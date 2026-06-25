@@ -78,11 +78,7 @@ async function errorHandlerPlugin(app: FastifyInstance) {
     }
 
     // Handle database / pool errors (don't expose internal details)
-    const dbUnavailable =
-      isTransientDbError(error) ||
-      error.message?.includes("Failed query") ||
-      error.message?.toLowerCase().includes("database") ||
-      error.message?.toLowerCase().includes("connection");
+    const dbUnavailable = isTransientDbError(error);
     if (dbUnavailable) {
       app.log.error({ error: error.message, stack: error.stack }, "Database error");
       return reply.status(503).send({

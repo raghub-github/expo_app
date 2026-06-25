@@ -1,94 +1,103 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, View, Platform } from "react-native";
 import { WebView } from "react-native-webview";
 import { getConfig } from "@/config/env";
 import { buildRideSearchingMapHtml } from "@/components/maps/mapbox-web-ride-searching-html";
 import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
+import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
 import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
-import { resolveRiderVehicleMarkerImage } from "@/features/ride/rideOptionAssets";
 import type { NearbySupplyRider } from "@/services/rideAvailability.service";
 
 type Props = {
   center: { latitude: number; longitude: number };
   nearbyRiders?: NearbySupplyRider[];
+  /** Catalog image_key for nearby rider markers (bike, auto, cab, cab_premium). */
+  riderMarkerImageKey?: string;
   /** Keeps pickup radar above the bottom sheet (px). */
   bottomMapPadding?: number;
   style?: object;
 };
 
+function escJsString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 /** Searching-for-rider map — Mapbox only. */
 export function RideSearchingMap({
   center,
   nearbyRiders = [],
+  riderMarkerImageKey = "bike",
   bottomMapPadding = 360,
   style,
 }: Props) {
   const webRef = useRef<WebView>(null);
   const readyRef = useRef(false);
+  const initialCenterRef = useRef(center);
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
-  const [bikeDataUri, setBikeDataUri] = useState<string | null>(null);
-  const [ridersPayload, setRidersPayload] = useState<
-    Array<{
-      riderId: number;
-      lat: number;
-      lng: number;
-      heading: number | null;
-      markerUri: string;
-    }>
-  >([]);
+  const [markerDataUri, setMarkerDataUri] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void resolveMapImageDataUri(MAPBIKE_IMAGE).then((uri) => {
-      if (!cancelled) setBikeDataUri(uri);
+    const source = resolveNearbyRiderMarkerImage(riderMarkerImageKey);
+    void resolveMapImageDataUri(source).then((uri) => {
+      if (!cancelled) setMarkerDataUri(uri);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const rows = await Promise.all(
-        nearbyRiders.map(async (r) => {
-          const vehicleType = r.vehicleTypes?.find(Boolean) ?? r.vehicleType ?? "bike";
-          const markerUri = await resolveMapImageDataUri(
-            resolveRiderVehicleMarkerImage(vehicleType)
-          );
-          return {
-            riderId: r.riderId,
-            lat: r.lat,
-            lng: r.lng,
-            heading: r.heading,
-            markerUri,
-          };
-        })
-      );
-      if (!cancelled) setRidersPayload(rows);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [nearbyRiders, bikeDataUri]);
+  }, [riderMarkerImageKey]);
 
   const html = useMemo(() => {
-    if (!token || !bikeDataUri) return "";
-    return buildRideSearchingMapHtml(token, center, bikeDataUri, undefined, bottomMapPadding);
-  }, [token, center.latitude, center.longitude, bikeDataUri, bottomMapPadding]);
+    if (!token || !markerDataUri) return "";
+    return buildRideSearchingMapHtml(
+      token,
+      initialCenterRef.current,
+      markerDataUri,
+      undefined,
+      bottomMapPadding
+    );
+  }, [token, markerDataUri, bottomMapPadding]);
 
-  const syncRiders = useCallback(() => {
+  useEffect(() => {
+    readyRef.current = false;
+  }, [html]);
+
+  const ridersPayload = useMemo(
+    () =>
+      nearbyRiders.map((r) => ({
+        riderId: r.riderId,
+        lat: r.lat,
+        lng: r.lng,
+        heading: r.heading,
+      })),
+    [nearbyRiders]
+  );
+
+  const injectMarkerIcon = useCallback(() => {
+    if (!readyRef.current || !markerDataUri) return;
+    const uri = escJsString(markerDataUri);
+    webRef.current?.injectJavaScript(
+      `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
+    );
+  }, [markerDataUri]);
+
+  const injectRiders = useCallback(() => {
     if (!readyRef.current) return;
     const json = JSON.stringify(ridersPayload);
     webRef.current?.injectJavaScript(
       `window.updateNearbyRiders && window.updateNearbyRiders(${json}); true;`
     );
-  }, [ridersPayload, nearbyRiders.length]);
+  }, [ridersPayload]);
+
+  const syncLayers = useCallback(() => {
+    injectMarkerIcon();
+    injectRiders();
+  }, [injectMarkerIcon, injectRiders]);
 
   useEffect(() => {
-    syncRiders();
-  }, [syncRiders]);
+    if (!readyRef.current) return;
+    syncLayers();
+  }, [syncLayers]);
 
   if (!token || !html) {
     return <CustomerMapUnavailable style={style} />;
@@ -104,6 +113,9 @@ export function RideSearchingMap({
         javaScriptEnabled
         domStorageEnabled
         scrollEnabled={false}
+        nestedScrollEnabled={Platform.OS === "android"}
+        overScrollMode="never"
+        androidLayerType="hardware"
         mixedContentMode="always"
         allowFileAccess
         allowUniversalAccessFromFileURLs
@@ -112,11 +124,14 @@ export function RideSearchingMap({
             const msg = JSON.parse(event.nativeEvent.data) as { type?: string };
             if (msg.type === "ready") {
               readyRef.current = true;
-              syncRiders();
+              syncLayers();
             }
           } catch {
             /* ignore */
           }
+        }}
+        onLoadEnd={() => {
+          if (readyRef.current) syncLayers();
         }}
       />
     </View>

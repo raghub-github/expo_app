@@ -1,5 +1,6 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import {
   createContext,
   useCallback,
@@ -10,7 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { usePathname } from "next/navigation";
+
 import { hasReachedNavTarget } from "@/lib/navigation/dashboard-nav-transition";
 
 interface CurrentRouteContextValue {
@@ -31,7 +32,7 @@ function stripHashQuery(s: string) {
 const NAVIGATION_TIMEOUT_MS = 12_000;
 
 export function CurrentRouteProvider({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
   const navGenerationRef = useRef(0);
 

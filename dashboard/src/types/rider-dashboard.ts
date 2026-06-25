@@ -39,6 +39,8 @@ export interface RiderSummary {
     onboardingStage: string;
     kycStatus: string;
     vehicleChoice: string | null;
+    /** Resolved from rider_onboarding_vehicle_types (e.g. Sedan (AC)). */
+    onboardingVehicleLabel?: string | null;
     selfieUrl: string | null;
     isOnline: boolean;
     lastDutyStatus: string;
@@ -48,6 +50,10 @@ export interface RiderSummary {
   vehicle: {
     id: number;
     vehicleType: string;
+    /** Onboarding catalog code (e.g. sedan_ac). */
+    onboardingVehicleCode?: string | null;
+    /** Human label from onboarding selection (e.g. Sedan (AC)). */
+    onboardingVehicleLabel?: string | null;
     registrationNumber: string;
     make: string | null;
     model: string | null;

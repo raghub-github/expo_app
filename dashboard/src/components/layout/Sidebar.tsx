@@ -1,8 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useMemo, memo } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   UserCircle,
@@ -44,7 +45,7 @@ const navigation: NavItem[] = [
 ];
 
 function SidebarComponent() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const router = useRouter();
   const { dashboards, loading: accessLoading } = useDashboardAccess();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();

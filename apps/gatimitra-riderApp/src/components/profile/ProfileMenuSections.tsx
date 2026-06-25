@@ -154,8 +154,11 @@ export function ProfileMenuSections({
             iconColor: "#7C3AED",
             iconBg: "#EDE9FE",
             title: t("profile.teamLeader.menu", "Connect with Team Leader"),
-            subtitle: t("profile.teamLeader.menuSub", "Call or chat with coordinator"),
-            onPress: () => router.push("/team-leader"),
+            subtitle: t(
+              "profile.teamLeader.temporarilyUnavailable",
+              "Temporarily unavailable"
+            ),
+            disabled: true,
           },
         ]}
       />

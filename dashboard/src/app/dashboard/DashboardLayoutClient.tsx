@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from "react";
-import { usePathname } from "next/navigation";
+
 import { useQueryClient } from "@tanstack/react-query";
 import {
   DashboardSearchParamsProvider,
@@ -88,7 +89,7 @@ function DashboardLayoutClientInner({
 }: {
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const searchParams = useDashboardSearchParams();
   const queryClient = useQueryClient();
 
@@ -377,7 +378,7 @@ function DashboardLayoutContent({
   isStoreOrdersPath: boolean;
   isCustomerDetailFromOrder: boolean;
 }) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const searchParams = useDashboardSearchParams();
   const queryClient = useQueryClient();
   const filterSidebar = useTicketFilterSidebar();

@@ -26,6 +26,8 @@ import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstab
 import {
   onboardingStepToRoute,
   isVehicleOnboardingComplete,
+  resolveOnboardingMacroStepIndex,
+  canAccessOnboardingPaymentScreen,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
 import {
@@ -126,6 +128,31 @@ export default function PaymentScreen() {
   }, [hydrate]);
 
   useEffect(() => {
+    if (!data.vehicleChoice?.trim()) {
+      router.replace("/(onboarding)/dl-rc");
+      return;
+    }
+    const locallySubmitted =
+      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim();
+    if (locallySubmitted) return;
+    if (
+      !canAccessOnboardingPaymentScreen({
+        vehicleChoice: data.vehicleChoice,
+        vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+        completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+        vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+      })
+    ) {
+      router.replace("/(onboarding)/dl-rc");
+    }
+  }, [
+    data.vehicleChoice,
+    data.vehicleOnboardingSubmittedFor,
+    data.vehicleOnboardingFlow,
+    riderStatus?.completedOnboardingSteps,
+  ]);
+
+  useEffect(() => {
     const next = riderStatus?.nextOnboardingStep;
     if (!next || next === "payment") return;
     if (
@@ -144,6 +171,31 @@ export default function PaymentScreen() {
     riderStatus?.completedOnboardingSteps,
     data.vehicleOnboardingFlow,
   ]);
+
+  const macroStepIndex = useMemo(
+    () =>
+      resolveOnboardingMacroStepIndex(
+        riderStatus?.completedOnboardingSteps,
+        data.vehicleOnboardingFlow
+      ),
+    [riderStatus?.completedOnboardingSteps, data.vehicleOnboardingFlow]
+  );
+
+  const documentsReadyForPayment = useMemo(
+    () =>
+      canAccessOnboardingPaymentScreen({
+        vehicleChoice: data.vehicleChoice,
+        vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+        completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+        vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+      }),
+    [
+      data.vehicleChoice,
+      data.vehicleOnboardingSubmittedFor,
+      data.vehicleOnboardingFlow,
+      riderStatus?.completedOnboardingSteps,
+    ]
+  );
 
   const totalDisplay = useMemo(
     () => formatRupeeFromPaise(feeConfig?.totalPaise ?? 5782),
@@ -218,6 +270,10 @@ export default function PaymentScreen() {
   };
 
   const handleInitiatePayment = async () => {
+    if (!documentsReadyForPayment) {
+      setError("Please complete KYC and vehicle steps before payment.");
+      return;
+    }
     if (!data.riderId) {
       setError("Rider ID not found");
       return;
@@ -270,7 +326,7 @@ export default function PaymentScreen() {
             end={{ x: 0.5, y: 1 }}
             style={[form.header, styles.headerExtra]}
           >
-            <StepProgress steps={ONBOARDING_STEPS} currentIndex={2} />
+            <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
 
             <View style={[form.stepPill, styles.stepPillSpaced]}>
               <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
@@ -339,7 +395,7 @@ export default function PaymentScreen() {
             label={payButtonLabel}
             onPress={handleInitiatePayment}
             loading={isPaying}
-            disabled={isPaying}
+            disabled={isPaying || !documentsReadyForPayment}
           />
 
           {feeConfig?.footerNote ? (

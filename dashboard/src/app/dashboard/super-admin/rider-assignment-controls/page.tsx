@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+
 import {
   Car,
   CheckCircle2,
@@ -200,7 +201,7 @@ function milestoneIcon(key: string): React.ElementType {
 }
 
 export default function RiderAssignmentControlsPage() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const dispatchRef = useRef<RiderDispatchPanelHandle>(null);
 
   const [limits, setLimits] = useState<ServiceLimitRow[]>([]);

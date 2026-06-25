@@ -59,15 +59,6 @@ export const RIDE_OPTIONS: RideOption[] = [
     capacity: 4,
     subtitle: "Premium comfort rides",
   },
-  {
-    id: "travel",
-    name: "Travel",
-    image: require("../../public/img/travel.png"),
-    baseFare: 120,
-    etaMins: 12,
-    capacity: 4,
-    subtitle: "Outstation & travel",
-  },
 ];
 
 export function getRideOption(rideId: string): RideOption {

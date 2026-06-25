@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { Suspense, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
@@ -45,7 +46,7 @@ function AuthCallbackLoading() {
 }
 function AuthCallbackContent() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
 
   useEffect(() => {
     const handleCallback = async () => {

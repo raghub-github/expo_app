@@ -10,7 +10,8 @@ import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback, useRef, useState } from "react";
 import { View, LogBox, Alert, AppState, type AppStateStatus } from "react-native";
-import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
@@ -22,6 +23,7 @@ import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
@@ -38,7 +40,7 @@ import {
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
-import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT, screenManagesBottomNav } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
@@ -158,6 +160,7 @@ export default function RootLayout() {
               <CustomerPermissionsRealtimeSync />
               <LocationPermissionResumeCheck />
               <LanguageSync />
+              <CustomerSystemChrome />
               <RootStack onLayoutRootView={onLayoutRootView} />
               <GlobalFloatingCart />
               <LocationModalWrapper />
@@ -354,7 +357,7 @@ function LocationModalWrapper() {
 }
 
 function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const segments = useSegments();
   const inProfileStack = segments[0] === "profile";
   const inLegalStack = segments[0] === "legal";
@@ -362,6 +365,7 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
     inProfileStack || inLegalStack ? 0 : insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
   const statusBarStyle = useScreenChromeStore((s) => s.statusBarStyle);
+  const stackBottomInset = screenManagesBottomNav(segments) ? 0 : insets.bottom;
 
   return (
     <>
@@ -377,7 +381,10 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
         <Stack
           screenOptions={{
             headerShown: false,
-            contentStyle: { backgroundColor: colors.background.light },
+            contentStyle: {
+              backgroundColor: colors.background.light,
+              paddingBottom: stackBottomInset,
+            },
             animation: "slide_from_right",
           }}
         >

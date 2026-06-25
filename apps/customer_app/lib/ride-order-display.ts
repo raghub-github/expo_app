@@ -1,6 +1,6 @@
 import type { OrderDetail, OrderSummary } from "@/services/order.service";
 import { getRideOption } from "@/features/ride/rideOptions";
-import { resolveRideImage } from "@/features/ride/rideOptionAssets";
+import { resolveRideImage, resolveSelectedRideMapMarkerImageKey } from "@/features/ride/rideOptionAssets";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { resolvePlaceDisplayName } from "@/services/location.service";
 import { parseRideFareDistanceKm } from "@/lib/ride-fare-distance";
@@ -16,7 +16,6 @@ const RIDE_IMAGE_KEY: Record<string, string> = {
   auto: "auto",
   "cab-economy": "cab",
   "cab-premium": "cab_premium",
-  travel: "travel",
 };
 
 export function resolveRideCatalogImageKey(rideType: string | null | undefined): string {
@@ -77,6 +76,11 @@ export function formatRideFare(amount: number | null | undefined): string {
 
 export function resolveRideVehicleImage(rideType: string | null | undefined) {
   return resolveRideImage(resolveRideCatalogImageKey(rideType));
+}
+
+/** Map marker image_key for the booked ride (bike / auto / cab / cab_premium). */
+export function resolveRideMapMarkerImageKey(rideType: string | null | undefined): string {
+  return resolveSelectedRideMapMarkerImageKey(rideType, resolveRideCatalogImageKey(rideType));
 }
 
 export function getRideFareBreakdown(order: Pick<OrderDetail, "totalAmount" | "tipAmount">) {

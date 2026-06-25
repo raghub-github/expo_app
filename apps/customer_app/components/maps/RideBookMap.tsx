@@ -13,9 +13,12 @@ type Props = {
   showRoadPolyline: boolean;
   stopCoords: LatLng[];
   nearbyRiders: NearbySupplyRider[];
+  /** Catalog image_key for nearby rider markers (bike, auto, cab, cab_premium). */
+  riderMarkerImageKey?: string;
   onMapReady?: () => void;
   onRegionChange?: () => void;
   onRegionChangeComplete?: () => void;
+  onUserMapGesture?: () => void;
   style?: object;
 };
 

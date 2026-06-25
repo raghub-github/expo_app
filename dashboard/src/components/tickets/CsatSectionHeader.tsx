@@ -1,13 +1,14 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+
 import { ArrowRight } from "lucide-react";
 
 const BASE = "/dashboard/tickets/csat";
 
 export function CsatSectionHeader() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const isDetails = pathname.startsWith(`${BASE}/details`);
 
   return (

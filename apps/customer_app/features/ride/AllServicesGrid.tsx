@@ -26,8 +26,7 @@ export type ServiceId =
   | "cab-economy"
   | "bike"
   | "bike-lite"
-  | "cab-premium"
-  | "travel";
+  | "cab-premium";
 
 type ServiceBadge = "discount" | "premium";
 
@@ -39,8 +38,8 @@ type RideService = {
   disabled?: boolean;
 };
 
-/** Temporarily disabled on Book a Ride — enable when travel is live. */
-export const DISABLED_SERVICE_IDS: ServiceId[] = ["travel"];
+/** @deprecated Travel removed from customer booking. */
+export const DISABLED_SERVICE_IDS: ServiceId[] = [];
 
 export const ALL_SERVICES: RideService[] = [
   {
@@ -69,12 +68,6 @@ export const ALL_SERVICES: RideService[] = [
     label: "Cab Premium",
     image: require("../../public/img/cabpremium.png"),
     badge: "premium",
-  },
-  {
-    id: "travel",
-    label: "Travel",
-    image: require("../../public/img/travel.png"),
-    disabled: true,
   },
 ];
 

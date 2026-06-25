@@ -1,7 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Search } from "lucide-react";
 import {
@@ -209,8 +211,8 @@ const SUP_OFFLINE_PRESETS: { value: string; label: string }[] = [
 export function QueueSupervisorUpdatedAgentsClient() {
   const queryClient = useQueryClient();
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const agentIdFromUrl = (searchParams.get("agentId") ?? "").trim();
 
   const { toast } = useToast();

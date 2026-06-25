@@ -15,7 +15,7 @@ import {
   Share,
   Alert,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -463,7 +463,7 @@ function HistoryOrderCard({
 export default function OrdersScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const [tab, setTab] = useState<OrdersTab>("active");
   const [search, setSearch] = useState("");
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);

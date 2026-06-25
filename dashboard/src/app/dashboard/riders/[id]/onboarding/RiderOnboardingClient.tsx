@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
@@ -13,6 +14,7 @@ import { DocumentEditModal } from "@/components/riders/DocumentEditModal";
 import { Edit, CheckCircle, XCircle, Eye, Loader2, AlertCircle, X } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ONBOARDING_STAGE_LABELS } from "@/types/rider-dashboard";
+import { computeIdentityVerificationProgress } from "@/lib/rider-identity-doc-requirements";
 import { documentActionKey } from "@/lib/rider-document-side-verification";
 
 interface Rider {
@@ -116,7 +118,7 @@ export default function RiderOnboardingClient() {
   const isSuperAdmin = permissionsData?.isSuperAdmin ?? false;
   const exists = permissionsData?.exists ?? false;
 
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
   const queryClient = useQueryClient();
   const riderDashboard = useRiderDashboardOptional();
@@ -836,12 +838,14 @@ export default function RiderOnboardingClient() {
         <div className="space-y-3">
           {(() => {
             const allDocs = riderData.documents || [];
-            const identityDocs = allDocs.filter(d => DOCUMENT_SECTIONS.identity.includes(d.docType));
-            const identityVerified = identityDocs.filter(d => d.verified).length;
-            const identityUploaded = DOCUMENT_SECTIONS.identity.filter(
-              (docType) => allDocs.some((d) => d.docType === docType)
-            ).length;
-            const identityTotal = DOCUMENT_SECTIONS.identity.length;
+            const identityProgress = computeIdentityVerificationProgress(
+              allDocs,
+              (docType) => Boolean(getLatestDocument(docType)?.verified),
+              (docType) => getLatestDocument(docType) != null
+            );
+            const identityVerified = identityProgress.verified;
+            const identityUploaded = identityProgress.uploaded;
+            const identityTotal = identityProgress.total;
             
             const vehicleDocs = allDocs.filter(d => DOCUMENT_SECTIONS.vehicle.includes(d.docType));
             const vehicleVerified = vehicleDocs.filter(d => d.verified).length;
@@ -853,7 +857,7 @@ export default function RiderOnboardingClient() {
             const additionalDocs = allDocs.filter(d => DOCUMENT_SECTIONS.additional.includes(d.docType));
             const additionalVerified = additionalDocs.filter(d => d.verified).length;
             
-            const allRequiredVerified = identityVerified === identityTotal && vehicleVerified === vehicleTotal;
+            const allRequiredVerified = identityProgress.complete && vehicleVerified === vehicleTotal;
             const paymentCompleted = (riderData.onboardingPayments ?? []).some((p) => p.status === "completed");
             const isActive = riderData.rider.status === "ACTIVE";
             
@@ -908,6 +912,7 @@ export default function RiderOnboardingClient() {
                 key={docType}
                 docType={docType}
                 document={doc}
+                isOptional={docType === "pan"}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
                 onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
                 onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
@@ -1040,6 +1045,7 @@ const DOC_TYPES_WITH_NUMBER = new Set([
 interface DocumentCardProps {
   docType: string;
   document: Document | null;
+  isOptional?: boolean;
   imageRefreshKey?: number;
   onView: () => void;
   onEdit: () => void;
@@ -1053,6 +1059,7 @@ interface DocumentCardProps {
 function DocumentCard({
   docType,
   document,
+  isOptional = false,
   imageRefreshKey,
   onView,
   onEdit,
@@ -1079,6 +1086,9 @@ function DocumentCard({
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-semibold text-gray-900">
             {DOCUMENT_LABELS[docType] || docType}
+            {isOptional ? (
+              <span className="ml-1.5 text-xs font-medium text-gray-500">(Optional)</span>
+            ) : null}
           </h3>
           {hasMultipleVersions && (
             <p className="text-xs text-gray-500 mt-0.5">
@@ -1216,7 +1226,9 @@ function DocumentCard({
         </>
       ) : (
         <div className="text-center py-8 text-gray-400">
-          <p className="text-sm">No document uploaded</p>
+          <p className="text-sm">
+            {isOptional ? "Optional — not submitted" : "No document uploaded"}
+          </p>
         </div>
       )}
     </div>

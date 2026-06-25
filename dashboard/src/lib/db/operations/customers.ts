@@ -569,11 +569,12 @@ export async function getCustomerById(id: number) {
 /** Get customer by public customer_id (e.g. GM…). */
 export async function getCustomerByCustomerId(customerId: string) {
   const db = getDb();
+  const compact = customerId.trim().replace(/\s/g, "");
 
   const [customer] = await db
     .select(customerSelectFields)
     .from(customers)
-    .where(eq(customers.customerId, customerId))
+    .where(sql`LOWER(TRIM(${customers.customerId})) = LOWER(${compact})`)
     .limit(1);
 
   if (!customer) return null;

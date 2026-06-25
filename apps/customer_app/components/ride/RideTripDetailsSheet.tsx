@@ -68,6 +68,13 @@ export function RideTripDetailsSheet({
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 20 }]}>
         <Text style={styles.title}>Trip details</Text>
         <ScrollView showsVerticalScrollIndicator={false}>
+          <View style={styles.tollNote}>
+            <Text style={styles.tollNoteText}>
+              Toll charges are not included unless explicitly shown in your fare breakdown. If your
+              trip passes through a toll plaza, please pay the toll amount directly to the rider at
+              the time of travel.
+            </Text>
+          </View>
           <View style={styles.row}>
             <View style={[styles.dot, styles.dotPickup]} />
             <View style={styles.textCol}>
@@ -157,6 +164,21 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#111827",
     marginBottom: 16,
+  },
+  tollNote: {
+    backgroundColor: "#FFFBEB",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 16,
+  },
+  tollNoteText: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#92400E",
+    lineHeight: 18,
   },
   row: {
     flexDirection: "row",

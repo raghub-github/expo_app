@@ -97,8 +97,8 @@ export function splitWalletNegativeBalance(
   }
 
   if (subscriptionDues <= 0 && balance < 0 && penaltyNegative <= 0) {
-    penaltyNegative = round2(-balance);
-    subscriptionNegative = 0;
+    subscriptionNegative = round2(-balance);
+    penaltyNegative = 0;
   }
 
   if (subscriptionDues > 0 && subscriptionNegative > MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {

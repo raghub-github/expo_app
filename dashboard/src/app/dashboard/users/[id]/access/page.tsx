@@ -1,13 +1,14 @@
 "use client";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
 import { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, Save, Loader2 } from "lucide-react";
 import { DashboardAccessSelector } from "@/components/users/DashboardAccessSelector";
 import { usePermissions } from "@/hooks/usePermissions";
 
 export default function UserAccessPage() {
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
   const [loading, setLoading] = useState(true);

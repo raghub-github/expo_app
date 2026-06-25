@@ -9,8 +9,10 @@
  */
 
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { incrCounter } from "@gatimitra/logger";
 import { getDb, getSql } from "../db/client.js";
 import {
+  customerRideServiceCatalog,
   dutyLogs,
   ordersCore,
   ordersFood,
@@ -385,13 +387,31 @@ export async function computeRiderEligibleDispatchServices(
   if (dutyServices.length === 0) return null;
 
   const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
-  const vehicleServices = await getActiveVehicleServiceTypes(riderId);
+  const { resolveAssignedDispatchServicesForProfile } = await import(
+    "./rider-vehicle-type-service-assignments.js"
+  );
+  const assignmentServices = await resolveAssignedDispatchServicesForProfile(vehicleProfile);
+  const hasVehicleProfile =
+    vehicleProfile.vehicleTypes.some((v) => v.trim().length > 0) ||
+    vehicleProfile.vehicleCategories.some((c) => c.trim().length > 0);
+  const vehicleServices = hasVehicleProfile
+    ? assignmentServices
+    : assignmentServices.length > 0
+      ? assignmentServices
+      : await getActiveVehicleServiceTypes(riderId);
   if (vehicleServices.length === 0) return null;
 
   const intersected = intersectServices(dutyServices, vehicleServices);
   const profileFiltered = filterDispatchServicesForRiderProfile(intersected, vehicleProfile);
+  const { filterDispatchServicesByVehicleAssignments } = await import(
+    "./rider-vehicle-type-service-assignments.js"
+  );
+  const vehicleFiltered = await filterDispatchServicesByVehicleAssignments(profileFiltered, {
+    vehicleTypes: vehicleProfile.vehicleTypes,
+    vehicleCategories: vehicleProfile.vehicleCategories,
+  });
   const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
-  const unrestricted = filterUnrestrictedDispatchServices(profileFiltered, restrictionSnapshot);
+  const unrestricted = filterUnrestrictedDispatchServices(vehicleFiltered, restrictionSnapshot);
 
   return unrestricted.length > 0 ? unrestricted : null;
 }
@@ -407,27 +427,29 @@ export async function loadRiderGps(
   riderId: number
 ): Promise<{ lat: number; lng: number; updatedAt: Date } | null> {
   const sqlClient = getSql();
+  const started = Date.now();
   const [position] = (await sqlClient`
-    WITH latest_ping AS (
-      SELECT DISTINCT ON (rle.user_id)
-        (substring(rle.user_id from 'usr_(\\d+)'))::int AS rider_id,
-        rle.lat,
-        rle.lng,
-        to_timestamp(rle.ts_ms / 1000.0) AT TIME ZONE 'UTC' AS updated_at
-      FROM rider_location_events rle
-      WHERE rle.user_id = ${`usr_${riderId}`}
-      ORDER BY rle.user_id, rle.ts_ms DESC
-    )
     SELECT
-      COALESCE(rll.latitude::float, lp.lat, r.lat::float) AS lat,
-      COALESCE(rll.longitude::float, lp.lng, r.lon::float) AS lng,
-      COALESCE(rll.updated_at, lp.updated_at) AS updated_at
+      COALESCE(rcl.lat, r.lat::float) AS lat,
+      COALESCE(rcl.lng, r.lon::float) AS lng,
+      rcl.updated_at AS updated_at
     FROM riders r
-    LEFT JOIN rider_live_locations rll ON rll.rider_id = r.id
-    LEFT JOIN latest_ping lp ON lp.rider_id = r.id
+    LEFT JOIN rider_current_locations rcl ON rcl.rider_id = r.id
     WHERE r.id = ${riderId}
     LIMIT 1
   `) as Array<{ lat: number | null; lng: number | null; updated_at: Date | null }>;
+
+  incrCounter(
+    "rider_dispatch_gps_lookups_total",
+    "Dispatch rider GPS lookups via rider_current_locations"
+  );
+  const lookupMs = Date.now() - started;
+  if (lookupMs > 50) {
+    incrCounter(
+      "rider_dispatch_gps_slow_lookups_total",
+      "Dispatch GPS lookups slower than 50ms"
+    );
+  }
 
   if (!position?.updated_at || position.lat == null || position.lng == null) {
     return null;
@@ -771,6 +793,39 @@ function toPickupPoint(latRaw: unknown, lngRaw: unknown): DispatchPickupPoint {
   };
 }
 
+async function resolvePersonRideVehicleTypesForOrder(
+  orderCoreId: number
+): Promise<string[] | undefined> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      rideType: ordersRide.rideType,
+      vehicleTypeRequired: ordersRide.vehicleTypeRequired,
+    })
+    .from(ordersCore)
+    .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+    .where(eq(ordersCore.id, orderCoreId))
+    .limit(1);
+
+  if (!row) return undefined;
+
+  const rideType = row.rideType?.trim();
+  if (rideType) {
+    const [catalog] = await db
+      .select({ vehicleTypes: customerRideServiceCatalog.vehicleTypes })
+      .from(customerRideServiceCatalog)
+      .where(eq(customerRideServiceCatalog.code, rideType))
+      .limit(1);
+    const fromCatalog = (catalog?.vehicleTypes ?? [])
+      .map((t) => String(t).trim())
+      .filter(Boolean);
+    if (fromCatalog.length > 0) return fromCatalog;
+  }
+
+  const fallback = row.vehicleTypeRequired?.trim();
+  return fallback ? [fallback] : undefined;
+}
+
 async function fetchPersonRidePoolRows(): Promise<DispatchPoolOrderRow[]> {
   const db = getDb();
   const rows = await db
@@ -941,9 +996,6 @@ export async function listDispatchPoolOrdersForRider(
   for (const order of candidates) {
     if (excludedCoreIds.has(order.orderCoreId)) continue;
     if (await isOrderDispatchManualHold(order.orderCoreId)) continue;
-    if (await isRiderBlacklistedForService(riderId, order.serviceType)) continue;
-
-    const ctx = baseCtx;
 
     const session = sessionMap.get(order.orderCoreId);
     const wave = session?.currentWave ?? 1;
@@ -960,16 +1012,20 @@ export async function listDispatchPoolOrdersForRider(
       continue;
     }
 
-    if (
-      isRiderWithinPickupRadiusMeters(
-        ctx.lat,
-        ctx.lng,
-        toPickupPoint(order.pickupLat, order.pickupLng),
-        radiusMeters
-      )
-    ) {
-      withinRadius.push(order);
-    }
+    const personRideVehicleTypes =
+      order.serviceType === "person_ride"
+        ? await resolvePersonRideVehicleTypesForOrder(order.orderCoreId)
+        : undefined;
+
+    const eligible = await evaluateRiderDispatchEligibility(riderId, {
+      serviceType: order.serviceType,
+      pickup: toPickupPoint(order.pickupLat, order.pickupLng),
+      effectiveRadiusMeters: radiusMeters,
+      orderCoreId: order.orderCoreId,
+      orderId: order.orderId,
+      personRideVehicleTypes,
+    });
+    if (eligible) withinRadius.push(order);
   }
 
   return withinRadius

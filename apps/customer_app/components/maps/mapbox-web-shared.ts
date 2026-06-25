@@ -31,9 +31,53 @@ export function mapboxHtmlHead(styleUrl: string): string {
   <script src="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.js"><\/script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    html, body, #map { width:100%; height:100%; }
+    html, body, #map { width:100%; height:100%; touch-action: none; }
     .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display:none !important; }
+    .mapboxgl-marker { background: transparent !important; }
+    .gm-vehicle-marker { background: transparent !important; pointer-events: none; }
+    .gm-vehicle-marker img {
+      display: block;
+      background: transparent !important;
+      border: 0;
+      mix-blend-mode: screen;
+      -webkit-mix-blend-mode: screen;
+    }
   </style>`;
+}
+
+/** Pinch-zoom, pan, and double-tap zoom — Rapido-style map interaction. */
+export function mapboxEnableGesturesScript(): string {
+  return `
+    map.touchZoomRotate.enable();
+    map.scrollZoom.enable();
+    map.dragPan.enable();
+    map.doubleClickZoom.enable();
+    if (map.touchPitch && map.touchPitch.disable) map.touchPitch.disable();
+    if (map.dragRotate && map.dragRotate.disable) map.dragRotate.disable();
+    var userGestureNotified = false;
+    function notifyUserGesture() {
+      if (userGestureNotified) return;
+      userGestureNotified = true;
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'usergesture' }));
+      }
+    }
+    map.on('zoomstart', function(e) { if (e.originalEvent) notifyUserGesture(); });
+    map.on('dragstart', function(e) { if (e.originalEvent) notifyUserGesture(); });
+  `;
+}
+
+/** Vehicle marker img HTML — black matte PNGs blend cleanly via screen mode. */
+export function mapboxVehicleMarkerImgStyle(sizePx: number, rotationDeg: string): string {
+  return (
+    "width:" +
+    sizePx +
+    "px;height:" +
+    sizePx +
+    "px;object-fit:contain;transform:" +
+    rotationDeg +
+    ";transform-origin:center center;"
+  );
 }
 
 /** Approximate Mapbox zoom from react-native-maps latitudeDelta. */

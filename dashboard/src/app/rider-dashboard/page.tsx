@@ -1,6 +1,7 @@
 "use client";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useRouter } from "next/navigation";
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
 
 type Rider = {
@@ -35,7 +36,7 @@ export default function RiderDashboardPage() {
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [showDefault, setShowDefault] = useState<boolean>(true);
   
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const router = useRouter();
   
   // Initial load from URL

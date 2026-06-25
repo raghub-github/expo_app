@@ -1,15 +1,16 @@
 "use client";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
 import Link from "next/link";
 import { useEffect, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { SystemRoleForm } from "@/components/users/SystemRoleForm";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useHydrated } from "@/hooks/useHydrated";
 
 export default function EditSystemRolePage() {
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
   const hydrated = useHydrated();
   const { isSuperAdmin, loading: permsLoading, exists } = usePermissions();

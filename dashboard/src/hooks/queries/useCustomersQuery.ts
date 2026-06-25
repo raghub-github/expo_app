@@ -1,11 +1,13 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useQuery } from "@tanstack/react-query";
-import { usePathname } from "next/navigation";
+
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { CustomerWithStats } from "@/lib/db/operations/customers";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 
 interface CustomersResponse {
   success: boolean;
@@ -91,21 +93,27 @@ export async function fetchCustomers(
  * Uses React Query for automatic caching and refetching
  */
 export function useCustomersQuery(params: CustomersQueryParams = {}) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const auth = useAuthOptional();
+  const { data: permissionsData, isLoading: permissionsLoading } = usePermissionsQuery();
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
+  const permissionsReady = Boolean(auth?.permissions ?? permissionsData);
 
   const { enabled: enabledFromParams = true, ...queryParams } = params;
 
   const isOnCustomersRoute = pathname.startsWith("/dashboard/customers");
-  const isAllowed = Boolean(authReady && sessionUser && permissions);
-  const enabled = Boolean(isOnCustomersRoute && isAllowed && enabledFromParams);
-  return useQuery({
+  const authGateReady = Boolean(authReady && sessionUser && permissionsReady && !permissionsLoading);
+  const enabled = Boolean(isOnCustomersRoute && authGateReady && enabledFromParams);
+  const query = useQuery({
     queryKey: queryKeys.customers.list(queryParams as Record<string, unknown>),
     queryFn: ({ signal }) => fetchCustomers(queryParams, signal),
     enabled,
     ...getCacheConfig(CacheTier.MEDIUM), // Customers list is medium frequency
   });
+
+  return {
+    ...query,
+    authGateReady,
+  };
 }

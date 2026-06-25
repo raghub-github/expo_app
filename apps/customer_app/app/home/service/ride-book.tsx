@@ -24,26 +24,27 @@ import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { resolvePlaceDisplayName } from "@/services/location.service";
 import { RideServiceUnavailableSheet } from "@/features/ride/RideServiceUnavailableSheet";
+import { haversineKm } from "@/lib/billSummary";
 import { parseRideStopsParam } from "@/lib/ride-serviceability";
 import type { LatLng } from "@/services/directions.service";
 import { RideRouteMapPillOverlay } from "@/features/ride/RideRouteMapPillOverlay";
 import {
   rideMapFitPadding,
-  rideRouteFitMaxZoom,
+  rideMapFitMaxZoom,
+  endpointsBoundsFitPoints,
   routeBoundsFitPoints,
   RIDE_BOOK_SHEET_HEIGHT_RATIO,
   type InwardBias,
 } from "@/features/ride/ride-map-pill-layout";
 import { useRideConfirmPickupStore } from "@/store/rideConfirmPickupStore";
-import { resolveRideImage } from "@/features/ride/rideOptionAssets";
+import { resolveRideImage, resolveSelectedRideMapMarkerImageKey } from "@/features/ride/rideOptionAssets";
+import { filterRideCatalogOptions } from "@/lib/ride-catalog-display";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import type { RideAvailabilityOption } from "@/services/rideAvailability.service";
 import { estimateRideFare } from "@/features/ride/rideOptions";
 import { getRideFareQuote, type RideFareQuote } from "@/services/rideQuote.service";
 import { useLocationStore } from "@/store/locationStore";
 import { pickupGeoHintsFromAddress } from "@/lib/ride-geo-hints";
-import { ActiveRideBottomSheet } from "@/components/ride/ActiveRideBottomSheet";
-import { useActivePersonRideOrders } from "@/hooks/useActivePersonRideOrders";
 import { RidePreBookTipSheet } from "@/features/ride/RidePreBookTipSheet";
 import { RideOffersSheet } from "@/features/ride/RideOffersSheet";
 import { RideVehicleFareDetailsSheet } from "@/features/ride/RideVehicleFareDetailsSheet";
@@ -247,6 +248,8 @@ export default function RideBookScreen() {
   const [bikeUnavailableToastVisible, setBikeUnavailableToastVisible] = useState(false);
   const [selectedRideId, setSelectedRideId] = useState<string | null>(null);
   const mapRef = useRef<CustomerMapRef>(null);
+  const userAdjustedMapRef = useRef(false);
+  const lastAutoFitKeyRef = useRef("");
   const [mapSyncToken, setMapSyncToken] = useState(0);
   const [mapFrameTick, setMapFrameTick] = useState(0);
   const [bottomSheetHeight, setBottomSheetHeight] = useState(0);
@@ -416,11 +419,8 @@ export default function RideBookScreen() {
     isError: availabilityError,
   } = useNearbyRideAvailability(pickupLat, pickupLng, tripKm, pickupGeoHints);
 
-  const { activeRides } = useActivePersonRideOrders(true);
-  const hasActiveRide = activeRides.length > 0;
-
   const availableOptions = useMemo(
-    () => availability?.options ?? EMPTY_RIDE_OPTIONS,
+    () => filterRideCatalogOptions(availability?.options ?? EMPTY_RIDE_OPTIONS),
     [availability?.options]
   );
 
@@ -438,6 +438,10 @@ export default function RideBookScreen() {
 
   const selectedRide =
     sortedOptions.find((r) => r.id === selectedRideId) ?? sortedOptions[0] ?? null;
+  const riderMarkerImageKey = resolveSelectedRideMapMarkerImageKey(
+    selectedRide?.id,
+    selectedRide?.imageKey
+  );
   const fareDetailsOption = useMemo(
     () => sortedOptions.find((o) => o.id === fareDetailsOptionId) ?? null,
     [sortedOptions, fareDetailsOptionId]
@@ -571,7 +575,10 @@ export default function RideBookScreen() {
     const allowed = new Set(selectedRide.vehicleTypes);
     return allNearbyRiders.filter((rider) => {
       const types = rider.vehicleTypes?.length ? rider.vehicleTypes : [rider.vehicleType];
-      return types.some((type) => allowed.has(type));
+      if (!types.some((type) => allowed.has(type))) return false;
+      if (selectedRide.id === "cab-economy") return rider.acType === "Non-AC";
+      if (selectedRide.id === "cab-premium") return rider.acType === "AC";
+      return true;
     });
   }, [allNearbyRiders, selectedRide]);
 
@@ -703,13 +710,30 @@ export default function RideBookScreen() {
   ]);
 
   const mapFitPoints = useMemo(() => {
-    if (routeCoordinates.length < 2) return [];
     const endpoints: LatLng[] = [];
     if (pickupPoint) endpoints.push(pickupPoint);
     stopCoords.forEach((s) => endpoints.push(s));
     if (dropPoint) endpoints.push(dropPoint);
-    return routeBoundsFitPoints(routeCoordinates, endpoints);
-  }, [routeCoordinates, pickupPoint, dropPoint, stopCoords]);
+    if (endpoints.length < 2) return endpoints;
+    if (routeCoordinates.length >= 2) {
+      return routeBoundsFitPoints(routeCoordinates, endpoints);
+    }
+    return endpointsBoundsFitPoints(endpoints);
+  }, [pickupPoint, dropPoint, stopCoords, routeCoordinates]);
+
+  const endpointSpanKm = useMemo(() => {
+    if (!pickupPoint || !dropPoint) return null;
+    return haversineKm(pickupPoint, dropPoint);
+  }, [pickupPoint, dropPoint]);
+
+  /** Nearest supply at pickup — selected vehicle icon (Rapido-style, max 6). */
+  const mapNearbyRiders = useMemo(
+    () =>
+      [...nearbyRiders]
+        .sort((a, b) => a.distanceKm - b.distanceKm)
+        .slice(0, 4),
+    [nearbyRiders]
+  );
 
   const showRoadPolyline = routeCoordinates.length >= 2;
 
@@ -733,12 +757,31 @@ export default function RideBookScreen() {
     () =>
       rideMapFitPadding({
         topInset: insets.top,
-        bottomSheetHeightPx: effectiveBottomSheetHeight,
       }),
-    [insets.top, effectiveBottomSheetHeight]
+    [insets.top]
   );
 
-  const mapFitMaxZoom = useMemo(() => rideRouteFitMaxZoom(tripKm), [tripKm]);
+  const mapFitMaxZoom = useMemo(
+    () => rideMapFitMaxZoom(tripKm ?? endpointSpanKm),
+    [tripKm, endpointSpanKm]
+  );
+
+  const autoFitKey = useMemo(
+    () =>
+      [
+        pickupLat,
+        pickupLng,
+        dropLat,
+        dropLng,
+        routeCoordinates.length,
+        stopCoords.length,
+      ].join("|"),
+    [pickupLat, pickupLng, dropLat, dropLng, routeCoordinates.length, stopCoords.length]
+  );
+
+  const handleUserMapGesture = useCallback(() => {
+    userAdjustedMapRef.current = true;
+  }, []);
 
   const handleMapReady = useCallback(() => {
     setMapReady(true);
@@ -747,28 +790,45 @@ export default function RideBookScreen() {
 
   useEffect(() => {
     if (!mapReady) return;
-    if (routeLoading) return;
-    if (routeCoordinates.length < 2) return;
     if (mapFitPoints.length < 2) return;
 
-    const timer = setTimeout(() => {
+    const locationChanged = autoFitKey !== lastAutoFitKeyRef.current;
+    if (userAdjustedMapRef.current && !locationChanged) return;
+
+    if (locationChanged) {
+      userAdjustedMapRef.current = false;
+      lastAutoFitKeyRef.current = autoFitKey;
+    }
+
+    const runFit = () => {
+      if (userAdjustedMapRef.current) return;
       mapRef.current?.fitToCoordinates(mapFitPoints, {
         edgePadding: mapEdgePadding,
         animated: true,
         maxZoom: mapFitMaxZoom,
       });
-      setTimeout(bumpMapOverlay, 520);
-    }, 450);
+    };
 
-    return () => clearTimeout(timer);
+    runFit();
+    const t1 = setTimeout(runFit, routeLoading ? 600 : 200);
+    const t2 = setTimeout(() => {
+      if (userAdjustedMapRef.current) return;
+      runFit();
+      bumpMapOverlay();
+    }, routeLoading ? 1400 : 550);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [
     mapReady,
     routeLoading,
-    routeCoordinates.length,
     mapFitPoints,
     mapEdgePadding,
     mapFitMaxZoom,
     bumpMapOverlay,
+    autoFitKey,
   ]);
 
   const effectivePickupAddress =
@@ -891,11 +951,13 @@ export default function RideBookScreen() {
           routeCoordinates={routeCoordinates}
           showRoadPolyline={showRoadPolyline}
           stopCoords={stopCoords}
-          nearbyRiders={nearbyRiders}
+          nearbyRiders={mapNearbyRiders}
+          riderMarkerImageKey={riderMarkerImageKey}
           style={StyleSheet.absoluteFill}
           onMapReady={handleMapReady}
           onRegionChange={syncMapOverlayDuringPan}
           onRegionChangeComplete={bumpMapOverlay}
+          onUserMapGesture={handleUserMapGesture}
         />
 
         <RideRouteMapPillOverlay
@@ -913,7 +975,12 @@ export default function RideBookScreen() {
         />
 
         {routeLoading ? (
-          <View style={styles.routeLoadingPill}>
+          <View
+            style={[
+              styles.routeLoadingPill,
+              { bottom: effectiveBottomSheetHeight > 0 ? effectiveBottomSheetHeight + 16 : 24 },
+            ]}
+          >
             <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
             <Text style={styles.routeLoadingText}>Calculating route…</Text>
           </View>
@@ -946,17 +1013,12 @@ export default function RideBookScreen() {
 
       {!serviceUnavailableVisible ? (
         <View
-          style={[styles.bottomSheet, { paddingBottom: insets.bottom + 12 }]}
+          style={[styles.bottomSheet, { paddingBottom: Math.max(insets.bottom - 18, 0) }]}
           onLayout={(event) => {
             const h = event.nativeEvent.layout.height;
             if (h > 0) setBottomSheetHeight(h);
           }}
         >
-          {hasActiveRide ? (
-            <View style={styles.activeRideBannerWrap}>
-              <ActiveRideBottomSheet rides={activeRides} embedded />
-            </View>
-          ) : null}
           <View style={styles.sheetHandle} />
           {pricingBanner ? (
             <View
@@ -1069,10 +1131,6 @@ export default function RideBookScreen() {
         }}
       />
 
-      {serviceUnavailableVisible && hasActiveRide ? (
-        <ActiveRideBottomSheet rides={activeRides} bottomInset={insets.bottom + 16} />
-      ) : null}
-
       <RideOffersSheet
         visible={offersSheetVisible}
         onClose={() => setOffersSheetVisible(false)}
@@ -1114,13 +1172,12 @@ const styles = StyleSheet.create({
   },
   mapSection: {
     flex: 1,
-    minHeight: 260,
-    overflow: "visible",
+    minHeight: 300,
+    overflow: "hidden",
   },
   routeLoadingPill: {
     position: "absolute",
     alignSelf: "center",
-    bottom: 24,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -1225,8 +1282,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    marginTop: -18,
-    maxHeight: "52%",
+    flexShrink: 0,
     paddingHorizontal: 16,
     paddingTop: 8,
     shadowColor: "#000",
@@ -1234,12 +1290,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 12,
     elevation: 12,
-  },
-  activeRideBannerWrap: {
-    marginHorizontal: -16,
-    marginTop: -8,
-    marginBottom: 8,
-    paddingHorizontal: 16,
   },
   sheetHandle: {
     alignSelf: "center",
@@ -1251,6 +1301,7 @@ const styles = StyleSheet.create({
   },
   optionsScroll: {
     flexGrow: 0,
+    maxHeight: Dimensions.get("window").height * 0.3,
   },
   optionsContent: {
     paddingBottom: 4,
@@ -1450,7 +1501,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     marginTop: 4,
-    marginBottom: 12,
+    marginBottom: 6,
   },
   payOffersHalf: {
     flex: 1,
@@ -1472,9 +1523,10 @@ const styles = StyleSheet.create({
   },
   bookBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
-    paddingVertical: 16,
+    paddingVertical: 12,
     borderRadius: 28,
     alignItems: "center",
+    marginBottom: 0,
   },
   bookBtnDisabled: {
     opacity: 0.5,

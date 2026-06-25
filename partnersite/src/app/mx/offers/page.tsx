@@ -1083,7 +1083,9 @@ function OffersContent() {
                 type="button"
                 onClick={() => setPageTab("create")}
                 className={`pb-3 border-b-2 transition-colors ${
-                  pageTab === "create" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+                  pageTab === "create"
+                    ? "border-blue-600 text-blue-700 font-medium"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
                 }`}
               >
                 Create offers
@@ -1092,7 +1094,9 @@ function OffersContent() {
                 type="button"
                 onClick={() => setPageTab("track")}
                 className={`pb-3 border-b-2 transition-colors ${
-                  pageTab === "track" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+                  pageTab === "track"
+                    ? "border-blue-600 text-blue-700 font-medium"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
                 }`}
               >
                 Track offers
@@ -1143,11 +1147,14 @@ function OffersContent() {
           <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
             {pageTab === "create" ? (
               <div className="py-6">
-                <div className="rounded-lg border border-gray-200 bg-white p-6">
+                <div className="rounded-lg border border-gray-200 bg-white p-6 max-w-3xl mx-auto">
                   <div className="flex flex-col items-center justify-center gap-3 text-center">
                     <p className="text-sm text-gray-700 font-medium">Create offers</p>
-                    <p className="text-sm text-gray-500">Click below to start creating a new offer for {displayStoreName || "your store"}.</p>
+                    <p className="text-sm text-gray-500">
+                      Click below to start creating a new offer for {displayStoreName || "your store"}.
+                    </p>
                     <button
+                      type="button"
                       onClick={() => handleOpenModal()}
                       className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
                     >
@@ -1158,18 +1165,16 @@ function OffersContent() {
                 </div>
               </div>
             ) : offers.length === 0 ? (
-              <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/90 border-dashed shadow-sm p-6 sm:p-8 md:p-10 text-center max-w-xl mx-auto">
-                <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-orange-100 to-red-50 rounded-2xl flex items-center justify-center mx-auto mb-4 sm:mb-5">
-                  <Zap size={28} className="sm:w-8 sm:h-8 text-orange-500" />
-                </div>
-                <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-2">No offers created yet</h3>
-                <p className="text-gray-500 text-sm sm:text-base mb-6 sm:mb-8 max-w-sm mx-auto">Create your first offer to attract more customers and boost sales.</p>
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/80 py-12 text-center max-w-xl mx-auto">
+                <p className="text-sm font-medium text-gray-700">No offers yet</p>
+                <p className="text-xs text-gray-500 mt-1">Create your first campaign to start tracking performance.</p>
                 <button
-                  onClick={() => handleOpenModal()}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl hover:from-orange-600 hover:to-red-600 font-semibold text-sm shadow-md hover:shadow-lg transition-all active:scale-[0.98]"
+                  type="button"
+                  onClick={() => setPageTab("create")}
+                  className="mt-4 inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
                 >
-                  <Plus size={18} />
-                  Create First Offer
+                  <Plus size={16} className="shrink-0" />
+                  Create offer
                 </button>
               </div>
             ) : filteredTrackOffers.length === 0 ? (

@@ -1,4 +1,5 @@
 import { MAPBOX_GL_VERSION, MAPBOX_RIDE_STYLE } from "@/lib/customer-map-assets";
+import { mapboxEnableGesturesScript } from "@/components/maps/mapbox-web-shared";
 
 type LatLng = { latitude: number; longitude: number };
 
@@ -7,7 +8,6 @@ type NearbyRiderPin = {
   lat: number;
   lng: number;
   heading: number | null;
-  markerUri: string;
 };
 
 function escToken(token: string): string {
@@ -54,8 +54,17 @@ export function buildRideSearchingMapHtml(
   <script src="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.js"><\/script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    html, body, #map { width:100%; height:100%; }
+    html, body, #map { width:100%; height:100%; touch-action: none; }
     .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display:none !important; }
+    .mapboxgl-marker { background: transparent !important; }
+    .gm-vehicle-marker { background: transparent !important; pointer-events: none; }
+    .gm-vehicle-marker img {
+      display: block;
+      background: transparent !important;
+      border: 0;
+      mix-blend-mode: screen;
+      -webkit-mix-blend-mode: screen;
+    }
     .radar-host {
       position:absolute; left:50%; bottom:0; width:160px; height:160px;
       margin-left:-80px; margin-bottom:-80px; pointer-events:none;
@@ -79,10 +88,17 @@ export function buildRideSearchingMapHtml(
   <script>
     (function(){
       var token = '${escToken(token)}';
-      var defaultBikeUri = '${uri}';
+      var riderMarkerUri = '${uri}';
+      var lastRidersPayload = [];
       var riderMarkers = [];
       var pickupLng = ${lng};
       var pickupLat = ${lat};
+
+      window.setRiderMarkerIcon = function(nextUri) {
+        if (!nextUri) return;
+        riderMarkerUri = nextUri;
+        if (lastRidersPayload.length) window.updateNearbyRiders(lastRidersPayload);
+      };
 
       mapboxgl.accessToken = token;
       var map = new mapboxgl.Map({
@@ -93,9 +109,11 @@ export function buildRideSearchingMapHtml(
         minZoom: 10,
         maxZoom: 18,
         pitch: 0,
-        attributionControl: false
+        attributionControl: false,
+        cooperativeGestures: false
       });
       ${labelRestoreScript()}
+      ${mapboxEnableGesturesScript()}
       map.on('style.load', function() { ensureMapLabelsVisible(map); });
 
       function buildPickupMarker() {
@@ -146,19 +164,20 @@ export function buildRideSearchingMapHtml(
       }
 
       window.updateNearbyRiders = function(riders) {
+        lastRidersPayload = riders || [];
         clearRiderMarkers();
-        (riders || []).forEach(function(r) {
+        lastRidersPayload.forEach(function(r) {
           var el = document.createElement('div');
-          el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
-          var imgUri = r.markerUri || defaultBikeUri;
+          el.className = 'gm-vehicle-marker';
+          el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:transparent;';
           var rot = r.heading != null && !isNaN(r.heading) ? 'rotate(' + r.heading + 'deg)' : 'none';
-          el.innerHTML = '<img src="' + imgUri + '" style="width:40px;height:40px;object-fit:contain;transform:' + rot + ';transform-origin:center center;" alt="" />';
+          el.innerHTML = '<img src="' + riderMarkerUri + '" style="width:40px;height:40px;object-fit:contain;transform:' + rot + ';transform-origin:center center;background:transparent;border:0;" alt="" />';
           var marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
             .setLngLat([r.lng, r.lat])
             .addTo(map);
           riderMarkers.push(marker);
         });
-        fitPickupAndRiders(riders);
+        fitPickupAndRiders(lastRidersPayload);
       };
 
       map.on('load', function() {

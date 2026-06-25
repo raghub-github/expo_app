@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { createAnimatedComponent } from "react-native-reanimated";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
 import { foodHomeRouterBack } from "@/lib/safeRouterBack";
@@ -151,7 +151,7 @@ function computeCategoryRailMetrics(windowWidth: number, insetRight: number): Ca
 }
 
 export default function FoodMerchantsScreen() {
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const router = useRouter();
   const {

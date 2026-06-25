@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
+
 import type { QueryClient } from "@tanstack/react-query";
 import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
@@ -41,7 +42,7 @@ declare global {
  * another tab already hydrated auth recently — that was reloading other tabs.
  */
 export function useBootstrapGate(queryClient: QueryClient): boolean {
-  const pathname = usePathname() ?? "";
+  const pathname = useAppPathname() ?? "";
   const isStandaloneOrderRoute = pathname.split("?")[0].split("#")[0].startsWith("/order");
 
   const [authReady, setAuthReady] = useState(() => {

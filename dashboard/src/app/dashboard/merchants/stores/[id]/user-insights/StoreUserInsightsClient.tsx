@@ -1,6 +1,7 @@
 "use client";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useState, useEffect, Suspense, useRef, useMemo } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   Star,
   MessageSquare,
@@ -318,7 +319,7 @@ function DateRangePopover({
 }
 
 function UserInsightsContent({ storeId }: { storeId: string }) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [reviews, setReviews] = useState<Review[]>([]);

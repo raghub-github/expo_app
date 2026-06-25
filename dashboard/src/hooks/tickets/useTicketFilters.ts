@@ -1,7 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { startTransition } from "react";
 
 export interface TicketFilterState {
@@ -358,8 +360,8 @@ export function buildSearchParams(filters: TicketFilterState) {
 
 export function useTicketFilters() {
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const [filters, dispatch] = useReducer(reducer, searchParams, initFilters);
 
   /** Applied filters (from URL) - use for the ticket list so it only updates on Apply */

@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useState, type ComponentType, type ReactNode } from "react";
-import Link from "next/link";
 import { Percent, Sparkles, Tag, Users } from "lucide-react";
+import { RiderIncentiveProgramsClient } from "@/components/super-admin/RiderIncentiveProgramsClient";
 import {
   useCreateBillingDiscountMutation,
   useCreateBillingPlatformOfferMutation,
@@ -127,6 +127,7 @@ function StatCard({
 }
 
 type BuilderMode = "platform_offer" | "checkout_coupon";
+type PageMode = "offer" | "incentive";
 
 function toDatetimeLocal(val: string | null | undefined): string {
   if (val == null || String(val).trim() === "") return "";
@@ -179,6 +180,7 @@ export default function OffersCouponsPage() {
   const [updateCoupon, updateCouponState] = useUpdateBillingDiscountMutation();
   const [deleteCoupon, deleteCouponState] = useDeleteBillingDiscountMutation();
 
+  const [pageMode, setPageMode] = useState<PageMode>("offer");
   const [builderMode, setBuilderMode] = useState<BuilderMode>("platform_offer");
   const [editingOfferId, setEditingOfferId] = useState<number | null>(null);
   const [editingCouponId, setEditingCouponId] = useState<number | null>(null);
@@ -492,24 +494,80 @@ export default function OffersCouponsPage() {
     "h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30";
 
   return (
-    <div className="mx-auto min-h-screen max-w-7xl space-y-8 bg-gradient-to-b from-slate-50/80 to-white p-4 pb-12 text-slate-900 sm:p-6 sm:pb-16">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600/90">Super Admin</p>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">Offers & coupons</h1>
+    <div
+      className={cn(
+        "mx-auto min-h-screen max-w-7xl bg-gradient-to-b from-slate-50/80 to-white p-4 pb-12 text-slate-900 sm:p-6 sm:pb-16",
+        pageMode === "incentive" ? "space-y-5" : "space-y-8",
+      )}
+    >
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className={cn("space-y-1", pageMode === "incentive" && "space-y-1.5")}>
+          <p
+            className={cn(
+              "text-xs font-semibold uppercase tracking-[0.2em]",
+              pageMode === "incentive" ? "text-emerald-600/90" : "text-indigo-600/90",
+            )}
+          >
+            Super Admin
+          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-[1.65rem]">
+            {pageMode === "offer" ? "Offers & coupons" : "Rider incentives"}
+          </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-slate-600">
-            Configure platform-wide offers (global scope). Merchant-portal offers are managed separately. Only{" "}
-            <span className="font-medium text-slate-800">Customer</span> audience offers apply at customer checkout today.
+            {pageMode === "offer" ? (
+              <>
+                Configure platform-wide offers (global scope). Merchant-portal offers are managed separately. Only{" "}
+                <span className="font-medium text-slate-800">Customer</span> audience offers apply at customer checkout
+                today.
+              </>
+            ) : (
+              <>
+                State-scoped rider incentive programs with GMitra Max gating. Riders can see incentives before qualifying,
+                but rewards go only to threshold-passing top performers within budget caps.
+              </>
+            )}
           </p>
         </div>
-        <Link
-          href="/dashboard/super-admin"
-          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+        <div
+          className="inline-flex shrink-0 rounded-xl border border-slate-200 bg-slate-50/80 p-1 shadow-sm"
+          role="tablist"
+          aria-label="Offer or Incentive mode"
         >
-          ← Back to Super Admin
-        </Link>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pageMode === "offer"}
+            className={cn(
+              "min-h-[42px] min-w-[100px] rounded-lg px-5 py-2.5 text-sm font-semibold transition",
+              pageMode === "offer"
+                ? "bg-white text-indigo-700 shadow-sm ring-1 ring-slate-200/80"
+                : "text-slate-600 hover:bg-white/60 hover:text-slate-900",
+            )}
+            onClick={() => setPageMode("offer")}
+          >
+            Offer
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pageMode === "incentive"}
+            className={cn(
+              "min-h-[42px] min-w-[100px] rounded-lg px-5 py-2.5 text-sm font-semibold transition",
+              pageMode === "incentive"
+                ? "bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-200/80"
+                : "text-slate-600 hover:bg-white/60 hover:text-slate-900",
+            )}
+            onClick={() => setPageMode("incentive")}
+          >
+            Incentive
+          </button>
+        </div>
       </header>
 
+      {pageMode === "incentive" ? (
+        <RiderIncentiveProgramsClient />
+      ) : (
+        <>
       {err ? (
         <div
           className="rounded-xl border border-red-200/90 bg-red-50/90 px-4 py-3 text-sm text-red-800 shadow-sm ring-1 ring-red-900/5"
@@ -1590,6 +1648,8 @@ export default function OffersCouponsPage() {
           </div>
         </div>
       </section>
+        </>
+      )}
 
     </div>
   );

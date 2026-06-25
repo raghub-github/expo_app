@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   View,
   Text,
@@ -8,6 +9,14 @@ import {
   Platform,
   ScrollView,
 } from "react-native";
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { formatRideDistanceKm } from "@/lib/ride-route-snapshot";
@@ -17,7 +26,6 @@ type Props = {
   title: string;
   subtitle: string;
   elapsedLabel?: string;
-  progress: number;
   fare: number;
   rideImage: ImageSourcePropType;
   rideName: string;
@@ -27,6 +35,8 @@ type Props = {
   pickupDistanceKm?: number | null;
   routeEtaMins?: number | null;
   nearbyRidersCount?: number;
+  activeMitraSathiCount?: number;
+  dispatchDeclinedCount?: number;
   showFastestTag?: boolean;
   placementError?: string | null;
   routeViaLabel?: string;
@@ -62,76 +72,83 @@ function formatEtaRange(tripKm?: number, routeEtaMins?: number | null): string {
   return "3 – 5 min";
 }
 
-type StepState = "done" | "active" | "pending";
+const STRIPE_COUNT = 36;
+const STRIPE_WIDTH = 7;
 
-function SearchStepper({
-  nearbyCount,
-  progress,
-}: {
-  nearbyCount: number;
-  progress: number;
-}) {
-  const ridersLabel =
-    nearbyCount > 0 ? `${nearbyCount} rider${nearbyCount === 1 ? "" : "s"} found` : "Scanning area";
+function AnimatedStripes() {
+  const stripeOffset = useSharedValue(0);
 
-  const steps: { label: string; state: StepState }[] = [
-    { label: "Searching nearby riders", state: "done" },
-    {
-      label: ridersLabel,
-      state: nearbyCount > 0 ? "done" : progress > 0.12 ? "active" : "pending",
-    },
-    {
-      label: "Sending requests",
-      state:
-        nearbyCount > 0
-          ? progress > 0.45
-            ? "done"
-            : "active"
-          : "pending",
-    },
-    {
-      label: "Waiting for acceptance",
-      state: nearbyCount > 0 && progress > 0.45 ? "active" : "pending",
-    },
-  ];
+  useEffect(() => {
+    stripeOffset.value = withRepeat(
+      withTiming(STRIPE_WIDTH * 2, { duration: 700, easing: Easing.linear }),
+      -1,
+      false
+    );
+  }, [stripeOffset]);
+
+  const stripeAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: "24deg" }, { translateX: stripeOffset.value }],
+  }));
 
   return (
-    <View style={styles.stepperRow}>
-      {steps.map((step, index) => (
-        <View key={step.label} style={styles.stepItem}>
-          <View style={styles.stepTop}>
-            <View
-              style={[
-                styles.stepDot,
-                step.state === "done" && styles.stepDotDone,
-                step.state === "active" && styles.stepDotActive,
-              ]}
-            >
-              {step.state === "done" ? (
-                <Ionicons name="checkmark" size={10} color="#FFFFFF" />
-              ) : null}
-            </View>
-            {index < steps.length - 1 ? (
-              <View
-                style={[
-                  styles.stepLine,
-                  step.state === "done" ? styles.stepLineDone : null,
-                ]}
-              />
-            ) : null}
-          </View>
-          <Text
-            style={[
-              styles.stepLabel,
-              step.state === "done" && styles.stepLabelDone,
-              step.state === "active" && styles.stepLabelActive,
-            ]}
-            numberOfLines={2}
-          >
-            {step.label}
-          </Text>
-        </View>
+    <Animated.View style={[styles.stripeLayer, stripeAnimStyle]}>
+      {Array.from({ length: STRIPE_COUNT }).map((_, index) => (
+        <View
+          key={index}
+          style={[
+            styles.stripeSegment,
+            index % 2 === 0 ? styles.stripeSegmentLight : styles.stripeSegmentDark,
+          ]}
+        />
       ))}
+    </Animated.View>
+  );
+}
+
+function SearchDispatchTimeline({
+  activeMitraSathiCount,
+  dispatchDeclinedCount,
+}: {
+  activeMitraSathiCount: number;
+  dispatchDeclinedCount: number;
+}) {
+  const declined = Math.max(0, dispatchDeclinedCount);
+  const total = Math.max(0, activeMitraSathiCount);
+  const fillRatio =
+    total > 0 ? Math.max(0, Math.min(1, declined / total)) : declined > 0 ? 1 : 0;
+  const isFull = fillRatio >= 0.995;
+  const hasActiveSupply = total > 0;
+
+  return (
+    <View style={styles.dispatchBlock}>
+      <Text style={styles.dispatchLabel} numberOfLines={2}>
+        {!hasActiveSupply
+          ? "Searching nearby MitraSathi…"
+          : `${declined} of ${total} MitraSathi didn't accept your ride`}
+      </Text>
+
+      <View style={styles.progressTrack}>
+        {fillRatio > 0 ? (
+          <View
+            style={[
+              styles.progressFillWrap,
+              { flex: fillRatio },
+              isFull ? styles.progressFillWrapFull : null,
+            ]}
+          >
+            <LinearGradient
+              colors={["#047857", "#059669", "#10B981"]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.stripeMask}>
+              <AnimatedStripes />
+            </View>
+          </View>
+        ) : null}
+        <View style={{ flex: 1 - fillRatio }} />
+      </View>
     </View>
   );
 }
@@ -141,7 +158,6 @@ export function RideSearchingBottomSheet({
   title,
   subtitle,
   elapsedLabel,
-  progress,
   fare,
   rideImage,
   rideName,
@@ -151,6 +167,8 @@ export function RideSearchingBottomSheet({
   pickupDistanceKm,
   routeEtaMins,
   nearbyRidersCount = 0,
+  activeMitraSathiCount,
+  dispatchDeclinedCount = 0,
   showFastestTag = false,
   placementError,
   routeViaLabel = "Optimized",
@@ -167,6 +185,7 @@ export function RideSearchingBottomSheet({
   const pickupKm = pickupDistanceKm ?? 0;
   const totalKm =
     rideKm != null && pickupKm > 0 ? Math.round((rideKm + pickupKm) * 10) / 10 : rideKm;
+  const mitraSathiPool = activeMitraSathiCount ?? nearbyRidersCount;
 
   return (
     <View style={[styles.sheet, { paddingBottom: Math.max(8, bottomInset) }]}>
@@ -208,7 +227,10 @@ export function RideSearchingBottomSheet({
           </TouchableOpacity>
         ) : (
           <>
-            <SearchStepper nearbyCount={nearbyRidersCount} progress={progress} />
+            <SearchDispatchTimeline
+              activeMitraSathiCount={mitraSathiPool}
+              dispatchDeclinedCount={dispatchDeclinedCount}
+            />
 
             <View style={styles.summaryCard}>
               <Image source={rideImage} style={styles.rideImage} resizeMode="contain" />
@@ -423,65 +445,55 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#047857",
   },
-  stepperRow: {
-    flexDirection: "row",
+  dispatchBlock: {
     marginBottom: 14,
-    paddingHorizontal: 2,
+    gap: 10,
   },
-  stepItem: {
-    flex: 1,
-    alignItems: "center",
+  dispatchLabel: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0B1F44",
+    lineHeight: 20,
+    letterSpacing: -0.2,
   },
-  stepTop: {
+  progressTrack: {
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "#E8F5EE",
+    overflow: "hidden",
     flexDirection: "row",
-    alignItems: "center",
-    width: "100%",
-    justifyContent: "center",
-    marginBottom: 6,
-    minHeight: 18,
   },
-  stepDot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: "#CBD5E1",
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
+  progressFillWrap: {
+    height: "100%",
+    overflow: "hidden",
+    borderTopLeftRadius: 999,
+    borderBottomLeftRadius: 999,
+    minWidth: 10,
   },
-  stepDotDone: {
-    backgroundColor: "#059669",
-    borderColor: "#059669",
+  progressFillWrapFull: {
+    borderTopRightRadius: 999,
+    borderBottomRightRadius: 999,
   },
-  stepDotActive: {
-    borderColor: "#059669",
-    backgroundColor: "#FFFFFF",
+  stripeMask: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: "hidden",
   },
-  stepLine: {
-    flex: 1,
-    height: 2,
-    backgroundColor: "#E2E8F0",
-    marginHorizontal: 2,
-    marginTop: 7,
+  stripeLayer: {
+    position: "absolute",
+    top: -12,
+    bottom: -12,
+    left: -24,
+    flexDirection: "row",
   },
-  stepLineDone: {
-    backgroundColor: "#86EFAC",
+  stripeSegment: {
+    width: STRIPE_WIDTH,
+    height: "160%",
   },
-  stepLabel: {
-    fontSize: 9,
-    fontWeight: "600",
-    color: "#94A3B8",
-    textAlign: "center",
-    lineHeight: 12,
-    paddingHorizontal: 2,
+  stripeSegmentLight: {
+    backgroundColor: "rgba(255, 255, 255, 0.14)",
   },
-  stepLabelDone: {
-    color: "#059669",
-  },
-  stepLabelActive: {
-    color: "#047857",
-    fontWeight: "700",
+  stripeSegmentDark: {
+    backgroundColor: "transparent",
   },
   summaryCard: {
     flexDirection: "row",

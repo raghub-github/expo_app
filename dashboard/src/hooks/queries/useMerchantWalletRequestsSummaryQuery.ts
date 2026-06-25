@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useCallback } from "react";
-import { usePathname } from "next/navigation";
+
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAuthOptional } from "@/providers/AuthProvider";
@@ -37,7 +38,7 @@ const GC_TIME_MS = 30 * 60 * 1000; // 30 minutes
  * - GET /api/merchant/stores/:storeId/wallet-requests/summary (store-scoped payments page)
  */
 export function useMerchantWalletRequestsSummaryQuery(storeId: string | null | undefined) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const auth = useAuthOptional();
 
   const cleanPathname = pathname?.split("?")[0].split("#")[0] ?? "";

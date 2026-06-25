@@ -177,7 +177,10 @@ import { R2Image } from '@/components/R2Image'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/menuItemImageValidationClient'
-import { persistPartnerSelectedStoreId } from '@/lib/partner-selected-store'
+import { persistPartnerSelectedStoreId, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
+import { useQueryClient } from '@tanstack/react-query'
+import { getQueryClient } from '@/lib/query-client'
+import { merchantKeys } from '@/lib/query-keys'
 
 // --- Menu Category interface ---
 type MerchantStore = {
@@ -1645,7 +1648,10 @@ function ItemForm(props: ItemFormProps) {
 
 function MenuContent() {
   // --- Dynamic Menu Categories State ---
-  const [storeId, setStoreId] = useState<string | null>(null);
+  const [storeId, setStoreId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return readPartnerSelectedStoreId() || null;
+  });
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [categoryPillMode, setCategoryPillMode] = useState<'category' | 'sub-category'>('category');
@@ -1688,6 +1694,7 @@ function MenuContent() {
   const useSubcategoryPeerSuggestions = parentCategoryIdInForm != null;
 
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
   const [store, setStore] = useState<MerchantStore | null>(null);
   const itemFormStoreDefaults = useMemo(
     () => ({
@@ -1696,10 +1703,21 @@ function MenuContent() {
     }),
     [store]
   );
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>(() => {
+    if (typeof window === 'undefined') return [];
+    const id = readPartnerSelectedStoreId();
+    if (!id) return [];
+    return getQueryClient().getQueryData<MenuItem[]>(merchantKeys.menuItems(id)) ?? [];
+  });
   const [combos, setCombos] = useState<MenuCombo[]>([]);
   const [comboDetailsById, setComboDetailsById] = useState<Record<number, { components: Array<{ menu_item_id: number }> }>>({});
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const id = readPartnerSelectedStoreId();
+    if (!id) return true;
+    const cached = getQueryClient().getQueryData<MenuItem[]>(merchantKeys.menuItems(id));
+    return !cached?.length;
+  });
   const [searchTerm, setSearchTerm] = useState('');
   const [cuisineOptions, setCuisineOptions] = useState<string[]>(CUISINE_TYPES);
 
@@ -1863,7 +1881,10 @@ function MenuContent() {
   const [imageUploadStatus, setImageUploadStatus] = useState<any>(null);
   const [storeImageCount, setStoreImageCount] = useState<{ totalUsed: number } | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
-  const [storeIdResolved, setStoreIdResolved] = useState(false);
+  const [storeIdResolved, setStoreIdResolved] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(readPartnerSelectedStoreId());
+  });
   const [planLimits, setPlanLimits] = useState<{
     maxMenuItems: number | null;
     maxMenuCategories: number | null;
@@ -1991,9 +2012,16 @@ function MenuContent() {
   // Fetch store ID from params or localStorage; must belong to logged-in merchant (resolve-session).
   useEffect(() => {
     const getStoreId = async () => {
-      let id = searchParams ? searchParams.get('storeId') : null;
+      let id =
+        searchParams?.get('storeId') ??
+        searchParams?.get('store_id') ??
+        null;
       if (!id && typeof window !== 'undefined') {
-        id = localStorage.getItem('selectedStoreId');
+        id = readPartnerSelectedStoreId() || localStorage.getItem('selectedStoreId');
+      }
+      if (id) {
+        setStoreId(id);
+        setStoreIdResolved(true);
       }
       try {
         const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
@@ -2163,7 +2191,10 @@ function MenuContent() {
     };
 
     const loadData = async () => {
-      setIsLoading(true);
+      const cachedItems = queryClient.getQueryData<MenuItem[]>(merchantKeys.menuItems(storeId));
+      if (!cachedItems?.length) {
+        setIsLoading(true);
+      }
       setStoreError(null);
       try {
         const [data, itemsRes, comboRes] = await Promise.all([
@@ -2189,7 +2220,9 @@ function MenuContent() {
         setStore(data);
 
         const items = itemsRes.ok ? await itemsRes.json() : [];
-        setMenuItems(Array.isArray(items) ? items : []);
+        const nextItems = Array.isArray(items) ? items : [];
+        setMenuItems(nextItems);
+        queryClient.setQueryData(merchantKeys.menuItems(storeId), nextItems);
 
         let comboRows: MenuCombo[] = [];
         try {
@@ -2213,7 +2246,7 @@ function MenuContent() {
       }
     };
     loadData();
-  }, [storeId, storeIdResolved]);
+  }, [storeId, storeIdResolved, queryClient]);
 
   useEffect(() => {
     if (!showCategoryModal || !storeId) {
@@ -3833,7 +3866,7 @@ function MenuContent() {
     return base;
   }, [planLimits?.planName]);
 
-  if (!storeIdResolved) {
+  if (!storeIdResolved && !storeId) {
     return (
       <MXLayoutWhite restaurantName="Loading..." restaurantId={undefined}>
         <PartnerPageHeader title="Menu Management" subtitle="Loading menu…" />
@@ -4047,7 +4080,9 @@ function MenuContent() {
                   {(categoryPillMode === 'category' ? rootCategories : subCategories).map((category) => (
                     <button
                       key={category.id}
-                      onClick={() => setSelectedCategoryId(category.id)}
+                      onClick={() =>
+                        setSelectedCategoryId((prev) => (prev === category.id ? null : category.id))
+                      }
                       className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[160px] truncate ${
                         selectedCategoryId === category.id ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}

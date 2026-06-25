@@ -18,6 +18,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import type { ImageSourcePropType } from "react-native";
 import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
 
 const TIP_OPTIONS = [
@@ -53,6 +54,7 @@ export type RideTipBoostSheetProps = {
   orderTotal: number;
   /** Total tip already on the order (pre-book + search boosts) */
   existingTipAmount: number;
+  heroImage?: ImageSourcePropType;
   onAddTipAndContinue: (tipAmount: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
@@ -108,6 +110,7 @@ function NoTipBoostView({
   onSelectTip,
   loadingAction,
   decisionRemainingSec,
+  heroImage,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
@@ -116,6 +119,7 @@ function NoTipBoostView({
   onSelectTip: (amount: number) => void;
   loadingAction: TipBoostLoadingAction;
   decisionRemainingSec: number;
+  heroImage: ImageSourcePropType;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
@@ -125,7 +129,7 @@ function NoTipBoostView({
     <>
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.heroWrap}>
-          <Image source={MAPBIKE_IMAGE} style={styles.heroImage} resizeMode="contain" />
+          <Image source={heroImage} style={styles.heroImage} resizeMode="contain" />
           <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
         </View>
 
@@ -208,6 +212,7 @@ function TipAlreadyAddedView({
   onBackFromIncrease,
   loadingAction,
   decisionRemainingSec,
+  heroImage,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
@@ -221,6 +226,7 @@ function TipAlreadyAddedView({
   onBackFromIncrease: () => void;
   loadingAction: TipBoostLoadingAction;
   decisionRemainingSec: number;
+  heroImage: ImageSourcePropType;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
@@ -300,7 +306,7 @@ function TipAlreadyAddedView({
         <View style={styles.searchHeroWrap}>
           <View style={styles.searchRingOuter} />
           <View style={styles.searchRingMid} />
-          <Image source={MAPBIKE_IMAGE} style={styles.searchHeroImage} resizeMode="contain" />
+          <Image source={heroImage} style={styles.searchHeroImage} resizeMode="contain" />
           <View style={styles.priorityActiveBadge}>
             <Ionicons name="checkmark-circle" size={16} color={GatiMitraColors.deepMintStart} />
             <View style={styles.priorityActiveTextWrap}>
@@ -426,6 +432,7 @@ export function RideTipBoostSheet({
   decisionRemainingSec = 90,
   orderTotal,
   existingTipAmount,
+  heroImage = MAPBIKE_IMAGE,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
@@ -473,6 +480,7 @@ export function RideTipBoostSheet({
               onBackFromIncrease={() => setShowIncreaseTip(false)}
               loadingAction={loadingAction}
               decisionRemainingSec={decisionRemainingSec}
+              heroImage={heroImage}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}
@@ -483,6 +491,7 @@ export function RideTipBoostSheet({
               onSelectTip={setSelectedTip}
               loadingAction={loadingAction}
               decisionRemainingSec={decisionRemainingSec}
+              heroImage={heroImage}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}

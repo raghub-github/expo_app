@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import {
   EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT,
 } from "@/src/components/earnings/EarningsAddAccountFooter";
 import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
+import { EarningsWithdrawalModal } from "@/src/components/earnings/EarningsWithdrawalModal";
 import { colors } from "@/src/theme";
 
 export default function EarningsScreen() {
@@ -29,6 +30,7 @@ export default function EarningsScreen() {
   const bankSheetOpen = useEarningsBankSheetStore((s) => s.visible);
   const openBankSheet = useEarningsBankSheetStore((s) => s.open);
   const display = earnings ?? DEFAULT_EARNINGS_SUMMARY;
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -139,8 +141,19 @@ export default function EarningsScreen() {
             isLoading={isBankAccountLoading}
             hasBankAccount={display.hasBankAccount}
             onAddAccount={openBankSheet}
+            onRequestWithdrawal={() => setWithdrawOpen(true)}
           />
         ) : null}
+
+        <EarningsWithdrawalModal
+          visible={withdrawOpen}
+          withdrawable={display.withdrawable}
+          bankAccount={bankAccount}
+          onClose={() => setWithdrawOpen(false)}
+          onSuccess={() => {
+            void refetch();
+          }}
+        />
       </View>
     </SafeAreaView>
   );

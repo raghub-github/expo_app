@@ -16,9 +16,7 @@ import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
-import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
-import { pingLocation } from "@/src/services/location/locationPinger";
 import { useAvailableOrders, useActiveOrders, useRidePaymentHolds, RIDER_ACTIVE_ORDERS_QUERY_KEY, RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -95,7 +93,6 @@ export default function OrdersScreen() {
     dutyAccountRestricted: dutyStatus?.accountRestricted,
   });
   const penaltyDue = Math.max(restrictions?.penaltyDue ?? 0, earnings?.locked ?? 0);
-  const showPenaltyBanner = walletBalance < 0 && penaltyDue > 0;
 
   const refreshRestrictionQueries = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
@@ -185,6 +182,9 @@ export default function OrdersScreen() {
   ]);
   const subscriptionBannerVisible =
     subscriptionStatus?.dues?.alertBanner?.visible ?? false;
+  const subscriptionTotalDue = subscriptionStatus?.dues?.totalDue ?? 0;
+  const subscriptionDispatchBlocked = subscriptionStatus?.dues?.dispatchBlocked ?? false;
+  const showPenaltyBanner = penaltyDue > 0 && subscriptionTotalDue <= 0;
   const primaryPaymentHold = ridePaymentHolds[0] ?? null;
 
   const homeBannerSlides = useMemo((): HomeBannerSlide[] => {
@@ -202,6 +202,15 @@ export default function OrdersScreen() {
             globalWalletBlock={restrictions?.globalWalletBlock === true}
           />
         ),
+      });
+    }
+
+    if (!showServiceRestrictedBanner && subscriptionBannerVisible) {
+      slides.push({
+        id: "subscription",
+        type: "subscription",
+        durationMs: homeBannerDuration("subscription"),
+        element: <SubscriptionDuesBanner embedded />,
       });
     }
 
@@ -226,15 +235,6 @@ export default function OrdersScreen() {
         type: "ride_payment_hold",
         durationMs: homeBannerDuration("ride_payment_hold"),
         element: <RidePaymentHoldBanner hold={primaryPaymentHold} />,
-      });
-    }
-
-    if (!showServiceRestrictedBanner && subscriptionBannerVisible) {
-      slides.push({
-        id: "subscription",
-        type: "subscription",
-        durationMs: homeBannerDuration("subscription"),
-        element: <SubscriptionDuesBanner embedded />,
       });
     }
 
@@ -263,10 +263,17 @@ export default function OrdersScreen() {
       void queryClient.invalidateQueries({ queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
       void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "subscription", "status"] });
     }, [queryClient])
   );
 
-  const lastPingAtRef = useRef<number>(0);
+  useEffect(() => {
+    if (!subscriptionDispatchBlocked) return;
+    if (!isOnDuty) return;
+    void useDutyStore.getState().setDutyStatus(false);
+    void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
+  }, [subscriptionDispatchBlocked, isOnDuty, queryClient]);
+
   const locationCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => tracker.subscribe(setState), [tracker]);
@@ -321,21 +328,6 @@ export default function OrdersScreen() {
       void tracker.stop();
     };
   }, [tracker]);
-
-  useEffect(() => {
-    if (state.status !== "tracking" || !state.lastFix || !session || !isOnDuty) return;
-    const now = Date.now();
-    if (now - lastPingAtRef.current < 3000) return;
-    lastPingAtRef.current = now;
-    void (async () => {
-      try {
-        const deviceId = await getOrCreateDeviceId();
-        await pingLocation({ session, deviceId, fix: state.lastFix! });
-      } catch {
-        // silent
-      }
-    })();
-  }, [state, session, isOnDuty]);
 
   const handleEnableLocation = useCallback(async () => {
     setCheckingLocation(true);
@@ -447,7 +439,12 @@ export default function OrdersScreen() {
 
         {showOffDutyBanner ? (
           <View style={styles.offDutyHost}>
-            <OffDutyBanner visible onTurnOn={() => void setDuty(true)} loading={dutyPending} />
+            <OffDutyBanner
+              visible
+              dutyLocked={subscriptionDispatchBlocked}
+              onTurnOn={() => void setDuty(true)}
+              loading={dutyPending}
+            />
           </View>
         ) : null}
       </View>

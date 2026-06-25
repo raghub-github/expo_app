@@ -168,6 +168,14 @@ export declare const RiderLocationPingResponseSchema: z.ZodObject<{
         DEVICE_ID_MISMATCH: "DEVICE_ID_MISMATCH";
     }>>;
     fraudScore: z.ZodNumber;
+    eventPersisted: z.ZodOptional<z.ZodBoolean>;
+    recommendedPingIntervalMs: z.ZodOptional<z.ZodNumber>;
+    trackingMode: z.ZodOptional<z.ZodEnum<{
+        idle: "idle";
+        moving: "moving";
+        active_order: "active_order";
+        high_speed: "high_speed";
+    }>>;
 }, z.core.$strip>;
 export type RiderLocationPingResponse = z.infer<typeof RiderLocationPingResponseSchema>;
 export declare const LatLngSchema: z.ZodObject<{

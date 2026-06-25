@@ -119,7 +119,7 @@ export function getConfig(): {
   googleMapsApiKey: string | null;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
-  /** When true, OTP is sent via backend POST /v1/auth/otp/request (MSG91). */
+  /** When true, OTP uses `POST /v1/auth/otp/request` (backend + MSG91). Default: Supabase hook (same as merchant). */
   phoneOtpUseBackendOnly: boolean;
 } {
   const port = apiDevPort();
@@ -178,13 +178,15 @@ export function getConfig(): {
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string) ??
     null;
 
-  const phoneOtpUseBackendOnly = (() => {
-    const flag = (process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ?? "").trim().toLowerCase();
-    if (flag === "true" || flag === "1" || flag === "yes") return true;
-    if (flag === "false" || flag === "0" || flag === "no") return false;
-    // Dev default: Supabase Send SMS hook needs a public URL; backend MSG91 works on LAN.
-    return __DEV__;
-  })();
+  const extra = Constants.expoConfig?.extra as Record<string, unknown> | undefined;
+  const phoneOtpBackendRaw =
+    asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
+    asNonEmptyString(extra?.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND as string);
+  const phoneOtpUseBackendOnly =
+    phoneOtpBackendRaw === "1" ||
+    phoneOtpBackendRaw?.toLowerCase() === "true" ||
+    phoneOtpBackendRaw?.toLowerCase() === "yes" ||
+    phoneOtpBackendRaw?.toLowerCase() === "on";
 
   return {
     apiBaseUrl,

@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useResolvedRiderSearch } from "@/hooks/useResolvedRiderSearch";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
@@ -75,7 +76,7 @@ function serviceLabel(s: string): string {
 }
 
 export function RiderActivityLogsClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const router = useRouter();
   const { rider, resolveLoading, error, hasSearch, searchValue } =
     useResolvedRiderSearch();

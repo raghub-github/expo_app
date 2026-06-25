@@ -12,6 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useFocusEffect } from "@react-navigation/native";
 import { useLedger } from "@/src/hooks/useLedger";
+import { useLedgerGraph } from "@/src/hooks/useLedgerGraph";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
 import type { RiderLedgerPeriod, RiderLedgerSegment } from "@/src/services/api/riderApi";
 import { LedgerFilterPills } from "@/src/components/ledger/LedgerFilterPills";
@@ -19,7 +20,15 @@ import { LedgerEmptyState } from "@/src/components/ledger/LedgerEmptyState";
 import { LedgerMonthlySummaryCard } from "@/src/components/ledger/LedgerMonthlySummaryCard";
 import { LedgerGroupedTransactionList } from "@/src/components/ledger/LedgerGroupedTransactionList";
 import { LedgerPeriodDropdown } from "@/src/components/ledger/LedgerPeriodDropdown";
+import { LedgerGraphView } from "@/src/components/ledger/LedgerGraphView";
 import { groupLedgerEntriesByDay } from "@/src/components/ledger/ledgerDisplay";
+import {
+  OrderHistoryDateRangeSheet,
+} from "@/src/components/profile/OrderHistoryDateRangeSheet";
+import {
+  formatLedgerGraphHeaderRange,
+  resolveLedgerGraphRange,
+} from "@/src/components/ledger/ledgerGraphRange";
 import { LEDGER_PAGE_BG, LEDGER_TEAL } from "@/src/components/ledger/ledgerUiTokens";
 
 const PERIOD_CYCLE: RiderLedgerPeriod[] = ["this_month", "last_month", "all"];
@@ -35,6 +44,11 @@ export function LedgerScreen() {
   const { t } = useTranslation();
   const [selectedSegment, setSelectedSegment] = useState<RiderLedgerSegment>("all");
   const [period, setPeriod] = useState<RiderLedgerPeriod>("this_month");
+  const [viewMode, setViewMode] = useState<"list" | "graph">("list");
+  const [graphFromDate, setGraphFromDate] = useState<Date | null>(null);
+  const [graphToDate, setGraphToDate] = useState<Date | null>(null);
+  const [rangeSheetVisible, setRangeSheetVisible] = useState(false);
+  const [liveWeekKey, setLiveWeekKey] = useState(() => new Date().toDateString());
 
   const {
     data,
@@ -53,6 +67,7 @@ export function LedgerScreen() {
   useFocusEffect(
     useCallback(() => {
       void refetchEarnings();
+      setLiveWeekKey(new Date().toDateString());
     }, [refetchEarnings]),
   );
 
@@ -86,8 +101,53 @@ export function LedgerScreen() {
     setPeriod(PERIOD_CYCLE[(idx + 1) % PERIOD_CYCLE.length]);
   };
 
+  const graphRange = useMemo(
+    () => resolveLedgerGraphRange(graphFromDate, graphToDate),
+    [graphFromDate, graphToDate, liveWeekKey],
+  );
+
+  const {
+    data: graphData,
+    isPending: graphPending,
+    isRefetching: graphRefetching,
+    refetch: refetchGraph,
+  } = useLedgerGraph({
+    segment: selectedSegment,
+    from: graphRange.from.toISOString(),
+    to: graphRange.to.toISOString(),
+    enabled: viewMode === "graph",
+  });
+
   const showEmpty = !isPending && !isError && entries.length === 0;
   const showInitialLoading = isPending && entries.length === 0;
+  const graphHeaderRangeLabel = useMemo(
+    () => formatLedgerGraphHeaderRange(graphRange.from, graphRange.to),
+    [graphRange.from, graphRange.to],
+  );
+
+  const toggleWithPeriodControl = (
+    <View style={styles.firstHeaderControls}>
+      <View style={styles.viewToggle}>
+        <Pressable
+          style={[styles.toggleBtn, viewMode === "list" && styles.toggleBtnActive]}
+          onPress={() => setViewMode("list")}
+        >
+          <Text style={[styles.toggleText, viewMode === "list" && styles.toggleTextActive]}>
+            {t("ledger.viewList", "List")}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[styles.toggleBtn, viewMode === "graph" && styles.toggleBtnActive]}
+          onPress={() => setViewMode("graph")}
+        >
+          <Text style={[styles.toggleText, viewMode === "graph" && styles.toggleTextActive]}>
+            {t("ledger.viewGraph", "Graph")}
+          </Text>
+        </Pressable>
+      </View>
+      <LedgerPeriodDropdown value={period} onChange={setPeriod} />
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.root} edges={[]}>
@@ -97,8 +157,11 @@ export function LedgerScreen() {
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
-            refreshing={isRefetching && !isPending}
-            onRefresh={() => void refetch()}
+            refreshing={(isRefetching && !isPending) || (viewMode === "graph" && graphRefetching)}
+            onRefresh={() => {
+              void refetch();
+              if (viewMode === "graph") void refetchGraph();
+            }}
             tintColor={LEDGER_TEAL}
           />
         }
@@ -132,34 +195,60 @@ export function LedgerScreen() {
         ) : showEmpty ? (
           <>
             <View style={styles.periodHeaderRow}>
-              <View style={styles.periodHeaderSpacer} />
-              <LedgerPeriodDropdown value={period} onChange={setPeriod} />
+              <Text style={styles.headerLabel}>{t("ledger.today", "Today")}</Text>
+              {toggleWithPeriodControl}
             </View>
             <LedgerEmptyState />
           </>
         ) : (
           <View style={styles.list}>
-            <LedgerGroupedTransactionList
-              groups={groupedEntries}
-              period={period}
-              onPeriodChange={setPeriod}
-            />
-            {hasNextPage ? (
-              <Pressable
-                onPress={() => void fetchNextPage()}
-                style={({ pressed }) => [styles.loadMoreBtn, pressed && styles.loadMorePressed]}
-                disabled={isFetchingNextPage}
-              >
-                {isFetchingNextPage ? (
-                  <ActivityIndicator color={LEDGER_TEAL} />
-                ) : (
-                  <Text style={styles.loadMoreText}>{t("ledger.loadMore", "Load more")}</Text>
-                )}
-              </Pressable>
-            ) : null}
+            {viewMode === "list" ? (
+              <>
+                <LedgerGroupedTransactionList
+                  groups={groupedEntries}
+                  firstHeaderControl={toggleWithPeriodControl}
+                />
+                {hasNextPage ? (
+                  <Pressable
+                    onPress={() => void fetchNextPage()}
+                    style={({ pressed }) => [styles.loadMoreBtn, pressed && styles.loadMorePressed]}
+                    disabled={isFetchingNextPage}
+                  >
+                    {isFetchingNextPage ? (
+                      <ActivityIndicator color={LEDGER_TEAL} />
+                    ) : (
+                      <Text style={styles.loadMoreText}>{t("ledger.loadMore", "Load more")}</Text>
+                    )}
+                  </Pressable>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <View style={styles.periodHeaderRow}>
+                  <Pressable
+                    onPress={() => setRangeSheetVisible(true)}
+                    style={({ pressed }) => [styles.rangeEditableBtn, pressed && styles.rangeEditablePressed]}
+                  >
+                    <Text style={styles.headerLabelEditable}>{graphHeaderRangeLabel}</Text>
+                  </Pressable>
+                  {toggleWithPeriodControl}
+                </View>
+                <LedgerGraphView data={graphData} loading={graphPending} />
+              </>
+            )}
           </View>
         )}
       </ScrollView>
+      <OrderHistoryDateRangeSheet
+        visible={rangeSheetVisible}
+        onClose={() => setRangeSheetVisible(false)}
+        initialFrom={graphFromDate ?? graphRange.from}
+        initialTo={graphToDate ?? graphRange.to}
+        onApply={(from, to) => {
+          setGraphFromDate(from);
+          setGraphToDate(to);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -204,13 +293,58 @@ const styles = StyleSheet.create({
   periodHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
     marginBottom: 8,
     paddingHorizontal: 2,
     zIndex: 30,
   },
-  periodHeaderSpacer: {
+  headerLabel: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#111827",
     flex: 1,
+    marginRight: 10,
+  },
+  headerLabelEditable: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: LEDGER_TEAL,
+    textDecorationLine: "underline",
+  },
+  rangeEditableBtn: {
+    flex: 1,
+    marginRight: 10,
+  },
+  rangeEditablePressed: {
+    opacity: 0.75,
+  },
+  viewToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#E5E7EB",
+    borderRadius: 999,
+    padding: 2,
+    marginRight: 10,
+  },
+  firstHeaderControls: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  toggleBtn: {
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+  },
+  toggleBtnActive: {
+    backgroundColor: "#FFFFFF",
+  },
+  toggleText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#6B7280",
+  },
+  toggleTextActive: {
+    color: "#111827",
   },
   loadMoreBtn: {
     marginTop: 12,

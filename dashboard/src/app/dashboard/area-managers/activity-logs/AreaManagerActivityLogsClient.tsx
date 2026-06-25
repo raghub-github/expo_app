@@ -1,8 +1,9 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback } from "react";
 import { ChevronRight, AlertCircle } from "lucide-react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useUrlFilter } from "@/hooks/useUrlFilters";
 
@@ -17,7 +18,7 @@ interface LogItem {
 
 export function AreaManagerActivityLogsClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
 
   // Use URL-based entity type filter with persistence
   const {

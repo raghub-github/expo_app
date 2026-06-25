@@ -453,10 +453,10 @@ export async function loadPublicTripByToken(token: string): Promise<PublicTripTr
   if ((riderLat == null || riderLng == null) && orderRow.riderId != null) {
     const [live] = await db
       .select({
-        latitude: riderLiveLocations.latitude,
-        longitude: riderLiveLocations.longitude,
-        heading: riderLiveLocations.heading,
-        speedKmh: riderLiveLocations.speedKmh,
+        latitude: riderLiveLocations.lat,
+        longitude: riderLiveLocations.lng,
+        heading: riderLiveLocations.headingDeg,
+        speedKmh: riderLiveLocations.speedMps,
         updatedAt: riderLiveLocations.updatedAt,
       })
       .from(riderLiveLocations)
@@ -465,7 +465,8 @@ export async function loadPublicTripByToken(token: string): Promise<PublicTripTr
     riderLat = parseNum(live?.latitude) ?? riderLat;
     riderLng = parseNum(live?.longitude) ?? riderLng;
     riderHeading = parseNum(live?.heading) ?? riderHeading;
-    riderSpeed = parseNum(live?.speedKmh) ?? riderSpeed;
+    riderSpeed =
+      live?.speedKmh != null ? parseNum(Number(live.speedKmh) * 3.6) : riderSpeed;
     riderUpdatedAt = toIso(live?.updatedAt) ?? riderUpdatedAt;
   }
 

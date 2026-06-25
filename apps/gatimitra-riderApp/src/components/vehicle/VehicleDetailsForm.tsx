@@ -30,7 +30,19 @@ import {
   registrationStateLabel,
   toggleServiceSelection,
 } from "@/src/lib/rider-vehicle-form";
-import type { RiderVehicleDto, UpsertRiderVehiclePayload } from "@/src/hooks/useRiderVehicle";
+import type {
+  RiderVehicleDto,
+  RiderVehicleOnboardingPrefill,
+  UpsertRiderVehiclePayload,
+} from "@/src/hooks/useRiderVehicle";
+import { useCategoryServiceAssignments } from "@/src/hooks/useCategoryServiceAssignments";
+import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
+import {
+  filterServicesByVehicleAssignments,
+  resolveCategoryCodeForVehicleType,
+} from "@/src/lib/rider-category-service-assignments";
+import { buildVehicleDetailsOnboardingFilter } from "@/src/lib/vehicle-details-onboarding-filter";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { colors } from "@/src/theme";
 
 const TEAL = colors.primary[600];
@@ -49,18 +61,32 @@ function initialServiceSelection(serviceTypes: string[] | undefined): string[] {
 
 type VehicleDetailsFormProps = {
   initial?: RiderVehicleDto | null;
+  onboardingVehicleChoice?: string | null;
+  onboardingVehicleCategoryCode?: string | null;
+  onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
   onSubmit: (payload: UpsertRiderVehiclePayload) => Promise<void>;
   submitting?: boolean;
   errorMessage?: string | null;
+  onDismissError?: () => void;
 };
 
 export function VehicleDetailsForm({
   initial,
+  onboardingVehicleChoice,
+  onboardingVehicleCategoryCode,
+  onboardingPrefill,
   onSubmit,
   submitting = false,
   errorMessage,
+  onDismissError,
 }: VehicleDetailsFormProps) {
   const { t } = useTranslation();
+  const assignmentsQuery = useCategoryServiceAssignments();
+  const onboardingTypesQuery = useOnboardingVehicleTypes();
+  const storeVehicleChoice = useOnboardingStore((s) => s.data.vehicleChoice);
+  const storeVehicleCategoryCode = useOnboardingStore((s) => s.data.vehicleCategoryCode);
+  const storeRcNumber = useOnboardingStore((s) => s.data.rcNumber);
+  const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
   const [step, setStep] = useState<1 | 2>(1);
 
   const [vehicleType, setVehicleType] = useState(initial?.vehicleType ?? "bike");
@@ -98,6 +124,76 @@ export function VehicleDetailsForm({
   const otherInputRef = useRef<TextInput>(null);
   const otherFieldY = useRef(0);
   const isOtherType = vehicleType === OTHER_VEHICLE_TYPE;
+
+  useEffect(() => {
+    void hydrateOnboarding();
+  }, [hydrateOnboarding]);
+
+  const effectiveVehicleChoice =
+    onboardingVehicleChoice?.trim() ||
+    storeVehicleChoice?.trim() ||
+    null;
+  const effectiveVehicleCategoryCode =
+    onboardingVehicleCategoryCode?.trim() ||
+    storeVehicleCategoryCode?.trim() ||
+    null;
+
+  const onboardingFilter = useMemo(
+    () =>
+      buildVehicleDetailsOnboardingFilter({
+        vehicleChoice: effectiveVehicleChoice,
+        vehicleCategoryCode: effectiveVehicleCategoryCode,
+        onboardingTypes: onboardingTypesQuery.data ?? [],
+        existingVehicleType: initial?.vehicleType ?? null,
+      }),
+    [
+      effectiveVehicleChoice,
+      effectiveVehicleCategoryCode,
+      onboardingTypesQuery.data,
+      initial?.vehicleType,
+    ]
+  );
+
+  const vehicleTypeOptions = onboardingFilter?.vehicleTypeOptions ?? RIDER_VEHICLE_TYPE_OPTIONS;
+  const lockVehicleType = onboardingFilter?.lockVehicleType ?? false;
+  const fuelTypeOptions = onboardingFilter?.fuelTypeOptions ?? RIDER_FUEL_TYPE_OPTIONS;
+  const hideFuelType = onboardingFilter?.hideFuelType ?? false;
+
+  useEffect(() => {
+    if (!onboardingFilter || initial?.vehicleType) return;
+    setVehicleType(onboardingFilter.resolvedVehicleType);
+    if (
+      onboardingFilter.resolvedVehicleType === OTHER_VEHICLE_TYPE &&
+      onboardingFilter.customTypeLabel
+    ) {
+      setCustomOtherType(onboardingFilter.customTypeLabel);
+    }
+    if (onboardingFilter.defaultFuelType) {
+      setFuelType(onboardingFilter.defaultFuelType);
+    }
+  }, [onboardingFilter, initial?.vehicleType]);
+
+  useEffect(() => {
+    const prefillReg =
+      onboardingPrefill?.registrationNumber?.trim() ||
+      storeRcNumber?.trim() ||
+      "";
+    if (prefillReg && !registrationNumber.trim()) {
+      setRegistrationNumber(prefillReg);
+    }
+  }, [onboardingPrefill?.registrationNumber, storeRcNumber, registrationNumber]);
+
+  useEffect(() => {
+    if (initial?.acType || !onboardingPrefill?.suggestedAcType) return;
+    setAcType(onboardingPrefill.suggestedAcType);
+  }, [initial?.acType, onboardingPrefill?.suggestedAcType]);
+
+  useEffect(() => {
+    if (initial?.isCommercial != null || onboardingPrefill?.suggestedIsCommercial == null) {
+      return;
+    }
+    setIsCommercial(onboardingPrefill.suggestedIsCommercial);
+  }, [initial?.isCommercial, onboardingPrefill?.suggestedIsCommercial]);
 
   const normalizedServices = useMemo(
     () => normalizeSelectedServiceTypes(selectedServices),
@@ -163,6 +259,58 @@ export function VehicleDetailsForm({
     return typeOk && regOk && otherOk;
   }, [vehicleType, registrationNumber, customOtherType]);
 
+  const vehicleCategoryCode = useMemo(
+    () =>
+      resolveCategoryCodeForVehicleType(
+        vehicleType,
+        onboardingTypesQuery.data ?? [],
+        initial?.vehicleCategory ?? effectiveVehicleCategoryCode ?? null
+      ),
+    [vehicleType, onboardingTypesQuery.data, initial?.vehicleCategory, effectiveVehicleCategoryCode]
+  );
+
+  const allowedServiceOptions = useMemo(() => {
+    const assigned = filterServicesByVehicleAssignments(
+      [...RIDER_SERVICE_TYPE_VALUES],
+      vehicleType,
+      assignmentsQuery.data?.byMapsToVehicleType,
+      vehicleCategoryCode,
+      assignmentsQuery.data?.byCategory ?? {}
+    );
+    const allowedSet = new Set(assigned);
+    return RIDER_SERVICE_TYPE_OPTIONS.filter(
+      (o) => o.value === "all" || allowedSet.has(o.value as (typeof RIDER_SERVICE_TYPE_VALUES)[number])
+    );
+  }, [
+    vehicleType,
+    vehicleCategoryCode,
+    assignmentsQuery.data?.byCategory,
+    assignmentsQuery.data?.byMapsToVehicleType,
+  ]);
+
+  useEffect(() => {
+    const assigned = filterServicesByVehicleAssignments(
+      normalizeSelectedServiceTypes(selectedServices),
+      vehicleType,
+      assignmentsQuery.data?.byMapsToVehicleType,
+      vehicleCategoryCode,
+      assignmentsQuery.data?.byCategory ?? {}
+    );
+    if (assigned.length === 0) return;
+    setSelectedServices((prev) => {
+      const current = normalizeSelectedServiceTypes(prev);
+      if (current.sort().join(",") === [...assigned].sort().join(",")) return prev;
+      return assigned.length === RIDER_SERVICE_TYPE_VALUES.length
+        ? ["all", ...RIDER_SERVICE_TYPE_VALUES]
+        : assigned;
+    });
+  }, [
+    vehicleType,
+    vehicleCategoryCode,
+    assignmentsQuery.data?.byCategory,
+    assignmentsQuery.data?.byMapsToVehicleType,
+  ]);
+
   const canSubmitStep2 = useMemo(() => {
     if (normalizedServices.length < 1) return false;
     if (!ownershipType) return false;
@@ -176,12 +324,12 @@ export function VehicleDetailsForm({
     if (normalizedServices.length === RIDER_SERVICE_TYPE_VALUES.length) {
       return t("vehicle.form.serviceAll", "All services");
     }
-    return RIDER_SERVICE_TYPE_OPTIONS.filter(
+    return allowedServiceOptions.filter(
       (o) => o.value !== "all" && normalizedServices.includes(o.value),
     )
       .map((o) => o.label)
       .join(", ");
-  }, [normalizedServices, t]);
+  }, [normalizedServices, allowedServiceOptions, t]);
 
   const validateStep1 = (): boolean => {
     const reg = registrationNumber.trim();
@@ -198,9 +346,31 @@ export function VehicleDetailsForm({
     return true;
   };
 
+  const resolveFuelTypeForSubmit = (): string | null => {
+    const normalized = fuelType?.trim().toLowerCase() || null;
+    if (normalized) return normalized;
+    if (hideFuelType) {
+      return onboardingFilter?.defaultFuelType ?? null;
+    }
+    return (
+      onboardingFilter?.defaultFuelType ??
+      fuelTypeOptions.find((opt) => opt.value === "petrol")?.value ??
+      fuelTypeOptions[0]?.value ??
+      null
+    );
+  };
+
+  const applyFuelDefaults = () => {
+    if (fuelType?.trim()) return;
+    const next = resolveFuelTypeForSubmit();
+    if (next) setFuelType(next);
+  };
+
   const handleContinue = () => {
     setLocalError(null);
+    onDismissError?.();
     if (!validateStep1()) return;
+    applyFuelDefaults();
     setStep(2);
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -226,6 +396,15 @@ export function VehicleDetailsForm({
       return;
     }
 
+    applyFuelDefaults();
+
+    const resolvedFuelType = resolveFuelTypeForSubmit();
+    if (!hideFuelType && fuelTypeOptions.length > 0 && !resolvedFuelType) {
+      setLocalError(t("vehicle.form.fuelRequired", "Select fuel type"));
+      setStep(1);
+      return;
+    }
+
     const reg = normalizeRegistrationNumber(registrationNumber);
     const parsedYear = year.trim() ? Number(year.trim()) : null;
     const brandMake = make.trim();
@@ -240,7 +419,7 @@ export function VehicleDetailsForm({
     await onSubmit({
       vehicleType,
       registrationNumber: reg,
-      fuelType,
+      fuelType: resolvedFuelType,
       make:
         vehicleType === OTHER_VEHICLE_TYPE
           ? customOtherType.trim()
@@ -255,6 +434,8 @@ export function VehicleDetailsForm({
       isCommercial,
       seatingCapacity: showPersonRideFields ? parsedSeating : null,
       acType: showPersonRideFields ? acType : null,
+      vehicleCategoryCode: vehicleCategoryCode ?? effectiveVehicleCategoryCode ?? null,
+      onboardingVehicleChoice: effectiveVehicleChoice,
     });
   };
 
@@ -321,36 +502,63 @@ export function VehicleDetailsForm({
               {t("vehicle.form.typeLabel", "Vehicle type")}
               <Text style={styles.required}> *</Text>
             </Text>
-            <View style={styles.chipGrid}>
-              {RIDER_VEHICLE_TYPE_OPTIONS.map((opt) => {
-                const selected = vehicleType === opt.value;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => {
-                      setVehicleType(opt.value);
-                      if (opt.value === OTHER_VEHICLE_TYPE) {
-                        focusOtherTypeInput();
-                      }
-                    }}
-                    style={[styles.typeChip, selected && styles.typeChipSelected]}
-                  >
-                    <Ionicons
-                      name={opt.icon}
-                      size={16}
-                      color={selected ? "#FFFFFF" : TEAL}
-                    />
-                    <Text
-                      style={[styles.typeChipText, selected && styles.typeChipTextSelected]}
+            {lockVehicleType ? (
+              <View style={styles.lockedTypeRow}>
+                <View style={[styles.typeChip, styles.typeChipSelected, styles.typeChipLocked]}>
+                  <Ionicons
+                    name={
+                      vehicleTypeOptions[0]?.icon ??
+                      RIDER_VEHICLE_TYPE_OPTIONS.find((o) => o.value === vehicleType)?.icon ??
+                      "bicycle-outline"
+                    }
+                    size={16}
+                    color="#FFFFFF"
+                  />
+                  <Text style={[styles.typeChipText, styles.typeChipTextSelected]}>
+                    {onboardingFilter?.onboardingDisplayLabel ??
+                      vehicleTypeOptions[0]?.label ??
+                      vehicleType}
+                  </Text>
+                </View>
+                <Text style={styles.hintText}>
+                  {t(
+                    "vehicle.form.typeFromOnboarding",
+                    "Selected during onboarding — cannot be changed here.",
+                  )}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.chipGrid}>
+                {vehicleTypeOptions.map((opt) => {
+                  const selected = vehicleType === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      onPress={() => {
+                        setVehicleType(opt.value);
+                        if (opt.value === OTHER_VEHICLE_TYPE) {
+                          focusOtherTypeInput();
+                        }
+                      }}
+                      style={[styles.typeChip, selected && styles.typeChipSelected]}
                     >
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+                      <Ionicons
+                        name={opt.icon}
+                        size={16}
+                        color={selected ? "#FFFFFF" : TEAL}
+                      />
+                      <Text
+                        style={[styles.typeChipText, selected && styles.typeChipTextSelected]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
 
-            {isOtherType ? (
+            {isOtherType && !lockVehicleType ? (
               <View
                 onLayout={(e) => {
                   otherFieldY.current = e.nativeEvent.layout.y;
@@ -380,6 +588,12 @@ export function VehicleDetailsForm({
                   />
                 </View>
               </View>
+            ) : null}
+
+            {isOtherType && lockVehicleType && customOtherType.trim() ? (
+              <Text style={styles.hintText}>
+                {t("vehicle.form.otherTypeLocked", "Type")}: {customOtherType.trim()}
+              </Text>
             ) : null}
 
             <View
@@ -420,25 +634,29 @@ export function VehicleDetailsForm({
               ) : null}
             </View>
 
-            <Text style={styles.fieldLabel}>{t("vehicle.form.fuelType", "Fuel type")}</Text>
-            <View style={styles.chipRow}>
-              {RIDER_FUEL_TYPE_OPTIONS.map((opt) => {
-                const selected = fuelType === opt.value;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => setFuelType(selected ? null : opt.value)}
-                    style={[styles.fuelChip, selected && styles.fuelChipSelected]}
-                  >
-                    <Text
-                      style={[styles.fuelChipText, selected && styles.fuelChipTextSelected]}
-                    >
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+            {!hideFuelType ? (
+              <>
+                <Text style={styles.fieldLabel}>{t("vehicle.form.fuelType", "Fuel type")}</Text>
+                <View style={styles.chipRow}>
+                  {fuelTypeOptions.map((opt) => {
+                    const selected = fuelType === opt.value;
+                    return (
+                      <Pressable
+                        key={opt.value}
+                        onPress={() => setFuelType(selected ? null : opt.value)}
+                        style={[styles.fuelChip, selected && styles.fuelChipSelected]}
+                      >
+                        <Text
+                          style={[styles.fuelChipText, selected && styles.fuelChipTextSelected]}
+                        >
+                          {opt.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
 
             <Text style={styles.fieldLabel}>
               {t("vehicle.form.makeModel", "Make & model")}
@@ -649,6 +867,7 @@ export function VehicleDetailsForm({
             <Pressable
               onPress={() => {
                 setLocalError(null);
+                onDismissError?.();
                 setStep(1);
               }}
               style={styles.backBtn}
@@ -694,7 +913,7 @@ export function VehicleDetailsForm({
             <Text style={styles.modalTitle}>
               {t("vehicle.form.serviceTypes", "Services you will deliver")}
             </Text>
-            {RIDER_SERVICE_TYPE_OPTIONS.map((opt) => {
+            {allowedServiceOptions.map((opt) => {
               const checked = isServiceOptionSelected(selectedServices, opt.value);
               return (
                 <Pressable
@@ -798,6 +1017,13 @@ const styles = StyleSheet.create({
   typeChipSelected: {
     backgroundColor: TEAL,
     borderColor: TEAL,
+  },
+  typeChipLocked: {
+    alignSelf: "flex-start",
+  },
+  lockedTypeRow: {
+    gap: 6,
+    marginBottom: 4,
   },
   typeChipText: {
     fontSize: 13,

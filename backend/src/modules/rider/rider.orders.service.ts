@@ -4,6 +4,7 @@
 
 import { and, eq, isNull, isNotNull, inArray, or, sql, desc, asc, notInArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
+import { recordRiderOrderMilestoneLocationEvent } from "../../lib/rider-location-business-event.js";
 import {
   customers,
   merchantStoreRatings,
@@ -115,6 +116,23 @@ const PERSON_RIDE_PRE_PICKUP_OTP_STATUSES = ["accepted", "reached_store"] as con
 
 /** After OTP verified — start ride requires reached_user only. */
 const PERSON_RIDE_READY_TO_START_STATUSES = [PERSON_RIDE_AT_USER_STATUS] as const;
+
+function noteRiderOrderLocationMilestone(
+  riderId: number,
+  orderId: string | null | undefined,
+  status: string,
+  gps?: { lat?: number | null; lng?: number | null }
+): void {
+  const oid = orderId?.trim();
+  if (!oid) return;
+  void recordRiderOrderMilestoneLocationEvent({
+    riderId,
+    orderId: oid,
+    status,
+    lat: gps?.lat ?? null,
+    lng: gps?.lng ?? null,
+  });
+}
 
 export type RiderOrderSummary = {
   id: string;
@@ -2330,6 +2348,7 @@ async function acceptFoodOrderForRider(
     }
   })();
 
+  noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
   return { ...accepted, status: "assigned" };
 }
 
@@ -2473,6 +2492,7 @@ async function acceptParcelOrderForRider(
   });
 
   await completeOrderDispatch(preCheck.id, "accepted");
+  noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
   return { ...accepted, status: "assigned" };
 }
 
@@ -2712,6 +2732,7 @@ async function acceptRideOrderForRider(
     }
   })();
 
+  noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
   return { ...accepted, status: "assigned" };
 }
 
@@ -3540,6 +3561,7 @@ export async function startRideForRider(
     return mapRideRowWithStatus(full, "picked_up", full.currentStatus);
   });
 
+  noteRiderOrderLocationMilestone(riderId, updated.id, "picked_up", gps);
   return updated;
 }
 
@@ -3639,6 +3661,7 @@ export async function markReachedPickupForRider(
     });
   });
 
+  noteRiderOrderLocationMilestone(riderId, orderRef, "reached_store", gps);
   return getRideOrderForRider(riderId, orderRef);
 }
 
@@ -3850,6 +3873,7 @@ async function markReachedFoodPickupForRider(
       );
   }
 
+  noteRiderOrderLocationMilestone(riderId, updated.id, "reached_store", gps);
   return { ...updated, merchantFeedbackSubmitted };
 }
 
@@ -4395,6 +4419,7 @@ async function markReachedFoodCustomerForRider(
     return mapFoodRowForActiveRider(tx, full, riderId, row.id);
   });
 
+  noteRiderOrderLocationMilestone(riderId, updated.id, "reached_user", gps);
   return updated;
 }
 
@@ -4501,6 +4526,7 @@ async function markReachedPersonRideDropForRider(
     return mapRideRowWithStatus(full, full.status, full.currentStatus);
   });
 
+  noteRiderOrderLocationMilestone(riderId, updated.id, "reached_user", gps);
   return updated;
 }
 
@@ -5191,6 +5217,7 @@ async function verifyPersonRideDropOtpForRider(
       });
   }
 
+  noteRiderOrderLocationMilestone(riderId, updated.id, "delivered");
   return updated;
 }
 

@@ -17,6 +17,7 @@ export type ProfileListRow = {
   subtitle: string;
   subtitleTone?: "default" | "success" | "warning";
   onPress?: () => void;
+  disabled?: boolean;
 };
 
 export type ProfileListCardProps = {
@@ -29,36 +30,52 @@ export type ProfileListCardProps = {
 };
 
 function ProfileListRowItem({ row }: { row: ProfileListRow }) {
+  const isDisabled = row.disabled === true;
   const subtitleStyles = [
     styles.rowSubtitle,
     row.subtitleTone === "success" ? styles.rowSubtitleSuccess : null,
     row.subtitleTone === "warning" ? styles.rowSubtitleWarning : null,
+    isDisabled ? styles.rowSubtitleDisabled : null,
   ];
 
   return (
     <Pressable
       onPress={row.onPress}
-      disabled={!row.onPress}
+      disabled={!row.onPress || isDisabled}
       style={({ pressed }) => [
         styles.rowPressable,
-        row.onPress && pressed ? styles.rowPressed : null,
+        row.onPress && !isDisabled && pressed ? styles.rowPressed : null,
       ]}
     >
       <View style={styles.rowInner}>
-        <View style={[styles.rowIconWrap, { backgroundColor: row.iconBg }]}>
-          <Ionicons name={row.icon} size={18} color={row.iconColor} />
+        <View
+          style={[
+            styles.rowIconWrap,
+            { backgroundColor: row.iconBg },
+            isDisabled ? styles.rowIconWrapDisabled : null,
+          ]}
+        >
+          <Ionicons
+            name={row.icon}
+            size={18}
+            color={isDisabled ? "#9CA3AF" : row.iconColor}
+          />
         </View>
         <View style={styles.rowCopy}>
-          <Text style={styles.rowTitle} numberOfLines={1}>
+          <Text style={[styles.rowTitle, isDisabled ? styles.rowTitleDisabled : null]} numberOfLines={1}>
             {row.title}
           </Text>
           <Text style={subtitleStyles} numberOfLines={2}>
             {row.subtitle}
           </Text>
         </View>
-        {row.onPress ? (
+        {row.onPress && !isDisabled ? (
           <View style={styles.chevronWrap}>
             <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
+          </View>
+        ) : isDisabled ? (
+          <View style={styles.chevronWrap}>
+            <Ionicons name="lock-closed-outline" size={16} color="#9CA3AF" />
           </View>
         ) : (
           <View style={styles.chevronSpacer} />
@@ -194,6 +211,15 @@ const styles = StyleSheet.create({
     fontWeight: "400",
     color: "#6B7280",
     lineHeight: 18,
+  },
+  rowSubtitleDisabled: {
+    color: "#9CA3AF",
+  },
+  rowTitleDisabled: {
+    color: "#9CA3AF",
+  },
+  rowIconWrapDisabled: {
+    backgroundColor: "#F3F4F6",
   },
   rowSubtitleSuccess: {
     color: "#059669",

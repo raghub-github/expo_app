@@ -3467,16 +3467,6 @@ const UserInsightsContent = () => {
                       </button>
                       <button
                         type="button"
-                        className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
-                        onClick={() => {
-                          router.push('/mx/support-inbox');
-                        }}
-                        title="Switch to Support Inbox"
-                      >
-                        Inbox
-                      </button>
-                      <button
-                        type="button"
                         className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
                           filter === "review"
                             ? "bg-green-600 text-white"

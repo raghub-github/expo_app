@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { dutyLogs, riderVehicles } from "../db/schema.js";
+import { recordRiderDutyLocationBusinessEvent } from "./rider-location-business-event.js";
 
 export type RiderDutyLogStatus = "ON" | "OFF" | "AUTO_OFF";
 export type RiderDutyService = "food" | "parcel" | "person_ride";
@@ -81,6 +82,14 @@ export async function recordRiderDutyLog(input: RecordRiderDutyLogInput): Promis
       ...(input.metadata ?? {}),
     },
     timestamp: new Date(),
+  });
+
+  void recordRiderDutyLocationBusinessEvent({
+    riderId: input.riderId,
+    deviceId: input.deviceId ?? null,
+    lat: input.lat ?? null,
+    lon: input.lon ?? null,
+    status: input.status,
   });
 }
 

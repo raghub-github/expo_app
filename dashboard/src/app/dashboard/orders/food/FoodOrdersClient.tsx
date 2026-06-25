@@ -1,8 +1,9 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useFoodOrdersListActive } from "@/hooks/useFoodOrdersListActive";
 import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
@@ -224,7 +225,7 @@ export default function FoodOrdersClient() {
   const shouldFetch = hasMounted && isFoodOrdersListActive;
 
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const urlStatus = searchParams.get("statusFilter") as OrderStatusFilter | null;
   const urlSearch = searchParams.get("search") ?? "";
   const urlSearchType = searchParams.get("searchType") ?? "Order Id";

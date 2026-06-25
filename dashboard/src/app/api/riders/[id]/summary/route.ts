@@ -22,6 +22,7 @@ import {
   systemUsers,
   onboardingPayments,
   riderPaymentMethods,
+  riderDocuments,
 } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
@@ -31,6 +32,7 @@ import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
 import { getRiderLogoutSessionSnapshot } from "@/lib/db/operations/rider-logout-events";
 import { getRiderSelfieViewUrl } from "@/lib/rider-selfie-url";
+import { resolveOnboardingVehicleDisplayLabel } from "@/lib/rider-onboarding-vehicle-display.server";
 
 export const runtime = 'nodejs';
 
@@ -579,6 +581,52 @@ export async function GET(
       }
     });
 
+    const limitationFlags =
+      activeVehicle?.limitationFlags &&
+      typeof activeVehicle.limitationFlags === "object" &&
+      !Array.isArray(activeVehicle.limitationFlags)
+        ? (activeVehicle.limitationFlags as Record<string, unknown>)
+        : null;
+    let onboardingVehicleCode =
+      (typeof limitationFlags?.onboardingVehicleTypeCode === "string"
+        ? limitationFlags.onboardingVehicleTypeCode
+        : null) ||
+      (typeof (rider as { vehicleChoice?: string | null }).vehicleChoice === "string"
+        ? (rider as { vehicleChoice: string }).vehicleChoice
+        : null);
+
+    const isLegacyFuelVehicleChoice = (code: string | null | undefined) => {
+      if (!code?.trim()) return true;
+      const upper = code.trim().toUpperCase();
+      return upper === "EV" || upper === "PETROL";
+    };
+
+    if (!onboardingVehicleCode || isLegacyFuelVehicleChoice(onboardingVehicleCode)) {
+      const [selectionRow] = await db
+        .select({ metadata: riderDocuments.metadata })
+        .from(riderDocuments)
+        .where(
+          and(
+            eq(riderDocuments.riderId, riderId),
+            eq(riderDocuments.docType, "onboarding_vehicle_selection")
+          )
+        )
+        .limit(1);
+      const meta =
+        selectionRow?.metadata &&
+        typeof selectionRow.metadata === "object" &&
+        !Array.isArray(selectionRow.metadata)
+          ? (selectionRow.metadata as Record<string, unknown>)
+          : null;
+      const fromDoc =
+        typeof meta?.vehicleChoice === "string" ? meta.vehicleChoice.trim() : null;
+      if (fromDoc && !isLegacyFuelVehicleChoice(fromDoc)) {
+        onboardingVehicleCode = fromDoc;
+      }
+    }
+
+    const onboardingVehicle = await resolveOnboardingVehicleDisplayLabel(onboardingVehicleCode);
+
     const payload = {
       success: true,
       data: {
@@ -593,7 +641,8 @@ export async function GET(
           status: rider.status,
           onboardingStage: rider.onboardingStage,
           kycStatus: rider.kycStatus,
-          vehicleChoice: (rider as any).vehicleChoice ?? null, // 'EV' or 'Petrol' from rider profile
+          vehicleChoice: (rider as any).vehicleChoice ?? null,
+          onboardingVehicleLabel: onboardingVehicle.label,
           selfieUrl: selfieUrl ?? null,
           isOnline,
           lastDutyStatus: latestDutyLog?.status || 'OFF',
@@ -641,6 +690,8 @@ export async function GET(
         vehicle: activeVehicle ? {
           id: activeVehicle.id,
           vehicleType: activeVehicle.vehicleType,
+          onboardingVehicleCode: onboardingVehicle.code,
+          onboardingVehicleLabel: onboardingVehicle.label,
           registrationNumber: activeVehicle.registrationNumber,
           make: activeVehicle.make,
           model: activeVehicle.model,

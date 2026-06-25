@@ -23,10 +23,11 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { useSaveOnboardingStep, useRiderStatus } from "@/src/hooks/useOnboarding";
+import { useSaveOnboardingStep, useRiderStatus, usePanRegistrationCheck } from "@/src/hooks/useOnboarding";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import { onboardingStepToRoute } from "@/src/lib/onboarding-routes";
+import { onboardingStepToRoute, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import {
   uploadToR2,
@@ -58,8 +59,13 @@ const PAN_COPY = {
   panBoxTitle: "Add PAN card photo",
   panBoxSub: "Tap here to capture or upload",
   selfieLabel: "Live Selfie",
-  selfieHint: "We use this to match your face with your documents",
-  selfieTips: ["Face the camera directly", "Use good lighting", "Remove sunglasses or mask"],
+  selfieHint: "Blink your eyes when prompted — selfie captures automatically",
+  selfieTips: [
+    "Face the camera directly",
+    "Use good lighting",
+    "Remove sunglasses or mask",
+    "Blink once when the prompt appears",
+  ],
   capture: "Capture",
   upload: "Upload from gallery",
   panPhotoPickerTitle: "Add PAN Photo",
@@ -67,12 +73,13 @@ const PAN_COPY = {
   captureSelfie: "Capture Selfie",
   retakeSelfie: "Retake Selfie",
   continue: "Continue",
-  nextSelfie: "Continue to Selfie",
-  skipPan: "Skip PAN — go to selfie",
-  skipPanHint: "PAN is optional for onboarding",
+  submitPan: "Submit Pan",
+  skipPan: "Skip PAN for now",
+  skipPanHint: "Continue directly to live selfie",
   uploading: "Uploading…",
   cancel: "Cancel",
   invalidPan: "Enter a valid PAN (e.g. ABCDE1234F)",
+  alreadyRegistered: "PAN Already Registered , Please try with Diff one .",
   panPhotoRequired: "Please add a photo of your PAN card",
   selfieRequired: "Please capture a live selfie",
   riderNotFound: "Rider ID not found. Please try again.",
@@ -144,6 +151,41 @@ function ContinueButton({
           />
         </>
       )}
+    </TouchableOpacity>
+  );
+}
+
+function SkipPanButton({
+  title,
+  subtitle,
+  onPress,
+  disabled,
+}: {
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const inactive = Boolean(disabled);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={inactive ? 1 : 0.85}
+      onPress={() => {
+        if (!inactive) onPress();
+      }}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: inactive }}
+      style={[styles.skipPanBtn, inactive && styles.skipPanBtnDisabled]}
+    >
+      <View style={styles.skipPanBtnRow}>
+        <View style={styles.skipPanIconWrap}>
+          <Ionicons name="play-skip-forward-outline" size={18} color={ACCENT_DARK} />
+        </View>
+        <Text style={styles.skipPanTitle}>{title}</Text>
+        <Ionicons name="arrow-forward" size={16} color={ACCENT_DARK} />
+      </View>
+      <Text style={styles.skipPanSub}>{subtitle}</Text>
     </TouchableOpacity>
   );
 }
@@ -273,18 +315,11 @@ export default function PanSelfieScreen() {
   const { data: riderStatus } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
 
-  useEffect(() => {
-    const next = riderStatus?.nextOnboardingStep;
-    if (!next || next === "pan_selfie" || next === "aadhaar_name" || next === "method_selection") {
-      return;
-    }
-    router.replace(onboardingStepToRoute(next as "dl_rc"));
-  }, [riderStatus?.nextOnboardingStep]);
-
   const [panNumber, setPanNumber] = useState(data.panNumber || "");
   const [panPhotoUri, setPanPhotoUri] = useState<string | null>(data.panPhotoUri || null);
   const [selfieUri, setSelfieUri] = useState<string | null>(data.selfieUri || null);
   const [wizardStep, setWizardStep] = useState<"pan" | "selfie">(() => {
+    if (data.selfieUri || data.selfieSignedUrl) return "selfie";
     if (data.panSkipped && !data.selfieUri) return "selfie";
     const panReady = isValidPan(data.panNumber || "") && Boolean(data.panPhotoUri);
     if (panReady && !data.selfieUri) return "selfie";
@@ -299,12 +334,21 @@ export default function PanSelfieScreen() {
   );
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const panValid = isValidPan(panNumber);
+  const panCheckQuery = usePanRegistrationCheck(panNumber, data.riderId);
+  const panAlreadyRegistered = panCheckQuery.data?.registered === true;
+  const checkingPan =
+    panValid && (panCheckQuery.isFetching || panCheckQuery.isLoading);
+  const panVerified =
+    panValid &&
+    !checkingPan &&
+    panCheckQuery.isSuccess &&
+    panCheckQuery.data?.registered === false;
   const panPhotoValid = Boolean(panPhotoUri);
   const selfieValid = Boolean(selfieUri);
-  const canContinuePan = panValid && panPhotoValid && !uploading;
+  const canContinuePan =
+    panValid && !panAlreadyRegistered && !checkingPan && panPhotoValid && !uploading;
   const canContinueSelfie =
     selfieValid && Boolean(selfieSignedUrl) && !submitting && !uploading;
 
@@ -317,6 +361,43 @@ export default function PanSelfieScreen() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    const next = riderStatus?.nextOnboardingStep as ServerOnboardingStep | undefined;
+
+    const stayOnScreen =
+      !next ||
+      next === "pan_selfie" ||
+      next === "aadhaar_name" ||
+      next === "method_selection" ||
+      next === "dl_rc" ||
+      next === "rental_ev";
+
+    if (stayOnScreen) {
+      if (riderStatus?.selfieUrl || data.selfieSignedUrl || data.selfieUri) {
+        setWizardStep("selfie");
+      }
+      if (riderStatus?.selfieUrl && !selfieSignedUrl) {
+        setSelfieSignedUrl(riderStatus.selfieUrl);
+        void setData({ selfieSignedUrl: riderStatus.selfieUrl });
+      }
+      if (riderStatus?.selfieUrl && !selfieUri) {
+        setSelfieUri(riderStatus.selfieUrl);
+        void setData({ selfieUri: riderStatus.selfieUrl });
+      }
+      return;
+    }
+
+    router.replace(onboardingStepToRoute(next));
+  }, [
+    riderStatus?.nextOnboardingStep,
+    riderStatus?.selfieUrl,
+    data.selfieSignedUrl,
+    data.selfieUri,
+    selfieSignedUrl,
+    selfieUri,
+    setData,
+  ]);
 
   const requestCameraPermission = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -340,7 +421,6 @@ export default function PanSelfieScreen() {
     const hasPermission = await requestCameraPermission();
     if (!hasPermission) return;
 
-    setError(null);
     try {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -352,7 +432,7 @@ export default function PanSelfieScreen() {
         setPanPhotoUri(result.assets[0].uri);
       }
     } catch {
-      setError(tx("captureFailed"));
+      notifyOnboardingToast(tx("captureFailed"));
     }
   };
 
@@ -360,7 +440,6 @@ export default function PanSelfieScreen() {
     const hasPermission = await requestGalleryPermission();
     if (!hasPermission) return;
 
-    setError(null);
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -372,21 +451,20 @@ export default function PanSelfieScreen() {
         setPanPhotoUri(result.assets[0].uri);
       }
     } catch {
-      setError(tx("uploadFailed"));
+      notifyOnboardingToast(tx("uploadFailed"));
     }
   };
 
   const handleCaptureSelfie = async (capturedUri: string) => {
     if (!data.riderId) {
-      setError(tx("riderNotFound"));
+      notifyOnboardingToast(tx("riderNotFound"));
       throw new Error(tx("riderNotFound"));
     }
     if (!session?.accessToken) {
-      setError(tx("notAuthenticated"));
+      notifyOnboardingToast(tx("notAuthenticated"));
       throw new Error(tx("notAuthenticated"));
     }
 
-    setError(null);
     setUploading(true);
     const uploadedKeys: string[] = [];
 
@@ -423,7 +501,7 @@ export default function PanSelfieScreen() {
         }
       }
       const message = e instanceof Error ? e.message : tx("selfieSaveError");
-      setError(message);
+      notifyOnboardingToast(message);
       throw e;
     } finally {
       setUploading(false);
@@ -438,8 +516,11 @@ export default function PanSelfieScreen() {
     ]);
   };
 
+  const handlePanNumberChange = (text: string) => {
+    setPanNumber(formatPan(text));
+  };
+
   const handleSkipPan = async () => {
-    setError(null);
     setPanNumber("");
     setPanPhotoUri(null);
     setPanPhotoSignedUrl(null);
@@ -455,23 +536,28 @@ export default function PanSelfieScreen() {
 
   const handlePanStepContinue = async () => {
     if (!panValid) {
-      setError(tx("invalidPan"));
-      return;
-    }
-    if (!panPhotoUri) {
-      setError(tx("panPhotoRequired"));
-      return;
-    }
-    if (!data.riderId) {
-      setError(tx("riderNotFound"));
-      return;
-    }
-    if (!session?.accessToken) {
-      setError(tx("notAuthenticated"));
+      notifyOnboardingToast(tx("invalidPan"));
       return;
     }
 
-    setError(null);
+    if (panAlreadyRegistered) {
+      notifyOnboardingToast(tx("alreadyRegistered"));
+      return;
+    }
+
+    if (!panPhotoUri) {
+      notifyOnboardingToast(tx("panPhotoRequired"));
+      return;
+    }
+    if (!data.riderId) {
+      notifyOnboardingToast(tx("riderNotFound"));
+      return;
+    }
+    if (!session?.accessToken) {
+      notifyOnboardingToast(tx("notAuthenticated"));
+      return;
+    }
+
     setUploading(true);
     const uploadedKeys: string[] = [];
 
@@ -512,7 +598,7 @@ export default function PanSelfieScreen() {
           console.error(`[Rollback] Failed to delete R2 PAN ${key}:`, rollbackError);
         }
       }
-      setError(e instanceof Error ? e.message : tx("panSaveError"));
+      notifyOnboardingToast(e instanceof Error ? e.message : tx("panSaveError"));
     } finally {
       setUploading(false);
     }
@@ -520,7 +606,6 @@ export default function PanSelfieScreen() {
 
   const handleBack = useCallback(() => {
     if (wizardStep === "selfie") {
-      setError(null);
       setWizardStep("pan");
       return;
     }
@@ -537,29 +622,28 @@ export default function PanSelfieScreen() {
 
   const handleContinue = async () => {
     if (!selfieUri) {
-      setError(tx("selfieRequired"));
+      notifyOnboardingToast(tx("selfieRequired"));
       return;
     }
     if (!selfieSignedUrl) {
-      setError(tx("selfieSaveError"));
+      notifyOnboardingToast(tx("selfieSaveError"));
       return;
     }
     const hasPan = panValid && Boolean(panPhotoUri) && Boolean(panPhotoSignedUrl);
     if (!panSkipped && !hasPan) {
       setWizardStep("pan");
-      setError(tx("panPhotoRequired"));
+      notifyOnboardingToast(tx("panPhotoRequired"));
       return;
     }
     if (!data.riderId) {
-      setError(tx("riderNotFound"));
+      notifyOnboardingToast(tx("riderNotFound"));
       return;
     }
     if (!session?.accessToken) {
-      setError(tx("notAuthenticated"));
+      notifyOnboardingToast(tx("notAuthenticated"));
       return;
     }
 
-    setError(null);
     setSubmitting(true);
 
     try {
@@ -588,13 +672,12 @@ export default function PanSelfieScreen() {
           : { panSkipped: true }),
         selfieUri,
         selfieSignedUrl,
-        currentStep: "pan_selfie",
       });
 
       await setStep("dl_rc");
       router.push("/(onboarding)/dl-rc");
     } catch (e) {
-      setError(e instanceof Error ? e.message : tx("uploadError"));
+      notifyOnboardingToast(e instanceof Error ? e.message : tx("uploadError"));
     } finally {
       setSubmitting(false);
     }
@@ -664,27 +747,49 @@ export default function PanSelfieScreen() {
 
                   <View style={styles.fieldGroup}>
                     <FieldLabel label={`${tx("panLabel")} (${tx("panOptional")})`} />
-                    <View style={[styles.inputWrap, panNumber.length > 0 && !panValid && styles.inputErrorBorder]}>
+                    <View
+                      style={[
+                        styles.inputWrap,
+                        panNumber.length > 0 && !panValid && styles.inputErrorBorder,
+                        panAlreadyRegistered ? styles.inputErrorBorder : null,
+                        panVerified ? styles.inputSuccessBorder : null,
+                      ]}
+                    >
                       <Ionicons
                         name="card-outline"
                         size={20}
-                        color={panNumber.length > 0 && !panValid ? colors.error[500] : colors.gray[400]}
+                        color={
+                          panAlreadyRegistered
+                            ? colors.error[500]
+                            : panVerified
+                              ? ACCENT_DARK
+                              : panNumber.length > 0 && !panValid
+                                ? colors.error[500]
+                                : colors.gray[400]
+                        }
                         style={styles.inputIcon}
                       />
                       <TextInput
                         value={panNumber}
-                        onChangeText={(text) => setPanNumber(formatPan(text))}
+                        onChangeText={handlePanNumberChange}
                         placeholder={tx("panPlaceholder")}
                         placeholderTextColor={colors.gray[400]}
                         autoCapitalize="characters"
                         maxLength={10}
                         style={styles.panInput}
                       />
-                      {panValid ? (
-                        <Ionicons name="checkmark-circle" size={20} color={ACCENT_DARK} />
+                      {panVerified ? (
+                        <Ionicons name="checkmark-circle" size={22} color={ACCENT_DARK} />
                       ) : null}
                     </View>
-                    {panNumber.length > 0 ? (
+                    {checkingPan ? (
+                      <View style={styles.panCheckRow}>
+                        <ActivityIndicator size="small" color={ACCENT_DARK} />
+                        <Text style={styles.hintText}>Checking PAN…</Text>
+                      </View>
+                    ) : panAlreadyRegistered ? (
+                      <Text style={styles.inlineWarningText}>{tx("alreadyRegistered")}</Text>
+                    ) : panNumber.length > 0 ? (
                       <Text style={styles.hintText}>
                         {tx("masked")}: {maskedPan}
                       </Text>
@@ -710,34 +815,21 @@ export default function PanSelfieScreen() {
                     ) : null}
                   </View>
 
-                  {error ? (
-                    <View style={styles.errorBanner}>
-                      <Ionicons name="warning-outline" size={18} color={colors.error[600]} />
-                      <Text style={styles.errorText}>{error}</Text>
-                    </View>
-                  ) : null}
+                  <View style={styles.panActionGroup}>
+                    <ContinueButton
+                      label={uploading ? tx("uploading") : tx("submitPan")}
+                      onPress={() => void handlePanStepContinue()}
+                      disabled={!canContinuePan}
+                      loading={uploading}
+                    />
 
-                  <ContinueButton
-                    label={uploading ? tx("uploading") : tx("nextSelfie")}
-                    onPress={() => void handlePanStepContinue()}
-                    disabled={!canContinuePan}
-                    loading={uploading}
-                  />
-
-                  <Pressable
-                    onPress={() => void handleSkipPan()}
-                    disabled={uploading}
-                    style={({ pressed }) => [
-                      styles.skipBtn,
-                      uploading && styles.skipBtnDisabled,
-                      pressed && !uploading && styles.skipBtnPressed,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={tx("skipPan")}
-                  >
-                    <Text style={styles.skipBtnText}>{tx("skipPan")}</Text>
-                    <Text style={styles.skipBtnHint}>{tx("skipPanHint")}</Text>
-                  </Pressable>
+                    <SkipPanButton
+                      title={tx("skipPan")}
+                      subtitle={tx("skipPanHint")}
+                      onPress={() => void handleSkipPan()}
+                      disabled={uploading}
+                    />
+                  </View>
                 </>
               ) : (
                 <>
@@ -760,7 +852,7 @@ export default function PanSelfieScreen() {
                       active={wizardStep === "selfie"}
                       disabled={uploading || submitting}
                       onCaptured={handleCaptureSelfie}
-                      onRejected={(message) => setError(message)}
+                      onRejected={(message) => notifyOnboardingToast(message)}
                       onRemove={() => {
                         setSelfieUri(null);
                         setSelfieSignedUrl(null);
@@ -770,13 +862,6 @@ export default function PanSelfieScreen() {
                       tips={PAN_COPY.selfieTips}
                     />
                   </View>
-
-                  {error ? (
-                    <View style={styles.errorBanner}>
-                      <Ionicons name="warning-outline" size={18} color={colors.error[600]} />
-                      <Text style={styles.errorText}>{error}</Text>
-                    </View>
-                  ) : null}
 
                   <ContinueButton
                     label={uploading ? tx("uploading") : tx("continue")}
@@ -808,7 +893,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingBottom: 28,
+    paddingBottom: 40,
   },
   header: {
     paddingHorizontal: 20,
@@ -1017,6 +1102,25 @@ const styles = StyleSheet.create({
     borderColor: colors.error[400],
     backgroundColor: colors.error[50],
   },
+  inputSuccessBorder: {
+    borderColor: ACCENT_DARK,
+    backgroundColor: "#f0fdf4",
+  },
+  panCheckRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: 2,
+    marginTop: 4,
+  },
+  inlineWarningText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.error[600],
+    fontWeight: "600",
+    marginLeft: 2,
+    marginTop: 4,
+  },
   hintText: {
     fontSize: 12,
     color: colors.gray[500],
@@ -1213,6 +1317,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   continueBtn: {
+    width: "100%",
+    alignSelf: "stretch",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -1220,7 +1326,7 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT,
     borderRadius: 14,
     paddingVertical: 16,
-    marginTop: 4,
+    minHeight: 52,
   },
   continueBtnDisabled: {
     backgroundColor: "#edf8f0",
@@ -1235,27 +1341,53 @@ const styles = StyleSheet.create({
   continueBtnTextDisabled: {
     color: "#7cb889",
   },
-  skipBtn: {
+  panActionGroup: {
+    width: "100%",
+    alignSelf: "stretch",
+    gap: 12,
+    marginTop: 4,
+  },
+  skipPanBtn: {
+    width: "100%",
+    alignSelf: "stretch",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 12,
-    gap: 2,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(57, 211, 83, 0.35)",
+    backgroundColor: "#ffffff",
+    gap: 4,
+    minHeight: 52,
   },
-  skipBtnPressed: {
-    opacity: 0.75,
-  },
-  skipBtnDisabled: {
+  skipPanBtnDisabled: {
     opacity: 0.45,
   },
-  skipBtnText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: colors.gray[600],
-    textDecorationLine: "underline",
+  skipPanBtnRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
-  skipBtnHint: {
-    fontSize: 11,
-    color: colors.gray[400],
+  skipPanIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#e8f8ec",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  skipPanTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: ACCENT_DARK,
+  },
+  skipPanSub: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.gray[500],
     textAlign: "center",
+    paddingHorizontal: 8,
   },
 });

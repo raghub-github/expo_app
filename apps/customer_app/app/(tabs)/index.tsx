@@ -6,8 +6,8 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { View, StyleSheet, ScrollView, RefreshControl } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useLocationStore } from "@/store/locationStore";
 import { HomeLocationHeader, HomeWeatherBanner } from "@/components/home/HomeScreenHeader";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
@@ -31,7 +31,7 @@ const TEAL = GatiMitraColors.splashMint;
 const TAB_BAR_H = 56;
 
 export default function HomeScreen() {
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);

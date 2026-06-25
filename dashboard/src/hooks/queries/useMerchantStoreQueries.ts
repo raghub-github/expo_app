@@ -1,10 +1,11 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { STORE_KEY } from "@/hooks/useStore";
 import { useAuthOptional } from "@/providers/AuthProvider";
-import { usePathname } from "next/navigation";
+
 
 const STALE_MS = 10 * 60 * 1000; // 10 minutes
 const GC_TIME_MS = 30 * 60 * 1000; // 30 minutes – cache survives navigation
@@ -98,7 +99,7 @@ export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string, 
   const permissions = auth?.permissions;
   const authReady = auth?.authReady ?? false;
   const isAllowed = Boolean(authReady && sessionUser && permissions);
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const cleanPathname = pathname?.split("?")[0].split("#")[0] ?? "";
   const isOnMerchantsHome = cleanPathname === "/dashboard/merchants";
 

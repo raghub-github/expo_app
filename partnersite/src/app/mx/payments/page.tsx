@@ -300,6 +300,19 @@ function PaymentsContent() {
   const [payoutDetailsCache, setPayoutDetailsCache] = useState<Record<number, { payout: { id: number; amount: number; net_payout_amount: number; status: string; utr_reference: string | null; pg_transaction_id: string | null; requested_at: string }; bank: { account_holder_name: string; account_number_masked: string | null; bank_name: string; payout_method: string; upi_id: string | null; ifsc_code?: string | null } | null }>>({})
   const [payoutDetailsLoading, setPayoutDetailsLoading] = useState<number | null>(null)
 
+  // Lock document scroll — only the payments content area scrolls (no extra whitespace at bottom).
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const html = document.documentElement
+    const body = document.body
+    html.classList.add('mx-no-page-scroll')
+    body.classList.add('mx-no-page-scroll')
+    return () => {
+      html.classList.remove('mx-no-page-scroll')
+      body.classList.remove('mx-no-page-scroll')
+    }
+  }, [])
+
   useEffect(() => {
     const id = searchParams?.get('restaurantId') ?? searchParams?.get('storeId')
       ?? (typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') ?? localStorage.getItem('selectedRestaurantId') : null)
@@ -619,7 +632,8 @@ function PaymentsContent() {
     <>
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
         <PartnerPageHeader title="Payments & Ledger" subtitle="Wallet balance and full transaction history" />
-        <div className="min-h-screen bg-[#f8fafc]">
+        <div className="flex flex-1 min-h-0 flex-col overflow-hidden bg-[#f8fafc] w-full">
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain hide-scrollbar">
           <div className="bg-white">
             <div className="px-4 sm:px-6 lg:px-8 py-2.5 max-w-7xl mx-auto w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
               <div className="flex items-center gap-2">
@@ -1324,6 +1338,7 @@ function PaymentsContent() {
                 )}
               </div>
             </div>
+          </div>
           </div>
         </div>
       </MXLayoutWhite>

@@ -49,11 +49,21 @@ module.exports = {
           defaultChannel: "customer_default",
         },
       ],
+      [
+        "expo-navigation-bar",
+        {
+          backgroundColor: "#121212",
+          barStyle: "light",
+          visibility: "visible",
+          position: "relative",
+        },
+      ],
     ],
     extra: {
       ...(appJson.expo.extra || {}),
       EXPO_PUBLIC_SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL || null,
       EXPO_PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || null,
+      EXPO_PUBLIC_PHONE_OTP_USE_BACKEND: process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND || null,
       mapboxAccessToken:
         process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
         process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||

@@ -1,10 +1,6 @@
 import { router, type Href } from "expo-router";
 
-/** Back when stack exists; otherwise replace so cold redirects don't throw GO_BACK. */
+/** Onboarding wizard steps use replace — not stack history (cold start / gate redirects). */
 export function goBackOrReplace(fallback: Href) {
-  if (!router.canGoBack()) {
-    router.replace(fallback);
-    return;
-  }
-  router.back();
+  router.replace(fallback);
 }

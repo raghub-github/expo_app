@@ -5,6 +5,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { DashboardStats } from "@/lib/db/operations/customer-stats";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 
 interface DashboardStatsResponse {
   success: boolean;
@@ -52,15 +53,17 @@ export function useCustomerDashboardStats(
   options?: { enabled?: boolean }
 ) {
   const auth = useAuthOptional();
+  const { data: permissionsData, isLoading: permissionsLoading } = usePermissionsQuery();
   const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
   const authReady = auth?.authReady ?? false;
-  const isAllowed = Boolean(authReady && sessionUser && permissions);
+  const permissionsReady = Boolean(auth?.permissions ?? permissionsData);
+  const authGateReady = Boolean(authReady && sessionUser && permissionsReady && !permissionsLoading);
 
   return useQuery({
     queryKey: queryKeys.customers.stats(filters as unknown as Record<string, unknown>),
     queryFn: () => fetchDashboardStats(filters),
-    enabled: isAllowed && options?.enabled !== false,    ...getCacheConfig(CacheTier.MEDIUM),
+    enabled: authGateReady && options?.enabled !== false,
+    ...getCacheConfig(CacheTier.MEDIUM),
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
     refetchOnMount: false,

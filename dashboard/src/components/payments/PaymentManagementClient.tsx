@@ -34,6 +34,9 @@ type MerchantPayoutRow = {
   id: number;
   store_name?: string;
   store_code?: string;
+  rider_id?: number;
+  rider_name?: string;
+  rider_mobile?: string;
   amount?: number;
   net_payout_amount?: number;
   status?: string;
@@ -84,7 +87,9 @@ function toLocalYmd(iso?: string | null): string | null {
 function matchesPayoutFilters(
   p: MerchantPayoutRow,
   opts: {
+    party: PaymentParty;
     storeFilter: string;
+    riderFilter: string;
     statusFilter: StatusFilter;
     dateFrom: string;
     dateTo: string;
@@ -93,7 +98,11 @@ function matchesPayoutFilters(
   const rawStatus = String(p.status ?? "PENDING");
   const disp = displayStatus(rawStatus);
 
-  if (opts.storeFilter !== "ALL" && String(p.store_code ?? "") !== opts.storeFilter) return false;
+  if (opts.party === "merchant") {
+    if (opts.storeFilter !== "ALL" && String(p.store_code ?? "") !== opts.storeFilter) return false;
+  } else if (opts.party === "rider") {
+    if (opts.riderFilter !== "ALL" && String(p.rider_id ?? "") !== opts.riderFilter) return false;
+  }
 
   if (opts.statusFilter === "PENDING" && disp !== "PENDING") return false;
   if (opts.statusFilter === "COMPLETED" && disp !== "COMPLETED") return false;
@@ -117,6 +126,7 @@ export function PaymentManagementClient() {
   const [pgInputs, setPgInputs] = useState<Record<number, string>>({});
   const [utrInputs, setUtrInputs] = useState<Record<number, string>>({});
   const [storeFilter, setStoreFilter] = useState("ALL");
+  const [riderFilter, setRiderFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("PENDING");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -143,7 +153,8 @@ export function PaymentManagementClient() {
 
   const loadPayouts = useCallback(async () => {
     try {
-      const res = await fetch("/api/super-admin/payment-payouts", { cache: "no-store" });
+      const query = party === "rider" ? "?party=rider" : "";
+      const res = await fetch(`/api/super-admin/payment-payouts${query}`, { cache: "no-store" });
       const data = await readApiJson(res);
       if (res.ok && data.success) {
         const rows = (data.payouts as MerchantPayoutRow[]) ?? [];
@@ -170,7 +181,7 @@ export function PaymentManagementClient() {
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [party]);
 
   useEffect(() => {
     void loadConfig();
@@ -187,7 +198,7 @@ export function PaymentManagementClient() {
       const res = await fetch("/api/super-admin/payment-payouts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, payoutId, ...extras }),
+        body: JSON.stringify({ action, payoutId, party, ...extras }),
       });
       const data = await readApiJson(res);
       if (!res.ok || !data.success) {
@@ -228,11 +239,21 @@ export function PaymentManagementClient() {
     return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
   }, [payouts]);
 
+  const riderOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of payouts) {
+      const id = String(p.rider_id ?? "");
+      const name = String(p.rider_name ?? `Rider #${id}`);
+      if (id) map.set(id, name);
+    }
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [payouts]);
+
   const filteredPayouts = useMemo(() => {
     return payouts.filter((p) =>
-      matchesPayoutFilters(p, { storeFilter, statusFilter, dateFrom, dateTo })
+      matchesPayoutFilters(p, { party, storeFilter, riderFilter, statusFilter, dateFrom, dateTo })
     );
-  }, [payouts, storeFilter, statusFilter, dateFrom, dateTo]);
+  }, [payouts, party, storeFilter, riderFilter, statusFilter, dateFrom, dateTo]);
 
   const stats = useMemo(() => {
     const sum = (rows: MerchantPayoutRow[]) =>
@@ -264,10 +285,11 @@ export function PaymentManagementClient() {
 
   useEffect(() => {
     setPage(1);
-  }, [storeFilter, statusFilter, dateFrom, dateTo, pageSize]);
+  }, [party, storeFilter, riderFilter, statusFilter, dateFrom, dateTo, pageSize]);
 
   const clearFilters = () => {
     setStoreFilter("ALL");
+    setRiderFilter("ALL");
     setStatusFilter("PENDING");
     setDateFrom("");
     setDateTo("");
@@ -275,7 +297,11 @@ export function PaymentManagementClient() {
   };
 
   const hasActiveFilters =
-    storeFilter !== "ALL" || statusFilter !== "PENDING" || Boolean(dateFrom) || Boolean(dateTo);
+    (party === "merchant" && storeFilter !== "ALL") ||
+    (party === "rider" && riderFilter !== "ALL") ||
+    statusFilter !== "PENDING" ||
+    Boolean(dateFrom) ||
+    Boolean(dateTo);
 
   const exportCsv = () => {
     const header = ["Store", "Store ID", "Amount", "Status", "PG TNX ID", "UTR", "Requested On"];
@@ -293,7 +319,7 @@ export function PaymentManagementClient() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `merchant-withdrawals-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `${party}-withdrawals-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success("Export downloaded");
@@ -324,24 +350,39 @@ export function PaymentManagementClient() {
         </div>
       )}
 
-      {party !== "merchant" ? (
+      {party === "customer" ? (
         <PaymentPartyComingSoon party={party} />
       ) : (
         <>
           {/* Filters */}
           <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={storeFilter}
-              onChange={(e) => setStoreFilter(e.target.value)}
-              className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
-            >
-              <option value="ALL">All Stores</option>
-              {storeOptions.map(([code, name]) => (
-                <option key={code} value={code}>
-                  {name}
-                </option>
-              ))}
-            </select>
+            {party === "merchant" ? (
+              <select
+                value={storeFilter}
+                onChange={(e) => setStoreFilter(e.target.value)}
+                className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+              >
+                <option value="ALL">All Stores</option>
+                {storeOptions.map(([code, name]) => (
+                  <option key={code} value={code}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select
+                value={riderFilter}
+                onChange={(e) => setRiderFilter(e.target.value)}
+                className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+              >
+                <option value="ALL">All Riders</option>
+                {riderOptions.map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            )}
 
             <select
               value={statusFilter}
@@ -462,6 +503,7 @@ export function PaymentManagementClient() {
           </div>
 
           <PayoutsTable
+            party={party}
             rows={pageRows}
             savingId={savingId}
             pgInputs={pgInputs}
@@ -606,7 +648,7 @@ function PaymentPartyTabs({
 }) {
   const items: { id: PaymentParty; label: string; icon: ReactNode; soon?: boolean }[] = [
     { id: "merchant", label: "Merchant", icon: <Store className="h-4 w-4" /> },
-    { id: "rider", label: "Rider", icon: <Bike className="h-4 w-4" />, soon: true },
+    { id: "rider", label: "Rider", icon: <Bike className="h-4 w-4" /> },
     { id: "customer", label: "Customer", icon: <Users className="h-4 w-4" />, soon: true },
   ];
 
@@ -673,6 +715,7 @@ function statusBadge(rawStatus: string) {
 }
 
 function PayoutsTable({
+  party,
   rows,
   savingId,
   pgInputs,
@@ -682,6 +725,7 @@ function PayoutsTable({
   onAction,
   onEditField,
 }: {
+  party: PaymentParty;
   rows: MerchantPayoutRow[];
   savingId: string | null;
   pgInputs: Record<number, string>;
@@ -701,7 +745,7 @@ function PayoutsTable({
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50/80 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
-              <th className="px-3 py-2">Store</th>
+              <th className="px-3 py-2">{party === "rider" ? "Rider" : "Store"}</th>
               <th className="px-3 py-2">Amount</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2 min-w-[150px]">PG TNX ID</th>
@@ -733,8 +777,21 @@ function PayoutsTable({
                 return (
                   <tr key={id} className="hover:bg-gray-50/50">
                     <td className="px-3 py-2">
-                      <div className="text-sm font-semibold leading-snug text-gray-900">{String(p.store_name ?? "—")}</div>
-                      <div className="text-[10px] font-mono text-gray-400">{String(p.store_code ?? "")}</div>
+                      {party === "rider" ? (
+                        <>
+                          <div className="text-sm font-semibold leading-snug text-gray-900">
+                            {String(p.rider_name ?? "—")}
+                          </div>
+                          <div className="text-[10px] font-mono text-gray-400">
+                            GMR{String(p.rider_id ?? "")} · {String(p.rider_mobile ?? "")}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-sm font-semibold leading-snug text-gray-900">{String(p.store_name ?? "—")}</div>
+                          <div className="text-[10px] font-mono text-gray-400">{String(p.store_code ?? "")}</div>
+                        </>
+                      )}
                     </td>
                     <td className="px-3 py-2 tabular-nums text-sm font-semibold text-gray-900 whitespace-nowrap">
                       {formatInr(Number(p.amount ?? 0))}

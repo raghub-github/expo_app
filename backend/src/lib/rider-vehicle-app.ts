@@ -1,15 +1,17 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 
-import { getDb } from "../db/client.js";
+import { getDb, getSql } from "../db/client.js";
 
 import { riderVehicles } from "../db/schema.js";
 
 import {
   mapFuelTypeFromDb,
-  mapFuelTypeToDb,
   mapVehicleTypeFromDb,
   mapVehicleTypeToDb,
+  resolveFuelTypeDbLabel,
+  resolveVehicleCategoryDbLabel,
 } from "./rider-vehicle-db-map.js";
+import { normalizeOnboardingCategoryCode } from "./rider-vehicle-category-service-assignments.js";
 import { filterDispatchServicesForRiderProfile } from "./rider-dispatch-service-rules.js";
 
 
@@ -22,13 +24,9 @@ function extractPgError(error: unknown): { message: string; detail?: string } {
     if (!err || depth > 4) return;
     if (err instanceof Error) {
       if (err.message) parts.push(err.message);
-      const c = (err as { cause?: unknown }).cause;
-      if (c && typeof c === "object") {
-        const pg = c as { message?: string; detail?: string };
-        if (pg.message) parts.push(pg.message);
-        if (pg.detail?.trim()) detail = pg.detail.trim();
-      }
-      visit(c, depth + 1);
+      const pg = err as { detail?: string; cause?: unknown };
+      if (pg.detail?.trim()) detail = pg.detail.trim();
+      visit(pg.cause, depth + 1);
     } else if (typeof err === "object") {
       const pg = err as { message?: string; detail?: string };
       if (pg.message) parts.push(pg.message);
@@ -43,6 +41,8 @@ function extractPgError(error: unknown): { message: string; detail?: string } {
 export function parseVehicleDbError(error: unknown): string {
   const { message, detail } = extractPgError(error);
   if (detail) return detail;
+
+  const firstLine = message.split("\n")[0]?.trim() ?? "";
 
   if (/relation .+ does not exist/i.test(message)) {
     if (/rider_vehicles/i.test(message)) {
@@ -82,6 +82,10 @@ export function parseVehicleDbError(error: unknown): string {
 
     if (short) return short.replace(/^error:\s*/i, "").trim();
 
+  }
+
+  if (firstLine && !firstLine.includes("Failed query:")) {
+    return firstLine.replace(/^(PostgresError|error):\s*/i, "").trim();
   }
 
   return "Could not save vehicle. Please try again.";
@@ -144,6 +148,38 @@ const VALID_OWNERSHIP_TYPES = new Set(["ownership", "rental", "authorization_let
 
 const VALID_AC_TYPES = new Set(["AC", "Non-AC"]);
 
+let cachedFuelTypeEnumLabels: string[] | undefined;
+let cachedVehicleCategoryEnumLabels: string[] | undefined;
+
+async function loadPgEnumLabels(typeName: string): Promise<string[]> {
+  try {
+    const rows = await getSql()`
+      SELECT e.enumlabel::text AS label
+      FROM pg_type t
+      JOIN pg_enum e ON e.enumtypid = t.oid
+      WHERE t.typname = ${typeName}
+      ORDER BY e.enumsortorder
+    `;
+    return rows.map((row) => String(row.label));
+  } catch {
+    return [];
+  }
+}
+
+async function loadFuelTypeEnumLabels(): Promise<string[]> {
+  if (cachedFuelTypeEnumLabels === undefined) {
+    cachedFuelTypeEnumLabels = await loadPgEnumLabels("fuel_type");
+  }
+  return cachedFuelTypeEnumLabels;
+}
+
+async function loadVehicleCategoryEnumLabels(): Promise<string[]> {
+  if (cachedVehicleCategoryEnumLabels === undefined) {
+    cachedVehicleCategoryEnumLabels = await loadPgEnumLabels("vehicle_category");
+  }
+  return cachedVehicleCategoryEnumLabels;
+}
+
 
 
 export type RiderVehicleAppDto = {
@@ -178,6 +214,8 @@ export type RiderVehicleAppDto = {
 
   serviceTypes: string[];
 
+  vehicleCategory: string | null;
+
   seatingCapacity: number | null;
 
   acType: string | null;
@@ -186,6 +224,16 @@ export type RiderVehicleAppDto = {
 
 
 
+export type RiderVehicleOnboardingPrefill = {
+  registrationNumber: string | null;
+  vehicleChoice: string | null;
+  vehicleCategoryCode: string | null;
+  resolvedVehicleType: string | null;
+  vehicleTypeLabel: string | null;
+  suggestedAcType: "AC" | "Non-AC" | null;
+  suggestedIsCommercial: boolean | null;
+};
+
 export type RiderVehicleStatusResponse = {
 
   hasVehicle: boolean;
@@ -193,6 +241,12 @@ export type RiderVehicleStatusResponse = {
   isComplete: boolean;
 
   vehicle: RiderVehicleAppDto | null;
+
+  onboardingVehicleChoice: string | null;
+
+  onboardingVehicleCategoryCode: string | null;
+
+  onboardingPrefill: RiderVehicleOnboardingPrefill | null;
 
 };
 
@@ -219,6 +273,10 @@ export type UpsertRiderVehicleInput = {
   registrationState?: string | null;
 
   serviceTypes?: string[];
+
+  vehicleCategoryCode?: string | null;
+
+  onboardingVehicleChoice?: string | null;
 
   isCommercial?: boolean;
 
@@ -319,6 +377,8 @@ function rowToDto(row: typeof riderVehicles.$inferSelect): RiderVehicleAppDto {
     isCommercial: Boolean(row.isCommercial),
 
     serviceTypes,
+
+    vehicleCategory: row.vehicleCategory ? String(row.vehicleCategory) : null,
 
     seatingCapacity: row.seatingCapacity ?? null,
 
@@ -432,17 +492,89 @@ export async function getActiveRiderVehicleRow(riderId: number) {
 
 
 
+async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
+  onboardingVehicleChoice: string | null;
+  onboardingVehicleCategoryCode: string | null;
+  onboardingPrefill: RiderVehicleOnboardingPrefill | null;
+}> {
+  const { readRiderOnboardingVehicleSelection } = await import(
+    "./rider-onboarding-progress.js"
+  );
+  const {
+    resolveVehicleTypeFromOnboardingChoice,
+    suggestAcTypeForCategory,
+    suggestIsCommercialForCategory,
+  } = await import("./rider-onboarding-vehicle-resolve.js");
+
+  const selection = await readRiderOnboardingVehicleSelection(riderId);
+  const choice = selection.vehicleChoice;
+  const categoryCode = selection.vehicleCategoryCode;
+
+  if (!choice && !selection.registrationNumber) {
+    return {
+      onboardingVehicleChoice: choice,
+      onboardingVehicleCategoryCode: categoryCode,
+      onboardingPrefill: null,
+    };
+  }
+
+  const resolved = await resolveVehicleTypeFromOnboardingChoice(choice, "bike");
+
+  let vehicleTypeLabel: string | null = resolved.customTypeLabel;
+  if (choice) {
+    const db = (await import("../db/client.js")).getDb();
+    const { riderOnboardingVehicleTypes } = await import("../db/schema.js");
+    const { eq, and } = await import("drizzle-orm");
+    const [catalogRow] = await db
+      .select({ label: riderOnboardingVehicleTypes.label })
+      .from(riderOnboardingVehicleTypes)
+      .where(
+        and(
+          eq(riderOnboardingVehicleTypes.code, choice),
+          eq(riderOnboardingVehicleTypes.isActive, true)
+        )
+      )
+      .limit(1);
+    vehicleTypeLabel = catalogRow?.label?.trim() ?? vehicleTypeLabel;
+  }
+
+  const regFromOnboarding = selection.registrationNumber
+    ? normalizeRegistrationNumber(selection.registrationNumber)
+    : null;
+
+  return {
+    onboardingVehicleChoice: choice,
+    onboardingVehicleCategoryCode: categoryCode,
+    onboardingPrefill: {
+      registrationNumber: regFromOnboarding,
+      vehicleChoice: choice,
+      vehicleCategoryCode: categoryCode,
+      resolvedVehicleType: resolved.vehicleType,
+      vehicleTypeLabel,
+      suggestedAcType: suggestAcTypeForCategory(categoryCode),
+      suggestedIsCommercial: suggestIsCommercialForCategory(categoryCode),
+    },
+  };
+}
+
 export async function getRiderVehicleStatusForApp(
 
   riderId: number,
 
 ): Promise<RiderVehicleStatusResponse> {
 
+  const onboardingSelection = await readOnboardingVehicleSelectionForApp(riderId);
+
   const row = await getActiveRiderVehicleRow(riderId);
 
   if (!row) {
 
-    return { hasVehicle: false, isComplete: false, vehicle: null };
+    return {
+      hasVehicle: false,
+      isComplete: false,
+      vehicle: null,
+      ...onboardingSelection,
+    };
 
   }
 
@@ -455,6 +587,8 @@ export async function getRiderVehicleStatusForApp(
     isComplete: isRiderVehicleComplete(row),
 
     vehicle,
+
+    ...onboardingSelection,
 
   };
 
@@ -662,45 +796,123 @@ type PersistVehicleData = Extract<
 
 async function persistRiderVehicleRow(
   riderId: number,
-  data: PersistVehicleData,
+  data: PersistVehicleData & {
+    onboardingVehicleCategoryCode?: string | null;
+    onboardingVehicleTypeCode?: string | null;
+  },
   existingId: number | null,
 ): Promise<void> {
-  const db = getDb();
-  const now = new Date();
+  const sql = getSql();
 
-  const patch = {
-    vehicleType: mapVehicleTypeToDb(data.vehicleType) as (typeof riderVehicles.$inferInsert)["vehicleType"],
-    registrationNumber: data.registrationNumber,
-    vehicleNumber: data.vehicleNumber,
-    fuelType: mapFuelTypeToDb(data.fuelType) as (typeof riderVehicles.$inferInsert)["fuelType"],
-    make: data.make,
-    model: data.model,
-    year: data.year,
-    color: data.color,
-    registrationState: data.registrationState,
-    ownershipType: data.ownershipType,
-    serviceTypes: data.serviceTypes,
-    isCommercial: data.isCommercial,
-    seatingCapacity: data.seatingCapacity,
-    acType: (data.acType ?? null) as (typeof riderVehicles.$inferInsert)["acType"],
-    vehicleActiveStatus: "active",
-    isActive: true,
-    updatedAt: now,
-  };
+  const [fuelLabels, vehicleCategoryLabels] = await Promise.all([
+    loadFuelTypeEnumLabels(),
+    loadVehicleCategoryEnumLabels(),
+  ]);
+
+  const vehicleTypeDb = mapVehicleTypeToDb(data.vehicleType);
+  const fuelTypeDb = resolveFuelTypeDbLabel(data.fuelType, fuelLabels);
+  const vehicleCategoryDb = resolveVehicleCategoryDbLabel(
+    data.onboardingVehicleCategoryCode,
+    data.vehicleType,
+    vehicleCategoryLabels,
+  );
+
+  const limitationFlags: Record<string, string> = {};
+  if (data.onboardingVehicleTypeCode?.trim()) {
+    limitationFlags.onboardingVehicleTypeCode = data.onboardingVehicleTypeCode.trim();
+  }
+  if (data.onboardingVehicleCategoryCode?.trim()) {
+    limitationFlags.onboardingVehicleCategoryCode =
+      data.onboardingVehicleCategoryCode.trim();
+  }
+
+  const serviceTypesJson = JSON.stringify(data.serviceTypes);
+  const limitationFlagsJson = JSON.stringify(limitationFlags);
+  const make = data.make ?? null;
+  const model = data.model ?? null;
+  const year = data.year ?? null;
+  const color = data.color ?? null;
+  const registrationState = data.registrationState ?? null;
+  const ownershipType = data.ownershipType ?? null;
+  const seatingCapacity = data.seatingCapacity ?? null;
+  const acType = data.acType ?? null;
 
   if (existingId != null) {
-    await db
-      .update(riderVehicles)
-      .set(patch)
-      .where(and(eq(riderVehicles.id, existingId), eq(riderVehicles.riderId, riderId)));
+    await sql`
+      UPDATE rider_vehicles
+      SET
+        vehicle_type = ${vehicleTypeDb}::vehicle_type,
+        registration_number = ${data.registrationNumber},
+        vehicle_number = ${data.vehicleNumber},
+        fuel_type = ${fuelTypeDb}::fuel_type,
+        make = ${make},
+        model = ${model},
+        year = ${year},
+        color = ${color},
+        registration_state = ${registrationState},
+        ownership_type = ${ownershipType},
+        service_types = ${serviceTypesJson}::jsonb,
+        is_commercial = ${data.isCommercial},
+        seating_capacity = ${seatingCapacity},
+        ac_type = ${acType}::ac_type,
+        vehicle_category = ${vehicleCategoryDb}::vehicle_category,
+        limitation_flags = COALESCE(limitation_flags, '{}'::jsonb) || ${limitationFlagsJson}::jsonb,
+        vehicle_active_status = 'active',
+        is_active = true,
+        updated_at = NOW()
+      WHERE id = ${existingId}
+        AND rider_id = ${riderId}
+    `;
     return;
   }
 
-  await db.insert(riderVehicles).values({
-    riderId,
-    ...patch,
-    createdAt: now,
-  });
+  await sql`
+    INSERT INTO rider_vehicles (
+      rider_id,
+      vehicle_type,
+      registration_number,
+      vehicle_number,
+      fuel_type,
+      make,
+      model,
+      year,
+      color,
+      registration_state,
+      ownership_type,
+      service_types,
+      is_commercial,
+      seating_capacity,
+      ac_type,
+      vehicle_category,
+      limitation_flags,
+      vehicle_active_status,
+      is_active,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${riderId},
+      ${vehicleTypeDb}::vehicle_type,
+      ${data.registrationNumber},
+      ${data.vehicleNumber},
+      ${fuelTypeDb}::fuel_type,
+      ${make},
+      ${model},
+      ${year},
+      ${color},
+      ${registrationState},
+      ${ownershipType},
+      ${serviceTypesJson}::jsonb,
+      ${data.isCommercial},
+      ${seatingCapacity},
+      ${acType}::ac_type,
+      ${vehicleCategoryDb}::vehicle_category,
+      ${limitationFlagsJson}::jsonb,
+      'active',
+      true,
+      NOW(),
+      NOW()
+    )
+  `;
 }
 
 
@@ -723,13 +935,98 @@ export async function upsertRiderVehicleForApp(
 
   const data = parsed.data;
 
+  const { resolveVehicleOnboardingCategoryCode } = await import(
+    "./rider-vehicle-category-service-assignments.js"
+  );
+  const { filterDispatchServicesByVehicleAssignments } = await import(
+    "./rider-vehicle-type-service-assignments.js"
+  );
+  const { readRiderOnboardingVehicleSelection } = await import(
+    "./rider-onboarding-progress.js"
+  );
+
+  const onboardingSelection = await readRiderOnboardingVehicleSelection(riderId);
+
+  const onboardingChoice =
+    input.onboardingVehicleChoice?.trim() ||
+    onboardingSelection.vehicleChoice?.trim() ||
+    null;
+
+  const { resolveVehicleTypeFromOnboardingChoice } = await import(
+    "./rider-onboarding-vehicle-resolve.js"
+  );
+  const resolvedFromOnboarding = await resolveVehicleTypeFromOnboardingChoice(
+    onboardingChoice,
+    data.vehicleType
+  );
+
+  let make = data.make;
+  let model = data.model;
+  if (
+    resolvedFromOnboarding.vehicleType === "other" &&
+    resolvedFromOnboarding.customTypeLabel &&
+    !make?.trim()
+  ) {
+    make = resolvedFromOnboarding.customTypeLabel;
+  }
+
+  const resolvedVehicleType = resolvedFromOnboarding.vehicleType;
+
+  const onboardingCategoryCode =
+    normalizeOnboardingCategoryCode(
+      input.vehicleCategoryCode ?? onboardingSelection.vehicleCategoryCode ?? null,
+    ) ??
+    (await resolveVehicleOnboardingCategoryCode(resolvedVehicleType, null));
+
+  const vehicleTypesForAssignment = [
+    resolvedVehicleType,
+    onboardingChoice ?? "",
+  ].filter((v) => v.trim().length > 0);
+
+  let serviceTypes = data.serviceTypes;
+  const selectedServices = [...serviceTypes];
+  serviceTypes = await filterDispatchServicesByVehicleAssignments(
+    serviceTypes as ("food" | "parcel" | "person_ride")[],
+    {
+      vehicleTypes: vehicleTypesForAssignment,
+      vehicleCategories: onboardingCategoryCode ? [onboardingCategoryCode] : [],
+    }
+  );
+  if (serviceTypes.length < 1) {
+    serviceTypes = filterDispatchServicesForRiderProfile(
+      selectedServices as Parameters<typeof filterDispatchServicesForRiderProfile>[0],
+      {
+        vehicleTypes: [resolvedVehicleType],
+        vehicleCategories: onboardingCategoryCode ? [onboardingCategoryCode] : [],
+      },
+    );
+  }
+  if (serviceTypes.length < 1 && selectedServices.length > 0) {
+    serviceTypes = selectedServices;
+  }
+  if (serviceTypes.length < 1) {
+    throw new Error(
+      "Selected services are not available for your vehicle type. Update service selection."
+    );
+  }
+
+  const persistData = {
+    ...data,
+    vehicleType: resolvedVehicleType,
+    make,
+    model,
+    serviceTypes,
+    onboardingVehicleCategoryCode: onboardingCategoryCode,
+    onboardingVehicleTypeCode: onboardingChoice,
+  };
+
   const existing = await getActiveRiderVehicleRow(riderId);
 
 
 
   try {
 
-    await persistRiderVehicleRow(riderId, data, existing ? Number(existing.id) : null);
+    await persistRiderVehicleRow(riderId, persistData, existing ? Number(existing.id) : null);
 
   } catch (error) {
 
