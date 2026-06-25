@@ -21,6 +21,9 @@ export function RiderVehiclePrompt() {
       <VehicleDetailsBottomSheet
         visible
         initial={data?.vehicle ?? null}
+        onboardingVehicleChoice={data?.onboardingVehicleChoice ?? null}
+        onboardingVehicleCategoryCode={data?.onboardingVehicleCategoryCode ?? null}
+        onboardingPrefill={data?.onboardingPrefill ?? null}
         onCompleted={() => {
           closeSheet();
           void refetch();

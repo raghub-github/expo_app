@@ -1,9 +1,10 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   Plus,
   ChevronRight,
@@ -67,7 +68,7 @@ interface StoreItem {
 
 export function AreaManagerStoresClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
 
   // Use URL-based filters with persistence
   const {

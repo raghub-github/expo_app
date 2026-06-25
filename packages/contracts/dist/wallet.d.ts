@@ -141,6 +141,7 @@ export declare const LedgerEntrySchema: z.ZodObject<{
     tds_amount: z.ZodNullable<z.ZodNumber>;
     created_at: z.ZodString;
     formatted_order_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    pg_transaction_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, z.core.$strip>;
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 export declare const LedgerQueryOptionsSchema: z.ZodObject<{

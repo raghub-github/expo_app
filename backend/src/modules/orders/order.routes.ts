@@ -2141,9 +2141,9 @@ export async function orderRoutes(app: FastifyInstance) {
       if (orderRow.riderId != null) {
         const [live] = await db
           .select({
-            latitude: riderLiveLocations.latitude,
-            longitude: riderLiveLocations.longitude,
-            heading: riderLiveLocations.heading,
+            latitude: riderLiveLocations.lat,
+            longitude: riderLiveLocations.lng,
+            heading: riderLiveLocations.headingDeg,
             updatedAt: riderLiveLocations.updatedAt,
           })
           .from(riderLiveLocations)

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -14,7 +14,9 @@ import type { ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { useRiderVehicle } from "@/src/hooks/useRiderVehicle";
-import { fuelTypeLabel, vehicleTypeLabel } from "@/src/lib/rider-vehicle-options";
+import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
+import { resolveRiderOnboardingVehicleDisplayName } from "@/src/lib/rider-onboarding-vehicle-display";
+import { fuelTypeLabel } from "@/src/lib/rider-vehicle-options";
 import { registrationStateLabel } from "@/src/lib/rider-vehicle-form";
 import { colors } from "@/src/theme";
 
@@ -49,7 +51,19 @@ function ReadOnlyField({
 export function ViewVehicleScreen() {
   const { t } = useTranslation();
   const { data, isLoading, isError, refetch, isRefetching } = useRiderVehicle();
+  const { data: onboardingTypes = [] } = useOnboardingVehicleTypes();
   const vehicle = data?.vehicle;
+
+  const displayVehicleName = useMemo(
+    () =>
+      resolveRiderOnboardingVehicleDisplayName({
+        vehicle,
+        onboardingVehicleChoice: data?.onboardingVehicleChoice,
+        onboardingPrefill: data?.onboardingPrefill,
+        onboardingTypes,
+      }),
+    [vehicle, data?.onboardingVehicleChoice, data?.onboardingPrefill, onboardingTypes],
+  );
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
@@ -113,9 +127,7 @@ export function ViewVehicleScreen() {
               <Ionicons name="bicycle" size={32} color={TEAL} />
             </View>
             <View style={styles.heroBody}>
-              <Text style={styles.heroTitle}>
-                {vehicle.vehicleTypeLabel || vehicleTypeLabel(vehicle.vehicleType)}
-              </Text>
+              <Text style={styles.heroTitle}>{displayVehicleName}</Text>
               <Text style={styles.heroReg}>{vehicle.registrationNumber}</Text>
               {vehicle.verified ? (
                 <View style={styles.verifiedBadge}>
@@ -142,7 +154,7 @@ export function ViewVehicleScreen() {
           <View style={styles.card}>
             <ReadOnlyField
               label={t("vehicle.page.type", "Vehicle type")}
-              value={vehicle.vehicleTypeLabel || vehicleTypeLabel(vehicle.vehicleType)}
+              value={displayVehicleName}
               icon="bicycle-outline"
             />
             <ReadOnlyField

@@ -34,6 +34,7 @@ import {
   parseRideDeliveredBill,
   buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
+import { RideTollNoticeBanner, RideTollNoticeSheet } from "@/components/ride/RideTollNoticeSheet";
 
 const MINT_DARK = GatiMitraColors.deepMintStart;
 const PENDING_HERO_DELAY_MS = 3 * 60 * 1000;
@@ -115,6 +116,11 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
     amount: number;
   } | null>(null);
   const { data: profile } = useProfile();
+  const [tollSheetVisible, setTollSheetVisible] = useState(true);
+
+  useEffect(() => {
+    setTollSheetVisible(true);
+  }, [order.orderId]);
 
   const finalizeRidePayment = useCallback(
     async (result: RazorpayPaymentResult) => {
@@ -305,6 +311,8 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           </View>
         </View>
 
+        <RideTollNoticeBanner onPress={() => setTollSheetVisible(true)} />
+
         <View style={styles.infoBanner}>
           <Ionicons name="information-circle" size={18} color="#4F46E5" />
           <Text style={styles.infoBannerText}>
@@ -345,6 +353,11 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           <Text style={styles.secureText}>100% Secure Payments</Text>
         </View>
       </View>
+
+      <RideTollNoticeSheet
+        visible={tollSheetVisible}
+        onClose={() => setTollSheetVisible(false)}
+      />
 
       <RazorpayCheckoutModal
         visible={razorpayVisible}

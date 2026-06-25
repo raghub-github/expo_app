@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useState, useEffect } from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
 import { Image } from "expo-image";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -46,7 +46,7 @@ type MenuItem = {
 export default function ProfileScreen() {
   const { t } = useTranslation();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const { data: profile } = useProfile();
   const { data: subscriptionStatus } = useCurrentSubscription(true);
 

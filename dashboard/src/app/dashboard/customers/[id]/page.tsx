@@ -1,7 +1,10 @@
 "use client";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useRef, Suspense } from "react";
-import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, ChevronDown, ExternalLink } from "lucide-react";
 import {
@@ -249,8 +252,8 @@ const NAV_PILL_MIN = "min-w-[7.25rem] max-w-[11rem] sm:min-w-[7.75rem]";
 const RESULT_CARD_SHELL = "mt-[2px] w-full shrink-0 px-4 py-4 sm:px-6";
 
 function CustomerDetailsContent() {
-  const params = useParams();
-  const searchParams = useSearchParams();
+  const params = useAppParams();
+  const searchParams = useAppSearchParams();
   const customerId = params.id as string;
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -265,7 +268,7 @@ function CustomerDetailsContent() {
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = useAppPathname();
 
   const searchQs = searchParams.get("search");
   const idLinkSuffix =

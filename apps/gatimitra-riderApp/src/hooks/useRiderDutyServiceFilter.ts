@@ -23,6 +23,13 @@ import {
 } from "@/src/lib/rider-duty-service-types";
 import { mergeRiderBlockedServices } from "@/src/lib/rider-blocked-services";
 import type { RiderServiceTypeValue } from "@/src/lib/rider-vehicle-form";
+import { useCategoryServiceAssignments } from "@/src/hooks/useCategoryServiceAssignments";
+import {
+  resolveCategoryCodeForVehicleType,
+  type CategoryServiceAssignmentsResponse,
+} from "@/src/lib/rider-category-service-assignments";
+import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
+import type { OnboardingVehicleType } from "@/src/lib/onboarding-vehicle-types";
 
 export function useRiderDutyServiceFilter() {
   const queryClient = useQueryClient();
@@ -34,6 +41,8 @@ export function useRiderDutyServiceFilter() {
   const geoQuery = useRiderGeoServiceAvailability();
   const dutyQuery = useDutyStatus();
   const vehicleQuery = useRiderVehicle();
+  const assignmentsQuery = useCategoryServiceAssignments();
+  const onboardingTypesQuery = useOnboardingVehicleTypes();
 
   const vehicleServices = useMemo(
     () => normalizeVehicleServiceTypes(vehicleQuery.data?.vehicle?.serviceTypes),
@@ -55,6 +64,17 @@ export function useRiderDutyServiceFilter() {
   );
 
   const vehicleType = vehicleQuery.data?.vehicle?.vehicleType ?? null;
+  const vehicleCategoryCode = useMemo(() => {
+    const stored = vehicleQuery.data?.vehicle?.vehicleCategory ?? null;
+    if (stored) return stored;
+    return resolveCategoryCodeForVehicleType(
+      vehicleType,
+      onboardingTypesQuery.data ?? []
+    );
+  }, [vehicleQuery.data, vehicleType, onboardingTypesQuery.data]);
+
+  const categoryServiceByCode = assignmentsQuery.data?.byCategory;
+  const vehicleServiceByMapsToType = assignmentsQuery.data?.byMapsToVehicleType;
 
   const eligibleServices = useMemo(
     () =>
@@ -63,8 +83,19 @@ export function useRiderDutyServiceFilter() {
         vehicleServices,
         blockedServices,
         vehicleType,
+        vehicleCategoryCode,
+        categoryServiceByCode,
+        vehicleServiceByMapsToType,
       }),
-    [geoEnabled, vehicleServices, blockedServices, vehicleType],
+    [
+      geoEnabled,
+      vehicleServices,
+      blockedServices,
+      vehicleType,
+      vehicleCategoryCode,
+      categoryServiceByCode,
+      vehicleServiceByMapsToType,
+    ],
   );
 
   const activeSelection = useMemo(
@@ -121,12 +152,25 @@ export function useRiderDutyServiceFilter() {
         vehicleServices,
         blockedServices,
         vehicleType,
+        vehicleCategoryCode,
+        categoryServiceByCode,
+        vehicleServiceByMapsToType,
       });
       if (serviceTypes.length === 0) return;
       if (!isOnDuty) return;
       await updateDutyMutation.mutateAsync(serviceTypes);
     },
-    [geoEnabled, vehicleServices, blockedServices, vehicleType, isOnDuty, updateDutyMutation],
+    [
+      geoEnabled,
+      vehicleServices,
+      blockedServices,
+      vehicleType,
+      vehicleCategoryCode,
+      categoryServiceByCode,
+      vehicleServiceByMapsToType,
+      isOnDuty,
+      updateDutyMutation,
+    ],
   );
 
   const setSelectedServices = useCallback(
@@ -200,12 +244,28 @@ export function resolveDutyServiceTypesForToggle(
   );
 
   const vehicleType = vehicle?.vehicle?.vehicleType ?? null;
+  const onboardingTypes =
+    queryClient.getQueryData<OnboardingVehicleType[]>(["rider", "onboarding", "vehicle-types"]) ??
+    [];
+  const assignments = queryClient.getQueryData<CategoryServiceAssignmentsResponse>([
+    "rider",
+    "onboarding",
+    "category-service-assignments",
+  ]);
+  const vehicleCategoryCode = resolveCategoryCodeForVehicleType(
+    vehicleType,
+    onboardingTypes,
+    vehicle?.vehicle?.vehicleCategory ?? null
+  );
 
   const eligible = buildEligibleServicePool({
     geoEnabled,
     vehicleServices,
     blockedServices,
     vehicleType,
+    vehicleCategoryCode,
+    categoryServiceByCode: assignments?.byCategory,
+    vehicleServiceByMapsToType: assignments?.byMapsToVehicleType,
   });
 
   const selected =
@@ -219,6 +279,9 @@ export function resolveDutyServiceTypesForToggle(
     vehicleServices,
     blockedServices,
     vehicleType,
+    vehicleCategoryCode,
+    categoryServiceByCode: assignments?.byCategory,
+    vehicleServiceByMapsToType: assignments?.byMapsToVehicleType,
   });
   return serviceTypes.length > 0 ? serviceTypes : undefined;
 }

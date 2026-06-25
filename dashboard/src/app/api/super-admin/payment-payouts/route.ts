@@ -2,17 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { approvePayoutRpc, completeMerchantPayoutWithPgTxn, listMerchantPayouts, rejectPayoutRpc, updateMerchantPayoutPgOrUtr } from "@/lib/db/operations/payment-config";
+import { approvePayoutRpc, completeMerchantPayoutWithPgTxn, listMerchantPayouts, listRiderPayouts, rejectPayoutRpc, updateMerchantPayoutPgOrUtr, updateRiderWithdrawalPgOrUtr } from "@/lib/db/operations/payment-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const gate = await requireSuperAdminApi();
   if (!gate.ok) return gate.response;
+  const party = req.nextUrl.searchParams.get("party") ?? "merchant";
   try {
-    const payouts = await listMerchantPayouts(200);
-    return NextResponse.json({ success: true, payouts });
+    const payouts =
+      party === "rider" ? await listRiderPayouts(200) : await listMerchantPayouts(200);
+    return NextResponse.json({ success: true, payouts, party });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed";
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
@@ -33,6 +35,7 @@ export async function POST(req: NextRequest) {
   let body: {
     action?: string;
     payoutId?: number;
+    party?: "merchant" | "rider";
     reason?: string;
     pgTransactionId?: string;
     utrReference?: string;
@@ -110,7 +113,10 @@ export async function POST(req: NextRequest) {
       }
       const value = body.value ?? (field === "pg" ? body.pgTransactionId : body.utrReference) ?? "";
       try {
-        const result = await updateMerchantPayoutPgOrUtr(payoutId, field, String(value));
+        const result =
+          body.party === "rider"
+            ? await updateRiderWithdrawalPgOrUtr(payoutId, field, String(value))
+            : await updateMerchantPayoutPgOrUtr(payoutId, field, String(value));
         return NextResponse.json({ success: true, result });
       } catch (rpcErr) {
         const msg = rpcErr instanceof Error ? rpcErr.message : "Update failed";

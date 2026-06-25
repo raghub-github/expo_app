@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { Settings } from "lucide-react";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   AGENT_ACTIVITY_PATH,
   TICKETS_HELPDESK_DASHBOARD_PATH,
@@ -12,7 +13,7 @@ const TICKETS_MAIN_LIST_PATH = "/dashboard/tickets";
 /** Gear next to Queue: opens helpdesk metrics dashboard, or returns to ticket list from hub pages. */
 export function TicketsHubGearButton() {
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const cleanPathname = pathname.split("?")[0].split("#")[0] ?? "";
 
   const onHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;

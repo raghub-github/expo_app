@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as Location from "expo-location";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -31,6 +32,15 @@ import {
 } from "@/services/orderPartnerChat.service";
 import { partnerChatUnreadQueryKey } from "@/hooks/usePartnerChatUnread";
 import { useKeyboardBottomInset } from "@/hooks/useKeyboardBottomInset";
+import { resolveRiderPickupChatCustomerView } from "@/lib/rider-pickup-chat-customer";
+import { RiderPickupChatCustomerCard } from "@/components/orders/RiderPickupChatCustomerCard";
+import { formatChatSharedLocationMessage } from "@/lib/chat-shared-location";
+import {
+  isPersonRidePartnerChat,
+  PERSON_RIDE_CUSTOMER_QUICK_REPLIES,
+  type PersonRideCustomerQuickReply,
+} from "@/lib/person-ride-customer-chat-quick-replies";
+import { useLocationStore } from "@/store/locationStore";
 
 const MINT = GatiMitraColors.primaryMint;
 const TEXT = GatiMitraColors.textPrimaryNew;
@@ -54,7 +64,11 @@ export default function OrderPartnerChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
+  const inputRef = useRef<TextInput>(null);
   const queryClient = useQueryClient();
+  const refetchLocation = useLocationStore((s) => s.refetchLocation);
+  const locationCoords = useLocationStore((s) => s.coords);
+  const locationAddress = useLocationStore((s) => s.address);
 
   const params = useLocalSearchParams<{
     orderId?: string | string[];
@@ -64,6 +78,7 @@ export default function OrderPartnerChatScreen() {
     partnerPhoto?: string | string[];
     partnerRole?: string | string[];
     orderSubtitle?: string | string[];
+    personRide?: string | string[];
   }>();
 
   const orderId = paramOne(params.orderId);
@@ -73,8 +88,18 @@ export default function OrderPartnerChatScreen() {
   const partnerPhoto = toAbsoluteImageUrl(paramOne(params.partnerPhoto) || null);
   const partnerRole = paramOne(params.partnerRole) || "Delivery partner";
   const orderSubtitle = paramOne(params.orderSubtitle) || `${restaurantName} order`;
+  const isPersonRide = isPersonRidePartnerChat({
+    personRide: paramOne(params.personRide),
+    partnerRole,
+    orderSubtitle,
+  });
+  const displayPartnerRole =
+    isPersonRide && partnerRole.trim().toLowerCase() === "captain"
+      ? "Mitra-Sathi"
+      : partnerRole;
 
   const [draft, setDraft] = useState("");
+  const [shareLocationLoading, setShareLocationLoading] = useState(false);
   const keyboardInset = useKeyboardBottomInset();
 
   const queryKey = useMemo(() => ["order-partner-chat", orderId] as const, [orderId]);
@@ -90,6 +115,16 @@ export default function OrderPartnerChatScreen() {
 
   const chatClosed = data?.chatClosed ?? false;
   const messages = data?.messages ?? [];
+
+  const highlightCall = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.isMine || m.senderType !== "RIDER") continue;
+      const view = resolveRiderPickupChatCustomerView(m.body);
+      if (view?.action === "call_highlight") return true;
+    }
+    return false;
+  }, [messages]);
 
   useEffect(() => {
     if (!orderId || !data) return;
@@ -144,6 +179,75 @@ export default function OrderPartnerChatScreen() {
     Linking.openURL(`tel:${phone}`).catch(() => Alert.alert("Could not open dialer"));
   }, [normalizePhone]);
 
+  const handleShareLiveLocation = useCallback(
+    async (prefixMessage?: string) => {
+      if (chatClosed || sendMutation.isPending || shareLocationLoading) return;
+      setShareLocationLoading(true);
+      try {
+        let lat = locationCoords?.latitude;
+        let lng = locationCoords?.longitude;
+        if (lat == null || lng == null) {
+          await refetchLocation({ forceDevice: true });
+          const fresh = useLocationStore.getState();
+          lat = fresh.coords?.latitude;
+          lng = fresh.coords?.longitude;
+        }
+        if (lat == null || lng == null) {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status !== "granted") {
+            Alert.alert("Location needed", "Allow location access to share your pickup point.");
+            return;
+          }
+          const pos = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
+          lat = pos.coords.latitude;
+          lng = pos.coords.longitude;
+        }
+        const label =
+          locationAddress?.fullAddress?.trim() ||
+          locationAddress?.primary?.trim() ||
+          `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        const lead = prefixMessage?.trim() || "Sharing my location with you.";
+        sendMutation.mutate(formatChatSharedLocationMessage(lead, label, lat, lng));
+      } catch {
+        Alert.alert("Could not share location", "Please try again.");
+      } finally {
+        setShareLocationLoading(false);
+      }
+    },
+    [
+      chatClosed,
+      sendMutation,
+      shareLocationLoading,
+      locationCoords,
+      locationAddress,
+      refetchLocation,
+    ]
+  );
+
+  const handleQuickReply = useCallback(
+    (item: PersonRideCustomerQuickReply) => {
+      if (chatClosed || sendMutation.isPending || shareLocationLoading) return;
+      if (item.action === "share_location") {
+        void handleShareLiveLocation(item.message);
+        return;
+      }
+      if (item.action === "call") {
+        sendMutation.mutate(item.message, {
+          onSuccess: () => {
+            handleCall();
+          },
+        });
+        return;
+      }
+      sendMutation.mutate(item.message);
+    },
+    [chatClosed, sendMutation, shareLocationLoading, handleShareLiveLocation, handleCall]
+  );
+
+  const showPersonRideQuickReplies = isPersonRide && !chatClosed;
+
   const handleSend = useCallback(() => {
     const text = draft.trim();
     if (!text || chatClosed || sendMutation.isPending) return;
@@ -168,6 +272,23 @@ export default function OrderPartnerChatScreen() {
         </View>
       );
     }
+
+    const pickupView = resolveRiderPickupChatCustomerView(m.body);
+    if (pickupView) {
+      return (
+        <RiderPickupChatCustomerCard
+          key={m.id}
+          view={pickupView}
+          createdAt={m.createdAt}
+          timeLabel={formatTime(m.createdAt)}
+          onCall={handleCall}
+          onChat={() => inputRef.current?.focus()}
+          onShareLocation={() => void handleShareLiveLocation()}
+          shareLoading={shareLocationLoading}
+        />
+      );
+    }
+
     return (
       <View key={m.id} style={styles.partnerBubbleWrap}>
         <View style={styles.partnerBubble}>
@@ -212,15 +333,19 @@ export default function OrderPartnerChatScreen() {
             </View>
             <View style={styles.headerTextCol}>
               <Text style={styles.headerTitle} numberOfLines={1}>
-                {partnerName} ({partnerRole})
+                {partnerName} ({displayPartnerRole})
               </Text>
               <Text style={styles.headerSub} numberOfLines={1}>
                 {orderSubtitle}
               </Text>
             </View>
           </View>
-          <TouchableOpacity onPress={handleCall} hitSlop={12} style={styles.headerSide}>
-            <Ionicons name="call-outline" size={22} color={MINT} />
+          <TouchableOpacity
+            onPress={handleCall}
+            hitSlop={12}
+            style={[styles.headerSide, highlightCall && styles.headerCallHighlight]}
+          >
+            <Ionicons name="call-outline" size={22} color={highlightCall ? GatiMitraColors.warmOrange : MINT} />
           </TouchableOpacity>
         </View>
 
@@ -277,10 +402,36 @@ export default function OrderPartnerChatScreen() {
             <Text style={styles.closedText}>Chat closed — order completed.</Text>
           </View>
         ) : (
-          <View style={[styles.composer, { paddingBottom: composerBottomPad }]}>
+          <>
+            {showPersonRideQuickReplies ? (
+              <View style={styles.quickReplyList}>
+                {PERSON_RIDE_CUSTOMER_QUICK_REPLIES.map((item) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.quickReplyRowItem}
+                    onPress={() => handleQuickReply(item)}
+                    disabled={sendMutation.isPending || shareLocationLoading}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.quickReplyText} numberOfLines={2}>
+                      {item.message}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color="#C4C4C4" />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+            <View
+              style={[
+                styles.composer,
+                { paddingBottom: composerBottomPad },
+                !showPersonRideQuickReplies && styles.composerBorderTop,
+              ]}
+            >
             <View style={styles.inputWrap}>
-              <TextInput
-                style={styles.input}
+                <TextInput
+                  ref={inputRef}
+                  style={styles.input}
                 placeholder="Type your message here..."
                 placeholderTextColor="#9CA3AF"
                 value={draft}
@@ -305,7 +456,8 @@ export default function OrderPartnerChatScreen() {
                 <Ionicons name="send" size={18} color="#fff" />
               )}
             </TouchableOpacity>
-          </View>
+            </View>
+          </>
         )}
       </Root>
     </>
@@ -325,6 +477,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   headerSide: { width: 40, alignItems: "center", justifyContent: "center" },
+  headerCallHighlight: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 2,
+    borderColor: GatiMitraColors.warmOrange,
+  },
   headerCenter: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, minWidth: 0 },
   headerAvatar: {
     width: 40,
@@ -396,15 +556,45 @@ const styles = StyleSheet.create({
   partnerBubbleText: { fontSize: 14, color: TEXT, lineHeight: 20 },
   timeLabel: { fontSize: 10, color: MUTED, marginTop: 4, marginRight: 4 },
   timeLabelLeft: { fontSize: 10, color: MUTED, marginTop: 4, marginLeft: 4 },
+  quickReplyList: {
+    backgroundColor: "#fff",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 6,
+    gap: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraColors.border,
+  },
+  quickReplyRowItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 44,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#E8EAED",
+    backgroundColor: "#FAFAFA",
+    gap: 10,
+  },
+  quickReplyText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "500",
+    color: TEXT,
+    lineHeight: 18,
+  },
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 8,
     paddingHorizontal: 10,
-    paddingTop: 10,
+    paddingTop: 8,
+    backgroundColor: "#fff",
+  },
+  composerBorderTop: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: GatiMitraColors.border,
-    backgroundColor: "#fff",
   },
   inputWrap: {
     flex: 1,

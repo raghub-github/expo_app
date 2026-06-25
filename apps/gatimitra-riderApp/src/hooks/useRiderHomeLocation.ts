@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
 import { putJson } from "@/src/services/http";
@@ -9,6 +10,7 @@ import { useRiderStatus } from "@/src/hooks/useOnboarding";
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
 export function useRiderHomeLocation(riderId: string | undefined) {
+  const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const queryClient = useQueryClient();
   const { data: riderStatus, isLoading: statusLoading } = useRiderStatus(riderId);
@@ -57,16 +59,39 @@ export function useRiderHomeLocation(riderId: string | undefined) {
     onSuccess: async () => {
       setLocalError(null);
       await queryClient.invalidateQueries({ queryKey: ["rider", riderId] });
-    },
-    onError: (err) => {
-      setLocalError(err instanceof Error ? err.message : "Failed to save location");
+      await queryClient.refetchQueries({ queryKey: ["rider", riderId] });
     },
   });
 
   const requestAndSave = useCallback(async () => {
     setLocalError(null);
-    await saveMutation.mutateAsync();
-  }, [saveMutation]);
+    try {
+      await saveMutation.mutateAsync();
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : "";
+      if (/permission/i.test(raw)) {
+        setLocalError(
+          t("homeLocation.permissionDenied", {
+            defaultValue: "Location permission is required. Tap Open Settings to allow access.",
+          }),
+        );
+      } else if (/gps|location services|turn on location/i.test(raw)) {
+        setLocalError(
+          t("homeLocation.gpsDisabled", {
+            defaultValue:
+              "Turn on Location (GPS) in your phone settings. We opened it for you — come back and tap Allow again.",
+          }),
+        );
+      } else {
+        setLocalError(
+          raw ||
+            t("homeLocation.saveFailed", {
+              defaultValue: "Could not save your address. Please try again.",
+            }),
+        );
+      }
+    }
+  }, [saveMutation, t]);
 
   return {
     needsHomeLocation: needsLocationSave,

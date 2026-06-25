@@ -1,5 +1,5 @@
 import { getDb } from "../db/client.js";
-import { riderDocuments, riderDocumentFiles, riders } from "../db/schema.js";
+import { riderDocuments, riderDocumentFiles, riders, riderOnboardingVehicleTypes } from "../db/schema.js";
 import { eq, inArray } from "drizzle-orm";
 
 export type RiderOnboardingStepKey =
@@ -43,6 +43,11 @@ function dlRcComplete(docs: { docType: string }[]): boolean {
   return hasDocType(docs, "dl") && hasDocType(docs, "rc");
 }
 
+function panSelfieComplete(docs: { docType: string }[]): boolean {
+  // PAN is optional during onboarding — selfie alone completes this step.
+  return hasDocType(docs, "selfie");
+}
+
 function rentalEvComplete(docs: { docType: string }[]): boolean {
   return hasDocType(docs, "rental_proof") || hasDocType(docs, "ev_proof");
 }
@@ -57,6 +62,101 @@ function readOnboardingVehicleFlow(
   return null;
 }
 
+function readOnboardingVehicleSelectionMetadata(
+  docs: { docType: string; metadata: unknown }[]
+): Record<string, unknown> | null {
+  const row = docs.find((d) => d.docType === "onboarding_vehicle_selection");
+  if (!row?.metadata || typeof row.metadata !== "object") return null;
+  return row.metadata as Record<string, unknown>;
+}
+
+function readVehicleChoice(docs: { docType: string; metadata: unknown }[]): string | null {
+  const meta = readOnboardingVehicleSelectionMetadata(docs);
+  const choice = meta?.vehicleChoice;
+  return typeof choice === "string" && choice.trim() ? choice.trim() : null;
+}
+
+function readVehicleCategoryCode(docs: { docType: string; metadata: unknown }[]): string | null {
+  const meta = readOnboardingVehicleSelectionMetadata(docs);
+  const code = meta?.vehicleCategoryCode;
+  return typeof code === "string" && code.trim() ? code.trim() : null;
+}
+
+function readRcNumber(docs: { docType: string; metadata: unknown }[]): string | null {
+  const row = docs.find((d) => d.docType === "rc");
+  if (!row?.metadata || typeof row.metadata !== "object") return null;
+  const rcNumber = (row.metadata as { rcNumber?: string }).rcNumber;
+  return typeof rcNumber === "string" && rcNumber.trim() ? rcNumber.trim() : null;
+}
+
+function readRcDocumentUrl(docs: { docType: string; fileUrl: string | null }[]): string | null {
+  const row = docs.find((d) => d.docType === "rc");
+  const url = row?.fileUrl?.trim();
+  if (!url || url === "pending") return null;
+  return url;
+}
+
+export async function readRiderOnboardingVehicleSelection(riderId: number): Promise<{
+  vehicleChoice: string | null;
+  vehicleCategoryCode: string | null;
+  registrationNumber: string | null;
+  rcDocumentUrl: string | null;
+}> {
+  const db = getDb();
+  const docs = await db
+    .select({
+      docType: riderDocuments.docType,
+      metadata: riderDocuments.metadata,
+      fileUrl: riderDocuments.fileUrl,
+    })
+    .from(riderDocuments)
+    .where(eq(riderDocuments.riderId, riderId));
+  return {
+    vehicleChoice: readVehicleChoice(docs),
+    vehicleCategoryCode: readVehicleCategoryCode(docs),
+    registrationNumber: readRcNumber(docs),
+    rcDocumentUrl: readRcDocumentUrl(docs),
+  };
+}
+
+function readVehicleDocsSubmittedFor(docs: { docType: string; metadata: unknown }[]): string | null {
+  const row = docs.find((d) => d.docType === "onboarding_vehicle_selection");
+  if (!row?.metadata || typeof row.metadata !== "object") return null;
+  const meta = row.metadata as {
+    vehicleDocsSubmittedFor?: string;
+    vehicleDocsSubmittedAt?: string;
+  };
+  const submittedFor =
+    typeof meta.vehicleDocsSubmittedFor === "string" ? meta.vehicleDocsSubmittedFor.trim() : "";
+  const submittedAt =
+    typeof meta.vehicleDocsSubmittedAt === "string" ? meta.vehicleDocsSubmittedAt.trim() : "";
+  if (!submittedFor || !submittedAt) return null;
+  return submittedFor;
+}
+
+async function readRequiredDocsForVehicleChoice(
+  vehicleChoice: string | null
+): Promise<string[] | null> {
+  if (!vehicleChoice) return null;
+  const db = getDb();
+  const [row] = await db
+    .select({ documentRequirements: riderOnboardingVehicleTypes.documentRequirements })
+    .from(riderOnboardingVehicleTypes)
+    .where(eq(riderOnboardingVehicleTypes.code, vehicleChoice))
+    .limit(1);
+  if (!row?.documentRequirements || typeof row.documentRequirements !== "object") return null;
+  const required = (row.documentRequirements as { required_docs?: string[] }).required_docs;
+  if (!Array.isArray(required) || required.length === 0) return null;
+  return required.filter((code): code is string => typeof code === "string" && code.length > 0);
+}
+
+function vehicleStepCompleteByRequired(
+  docs: { docType: string }[],
+  requiredDocs: string[]
+): boolean {
+  return requiredDocs.every((code) => hasDocType(docs, code));
+}
+
 function vehicleStepComplete(
   docs: { docType: string; metadata: unknown }[],
   flow: "dl_rc" | "rental_ev" | "payment" | null
@@ -67,16 +167,17 @@ function vehicleStepComplete(
   return dlRcComplete(docs) || rentalEvComplete(docs);
 }
 
-/** Riders past MOBILE_VERIFIED (or KYC already approved) must not be routed back to doc upload. */
+/** Riders past document collection (or KYC already approved) must not be routed back to doc upload. */
 function resolveNextStepForEstablishedRider(
   rider: { onboardingStage: string; kycStatus: string },
-  completed: RiderOnboardingStepKey[]
+  _completed: RiderOnboardingStepKey[]
 ): RiderOnboardingStepKey | null {
   if (rider.kycStatus === "APPROVED" || rider.kycStatus === "REVIEW") {
     return "payment";
   }
   const stage = rider.onboardingStage;
-  if (stage === "KYC" || stage === "PAYMENT" || stage === "APPROVAL" || stage === "ACTIVE") {
+  // KYC stage = still uploading Aadhaar / PAN / vehicle docs — do not skip to payment.
+  if (stage === "PAYMENT" || stage === "APPROVAL" || stage === "ACTIVE") {
     return "payment";
   }
   return null;
@@ -127,22 +228,53 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     completed.push("aadhaar_name");
   }
 
-  if (hasDocType(docs, "pan") && hasDocType(docs, "selfie")) {
+  if (panSelfieComplete(docs)) {
     completed.push("pan_selfie");
   }
 
   const vehicleFlow = readOnboardingVehicleFlow(docs);
-  const vehicleDone = vehicleStepComplete(docs, vehicleFlow);
+  const vehicleChoice = readVehicleChoice(docs);
+  const vehicleDocsSubmittedFor = readVehicleDocsSubmittedFor(docs);
+  const configuredRequiredDocs = await readRequiredDocsForVehicleChoice(vehicleChoice);
+  const vehicleDocsSatisfied = configuredRequiredDocs?.length
+    ? vehicleStepCompleteByRequired(docs, configuredRequiredDocs)
+    : vehicleStepComplete(docs, vehicleFlow);
+  const vehicleReadyForPayment =
+    vehicleDocsSatisfied &&
+    Boolean(vehicleChoice) &&
+    vehicleDocsSubmittedFor === vehicleChoice;
 
-  if (dlRcComplete(docs)) {
-    completed.push("dl_rc");
-  }
-  if (rentalEvComplete(docs)) {
-    completed.push("rental_ev");
-  }
-  if (vehicleFlow === "payment" && hasDocType(docs, "onboarding_vehicle_selection")) {
-    completed.push("dl_rc");
-    completed.push("rental_ev");
+  if (configuredRequiredDocs?.length) {
+    if (vehicleDocsSatisfied) {
+      const dlRcRequired = configuredRequiredDocs.filter((code) => code === "dl" || code === "rc");
+      if (dlRcRequired.length > 0) completed.push("dl_rc");
+      const rentalRequired = configuredRequiredDocs.filter(
+        (code) => code === "rental_proof" || code === "ev_proof"
+      );
+      if (rentalRequired.length > 0) completed.push("rental_ev");
+    } else {
+      const dlRcRequired = configuredRequiredDocs.filter((code) => code === "dl" || code === "rc");
+      if (dlRcRequired.length > 0 && dlRcRequired.every((code) => hasDocType(docs, code))) {
+        completed.push("dl_rc");
+      }
+      const rentalRequired = configuredRequiredDocs.filter(
+        (code) => code === "rental_proof" || code === "ev_proof"
+      );
+      if (rentalRequired.length > 0 && rentalRequired.every((code) => hasDocType(docs, code))) {
+        completed.push("rental_ev");
+      }
+    }
+  } else {
+    if (dlRcComplete(docs)) {
+      completed.push("dl_rc");
+    }
+    if (rentalEvComplete(docs)) {
+      completed.push("rental_ev");
+    }
+    if (vehicleFlow === "payment" && hasDocType(docs, "onboarding_vehicle_selection")) {
+      completed.push("dl_rc");
+      completed.push("rental_ev");
+    }
   }
 
   const rider = riderRows[0]!;
@@ -155,16 +287,16 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
 
   if (!aadhaarComplete(docs, filesByDocId)) {
     nextStep = "aadhaar_name";
-  } else if (!hasDocType(docs, "pan") || !hasDocType(docs, "selfie")) {
+  } else if (!panSelfieComplete(docs)) {
     nextStep = "pan_selfie";
-  } else if (!vehicleDone) {
+  } else if (!vehicleReadyForPayment) {
     if (vehicleFlow === "rental_ev") {
       nextStep = "rental_ev";
     } else {
       nextStep = "dl_rc";
     }
   } else {
-    // All doc steps done — client opens payment screen (distinct from rental_ev upload step).
+    // Rider explicitly submitted the current vehicle flow on the final Continue tap.
     nextStep = "payment";
   }
 

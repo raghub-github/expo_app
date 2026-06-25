@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import {
-  deactivateRiderOnboardingVehicleType,
+  deleteRiderOnboardingVehicleType,
   updateRiderOnboardingVehicleType,
 } from "@/lib/db/operations/rider-onboarding-vehicle-types";
 
@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 
 const docRequirementsSchema = z.object({
   required_docs: z.array(z.string()).optional(),
+  optional_docs: z.array(z.string()).optional(),
   has_own_vehicle: z.boolean().optional(),
   requires_max_speed: z.boolean().optional(),
 });
@@ -81,13 +82,13 @@ export async function DELETE(
     return NextResponse.json({ success: false, error: "Invalid id" }, { status: 400 });
   }
   try {
-    const row = await deactivateRiderOnboardingVehicleType(id);
-    if (!row) {
+    const deleted = await deleteRiderOnboardingVehicleType(id);
+    if (!deleted) {
       return NextResponse.json({ success: false, error: "Not found" }, { status: 404 });
     }
-    return NextResponse.json({ success: true, row });
+    return NextResponse.json({ success: true, id });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Failed to deactivate";
+    const msg = e instanceof Error ? e.message : "Failed to delete";
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
   }
 }

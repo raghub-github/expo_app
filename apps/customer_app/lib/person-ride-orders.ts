@@ -33,6 +33,13 @@ export function isActivePersonRideOrder(order: OrderSummary): boolean {
   return isActiveOrderStatus(order.status);
 }
 
+/** Book a Ride home — `/home/service/ride` only (not ride-book / ride-searching). */
+export function isBookARideHomeScreen(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  const normalized = pathname.split("?")[0]!.replace(/\/$/, "") || "/";
+  return normalized === "/home/service/ride";
+}
+
 /** Ride still matching a captain — show ride-searching, not live map. */
 export function isPersonRideSearchingSummary(order: OrderSummary): boolean {
   const s = normalizeCustomerOrderStatus(order.status);

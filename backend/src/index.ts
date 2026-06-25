@@ -425,6 +425,7 @@ let weatherRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let etaLiveTickInterval: ReturnType<typeof setInterval> | null = null;
 let subscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let merchantSubscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
+let riderLocationMaintenanceInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -470,6 +471,7 @@ const gracefulShutdown = async (signal: string) => {
   if (etaLiveTickInterval) { clearInterval(etaLiveTickInterval); etaLiveTickInterval = null; }
   if (subscriptionRenewalInterval) { clearInterval(subscriptionRenewalInterval); subscriptionRenewalInterval = null; }
   if (merchantSubscriptionRenewalInterval) { clearInterval(merchantSubscriptionRenewalInterval); merchantSubscriptionRenewalInterval = null; }
+  if (riderLocationMaintenanceInterval) { clearInterval(riderLocationMaintenanceInterval); riderLocationMaintenanceInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -730,6 +732,31 @@ try {
       void runMerchantSubscriptionRenewalLocked();
     }, merchantSubscriptionRenewalIntervalMs);
     app.log.info({ intervalMinutes: 10 }, "merchant subscription renewal tick started");
+
+    const riderLocationMaintenanceHours = env.RIDER_LOCATION_MAINTENANCE_INTERVAL_HOURS;
+    const riderLocationMaintenanceIntervalMs = riderLocationMaintenanceHours * 60 * 60 * 1000;
+    const riderLocationMaintenanceLockMs = riderLocationMaintenanceIntervalMs + 15 * 60 * 1000;
+    const runRiderLocationMaintenanceLocked = () =>
+      withLock("tick:rider-location-maintenance", riderLocationMaintenanceLockMs, async () => {
+        const { runRiderLocationMaintenanceTick } = await import(
+          "./lib/rider-location-maintenance.js"
+        );
+        return runRiderLocationMaintenanceTick();
+      })
+        .then((result) => {
+          if (result) {
+            app.log.info(result, "rider_location_maintenance_tick");
+          }
+        })
+        .catch((err) => app.log.error({ err }, "rider_location_maintenance_tick"));
+    void runRiderLocationMaintenanceLocked();
+    riderLocationMaintenanceInterval = setInterval(() => {
+      void runRiderLocationMaintenanceLocked();
+    }, riderLocationMaintenanceIntervalMs);
+    app.log.info(
+      { intervalHours: riderLocationMaintenanceHours },
+      "rider location maintenance tick started"
+    );
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

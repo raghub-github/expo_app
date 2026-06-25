@@ -248,6 +248,24 @@ const EnvSchema = z.object({
 
   /** Secret for POST /v1/push/send-notification (dashboard / internal). */
   PUSH_NOTIFICATION_ADMIN_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  /** Days to retain sampled rider_location_events audit rows. */
+  RIDER_LOCATION_EVENT_RETENTION_DAYS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(365)
+  ).default(30),
+
+  /** Background prune interval for rider_location_events (hours; default daily). */
+  RIDER_LOCATION_MAINTENANCE_INTERVAL_HOURS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(168)
+  ).default(24),
+
+  /** Speed (m/s) at which rider app should use high-frequency GPS pings (~80 km/h). */
+  RIDER_LOCATION_HIGH_SPEED_MPS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().positive().max(100)
+  ).default(22),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

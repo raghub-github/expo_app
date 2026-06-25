@@ -22,7 +22,7 @@ export function useOnboardingDocumentTypes(captureGroup?: OnboardingCaptureGroup
           : FALLBACK_ONBOARDING_DOCUMENT_TYPES;
       }
       try {
-        const qs = new URLSearchParams({ includeInactive: "true" });
+        const qs = new URLSearchParams({ includeInactive: "false" });
         if (captureGroup) qs.set("captureGroup", captureGroup);
         const res = await getJson<{ rows: OnboardingDocumentTypeDef[] }>(
           `${API_BASE()}/v1/onboarding/document-types?${qs.toString()}`,

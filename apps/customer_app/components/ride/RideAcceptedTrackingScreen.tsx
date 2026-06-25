@@ -47,6 +47,8 @@ import { normalizeCustomerOrderStatus, isPersonRideOnDropLeg } from "@/lib/custo
 import { getRideOrderStatus, cancelRideOrder } from "@/services/rideBooking.service";
 import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
 import { RideTripDetailsSheet } from "@/components/ride/RideTripDetailsSheet";
+import { RideInProgressNoticeCarousel } from "@/components/ride/RideInProgressNoticeCarousel";
+import { speakRideTollNotice } from "@/lib/speak-ride-notice";
 import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { RideCancelReasonSheet } from "@/features/ride/RideCancelReasonSheet";
 import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
@@ -69,7 +71,7 @@ import {
   resolveRidePickupFreeRemainingSeconds,
   resolveRidePickupWaitElapsedSeconds,
 } from "@/lib/ride-pickup-wait";
-import { buildActiveRideTripFareBreakdown } from "@/lib/ride-order-display";
+import { buildActiveRideTripFareBreakdown, resolveRideMapMarkerImageKey, resolveRideVehicleImage } from "@/lib/ride-order-display";
 
 const ACCENT_BLUE = "#4285F4";
 const BANNER_NAVY = "#1B3A6B";
@@ -85,9 +87,17 @@ type RideAcceptedTrackingScreenProps = {
 };
 
 function resolveRideCatalogId(order: OrderDetail): string {
+  const allowed = ["bike", "bike-lite", "auto", "cab-economy", "cab-premium"] as const;
   const raw = order.rideType?.trim().toLowerCase();
-  if (raw && ["bike", "bike-lite", "auto", "cab-economy", "cab-premium", "travel"].includes(raw)) {
+  if (raw && allowed.includes(raw as (typeof allowed)[number])) {
     return raw;
+  }
+  const meta = order.checkoutMetadata as Record<string, unknown> | null;
+  const fromMeta = String(meta?.rideType ?? meta?.selectedRideId ?? "")
+    .trim()
+    .toLowerCase();
+  if (fromMeta && allowed.includes(fromMeta as (typeof allowed)[number])) {
+    return fromMeta;
   }
   return "bike";
 }
@@ -114,6 +124,7 @@ export function RideAcceptedTrackingScreen({
   const [cancelLoading, setCancelLoading] = useState(false);
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const lastFitKeyRef = useRef("");
+  const tollNoticeSpokenRef = useRef<string | null>(null);
 
   const pickupPoint = useMemo(() => resolveRidePickupPoint(order), [order]);
   const dropPoint = useMemo(() => resolveRideDropPoint(order), [order]);
@@ -159,6 +170,13 @@ export function RideAcceptedTrackingScreen({
     rideStarted: liveRideStatus?.rideStarted ?? order.rideStarted ?? false,
   });
 
+  useEffect(() => {
+    if (!rideInProgress) return;
+    if (tollNoticeSpokenRef.current === order.orderId) return;
+    tollNoticeSpokenRef.current = order.orderId;
+    void speakRideTollNotice();
+  }, [rideInProgress, order.orderId]);
+
   const rideWaitFields = useMemo(
     () => ({
       riderReachedPickupAt:
@@ -200,6 +218,8 @@ export function RideAcceptedTrackingScreen({
   const routeDestination = rideInProgress ? dropPoint : pickupPoint;
 
   const rideCatalogId = resolveRideCatalogId(order);
+  const riderMarkerImageKey = resolveRideMapMarkerImageKey(rideCatalogId);
+  const rideVehicleImage = resolveRideVehicleImage(rideCatalogId);
   const {
     coordinates: routeCoordinates,
     fullCoordinates: fullRouteCoordinates,
@@ -489,10 +509,11 @@ export function RideAcceptedTrackingScreen({
       pathname: "/orders/partner-chat",
       params: {
         orderId: order.orderId,
-        partnerName: order.rider?.name ?? "Captain",
+        partnerName: order.rider?.name ?? "Mitra-Sathi",
         restaurantName: pickupAddress,
-        partnerRole: "Captain",
+        partnerRole: "Mitra-Sathi",
         orderSubtitle: "Live ride trip",
+        personRide: "1",
         ...(order.rider?.phone ? { partnerPhone: order.rider.phone } : {}),
         ...(order.rider?.photoUrl ? { partnerPhoto: order.rider.photoUrl } : {}),
       },
@@ -534,6 +555,7 @@ export function RideAcceptedTrackingScreen({
           riderHeading={riderHeading}
           pickupPosition={pickupPoint}
           dropPosition={dropPoint}
+          riderMarkerImageKey={riderMarkerImageKey}
           navigationMode={rideInProgress}
           highlightPickupZone={highlightPickupZone}
           highlightDropZone={highlightDropZone}
@@ -644,6 +666,8 @@ export function RideAcceptedTrackingScreen({
             <View style={[styles.banner, styles.bannerNav]}>
               <Text style={styles.bannerText}>{bannerText}</Text>
             </View>
+
+            <RideInProgressNoticeCarousel />
 
             <View style={[styles.etaBlock, styles.etaBlockNav]}>
               <View style={styles.etaRowSplit}>
@@ -894,6 +918,7 @@ export function RideAcceptedTrackingScreen({
       <RideCancelConfirmSheet
         visible={cancelFlowStep === "confirm"}
         loading={cancelLoading}
+        heroImage={rideVehicleImage}
         message="Your captain may already be on the way. Cancelling now may apply fees depending on ride status."
         confirmLabel="Cancel my ride"
         keepLabel="Keep ride"

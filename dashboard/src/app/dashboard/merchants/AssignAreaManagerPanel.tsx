@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useEffect, useMemo, useState, useRef } from "react";
-import { useSearchParams } from "next/navigation";
+
 import { X, Search, Users, Loader2 } from "lucide-react";
 import { usePermission } from "@/hooks/usePermission";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
@@ -70,7 +71,7 @@ interface AssignAreaManagerPanelProps {
 export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: AssignAreaManagerPanelProps) {
   const { isSuperAdmin } = usePermission();
   const merchantsSearch = useMerchantsSearch();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);

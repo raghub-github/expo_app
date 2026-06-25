@@ -926,6 +926,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       isFoodOrder && order.merchantName?.trim()
         ? `${order.merchantName.trim()} order`
         : t("orders.partnerChat.rideTripLabel", "Live ride trip");
+    const beforeReachPickup = !isFoodOrder && !atCustomer && !reachSliderDone;
     router.push({
       pathname: "/order-partner-chat/[orderId]",
       params: {
@@ -934,9 +935,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         orderLabel,
         ...(order.customerPhone?.trim() ? { customerPhone: order.customerPhone.trim() } : {}),
         ...(atCustomer ? { atDrop: "1" } : {}),
+        ...(beforeReachPickup ? { atPickup: "1" } : {}),
       },
     });
-  }, [order, isFoodOrder, atCustomer, t]);
+  }, [order, isFoodOrder, atCustomer, reachSliderDone, t]);
 
   const handleReachedPickup = useCallback(() => {
     const gps = riderGps();

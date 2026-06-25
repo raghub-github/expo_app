@@ -28,6 +28,7 @@ export function PartnerShellWarmup() {
     if (storeId) {
       prefetchPartnerRouteData(queryClient, '/partners/dashboard', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/orders', storeId);
+      prefetchPartnerRouteData(queryClient, '/partners/menu', storeId);
     }
   }, [queryClient]);
 

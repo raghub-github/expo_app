@@ -45,6 +45,7 @@ import {
   useCreatePayoutRequestMutation,
 } from "@/store/api/merchantStoreApi";
 import { useMerchantWalletRequestsSummaryQuery } from "@/hooks/queries/useMerchantWalletRequestsSummaryQuery";
+import { useStore } from "@/hooks/useStore";
 import { RefundPolicyContent } from "@/components/RefundPolicyContent";
 
 const LEDGER_CATEGORIES = [
@@ -136,8 +137,8 @@ export function StorePaymentsClient({
   initialRefundPolicyOpen?: boolean;
 }) {
   const { toast } = useToast();
-  const [storeName, setStoreName] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(true);
+  const { store } = useStore(storeId);
+  const storeName = store?.store_name ?? store?.name ?? "";
   const [showRefundPolicy, setShowRefundPolicy] = useState(initialRefundPolicyOpen);
   const [showWithdrawal, setShowWithdrawal] = useState(false);
   const [withdrawalAmount, setWithdrawalAmount] = useState("");
@@ -245,36 +246,6 @@ export function StorePaymentsClient({
 
   const [triggerPayoutQuote] = useLazyGetPayoutQuoteQuery();
   const [createPayoutRequest] = useCreatePayoutRequestMutation();
-
-  useEffect(() => {
-    if (!storeId) {
-      setIsLoading(false);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      setIsLoading(true);
-      try {
-        const res = await fetch(`/api/merchant/stores/${storeId}`);
-        if (cancelled) return;
-        const storeData = await res.json();
-        if (storeData.success && storeData.store?.store_name) {
-          setStoreName(storeData.store.store_name);
-        } else if (storeData.success && storeData.store?.name) {
-          setStoreName(storeData.store.name);
-        }
-      } catch {
-        if (!cancelled) toast("Failed to load store");
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [storeId, toast]);
 
   useEffect(() => {
     if (walletQueryData) {
@@ -686,17 +657,10 @@ export function StorePaymentsClient({
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex min-h-[40vh] items-center justify-center">
-        <Loader2 size={32} className="animate-spin text-gray-400" />
-      </div>
-    );
-  }
-
   return (
     <>
-    <div className="min-h-screen bg-[#f8fafc]">
+    <div className="flex flex-1 flex-col min-h-0 h-full w-full bg-[#f8fafc] overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-6">
       <div className="bg-white">
         <div className="px-4 sm:px-6 lg:px-8 py-2.5 max-w-7xl mx-auto w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
           <div>
@@ -1455,6 +1419,7 @@ export function StorePaymentsClient({
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
 

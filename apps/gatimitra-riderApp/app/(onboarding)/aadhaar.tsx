@@ -23,11 +23,12 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
+import { useSaveOnboardingStep, useAadhaarRegistrationCheck } from "@/src/hooks/useOnboarding";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import { onboardingStepToRoute } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument, useUpdateRiderStage } from "@/src/hooks/useDocuments";
@@ -67,6 +68,7 @@ const AADHAAR_COPY = {
   backHint: "Back side",
   continue: "Continue",
   invalidAadhaar: "Please enter a valid 12-digit Aadhaar number",
+  alreadyRegistered: "Aadhar Already Registered , Please try with Diff one .",
   invalidName: "Please enter your full name (minimum 3 characters)",
   dobRequired: "Please select your date of birth",
   photoRequired: "Please add both front and back photos of your Aadhaar",
@@ -287,8 +289,16 @@ export default function AadhaarScreen() {
 
   useEffect(() => {
     const next = riderStatus?.nextOnboardingStep;
-    if (!next || next === "aadhaar_name" || next === "method_selection") return;
-    router.replace(onboardingStepToRoute(next as "pan_selfie"));
+    if (
+      !next ||
+      next === "aadhaar_name" ||
+      next === "method_selection" ||
+      next === "payment" ||
+      next === "pan_selfie"
+    ) {
+      return;
+    }
+    router.replace(onboardingStepToRoute(next as "dl_rc"));
   }, [riderStatus?.nextOnboardingStep]);
 
   const [aadhaarNumber, setAadhaarNumber] = useState(data.aadhaarNumber || "");
@@ -306,16 +316,34 @@ export default function AadhaarScreen() {
   );
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const aadhaarDigits = aadhaarNumber.replace(/\D/g, "");
+  const aadhaarValid = aadhaarDigits.length === 12;
+  const aadhaarCheckQuery = useAadhaarRegistrationCheck(aadhaarDigits, data.riderId);
+  const aadhaarAlreadyRegistered = aadhaarCheckQuery.data?.registered === true;
+  const checkingAadhaar =
+    aadhaarValid &&
+    (aadhaarCheckQuery.isFetching || aadhaarCheckQuery.isLoading);
+  const aadhaarVerified =
+    aadhaarValid &&
+    !checkingAadhaar &&
+    aadhaarCheckQuery.isSuccess &&
+    aadhaarCheckQuery.data?.registered === false;
 
   const underAge = useMemo(() => isUnderMinimumAge(dob), [dob]);
   const maskedAadhaar = aadhaarNumber.replace(/\d(?=\d{4})/g, "X");
-  const aadhaarValid = aadhaarNumber.replace(/\D/g, "").length === 12;
   const nameValid = fullName.trim().length >= 3;
   const dobValid = Boolean(dob) && !underAge;
   const photosValid = Boolean(aadhaarFrontUri && aadhaarBackUri);
   const canContinue =
-    aadhaarValid && nameValid && dobValid && photosValid && !submitting && !uploading;
+    aadhaarValid &&
+    !aadhaarAlreadyRegistered &&
+    !checkingAadhaar &&
+    nameValid &&
+    dobValid &&
+    photosValid &&
+    !submitting &&
+    !uploading;
 
   useEffect(() => {
     hydrate();
@@ -372,8 +400,6 @@ export default function AadhaarScreen() {
       if (!hasPermission) return;
     }
 
-    setError(null);
-
     try {
       const result =
         source === "camera"
@@ -398,47 +424,51 @@ export default function AadhaarScreen() {
         }
       }
     } catch {
-      setError(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
+      notifyOnboardingToast(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
     }
   };
 
   const handleContinue = async () => {
     if (!aadhaarValid) {
-      setError(tx("invalidAadhaar"));
+      notifyOnboardingToast(tx("invalidAadhaar"));
+      return;
+    }
+
+    if (aadhaarAlreadyRegistered) {
+      notifyOnboardingToast(tx("alreadyRegistered"));
       return;
     }
 
     if (!nameValid) {
-      setError(tx("invalidName"));
+      notifyOnboardingToast(tx("invalidName"));
       return;
     }
 
     if (!dob) {
-      setError(tx("dobRequired"));
+      notifyOnboardingToast(tx("dobRequired"));
       return;
     }
 
     if (underAge) {
-      setError(tx("underAgeMessage"));
+      notifyOnboardingToast(tx("underAgeMessage"));
       return;
     }
 
     if (!photosValid) {
-      setError(tx("photoRequired"));
+      notifyOnboardingToast(tx("photoRequired"));
       return;
     }
 
     if (!data.riderId) {
-      setError(tx("riderNotFound"));
+      notifyOnboardingToast(tx("riderNotFound"));
       return;
     }
 
     if (!session?.accessToken) {
-      setError(tx("notAuthenticated"));
+      notifyOnboardingToast(tx("notAuthenticated"));
       return;
     }
 
-    setError(null);
     setSubmitting(true);
     setUploading(true);
 
@@ -526,7 +556,7 @@ export default function AadhaarScreen() {
         }
       }
       const message = e instanceof Error ? e.message : tx("uploadError");
-      setError(message);
+      notifyOnboardingToast(message);
       console.error("[Aadhaar] Continue failed:", e);
     } finally {
       setSubmitting(false);
@@ -576,11 +606,23 @@ export default function AadhaarScreen() {
             <View style={styles.formCard}>
               <View style={styles.fieldGroup}>
                 <FieldLabel label={tx("aadhaarLabel")} required />
-                <View style={styles.inputWrap}>
+                <View
+                  style={[
+                    styles.inputWrap,
+                    aadhaarAlreadyRegistered ? styles.inputErrorBorder : null,
+                    aadhaarVerified ? styles.inputSuccessBorder : null,
+                  ]}
+                >
                   <Ionicons
                     name="finger-print-outline"
                     size={20}
-                    color={colors.gray[400]}
+                    color={
+                      aadhaarAlreadyRegistered
+                        ? colors.error[500]
+                        : aadhaarVerified
+                          ? ACCENT_DARK
+                          : colors.gray[400]
+                    }
                     style={styles.inputIcon}
                   />
                   <TextInput
@@ -592,8 +634,18 @@ export default function AadhaarScreen() {
                     maxLength={14}
                     style={styles.inputWithIcon}
                   />
+                  {aadhaarVerified ? (
+                    <Ionicons name="checkmark-circle" size={22} color={ACCENT_DARK} />
+                  ) : null}
                 </View>
-                {aadhaarNumber.length > 0 ? (
+                {checkingAadhaar ? (
+                  <View style={styles.aadhaarCheckRow}>
+                    <ActivityIndicator size="small" color={ACCENT_DARK} />
+                    <Text style={styles.hintText}>Checking Aadhaar…</Text>
+                  </View>
+                ) : aadhaarAlreadyRegistered ? (
+                  <Text style={styles.inlineWarningText}>{tx("alreadyRegistered")}</Text>
+                ) : aadhaarNumber.length > 0 ? (
                   <Text style={styles.hintText}>
                     {tx("masked")}: {maskedAadhaar}
                   </Text>
@@ -722,13 +774,6 @@ export default function AadhaarScreen() {
                   />
                 </View>
               </View>
-
-              {error ? (
-                <View style={styles.errorBanner}>
-                  <Ionicons name="warning-outline" size={18} color={colors.error[600]} />
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
 
               <ContinueButton
                 label={tx("continue")}
@@ -866,9 +911,26 @@ const styles = StyleSheet.create({
     borderColor: colors.error[400],
     backgroundColor: colors.error[50],
   },
+  inputSuccessBorder: {
+    borderColor: ACCENT_DARK,
+    backgroundColor: "#f0fdf4",
+  },
   hintText: {
     fontSize: 12,
     color: colors.gray[500],
+    marginLeft: 2,
+  },
+  aadhaarCheckRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: 2,
+  },
+  inlineWarningText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.error[600],
+    fontWeight: "600",
     marginLeft: 2,
   },
   dobPressable: {

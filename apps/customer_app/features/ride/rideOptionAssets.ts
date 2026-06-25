@@ -1,5 +1,5 @@
 import type { ImageSourcePropType } from "react-native";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
+import { MAPAUTO_IMAGE, MAPBIKE_IMAGE, MAPCAB_IMAGE } from "@/lib/customer-map-assets";
 
 /** List / sheet assets keyed by catalog image_key from backend. */
 const RIDE_IMAGE_BY_KEY: Record<string, ImageSourcePropType> = {
@@ -10,12 +10,12 @@ const RIDE_IMAGE_BY_KEY: Record<string, ImageSourcePropType> = {
   travel: require("../../public/img/travel.png"),
 };
 
-/** Transparent map marker PNGs (no background box). */
+/** Map marker PNGs on ride-booking maps (bike / auto / cab). */
 const MAP_MARKER_IMAGE_BY_KEY: Record<string, ImageSourcePropType> = {
   bike: MAPBIKE_IMAGE,
-  auto: require("../../public/img/map/auto.png"),
-  cab: require("../../public/img/map/cab.png"),
-  cab_premium: require("../../public/img/map/cab_premium.png"),
+  auto: MAPAUTO_IMAGE,
+  cab: MAPCAB_IMAGE,
+  cab_premium: MAPCAB_IMAGE,
   travel: require("../../public/img/map/travel.png"),
 };
 
@@ -39,6 +39,21 @@ export function resolveRideImage(imageKey: string): ImageSourcePropType {
 
 export function resolveNearbyRiderMarkerImage(imageKey: string): ImageSourcePropType {
   return MAP_MARKER_IMAGE_BY_KEY[imageKey] ?? MAP_MARKER_IMAGE_BY_KEY.bike;
+}
+
+/** Map marker for selected ride option (bike / auto / cab / cab_premium). */
+export function resolveSelectedRideMapMarkerImageKey(
+  rideId: string | null | undefined,
+  imageKey?: string | null
+): string {
+  const fromCatalog = imageKey?.trim();
+  if (fromCatalog) return fromCatalog;
+  const id = (rideId ?? "").trim().toLowerCase();
+  if (id === "bike" || id === "bike-lite") return "bike";
+  if (id === "auto") return "auto";
+  if (id === "cab-economy") return "cab";
+  if (id === "cab-premium") return "cab_premium";
+  return "bike";
 }
 
 /** Map icon from rider vehicle type (bike / auto / cab / …). */

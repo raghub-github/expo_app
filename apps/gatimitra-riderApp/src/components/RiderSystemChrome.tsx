@@ -12,9 +12,8 @@ export function RiderSystemChrome() {
     void (async () => {
       try {
         const NavigationBar = await import("expo-navigation-bar");
-        await NavigationBar.setPositionAsync("relative");
+        // setPositionAsync / setBackgroundColorAsync warn on edge-to-edge Android (Expo Go SDK 54+).
         await NavigationBar.setVisibilityAsync("visible");
-        await NavigationBar.setBackgroundColorAsync("#ffffff");
         await NavigationBar.setButtonStyleAsync("dark");
       } catch {
         // Package optional until `npx expo install expo-navigation-bar` is run.

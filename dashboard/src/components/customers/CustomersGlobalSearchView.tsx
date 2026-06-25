@@ -1,7 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
-import { useSearchParams, usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
@@ -14,8 +16,8 @@ import { isStructuredCustomerSearch } from "@/lib/customers/search-kind";
  * - Name-style search with 2+ matches → table list only; Customer ID links to detail.
  */
 export function CustomersGlobalSearchView() {
-  const searchParams = useSearchParams();
-  const pathname = usePathname();
+  const searchParams = useAppSearchParams();
+  const pathname = useAppPathname();
   const router = useRouter();
   const { loading: permissionsLoading } = usePermissions();
   const [search, setSearch] = useState("");
@@ -46,7 +48,7 @@ export function CustomersGlobalSearchView() {
   const trimmed = search.trim();
   const shouldFetch = trimmed.length > 0;
 
-  const { data, isLoading, error, isError } = useCustomersQuery({
+  const { data, isLoading, error, isError, authGateReady } = useCustomersQuery({
     page,
     limit: 20,
     search: trimmed || undefined,
@@ -90,7 +92,8 @@ export function CustomersGlobalSearchView() {
     setPage(newPage);
   };
 
-  const showInitialLoading = shouldFetch && !isError && isLoading && customersSorted.length === 0;
+  const showInitialLoading =
+    shouldFetch && (!authGateReady || (isLoading && customersSorted.length === 0));
 
   if (permissionsLoading) {
     return (
@@ -144,7 +147,7 @@ export function CustomersGlobalSearchView() {
             </div>
           )}
 
-          {trimmed && !isLoading && !isError && customersSorted.length === 0 && (
+          {trimmed && authGateReady && !isLoading && !isError && customersSorted.length === 0 && (
             <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 p-4">
               <div className="flex items-start space-x-3">
                 <AlertCircle className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />

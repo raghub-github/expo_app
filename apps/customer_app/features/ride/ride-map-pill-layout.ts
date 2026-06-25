@@ -2,10 +2,13 @@ import { Dimensions } from "react-native";
 
 export const RIDE_MAP_PILL_WIDTH = 148;
 export const RIDE_MAP_PILL_HEIGHT = 36;
-export const RIDE_MAP_DOT_SIZE = 22;
-export const RIDE_MAP_STEM_HEIGHT = 5;
+/** @deprecated Use RIDE_MAP_PIN_WIDTH — kept for overlap math width. */
+export const RIDE_MAP_DOT_SIZE = 34;
+export const RIDE_MAP_PIN_WIDTH = 34;
+export const RIDE_MAP_PIN_HEIGHT = 42;
+export const RIDE_MAP_STEM_HEIGHT = 6;
 export const RIDE_MAP_STACK_HEIGHT =
-  RIDE_MAP_PILL_HEIGHT + RIDE_MAP_STEM_HEIGHT + RIDE_MAP_DOT_SIZE;
+  RIDE_MAP_PILL_HEIGHT + RIDE_MAP_STEM_HEIGHT + RIDE_MAP_PIN_HEIGHT;
 
 const PILL_GAP = 10;
 
@@ -22,22 +25,22 @@ export type MarkerOverlayLayout = {
 };
 
 function layoutMarkerOverlayAtPin(pin: ScreenPoint, bias: InwardBias): MarkerOverlayLayout {
-  const dotLeft = pin.x - RIDE_MAP_DOT_SIZE / 2;
-  const dotTop = pin.y - RIDE_MAP_DOT_SIZE / 2;
+  const dotLeft = pin.x - RIDE_MAP_PIN_WIDTH / 2;
+  const dotTop = pin.y - RIDE_MAP_PIN_HEIGHT;
   let pillLeft = pin.x - RIDE_MAP_PILL_WIDTH / 2;
   if (bias === "left") pillLeft += 10;
   if (bias === "right") pillLeft -= 10;
   const pillTop =
-    pin.y - RIDE_MAP_DOT_SIZE / 2 - RIDE_MAP_STEM_HEIGHT - RIDE_MAP_PILL_HEIGHT;
+    pin.y - RIDE_MAP_PIN_HEIGHT - RIDE_MAP_STEM_HEIGHT - RIDE_MAP_PILL_HEIGHT;
 
   return { pillLeft, pillTop, dotLeft, dotTop };
 }
 
 function stacksOverlap(a: MarkerOverlayLayout, b: MarkerOverlayLayout): boolean {
-  const aRight = Math.max(a.pillLeft + RIDE_MAP_PILL_WIDTH, a.dotLeft + RIDE_MAP_DOT_SIZE);
-  const aBottom = Math.max(a.pillTop + RIDE_MAP_STACK_HEIGHT, a.dotTop + RIDE_MAP_DOT_SIZE);
-  const bRight = Math.max(b.pillLeft + RIDE_MAP_PILL_WIDTH, b.dotLeft + RIDE_MAP_DOT_SIZE);
-  const bBottom = Math.max(b.pillTop + RIDE_MAP_STACK_HEIGHT, b.dotTop + RIDE_MAP_DOT_SIZE);
+  const aRight = Math.max(a.pillLeft + RIDE_MAP_PILL_WIDTH, a.dotLeft + RIDE_MAP_PIN_WIDTH);
+  const aBottom = Math.max(a.pillTop + RIDE_MAP_STACK_HEIGHT, a.dotTop + RIDE_MAP_PIN_HEIGHT);
+  const bRight = Math.max(b.pillLeft + RIDE_MAP_PILL_WIDTH, b.dotLeft + RIDE_MAP_PIN_WIDTH);
+  const bBottom = Math.max(b.pillTop + RIDE_MAP_STACK_HEIGHT, b.dotTop + RIDE_MAP_PIN_HEIGHT);
 
   const aLeft = Math.min(a.pillLeft, a.dotLeft);
   const aTop = Math.min(a.pillTop, a.dotTop);
@@ -102,69 +105,92 @@ export function resolveMarkerOverlays(
 }
 
 /** Typical bottom sheet height ratio on ride-book (used before onLayout). */
-export const RIDE_BOOK_SHEET_HEIGHT_RATIO = 0.46;
+export const RIDE_BOOK_SHEET_HEIGHT_RATIO = 0.48;
 
-/** Edge padding so the full route stays inside the visible map (never under sheet / FABs). */
+/** Edge padding inside the map viewport (sheet sits below the map, not over it). */
 export function rideMapFitPadding(options?: {
   topInset?: number;
-  /** Bottom sheet height — actual or estimated (px). */
-  bottomSheetHeightPx?: number;
 }): {
   top: number;
   right: number;
   bottom: number;
   left: number;
 } {
-  const { width, height: screenHeight } = Dimensions.get("window");
+  const { width } = Dimensions.get("window");
   const topInset = options?.topInset ?? 0;
-  const sheetHeight =
-    options?.bottomSheetHeightPx ??
-    Math.round(screenHeight * RIDE_BOOK_SHEET_HEIGHT_RATIO);
-  // Sheet uses marginTop:-18 over map; reserve overlap + FAB column clearance
-  const sheetOverlapPx = Math.max(32, Math.round(sheetHeight * 0.08));
-
-  const side = Math.ceil(Math.max(56, width * 0.12));
-  const top = Math.ceil(topInset + RIDE_MAP_STACK_HEIGHT + 52);
-  // FAB column (~72) + pill stack + sheet overlap + breathing room
-  const bottom = Math.ceil(RIDE_MAP_STACK_HEIGHT + 88 + sheetOverlapPx + 36);
+  const side = Math.ceil(Math.max(40, width * 0.06));
+  const top = Math.ceil(topInset + 72);
+  const bottom = 52;
 
   return { top, right: side, bottom, left: side };
 }
 
-/** Lower max zoom on longer trips so the entire route fits like Rapido. */
-export function rideRouteFitMaxZoom(tripKm: number | null | undefined): number {
-  if (tripKm == null || !Number.isFinite(tripKm) || tripKm <= 0) return 15;
-  if (tripKm > 35) return 10;
-  if (tripKm > 22) return 11;
-  if (tripKm > 14) return 12;
-  if (tripKm > 8) return 13;
-  if (tripKm > 4) return 14;
+/** Max zoom cap for fitBounds — lets Mapbox pick natural zoom; only prevents over-zoom on short trips. */
+export function rideMapFitMaxZoom(_tripKm?: number | null): number {
   return 15;
 }
 
-/** Bounding-box corner points — stable fit for long winding polylines. */
+/** @deprecated Use rideMapFitMaxZoom — low values forced fitBounds to zoom out too far. */
+export function rideRouteFitMaxZoom(tripKm: number | null | undefined): number {
+  return rideMapFitMaxZoom(tripKm);
+}
+
+/** Pickup/drop bounds with a little breathing room at the edges. */
+export function endpointsBoundsFitPoints(
+  endpoints: { latitude: number; longitude: number }[]
+): { latitude: number; longitude: number }[] {
+  if (endpoints.length < 2) return endpoints;
+  let minLat = endpoints[0]!.latitude;
+  let maxLat = endpoints[0]!.latitude;
+  let minLng = endpoints[0]!.longitude;
+  let maxLng = endpoints[0]!.longitude;
+  for (const p of endpoints) {
+    minLat = Math.min(minLat, p.latitude);
+    maxLat = Math.max(maxLat, p.latitude);
+    minLng = Math.min(minLng, p.longitude);
+    maxLng = Math.max(maxLng, p.longitude);
+  }
+  const latPad = Math.max((maxLat - minLat) * 0.14, 0.008);
+  const lngPad = Math.max((maxLng - minLng) * 0.14, 0.008);
+  return [
+    ...endpoints,
+    { latitude: minLat - latPad, longitude: minLng - lngPad },
+    { latitude: minLat - latPad, longitude: maxLng + lngPad },
+    { latitude: maxLat + latPad, longitude: minLng - lngPad },
+    { latitude: maxLat + latPad, longitude: maxLng + lngPad },
+  ];
+}
+
+/** Bounding-box fit points — route polyline + endpoints with edge breathing room. */
 export function routeBoundsFitPoints(
   route: { latitude: number; longitude: number }[],
   endpoints: { latitude: number; longitude: number }[]
 ): { latitude: number; longitude: number }[] {
   const points = [...endpoints];
-  if (route.length >= 2) {
-    let minLat = route[0]!.latitude;
-    let maxLat = route[0]!.latitude;
-    let minLng = route[0]!.longitude;
-    let maxLng = route[0]!.longitude;
-    for (const c of route) {
-      minLat = Math.min(minLat, c.latitude);
-      maxLat = Math.max(maxLat, c.latitude);
-      minLng = Math.min(minLng, c.longitude);
-      maxLng = Math.max(maxLng, c.longitude);
-    }
-    points.push(
-      { latitude: minLat, longitude: minLng },
-      { latitude: minLat, longitude: maxLng },
-      { latitude: maxLat, longitude: minLng },
-      { latitude: maxLat, longitude: maxLng }
-    );
-  }
+  let minLat = endpoints[0]?.latitude ?? route[0]?.latitude ?? 0;
+  let maxLat = minLat;
+  let minLng = endpoints[0]?.longitude ?? route[0]?.longitude ?? 0;
+  let maxLng = minLng;
+
+  const scan = (p: { latitude: number; longitude: number }) => {
+    minLat = Math.min(minLat, p.latitude);
+    maxLat = Math.max(maxLat, p.latitude);
+    minLng = Math.min(minLng, p.longitude);
+    maxLng = Math.max(maxLng, p.longitude);
+  };
+
+  endpoints.forEach(scan);
+  route.forEach(scan);
+
+  const latPad = Math.max((maxLat - minLat) * 0.14, 0.008);
+  const lngPad = Math.max((maxLng - minLng) * 0.14, 0.008);
+
+  points.push(
+    { latitude: minLat - latPad, longitude: minLng - lngPad },
+    { latitude: minLat - latPad, longitude: maxLng + lngPad },
+    { latitude: maxLat + latPad, longitude: minLng - lngPad },
+    { latitude: maxLat + latPad, longitude: maxLng + lngPad }
+  );
+
   return points;
 }

@@ -27,21 +27,11 @@ export async function loadRiderGpsForTimeline(
   try {
     const sqlClient = getSql();
     const [position] = (await sqlClient`
-      WITH latest_ping AS (
-        SELECT DISTINCT ON (rle.user_id)
-          (substring(rle.user_id from 'usr_(\\d+)'))::int AS rider_id,
-          rle.lat,
-          rle.lng
-        FROM rider_location_events rle
-        WHERE rle.user_id = ${`usr_${riderId}`}
-        ORDER BY rle.user_id, rle.ts_ms DESC
-      )
       SELECT
-        COALESCE(rll.latitude::float, lp.lat, r.lat::float) AS lat,
-        COALESCE(rll.longitude::float, lp.lng, r.lon::float) AS lng
+        COALESCE(rcl.lat, r.lat::float) AS lat,
+        COALESCE(rcl.lng, r.lon::float) AS lng
       FROM riders r
-      LEFT JOIN rider_live_locations rll ON rll.rider_id = r.id
-      LEFT JOIN latest_ping lp ON lp.rider_id = r.id
+      LEFT JOIN rider_current_locations rcl ON rcl.rider_id = r.id
       WHERE r.id = ${riderId}
       LIMIT 1
     `) as Array<{ lat: number | null; lng: number | null }>;

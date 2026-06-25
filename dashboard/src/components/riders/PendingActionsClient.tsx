@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+
 import { useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { invalidateRiderSummary } from "@/lib/cache-invalidation";
@@ -32,7 +33,7 @@ interface RequestRow {
 
 export function PendingActionsClient() {
   const queryClient = useQueryClient();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const riderIdParam = searchParams.get("search") || searchParams.get("riderId") || "";
 
   const [status, setStatus] = useState(searchParams.get("status") || "pending");

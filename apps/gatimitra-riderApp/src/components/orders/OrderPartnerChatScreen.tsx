@@ -28,7 +28,11 @@ import {
 } from "@/src/services/orderPartnerChat.service";
 import { partnerChatUnreadQueryKey } from "@/src/hooks/usePartnerChatUnread";
 import { useKeyboardBottomInset } from "@/src/hooks/useKeyboardBottomInset";
+import { useActiveOrders } from "@/src/hooks/useOrders";
+import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import { extractApiErrorMessage } from "@/src/services/http";
+import { parseChatSharedLocation } from "@/src/lib/parse-chat-shared-location";
+import { CustomerSharedLocationChatBubble } from "@/src/components/orders/CustomerSharedLocationChatBubble";
 import { colors } from "@/src/theme";
 
 const MINT = colors.primary[500];
@@ -50,6 +54,55 @@ type DropQuickReply = {
   defaultMessage: string;
   icon: QuickReplyIcon;
 };
+
+type PickupQuickReply = {
+  id: string;
+  messageKey: string;
+  defaultMessage: string;
+};
+
+const PICKUP_QUICK_REPLIES: PickupQuickReply[] = [
+  {
+    id: "onTheWay",
+    messageKey: "orders.partnerChat.quickReplies.onTheWay",
+    defaultMessage: "🚗 I'm on the way",
+  },
+  {
+    id: "reachedPickup",
+    messageKey: "orders.partnerChat.quickReplies.reachedPickup",
+    defaultMessage: "📍 I've reached the pickup location",
+  },
+  {
+    id: "answerCall",
+    messageKey: "orders.partnerChat.quickReplies.answerCallPickup",
+    defaultMessage: "📞 Please answer my call",
+  },
+  {
+    id: "arriveSoon",
+    messageKey: "orders.partnerChat.quickReplies.arriveSoon",
+    defaultMessage: "⏳ I'll arrive in a few minutes",
+  },
+  {
+    id: "stuckInTraffic",
+    messageKey: "orders.partnerChat.quickReplies.stuckInTraffic",
+    defaultMessage: "🚦 Stuck in traffic, please wait",
+  },
+  {
+    id: "shareLocation",
+    messageKey: "orders.partnerChat.quickReplies.shareLocation",
+    defaultMessage: "📍 Please share your exact location",
+  },
+  {
+    id: "waitingAtPickup",
+    messageKey: "orders.partnerChat.quickReplies.waitingAtPickup",
+    defaultMessage: "👋 I'm waiting at the pickup point",
+  },
+  {
+    id: "cantFindLocation",
+    messageKey: "orders.partnerChat.quickReplies.cantFindLocation",
+    defaultMessage: "🔍 I can't find your location",
+  },
+];
 
 const DROP_QUICK_REPLIES: DropQuickReply[] = [
   {
@@ -108,6 +161,17 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+/** Person-ride pickup quick replies stay until rider marks reach pickup. */
+function isPersonRideBeforeReachPickup(order: RiderOrderSummary): boolean {
+  if (order.category !== "ride") return false;
+  if (order.atCustomer || order.rideStarted) return false;
+  return !(
+    order.atPickup ||
+    order.pickupOtpVerified ||
+    order.pickupWaitStartedAt
+  );
+}
+
 export function OrderPartnerChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -121,6 +185,7 @@ export function OrderPartnerChatScreen() {
     orderLabel?: string | string[];
     customerPhone?: string | string[];
     atDrop?: string | string[];
+    atPickup?: string | string[];
   }>();
 
   const orderId = paramOne(params.orderId);
@@ -128,10 +193,21 @@ export function OrderPartnerChatScreen() {
   const orderLabel = paramOne(params.orderLabel) || t("orders.partnerChat.orderFallback", "Live order");
   const customerPhone = paramOne(params.customerPhone);
   const atDrop = paramOne(params.atDrop) === "1" || paramOne(params.atDrop) === "true";
+  const atPickup = paramOne(params.atPickup) === "1" || paramOne(params.atPickup) === "true";
 
   const [draft, setDraft] = useState("");
-  const [quickReplyDismissed, setQuickReplyDismissed] = useState(false);
+  const [dropQuickReplyDismissed, setDropQuickReplyDismissed] = useState(false);
   const keyboardInset = useKeyboardBottomInset();
+
+  const { data: activeOrders = [] } = useActiveOrders();
+  const activeOrder = useMemo(
+    () => activeOrders.find((o) => o.id === orderId),
+    [activeOrders, orderId]
+  );
+
+  const personRideBeforeReach = activeOrder
+    ? isPersonRideBeforeReachPickup(activeOrder)
+    : atPickup;
 
   const queryKey = useMemo(() => ["order-partner-chat", orderId] as const, [orderId]);
 
@@ -146,7 +222,9 @@ export function OrderPartnerChatScreen() {
 
   const chatClosed = data?.chatClosed ?? false;
   const messages = data?.messages ?? [];
-  const showDropQuickReplies = atDrop && !chatClosed && !quickReplyDismissed;
+  const showPickupQuickReplies = personRideBeforeReach && !chatClosed;
+  const showDropQuickReplies = atDrop && !chatClosed && !dropQuickReplyDismissed;
+  const showQuickReplies = showPickupQuickReplies || showDropQuickReplies;
 
   useEffect(() => {
     if (!orderId || !data) return;
@@ -179,15 +257,15 @@ export function OrderPartnerChatScreen() {
   });
 
   useEffect(() => {
-    if (!atDrop || quickReplyDismissed) return;
+    if (!showDropQuickReplies || dropQuickReplyDismissed) return;
     const quickTexts = DROP_QUICK_REPLIES.map((item) =>
       t(item.messageKey, item.defaultMessage).trim()
     );
     const alreadySent = messages.some(
       (m) => m.isMine && quickTexts.includes(m.body.trim())
     );
-    if (alreadySent) setQuickReplyDismissed(true);
-  }, [atDrop, quickReplyDismissed, messages, t]);
+    if (alreadySent) setDropQuickReplyDismissed(true);
+  }, [showDropQuickReplies, dropQuickReplyDismissed, messages, t]);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -229,9 +307,9 @@ export function OrderPartnerChatScreen() {
   }, [draft, chatClosed, sendMutation]);
 
   const handleQuickSend = useCallback(
-    (text: string) => {
+    (text: string, dismissDropReplies = false) => {
       if (chatClosed || sendMutation.isPending) return;
-      setQuickReplyDismissed(true);
+      if (dismissDropReplies) setDropQuickReplyDismissed(true);
       sendMutation.mutate(text);
     },
     [chatClosed, sendMutation]
@@ -245,6 +323,22 @@ export function OrderPartnerChatScreen() {
         </View>
       );
     }
+
+    const sharedLocation = parseChatSharedLocation(m.body);
+    if (sharedLocation) {
+      return (
+        <View
+          key={m.id}
+          style={m.isMine ? styles.mineLocationWrap : styles.theirBubbleWrap}
+        >
+          <CustomerSharedLocationChatBubble
+            location={sharedLocation}
+            timeLabel={formatTime(m.createdAt)}
+          />
+        </View>
+      );
+    }
+
     if (m.isMine) {
       return (
         <View key={m.id} style={styles.mineBubbleWrap}>
@@ -365,7 +459,32 @@ export function OrderPartnerChatScreen() {
           </View>
         ) : (
           <>
-            {showDropQuickReplies ? (
+            {showPickupQuickReplies ? (
+              <ScrollView
+                style={styles.quickReplyList}
+                contentContainerStyle={styles.pickupQuickReplyContent}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                {PICKUP_QUICK_REPLIES.map((item) => {
+                  const label = t(item.messageKey, item.defaultMessage);
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={styles.quickReplyRowItem}
+                      onPress={() => handleQuickSend(label)}
+                      disabled={sendMutation.isPending}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.quickReplyText} numberOfLines={2}>
+                        {label}
+                      </Text>
+                      <Ionicons name="chevron-forward" size={16} color="#C4C4C4" />
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            ) : showDropQuickReplies ? (
               <View style={styles.quickReplyList}>
                 {DROP_QUICK_REPLIES.map((item) => {
                   const label = t(item.messageKey, item.defaultMessage);
@@ -373,7 +492,7 @@ export function OrderPartnerChatScreen() {
                     <TouchableOpacity
                       key={item.id}
                       style={styles.quickReplyRowItem}
-                      onPress={() => handleQuickSend(label)}
+                      onPress={() => handleQuickSend(label, true)}
                       disabled={sendMutation.isPending}
                       activeOpacity={0.85}
                     >
@@ -393,7 +512,7 @@ export function OrderPartnerChatScreen() {
               style={[
                 styles.composer,
                 { paddingBottom: composerBottomPad },
-                !showDropQuickReplies && styles.composerBorderTop,
+                !showQuickReplies && styles.composerBorderTop,
               ]}
             >
               <View style={styles.inputWrap}>
@@ -485,6 +604,7 @@ const styles = StyleSheet.create({
     maxWidth: "88%",
   },
   mineBubbleWrap: { alignItems: "flex-end", marginBottom: 10 },
+  mineLocationWrap: { alignItems: "flex-end", marginBottom: 10, maxWidth: "100%" },
   mineBubble: {
     maxWidth: "82%",
     backgroundColor: MINT,
@@ -514,6 +634,11 @@ const styles = StyleSheet.create({
     gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
+    maxHeight: 220,
+  },
+  pickupQuickReplyContent: {
+    gap: 6,
+    paddingBottom: 2,
   },
   quickReplyRowItem: {
     flexDirection: "row",

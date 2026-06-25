@@ -63,6 +63,10 @@ export type OnboardingData = {
       textValue?: string;
     }
   >;
+  /** Optional onboarding docs the rider chose to skip. */
+  skippedOnboardingDocs?: string[];
+  /** Vehicle code for which the rider tapped Continue on the final doc step (allows payment). */
+  vehicleOnboardingSubmittedFor?: string;
   
   // Location data
   lat?: number;

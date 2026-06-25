@@ -190,8 +190,8 @@ function resolvePenaltyDue(input: {
         : walletPenaltiesSum;
   }
 
-  if (penaltyDue <= 0 && totalBalance < 0 && splitSubscriptionNegative <= 0) {
-    penaltyDue = round2(-totalBalance);
+  if (penaltyDue <= 0 && totalBalance < 0 && splitSubscriptionNegative <= 0 && activePenaltyTotal <= 0) {
+    penaltyDue = 0;
   }
 
   if (penaltyDue <= 0 && totalBalance < 0 && activePenaltyTotal > 0) {
@@ -332,10 +332,8 @@ export async function getRiderAccountRestrictions(
     !blockedStatus &&
     !accountRestricted &&
     totalBalance < 0 &&
-    (payablePenaltyDue > 0 ||
-      hasServicePenaltyBlocks ||
-      split.penaltyNegative > 0 ||
-      (activePenaltyTotal > 0 && totalBalance < 0));
+    split.penaltyNegative > 0 &&
+    (payablePenaltyDue > 0 || hasServicePenaltyBlocks);
 
   return {
     accountRestricted,
@@ -434,6 +432,24 @@ export async function syncRiderDutyWithRestrictions(riderId: number): Promise<{
       : row?.timestamp
         ? new Date(String(row.timestamp)).toISOString()
         : new Date().toISOString();
+
+  const { isRiderSubscriptionDispatchBlocked, forceRiderOffDutyForSubscriptionPenalty } =
+    await import("./rider-subscription-wallet.js");
+  const subscriptionDutyStopped = await isRiderSubscriptionDispatchBlocked(riderId);
+
+  if (subscriptionDutyStopped) {
+    if (row?.status === "ON") {
+      await forceRiderOffDutyForSubscriptionPenalty(riderId);
+    }
+    return {
+      isOnDuty: false,
+      allowedServiceTypes: [],
+      blockedServiceTypes,
+      accountRestricted: restrictions.accountRestricted,
+      allServicesBlacklisted: restrictions.allServicesBlacklisted,
+      lastUpdated: new Date().toISOString(),
+    };
+  }
 
   if (row?.status !== "ON") {
     return {

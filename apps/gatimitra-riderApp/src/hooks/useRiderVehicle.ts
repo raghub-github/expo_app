@@ -21,14 +21,28 @@ export type RiderVehicleDto = {
   verified: boolean;
   isCommercial: boolean;
   serviceTypes: string[];
+  vehicleCategory: string | null;
   seatingCapacity: number | null;
   acType: string | null;
+};
+
+export type RiderVehicleOnboardingPrefill = {
+  registrationNumber: string | null;
+  vehicleChoice: string | null;
+  vehicleCategoryCode: string | null;
+  resolvedVehicleType: string | null;
+  vehicleTypeLabel: string | null;
+  suggestedAcType: "AC" | "Non-AC" | null;
+  suggestedIsCommercial: boolean | null;
 };
 
 export type RiderVehicleStatusResponse = {
   hasVehicle: boolean;
   isComplete: boolean;
   vehicle: RiderVehicleDto | null;
+  onboardingVehicleChoice?: string | null;
+  onboardingVehicleCategoryCode?: string | null;
+  onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
 };
 
 export type UpsertRiderVehiclePayload = {
@@ -45,6 +59,8 @@ export type UpsertRiderVehiclePayload = {
   isCommercial: boolean;
   seatingCapacity?: number | null;
   acType?: string | null;
+  vehicleCategoryCode?: string | null;
+  onboardingVehicleChoice?: string | null;
 };
 
 export const riderVehicleQueryKey = ["rider", "me", "vehicle"] as const;

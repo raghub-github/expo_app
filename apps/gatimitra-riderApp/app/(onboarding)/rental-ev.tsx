@@ -36,18 +36,17 @@ import {
   onboardingFormStyles as form,
 } from "@/src/components/onboarding/OnboardingFormUi";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { onboardingStepToRoute, isVehicleOnboardingComplete, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import {
   docUploadToStorePatch,
   findDocumentType,
   getDocUploadState,
+  isDocStepSatisfied,
   resolveDocIcon,
-  resolveVehicleRequiredDocs,
+  resolveVehicleOnboardingDocs,
 } from "@/src/lib/onboarding-document-types";
-import {
-  findVehicleType,
-  FALLBACK_ONBOARDING_VEHICLE_TYPES,
-} from "@/src/lib/onboarding-vehicle-types";
+import { findVehicleType } from "@/src/lib/onboarding-vehicle-types";
 import { colors } from "@/src/theme";
 
 const ACCENT = "#39d353";
@@ -154,8 +153,8 @@ export default function RentalEvScreen() {
   const saveDocument = useSaveDocument();
   const { data: riderStatus } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
-  const { data: vehicleTypes = FALLBACK_ONBOARDING_VEHICLE_TYPES } = useOnboardingVehicleTypes();
-  const { data: documentCatalog = [] } = useOnboardingDocumentTypes("rental_ev");
+  const { data: vehicleTypes = [] } = useOnboardingVehicleTypes();
+  const { data: documentCatalog = [] } = useOnboardingDocumentTypes();
 
   const selectedVehicleType = useMemo(
     () => findVehicleType(vehicleTypes, data.vehicleChoice),
@@ -163,7 +162,7 @@ export default function RentalEvScreen() {
   );
 
   const requiredDocs = useMemo(
-    () => resolveVehicleRequiredDocs(selectedVehicleType, documentCatalog, "rental_ev"),
+    () => resolveVehicleOnboardingDocs(selectedVehicleType, documentCatalog),
     [selectedVehicleType, documentCatalog]
   );
 
@@ -182,8 +181,6 @@ export default function RentalEvScreen() {
   );
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   const selectedDocDef = useMemo(
     () => findDocumentType(documentCatalog, selectedDocCode),
     [documentCatalog, selectedDocCode]
@@ -219,11 +216,20 @@ export default function RentalEvScreen() {
     }
     if (data.vehicleOnboardingFlow === "payment" || data.vehicleOnboardingFlow === "dl_rc") {
       router.replace("/(onboarding)/dl-rc");
+      return;
+    }
+    const incomplete = requiredDocs.filter(
+      (doc) => !isDocStepSatisfied(data, doc, doc.optional)
+    );
+    if (incomplete.length > 0) {
+      router.replace("/(onboarding)/dl-rc");
     }
   }, [
     riderStatus?.nextOnboardingStep,
     riderStatus?.completedOnboardingSteps,
     data.vehicleOnboardingFlow,
+    data,
+    requiredDocs,
   ]);
 
   useEffect(() => {
@@ -298,7 +304,7 @@ export default function RentalEvScreen() {
         return result.assets[0].uri;
       }
     } catch {
-      setError(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
+      notifyOnboardingToast(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
     }
     return null;
   };
@@ -310,7 +316,6 @@ export default function RentalEvScreen() {
         onPress: () => {
           void pickPhoto("camera").then((uri) => {
             if (!uri) return;
-            setError(null);
             setDocumentUri(uri);
           });
         },
@@ -320,7 +325,6 @@ export default function RentalEvScreen() {
         onPress: () => {
           void pickPhoto("library").then((uri) => {
             if (!uri) return;
-            setError(null);
             setDocumentUri(uri);
           });
         },
@@ -334,32 +338,30 @@ export default function RentalEvScreen() {
       setSelectedDocCode(code);
       setDocumentUri(null);
     }
-    setError(null);
   };
 
   const handleContinue = async () => {
     if (!selectedDocCode || !selectedDocDef) {
-      setError(tx("docTypeRequired"));
+      notifyOnboardingToast(tx("docTypeRequired"));
       return;
     }
     if (!documentUri) {
-      setError(tx("photoRequired"));
+      notifyOnboardingToast(tx("photoRequired"));
       return;
     }
     if (!speedValid) {
-      setError(tx("speedRequired"));
+      notifyOnboardingToast(tx("speedRequired"));
       return;
     }
     if (!data.riderId) {
-      setError(tx("riderNotFound"));
+      notifyOnboardingToast(tx("riderNotFound"));
       return;
     }
     if (!session?.accessToken) {
-      setError(tx("notAuthenticated"));
+      notifyOnboardingToast(tx("notAuthenticated"));
       return;
     }
 
-    setError(null);
     setSubmitting(true);
     setUploading(true);
     const uploadedKeys: string[] = [];
@@ -431,7 +433,7 @@ export default function RentalEvScreen() {
           console.error(`[Rollback] Failed to delete R2 file ${key}:`, rollbackError);
         }
       }
-      setError(e instanceof Error ? e.message : tx("uploadError"));
+      notifyOnboardingToast(e instanceof Error ? e.message : tx("uploadError"));
     } finally {
       setSubmitting(false);
       setUploading(false);
@@ -555,8 +557,6 @@ export default function RentalEvScreen() {
                   ) : null}
                 </>
               ) : null}
-
-              {error ? <ErrorBanner message={error} /> : null}
 
               <ContinueButton
                 label={uploading ? tx("uploading") : tx("continue")}

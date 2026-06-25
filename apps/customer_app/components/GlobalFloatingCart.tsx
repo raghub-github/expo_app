@@ -1,6 +1,7 @@
 /**
  * Food floating cart + multi-order tracking dock.
  * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
+ * Hidden on main Home tab (/(tabs)/index) — use Food tab or merchant page for cart access.
  * Hidden on /orders/[id] (order detail — no floating cart or track pill; tracking is on-screen).
  * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
  */
@@ -23,6 +24,7 @@ import {
 } from "react-native";
 import { useRouter, useSegments, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
@@ -43,6 +45,7 @@ import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
 import { customerTabBarOffset } from "@/components/CustomerTabBar";
+import { resolveFloatingCartBottomOffset } from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
@@ -59,6 +62,14 @@ const SHEET_BRAND_RED = GatiMitraColors.closedRed;
 function useIsOnMainTabs(): boolean {
   const segments = useSegments();
   return segments[0] === "(tabs)";
+}
+
+/** Home tab only — floating cart is hidden here; food/browse keeps the cart bar. */
+function useIsOnHomeTab(): boolean {
+  const segments = useSegments();
+  if (segments[0] !== "(tabs)") return false;
+  const tab = segments[1];
+  return tab === "index" || tab == null;
 }
 
 /** Show on: /home, /home/merchant/*, /home/category/*, /search. */
@@ -94,6 +105,8 @@ function useHideFloatingOrderTrackingPill(): boolean {
   if (p === "/checkout" || p.startsWith("/checkout/")) return true;
 
   if (p.startsWith("/orders/payment-")) return true;
+
+  if (p.startsWith("/home/service/ride-searching")) return true;
 
   if (segments[0] === "home" && segments[1] === "merchant" && segments.length >= 3) {
     return true;
@@ -196,7 +209,8 @@ function FloatingCartPill({
 }
 
 export function GlobalFloatingCart() {
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
+  const { bottom: rawBottom } = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();
@@ -204,6 +218,7 @@ export function GlobalFloatingCart() {
   const segments = useSegments();
   const isFoodServicePage = useIsFoodServicePage();
   const isOnMainTabs = useIsOnMainTabs();
+  const isOnHomeTab = useIsOnHomeTab();
   const isOnOrdersArea = useIsOnOrdersArea();
   const hideFloatingOrderTrackingPill = useHideFloatingOrderTrackingPill();
   const hideFloatingCart = useHideFloatingCart();
@@ -382,16 +397,18 @@ export function GlobalFloatingCart() {
   };
 
   const visible =
-    (hasCart && !hideFloatingCart && (isFoodServicePage || isOnOrdersArea || isOnMainTabs)) ||
+    (hasCart &&
+      !hideFloatingCart &&
+      !isOnHomeTab &&
+      (isFoodServicePage || isOnOrdersArea || isOnMainTabs)) ||
     (showActiveOrderTracking && (isFoodServicePage || isOnOrdersArea || isOnMainTabs));
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
-  /** Slight lift so pagination dots sit clearly above the tab bar. */
-  const FLOATING_GAP_ABOVE_TAB = 10;
-  const bottomOffset = inTabs
-    ? customerTabBarOffset(insets.bottom) + FLOATING_GAP_ABOVE_TAB
-    : insets.bottom + FLOATING_GAP_ABOVE_TAB;
+  const bottomOffset = resolveFloatingCartBottomOffset(rawBottom, {
+    aboveTabBar: inTabs,
+    tabBarOffset: inTabs ? customerTabBarOffset(rawBottom) : undefined,
+  });
 
   const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
   const compact = isCartCompact;
@@ -694,7 +711,7 @@ function AllCartsSheetModal({
   closedCta?: { title: string; sub: string };
   cartOpenSoon?: boolean;
 }) {
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const [thumbLoadFailed, setThumbLoadFailed] = useState(false);
   const [rowRemoveExpanded, setRowRemoveExpanded] = useState(false);
 

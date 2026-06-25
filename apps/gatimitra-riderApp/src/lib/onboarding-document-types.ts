@@ -89,17 +89,60 @@ export function findDocumentType(
 
 export function resolveVehicleRequiredDocs(
   vehicleType: OnboardingVehicleType | undefined,
-  catalog: OnboardingDocumentTypeDef[],
-  captureGroup: OnboardingCaptureGroup
+  catalog: OnboardingDocumentTypeDef[]
 ): OnboardingDocumentTypeDef[] {
   const required = vehicleType?.documentRequirements?.required_docs ?? [];
   const activeByCode = new Map(
-    catalog.filter((d) => d.isActive && d.captureGroup === captureGroup).map((d) => [d.code, d])
+    catalog.filter((d) => d.isActive).map((d) => [d.code, d])
   );
   return required
     .map((code) => activeByCode.get(code))
     .filter((d): d is OnboardingDocumentTypeDef => Boolean(d))
     .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+}
+
+export type VehicleOnboardingDocStep = OnboardingDocumentTypeDef & {
+  optional: boolean;
+};
+
+export function resolveVehicleOnboardingDocs(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[]
+): VehicleOnboardingDocStep[] {
+  const required = vehicleType?.documentRequirements?.required_docs ?? [];
+  const optional = vehicleType?.documentRequirements?.optional_docs ?? [];
+  const optionalSet = new Set(optional);
+  const codes = [...required, ...optional.filter((code) => !required.includes(code))];
+  const activeByCode = new Map(
+    catalog.filter((d) => d.isActive).map((d) => [d.code, d])
+  );
+  return codes
+    .map((code) => {
+      const def = activeByCode.get(code);
+      if (!def) return null;
+      return { ...def, optional: optionalSet.has(code) };
+    })
+    .filter((d): d is VehicleOnboardingDocStep => Boolean(d))
+    .sort((a, b) => {
+      if (a.optional !== b.optional) return a.optional ? 1 : -1;
+      return a.sortOrder - b.sortOrder || a.id - b.id;
+    });
+}
+
+export function isDocSkipped(
+  data: import("@/src/stores/onboardingStore").OnboardingData,
+  code: string
+): boolean {
+  return data.skippedOnboardingDocs?.includes(code) ?? false;
+}
+
+export function isDocStepSatisfied(
+  data: import("@/src/stores/onboardingStore").OnboardingData,
+  doc: OnboardingDocumentTypeDef,
+  optional: boolean
+): boolean {
+  if (optional && isDocSkipped(data, doc.code)) return true;
+  return isDocStepComplete(data, doc);
 }
 
 export function resolveDocIcon(icon?: string | null): string {
@@ -224,12 +267,40 @@ export function docUploadToStorePatch(
 
 export function findFirstIncompleteDocStep(
   data: import("@/src/stores/onboardingStore").OnboardingData,
-  docs: OnboardingDocumentTypeDef[]
+  docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>
 ): string | null {
   for (const doc of docs) {
-    if (!isDocStepComplete(data, doc)) return doc.code;
+    if (!isDocStepSatisfied(data, doc, Boolean(doc.optional))) return doc.code;
   }
-  return docs[0]?.code ?? null;
+  return null;
+}
+
+/** Resume doc wizard: first incomplete step, or the last step when all docs are already satisfied. */
+export function resolveVehicleWizardDocStep(
+  data: import("@/src/stores/onboardingStore").OnboardingData,
+  docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>
+): string | null {
+  if (!docs.length) return null;
+  const incomplete = findFirstIncompleteDocStep(data, docs);
+  if (incomplete) return incomplete;
+  return docs[docs.length - 1]!.code;
+}
+
+export function filterSkippedDocsForVehicle(
+  docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>,
+  skipped?: string[]
+): string[] | undefined {
+  if (!skipped?.length) return undefined;
+  const optionalCodes = new Set(docs.filter((doc) => doc.optional).map((doc) => doc.code));
+  const filtered = skipped.filter((code) => optionalCodes.has(code));
+  return filtered.length ? filtered : undefined;
+}
+
+export function areAllVehicleDocStepsSatisfied(
+  data: import("@/src/stores/onboardingStore").OnboardingData,
+  docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>
+): boolean {
+  return docs.every((doc) => isDocStepSatisfied(data, doc, Boolean(doc.optional)));
 }
 
 export function metadataKeyForDocText(code: string): string {

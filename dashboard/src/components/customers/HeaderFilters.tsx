@@ -1,13 +1,14 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect } from "react";
 import { Filter, X } from "lucide-react";
 import { DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
-import { usePathname } from "next/navigation";
+
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 
 export function HeaderFilters() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const { isSuperAdmin } = usePermissions();
   const [showFilters, setShowFilters] = useState(false);
   const [localFilters, setLocalFilters] = useState<DashboardStatsFilters>({});

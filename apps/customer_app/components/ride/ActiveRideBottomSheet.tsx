@@ -1,9 +1,19 @@
 /**
- * Bottom pill on ride booking screens when the customer has an active person-ride order.
+ * Bottom pill on Book a Ride home when the customer has active person-ride orders.
+ * Multiple rides scroll horizontally.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Image, Platform } from "react-native";
-import { useRouter } from "expo-router";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Image,
+  Platform,
+  ScrollView,
+  useWindowDimensions,
+} from "react-native";
+import { useRouter, usePathname } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -21,27 +31,27 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import type { OrderSummary } from "@/services/order.service";
 import {
   getActiveRideTrackLabel,
+  isBookARideHomeScreen,
   resolvePersonRideTrackingNavigation,
 } from "@/lib/person-ride-orders";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
 import { orderService } from "@/services/order.service";
-import { formatRideFare, resolveRidePaymentDueAmount } from "@/lib/ride-order-display";
+import {
+  formatRideFare,
+  resolveRidePaymentDueAmount,
+  resolveRideVehicleImage,
+} from "@/lib/ride-order-display";
+
+const HORIZONTAL_PAD = 16;
+const CARD_GAP = 10;
 
 type ActiveRideBottomSheetProps = {
   rides: OrderSummary[];
   bottomInset?: number;
-  /** When true, flows inside a parent container instead of absolute bottom overlay. */
-  embedded?: boolean;
 };
 
-export function ActiveRideBottomSheet({
-  rides,
-  bottomInset = 16,
-  embedded = false,
-}: ActiveRideBottomSheetProps) {
+function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: number }) {
   const router = useRouter();
-  const ride = rides[0];
   const pulse = useSharedValue(1);
 
   useEffect(() => {
@@ -62,11 +72,6 @@ export function ActiveRideBottomSheet({
     transform: [{ scale: pulse.value }],
   }));
 
-  if (!ride) return null;
-
-  const { title, subtitle } = getActiveRideTrackLabel(ride.status, ride.paymentStatus);
-  const orderRef = ride.formattedOrderId ?? ride.orderId;
-  const extraCount = rides.length - 1;
   const paymentDue =
     String(ride.paymentStatus ?? "").trim().toLowerCase() !== "paid" &&
     String(ride.paymentStatus ?? "").trim().toLowerCase() !== "completed" &&
@@ -79,9 +84,13 @@ export function ActiveRideBottomSheet({
     staleTime: 5000,
   });
 
+  const { title, subtitle } = getActiveRideTrackLabel(ride.status, ride.paymentStatus);
+  const orderRef = ride.formattedOrderId ?? ride.orderId;
   const dueFareAmount = dueOrderDetail
     ? resolveRidePaymentDueAmount(dueOrderDetail)
     : resolveRidePaymentDueAmount(ride);
+
+  const rideVehicleImage = resolveRideVehicleImage(ride.rideType);
 
   const openRide = () => {
     const target = resolvePersonRideTrackingNavigation(ride);
@@ -89,47 +98,100 @@ export function ActiveRideBottomSheet({
   };
 
   return (
+    <TouchableOpacity
+      activeOpacity={0.92}
+      onPress={openRide}
+      style={[styles.cardTouchable, { width }]}
+    >
+      <Animated.View style={[styles.card, pulseStyle]}>
+        <LinearGradient
+          colors={[GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.gradient}
+        >
+          <View style={styles.iconWrap}>
+            <Image source={rideVehicleImage} style={styles.bikeIcon} resizeMode="contain" />
+          </View>
+          <View style={styles.textCol}>
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={styles.subtitle} numberOfLines={1}>
+              {subtitle}
+            </Text>
+            <Text style={styles.orderId} numberOfLines={1}>
+              {orderRef}
+            </Text>
+          </View>
+          <View style={styles.ctaCol}>
+            <Text style={styles.ctaText}>
+              {paymentDue
+                ? dueFareAmount > 0
+                  ? `Pay ${formatRideFare(dueFareAmount)}`
+                  : "Pay"
+                : "Track"}
+            </Text>
+            <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+          </View>
+        </LinearGradient>
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+export function ActiveRideBottomSheet({
+  rides,
+  bottomInset = 16,
+}: ActiveRideBottomSheetProps) {
+  const pathname = usePathname();
+  const { width: windowWidth } = useWindowDimensions();
+
+  const onRideSearchingScreen =
+    typeof pathname === "string" && pathname.includes("ride-searching");
+  const visible =
+    rides.length > 0 && !onRideSearchingScreen && isBookARideHomeScreen(pathname);
+
+  if (!visible) return null;
+
+  const multi = rides.length > 1;
+  const cardWidth = multi
+    ? Math.round(windowWidth * 0.86)
+    : windowWidth - HORIZONTAL_PAD * 2;
+  const snapInterval = cardWidth + CARD_GAP;
+
+  return (
     <Animated.View
       entering={SlideInUp.duration(280).easing(Easing.out(Easing.ease))}
-      style={[embedded ? styles.wrapEmbedded : styles.wrap, !embedded && { bottom: bottomInset }]}
+      style={[styles.wrap, { bottom: bottomInset }]}
       pointerEvents="box-none"
     >
-      <TouchableOpacity activeOpacity={0.92} onPress={openRide} style={styles.touchable}>
-        <Animated.View style={[styles.card, pulseStyle]}>
-          <LinearGradient
-            colors={[GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.gradient}
-          >
-            <View style={styles.iconWrap}>
-              <Image source={MAPBIKE_IMAGE} style={styles.bikeIcon} resizeMode="contain" />
-            </View>
-            <View style={styles.textCol}>
-              <Text style={styles.title} numberOfLines={1}>
-                {title}
-              </Text>
-              <Text style={styles.subtitle} numberOfLines={1}>
-                {subtitle}
-                {extraCount > 0 ? ` · +${extraCount} more` : ""}
-              </Text>
-              <Text style={styles.orderId} numberOfLines={1}>
-                {orderRef}
-              </Text>
-            </View>
-            <View style={styles.ctaCol}>
-              <Text style={styles.ctaText}>
-                {paymentDue
-                  ? dueFareAmount > 0
-                    ? `Pay ${formatRideFare(dueFareAmount)}`
-                    : "Pay"
-                  : "Track"}
-              </Text>
-              <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-            </View>
-          </LinearGradient>
-        </Animated.View>
-      </TouchableOpacity>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        scrollEnabled={multi}
+        decelerationRate="fast"
+        snapToInterval={multi ? snapInterval : undefined}
+        snapToAlignment="start"
+        disableIntervalMomentum={multi}
+        contentContainerStyle={[
+          styles.scrollContent,
+          multi ? styles.scrollContentMulti : styles.scrollContentSingle,
+        ]}
+      >
+        {rides.map((ride) => (
+          <ActiveRideTrackCard key={ride.orderId} ride={ride} width={cardWidth} />
+        ))}
+      </ScrollView>
+
+      {multi ? (
+        <View style={styles.hintRow} pointerEvents="none">
+          <Ionicons name="swap-horizontal" size={14} color="#6B7280" />
+          <Text style={styles.hintText}>
+            Swipe for {rides.length} active rides
+          </Text>
+        </View>
+      ) : null}
     </Animated.View>
   );
 }
@@ -148,15 +210,23 @@ const cardShadow = Platform.select({
 const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
-    left: 16,
-    right: 16,
+    left: 0,
+    right: 0,
     zIndex: 50,
   },
-  wrapEmbedded: {
-    width: "100%",
+  scrollContent: {
+    alignItems: "stretch",
   },
-  touchable: {
-    width: "100%",
+  scrollContentSingle: {
+    paddingHorizontal: HORIZONTAL_PAD,
+  },
+  scrollContentMulti: {
+    paddingHorizontal: HORIZONTAL_PAD,
+    gap: CARD_GAP,
+  },
+  cardTouchable: {
+    flexGrow: 0,
+    flexShrink: 0,
   },
   card: {
     borderRadius: 18,
@@ -213,5 +283,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     color: "#FFFFFF",
+  },
+  hintRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 8,
+    paddingHorizontal: HORIZONTAL_PAD,
+  },
+  hintText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#6B7280",
   },
 });

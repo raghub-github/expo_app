@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
 import { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, AlertCircle, CheckCircle } from "lucide-react";
 import Link from "next/link";
 
@@ -15,7 +16,7 @@ interface Customer {
 }
 
 export default function CustomerEditPage() {
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
   const customerId = params.id as string;
   const [customer, setCustomer] = useState<Customer | null>(null);

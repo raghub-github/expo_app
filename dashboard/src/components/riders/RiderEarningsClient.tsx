@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
@@ -27,7 +28,7 @@ interface WalletInfo {
 }
 
 export function RiderEarningsClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const riderContext = useRiderDashboardOptional();
   const searchValue = (searchParams.get("search") || "").trim();
 

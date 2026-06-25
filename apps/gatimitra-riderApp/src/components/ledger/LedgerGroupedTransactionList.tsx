@@ -2,8 +2,6 @@ import React from "react";
 import { View, Text, StyleSheet } from "react-native";
 import type { RiderLedgerEntry } from "@/src/services/api/riderApi";
 import { LedgerTransactionRow } from "@/src/components/ledger/LedgerTransactionRow";
-import { LedgerPeriodDropdown } from "@/src/components/ledger/LedgerPeriodDropdown";
-import type { RiderLedgerPeriod } from "@/src/services/api/riderApi";
 import { LEDGER_CARD_RADIUS } from "@/src/components/ledger/ledgerUiTokens";
 
 type DayGroup = {
@@ -14,24 +12,17 @@ type DayGroup = {
 
 type Props = {
   groups: DayGroup[];
-  period: RiderLedgerPeriod;
-  onPeriodChange: (period: RiderLedgerPeriod) => void;
+  firstHeaderControl?: React.ReactNode;
 };
 
-export function LedgerGroupedTransactionList({
-  groups,
-  period,
-  onPeriodChange,
-}: Props) {
+export function LedgerGroupedTransactionList({ groups, firstHeaderControl }: Props) {
   return (
     <View style={styles.root}>
       {groups.map((group, groupIndex) => (
         <View key={group.key} style={styles.dayBlock}>
           <View style={styles.dayHeaderRow}>
             <Text style={styles.dayLabel}>{group.label}</Text>
-            {groupIndex === 0 ? (
-              <LedgerPeriodDropdown value={period} onChange={onPeriodChange} />
-            ) : null}
+            {groupIndex === 0 ? firstHeaderControl ?? <View style={styles.dayHeaderSpacer} /> : null}
           </View>
           <View style={styles.card}>
             {group.entries.map((entry, index) => (
@@ -71,6 +62,10 @@ const styles = StyleSheet.create({
     flex: 1,
     flexShrink: 1,
     marginRight: 10,
+  },
+  dayHeaderSpacer: {
+    width: 1,
+    height: 1,
   },
   card: {
     backgroundColor: "#FFFFFF",

@@ -143,6 +143,9 @@ export const RiderLocationPingResponseSchema = z.object({
   serverTsMs: z.number().int().positive(),
   fraudSignals: z.array(FraudSignalSchema),
   fraudScore: z.number().min(0).max(100),
+  eventPersisted: z.boolean().optional(),
+  recommendedPingIntervalMs: z.number().int().positive().optional(),
+  trackingMode: z.enum(["idle", "moving", "active_order", "high_speed"]).optional(),
 });
 export type RiderLocationPingResponse = z.infer<typeof RiderLocationPingResponseSchema>;
 

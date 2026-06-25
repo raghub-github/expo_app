@@ -10,6 +10,7 @@ import { getDb } from "@/lib/db/client";
 import { riders, withdrawalRequests, riderWallet } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { revertRiderWithdrawalWalletDebitFromDashboard } from "@/lib/db/operations/payment-config";
 
 export const runtime = "nodejs";
 
@@ -120,6 +121,19 @@ export async function PATCH(
       .update(withdrawalRequests)
       .set(setPayload)
       .where(eq(withdrawalRequests.id, withdrawalIdNum));
+
+    if (
+      (status === "failed" || status === "cancelled") &&
+      !["failed", "cancelled", "completed"].includes(String(withdrawal.status))
+    ) {
+      const amount = Math.round(Number(withdrawal.amount) * 100) / 100;
+      await revertRiderWithdrawalWalletDebitFromDashboard(
+        riderId,
+        withdrawalIdNum,
+        amount,
+        body.failureReason ?? `Marked ${status} by admin`,
+      );
+    }
 
     return NextResponse.json({
       success: true,

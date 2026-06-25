@@ -7,10 +7,10 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, View, Platform } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { getConfig } from "@/config/env";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
+import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
 import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
 import { buildRideTrackingMapHtml } from "@/components/maps/mapbox-web-ride-tracking-html";
@@ -24,6 +24,8 @@ type Props = {
   riderHeading?: number | null;
   pickupPosition?: LatLng | null;
   dropPosition?: LatLng | null;
+  /** Catalog image_key for captain marker (bike, auto, cab, cab_premium). */
+  riderMarkerImageKey?: string;
   /** Google Maps–style blue nav route + tilted follow camera (drop leg). */
   navigationMode?: boolean;
   highlightPickupZone?: boolean;
@@ -34,6 +36,10 @@ type Props = {
   style?: object;
 };
 
+function escJsString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
   function MapboxWebRideTrackingMap(
     {
@@ -43,6 +49,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
       riderHeading,
       pickupPosition,
       dropPosition = null,
+      riderMarkerImageKey = "bike",
       navigationMode = false,
       highlightPickupZone = false,
       highlightDropZone = false,
@@ -55,6 +62,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
   ) {
     const webRef = useRef<WebView>(null);
     const readyRef = useRef(false);
+    const initialCenterRef = useRef(center);
     const pendingFitRef = useRef<{
       coords: LatLng[];
       options: { edgePadding: MapEdgePadding; maxZoom?: number };
@@ -65,24 +73,29 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
     const pointSeq = useRef(0);
 
     const token = getConfig().mapboxAccessToken?.trim() ?? "";
-    const [bikeDataUri, setBikeDataUri] = useState<string | null>(null);
+    const [markerDataUri, setMarkerDataUri] = useState<string | null>(null);
 
     useEffect(() => {
       let cancelled = false;
-      void resolveMapImageDataUri(MAPBIKE_IMAGE).then((uri) => {
-        if (!cancelled) setBikeDataUri(uri);
+      const source = resolveNearbyRiderMarkerImage(riderMarkerImageKey);
+      void resolveMapImageDataUri(source).then((uri) => {
+        if (!cancelled) setMarkerDataUri(uri);
       });
       return () => {
         cancelled = true;
       };
-    }, []);
+    }, [riderMarkerImageKey]);
 
     const html = useMemo(() => {
-      if (!token || !bikeDataUri) return "";
-      return buildRideTrackingMapHtml(token, center, bikeDataUri, {
+      if (!token || !markerDataUri) return "";
+      return buildRideTrackingMapHtml(token, initialCenterRef.current, markerDataUri, {
         navigationStyle: navigationMode,
       });
-    }, [token, center.latitude, center.longitude, bikeDataUri, navigationMode]);
+    }, [token, markerDataUri, navigationMode]);
+
+    useEffect(() => {
+      readyRef.current = false;
+    }, [html]);
 
     const applyFit = useCallback((coords: LatLng[], options: { edgePadding: MapEdgePadding; maxZoom?: number }) => {
       const json = JSON.stringify(coords);
@@ -92,6 +105,14 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
         `window.fitToCoordinates && window.fitToCoordinates(${json}, ${pad}, ${maxZoom}); true;`
       );
     }, []);
+
+    const injectMarkerIcon = useCallback(() => {
+      if (!readyRef.current || !markerDataUri) return;
+      const uri = escJsString(markerDataUri);
+      webRef.current?.injectJavaScript(
+        `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
+      );
+    }, [markerDataUri]);
 
     const injectRoute = useCallback(() => {
       if (!readyRef.current) return;
@@ -136,6 +157,22 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
         `window.updateDropZoneHighlight && window.updateDropZoneHighlight(${lat}, ${lng}, ${highlightDropZone ? "true" : "false"}, ${geofenceRadiusM}); true;`
       );
     }, [dropPosition, highlightDropZone, geofenceRadiusM]);
+
+    const syncLayers = useCallback(() => {
+      injectMarkerIcon();
+      injectRoute();
+      injectRider();
+      injectNavigationMode();
+      injectPickupZone();
+      injectDropZone();
+    }, [
+      injectMarkerIcon,
+      injectRoute,
+      injectRider,
+      injectNavigationMode,
+      injectPickupZone,
+      injectDropZone,
+    ]);
 
     useImperativeHandle(
       ref,
@@ -191,11 +228,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           }
           if (msg.type === "ready") {
             readyRef.current = true;
-            injectRoute();
-            injectRider();
-            injectNavigationMode();
-            injectPickupZone();
-            injectDropZone();
+            syncLayers();
             if (pendingFitRef.current && !navigationMode) {
               applyFit(pendingFitRef.current.coords, pendingFitRef.current.options);
               pendingFitRef.current = null;
@@ -208,16 +241,13 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           /* ignore */
         }
       },
-      [applyFit, injectRoute, injectRider, injectNavigationMode, injectPickupZone, injectDropZone, navigationMode, onMapReady, onRegionChangeComplete]
+      [applyFit, syncLayers, navigationMode, onMapReady, onRegionChangeComplete]
     );
 
     useEffect(() => {
-      injectRoute();
-      injectRider();
-      injectNavigationMode();
-      injectPickupZone();
-      injectDropZone();
-    }, [injectRoute, injectRider, injectNavigationMode, injectPickupZone, injectDropZone]);
+      if (!readyRef.current) return;
+      syncLayers();
+    }, [syncLayers]);
 
     if (!token || !html) {
       return <CustomerMapUnavailable style={style} />;
@@ -233,7 +263,16 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           javaScriptEnabled
           domStorageEnabled
           scrollEnabled={false}
+          nestedScrollEnabled={Platform.OS === "android"}
+          overScrollMode="never"
+          androidLayerType="hardware"
+          allowFileAccess
+          allowUniversalAccessFromFileURLs
+          mixedContentMode="always"
           onMessage={onMessage}
+          onLoadEnd={() => {
+            if (readyRef.current) syncLayers();
+          }}
         />
       </View>
     );

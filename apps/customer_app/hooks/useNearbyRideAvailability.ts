@@ -10,7 +10,8 @@ export function useNearbyRideAvailability(
   pickupLat: number | null,
   pickupLng: number | null,
   tripKm?: number | null,
-  geoHints?: PickupGeoHints
+  geoHints?: PickupGeoHints,
+  rideType?: string | null
 ) {
   const enabled =
     pickupLat != null &&
@@ -30,6 +31,7 @@ export function useNearbyRideAvailability(
       tripKmKey,
       geoHints?.pickupPincode ?? null,
       geoHints?.pickupState ?? null,
+      rideType ?? null,
     ],
     queryFn: () =>
       getRideAvailability({
@@ -38,6 +40,7 @@ export function useNearbyRideAvailability(
         tripKm: tripKmKey ?? undefined,
         pickupPincode: geoHints?.pickupPincode,
         pickupState: geoHints?.pickupState,
+        rideType: rideType ?? undefined,
       }),
     enabled,
     refetchInterval: 12_000,

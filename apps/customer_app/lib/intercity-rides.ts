@@ -6,7 +6,7 @@ import { estimateRideFare } from "@/features/ride/rideOptions";
 /** Minimum straight-line trip distance to qualify as inter city. */
 export const INTERCITY_MIN_DISTANCE_KM = 15;
 
-export const INTERCITY_SERVICE_IDS: ServiceId[] = ["cab-economy", "cab-premium", "travel"];
+export const INTERCITY_SERVICE_IDS: ServiceId[] = ["cab-economy", "cab-premium"];
 
 export function isIntercityRouteKm(km: number | null | undefined): boolean {
   return km != null && Number.isFinite(km) && km >= INTERCITY_MIN_DISTANCE_KM;

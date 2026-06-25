@@ -1,7 +1,8 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+
 import { Store, ArrowRight } from "lucide-react";
 
 /**
@@ -9,7 +10,7 @@ import { Store, ArrowRight } from "lucide-react";
  * User must go to Merchants, select a store, and click Verify to open verification for that store.
  */
 export function MerchantVerificationsClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const portal = searchParams.get("portal");
   const merchantsHref =
     portal === "admin" || portal === "merchant"

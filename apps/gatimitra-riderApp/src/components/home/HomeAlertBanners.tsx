@@ -189,9 +189,11 @@ type OffDutyBannerProps = {
   visible: boolean;
   onTurnOn: () => void;
   loading?: boolean;
+  /** Subscription penalty duty stop — hide Turn On CTA. */
+  dutyLocked?: boolean;
 };
 
-export function OffDutyBanner({ visible, onTurnOn, loading }: OffDutyBannerProps) {
+export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }: OffDutyBannerProps) {
   const { t } = useTranslation();
   if (!visible) return null;
 
@@ -202,19 +204,28 @@ export function OffDutyBanner({ visible, onTurnOn, loading }: OffDutyBannerProps
       </View>
       <View style={styles.bannerTextCol}>
         <Text style={styles.offDutyTitle}>
-          {t("home.notReceivingOrders", "Not receiving new orders!")}
+          {dutyLocked
+            ? t("home.subscriptionDutyStopTitle", "Duty stopped — subscription penalty")
+            : t("home.notReceivingOrders", "Not receiving new orders!")}
         </Text>
         <Text style={styles.offDutySub}>
-          {t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders")}
+          {dutyLocked
+            ? t(
+                "home.subscriptionDutyStopSub",
+                "Clear subscription dues to turn ON duty and receive orders"
+              )
+            : t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders")}
         </Text>
       </View>
-      <Pressable
-        style={[styles.turnOnBtn, loading && { opacity: 0.7 }]}
-        onPress={onTurnOn}
-        disabled={loading}
-      >
-        <Text style={styles.turnOnBtnText}>{t("home.turnOn", "Turn On")}</Text>
-      </Pressable>
+      {dutyLocked ? null : (
+        <Pressable
+          style={[styles.turnOnBtn, loading && { opacity: 0.7 }]}
+          onPress={onTurnOn}
+          disabled={loading}
+        >
+          <Text style={styles.turnOnBtnText}>{t("home.turnOn", "Turn On")}</Text>
+        </Pressable>
+      )}
     </View>
   );
 }

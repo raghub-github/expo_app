@@ -72,6 +72,7 @@ export type RideOrderStatusResponse = {
   estimatedPickupWaitingCharge?: number;
   awaitingTipBoost?: boolean;
   dispatchRetryCount?: number;
+  dispatchDeclinedCount?: number;
   customerTipAmount?: number;
   prebookTipAmount?: number;
   searchBoostTip1?: number;

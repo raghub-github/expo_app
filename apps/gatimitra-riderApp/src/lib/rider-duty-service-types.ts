@@ -2,6 +2,7 @@ import type { RiderServiceTypeValue } from "@/src/lib/rider-vehicle-form";
 import { RIDER_SERVICE_TYPE_VALUES } from "@/src/lib/rider-vehicle-form";
 import type { GeoServiceAvailability } from "@/src/services/geoServices.service";
 import { riderVehicleBlocksFoodDispatch } from "@/src/lib/rider-dispatch-service-rules";
+import { filterServicesByVehicleAssignments } from "@/src/lib/rider-category-service-assignments";
 
 export type RiderServiceFilter = "all" | RiderServiceTypeValue;
 
@@ -33,6 +34,9 @@ export function computeEligibleDutyServices(args: {
   vehicleServices: RiderServiceTypeValue[];
   blockedServices: RiderServiceTypeValue[];
   vehicleType?: string | null;
+  vehicleCategoryCode?: string | null;
+  categoryServiceByCode?: Record<string, RiderServiceTypeValue[]>;
+  vehicleServiceByMapsToType?: Record<string, RiderServiceTypeValue[]>;
 }): RiderServiceTypeValue[] {
   const pool = buildEligibleServicePool(args);
   const picked = args.selectedServices.filter((s) => pool.includes(s));
@@ -44,12 +48,23 @@ export function buildEligibleServicePool(args: {
   vehicleServices: RiderServiceTypeValue[];
   blockedServices: RiderServiceTypeValue[];
   vehicleType?: string | null;
+  vehicleCategoryCode?: string | null;
+  categoryServiceByCode?: Record<string, RiderServiceTypeValue[]>;
+  vehicleServiceByMapsToType?: Record<string, RiderServiceTypeValue[]>;
 }): RiderServiceTypeValue[] {
   let pool = args.vehicleServices.filter((s) => !args.blockedServices.includes(s));
   if (args.geoEnabled != null) {
     pool = pool.filter((s) => args.geoEnabled!.includes(s));
   }
-  if (args.vehicleType && riderVehicleBlocksFoodDispatch(args.vehicleType)) {
+  if (args.vehicleServiceByMapsToType || (args.categoryServiceByCode && args.vehicleCategoryCode)) {
+    pool = filterServicesByVehicleAssignments(
+      pool,
+      args.vehicleType ?? null,
+      args.vehicleServiceByMapsToType,
+      args.vehicleCategoryCode ?? null,
+      args.categoryServiceByCode ?? {}
+    );
+  } else if (args.vehicleType && riderVehicleBlocksFoodDispatch(args.vehicleType)) {
     pool = pool.filter((s) => s !== "food");
   }
   return pool;

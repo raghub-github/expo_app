@@ -21,6 +21,7 @@ export type NearbySupplyRider = {
   heading: number | null;
   distanceKm: number;
   vehicleType: string;
+  acType: string | null;
 };
 
 export type RideAvailabilityOption = {
@@ -51,6 +52,7 @@ export type RideAvailabilityResult = {
     distanceKm: number;
     vehicleType: string;
     vehicleTypes: string[];
+    acType: string | null;
   }>;
 };
 
@@ -63,6 +65,39 @@ function estimateRiderEtaMins(distanceKm: number, vehicleType: string): number {
   const isTwoWheeler = ["bike", "ev_bike", "cycle"].includes(vehicleType);
   const speedKmh = isTwoWheeler ? 22 : 16;
   return Math.max(1, Math.ceil((distanceKm / speedKmh) * 60));
+}
+
+function resolveRiderAcType(row: {
+  ac_type: string | null;
+  limitation_flags: unknown;
+}): string | null {
+  const fromDb = row.ac_type?.trim();
+  if (fromDb === "AC" || fromDb === "Non-AC") return fromDb;
+
+  const flags =
+    row.limitation_flags && typeof row.limitation_flags === "object" && !Array.isArray(row.limitation_flags)
+      ? (row.limitation_flags as Record<string, unknown>)
+      : null;
+  const onboardingCode =
+    typeof flags?.onboardingVehicleTypeCode === "string"
+      ? flags.onboardingVehicleTypeCode.trim().toLowerCase()
+      : "";
+  if (!onboardingCode) return null;
+  if (onboardingCode.includes("non_ac")) return "Non-AC";
+  if (onboardingCode.endsWith("_ac") || onboardingCode.includes("_ac_")) return "AC";
+  return null;
+}
+
+function riderMatchesCatalogOption(
+  rider: NearbySupplyRider & { vehicleTypes: Set<string> },
+  catalogCode: string,
+  matchTypes: string[]
+): boolean {
+  const hasVehicleType = [...rider.vehicleTypes].some((vt) => matchTypes.includes(vt));
+  if (!hasVehicleType) return false;
+  if (catalogCode === "cab-economy") return rider.acType === "Non-AC";
+  if (catalogCode === "cab-premium") return rider.acType === "AC";
+  return true;
 }
 
 export async function getNearbyRideSupply(input: {
@@ -107,27 +142,14 @@ export async function getNearbyRideSupply(input: {
       FROM duty_logs dl
       ORDER BY dl.rider_id, dl.timestamp DESC
     ),
-    latest_ping AS (
-      SELECT DISTINCT ON (rle.user_id)
-        (substring(rle.user_id from 'usr_(\\d+)'))::int AS rider_id,
-        rle.lat,
-        rle.lng,
-        rle.heading_deg AS heading,
-        to_timestamp(rle.ts_ms / 1000.0) AT TIME ZONE 'UTC' AS updated_at
-      FROM rider_location_events rle
-      WHERE rle.user_id ~ '^usr_\\d+$'
-      ORDER BY rle.user_id, rle.ts_ms DESC
-    ),
     rider_positions AS (
       SELECT
-        COALESCE(rll.rider_id, lp.rider_id) AS rider_id,
-        COALESCE(rll.latitude::float, lp.lat) AS lat,
-        COALESCE(rll.longitude::float, lp.lng) AS lng,
-        COALESCE(rll.heading::float, lp.heading) AS heading,
-        COALESCE(rll.updated_at, lp.updated_at) AS updated_at
-      FROM rider_live_locations rll
-      FULL OUTER JOIN latest_ping lp ON lp.rider_id = rll.rider_id
-      WHERE COALESCE(rll.rider_id, lp.rider_id) IS NOT NULL
+        rcl.rider_id,
+        rcl.lat,
+        rcl.lng,
+        rcl.heading_deg AS heading,
+        rcl.updated_at
+      FROM rider_current_locations rcl
     )
     SELECT
       rp.rider_id,
@@ -135,6 +157,8 @@ export async function getNearbyRideSupply(input: {
       rp.lng,
       rp.heading,
       rv.vehicle_type,
+      rv.ac_type,
+      rv.limitation_flags,
       (
         6371 * acos(
           LEAST(1.0, GREATEST(-1.0,
@@ -173,6 +197,8 @@ export async function getNearbyRideSupply(input: {
     lng: number;
     heading: number | null;
     vehicle_type: string;
+    ac_type: string | null;
+    limitation_flags: unknown;
     distance_km: number;
   }>;
 
@@ -183,6 +209,7 @@ export async function getNearbyRideSupply(input: {
 
   for (const row of supplyRows) {
     const vehicleType = String(row.vehicle_type ?? "");
+    const acType = resolveRiderAcType(row);
     const existing = ridersById.get(row.rider_id);
     if (existing) {
       existing.vehicleTypes.add(vehicleType);
@@ -191,6 +218,8 @@ export async function getNearbyRideSupply(input: {
         existing.lng = row.lng;
         existing.heading = row.heading != null ? parseNum(row.heading) : null;
         existing.distanceKm = parseNum(row.distance_km) ?? existing.distanceKm;
+        existing.vehicleType = vehicleType;
+        existing.acType = acType;
       }
       continue;
     }
@@ -201,6 +230,7 @@ export async function getNearbyRideSupply(input: {
       heading: row.heading != null ? parseNum(row.heading) : null,
       distanceKm: parseNum(row.distance_km) ?? 0,
       vehicleType,
+      acType,
       vehicleTypes: new Set([vehicleType]),
     });
   }
@@ -212,6 +242,8 @@ export async function getNearbyRideSupply(input: {
   const options: RideAvailabilityOption[] = [];
 
   for (const row of catalogRows) {
+    if (row.code === "travel") continue;
+
     if (tripKm != null && rideLimits.length > 0) {
       const eligible = isCatalogOptionEligibleForTrip({
         catalogCode: row.code,
@@ -223,7 +255,7 @@ export async function getNearbyRideSupply(input: {
 
     const matchTypes = (row.vehicleTypes ?? []).filter(Boolean);
     const matchingRiders = riders
-      .filter((r) => [...r.vehicleTypes].some((vt) => matchTypes.includes(vt)))
+      .filter((r) => riderMatchesCatalogOption(r, row.code, matchTypes))
       .sort((a, b) => a.distanceKm - b.distanceKm);
     if (matchingRiders.length === 0) continue;
 
@@ -233,10 +265,13 @@ export async function getNearbyRideSupply(input: {
       [...nearest.vehicleTypes].find((vt) => matchTypes.includes(vt)) ?? nearest.vehicleType;
     const nearestEta = estimateRiderEtaMins(nearestKm, nearestVehicle);
 
+    const subtitle =
+      row.code === "cab-economy" || row.code === "cab-premium" ? null : row.subtitle;
+
     options.push({
       id: row.code,
       name: row.label,
-      subtitle: row.subtitle,
+      subtitle,
       baseFare: parseNum(row.baseFare) ?? 0,
       etaMins: row.etaMins ?? 3,
       capacity: row.capacity,
@@ -253,7 +288,9 @@ export async function getNearbyRideSupply(input: {
   if (input.rideType) {
     const catalog = catalogRows.find((c) => c.code === input.rideType);
     const allowed = new Set((catalog?.vehicleTypes ?? []).filter(Boolean));
-    mapRiders = riders.filter((r) => [...r.vehicleTypes].some((vt) => allowed.has(vt)));
+    mapRiders = riders.filter((r) =>
+      riderMatchesCatalogOption(r, input.rideType!, [...allowed])
+    );
   }
 
   return {
@@ -269,6 +306,7 @@ export async function getNearbyRideSupply(input: {
       distanceKm: r.distanceKm,
       vehicleType: r.vehicleType,
       vehicleTypes: [...r.vehicleTypes],
+      acType: r.acType,
     })),
   };
 }

@@ -1,8 +1,9 @@
 "use client";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useRouter } from "next/navigation";
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
@@ -14,6 +15,7 @@ import { useRiderSummaryQuery, fetchRiderSummary } from '@/hooks/queries/useRide
 import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
+import { getOnboardingVehicleDisplayName, resolveAcTypeDisplay } from '@/lib/rider-onboarding-vehicle-display';
 import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
 import { formatRiderOrderStatusDisplayLabel, resolveRiderDashboardOrderStatusKey, resolveRiderDashboardOrderStatusLabel, type RiderDashboardOrderStatusInput } from '@/lib/riders/rider-order-status-display';
 import {
@@ -79,7 +81,7 @@ export default function RidersPage() {
   // ALL HOOKS MUST BE CALLED FIRST - BEFORE ANY CONDITIONAL RETURNS
   const { data: permissionsData, isLoading: permissionsLoading, error: permissionsError } = usePermissionsQuery();
   const { data: dashboardAccessData, isLoading: dashboardAccessLoading, error: dashboardAccessError } = useDashboardAccessQuery();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const searchFromUrl = searchParams.get("search")?.trim() ?? "";
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -1101,9 +1103,7 @@ export default function RidersPage() {
                         onClick={() => setVehicleOpen((o) => !o)}
                         className="flex items-center gap-1 text-sm font-semibold text-gray-900 hover:text-gray-700 cursor-pointer"
                       >
-                        {riderSummary?.vehicle?.vehicleType
-                          ? String(riderSummary.vehicle.vehicleType).charAt(0).toUpperCase() + String(riderSummary.vehicle.vehicleType).slice(1).toLowerCase()
-                          : riderSummary?.rider?.vehicleChoice || "—"}
+                        {getOnboardingVehicleDisplayName(riderSummary)}
                         {vehicleOpen ? <ChevronUp className="h-3 w-3 text-gray-500" /> : <ChevronDown className="h-3 w-3 text-gray-500" />}
                       </button>
                       {riderSummary?.vehicle && !riderSummary.vehicle.verified ? (
@@ -1164,10 +1164,28 @@ export default function RidersPage() {
                     {riderSummary?.vehicle ? (
                       <div className="flex flex-wrap items-baseline gap-x-1 gap-y-1">
                         <span className="text-gray-500 shrink-0">Type:</span>
-                        <span className="font-medium text-gray-900 shrink-0">{String(riderSummary.vehicle.vehicleType ?? "—").replace(/_/g, " ")}</span>
+                        <span className="font-medium text-gray-900 shrink-0">
+                          {getOnboardingVehicleDisplayName(riderSummary)}
+                        </span>
                         <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
                         <span className="text-gray-500 shrink-0">Fuel:</span>
                         <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.fuelType || "—"}</span>
+                        {(() => {
+                          const acLabel = resolveAcTypeDisplay({
+                            acType: riderSummary.vehicle.acType,
+                            onboardingVehicleCode:
+                              riderSummary.vehicle.onboardingVehicleCode ??
+                              riderSummary.rider?.vehicleChoice,
+                          });
+                          if (!acLabel) return null;
+                          return (
+                            <>
+                              <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                              <span className="text-gray-500 shrink-0">AC:</span>
+                              <span className="font-medium text-gray-900 shrink-0">{acLabel}</span>
+                            </>
+                          );
+                        })()}
                         <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
                         <span className="text-gray-500 shrink-0">Make:</span>
                         <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.make || "—"}</span>

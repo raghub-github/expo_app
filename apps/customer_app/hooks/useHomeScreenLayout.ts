@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useWindowDimensions } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 
 const TAB_BAR_H = 56;
 const HEADER_H = 50;
@@ -14,7 +14,7 @@ const BRAND_TOP_GAP = 16;
 /** Sizes promo + service grid + brand banner to fill one screen without scroll. */
 export function useHomeScreenLayout(showWeather: boolean) {
   const { height: screenH } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
 
   return useMemo(() => {
     const weatherBlock = showWeather ? WEATHER_H : 0;

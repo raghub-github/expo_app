@@ -6,6 +6,13 @@ import { riders, riderDocuments, riderOnboardingVehicleTypes, riderOnboardingDoc
 import { eq, and, asc } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
+import {
+  isAadhaarAlreadyRegistered,
+  normalizeAadhaarDigits,
+} from "../../lib/rider-aadhaar-registration-check.js";
+import { isPanAlreadyRegistered, normalizePan } from "../../lib/rider-pan-registration-check.js";
+import { isDlAlreadyRegistered, normalizeDlNumber } from "../../lib/rider-dl-registration-check.js";
+import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-registration-check.js";
 
 export async function onboardingRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
@@ -41,7 +48,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const includeInactive =
-        (req.query as { includeInactive?: string }).includeInactive !== "false";
+        (req.query as { includeInactive?: string }).includeInactive === "true";
       const db = getDb();
       const rows = await db
         .select()
@@ -101,7 +108,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const includeInactive =
-        (req.query as { includeInactive?: string }).includeInactive !== "false";
+        (req.query as { includeInactive?: string }).includeInactive === "true";
       const db = getDb();
       const rows = await db
         .select()
@@ -114,8 +121,22 @@ export async function onboardingRoutes(app: FastifyInstance) {
           asc(riderOnboardingVehicleCategories.id)
         );
 
+      let categoryRows = rows;
+      if (!includeInactive) {
+        const activeVehicleRows = await db
+          .select({ categoryCode: riderOnboardingVehicleTypes.categoryCode })
+          .from(riderOnboardingVehicleTypes)
+          .where(eq(riderOnboardingVehicleTypes.isActive, true));
+        const codesWithActiveVehicles = new Set(
+          activeVehicleRows
+            .map((r) => r.categoryCode)
+            .filter((code): code is string => Boolean(code))
+        );
+        categoryRows = rows.filter((row) => codesWithActiveVehicles.has(row.code));
+      }
+
       return {
-        rows: rows.map((row) => ({
+        rows: categoryRows.map((row) => ({
           id: row.id,
           code: row.code,
           label: row.label,
@@ -126,6 +147,77 @@ export async function onboardingRoutes(app: FastifyInstance) {
           isActive: row.isActive,
         })),
       };
+    }
+  );
+
+  app.get(
+    "/category-service-assignments",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            rows: z.array(
+              z.object({
+                categoryCode: z.string(),
+                serviceType: z.enum(["food", "parcel", "person_ride"]),
+                isAssigned: z.boolean(),
+              })
+            ),
+            byCategory: z.record(z.string(), z.array(z.enum(["food", "parcel", "person_ride"]))),
+            vehicleRows: z.array(
+              z.object({
+                vehicleTypeCode: z.string(),
+                serviceType: z.enum(["food", "parcel", "person_ride"]),
+                isAssigned: z.boolean(),
+                mapsToVehicleType: z.string().nullable(),
+                categoryCode: z.string().nullable(),
+                vehicleLabel: z.string(),
+              })
+            ),
+            byMapsToVehicleType: z.record(
+              z.string(),
+              z.array(z.enum(["food", "parcel", "person_ride"]))
+            ),
+          }),
+        },
+      },
+    },
+    async () => {
+      const { listCategoryServiceAssignmentsForApp } = await import(
+        "../../lib/rider-vehicle-category-service-assignments.js"
+      );
+      const { listVehicleTypeServiceAssignmentsForApp } = await import(
+        "../../lib/rider-vehicle-type-service-assignments.js"
+      );
+      const [rows, vehicleRows] = await Promise.all([
+        listCategoryServiceAssignmentsForApp(),
+        listVehicleTypeServiceAssignmentsForApp(),
+      ]);
+      const byCategory: Record<string, Array<"food" | "parcel" | "person_ride">> = {};
+      for (const row of rows) {
+        if (!row.isAssigned) continue;
+        if (!byCategory[row.categoryCode]) byCategory[row.categoryCode] = [];
+        byCategory[row.categoryCode]!.push(row.serviceType);
+      }
+      const categoryAssigned = new Set(
+        rows.filter((r) => r.isAssigned).map((r) => `${r.categoryCode}::${r.serviceType}`)
+      );
+      const byMapsToVehicleType: Record<string, Array<"food" | "parcel" | "person_ride">> = {};
+      for (const row of vehicleRows) {
+        if (!row.isAssigned || !row.mapsToVehicleType?.trim()) continue;
+        const catKey = `${row.categoryCode}::${row.serviceType}`;
+        if (!categoryAssigned.has(catKey)) continue;
+        const mapsKey = row.mapsToVehicleType.trim().toLowerCase();
+        const codeKey = row.vehicleTypeCode.trim().toLowerCase();
+        for (const key of [mapsKey, codeKey]) {
+          if (!key) continue;
+          if (!byMapsToVehicleType[key]) byMapsToVehicleType[key] = [];
+          if (!byMapsToVehicleType[key]!.includes(row.serviceType)) {
+            byMapsToVehicleType[key]!.push(row.serviceType);
+          }
+        }
+      }
+      return { rows, byCategory, vehicleRows, byMapsToVehicleType };
     }
   );
 
@@ -164,7 +256,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
         includeInactive?: string;
         captureGroup?: "dl_rc" | "rental_ev";
       };
-      const includeInactive = query.includeInactive !== "false";
+      const includeInactive = query.includeInactive === "true";
       const db = getDb();
 
       const conditions = [];
@@ -204,6 +296,138 @@ export async function onboardingRoutes(app: FastifyInstance) {
     }
   );
 
+  app.post(
+    "/check-aadhaar",
+    {
+      schema: {
+        body: z.object({
+          aadhaarNumber: z.string().min(1).max(20),
+          riderId: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            registered: z.boolean(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { aadhaarNumber, riderId } = req.body as {
+        aadhaarNumber: string;
+        riderId?: string;
+      };
+      const digits = normalizeAadhaarDigits(aadhaarNumber);
+      if (!digits) {
+        return { registered: false };
+      }
+      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
+      const registered = await isAadhaarAlreadyRegistered(
+        digits,
+        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
+      );
+      return { registered };
+    }
+  );
+
+  app.post(
+    "/check-pan",
+    {
+      schema: {
+        body: z.object({
+          panNumber: z.string().min(1).max(15),
+          riderId: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            registered: z.boolean(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { panNumber, riderId } = req.body as {
+        panNumber: string;
+        riderId?: string;
+      };
+      const pan = normalizePan(panNumber);
+      if (!pan) {
+        return { registered: false };
+      }
+      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
+      const registered = await isPanAlreadyRegistered(
+        pan,
+        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
+      );
+      return { registered };
+    }
+  );
+
+  app.post(
+    "/check-dl",
+    {
+      schema: {
+        body: z.object({
+          dlNumber: z.string().min(1).max(32),
+          riderId: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            registered: z.boolean(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { dlNumber, riderId } = req.body as {
+        dlNumber: string;
+        riderId?: string;
+      };
+      const dl = normalizeDlNumber(dlNumber);
+      if (!dl) {
+        return { registered: false };
+      }
+      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
+      const registered = await isDlAlreadyRegistered(
+        dl,
+        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
+      );
+      return { registered };
+    }
+  );
+
+  app.post(
+    "/check-rc",
+    {
+      schema: {
+        body: z.object({
+          rcNumber: z.string().min(1).max(32),
+          riderId: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            registered: z.boolean(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { rcNumber, riderId } = req.body as {
+        rcNumber: string;
+        riderId?: string;
+      };
+      const rc = normalizeRcNumber(rcNumber);
+      if (!rc) {
+        return { registered: false };
+      }
+      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
+      const registered = await isRcAlreadyRegistered(
+        rc,
+        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
+      );
+      return { registered };
+    }
+  );
+
   // Save onboarding step progress
   app.post(
     "/save-step",
@@ -219,6 +443,10 @@ export async function onboardingRoutes(app: FastifyInstance) {
             dlNumber: z.string().optional(),
             rcNumber: z.string().optional(),
             hasOwnVehicle: z.boolean().optional(),
+            vehicleChoice: z.string().optional(),
+            vehicleCategoryCode: z.string().optional(),
+            onboardingFlow: z.enum(["dl_rc", "rental_ev", "payment"]).optional(),
+            submitVehicleDocs: z.boolean().optional(),
             rentalProofSignedUrl: z.string().optional(),
             evProofSignedUrl: z.string().optional(),
             maxSpeedDeclaration: z.number().optional(),
@@ -232,10 +460,16 @@ export async function onboardingRoutes(app: FastifyInstance) {
             address: z.string().optional(),
           }),
         }),
-        response: { 200: z.object({ success: z.boolean() }) },
+        response: {
+          200: z.object({ success: z.boolean() }),
+          409: z.object({
+            error: z.string(),
+            message: z.string(),
+          }),
+        },
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const { riderId, step, data: stepData } = req.body as {
         riderId: string;
         step: string;
@@ -254,6 +488,47 @@ export async function onboardingRoutes(app: FastifyInstance) {
       const riderRows = await db.select().from(riders).where(eq(riders.id, riderIdInt)).limit(1);
       if (riderRows.length === 0) {
         throw new Error("Rider not found");
+      }
+
+      if (step === "aadhaar_name" && stepData.aadhaarNumber) {
+        const digits = normalizeAadhaarDigits(String(stepData.aadhaarNumber));
+        if (digits && (await isAadhaarAlreadyRegistered(digits, riderIdInt))) {
+          return reply.code(409).send({
+            error: "aadhaar_already_registered",
+            message: "Aadhar Already Registered , Please try with Diff one .",
+          });
+        }
+      }
+
+      if (step === "pan_selfie" && stepData.panNumber) {
+        const pan = normalizePan(String(stepData.panNumber));
+        if (pan && (await isPanAlreadyRegistered(pan, riderIdInt))) {
+          return reply.code(409).send({
+            error: "pan_already_registered",
+            message: "PAN Already Registered , Please try with Diff one .",
+          });
+        }
+      }
+
+      if (step === "dl_rc") {
+        if (stepData.dlNumber) {
+          const dl = normalizeDlNumber(String(stepData.dlNumber));
+          if (dl && (await isDlAlreadyRegistered(dl, riderIdInt))) {
+            return reply.code(409).send({
+              error: "dl_already_registered",
+              message: "Driving License Already Registered , Please try with Diff one .",
+            });
+          }
+        }
+        if (stepData.rcNumber) {
+          const rc = normalizeRcNumber(String(stepData.rcNumber));
+          if (rc && (await isRcAlreadyRegistered(rc, riderIdInt))) {
+            return reply.code(409).send({
+              error: "rc_already_registered",
+              message: "RC Already Registered , Please try with Diff one .",
+            });
+          }
+        }
       }
 
       // Advance onboarding only for document steps (not post-approval home location)
@@ -329,7 +604,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           });
         }
       } else if (step === "dl_rc") {
-        const selectionMeta = {
+        const selectionMeta: Record<string, unknown> = {
           vehicleChoice:
             typeof stepData.vehicleChoice === "string" ? stepData.vehicleChoice : undefined,
           vehicleCategoryCode:
@@ -344,9 +619,12 @@ export async function onboardingRoutes(app: FastifyInstance) {
               : undefined,
         };
 
+        const submitVehicleDocs = stepData.submitVehicleDocs === true;
+
         if (
           selectionMeta.vehicleChoice ||
-          selectionMeta.onboardingFlow
+          selectionMeta.onboardingFlow ||
+          submitVehicleDocs
         ) {
           const existingSelection = await db
             .select()
@@ -354,22 +632,50 @@ export async function onboardingRoutes(app: FastifyInstance) {
             .where(
               and(
                 eq(riderDocuments.riderId, riderIdInt),
-                eq(riderDocuments.docType, "onboarding_vehicle_selection" as never)
+                eq(riderDocuments.docType, "onboarding_vehicle_selection")
               )
             )
             .limit(1);
 
+          const prevMeta =
+            existingSelection[0]?.metadata &&
+            typeof existingSelection[0].metadata === "object"
+              ? (existingSelection[0].metadata as Record<string, unknown>)
+              : {};
+          const prevChoice =
+            typeof prevMeta.vehicleChoice === "string" ? prevMeta.vehicleChoice.trim() : "";
+          const nextChoice =
+            typeof selectionMeta.vehicleChoice === "string"
+              ? selectionMeta.vehicleChoice.trim()
+              : prevChoice;
+          const choiceChanged = Boolean(nextChoice && prevChoice && nextChoice !== prevChoice);
+
+          const mergedMeta: Record<string, unknown> = {
+            ...prevMeta,
+            ...Object.fromEntries(
+              Object.entries(selectionMeta).filter(([, value]) => value !== undefined)
+            ),
+          };
+
+          if (submitVehicleDocs && nextChoice) {
+            mergedMeta.vehicleDocsSubmittedFor = nextChoice;
+            mergedMeta.vehicleDocsSubmittedAt = new Date().toISOString();
+          } else if (choiceChanged) {
+            delete mergedMeta.vehicleDocsSubmittedFor;
+            delete mergedMeta.vehicleDocsSubmittedAt;
+          }
+
           if (existingSelection.length > 0) {
             await db
               .update(riderDocuments)
-              .set({ metadata: selectionMeta })
+              .set({ metadata: mergedMeta })
               .where(eq(riderDocuments.id, existingSelection[0]!.id));
           } else {
             await db.insert(riderDocuments).values({
               riderId: riderIdInt,
-              docType: "onboarding_vehicle_selection" as never,
+              docType: "onboarding_vehicle_selection",
               fileUrl: "n/a",
-              metadata: selectionMeta,
+              metadata: mergedMeta,
             });
           }
         }

@@ -23,6 +23,7 @@ import { quoteCustomerRideFare } from "../ride-state-config/rideQuote.service.js
 import { resolveRideAddressDisplayLabel } from "../../lib/ride-address-display.js";
 import { resolveRidePickupFreeWaitMinutes, resolveRidePickupWaitingChargePerMin } from "../../lib/ride-pickup-wait.js";
 import { findCustomerOutstandingRideFare } from "../../lib/ride-fare-gate.js";
+import { countDispatchDeclinedForOrder } from "../../lib/rider-dispatch-assignment-audit-read.js";
 
 export const DEFAULT_RIDE_SEARCH_TIMEOUT_SEC = 4 * 60;
 
@@ -744,6 +745,7 @@ export async function getRideOrderForCustomer(
   estimatedPickupWaitingCharge: number;
   awaitingTipBoost: boolean;
   dispatchRetryCount: number;
+  dispatchDeclinedCount: number;
   customerTipAmount: number;
   prebookTipAmount: number;
   searchBoostTip1: number;
@@ -853,6 +855,8 @@ export async function getRideOrderForCustomer(
     appStatus = "RIDER_ASSIGNED";
   else if (dbStatus === "delivered") appStatus = "DELIVERED";
 
+  const dispatchDeclinedCount = await countDispatchDeclinedForOrder(row.orderId);
+
   return {
     orderId: row.orderId,
     coreOrderId: row.id,
@@ -873,6 +877,7 @@ export async function getRideOrderForCustomer(
     estimatedPickupWaitingCharge,
     awaitingTipBoost: rideRow?.awaitingTipBoost === true,
     dispatchRetryCount: Number(rideRow?.dispatchRetryCount ?? 0),
+    dispatchDeclinedCount,
     customerTipAmount: Number(rideRow?.customerTipAmount ?? 0),
     prebookTipAmount: Number(rideRow?.prebookTipAmount ?? 0),
     searchBoostTip1: Number(rideRow?.searchBoostTip1 ?? 0),

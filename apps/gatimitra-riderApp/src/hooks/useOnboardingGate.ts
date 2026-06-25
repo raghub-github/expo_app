@@ -19,6 +19,9 @@ export function useOnboardingGate() {
   const currentStep = useOnboardingStore((s) => s.data.currentStep);
   const vehicleChoice = useOnboardingStore((s) => s.data.vehicleChoice);
   const vehicleOnboardingFlow = useOnboardingStore((s) => s.data.vehicleOnboardingFlow);
+  const vehicleOnboardingSubmittedFor = useOnboardingStore(
+    (s) => s.data.vehicleOnboardingSubmittedFor
+  );
   const setStep = useOnboardingStore((s) => s.setStep);
   const clearOnboarding = useOnboardingStore((s) => s.clear);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
@@ -36,6 +39,14 @@ export function useOnboardingGate() {
   const sessionUnauthorized = isError && isUnauthorizedError(error);
 
   const serverStep = (riderStatus?.nextOnboardingStep ?? null) as ServerOnboardingStep | null;
+
+  const completedOnboardingSteps = useMemo(() => {
+    const base = riderStatus?.completedOnboardingSteps ?? [];
+    if (riderStatus?.selfieUrl && !base.includes("pan_selfie")) {
+      return [...base, "pan_selfie"];
+    }
+    return base;
+  }, [riderStatus?.completedOnboardingSteps, riderStatus?.selfieUrl]);
 
   // Expired/revoked JWT or inactive device session — clear local session.
   useEffect(() => {
@@ -85,8 +96,9 @@ export function useOnboardingGate() {
     return resolveOnboardingHref(riderStatus?.onboardingStatus, currentStep, serverStep, {
       vehicleChoice,
       vehicleOnboardingFlow,
+      vehicleOnboardingSubmittedFor,
       accountStatus: riderStatus?.accountStatus,
-      completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+      completedOnboardingSteps,
       approvalStatus: riderStatus?.approvalStatus,
     });
   }, [
@@ -100,8 +112,9 @@ export function useOnboardingGate() {
     sessionUnauthorized,
     vehicleChoice,
     vehicleOnboardingFlow,
+    vehicleOnboardingSubmittedFor,
     riderStatus?.accountStatus,
-    riderStatus?.completedOnboardingSteps,
+    completedOnboardingSteps,
     riderStatus?.approvalStatus,
   ]);
 

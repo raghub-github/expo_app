@@ -1,7 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useCallback, useMemo, useEffect, Suspense } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Search, Loader2 } from "lucide-react";
 import { getCurrentDashboard } from "@/lib/navigation/dashboard-routes";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
@@ -20,9 +22,9 @@ interface DashboardSearchProps {
 
 // Inner component that uses useSearchParams
 function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const merchantsSearch = useMerchantsSearch();
   const { canTogglePortal = false } = usePermissions();
   const [loading, setLoading] = useState(false);

@@ -1,21 +1,26 @@
 import React, { useEffect } from "react";
-import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
+import { View, Text, Pressable, StyleSheet } from "react-native";
 import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT,
+  resolveCustomerBottomNavHeight,
+  resolveTabBarBottomInset,
+} from "@/constants/layout";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
 
 const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
 const ICON_SIZE = 23;
 
-/** Bar padding + tab minHeight + bar padding — keep in sync with `styles.bar` / `styles.tab`. */
-export const CUSTOMER_TAB_BAR_CONTENT_HEIGHT = 8 + 48 + 4;
+/** @deprecated Use `CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT` from `@/constants/layout`. */
+export const CUSTOMER_TAB_BAR_CONTENT_HEIGHT = CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT;
 
 export function customerTabBarOffset(insetsBottom: number): number {
-  return CUSTOMER_TAB_BAR_CONTENT_HEIGHT + Math.max(insetsBottom, 0);
+  return resolveCustomerBottomNavHeight(insetsBottom);
 }
 
 type IconFamily = "ionicons" | "material";
@@ -88,11 +93,11 @@ function TabIcon({ tab, focused }: { tab: TabConfig; focused: boolean }) {
 }
 
 export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
-  const insets = useSafeAreaInsets();
+  const { bottom: rawBottom } = useSafeAreaInsets();
   const router = useRouter();
   const { enabledServices } = useCustomerGeoServiceAvailability();
   const foodEnabled = enabledServices.food;
-  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 0 : 0);
+  const bottomPad = resolveTabBarBottomInset(rawBottom);
 
   const visibleRoutes = state.routes.filter(
     (route) => route.name !== "offers" && (route.name !== "food" || foodEnabled)
@@ -105,7 +110,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   }, [foodEnabled, state.index, state.routes, navigation]);
 
   return (
-    <View style={[styles.wrapper, { paddingBottom: bottomPad }]}>
+    <View style={[styles.wrapper, bottomPad > 0 ? { paddingBottom: bottomPad } : null]}>
       <View style={styles.bar}>
         {visibleRoutes.map((route) => {
           const focused = state.routes[state.index]?.name === route.name;

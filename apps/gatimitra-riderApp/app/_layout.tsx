@@ -77,7 +77,9 @@ export {
 
 
 
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {
+  // Expo Go / some Android builds cannot activate keep-awake — non-fatal
+});
 
 
 

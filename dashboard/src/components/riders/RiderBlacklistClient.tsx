@@ -1,7 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useSearchParams, usePathname } from "next/navigation";
+
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
@@ -226,7 +228,7 @@ function formatRemaining(ms: number): string {
 
 export function RiderBlacklistClient() {
   const queryClient = useQueryClient();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const riderContext = useRiderDashboardOptional();
   const searchValue = (searchParams.get("search") || "").trim();
   const parsedRiderId = useMemo(() => parseNumericRiderIdFromSearch(searchValue), [searchValue]);
@@ -493,7 +495,7 @@ export function RiderBlacklistClient() {
     if (historyPage > historyTotalPages) setHistoryPage(historyTotalPages);
   }, [historyPage, historyTotalPages]);
 
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const riderCardReturnTo = riderId
     ? `${pathname}?search=${encodeURIComponent(searchValue || `GMR${riderId}`)}`
     : pathname;

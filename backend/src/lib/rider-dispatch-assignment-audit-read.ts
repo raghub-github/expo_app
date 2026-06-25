@@ -30,6 +30,19 @@ export type DispatchAssignmentAuditRow = {
   createdAt: string;
 };
 
+/** Riders who rejected or timed out on dispatch offers for this order. */
+export async function countDispatchDeclinedForOrder(orderRef: string): Promise<number> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT COUNT(DISTINCT rider_id)::int AS declined_count
+    FROM order_rider_dispatch_assignment_audit
+    WHERE order_id = ${orderRef.trim()}
+      AND event_type IN ('rejected', 'timeout')
+  `) as Array<{ declined_count?: number | null }>;
+
+  return Math.max(0, Number(rows[0]?.declined_count ?? 0));
+}
+
 export async function listDispatchAssignmentAuditForOrder(
   orderRef: string
 ): Promise<DispatchAssignmentAuditRow[]> {

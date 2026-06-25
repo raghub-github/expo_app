@@ -258,6 +258,26 @@ const RiderLedgerResponseSchema = z.object({
   summary: RiderLedgerSummarySchema,
 });
 
+const RiderLedgerGraphSchema = z.object({
+  totalEarning: z.number(),
+  orderEarning: z.number(),
+  incentive: z.number(),
+  surge: z.number(),
+  waiting: z.number(),
+  orderCount: z.number(),
+  rangeLabel: z.string(),
+  from: z.string(),
+  to: z.string(),
+  dailyBars: z.array(
+    z.object({
+      date: z.string(),
+      day: z.number(),
+      amount: z.number(),
+      orderCount: z.number(),
+    }),
+  ),
+});
+
 export type RiderLedgerSegment = z.infer<typeof RiderLedgerSegmentSchema>;
 export type RiderLedgerPeriod = z.infer<typeof RiderLedgerPeriodSchema>;
 export type RiderLedgerEntry = z.infer<typeof RiderLedgerEntrySchema>;
@@ -268,6 +288,26 @@ export type RiderLedgerFilters = {
   period?: RiderLedgerPeriod;
   limit?: number;
   offset?: number;
+};
+
+export type RiderLedgerGraphDayBar = {
+  date: string;
+  day: number;
+  amount: number;
+  orderCount: number;
+};
+
+export type RiderLedgerGraphData = {
+  totalEarning: number;
+  orderEarning: number;
+  incentive: number;
+  surge: number;
+  waiting: number;
+  orderCount: number;
+  rangeLabel: string;
+  from: string;
+  to: string;
+  dailyBars: RiderLedgerGraphDayBar[];
 };
 
 export type RiderOrderSummary = z.infer<typeof OrderSummarySchema>;
@@ -751,6 +791,54 @@ export const riderApi = {
     );
   },
 
+  async createWithdrawalRequest(amount: number) {
+    const client = createApiClient();
+    const RiderWithdrawalSchema = z.object({
+      id: z.number(),
+      amount: z.number(),
+      status: z.string(),
+      bankAccMasked: z.string(),
+      ifsc: z.string(),
+      accountHolderName: z.string(),
+      transactionId: z.string().nullable(),
+      failureReason: z.string().nullable(),
+      createdAt: z.string(),
+      processedAt: z.string().nullable(),
+    });
+    return client.request<{ withdrawal: z.infer<typeof RiderWithdrawalSchema> }>(
+      "/v1/rider/withdrawals",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount }),
+        responseSchema: z.object({ withdrawal: RiderWithdrawalSchema }),
+      },
+    );
+  },
+
+  async listWithdrawals(limit = 20) {
+    const client = createApiClient();
+    const RiderWithdrawalSchema = z.object({
+      id: z.number(),
+      amount: z.number(),
+      status: z.string(),
+      bankAccMasked: z.string(),
+      ifsc: z.string(),
+      accountHolderName: z.string(),
+      transactionId: z.string().nullable(),
+      failureReason: z.string().nullable(),
+      createdAt: z.string(),
+      processedAt: z.string().nullable(),
+    });
+    return client.request<{ withdrawals: z.infer<typeof RiderWithdrawalSchema>[] }>(
+      `/v1/rider/withdrawals?limit=${limit}`,
+      {
+        method: "GET",
+        responseSchema: z.object({ withdrawals: z.array(RiderWithdrawalSchema) }),
+      },
+    );
+  },
+
   async getLedger(filters: RiderLedgerFilters = {}) {
     const client = createApiClient();
     const params = new URLSearchParams();
@@ -764,6 +852,25 @@ export const riderApi = {
       method: "GET",
       responseSchema: RiderLedgerResponseSchema,
     });
+  },
+
+  async getLedgerGraph(args: {
+    segment?: RiderLedgerSegment;
+    from: string;
+    to: string;
+  }) {
+    const client = createApiClient();
+    const params = new URLSearchParams();
+    if (args.segment) params.set("segment", args.segment);
+    params.set("from", args.from);
+    params.set("to", args.to);
+    return client.request<z.infer<typeof RiderLedgerGraphSchema>>(
+      `/v1/rider/wallet/ledger/graph?${params.toString()}`,
+      {
+        method: "GET",
+        responseSchema: RiderLedgerGraphSchema,
+      },
+    );
   },
 
   /**

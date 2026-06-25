@@ -2,13 +2,32 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { riderApi } from "@/src/services/api/riderApi";
 import {
+  getJson,
   isVehicleDetailsRequiredError,
   isVehicleNotVerifiedError,
 } from "@/src/services/http";
-import { riderVehicleQueryKey, type RiderVehicleStatusResponse } from "@/src/hooks/useRiderVehicle";
+import { getRiderAppConfig } from "@/src/config/env";
+import { useSessionStore } from "@/src/stores/sessionStore";
+import {
+  riderVehicleQueryKey,
+  type RiderVehicleStatusResponse,
+} from "@/src/hooks/useRiderVehicle";
 import { useVehicleGateStore } from "@/src/stores/vehicleGateStore";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { resolveDutyServiceTypesForToggle } from "@/src/hooks/useRiderDutyServiceFilter";
+
+async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusResponse | null> {
+  const token = useSessionStore.getState().session?.accessToken;
+  if (!token) return null;
+  try {
+    return await getJson<RiderVehicleStatusResponse>(
+      `${getRiderAppConfig().apiBaseUrl}/v1/rider/me/vehicle`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+  } catch {
+    return null;
+  }
+}
 
 export function useDutyToggle() {
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
@@ -43,20 +62,32 @@ export function useDutyToggle() {
 
   const setDuty = async (next: boolean) => {
     if (next === isOnDuty) return;
-    const cached = queryClient.getQueryData<RiderVehicleStatusResponse>(riderVehicleQueryKey);
+
     if (next) {
-      if (cached && !cached.isComplete) {
+      const vehicleStatus =
+        (await loadRiderVehicleStatusForDutyGate()) ??
+        queryClient.getQueryData<RiderVehicleStatusResponse>(riderVehicleQueryKey) ??
+        null;
+
+      if (vehicleStatus) {
+        queryClient.setQueryData(riderVehicleQueryKey, vehicleStatus);
+      }
+
+      if (!vehicleStatus?.isComplete) {
         openVehicleSheet();
         return;
       }
-      if (cached?.vehicle && !cached.vehicle.verified) {
+
+      if (!vehicleStatus.vehicle?.verified) {
         openVerificationModal();
         return;
       }
+
       const serviceTypes = resolveDutyServiceTypesForToggle(queryClient);
       if (!serviceTypes?.length) {
         return;
       }
+
       await toggleDuty();
       updateDutyMutation.mutate({
         status: next,
@@ -64,6 +95,7 @@ export function useDutyToggle() {
       });
       return;
     }
+
     await toggleDuty();
     updateDutyMutation.mutate({
       status: next,

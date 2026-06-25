@@ -4,7 +4,7 @@
  * rounded input with focus glow, green gradient CTA, safe-area aware.
  */
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   View,
   Text,
@@ -28,15 +28,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { authService } from "@/services/auth.service";
 import { COUNTRIES, DEFAULT_COUNTRY, type CountryOption } from "@/constants/countries";
-import { getItem, setItem } from "@/utils/storage";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
 
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 
-const REMEMBERED_PHONE_KEY = "gatimitra_remembered_phone";
-
-/** Indian mobile: 98765-43210 (5 digits, hyphen, 5 digits). */
+/** Indian mobile display: 98765-43210 (5 digits, hyphen, 5 digits). */
 function formatIndianPhoneDisplay(digits: string): string {
   if (digits.length <= 5) return digits;
   return `${digits.slice(0, 5)}-${digits.slice(5)}`;
@@ -197,12 +194,6 @@ export default function LoginScreen() {
     }
   };
 
-  useEffect(() => {
-    getItem(REMEMBERED_PHONE_KEY).then((v) => {
-      if (v) setPhone(v);
-    });
-  }, []);
-
   const phoneDigits = phone.replace(/\D/g, "");
   const requiredPhoneLen = selectedCountry.code === "IN" ? 10 : 7;
   const maxPhoneLen = selectedCountry.code === "IN" ? 10 : 15;
@@ -231,7 +222,6 @@ export default function LoginScreen() {
     try {
       const phoneE164 = `${selectedCountry.dialCode}${digits}`;
       await authService.sendOtp({ phoneE164 });
-      setItem(REMEMBERED_PHONE_KEY, digits);
       router.replace({
         pathname: "/(auth)/otp",
         params: { phoneE164 },
@@ -339,9 +329,7 @@ export default function LoginScreen() {
                     styles.inputNoOutline,
                     phoneDigits.length > 0 && styles.inputFilled,
                   ]}
-                  placeholder={
-                    selectedCountry.code === "IN" ? "98765-43210" : "Enter mobile number"
-                  }
+                  placeholder="Enter mobile number"
                   placeholderTextColor={PLACEHOLDER_GRAY}
                   keyboardType="phone-pad"
                   maxLength={phoneInputMaxLen}

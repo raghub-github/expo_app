@@ -1,8 +1,9 @@
 "use client";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+
 import dynamic from "next/dynamic";
 
 interface AdminOption {
@@ -299,7 +300,7 @@ const AdminCard = React.memo(function AdminCard({ option, isActive }: AdminCardP
 });
 
 const AdminGrid = React.memo(function AdminGrid() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

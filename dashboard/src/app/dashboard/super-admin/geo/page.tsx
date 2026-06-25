@@ -1,8 +1,9 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+
 import { GeoTree, type GeoTreeFilters } from "@/components/geo-admin/GeoTree";
 import { SearchBar } from "@/components/geo-admin/SearchBar";
 import { FilterPanel, type ServiceTriState } from "@/components/geo-admin/FilterPanel";
@@ -56,7 +57,7 @@ function searchRowToChild(r: GeoSearchRow): GeoChildRow {
 }
 
 export default function GeoSuperAdminPage() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const [view, setViewState] = useState<GeoView>("tree");
 
   useEffect(() => {
