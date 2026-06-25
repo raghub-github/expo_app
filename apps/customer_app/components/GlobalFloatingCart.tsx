@@ -67,7 +67,7 @@ function useIsOnMainTabs(): boolean {
 
 /** Home tab only — floating cart is hidden here; food/browse keeps the cart bar. */
 function useIsOnHomeTab(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   if (segments[0] !== "(tabs)") return false;
   const tab = segments[1];
   return tab === "index" || tab == null;

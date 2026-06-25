@@ -207,7 +207,7 @@ export function DailyIncentiveCard({ program }: Props) {
       {program.lockedReason === "GMITRA_MAX_REQUIRED" ? (
         <Pressable
           style={styles.lockedBanner}
-          onPress={() => router.push("/your-subscription")}
+          onPress={() => router.push("/your-subscription" as never)}
           accessibilityRole="button"
           accessibilityLabel={t("offers.gmitraMaxRequired", "Subscribe to GMitra Max to unlock this incentive")}
         >

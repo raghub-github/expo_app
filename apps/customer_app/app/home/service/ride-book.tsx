@@ -723,7 +723,7 @@ export default function RideBookScreen() {
 
   const endpointSpanKm = useMemo(() => {
     if (!pickupPoint || !dropPoint) return null;
-    return haversineKm(pickupPoint, dropPoint);
+    return haversineKm(pickupPoint.latitude, pickupPoint.longitude, dropPoint.latitude, dropPoint.longitude);
   }, [pickupPoint, dropPoint]);
 
   /** Nearest supply at pickup — selected vehicle icon (Rapido-style, max 6). */
