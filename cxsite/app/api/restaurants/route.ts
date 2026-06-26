@@ -165,7 +165,12 @@ export async function GET(request: NextRequest) {
         .lte('longitude', lonMax)
       if (storeTypeFilter.mode === 'is_null') geoQuery = geoQuery.is('store_type', null)
       else if (storeTypeFilter.mode === 'eq') geoQuery = geoQuery.eq('store_type', storeTypeFilter.value)
-      const { data, error } = await geoQuery.order('store_name', { ascending: true })
+      // HARD_CAP: bbox query is already narrow but ordering by name forces
+      // a sort over the entire matched set. Capping at 1000 keeps the
+      // pooler within statement_timeout even in dense metros.
+      const { data, error } = await geoQuery
+        .order('store_name', { ascending: true })
+        .limit(1000)
 
       if (error) {
         log('Supabase error:', error.message, error)
@@ -192,6 +197,11 @@ export async function GET(request: NextRequest) {
     }
 
     log('Pan-India: approved active stores (open + closed operational)')
+    // HARD_CAP: without a LIMIT, this scans every approved store and sorts
+    // them by name. On the Supabase pooler that blows past the 60s
+    // statement timeout (see backend audit 2026-06-26). The homepage never
+    // renders more than ~200 cards on first paint, so 500 is a safe cap.
+    const HARD_CAP = 500
     let panQuery = supabase
       .from('merchant_stores')
       .select(STORE_SELECT)
@@ -200,7 +210,9 @@ export async function GET(request: NextRequest) {
       .eq('approval_status', 'APPROVED')
     if (storeTypeFilter.mode === 'is_null') panQuery = panQuery.is('store_type', null)
     else if (storeTypeFilter.mode === 'eq') panQuery = panQuery.eq('store_type', storeTypeFilter.value)
-    const { data, error } = await panQuery.order('store_name', { ascending: true })
+    const { data, error } = await panQuery
+      .order('store_name', { ascending: true })
+      .limit(HARD_CAP)
 
     if (error) {
       log('Supabase error:', error.message, error)

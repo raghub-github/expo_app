@@ -242,8 +242,13 @@ export async function GET(request: NextRequest) {
       return res
     }
 
-    // No location and no city → return ALL brands (initial state)
+    // No location and no city → return up to HARD_CAP brands (initial state).
+    // Without a LIMIT, Postgres would scan + sort every approved BRAND row,
+    // and on the Supabase pooler that easily blows past the 60s statement
+    // timeout. We always cap at HARD_CAP (200) when the caller doesn't
+    // supply ?limit / ?page; UI never needs more than that on the homepage.
     if (!hasValidCoords) {
+      const HARD_CAP = 200
       let query = supabase
         .from('merchant_parents')
         .select(
@@ -255,6 +260,7 @@ export async function GET(request: NextRequest) {
         .or('registration_status.eq.VERIFIED,registration_status.is.null')
         .order('parent_name', { ascending: true })
       if (limitParam || pageParam) query = query.range(from, to)
+      else query = query.range(0, HARD_CAP - 1)
       const { data, error } = await query
       if (error) {
         console.error('[api/brands] merchant_parents (all) error:', error.message)

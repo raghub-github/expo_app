@@ -56,13 +56,16 @@ jobs:
 
       # Refuse to build the image if any NEXT_PUBLIC_* secret is empty.
       # Without this guard, an empty secret silently produces a client bundle
-      # with `undefined` — see docs/CI_SECRETS.md for the 2026-06-25 incident.
+      # with `undefined` — see docs/CI_SECRETS.md for the 2026-06-26 incident.
+      # NEXT_PUBLIC_APP_URL is hard-coded to control.gatimitra.com because the
+      # SAME GitHub secret cannot serve both dashboard and partnersite (which
+      # need different origins). The value is the public origin, not a secret.
       - name: Validate NEXT_PUBLIC_* secrets
         run: |
           set -e
           missing=""
           for var in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY \
-                     NEXT_PUBLIC_APP_URL NEXT_PUBLIC_MAPBOX_TOKEN \
+                     NEXT_PUBLIC_MAPBOX_TOKEN \
                      NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY \
                      NEXT_PUBLIC_MERCHANT_R2_BASE_URL \
                      NEXT_PUBLIC_DISABLE_CURRENT_LOCATION \
@@ -79,7 +82,6 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_MAPBOX_TOKEN: ${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
           NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY: ${{ secrets.NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY }}
           NEXT_PUBLIC_MERCHANT_R2_BASE_URL: ${{ secrets.NEXT_PUBLIC_MERCHANT_R2_BASE_URL }}
@@ -111,7 +113,7 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-            NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_APP_URL=https://control.gatimitra.com
             NEXT_PUBLIC_MAPBOX_TOKEN=${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
             NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY=${{ secrets.NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY }}
             NEXT_PUBLIC_MERCHANT_R2_BASE_URL=${{ secrets.NEXT_PUBLIC_MERCHANT_R2_BASE_URL }}

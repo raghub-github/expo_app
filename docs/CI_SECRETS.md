@@ -21,8 +21,7 @@ Set every one of these. Empty / missing secrets ship broken bundles.
 |---|---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | dashboard + partnersite | Supabase project endpoint | `https://uoxkwznciiibubtiiffh.supabase.co` |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | dashboard + partnersite | Supabase anon key (safe in client) | `eyJhbGc…` |
-| `NEXT_PUBLIC_APP_URL` (dashboard build) | dashboard | Public origin for the admin panel | `https://control.gatimitra.com` |
-| `NEXT_PUBLIC_APP_URL` (partnersite build) | partnersite | Public origin for the partner portal | `https://partner.gatimitra.com` |
+| ~~`NEXT_PUBLIC_APP_URL`~~ | — | **Not a secret anymore.** Hard-coded in each workflow YAML to its own public origin (`control.gatimitra.com` for dashboard, `partner.gatimitra.com` for partnersite). The previous shared secret could only carry one value, so one service always shipped with the wrong origin. | — |
 | `NEXT_PUBLIC_MAPBOX_TOKEN` | dashboard + partnersite | Mapbox pk.* token; without it, every map widget renders the "Mapbox token not configured" banner | `pk.eyJ1IjoicmFnaH…` |
 | `NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY` | dashboard | API origin for proxying merchant attachments | `https://api.gatimitra.com` |
 | `NEXT_PUBLIC_MERCHANT_R2_BASE_URL` | dashboard | R2 base for merchant assets | `https://4b9b7a72…r2.cloudflarestorage.com` |

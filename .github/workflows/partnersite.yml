@@ -58,7 +58,7 @@ jobs:
           set -e
           missing=""
           for var in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY \
-                     NEXT_PUBLIC_APP_URL NEXT_PUBLIC_MAPBOX_TOKEN \
+                     NEXT_PUBLIC_MAPBOX_TOKEN \
                      NEXT_PUBLIC_R2_PUBLIC_BASE_URL \
                      NEXT_PUBLIC_DISABLE_CURRENT_LOCATION \
                      NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN \
@@ -75,7 +75,6 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_MAPBOX_TOKEN: ${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
           NEXT_PUBLIC_R2_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_R2_PUBLIC_BASE_URL }}
           NEXT_PUBLIC_DISABLE_CURRENT_LOCATION: ${{ secrets.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION }}
@@ -104,7 +103,7 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-            NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_APP_URL=https://partner.gatimitra.com
             NEXT_PUBLIC_MAPBOX_TOKEN=${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
             NEXT_PUBLIC_R2_PUBLIC_BASE_URL=${{ secrets.NEXT_PUBLIC_R2_PUBLIC_BASE_URL }}
             NEXT_PUBLIC_DISABLE_CURRENT_LOCATION=${{ secrets.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION }}
