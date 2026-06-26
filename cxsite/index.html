@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GatiMitra | Moving India Forward</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+<style>
+:root{
+  --mint:#16c2a5;
+  --mint-light:#e8fffb;
+  --purple:#4b2ad4;
+  --purple-light:#f0edff;
+  --pink:#ff4d8d;
+  --gold:#ffc107;
+  --bg:#f6f8fb;
+  --border:#dcd6ff;
+  --text:#1e1e2f;
+  --text-light:#5a5a7a;
+  --white:#ffffff;
+  --nav-bg: rgba(255, 255, 255, 0.95);
+}
+
+*{margin:0;padding:0;box-sizing:border-box;font-family:Inter,sans-serif;}
+body{background:var(--bg);color:var(--text);}
+
+/* ================= HEADER ================= */
+header{
+  background: linear-gradient(rgba(22, 194, 165, 0.85), rgba(75, 42, 212, 0.9)), 
+              url('img/bg.png') center/cover no-repeat;
+  padding:20px 80px 240px;
+  border-bottom-left-radius:90px;
+  border-bottom-right-radius:90px;
+  color:#fff;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Add a subtle pattern overlay for better text readability */
+header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: url('https://www.transparenttextures.com/patterns/light-sketch.png');
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+/* Premium Navigation */
+.navbar{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  position: relative;
+  z-index: 100;
+  background: var(--nav-bg);
+  padding: 15px 30px;
+  border-radius: 20px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  margin-bottom: 60px;
+}
+
+/* Logo with gradient */
+.logo{
+  font-size: 32px;
+  font-weight: 900;
+  background: linear-gradient(135deg, var(--purple), var(--mint));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: -0.5px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.logo span{
+  display:block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-light);
+  margin-top: 2px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+}
+
+/* Attractive Navigation Links */
+.nav-links{
+  display:flex;
+  gap: 30px;
+  align-items:center;
+}
+
+.nav-links a{
+  color: var(--text);
+  text-decoration:none;
+  font-weight:600;
+  font-size: 15px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-links a:not(.sign-btn):hover {
+  background: linear-gradient(135deg, var(--mint-light), var(--purple-light));
+  color: var(--purple);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(22, 194, 165, 0.15);
+}
+
+.nav-links a:not(.sign-btn)::after {
+  content: '';
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--mint), var(--purple));
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.nav-links a:not(.sign-btn):hover::after {
+  width: 60%;
+}
+
+.dropdown{
+  position:relative;
+}
+.dropdown > a::after {
+  content: '▼';
+  font-size: 10px;
+  margin-left: 4px;
+  transition: transform 0.3s ease;
+}
+.dropdown:hover > a::after {
+  transform: rotate(180deg);
+}
+
+.dropdown-menu{
+  position:absolute;
+  top: 48px;
+  left:0;
+  background:#fff;
+  border-radius:18px;
+  box-shadow:0 20px 50px rgba(0,0,0,.2);
+  min-width:260px;
+  display:none;
+  overflow:hidden;
+  z-index:200;
+  border: 1px solid rgba(22, 194, 165, 0.1);
+  padding: 10px 0;
+  animation: fadeIn 0.3s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.dropdown-menu a{
+  display:block;
+  padding: 14px 22px;
+  color:#333;
+  text-decoration:none;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-left: 3px solid transparent;
+}
+.dropdown-menu a:hover{
+  background:linear-gradient(90deg, rgba(22, 194, 165, 0.1), rgba(75, 42, 212, 0.05));
+  color:var(--purple);
+  border-left: 3px solid var(--mint);
+  padding-left: 25px;
+}
+.dropdown:hover .dropdown-menu{display:block;}
+
+/* Premium Sign Button */
+.sign-btn{
+  background: linear-gradient(135deg, var(--purple), #6a3aff);
+  color: white !important;
+  padding: 14px 28px !important;
+  border-radius: 16px;
+  font-weight:700;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  box-shadow: 0 8px 25px rgba(75, 42, 212, 0.3);
+  border: none;
+  position: relative;
+  overflow: hidden;
+  z-index: 1;
+}
+.sign-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, var(--mint), var(--purple));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: -1;
+}
+.sign-btn:hover {
+  transform: translateY(-4px) scale(1.05);
+  box-shadow: 0 15px 35px rgba(75, 42, 212, 0.4);
+}
+.sign-btn:hover::before {
+  opacity: 1;
+}
+
+/* ================= HERO ================= */
+.hero{
+  text-align:center;
+  margin-top: 40px;
+  position: relative;
+  z-index: 10;
+}
+.hero h1{
+  font-size: 48px;
+  font-weight: 900;
+  line-height:1.15;
+  text-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  margin-bottom: 20px;
+}
+.hero h1 span{
+  background: linear-gradient(135deg, #00ffd5, #00c9ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 2px 8px rgba(0,255,213,0.3);
+}
+.hero p{
+  font-size: 18px;
+  font-weight: 500;
+  opacity: 0.95;
+  margin-bottom: 10px;
+  letter-spacing: 0.5px;
+}
+
+.search-box{
+  margin:50px auto 0;
+  max-width:850px;
+  color: black;
+  background: rgba(255, 255, 255, 0.85);
+  display:flex;
+  align-items:center;
+  border-radius:50px;
+  overflow:hidden;
+  box-shadow: 0 18px 45px rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.35);
+  backdrop-filter: blur(6px);
+  position:relative;
+  z-index:20;
+}
+
+.search-box::before{
+  content:'';
+  position:absolute;
+  inset:-2px;
+  background: linear-gradient(135deg, var(--pink), var(--bg));
+  border-radius:52px;
+  z-index:-1;
+  color: var(--text);
+  opacity:0.55;
+}
+
+/* INPUT */
+.search-box input{
+  flex:1;
+  border:none;
+  outline:none;
+  padding:22px 26px;
+  font-size:16px;
+  background: transparent;
+  color:#1e1e2f;
+}
+
+/* Placeholder clarity */
+.search-box input::placeholder{
+  color: rgba(30,30,47,0.55);
+}
+
+/* LOCATION SECTION */
+.location{
+  width:240px;
+  padding:22px 24px;
+  background: rgba(255,255,255,0.9);
+  border-right:1px solid rgba(0,0,0,0.08);
+  color:#1e1e2f;
+  font-weight:500;
+}
+
+
+/* ================= QUICK CARDS ================= */
+.cards-section{
+  margin-top:-150px;
+  padding-bottom:120px;
+  position: relative;
+  z-index: 20;
+}
+.cards-wrapper{
+  display:flex;
+  justify-content:center;
+  gap:28px;
+  flex-wrap:wrap;
+}
+.card{
+  background:#fff;
+  width:210px;
+  padding:28px 20px;
+  border-radius:28px;
+  box-shadow:0 20px 50px rgba(0,0,0,.15);
+  text-align:center;
+  transition:.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  cursor: pointer;
+  border: 1px solid rgba(220, 214, 255, 0.3);
+  position: relative;
+  overflow: hidden;
+}
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 5px;
+  background: linear-gradient(to right, var(--mint), var(--purple));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.card:hover::before {
+  opacity: 1;
+}
+.card:hover{
+  transform:translateY(-15px) scale(1.05);
+  box-shadow:0 40px 80px rgba(22,194,165,.3);
+  border-color: var(--mint);
+}
+.tag{
+  background: linear-gradient(135deg, var(--mint-light), rgba(75, 42, 212, 0.1));
+  color: var(--purple);
+  font-size:12px;
+  padding: 8px 16px;
+  border-radius:20px;
+  font-weight:800;
+  margin-bottom:16px;
+  display:inline-block;
+  letter-spacing: 0.5px;
+  border: 1px solid rgba(22, 194, 165, 0.2);
+}
+.card h3{
+  font-size:18px;
+  font-weight:800;
+  margin-bottom:18px;
+  color: var(--text);
+}
+.card img{
+  width:100px;
+  height: 100px;
+  object-fit: contain;
+  transition: transform 0.5s ease;
+  filter: drop-shadow(0 5px 15px rgba(0,0,0,0.1));
+}
+.card:hover img {
+  transform: scale(1.15) rotate(5deg);
+}
+
+/* ================= COMMON SECTION ================= */
+.section{
+  padding: 100px 80px 80px;
+  position: relative;
+}
+.section h1{
+  text-align:center;
+  font-size:42px;
+  font-weight:900;
+  margin-bottom: 60px;
+  position: relative;
+}
+.section h1::after {
+  content: '';
+  position: absolute;
+  bottom: -15px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80px;
+  height: 4px;
+  background: linear-gradient(to right, var(--mint), var(--purple));
+  border-radius: 2px;
+}
+.section h1 .pink{color:var(--mint);}
+.section h1 .purple{color:var(--purple);}
+.section h1 .white{color:#fff;}
+
+/* ================= BRAND GRID ================= */
+.brand-grid{
+  margin:50px auto 30px;
+  max-width:1200px;
+  display:grid;
+  grid-template-columns:repeat(7,1fr);
+  gap:34px;
+}
+.brand-card{
+  background:#fff;
+  height:170px;
+  border-radius:32px;
+  border:2px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  cursor:pointer;
+  transition:.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  position: relative;
+  overflow: hidden;
+}
+.brand-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, rgba(22, 194, 165, 0.1), rgba(75, 42, 212, 0.05));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.brand-card:hover::before {
+  opacity: 1;
+}
+.brand-card:hover{
+  transform:translateY(-12px) scale(1.05);
+  box-shadow:0 35px 70px rgba(75,42,212,.25);
+  border-color:var(--mint);
+}
+.brand-card img{
+  max-width:95px;
+  max-height:65px;
+  object-fit:contain;
+  position: relative;
+  z-index: 1;
+}
+
+/* ================= PAGINATION ================= */
+.nav-buttons{
+  display:flex;
+  justify-content:center;
+  gap:20px;
+  margin-top:40px;
+}
+.nav-buttons button{
+  background:#fff;
+  border:2px solid var(--mint);
+  color:var(--mint);
+  padding:14px 32px;
+  border-radius:30px;
+  font-weight:700;
+  cursor:pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-size: 15px;
+  position: relative;
+  overflow: hidden;
+}
+.nav-buttons button:hover{
+  background:linear-gradient(135deg, var(--mint), var(--purple));
+  color:#fff;
+  transform: translateY(-3px);
+  box-shadow: 0 10px 25px rgba(22, 194, 165, 0.3);
+}
+.nav-buttons button:disabled{
+  opacity:.4;
+  cursor:not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* ================= PREMIUM FOOTER ================= */
+.footer-premium {
+  background: linear-gradient(135deg, #0c0c1a, #121230);
+  color: var(--white);
+  padding: 100px 80px 40px;
+  position: relative;
+  overflow: hidden;
+}
+
+.footer-premium::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  background: linear-gradient(to right, var(--mint), var(--purple), var(--pink));
+}
+
+.footer-content {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 60px;
+  margin-bottom: 70px;
+}
+
+.footer-column h3 {
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: 30px;
+  color: var(--white);
+  position: relative;
+  padding-bottom: 15px;
+}
+
+.footer-column h3::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 50px;
+  height: 4px;
+  background: var(--mint);
+  border-radius: 2px;
+}
+
+.footer-links {
+  list-style: none;
+}
+
+.footer-links li {
+  margin-bottom: 16px;
+}
+
+.footer-links a {
+  color: #b0b0d0;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.footer-links a:hover {
+  color: var(--mint);
+  transform: translateX(8px);
+}
+
+.footer-links i {
+  margin-right: 12px;
+  font-size: 16px;
+  width: 22px;
+  text-align: center;
+  color: var(--mint);
+}
+
+.newsletter-form {
+  margin-top: 25px;
+}
+
+.newsletter-form p {
+  color: #b0b0d0;
+  font-size: 15px;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+
+.newsletter-input {
+  display: flex;
+  margin-bottom: 20px;
+}
+
+.newsletter-input input {
+  flex: 1;
+  padding: 16px 20px;
+  border: none;
+  border-radius: 12px 0 0 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--white);
+  font-size: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.newsletter-input input::placeholder {
+  color: #a0a0c0;
+}
+
+.newsletter-input button {
+  background: linear-gradient(135deg, var(--mint), var(--purple));
+  border: none;
+  color: white;
+  padding: 0 25px;
+  border-radius: 0 12px 12px 0;
+  cursor: pointer;
+  font-weight: 700;
+  transition: all 0.3s ease;
+  font-size: 15px;
+}
+
+.newsletter-input button:hover {
+  background: linear-gradient(135deg, var(--purple), var(--mint));
+  transform: translateX(2px);
+}
+
+.social-icons {
+  display: flex;
+  gap: 15px;
+  margin-top: 25px;
+}
+
+.social-icons a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 45px;
+  height: 45px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--white);
+  font-size: 18px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.social-icons a:hover {
+  background: linear-gradient(135deg, var(--mint), var(--purple));
+  transform: translateY(-5px) rotate(5deg);
+  box-shadow: 0 10px 20px rgba(22, 194, 165, 0.3);
+}
+
+.footer-bottom {
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  padding-top: 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.footer-logo {
+  font-size: 28px;
+  font-weight: 900;
+  color: var(--white);
+  background: linear-gradient(135deg, var(--mint), #00ffd5);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.copyright {
+  color: #a0a0c0;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.footer-bottom-links {
+  display: flex;
+  gap: 30px;
+}
+
+.footer-bottom-links a {
+  color: #b0b0d0;
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 500;
+  transition: color 0.3s ease;
+}
+
+.footer-bottom-links a:hover {
+  color: var(--mint);
+}
+
+.payment-methods {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.payment-icon {
+  background: rgba(255, 255, 255, 0.15);
+  width: 45px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--white);
+  font-weight: 700;
+  transition: all 0.3s ease;
+}
+
+.payment-icon:hover {
+  background: var(--mint);
+  transform: translateY(-3px);
+}
+
+.app-download {
+  margin-top: 30px;
+}
+
+.app-download p {
+  color: #b0b0d0;
+  font-size: 15px;
+  margin-bottom: 15px;
+  font-weight: 500;
+}
+
+.app-stores {
+  display: flex;
+  gap: 12px;
+}
+
+.store-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.store-btn:hover {
+  background: linear-gradient(135deg, rgba(22, 194, 165, 0.3), rgba(75, 42, 212, 0.3));
+  transform: translateY(-5px);
+  border-color: var(--mint);
+}
+
+.store-btn i {
+  font-size: 22px;
+}
+
+.store-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.store-text span:first-child {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.store-text span:last-child {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+/* ================= RESPONSIVE ================= */
+@media(max-width: 1200px) {
+  .footer-content {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media(max-width: 1100px) {
+  .navbar {
+    flex-direction: column;
+    gap: 20px;
+    padding: 20px;
+  }
+  .nav-links {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+@media(max-width: 1024px){
+  .brand-grid{grid-template-columns:repeat(4,1fr);}
+  .footer-premium {
+    padding: 80px 40px 30px;
+  }
+}
+
+@media(max-width: 900px){
+  header {
+    padding: 20px 40px 240px;
+  }
+  .section {
+    padding: 80px 40px 60px;
+  }
+  .hero h1 {
+    font-size: 40px;
+  }
+}
+
+@media(max-width: 768px){
+  .footer-content {
+    grid-template-columns: 1fr;
+  }
+  
+  .footer-bottom {
+    flex-direction: column;
+    gap: 25px;
+    text-align: center;
+  }
+  
+  .footer-bottom-links {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+@media(max-width: 600px){
+  header{padding:20px 20px 280px;}
+  .navbar {
+    padding: 15px;
+    border-radius: 15px;
+    margin-bottom: 40px;
+  }
+  .hero h1{font-size:32px;}
+  .search-box{flex-direction:column;}
+  .location{width:100%;border-right:none;border-bottom:1px solid #eee;}
+  .section{padding:60px 20px 40px;}
+  .brand-grid{grid-template-columns:repeat(2,1fr);}
+  .footer-premium {
+    padding: 60px 20px 30px;
+  }
+  .nav-links {
+    gap: 15px;
+  }
+  .nav-links a {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+  .sign-btn {
+    padding: 12px 20px !important;
+  }
+}
+
+.popup-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:9999;
+}
+
+.popup-box{
+  background:#fff;
+  padding:38px 42px;
+  border-radius:22px;
+  max-width:420px;
+  text-align:center;
+  box-shadow:0 30px 80px rgba(0,0,0,.4);
+  animation: popupScale .35s ease;
+}
+
+.popup-box h2{
+  font-size:26px;
+  margin-bottom:12px;
+  color:#4b2ad4;
+}
+
+.popup-box p{
+  font-size:15px;
+  color:#555;
+  line-height:1.6;
+}
+
+.popup-box button{
+  margin-top:22px;
+  padding:12px 28px;
+  border:none;
+  border-radius:30px;
+  background:linear-gradient(135deg,#ff4d8d,#4b2ad4);
+  color:#fff;
+  font-weight:600;
+  cursor:pointer;
+}
+
+.close-btn{
+  position:absolute;
+  top:18px;
+  right:22px;
+  font-size:24px;
+  cursor:pointer;
+  color:#999;
+}
+
+@keyframes popupScale{
+  from{transform:scale(.85);opacity:0}
+  to{transform:scale(1);opacity:1}
+}
+
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="navbar">
+    <div class="logo">GatiMitra<span>Moving India Forward</span></div>
+
+    <div class="nav-links">
+      <a href="#"><i class="fas fa-info-circle"></i> About</a>
+      <a href="#"><i class="fas fa-map-marker-alt"></i> Around You</a>
+      <div class="dropdown">
+        <a href="#"><i class="fas fa-briefcase"></i> Business</a>
+        <div class="dropdown-menu">
+          <a href="register.html" target="_blank"><i class="fas fa-store"></i> Register as Merchant</a>
+          <a href="#"><i class="fas fa-tag"></i> Register as Brand</a>
+          <a href="#"><i class="fas fa-building"></i> GatiMitra for Corporates</a>
+        </div>
+      </div>
+      <a href="#"><i class="fas fa-mobile-alt"></i> Get App</a>
+      <a href="#" class="sign-btn"><i class="fas fa-user-circle"></i> Sign In / Up</a>
+    </div>
+  </div>
+
+  <div class="hero">
+    <h1>India's <span>Lowest Commission</span><br>Delivery Platform</h1>
+    <p>Food • Parcel • Person Delivery</p>
+
+    <div class="search-box">
+      <input class="location" placeholder="📍 Detecting location…" readonly>
+      <input placeholder="🔍 Search for brands, stores & services…">
+    </div>
+  </div>
+</header>
+
+<!-- QUICK CATEGORIES -->
+<section class="cards-section">
+  <div class="cards-wrapper">
+
+    <!-- FOOD DELIVERY -->
+    <a href="order.html" class="card-link">
+      <div class="card">
+        <div class="tag">Food Delivery</div>
+        <h3>Order Your Meal</h3>
+        <img 
+          src="https://cdn-icons-png.flaticon.com/512/706/706164.png" 
+          alt="Food Delivery">
+      </div>
+    </a>
+
+    <!-- RIDE BOOKING -->
+    <a href="person.html" class="card-link">
+      <div class="card">
+        <div class="tag">Powered by GatiMitra</div>
+        <h3>Book Your Ride</h3>
+        <img 
+          src="https://cdn-icons-png.flaticon.com/512/854/854878.png" 
+          alt="Ride Booking">
+      </div>
+    </a>
+
+    <!-- PARCEL -->
+    <a href="Courier.html" class="card-link">
+      <div class="card">
+        <div class="tag">Send & Receive</div>
+        <h3>Book Your Parcel</h3>
+        <img 
+          src="https://cdn-icons-png.flaticon.com/512/679/679922.png" 
+          alt="Parcel Delivery">
+      </div>
+    </a>
+
+<!-- VOUCHERS -->
+<a href="javascript:void(0)" class="card-link" id="voucherBtn">
+  <div class="card">
+    <div class="tag">Deals & Offers</div>
+    <h3>Online Vouchers</h3>
+    <img 
+      src="https://cdn-icons-png.flaticon.com/512/891/891419.png" 
+      alt="Discount Vouchers">
+  </div>
+</a>
+
+<div class="popup-overlay" id="voucherPopup">
+  <div class="popup-box">
+    <span class="close-btn" onclick="closeVoucherPopup()">×</span>
+    
+    <h2>Coming Soon 🚀</h2>
+    <p>
+      We’re working on exciting deals & vouchers.<br>
+      This feature will be live very soon on GatiMitra.
+    </p>
+
+    <button onclick="closeVoucherPopup()">Got it</button>
+  </div>
+</div>
+
+
+
+    <!-- NEAR ME -->
+    <a href="#" class="card-link">
+      <div class="card">
+        <div class="tag">Explore Nearby</div>
+        <h3>Near Me</h3>
+        <img 
+          src="https://cdn-icons-png.flaticon.com/512/684/684908.png" 
+          alt="Nearby Places">
+      </div>
+    </a>
+
+  </div>
+</section>
+
+
+<!-- FOOD BRANDS -->
+<section class="section">
+  <h1>Top <span class="pink">Food Delivery</span> <span class="purple">Brands</span></h1>
+  <div class="brand-grid" id="foodGrid"></div>
+  <div class="nav-buttons">
+    <button id="prevBtn">← Previous</button>
+    <button id="nextBtn">Next →</button>
+  </div>
+</section>
+
+<!-- FASHION BRANDS -->
+<section class="section">
+  <h1>Top <span class="pink">Fashion</span> <span class="purple">Brands</span></h1>
+  <div class="brand-grid">
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/7/7e/Bata_Logo.svg"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/f/fd/Puma_logo.svg"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/en/3/35/Spykar_Logo.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/2/25/Lifestyle_Stores_Logo.svg"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/en/1/18/Shoppers_Stop_Logo.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/9/97/Trends_Footwear_logo.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/6/6c/Pepe_Jeans_logo.svg"></div>
+  </div>
+</section>
+
+<!-- ONLINE BRANDS -->
+<section class="section">
+  <h1>Top <span class="pink">Online</span> <span class="purple">Brands</span></h1>
+  <div class="brand-grid">
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/4/4a/Nykaa_Logo.svg"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Myntra_logo.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/c/cc/Uber_logo_2018.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/8/8b/MakeMyTrip_Logo.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Mamaearth_logo.png"></div>
+    <div class="brand-card"><img src="https://upload.wikimedia.org/wikipedia/commons/6/6e/Bombay_Shaving_Company_logo.png"></div>
+  </div>
+</section>
+
+<!-- PREMIUM FOOTER -->
+<footer class="footer-premium">
+  <div class="footer-content">
+    <div class="footer-column">
+      <h3>Quick Links</h3>
+      <ul class="footer-links">
+        <li><a href="#"><i class="fas fa-home"></i>Home</a></li>
+        <li><a href="#"><i class="fas fa-utensils"></i>Food Delivery</a></li>
+        <li><a href="#"><i class="fas fa-shipping-fast"></i>Parcel Delivery</a></li>
+        <li><a href="#"><i class="fas fa-user-friends"></i>Person Delivery</a></li>
+        <li><a href="#"><i class="fas fa-tags"></i>Deals & Offers</a></li>
+        <li><a href="#"><i class="fas fa-map-marker-alt"></i>Around You</a></li>
+      </ul>
+    </div>
+    
+    <div class="footer-column">
+      <h3>Company</h3>
+      <ul class="footer-links">
+        <li><a href="#"><i class="fas fa-info-circle"></i>About Us</a></li>
+        <li><a href="#"><i class="fas fa-newspaper"></i>Blog</a></li>
+        <li><a href="#"><i class="fas fa-bullhorn"></i>Press</a></li>
+        <li><a href="#"><i class="fas fa-users"></i>Careers</a></li>
+        <li><a href="#"><i class="fas fa-handshake"></i>Partners</a></li>
+        <li><a href="#"><i class="fas fa-shield-alt"></i>Trust & Safety</a></li>
+      </ul>
+    </div>
+    
+    <div class="footer-column">
+      <h3>Support</h3>
+      <ul class="footer-links">
+        <li><a href="#"><i class="fas fa-question-circle"></i>Help Center</a></li>
+        <li><a href="#"><i class="fas fa-phone-alt"></i>Contact Us</a></li>
+        <li><a href="#"><i class="fas fa-exclamation-triangle"></i>Report Issue</a></li>
+        <li><a href="#"><i class="fas fa-comment-dots"></i>Feedback</a></li>
+        <li><a href="#"><i class="fas fa-file-alt"></i>Terms & Conditions</a></li>
+        <li><a href="#"><i class="fas fa-lock"></i>Privacy Policy</a></li>
+      </ul>
+    </div>
+    
+    <div class="footer-column">
+      <h3>Stay Connected</h3>
+      <div class="newsletter-form">
+        <p>Subscribe to our newsletter for latest updates and exclusive offers.</p>
+        <div class="newsletter-input">
+          <input type="email" placeholder="Enter your email">
+          <button><i class="fas fa-paper-plane"></i> Subscribe</button>
+        </div>
+        
+        <div class="app-download">
+          <p>Download our app</p>
+          <div class="app-stores">
+            <div class="store-btn">
+              <i class="fab fa-google-play"></i>
+              <div class="store-text">
+                <span>GET IT ON</span>
+                <span>Google Play</span>
+              </div>
+            </div>
+            <div class="store-btn">
+              <i class="fab fa-apple"></i>
+              <div class="store-text">
+                <span>Download on the</span>
+                <span>App Store</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="social-icons">
+          <a href="#"><i class="fab fa-facebook-f"></i></a>
+          <a href="#"><i class="fab fa-twitter"></i></a>
+          <a href="#"><i class="fab fa-instagram"></i></a>
+          <a href="#"><i class="fab fa-linkedin-in"></i></a>
+          <a href="#"><i class="fab fa-youtube"></i></a>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="footer-bottom">
+    <div class="footer-logo">GatiMitra</div>
+    
+    <div class="copyright">
+      © 2025 GatiMitra Technologies Pvt. Ltd. • Moving India Forward
+    </div>
+    
+    <div class="footer-bottom-links">
+      <a href="#">Sitemap</a>
+      <a href="#">Cookie Policy</a>
+      <a href="#">Accessibility</a>
+    </div>
+    
+    <div class="payment-methods">
+      <div class="payment-icon">VISA</div>
+      <div class="payment-icon">MC</div>
+      <div class="payment-icon">UPI</div>
+      <div class="payment-icon">COD</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+const foodBrands=[
+  "https://upload.wikimedia.org/wikipedia/commons/3/3b/Taco_Bell_Logo_2016.svg",
+  "https://danachoga.com/wp-content/uploads/2022/05/danachoga-logo.png",
+  "https://sevenntenders.com/assets/images/logo.png",
+  "https://www.chaayos.com/images/logo.png",
+  "https://upload.wikimedia.org/wikipedia/commons/d/d2/Pizza_Hut_logo.svg",
+  "https://upload.wikimedia.org/wikipedia/commons/1/1f/Wow_Momo_logo.png",
+  "https://upload.wikimedia.org/wikipedia/en/6/6b/BTW_logo.png",
+  "https://samosaparty.com/wp-content/uploads/2022/02/logo.png",
+  "https://freshmenu.com/images/logo.svg",
+  "https://eatfit.in/static/images/logo.svg",
+  "https://upload.wikimedia.org/wikipedia/commons/3/3b/Wendy%27s_logo_2012.svg",
+  "https://biryani-by-kilo.s3.ap-south-1.amazonaws.com/logo.png",
+  "https://behrouzbiryani.com/assets/images/logo.png",
+  "https://omfoods.in/logo.png",
+  "https://upload.wikimedia.org/wikipedia/commons/5/5c/Subway_2016_logo.svg"
+];
+
+const perPage=14;
+let page=0;
+const grid=document.getElementById("foodGrid");
+const prev=document.getElementById("prevBtn");
+const next=document.getElementById("nextBtn");
+
+function render(){
+  grid.innerHTML="";
+  foodBrands.slice(page*perPage,page*perPage+perPage).forEach(src=>{
+    const d=document.createElement("div");
+    d.className="brand-card";
+    d.innerHTML=`<img src="${src}">`;
+    grid.appendChild(d);
+  });
+  prev.disabled=page===0;
+  next.disabled=(page+1)*perPage>=foodBrands.length;
+}
+prev.onclick=()=>{page--;render();}
+next.onclick=()=>{page++;render();}
+render();
+
+
+</script>
+<script>
+  const voucherBtn = document.getElementById('voucherBtn');
+  const voucherPopup = document.getElementById('voucherPopup');
+
+  voucherBtn.addEventListener('click', () => {
+    voucherPopup.style.display = 'flex';
+  });
+
+  function closeVoucherPopup(){
+    voucherPopup.style.display = 'none';
+  }
+</script>
+
+</body>
+</html>

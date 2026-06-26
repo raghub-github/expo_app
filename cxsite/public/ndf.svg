@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">
+  <!-- Background -->
+  <rect width="400" height="300" fill="#f8f9fa"/>
+  
+  <!-- Empty Box Icon -->
+  <g transform="translate(200, 80)">
+    <rect x="-50" y="-40" width="100" height="80" rx="8" fill="none" stroke="#e0e7ff" stroke-width="3"/>
+    <line x1="-50" y1="0" x2="50" y2="0" stroke="#e0e7ff" stroke-width="2"/>
+    <circle cx="0" cy="-10" r="15" fill="none" stroke="#818cf8" stroke-width="3"/>
+  </g>
+  
+  <!-- Text -->
+  <text x="200" y="200" text-anchor="middle" font-size="28" font-weight="bold" fill="#4f46e5" font-family="Arial, sans-serif">
+    No Data Found
+  </text>
+  
+  <!-- Subtext -->
+  <text x="200" y="240" text-anchor="middle" font-size="14" fill="#9ca3af" font-family="Arial, sans-serif">
+    The parcel tracking information is not available
+  </text>
+  
+  <!-- Decorative elements -->
+  <circle cx="80" cy="260" r="3" fill="#e0e7ff"/>
+  <circle cx="320" cy="260" r="3" fill="#e0e7ff"/>
+  <circle cx="100" cy="40" r="2" fill="#e0e7ff"/>
+  <circle cx="300" cy="50" r="2" fill="#e0e7ff"/>
+</svg>

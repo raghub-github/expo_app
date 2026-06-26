@@ -1,0 +1,1299 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>स्वाद भारत - ऑर्डर फूड</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+
+        :root {
+            --primary: #d97706;
+            --secondary: #f59e0b;
+            --accent: #dc2626;
+            --dark: #1f2937;
+            --light: #fef3c7;
+            --text: #374151;
+            --bg: #fffbeb;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Header */
+        .header {
+            background: white;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 0;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo-icon {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            width: 45px;
+            height: 45px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .logo-text h1 {
+            font-size: 24px;
+            color: var(--dark);
+        }
+
+        .logo-text p {
+            font-size: 12px;
+            color: var(--primary);
+        }
+
+        .cart-icon {
+            position: relative;
+            font-size: 24px;
+            color: var(--primary);
+            cursor: pointer;
+        }
+
+        .cart-count {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: var(--accent);
+            color: white;
+            border-radius: 50%;
+            width: 22px;
+            height: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        /* Restaurant Info */
+        .restro-info {
+            background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80');
+            background-size: cover;
+            background-position: center;
+            color: white;
+            padding: 40px 0;
+            border-radius: 0 0 20px 20px;
+            margin-bottom: 30px;
+        }
+
+        .restro-details {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 30px;
+            align-items: start;
+        }
+
+        @media (max-width: 768px) {
+            .restro-details {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .restro-name {
+            font-size: 36px;
+            margin-bottom: 10px;
+            color: white;
+        }
+
+        .rating {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+
+        .stars {
+            color: #fbbf24;
+        }
+
+        .tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .tag {
+            background: rgba(255,255,255,0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+
+        .info-box {
+            background: white;
+            color: var(--dark);
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        .info-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .info-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .info-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--light);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--primary);
+        }
+
+        /* Categories */
+        .categories {
+            display: flex;
+            gap: 15px;
+            overflow-x: auto;
+            padding: 15px 0;
+            margin-bottom: 30px;
+            scrollbar-width: thin;
+        }
+
+        .category-btn {
+            padding: 10px 25px;
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 30px;
+            white-space: nowrap;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .category-btn.active,
+        .category-btn:hover {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        /* Menu Items */
+        .menu-section {
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 28px;
+            color: var(--dark);
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid var(--light);
+        }
+
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 25px;
+        }
+
+        .menu-item {
+            background: white;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            transition: transform 0.3s;
+        }
+
+        .menu-item:hover {
+            transform: translateY(-5px);
+        }
+
+        .item-img {
+            height: 180px;
+            background: #e5e7eb;
+            overflow: hidden;
+        }
+
+        .item-img img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.5s;
+        }
+
+        .menu-item:hover .item-img img {
+            transform: scale(1.05);
+        }
+
+        .item-details {
+            padding: 20px;
+        }
+
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+
+        .item-name {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--dark);
+        }
+
+        .item-price {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .item-desc {
+            color: #6b7280;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .item-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .veg-nonveg {
+            width: 20px;
+            height: 20px;
+            border: 2px solid;
+            border-radius: 2px;
+            position: relative;
+        }
+
+        .veg {
+            border-color: #22c55e;
+        }
+
+        .veg::before {
+            content: '';
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: #22c55e;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .nonveg {
+            border-color: #dc2626;
+        }
+
+        .nonveg::before {
+            content: '';
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: #dc2626;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .add-to-cart {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background 0.3s;
+        }
+
+        .add-to-cart:hover {
+            background: #b45309;
+        }
+
+        .quantity-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .qty-btn {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: var(--light);
+            border: none;
+            color: var(--primary);
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .qty {
+            font-weight: 700;
+            min-width: 30px;
+            text-align: center;
+        }
+
+        /* Cart Sidebar */
+        .cart-sidebar {
+            position: fixed;
+            top: 0;
+            right: -400px;
+            width: 380px;
+            height: 100vh;
+            background: white;
+            box-shadow: -5px 0 25px rgba(0,0,0,0.15);
+            padding: 25px;
+            overflow-y: auto;
+            transition: right 0.4s ease;
+            z-index: 1000;
+        }
+
+        .cart-sidebar.active {
+            right: 0;
+        }
+
+        .cart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f3f4f6;
+        }
+
+        .cart-header h2 {
+            font-size: 24px;
+            color: var(--dark);
+        }
+
+        .close-cart {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #6b7280;
+        }
+
+        .cart-items {
+            margin-bottom: 25px;
+        }
+
+        .cart-item {
+            display: flex;
+            align-items: center;
+            padding: 15px 0;
+            border-bottom: 1px solid #f3f4f6;
+        }
+
+        .cart-item-img {
+            width: 70px;
+            height: 70px;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-right: 15px;
+        }
+
+        .cart-item-img img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .cart-item-details {
+            flex-grow: 1;
+        }
+
+        .cart-item-name {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .cart-item-price {
+            color: var(--primary);
+            font-weight: 700;
+        }
+
+        .cart-item-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .cart-total {
+            background: #f9fafb;
+            padding: 20px;
+            border-radius: 15px;
+            margin-top: 20px;
+        }
+
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .total-row.final {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--dark);
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 2px dashed #d1d5db;
+        }
+
+        .checkout-btn {
+            width: 100%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 15px;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: background 0.3s;
+        }
+
+        .checkout-btn:hover {
+            background: #b91c1c;
+        }
+
+        .empty-cart {
+            text-align: center;
+            padding: 40px 20px;
+            color: #6b7280;
+        }
+
+        .empty-cart i {
+            font-size: 60px;
+            margin-bottom: 15px;
+            color: #d1d5db;
+        }
+
+        /* Overlay */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+            display: none;
+        }
+
+        .overlay.active {
+            display: block;
+        }
+
+        /* Footer */
+        .footer {
+            background: var(--dark);
+            color: white;
+            padding: 40px 0 20px;
+            margin-top: 50px;
+        }
+
+        .footer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .footer-section h3 {
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: var(--light);
+        }
+
+        .footer-section ul {
+            list-style: none;
+        }
+
+        .footer-section ul li {
+            margin-bottom: 10px;
+        }
+
+        .footer-section ul li a {
+            color: #d1d5db;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .footer-section ul li a:hover {
+            color: var(--secondary);
+        }
+
+        .copyright {
+            text-align: center;
+            padding-top: 20px;
+            border-top: 1px solid #374151;
+            color: #9ca3af;
+            font-size: 14px;
+        }
+
+        /* Notification */
+        .notification {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--primary);
+            color: white;
+            padding: 15px 25px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            z-index: 1000;
+            transition: transform 0.5s;
+        }
+
+        .notification.show {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .cart-sidebar {
+                width: 100%;
+                right: -100%;
+            }
+            
+            .menu-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .restro-name {
+                font-size: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <nav class="nav">
+                <div class="logo">
+                    <div class="logo-icon">
+                        खा
+                    </div>
+                    <div class="logo-text">
+                        <h1>स्वाद भारत</h1>
+                        <p>शुद्ध भारतीय स्वाद</p>
+                    </div>
+                </div>
+                <div class="cart-icon" id="cartToggle">
+                    <i class="fas fa-shopping-cart"></i>
+                    <span class="cart-count" id="cartCount">0</span>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Restaurant Info -->
+    <section class="restro-info">
+        <div class="container">
+            <div class="restro-details">
+                <div>
+                    <h1 class="restro-name">स्वाद भारत रेस्टोरेंट</h1>
+                    <div class="rating">
+                        <div class="stars">
+                            <i class="fas fa-star"></i>
+                            <i class="fas fa-star"></i>
+                            <i class="fas fa-star"></i>
+                            <i class="fas fa-star"></i>
+                            <i class="fas fa-star-half-alt"></i>
+                        </div>
+                        <span>4.5 (1,234 रेटिंग)</span>
+                    </div>
+                    <p>उत्तरी भारतीय, मुगलई, सीफूड • ₹200 न्यूनतम ऑर्डर • 30-45 मिनट</p>
+                    <div class="tags">
+                        <span class="tag">शाकाहारी</span>
+                        <span class="tag">मांसाहारी</span>
+                        <span class="tag">स्पाइसी</span>
+                        <span class="tag">बजट फ्रेंडली</span>
+                        <span class="tag">फैमिली</span>
+                    </div>
+                </div>
+                <div class="info-box">
+                    <div class="info-item">
+                        <div class="info-icon">
+                            <i class="fas fa-map-marker-alt"></i>
+                        </div>
+                        <div>
+                            <h4>पता</h4>
+                            <p>123, फूड स्ट्रीट, मुंबई - 400001</p>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-icon">
+                            <i class="fas fa-phone"></i>
+                        </div>
+                        <div>
+                            <h4>फोन</h4>
+                            <p>+91 98765 43210</p>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-icon">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                        <div>
+                            <h4>खुलने का समय</h4>
+                            <p>सोम-शुक्र: 10:00 AM - 11:00 PM</p>
+                            <p>शनि-रवि: 10:00 AM - 12:00 AM</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Categories -->
+    <div class="container">
+        <div class="categories">
+            <button class="category-btn active" data-category="all">सभी</button>
+            <button class="category-btn" data-category="starters">स्टार्टर्स</button>
+            <button class="category-btn" data-category="main">मुख्य व्यंजन</button>
+            <button class="category-btn" data-category="breads">रोटियाँ</button>
+            <button class="category-btn" data-category="rice">चावल</button>
+            <button class="category-btn" data-category="desserts">डेज़र्ट</button>
+            <button class="category-btn" data-category="drinks">पेय पदार्थ</button>
+        </div>
+    </div>
+
+    <!-- Menu Sections -->
+    <div class="container">
+        <!-- Starters -->
+        <section class="menu-section" id="starters">
+            <h2 class="section-title">स्टार्टर्स</h2>
+            <div class="menu-grid">
+                <!-- Items will be loaded by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Main Course -->
+        <section class="menu-section" id="main">
+            <h2 class="section-title">मुख्य व्यंजन</h2>
+            <div class="menu-grid">
+                <!-- Items will be loaded by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Breads -->
+        <section class="menu-section" id="breads">
+            <h2 class="section-title">रोटियाँ</h2>
+            <div class="menu-grid">
+                <!-- Items will be loaded by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Rice -->
+        <section class="menu-section" id="rice">
+            <h2 class="section-title">चावल व्यंजन</h2>
+            <div class="menu-grid">
+                <!-- Items will be loaded by JavaScript -->
+            </div>
+        </section>
+    </div>
+
+    <!-- Cart Sidebar -->
+    <div class="cart-sidebar" id="cartSidebar">
+        <div class="cart-header">
+            <h2>आपका ऑर्डर</h2>
+            <button class="close-cart" id="closeCart">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="cart-items" id="cartItems">
+            <!-- Cart items will be loaded here -->
+        </div>
+        <div class="cart-total">
+            <div class="total-row">
+                <span>सबटोटल</span>
+                <span id="subtotal">₹0</span>
+            </div>
+            <div class="total-row">
+                <span>डिलीवरी चार्ज</span>
+                <span id="deliveryCharge">₹30</span>
+            </div>
+            <div class="total-row">
+                <span>जीएसटी (5%)</span>
+                <span id="tax">₹0</span>
+            </div>
+            <div class="total-row final">
+                <span>कुल राशि</span>
+                <span id="totalAmount">₹0</span>
+            </div>
+            <button class="checkout-btn" id="checkoutBtn">ऑर्डर दें</button>
+        </div>
+    </div>
+
+    <!-- Overlay -->
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Notification -->
+    <div class="notification" id="notification">
+        <span id="notificationText">आइटम कार्ट में जोड़ा गया</span>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h3>स्वाद भारत</h3>
+                    <p>2005 से शुद्ध और स्वादिष्ट भारतीय भोजन परोस रहे हैं। हमारी प्रतिबद्धता गुणवत्ता और स्वाद के प्रति है।</p>
+                </div>
+                <div class="footer-section">
+                    <h3>लिंक्स</h3>
+                    <ul>
+                        <li><a href="#">होम</a></li>
+                        <li><a href="#menu">मेनू</a></li>
+                        <li><a href="#about">हमारे बारे में</a></li>
+                        <li><a href="#contact">संपर्क करें</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>संपर्क</h3>
+                    <ul>
+                        <li><i class="fas fa-map-marker-alt"></i> मुंबई, भारत</li>
+                        <li><i class="fas fa-phone"></i> +91 98765 43210</li>
+                        <li><i class="fas fa-envelope"></i> info@swadbharat.com</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="copyright">
+                <p>© 2023 स्वाद भारत रेस्टोरेंट. सभी अधिकार सुरक्षित।</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Restaurant Data
+        const menuItems = {
+            starters: [
+                {
+                    id: 1,
+                    name: "पनीर टिक्का",
+                    description: "मसालेदार पनीर के टुकड़े, तंदूर में पके हुए",
+                    price: 250,
+                    image: "https://images.unsplash.com/photo-1565557623262-b51c2513a641?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "starters",
+                    type: "veg"
+                },
+                {
+                    id: 2,
+                    name: "चिकन टिक्का",
+                    description: "मैरीनेटेड चिकन, तंदूर में पकाया गया",
+                    price: 320,
+                    image: "https://images.unsplash.com/photo-1626645738196-c2a7c87a8f58?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "starters",
+                    type: "nonveg"
+                },
+                {
+                    id: 3,
+                    name: "हरा भरा कबाब",
+                    description: "हरी सब्जियों और मसालों से बने कबाब",
+                    price: 220,
+                    image: "https://images.unsplash.com/photo-1606491956689-2ea866880c84?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "starters",
+                    type: "veg"
+                },
+                {
+                    id: 4,
+                    name: "फिश फिंगर्स",
+                    description: "क्रिस्पी फिश फिंगर्स, टार्टर सॉस के साथ",
+                    price: 280,
+                    image: "https://images.unsplash.com/photo-1551024506-0bccd828d307?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "starters",
+                    type: "nonveg"
+                }
+            ],
+            main: [
+                {
+                    id: 5,
+                    name: "पनीर बटर मसाला",
+                    description: "मलाईदार टमाटर ग्रेवी में पनीर",
+                    price: 350,
+                    image: "https://images.unsplash.com/photo-1631452180519-c014fe946bc7?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "main",
+                    type: "veg"
+                },
+                {
+                    id: 6,
+                    name: "चिकन बटर मसाला",
+                    description: "मलाईदार टमाटर ग्रेवी में चिकन",
+                    price: 420,
+                    image: "https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "main",
+                    type: "nonveg"
+                },
+                {
+                    id: 7,
+                    name: "मटर पनीर",
+                    description: "हरे मटर और पनीर की स्वादिष्ट करी",
+                    price: 320,
+                    image: "https://images.unsplash.com/photo-1565557623262-b51c2513a641?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "main",
+                    type: "veg"
+                },
+                {
+                    id: 8,
+                    name: "मुर्ग मुखनी",
+                    description: "मखनी ग्रेवी में टेंडर चिकन",
+                    price: 450,
+                    image: "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "main",
+                    type: "nonveg"
+                }
+            ],
+            breads: [
+                {
+                    id: 9,
+                    name: "बटर नान",
+                    description: "मक्खन लगी मुलायम नान",
+                    price: 60,
+                    image: "https://images.unsplash.com/photo-1603532648955-039310d9ed75?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "breads",
+                    type: "veg"
+                },
+                {
+                    id: 10,
+                    name: "रूमाली रोटी",
+                    description: "पतली और मुलायम रूमाली रोटी",
+                    price: 50,
+                    image: "https://images.unsplash.com/photo-1563379091339-03246963d9d6?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "breads",
+                    type: "veg"
+                },
+                {
+                    id: 11,
+                    name: "लहसुन नान",
+                    description: "लहसुन और जड़ी बूटियों के साथ नान",
+                    price: 80,
+                    image: "https://images.unsplash.com/photo-1546833999-b9f581a1996d?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "breads",
+                    type: "veg"
+                },
+                {
+                    id: 12,
+                    name: "तंदूरी रोटी",
+                    description: "तंदूर में पकी हुई स्वादिष्ट रोटी",
+                    price: 40,
+                    image: "https://images.unsplash.com/photo-1565299507177-b0ac66763828?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "breads",
+                    type: "veg"
+                }
+            ],
+            rice: [
+                {
+                    id: 13,
+                    name: "वेज बिरयानी",
+                    description: "सब्जियों और मसालों से तैयार बिरयानी",
+                    price: 280,
+                    image: "https://images.unsplash.com/photo-1563379091339-03246963d9d6?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "rice",
+                    type: "veg"
+                },
+                {
+                    id: 14,
+                    name: "चिकन बिरयानी",
+                    description: "चिकन और लम्बे चावल की बिरयानी",
+                    price: 380,
+                    image: "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "rice",
+                    type: "nonveg"
+                },
+                {
+                    id: 15,
+                    name: "जीरा राइस",
+                    description: "जीरे के साथ सुगंधित चावल",
+                    price: 180,
+                    image: "https://images.unsplash.com/photo-1512058564366-18510be2db19?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "rice",
+                    type: "veg"
+                },
+                {
+                    id: 16,
+                    name: "पुलाव",
+                    description: "मिश्रित सब्जियों के साथ पुलाव",
+                    price: 220,
+                    image: "https://images.unsplash.com/photo-1589302168068-964664d93dc0?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                    category: "rice",
+                    type: "veg"
+                }
+            ]
+        };
+
+        // Cart State
+        let cart = [];
+        const deliveryCharge = 30;
+
+        // DOM Elements
+        const cartToggle = document.getElementById('cartToggle');
+        const closeCart = document.getElementById('closeCart');
+        const cartSidebar = document.getElementById('cartSidebar');
+        const overlay = document.getElementById('overlay');
+        const cartItemsContainer = document.getElementById('cartItems');
+        const cartCount = document.getElementById('cartCount');
+        const subtotalElement = document.getElementById('subtotal');
+        const taxElement = document.getElementById('tax');
+        const totalAmountElement = document.getElementById('totalAmount');
+        const checkoutBtn = document.getElementById('checkoutBtn');
+        const notification = document.getElementById('notification');
+        const notificationText = document.getElementById('notificationText');
+        const categoryBtns = document.querySelectorAll('.category-btn');
+
+        // Initialize Menu
+        function initializeMenu() {
+            for (const category in menuItems) {
+                const section = document.getElementById(category);
+                if (section) {
+                    const grid = section.querySelector('.menu-grid');
+                    grid.innerHTML = '';
+                    
+                    menuItems[category].forEach(item => {
+                        const itemElement = createMenuItemElement(item);
+                        grid.appendChild(itemElement);
+                    });
+                }
+            }
+        }
+
+        // Create Menu Item Element
+        function createMenuItemElement(item) {
+            const div = document.createElement('div');
+            div.className = 'menu-item';
+            div.dataset.id = item.id;
+            div.dataset.category = item.category;
+            
+            const cartItem = cart.find(cartItem => cartItem.id === item.id);
+            const quantity = cartItem ? cartItem.quantity : 0;
+            
+            div.innerHTML = `
+                <div class="item-img">
+                    <img src="${item.image}" alt="${item.name}">
+                </div>
+                <div class="item-details">
+                    <div class="item-header">
+                        <h3 class="item-name">${item.name}</h3>
+                        <div class="item-price">₹${item.price}</div>
+                    </div>
+                    <p class="item-desc">${item.description}</p>
+                    <div class="item-footer">
+                        <div class="veg-nonveg ${item.type}"></div>
+                        ${quantity === 0 ? 
+                            `<button class="add-to-cart" onclick="addToCart(${item.id})">
+                                <i class="fas fa-plus"></i> कार्ट में डालें
+                            </button>` : 
+                            `<div class="quantity-controls">
+                                <button class="qty-btn" onclick="updateQuantity(${item.id}, -1)">-</button>
+                                <span class="qty">${quantity}</span>
+                                <button class="qty-btn" onclick="updateQuantity(${item.id}, 1)">+</button>
+                            </div>`
+                        }
+                    </div>
+                </div>
+            `;
+            
+            return div;
+        }
+
+        // Add to Cart
+        function addToCart(itemId) {
+            let item = null;
+            let category = null;
+            
+            // Find item in menu
+            for (const cat in menuItems) {
+                const found = menuItems[cat].find(i => i.id === itemId);
+                if (found) {
+                    item = found;
+                    category = cat;
+                    break;
+                }
+            }
+            
+            if (!item) return;
+            
+            // Check if item already in cart
+            const existingItem = cart.find(cartItem => cartItem.id === itemId);
+            
+            if (existingItem) {
+                existingItem.quantity += 1;
+            } else {
+                cart.push({
+                    ...item,
+                    quantity: 1
+                });
+            }
+            
+            updateCart();
+            updateMenuItemUI(itemId, category);
+            showNotification(`${item.name} कार्ट में जोड़ा गया`);
+        }
+
+        // Update Quantity
+        function updateQuantity(itemId, change) {
+            const itemIndex = cart.findIndex(item => item.id === itemId);
+            
+            if (itemIndex !== -1) {
+                cart[itemIndex].quantity += change;
+                
+                if (cart[itemIndex].quantity <= 0) {
+                    cart.splice(itemIndex, 1);
+                }
+                
+                updateCart();
+                
+                // Update menu item UI
+                let category = null;
+                for (const cat in menuItems) {
+                    if (menuItems[cat].find(i => i.id === itemId)) {
+                        category = cat;
+                        break;
+                    }
+                }
+                
+                if (category) {
+                    updateMenuItemUI(itemId, category);
+                }
+                
+                if (change > 0) {
+                    const item = cart.find(item => item.id === itemId);
+                    if (item) {
+                        showNotification(`${item.name} की मात्रा बढ़ाई गई`);
+                    }
+                }
+            }
+        }
+
+        // Update Menu Item UI
+        function updateMenuItemUI(itemId, category) {
+            const menuItem = document.querySelector(`.menu-item[data-id="${itemId}"]`);
+            if (!menuItem) return;
+            
+            const item = cart.find(cartItem => cartItem.id === itemId);
+            const quantity = item ? item.quantity : 0;
+            
+            const footer = menuItem.querySelector('.item-footer');
+            if (footer) {
+                if (quantity === 0) {
+                    footer.innerHTML = `
+                        <div class="veg-nonveg ${menuItems[category].find(i => i.id === itemId).type}"></div>
+                        <button class="add-to-cart" onclick="addToCart(${itemId})">
+                            <i class="fas fa-plus"></i> कार्ट में डालें
+                        </button>
+                    `;
+                } else {
+                    footer.innerHTML = `
+                        <div class="veg-nonveg ${menuItems[category].find(i => i.id === itemId).type}"></div>
+                        <div class="quantity-controls">
+                            <button class="qty-btn" onclick="updateQuantity(${itemId}, -1)">-</button>
+                            <span class="qty">${quantity}</span>
+                            <button class="qty-btn" onclick="updateQuantity(${itemId}, 1)">+</button>
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        // Update Cart
+        function updateCart() {
+            // Update cart count
+            const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
+            cartCount.textContent = totalItems;
+            
+            // Update cart items
+            cartItemsContainer.innerHTML = '';
+            
+            if (cart.length === 0) {
+                cartItemsContainer.innerHTML = `
+                    <div class="empty-cart">
+                        <i class="fas fa-shopping-cart"></i>
+                        <h3>आपकी कार्ट खाली है</h3>
+                        <p>कुछ स्वादिष्ट व्यंजन जोड़ें!</p>
+                    </div>
+                `;
+            } else {
+                cart.forEach(item => {
+                    const itemElement = document.createElement('div');
+                    itemElement.className = 'cart-item';
+                    itemElement.innerHTML = `
+                        <div class="cart-item-img">
+                            <img src="${item.image}" alt="${item.name}">
+                        </div>
+                        <div class="cart-item-details">
+                            <div class="cart-item-name">${item.name}</div>
+                            <div class="cart-item-price">₹${item.price * item.quantity}</div>
+                        </div>
+                        <div class="cart-item-controls">
+                            <button class="qty-btn" onclick="updateQuantity(${item.id}, -1)">-</button>
+                            <span style="padding: 0 10px;">${item.quantity}</span>
+                            <button class="qty-btn" onclick="updateQuantity(${item.id}, 1)">+</button>
+                        </div>
+                    `;
+                    cartItemsContainer.appendChild(itemElement);
+                });
+            }
+            
+            // Update totals
+            const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+            const tax = subtotal * 0.05;
+            const total = subtotal + tax + deliveryCharge;
+            
+            subtotalElement.textContent = `₹${subtotal}`;
+            taxElement.textContent = `₹${tax.toFixed(2)}`;
+            totalAmountElement.textContent = `₹${total.toFixed(2)}`;
+        }
+
+        // Show Notification
+        function showNotification(message) {
+            notificationText.textContent = message;
+            notification.classList.add('show');
+            
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 3000);
+        }
+
+        // Checkout
+        function checkout() {
+            if (cart.length === 0) {
+                showNotification("कार्ट खाली है! कुछ आइटम जोड़ें।");
+                return;
+            }
+            
+            const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+            const finalTotal = total + (total * 0.05) + deliveryCharge;
+            
+            const orderDetails = cart.map(item => 
+                `${item.name} x${item.quantity} = ₹${item.price * item.quantity}`
+            ).join('\n');
+            
+            alert(`आपका ऑर्डर सफलतापूर्वक दिया गया!\n\n${orderDetails}\n\nकुल राशि: ₹${finalTotal.toFixed(2)}\n\nआपका ऑर्डर 30-45 मिनट में तैयार होगा।`);
+            
+            cart = [];
+            updateCart();
+            initializeMenu();
+            closeCartSidebar();
+            
+            showNotification("आपका ऑर्डर सफलतापूर्वक दिया गया!");
+        }
+
+        // Toggle Cart Sidebar
+        function toggleCartSidebar() {
+            cartSidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            document.body.style.overflow = cartSidebar.classList.contains('active') ? 'hidden' : '';
+        }
+
+        // Close Cart Sidebar
+        function closeCartSidebar() {
+            cartSidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        // Filter by Category
+        function filterByCategory(category) {
+            const sections = document.querySelectorAll('.menu-section');
+            
+            sections.forEach(section => {
+                if (category === 'all' || section.id === category) {
+                    section.style.display = 'block';
+                } else {
+                    section.style.display = 'none';
+                }
+            });
+            
+            // Update active button
+            categoryBtns.forEach(btn => {
+                if (btn.dataset.category === category) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+
+        // Event Listeners
+        cartToggle.addEventListener('click', toggleCartSidebar);
+        closeCart.addEventListener('click', closeCartSidebar);
+        overlay.addEventListener('click', closeCartSidebar);
+        checkoutBtn.addEventListener('click', checkout);
+
+        // Category filter event listeners
+        categoryBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterByCategory(btn.dataset.category);
+            });
+        });
+
+        // Initialize
+        initializeMenu();
+        updateCart();
+
+        // Make functions available globally
+        window.addToCart = addToCart;
+        window.updateQuantity = updateQuantity;
+    </script>
+</body>
+</html>
