@@ -14,6 +14,7 @@ import {
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
+import { createReviewModeService } from "./reviewMode.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
 import { riders, userProfiles, customers } from "../../db/schema.js";
@@ -101,6 +102,7 @@ async function persistMerchantDeviceSessionForMerchant(
  */
 export async function authRoutes(app: FastifyInstance) {
   const env = getEnv();
+  const reviewMode = createReviewModeService(env);
 
   // Dev-only in-memory OTP store. In production, use Redis/DB.
   const otpStore = new Map<
@@ -435,6 +437,31 @@ export async function authRoutes(app: FastifyInstance) {
 
       req.log?.info?.({ phoneE164, phoneTail, requestId }, "[OTP] Requested");
 
+      // Google Play Review Mode — only this single phone is short-circuited,
+      // and only when the env flag is on. Everything else runs the real
+      // SMS path. The OTP is stored in the SAME otpStore with the SAME shape
+      // so /otp/verify sees no difference.
+      if (reviewMode.isReviewLogin(phoneE164)) {
+        const otp = reviewMode.getReviewOtp();
+        otpStore.set(requestId, {
+          phoneE164,
+          otp,
+          expiresAtMs: Date.now() + expiresInSec * 1000,
+          attempts: 0,
+        });
+        reviewMode.logReviewLogin(req.log, {
+          phone: phoneE164,
+          ip: req.ip ?? null,
+          stage: "request",
+          ok: true,
+        });
+        return {
+          requestId,
+          expiresInSec,
+          smsSent: true,
+        };
+      }
+
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
       otpStore.set(requestId, {
@@ -537,11 +564,27 @@ export async function authRoutes(app: FastifyInstance) {
 
       if (entry.otp !== otp) {
         req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid code");
+        if (reviewMode.isReviewLogin(phoneE164)) {
+          reviewMode.logReviewLogin(req.log, {
+            phone: phoneE164,
+            ip: req.ip ?? null,
+            stage: "verify",
+            ok: false,
+          });
+        }
         return reply.code(400).send({ error: "invalid_otp" });
       }
       otpStore.delete(requestId);
 
       req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verified");
+      if (reviewMode.isReviewLogin(phoneE164)) {
+        reviewMode.logReviewLogin(req.log, {
+          phone: phoneE164,
+          ip: req.ip ?? null,
+          stage: "verify",
+          ok: true,
+        });
+      }
 
       const db = getDb();
       const sql = getSql();
