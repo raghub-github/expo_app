@@ -19,7 +19,10 @@
         "gradleCommand": ":app:assembleRelease"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://uoxkwznciiibubtiiffh.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVveGt3em5jaWlpYnVidGlpZmZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc1NDM2OTQsImV4cCI6MjA4MzExOTY5NH0.r61tUqHUEDp4ia9tyY8IJHB-6acRcbVsZo3s8T3v8_Q",
+        "EXPO_PUBLIC_PHONE_OTP_USE_BACKEND": "false"
       }
     },
     "production": {
@@ -28,7 +31,10 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://uoxkwznciiibubtiiffh.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVveGt3em5jaWlpYnVidGlpZmZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc1NDM2OTQsImV4cCI6MjA4MzExOTY5NH0.r61tUqHUEDp4ia9tyY8IJHB-6acRcbVsZo3s8T3v8_Q",
+        "EXPO_PUBLIC_PHONE_OTP_USE_BACKEND": "false"
       }
     }
   },

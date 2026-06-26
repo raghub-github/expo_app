@@ -213,7 +213,7 @@ export async function deliverSupabaseOtpViaMsg91(
   env: Env,
   phoneRaw: string,
   otp: string,
-  _options?: { preferLegacyOtpApi?: boolean },
+  options?: { preferLegacyOtpApi?: boolean },
 ): Promise<{ ok: true; channel: string } | { ok: false; error: string; attempts?: Msg91Attempt[] }> {
   const authKey = env.MSG91_AUTH_KEY?.trim();
   if (!authKey) {
@@ -233,6 +233,7 @@ export async function deliverSupabaseOtpViaMsg91(
   const mobileWithCountry = mobile.length === 10 ? `91${mobile}` : mobile.startsWith("91") ? mobile : `91${mobile}`;
   const otpExpiryMin = Math.max(1, Math.ceil((env.MSG91_OTP_EXPIRY_SEC ?? 300) / 60));
   const attempts: Msg91Attempt[] = [];
+  const preferLegacyOtpApi = options?.preferLegacyOtpApi === true;
 
   const tryChannel = async (
     attempt: Msg91Attempt,
@@ -242,55 +243,64 @@ export async function deliverSupabaseOtpViaMsg91(
     return attempt.ok ? { ok: true, channel: attempt.channel } : null;
   };
 
-  try {
-    // 1) MSG91 Send OTP v5 — correct product for OTP (uses MSG91_TEMPLATE_ID from OTP dashboard).
-    if (otpTemplateId && isPlausibleMsg91Id(otpTemplateId)) {
-      const v5 = await sendViaV5OtpApi({
-        authKey,
-        mobileWithCountry,
-        otp,
-        otpTemplateId,
-        otpExpiryMin,
-      });
-      const ok = await tryChannel(v5);
-      if (ok) return ok;
-    }
+  // v5 OTP API is configured on a DLT template that returns HTTP 200/type:"success"
+  // but does NOT actually deliver SMS on our current MSG91 account. When the
+  // caller passes preferLegacyOtpApi:true, skip v5 entirely and go straight to
+  // the channels we have observed delivering: legacy sendotp.php → flow → v2.
+  // (Supabase Send SMS Hook callers don't set this flag and continue using v5
+  // first because they pass Supabase-generated OTPs that aren't in our app DB.)
+  const tryV5OtpApi = async () => {
+    if (!otpTemplateId || !isPlausibleMsg91Id(otpTemplateId)) return null;
+    const v5 = await sendViaV5OtpApi({
+      authKey,
+      mobileWithCountry,
+      otp,
+      otpTemplateId,
+      otpExpiryMin,
+    });
+    return tryChannel(v5);
+  };
 
-    // 2) Legacy sendotp.php — accepts our server-generated 6-digit OTP.
-    const legacy = await sendViaLegacyOtpApi({
+  const tryFlowApi = async () => {
+    if (!flowId) return null;
+    const flowAttempt = await sendViaFlowApi({
       authKey,
       sender,
       mobileWithCountry,
       otp,
-      otpExpiryMin,
+      otpVarName,
+      flowId,
     });
-    const legacyOk = await tryChannel(legacy);
-    if (legacyOk) return legacyOk;
+    return tryChannel(flowAttempt);
+  };
 
-    // 3) Flow API — transactional only; use flow_id (NOT OTP template_id).
-    if (flowId) {
-      const flowAttempt = await sendViaFlowApi({
+  const tryLegacy = async () =>
+    tryChannel(
+      await sendViaLegacyOtpApi({ authKey, sender, mobileWithCountry, otp, otpExpiryMin }),
+    );
+
+  const tryV2 = async () =>
+    tryChannel(
+      await sendViaV2Sms({
         authKey,
         sender,
-        mobileWithCountry,
+        mobile,
         otp,
-        otpVarName,
-        flowId,
-      });
-      const flowOk = await tryChannel(flowAttempt);
-      if (flowOk) return flowOk;
-    }
+        templateContent: process.env.MSG91_OTP_TEMPLATE_CONTENT,
+      }),
+    );
 
-    // 4) v2 transactional SMS fallback.
-    const v2 = await sendViaV2Sms({
-      authKey,
-      sender,
-      mobile,
-      otp,
-      templateContent: process.env.MSG91_OTP_TEMPLATE_CONTENT,
-    });
-    const v2Ok = await tryChannel(v2);
-    if (v2Ok) return v2Ok;
+  try {
+    // Order matters. Callers that already know v5 lies for their account pass
+    // preferLegacyOtpApi:true to skip it.
+    const channelOrder = preferLegacyOtpApi
+      ? [tryFlowApi, tryLegacy, tryV2]
+      : [tryV5OtpApi, tryLegacy, tryFlowApi, tryV2];
+
+    for (const fn of channelOrder) {
+      const result = await fn();
+      if (result) return result;
+    }
 
     const lastError =
       attempts.map((a) => `${a.channel}: ${a.error ?? "unknown"}`).join("; ") || "All MSG91 channels failed";
