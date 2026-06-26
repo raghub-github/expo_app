@@ -46,6 +46,7 @@ services:
       - ws-gateway
       - dashboard
       - partnersite
+      - cxsite
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
       interval: 30s
@@ -185,6 +186,30 @@ services:
 
     networks:
       - app
+
+  cxsite:
+    # Customer-facing marketing + policy site (gatimitra.com). Built locally
+    # on the VPS via infra/scripts/rebuild-cxsite.sh (no GHCR push yet — the
+    # image is tagged the same as the GHCR path so compose still finds it).
+    image: ghcr.io/raghub-github/gm-cxsite:${IMAGE_TAG:-latest}
+    build:
+      context: ../..
+      dockerfile: cxsite/Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_APP_URL: ${CXSITE_PUBLIC_APP_URL:-https://gatimitra.com}
+        NEXT_PUBLIC_API_URL: ${CXSITE_PUBLIC_API_URL:-https://api.gatimitra.com}
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${NEXT_PUBLIC_MAPBOX_TOKEN}
+    restart: unless-stopped
+    env_file:
+      - ../../cxsite/.env.local
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    expose:
+      - "3000"
+    networks: [app]
 
   partnersite:
     image: ghcr.io/raghub-github/gm-partnersite:${IMAGE_TAG:-latest}

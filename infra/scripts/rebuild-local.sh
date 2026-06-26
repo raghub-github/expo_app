@@ -16,7 +16,7 @@ REPO="${REPO:-/opt/gatimitra}"
 COMPOSE_FILE="$REPO/infra/docker/docker-compose.prod.yml"
 
 if [[ $# -eq 0 ]]; then
-  echo "usage: $0 <service> [service…]    (dashboard | partnersite)" >&2
+  echo "usage: $0 <service> [service…]    (dashboard | partnersite | cxsite)" >&2
   exit 2
 fi
 
@@ -32,8 +32,9 @@ build_one() {
   case "$svc" in
     dashboard)   env_local="$REPO/dashboard/.env.local" ;;
     partnersite) env_local="$REPO/partnersite/.env.local" ;;
+    cxsite)      env_local="$REPO/cxsite/.env.local" ;;
     *)
-      echo "✖ unknown service: $svc (supported: dashboard, partnersite)" >&2
+      echo "✖ unknown service: $svc (supported: dashboard, partnersite, cxsite)" >&2
       exit 2
       ;;
   esac
@@ -64,6 +65,10 @@ build_one() {
     partnersite)
       image_tag="ghcr.io/raghub-github/gm-partnersite:latest"
       dockerfile="partnersite/Dockerfile"
+      ;;
+    cxsite)
+      image_tag="ghcr.io/raghub-github/gm-cxsite:latest"
+      dockerfile="cxsite/Dockerfile"
       ;;
   esac
 
