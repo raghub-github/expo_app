@@ -663,4 +663,112 @@ export async function meRoutes(app: FastifyInstance) {
       return { success: true };
     }
   );
+
+  /**
+   * DELETE /v1/me/account — Google Play–required account deletion endpoint.
+   *
+   * Performs a soft-delete on the authenticated customer:
+   *   1. Anonymises name / email / profile photo / addresses on the customer row
+   *   2. Sets deletedAt + deletionReason
+   *   3. Bumps sessionsInvalidBefore so every issued JWT is invalidated
+   *
+   * What we DON'T touch (legal retention obligations):
+   *   - orders_core / orders_food / orders_person / orders_parcel rows
+   *   - wallet ledger entries
+   *   - tax invoices
+   *
+   * Authentication: customer JWT (auth plugin enforces this at the register).
+   * Idempotent: returns 200 even if already deleted.
+   *
+   * Called by:
+   *   - In-app "Delete my account" button
+   *   - https://gatimitra.com/delete-account-request (web flow)
+   */
+  app.delete(
+    "/account",
+    {
+      schema: {
+        body: z
+          .object({
+            reason: z.string().max(500).nullish(),
+            phoneE164: z.string().max(20).optional(),
+          })
+          .nullish(),
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          401: z.object({ error: z.string(), message: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+      const db = getDb();
+
+      // Customer accounts only — refuse riders, partners, system_users.
+      if (role && role !== "customer") {
+        return reply.code(403).send({
+          error: "forbidden",
+          message: "Only customer accounts can be deleted via this endpoint.",
+        });
+      }
+
+      const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+      if (!customerId) {
+        // Not a customer at all — treat as already deleted.
+        return { ok: true as const };
+      }
+
+      const body = (req.body ?? {}) as { reason?: string | null; phoneE164?: string };
+      const reason = (body.reason ?? "user-requested").toString().slice(0, 500);
+      const source =
+        (req.headers["x-deletion-source"] as string | undefined)?.slice(0, 32) || "in-app";
+
+      const now = new Date();
+      const customerRow = await db
+        .select({ id: customers.id, deletedAt: customers.deletedAt })
+        .from(customers)
+        .where(eq(customers.customerId, customerId))
+        .limit(1);
+
+      if (customerRow.length === 0) return { ok: true as const };
+
+      // Already-deleted accounts: still bump sessionsInvalidBefore (defensive).
+      const alreadyDeleted = customerRow[0]!.deletedAt != null;
+      const anonymised = `deleted-${customerRow[0]!.id}@anonymised.invalid`;
+
+      await db
+        .update(customers)
+        .set({
+          deletedAt: alreadyDeleted ? customerRow[0]!.deletedAt : now,
+          deletionReason: reason,
+          sessionsInvalidBefore: now,
+          updatedAt: now,
+          // Anonymise PII fields. Phone is required to be unique-null so we
+          // keep the existing primaryMobile (hashed/restricted at app layer);
+          // app code already treats deletedAt-set rows as inaccessible.
+          fullName: alreadyDeleted ? undefined : "Deleted user",
+          email: alreadyDeleted ? undefined : anonymised,
+          profileImageUrl: null,
+          addressLine1: null,
+          addressLine2: null,
+          city: null,
+          state: null,
+          pincode: null,
+          country: null,
+          latitude: null,
+          longitude: null,
+        })
+        .where(eq(customers.id, customerRow[0]!.id));
+
+      // eslint-disable-next-line no-console
+      req.log?.info?.(
+        { customerId, source, reason, alreadyDeleted },
+        "[account-deletion] customer marked deleted",
+      );
+
+      return { ok: true as const };
+    }
+  );
 }
