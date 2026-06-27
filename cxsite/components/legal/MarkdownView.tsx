@@ -251,9 +251,13 @@ function parse(markdown: string): Block[] {
 
 export default function MarkdownView({ source }: Props) {
   const blocks = React.useMemo(() => parse(source), [source]);
+  // h2 counter resets for each document. h3 counter resets each time a
+  // new h2 is encountered. Both align with TableOfContents extractor in
+  // ./legal-meta.ts so anchor links match.
   let h2Index = 0;
+  let h3Index = 0;
   return (
-    <article className="prose-legal max-w-none">
+    <article className="prose-legal max-w-none print:max-w-none">
       {blocks.map((b, idx) => {
         switch (b.kind) {
           case "h1":
@@ -266,23 +270,38 @@ export default function MarkdownView({ source }: Props) {
               </h1>
             );
           case "h2": {
-            const id = `s-${++h2Index}`;
+            h2Index += 1;
+            h3Index = 0;
+            const id = `s-${h2Index}`;
             return (
               <h2
                 key={idx}
                 id={id}
-                className="mt-12 mb-4 scroll-mt-24 text-2xl md:text-3xl font-bold text-slate-900 border-b border-slate-200 pb-3"
+                className="group mt-12 mb-4 scroll-mt-24 text-2xl md:text-3xl font-bold text-slate-900 border-b border-slate-200 pb-3 flex items-baseline gap-2"
               >
-                {renderInline(b.text)}
+                <a
+                  href={`#${id}`}
+                  aria-label="Link to section"
+                  className="opacity-0 group-hover:opacity-100 text-emerald-500 text-base no-underline transition-opacity"
+                >
+                  #
+                </a>
+                <span>{renderInline(b.text)}</span>
               </h2>
             );
           }
-          case "h3":
+          case "h3": {
+            const id = h2Index > 0 ? `s-${h2Index}-${++h3Index}` : undefined;
             return (
-              <h3 key={idx} className="mt-8 mb-3 text-xl md:text-2xl font-semibold text-slate-900">
+              <h3
+                key={idx}
+                id={id}
+                className="mt-8 mb-3 scroll-mt-24 text-xl md:text-2xl font-semibold text-slate-900"
+              >
                 {renderInline(b.text)}
               </h3>
             );
+          }
           case "h4":
             return (
               <h4 key={idx} className="mt-6 mb-2 text-lg font-semibold text-slate-800">

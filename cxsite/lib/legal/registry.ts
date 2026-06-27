@@ -52,7 +52,7 @@ export const LEGAL_DOCS: LegalDoc[] = [
   },
   {
     slug: "refund-policy",
-    file: "refund-cancellation-policy.md",
+    file: "refund-policy.md",
     title: "Refund Policy",
     description:
       "When and how refunds are processed for food orders, rides, parcel delivery, wallet recharges and GMitra Plus membership. Refund timelines and methods.",
@@ -61,7 +61,7 @@ export const LEGAL_DOCS: LegalDoc[] = [
   },
   {
     slug: "cancellation-policy",
-    file: "refund-cancellation-policy.md",
+    file: "cancellation-policy.md",
     title: "Cancellation Policy",
     description:
       "Cancellation rules for food orders, rides, parcels and membership. When you can cancel, applicable fees and refund eligibility.",
@@ -140,7 +140,7 @@ export const LEGAL_DOCS: LegalDoc[] = [
   },
   {
     slug: "data-retention-policy",
-    file: "dpdpa-compliance-notice.md",
+    file: "data-retention-policy.md",
     title: "Data Retention Policy",
     description:
       "How long GatiMitra keeps your data — account, orders, financial records, location history — and when it is deleted under DPDPA 2023.",
@@ -180,7 +180,7 @@ export const LEGAL_DOCS: LegalDoc[] = [
   },
   {
     slug: "dpdpa-notice",
-    file: "dpdpa-compliance-notice.md",
+    file: "dpdpa-notice.md",
     title: "DPDPA 2023 Notice",
     description:
       "Your rights as a Data Principal under the Digital Personal Data Protection Act 2023 — consent, access, correction, erasure and grievance.",

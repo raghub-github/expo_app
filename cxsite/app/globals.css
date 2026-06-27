@@ -470,3 +470,27 @@ body.ecom-page::-webkit-scrollbar {
 .ecom-hero-float2 { animation: ecom-hero-float2 10s ease-in-out infinite; }
 .ecom-hero-ring { animation: ecom-hero-ring 15s linear infinite; }
 .ecom-hero-glow { animation: ecom-hero-glow 4s ease-in-out infinite; }
+
+/* --- Legal/policy page print styles --- */
+/* When the user prints (or "Save as PDF") from any /privacy-policy,
+   /terms-and-conditions etc. page, hide the chrome (footer, sidebar,
+   navbar, CTAs) and keep only the article body. */
+@media print {
+  header, footer, nav, aside, .no-print { display: none !important; }
+  body { background: white !important; }
+  main { padding: 0 !important; }
+  .prose-legal { max-width: none !important; font-size: 11pt; line-height: 1.5; }
+  .prose-legal h1 { font-size: 22pt; margin-top: 0; }
+  .prose-legal h2 { font-size: 16pt; page-break-after: avoid; }
+  .prose-legal h3 { font-size: 13pt; page-break-after: avoid; }
+  .prose-legal table { page-break-inside: avoid; }
+  .prose-legal a { color: #047857; text-decoration: underline; }
+  /* show the URL of in-page links in print so the printed copy is useful */
+  .prose-legal a[href^="http"]::after,
+  .prose-legal a[href^="/"]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    color: #475569;
+    word-break: break-all;
+  }
+}

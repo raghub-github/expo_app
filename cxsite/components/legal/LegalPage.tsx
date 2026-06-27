@@ -13,10 +13,12 @@
  */
 import React from "react";
 import Link from "next/link";
-import { ChevronRight, ArrowLeft, FileText, Clock, Share2 } from "lucide-react";
+import { ChevronRight, ArrowLeft, FileText, Clock, Share2, BookOpen, CalendarDays, Tag } from "lucide-react";
 import { getLegalDoc, LEGAL_DOCS, LEGAL_PACK_VERSION, type LegalDoc } from "@/lib/legal/registry";
 import { LEGAL_BUNDLE } from "@/lib/legal/bundle.generated";
 import MarkdownView from "./MarkdownView";
+import { extractToc, extractMeta, estimateReadingMinutes } from "./legal-meta";
+import PrintButton from "./PrintButton";
 
 type Props = {
   slug: string;
@@ -52,6 +54,9 @@ export default function LegalPage({ slug }: Props) {
 
   const body = LEGAL_BUNDLE[doc.file] ?? "";
   const related = getRelatedDocs(doc);
+  const toc = extractToc(body);
+  const meta = extractMeta(body);
+  const readingMin = estimateReadingMinutes(body);
 
   const breadcrumbLd = {
     "@context": "https://schema.org",
@@ -108,14 +113,29 @@ export default function LegalPage({ slug }: Props) {
               <p className="mt-2 text-slate-600 max-w-2xl">{doc.description}</p>
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-emerald-200 px-3 py-1 text-xs font-medium text-emerald-700">
-                  <Clock size={12} /> Pack version {LEGAL_PACK_VERSION}
-                </span>
+                {meta.lastUpdated && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-emerald-200 px-3 py-1 text-xs font-medium text-emerald-700">
+                    <CalendarDays size={12} /> Last updated {meta.lastUpdated}
+                  </span>
+                )}
+                {meta.effectiveDate && meta.effectiveDate !== meta.lastUpdated && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-violet-200 px-3 py-1 text-xs font-medium text-violet-700">
+                    <Clock size={12} /> Effective {meta.effectiveDate}
+                  </span>
+                )}
+                {meta.version && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600">
+                    <Tag size={12} /> v{meta.version}
+                  </span>
+                )}
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600">
-                  GatiMitra On Demand Services Pvt. Ltd.
+                  <BookOpen size={12} /> {readingMin} min read
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600">
                   Applies in India
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500">
+                  Pack {LEGAL_PACK_VERSION}
                 </span>
               </div>
             </div>
@@ -182,35 +202,57 @@ export default function LegalPage({ slug }: Props) {
             </div>
           </div>
 
-          {/* Sticky right rail — section nav placeholder. We render a slim
-              actions card here; real on-page nav is generated client-side by the
-              browser's "Find in page" since we already make h2s scroll targets. */}
+          {/* Sticky right rail: auto-generated TOC from the markdown body. */}
           <aside className="hidden md:block">
             <div className="sticky top-24 space-y-3">
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
-                  On this page
-                </h3>
-                <p className="text-xs text-slate-500 leading-5">
-                  Use your browser’s search ( <kbd className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono border border-slate-300">Ctrl + F</kbd> ) to jump to any term.
-                </p>
-              </div>
+              {toc.length > 0 && (
+                <nav
+                  aria-label="On this page"
+                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm max-h-[calc(100vh-8rem)] overflow-y-auto"
+                >
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3 flex items-center gap-1.5">
+                    <BookOpen size={12} className="text-emerald-500" /> On this page
+                  </h3>
+                  <ol className="space-y-1.5 text-sm">
+                    {toc.map((item) => (
+                      <li
+                        key={item.id}
+                        className={item.level === 3 ? "pl-3" : ""}
+                      >
+                        <a
+                          href={`#${item.id}`}
+                          className={
+                            item.level === 2
+                              ? "block text-slate-700 hover:text-emerald-700 hover:underline underline-offset-2 leading-snug"
+                              : "block text-xs text-slate-500 hover:text-emerald-700 hover:underline underline-offset-2 leading-snug"
+                          }
+                        >
+                          {item.text}
+                        </a>
+                      </li>
+                    ))}
+                  </ol>
+                </nav>
+              )}
 
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
-                  Share
+                  Tools
                 </h3>
-                <a
-                  href={`mailto:?subject=${encodeURIComponent(`GatiMitra ${doc.title}`)}&body=${encodeURIComponent(`https://gatimitra.com/${doc.slug}`)}`}
-                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  <Share2 size={14} /> Email link
-                </a>
+                <div className="flex flex-col gap-2">
+                  <a
+                    href={`mailto:?subject=${encodeURIComponent(`GatiMitra ${doc.title}`)}&body=${encodeURIComponent(`https://gatimitra.com/${doc.slug}`)}`}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:border-emerald-300 transition-colors"
+                  >
+                    <Share2 size={14} className="text-emerald-600" /> Email link
+                  </a>
+                  <PrintButton />
+                </div>
               </div>
 
               <Link
                 href="/"
-                className="block rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600 hover:bg-slate-50"
+                className="block rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600 hover:bg-slate-50 hover:border-emerald-400 transition-colors"
               >
                 <span className="inline-flex items-center gap-2">
                   <ArrowLeft size={14} /> Back to gatimitra.com
