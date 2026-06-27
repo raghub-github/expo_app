@@ -20,6 +20,11 @@ const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().positive().max(120)
   ).optional(),
+  /** Postgres.js pool size. Keep low in dev — Supabase transaction pooler is easy to exhaust. */
+  DATABASE_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(50)
+  ).optional(),
 
   // Supabase
   SUPABASE_URL: z.string().url(),
@@ -154,8 +159,8 @@ const EnvSchema = z.object({
   ).default("refund"),
 
   /**
-   * Dev helper: disable background intervals (store schedule tick + payment reconciler).
-   * Use when DATABASE_URL is unreachable so local API debugging isn't spammed by ETIMEDOUT/ECONNRESET.
+   * Dev helper: disable all in-process background ticks (store schedule, order timeouts,
+   * dispatch waves, payment reconciler, weather, ETA, etc.). Use locally to reduce DB load.
    */
   DISABLE_BACKGROUND_JOBS: z.preprocess(
     (v) => v === true || v === "true" || v === "1",
@@ -167,10 +172,11 @@ const EnvSchema = z.object({
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   /** Public live trip share page base, e.g. https://track.gatimitra.com/trip */
   TRACK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  /** Public address share link base, e.g. https://link.gatimitra.com */
+  ADDRESS_LINK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
-  /** OpenWeather — backend-only. Mobile apps must use /v1/weather/* endpoints. */
-  OPENWEATHER_API_KEY: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
+  /** Open-Meteo — no API key (see weather.constants.ts). */
 
   /**
    * Legacy flag; billing always runs for checkout. Kept for dashboards/scripts that read env.

@@ -74,6 +74,19 @@ export default function CheckoutLayout() {
         }}
       />
       <Stack.Screen
+        name="ride-fare"
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen
+        name="ride-fare-success"
+        options={{
+          headerShown: false,
+          gestureEnabled: false,
+        }}
+      />
+      <Stack.Screen
         name="success"
         options={{
           headerShown: false,

@@ -5,13 +5,11 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { StyleSheet, View, Platform } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { getConfig } from "@/config/env";
-import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
-import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
+import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
 import { buildRideTrackingMapHtml } from "@/components/maps/mapbox-web-ride-tracking-html";
 import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
@@ -73,18 +71,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
     const pointSeq = useRef(0);
 
     const token = getConfig().mapboxAccessToken?.trim() ?? "";
-    const [markerDataUri, setMarkerDataUri] = useState<string | null>(null);
-
-    useEffect(() => {
-      let cancelled = false;
-      const source = resolveNearbyRiderMarkerImage(riderMarkerImageKey);
-      void resolveMapImageDataUri(source).then((uri) => {
-        if (!cancelled) setMarkerDataUri(uri);
-      });
-      return () => {
-        cancelled = true;
-      };
-    }, [riderMarkerImageKey]);
+    const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
 
     const html = useMemo(() => {
       if (!token || !markerDataUri) return "";

@@ -24,9 +24,10 @@ import { buildRideDeliverySuccessParams } from "@/src/lib/ride-delivery-success-
 import { isRideFarePaymentSettled } from "@/src/lib/ride-payment-wait";
 import { resolveRiderDisplayedEarning, buildRiderRideEarningBreakdown } from "@/src/lib/rider-earning-display";
 import { RIDER_ACTIVE_ORDERS_QUERY_KEY, RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { useAppAssetSource } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
 const POLL_MS = 15_000;
-const WAITING_HERO = require("../../../assets/images/waiting.png");
 const MINT = colors.primary[600];
 const MINT_DARK = colors.primary[700];
 
@@ -87,6 +88,7 @@ function TimelineRow({ step, isLast }: { step: TimelineStep; isLast?: boolean })
 export function RidePaymentWaitingScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const waitingHero = useAppAssetSource(RX.orders.waitingHero);
   const params = useLocalSearchParams<{ orderId?: string; displayId?: string }>();
   const orderId = typeof params.orderId === "string" ? params.orderId : "";
   const [lastCheckedAt, setLastCheckedAt] = useState(() => new Date());
@@ -175,7 +177,8 @@ export function RidePaymentWaitingScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <ImageBackground source={WAITING_HERO} style={styles.hero} imageStyle={styles.heroImage}>
+        {waitingHero ? (
+          <ImageBackground source={waitingHero} style={styles.hero} imageStyle={styles.heroImage}>
           <LinearGradient
             colors={["rgba(15,23,42,0.35)", "rgba(15,23,42,0.82)"]}
             style={StyleSheet.absoluteFill}
@@ -200,6 +203,9 @@ export function RidePaymentWaitingScreen() {
             </View>
           </SafeAreaView>
         </ImageBackground>
+        ) : (
+          <View style={styles.hero} />
+        )}
 
         <View style={styles.body}>
           <View style={styles.fareCard}>

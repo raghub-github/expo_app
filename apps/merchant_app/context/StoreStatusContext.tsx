@@ -1,5 +1,6 @@
+/** Store status display + manual actions. Backend owns schedule / operational truth. */
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Alert } from "react-native";
+import { Alert, AppState, type AppStateStatus } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -320,6 +321,16 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       void refresh();
     }, STATUS_POLL_INTERVAL_MS);
     return () => clearInterval(id);
+  }, [token, storeId, refresh]);
+
+  // Read-only freshness sync when app returns to foreground.
+  useEffect(() => {
+    if (!token || !storeId) return;
+    const onAppState = (state: AppStateStatus) => {
+      if (state === "active") void refresh();
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+    return () => sub.remove();
   }, [token, storeId, refresh]);
 
   /**

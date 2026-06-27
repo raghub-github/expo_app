@@ -1,17 +1,29 @@
 import { eq } from "drizzle-orm";
-import { getDb } from "../../db/client.js";
+import { getDb, getSql } from "../../db/client.js";
+import {
+  debitCustomerGatiCashForRideFare,
+  getCustomerGatiCashAvailable,
+} from "../../lib/checkout-gaticash-wallet-ops.js";
 import { customers, ordersCore, ordersRide } from "../../db/schema.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
+import { resolveRideFareOfferDiscount } from "../../lib/ride-fare-offer-discount.js";
+
+function roundInr(value: number): number {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
 
 export async function confirmRideFarePaymentForCustomer(input: {
   customerSub: string;
   orderRef: string;
-  razorpayOrderId: string;
-  razorpayPaymentId: string;
-  razorpaySignature: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  razorpaySignature?: string;
+  gatiCashAmount?: number;
+  couponCode?: string | null;
+  platformOfferId?: number | null;
 }): Promise<{ ok: true; amountPaid: number }> {
   const db = getDb();
 
@@ -59,35 +71,83 @@ export async function confirmRideFarePaymentForCustomer(input: {
     throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
   }
 
-  const amountPaid = Math.round(Number(orderRow.grandTotal ?? 0));
-  if (amountPaid <= 0) {
+  const baseFareDue = roundInr(Number(orderRow.grandTotal ?? 0));
+  if (baseFareDue <= 0) {
     throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
   }
 
-  const signatureOk = verifyRazorpaySignature(
-    input.razorpayOrderId,
-    input.razorpayPaymentId,
-    input.razorpaySignature
-  );
-  if (!signatureOk) {
-    throw Object.assign(new Error("Invalid payment signature"), { statusCode: 400 });
+  const offerDiscount = await resolveRideFareOfferDiscount(db, {
+    fareSubtotal: baseFareDue,
+    couponCode: input.couponCode,
+    platformOfferId: input.platformOfferId,
+  });
+  const fareDue = roundInr(Math.max(0, baseFareDue - offerDiscount));
+  if (fareDue <= 0 && offerDiscount <= 0.005) {
+    throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
   }
 
-  try {
-    const verified = await verifyRazorpayPaymentDetails(
-      input.razorpayOrderId,
-      input.razorpayPaymentId,
-      input.razorpaySignature,
-      amountPaid * 100
-    );
-    if (!verified.ok) {
-      throw Object.assign(new Error(verified.message ?? "Could not verify payment"), {
+  const requestedGatiCash = roundInr(input.gatiCashAmount ?? 0);
+  const hasRazorpay = Boolean(
+    input.razorpayOrderId?.trim() &&
+      input.razorpayPaymentId?.trim() &&
+      input.razorpaySignature?.trim()
+  );
+
+  if (requestedGatiCash <= 0.005 && !hasRazorpay) {
+    const hasOffer =
+      Boolean(input.couponCode?.trim()) ||
+      (input.platformOfferId != null && input.platformOfferId > 0);
+    if (fareDue > 0.005 || !hasOffer) {
+      throw Object.assign(new Error("Payment details are required"), { statusCode: 400 });
+    }
+  }
+
+  const sql = getSql();
+  const walletAvailable =
+    requestedGatiCash > 0.005
+      ? await getCustomerGatiCashAvailable(sql, customerPk)
+      : 0;
+  const gatiCashApplied =
+    requestedGatiCash > 0.005
+      ? Math.min(requestedGatiCash, walletAvailable, fareDue)
+      : 0;
+
+  if (requestedGatiCash > 0.005 && gatiCashApplied + 0.005 < requestedGatiCash) {
+    throw Object.assign(new Error("Insufficient GatiCash balance"), { statusCode: 400 });
+  }
+
+  const razorpayDue = roundInr(fareDue - gatiCashApplied);
+  if (razorpayDue > 0.005) {
+    if (!hasRazorpay) {
+      throw Object.assign(new Error("Online payment is required for the remaining fare"), {
         statusCode: 400,
       });
     }
-  } catch (err) {
-    if ((err as { statusCode?: number }).statusCode) throw err;
-    /* dummy / dev simulated payments may skip gateway fetch */
+    const signatureOk = verifyRazorpaySignature(
+      input.razorpayOrderId!,
+      input.razorpayPaymentId!,
+      input.razorpaySignature!
+    );
+    if (!signatureOk) {
+      throw Object.assign(new Error("Invalid payment signature"), { statusCode: 400 });
+    }
+
+    try {
+      const verified = await verifyRazorpayPaymentDetails(
+        input.razorpayOrderId!,
+        input.razorpayPaymentId!,
+        input.razorpaySignature!,
+        Math.round(razorpayDue * 100)
+      );
+      if (!verified.ok) {
+        throw Object.assign(new Error(verified.message ?? "Could not verify payment"), {
+          statusCode: 400,
+        });
+      }
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode) throw err;
+      /* dummy / dev simulated payments may skip gateway fetch */
+    }
   }
 
   const now = new Date();
@@ -95,6 +155,15 @@ export async function confirmRideFarePaymentForCustomer(input: {
     orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
       ? (orderRow.billingSnapshot as Record<string, unknown>)
       : {};
+  const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
+
+  if (gatiCashApplied > 0.005) {
+    await debitCustomerGatiCashForRideFare(sql, {
+      customerInternalId: customerPk,
+      orderIdText,
+      amount: gatiCashApplied,
+    });
+  }
 
   await db.transaction(async (tx) => {
     await tx
@@ -103,7 +172,12 @@ export async function confirmRideFarePaymentForCustomer(input: {
         paymentStatus: "completed",
         billingSnapshot: {
           ...prevSnap,
-          final_amount: amountPaid,
+          final_amount: fareDue,
+          ride_fare_offer_discount: offerDiscount > 0.005 ? offerDiscount : undefined,
+          ride_fare_coupon_code: input.couponCode?.trim() || undefined,
+          ride_fare_platform_offer_id:
+            input.platformOfferId != null ? input.platformOfferId : undefined,
+          gatiCashAmount: gatiCashApplied > 0.005 ? gatiCashApplied : undefined,
           ride_fare_paid_at: now.toISOString(),
         },
         updatedAt: now,
@@ -113,8 +187,8 @@ export async function confirmRideFarePaymentForCustomer(input: {
     await tx
       .update(ordersRide)
       .set({
-        amountCollected: String(amountPaid),
-        finalFare: String(amountPaid),
+        amountCollected: String(fareDue),
+        finalFare: String(fareDue),
         updatedAt: now,
       })
       .where(eq(ordersRide.orderId, orderRow.id));
@@ -136,7 +210,7 @@ export async function confirmRideFarePaymentForCustomer(input: {
       });
   }
 
-  return { ok: true, amountPaid };
+  return { ok: true, amountPaid: fareDue };
 }
 
 export async function adminClearRiderPaymentHoldForOrder(input: {

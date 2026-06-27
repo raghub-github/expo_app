@@ -7,6 +7,19 @@ import { getWeatherThresholds, invalidateWeatherConfigCache } from "./weather.co
 import { getEnv } from "../../config/env.js";
 import { countSnapshots } from "./weather.repository.js";
 import { getWeatherMonitoringSnapshot } from "./weather.monitoring.js";
+import { getWeatherStatus, listActiveWeatherAlerts, getWeatherHistory } from "./weather.cache.js";
+import { refreshZoneWeatherFromProvider, ingestRainWeatherEvent } from "./weather.service.js";
+import { listActiveZoneSummaries } from "./weather.zones-active.js";
+import { handleZonePresenceJoin, handleZonePresenceLeave } from "./weather.presence.js";
+
+const RainEventBodySchema = z.object({
+  event: z.enum(["rain_started", "rain_intensity_changed", "rain_stopped"]),
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  cityHint: z.string().max(120).optional(),
+  areaLabel: z.string().max(200).optional(),
+  rainIntensityMm: z.coerce.number().min(0).max(500).optional(),
+});
 
 const LocationQuerySchema = z.object({
   lat: z.coerce.number().min(-90).max(90),
@@ -35,6 +48,25 @@ const WeatherContextResponseSchema = z.object({
   etaImpactLabel: z.string().nullable(),
   trackingMessage: z.string().nullable(),
   updatedAt: z.string().nullable(),
+  zoneKey: z.string().nullable(),
+  details: z
+    .object({
+      feelsLikeC: z.number().nullable(),
+      pressureHpa: z.number().nullable(),
+      visibilityKm: z.number().nullable(),
+      cloudCoverPct: z.number().nullable(),
+      windGustKmh: z.number().nullable(),
+      weatherId: z.number().nullable(),
+      weatherMain: z.string().nullable(),
+      weatherDescription: z.string().nullable(),
+      sunriseAt: z.string().nullable(),
+      sunsetAt: z.string().nullable(),
+      rainfallMm1h: z.number().nullable(),
+      uvIndex: z.number().nullable(),
+      aqi: z.number().nullable(),
+      aqiLabel: z.string().nullable(),
+    })
+    .nullable(),
   futureHooks: z.object({
     surgeEligible: z.boolean(),
     weatherPriorityBoost: z.boolean(),
@@ -79,6 +111,9 @@ export async function weatherRoutes(app: FastifyInstance) {
         lng: q.lng,
         cityHint: sanitizeLocationHint(q.city) ?? undefined,
         areaLabel: sanitizeLocationHint(q.area) ?? sanitizeLocationHint(q.city) ?? undefined,
+        trigger: "customer_home",
+        actorId: request.auth?.sub ?? undefined,
+        actorType: request.auth?.sub ? "customer" : undefined,
       });
       return reply.send(ctx);
     }
@@ -101,6 +136,7 @@ export async function weatherRoutes(app: FastifyInstance) {
         lat: q.lat,
         lng: q.lng,
         cityHint: q.city,
+        actorId: request.auth?.sub ?? undefined,
       });
       return reply.send(ctx);
     }
@@ -134,6 +170,7 @@ export async function weatherRoutes(app: FastifyInstance) {
         lng: q.lng,
         cityHint: q.city,
         areaLabel: q.area ?? q.city,
+        trigger: "eta_calculation",
       });
       const adjusted = Math.round(q.baseEtaMinutes + weather.etaDelayMinutes);
       return reply.send({
@@ -144,6 +181,70 @@ export async function weatherRoutes(app: FastifyInstance) {
         includesWeatherImpact: weather.etaDelayMinutes > 0,
         impactLabel: weather.etaImpactLabel,
       });
+    }
+  );
+
+  /** v2 — current weather (Open-Meteo). */
+  app.get("/current", async (request, reply) => {
+    const q = LocationQuerySchema.parse(request.query);
+    const ctx = await resolveZoneWeather({
+      lat: q.lat,
+      lng: q.lng,
+      cityHint: sanitizeLocationHint(q.city) ?? undefined,
+      areaLabel: sanitizeLocationHint(q.area) ?? sanitizeLocationHint(q.city) ?? undefined,
+      trigger: "customer_home",
+      actorId: request.auth?.sub ?? undefined,
+      actorType: request.auth?.sub ? "customer" : undefined,
+    });
+    return reply.send(ctx);
+  });
+
+  app.get("/history", async (request, reply) => {
+    const q = LocationQuerySchema.extend({
+      hours: z.coerce.number().int().min(1).max(720).default(24),
+      zoneKey: z.string().max(64).optional(),
+    }).parse(request.query);
+    const { buildZoneKey } = await import("./weather.classify.js");
+    const zoneKey =
+      q.zoneKey ??
+      buildZoneKey(q.lat, q.lng, q.city ?? "Unknown", null).zoneKey;
+    const rows = await getWeatherHistory(zoneKey, q.hours);
+    return reply.send({ ok: true, zoneKey, rows });
+  });
+
+  app.get("/alerts", async (request, reply) => {
+    const zoneKey = (request.query as { zoneKey?: string }).zoneKey;
+    const rows = await listActiveWeatherAlerts(zoneKey?.trim() || undefined);
+    return reply.send({ ok: true, alerts: rows });
+  });
+
+  app.get("/zones", async (_request, reply) => {
+    const zones = listActiveZoneSummaries();
+    return reply.send({ ok: true, zones, mode: "event_driven" });
+  });
+
+  app.get("/status", async (_request, reply) => {
+    const status = await getWeatherStatus();
+    return reply.send({ ok: true, ...status });
+  });
+
+  app.post(
+    "/refresh",
+    {
+      config: { rateLimit: { max: 12, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const q = LocationQuerySchema.parse(request.body ?? request.query);
+      const result = await refreshZoneWeatherFromProvider({
+        lat: q.lat,
+        lng: q.lng,
+        cityHint: q.city,
+        areaLabel: q.area ?? q.city,
+        forceRefresh: true,
+        trigger: "manual_refresh",
+      });
+      if (!result.after) return reply.status(502).send({ error: "weather_refresh_failed" });
+      return reply.send({ ok: true, published: result.publishedEvent != null, zoneKey: result.after.zoneKey });
     }
   );
 }
@@ -159,7 +260,7 @@ export async function weatherInternalRoutes(app: FastifyInstance) {
     return reply.send(
       getWeatherMonitoringSnapshot({
         zoneSnapshotCount: zoneCount ?? undefined,
-        apiKeyConfigured: Boolean(getEnv().OPENWEATHER_API_KEY),
+        provider: "open-meteo",
       })
     );
   });
@@ -206,5 +307,53 @@ export async function weatherInternalRoutes(app: FastifyInstance) {
     invalidateWeatherConfigCache();
     const thresholds = await getWeatherThresholds();
     return reply.send({ ok: true, thresholds });
+  });
+
+  /**
+   * Rain alert ingest — triggers Open-Meteo verification fetch and WebSocket fan-out when changed.
+   */
+  app.post("/weather/rain-events", async (req, reply) => {
+    const token = getEnv().INTERNAL_API_TOKEN;
+    const header = String(req.headers["x-internal-token"] ?? "");
+    if (!token || header !== token) return reply.status(401).send({ error: "unauthorized" });
+
+    const parsed = RainEventBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    }
+
+    try {
+      const result = await ingestRainWeatherEvent(parsed.data);
+      return reply.send(result);
+    } catch {
+      return reply.status(502).send({ error: "weather_refresh_failed" });
+    }
+  });
+
+  /** ws-gateway zone presence — join/leave for active zone tracking. */
+  app.post("/weather/zone-presence", async (req, reply) => {
+    const token = getEnv().INTERNAL_API_TOKEN;
+    const header = String(req.headers["x-internal-token"] ?? "");
+    if (!token || header !== token) return reply.status(401).send({ error: "unauthorized" });
+
+    const body = z
+      .object({
+        action: z.enum(["join", "leave"]),
+        zoneKey: z.string().min(4).max(64),
+        actorId: z.string().min(1).max(128),
+        actorType: z.enum(["customer", "rider", "merchant", "order"]).optional(),
+        role: z.string().max(32).optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!body.success) {
+      return reply.status(400).send({ error: "invalid_body", details: body.error.flatten() });
+    }
+
+    if (body.data.action === "join") {
+      await handleZonePresenceJoin(body.data);
+    } else {
+      handleZonePresenceLeave(body.data);
+    }
+    return reply.send({ ok: true });
   });
 }

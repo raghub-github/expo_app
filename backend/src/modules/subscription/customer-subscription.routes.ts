@@ -1,9 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { getDb } from "../../db/client.js";
-import { customers } from "../../db/schema.js";
 import { auth } from "../../plugins/auth.js";
+import { withSqlRetry } from "../../db/client.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import {
   createCustomerSubscriptionPaymentOrder,
   getActiveCustomerSubscription,
@@ -23,16 +22,6 @@ const paymentBodySchema = subscribeBodySchema.extend({
   razorpayPaymentId: z.string().min(1),
   razorpaySignature: z.string().min(1),
 });
-
-async function resolveCustomerPk(sub: string): Promise<number | null> {
-  const db = getDb();
-  const [row] = await db
-    .select({ id: customers.id })
-    .from(customers)
-    .where(eq(customers.customerId, sub))
-    .limit(1);
-  return row?.id ?? null;
-}
 
 function registerCustomerSubscriptionRoutes(app: FastifyInstance) {
   app.get("/subscription-plans", async (req, reply) => {
@@ -61,12 +50,12 @@ function registerCustomerSubscriptionRoutes(app: FastifyInstance) {
     if (!req.auth?.sub || req.auth?.role !== "customer") {
       return reply.code(401).send({ success: false, error: "Authentication required" });
     }
-    const customerPk = await resolveCustomerPk(req.auth.sub);
+    const customerPk = await resolveCustomerPkForRequest(req.auth!, req);
     if (customerPk == null) {
       return reply.code(403).send({ success: false, error: "Customer not found" });
     }
     try {
-      const result = await getActiveCustomerSubscription(customerPk);
+      const result = await withSqlRetry(() => getActiveCustomerSubscription(customerPk));
       return reply.send({
         success: true,
         active: result.active,
@@ -83,7 +72,7 @@ function registerCustomerSubscriptionRoutes(app: FastifyInstance) {
     if (!req.auth?.sub || req.auth?.role !== "customer") {
       return reply.code(401).send({ success: false, error: "Authentication required" });
     }
-    const customerPk = await resolveCustomerPk(req.auth.sub);
+    const customerPk = await resolveCustomerPkForRequest(req.auth!);
     if (customerPk == null) {
       return reply.code(403).send({ success: false, error: "Customer not found" });
     }
@@ -104,7 +93,7 @@ function registerCustomerSubscriptionRoutes(app: FastifyInstance) {
     if (!req.auth?.sub || req.auth?.role !== "customer") {
       return reply.code(401).send({ success: false, error: "Authentication required" });
     }
-    const customerPk = await resolveCustomerPk(req.auth.sub);
+    const customerPk = await resolveCustomerPkForRequest(req.auth!);
     if (customerPk == null) {
       return reply.code(403).send({ success: false, error: "Customer not found" });
     }

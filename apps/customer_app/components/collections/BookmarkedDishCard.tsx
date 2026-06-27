@@ -8,8 +8,8 @@ import { setMenuItemBookmark } from "@/services/merchant.service";
 import { useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { GatiMitraColors } from "@/constants/gatimitra";
-
-const DEFAULT_IMAGE = require("../../public/img/ndf.png");
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 const BOOKMARK_GREEN = GatiMitraColors.primaryMint;
 
 type Props = {
@@ -50,7 +50,7 @@ export function BookmarkedDishCard({ item, onRemoved }: Props) {
             transition={0}
           />
         ) : (
-          <Image source={DEFAULT_IMAGE} style={styles.image} contentFit="cover" cachePolicy="memory-disk" />
+          <AppAssetImage assetKey={CX.common.defaultImage} style={styles.image} contentFit="cover" />
         )}
         <TouchableOpacity
           style={styles.bookmarkBtn}

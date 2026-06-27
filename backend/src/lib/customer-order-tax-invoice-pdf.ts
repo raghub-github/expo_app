@@ -3,13 +3,14 @@
  */
 
 import PDFDocument from "pdfkit";
-import { existsSync } from "fs";
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
 import {
   buildCustomerInvoiceNumber,
   type CustomerOrderInvoiceInput,
 } from "./customer-order-tax-invoice.js";
+import {
+  getInvoiceSignatureSource,
+  type InvoiceSignatureSource,
+} from "./invoice-signature-source.js";
 
 type GstLine = {
   taxable: number;
@@ -66,16 +67,19 @@ function formatInvoiceDate(iso: string): string {
   }
 }
 
-function signatureImagePath(): string | null {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(here, "../../assets/invoice-signature.png"),
-    join(process.cwd(), "assets/invoice-signature.png"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
+function drawSignature(
+  doc: InstanceType<typeof PDFDocument>,
+  signature: InvoiceSignatureSource | null,
+  x: number,
+  y: number
+): number {
+  if (!signature) return y;
+  if (signature.filePath) {
+    doc.image(signature.filePath, x, y, { fit: [140, 52], align: "right" });
+  } else {
+    doc.image(signature.buffer, x, y, { fit: [140, 52], align: "right" });
   }
-  return null;
+  return y + 58;
 }
 
 function drawRow(doc: InstanceType<typeof PDFDocument>, label: string, value: string, y: number): number {
@@ -88,7 +92,8 @@ function drawPlatformPage(
   doc: InstanceType<typeof PDFDocument>,
   input: CustomerOrderInvoiceInput,
   line: GstLine,
-  invoiceNo: string
+  invoiceNo: string,
+  signature: InvoiceSignatureSource | null
 ): void {
   const platformName =
     process.env.PLATFORM_LEGAL_NAME?.trim() ||
@@ -140,9 +145,8 @@ function drawPlatformPage(
     { width: 520 }
   );
 
-  const sigPath = signatureImagePath();
-  if (sigPath) {
-    doc.image(sigPath, 380, 680, { fit: [140, 52], align: "right" });
+  if (signature) {
+    drawSignature(doc, signature, 380, 680);
   }
   doc.fontSize(9).fillColor("#111111").text("Authorised Signatory", 380, 740, { width: 160, align: "right" });
 }
@@ -151,7 +155,8 @@ function drawDeliveryPage(
   doc: InstanceType<typeof PDFDocument>,
   input: CustomerOrderInvoiceInput,
   line: GstLine,
-  invoiceNo: string
+  invoiceNo: string,
+  signature: InvoiceSignatureSource | null
 ): void {
   const platformName =
     process.env.PLATFORM_LEGAL_NAME?.trim() ||
@@ -201,18 +206,19 @@ function drawDeliveryPage(
   y += 12;
   doc.text(`CIN: ${cin}`, 320, y, { width: 240, align: "right" });
 
-  const sigPath = signatureImagePath();
-  if (sigPath) {
-    doc.image(sigPath, 380, y + 10, { fit: [140, 52], align: "right" });
-    y += 58;
+  if (signature) {
+    y = drawSignature(doc, signature, 380, y + 10);
   }
   doc.text("Authorised Signatory", 380, y + 10, { width: 160, align: "right" });
 }
 
-export function buildCustomerOrderTaxInvoicePdfBuffer(input: CustomerOrderInvoiceInput): Promise<Buffer> {
+export async function buildCustomerOrderTaxInvoicePdfBuffer(
+  input: CustomerOrderInvoiceInput
+): Promise<Buffer> {
   const snap = input.billingSnapshot ?? {};
   const platformLine = readGstComponent(snap, "platform", "platform_fee");
   const deliveryLine = readGstComponent(snap, "delivery", "delivery_fee");
+  const signature = await getInvoiceSignatureSource();
 
   const platformInvoiceNo = buildCustomerInvoiceNumber({
     invoiceKind: "platform",
@@ -238,11 +244,11 @@ export function buildCustomerOrderTaxInvoicePdfBuffer(input: CustomerOrderInvoic
 
     if (platformLine.taxable > 0) {
       doc.addPage();
-      drawPlatformPage(doc, input, platformLine, platformInvoiceNo);
+      drawPlatformPage(doc, input, platformLine, platformInvoiceNo, signature);
     }
     if (deliveryLine.taxable > 0) {
       doc.addPage();
-      drawDeliveryPage(doc, input, deliveryLine, deliveryInvoiceNo);
+      drawDeliveryPage(doc, input, deliveryLine, deliveryInvoiceNo, signature);
     }
 
     if (platformLine.taxable <= 0 && deliveryLine.taxable <= 0) {

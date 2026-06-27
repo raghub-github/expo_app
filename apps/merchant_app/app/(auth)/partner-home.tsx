@@ -35,6 +35,8 @@ import {
   SAFE_AREA_TOP_MIN,
 } from "@/constants/theme";
 import type { ChildStore, PartnerParent } from "@/context/AuthContext";
+import { MX } from "@/lib/appAssetKeys";
+import { useAppAssetSource } from "@/store/appAssetsStore";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -45,7 +47,6 @@ const DIAGONAL_LEFT_OFFSET = 20;
 const STORE_NAME_MAX_CHARS = 28;
 const CIRCLE_SIZE = 118;
 const GRID_GAP = 28;
-const HEADER_IMAGE = require("../../public/portalheader.png");
 const PARTNER_BASE = "https://partner.gatimitra.com";
 
 function HeaderDiagonalDivider() {
@@ -304,6 +305,7 @@ export default function PartnerHomeScreen() {
   const { partner, signOut } = useAuth();
   const { setSelectedStore } = useSelectedStore();
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const headerImage = useAppAssetSource(MX.auth.header);
 
   const gridItemWidth = useMemo(() => {
     const columns = 2;
@@ -362,12 +364,16 @@ export default function PartnerHomeScreen() {
       />
 
       <View style={[styles.headerWrap, { paddingTop: topInset }]}>
-        <ImageBackground source={HEADER_IMAGE} style={styles.headerBg} resizeMode="cover">
-          <LinearGradient
-            colors={["transparent", "rgba(255,255,255,0.15)"]}
-            style={styles.headerFade}
-          />
-        </ImageBackground>
+        {headerImage ? (
+          <ImageBackground source={headerImage} style={styles.headerBg} resizeMode="cover">
+            <LinearGradient
+              colors={["transparent", "rgba(255,255,255,0.15)"]}
+              style={styles.headerFade}
+            />
+          </ImageBackground>
+        ) : (
+          <View style={styles.headerBg} />
+        )}
         <View style={styles.waveContainer}>
           <HeaderDiagonalDivider />
         </View>

@@ -50,12 +50,12 @@ export function useRiderDispatchRecovery(): void {
   }, [refreshOffers]);
 
   useEffect(() => {
-    if (!isOnDuty) return;
+    if (!isOnDuty || !session?.accessToken) return;
     const id = setInterval(() => {
       void syncDutyFromServer();
     }, DUTY_SYNC_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [isOnDuty, syncDutyFromServer]);
+  }, [isOnDuty, session?.accessToken, syncDutyFromServer]);
 
   useEffect(() => {
     if (!isOnDuty) return;

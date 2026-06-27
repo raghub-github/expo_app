@@ -2,9 +2,11 @@
  * Six service cards in a 2-column grid — height adapts to fill one-screen home layout.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Image, Dimensions } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -18,7 +20,7 @@ type ServiceItem = {
   title: string;
   pill?: string;
   arrowColor: string;
-  image: ReturnType<typeof require>;
+  assetKey: string;
   route: string;
 };
 
@@ -30,7 +32,7 @@ const SERVICES: ServiceItem[] = [
     title: "Order Food",
     pill: "Fresh & Fast Delivery",
     arrowColor: "#7C3AED",
-    image: require("../../public/img/food.png"),
+    assetKey: CX.home.serviceFood,
     route: "/home",
   },
   {
@@ -38,7 +40,7 @@ const SERVICES: ServiceItem[] = [
     title: "Book a Ride",
     pill: "Going Out",
     arrowColor: "#16A34A",
-    image: require("../../public/img/ridecard.png"),
+    assetKey: CX.home.serviceRide,
     route: "/home/service/ride",
   },
   {
@@ -46,7 +48,7 @@ const SERVICES: ServiceItem[] = [
     title: "Courier Service",
     pill: "Send Parcels",
     arrowColor: "#EA580C",
-    image: require("../../public/img/parcelcard.png"),
+    assetKey: CX.home.serviceParcel,
     route: "/home/service/parcels",
   },
   {
@@ -54,7 +56,7 @@ const SERVICES: ServiceItem[] = [
     title: "E-Commerce",
     pill: "Elect & Ecom",
     arrowColor: "#2563EB",
-    image: require("../../public/img/ecomer.png"),
+    assetKey: CX.home.serviceEcommerce,
     route: "/home/shop",
   },
   {
@@ -62,7 +64,7 @@ const SERVICES: ServiceItem[] = [
     title: "Online Vouchers",
     pill: "Offers",
     arrowColor: "#EA580C",
-    image: require("../../public/img/voucher.png"),
+    assetKey: CX.home.serviceVoucher,
     route: "/home/service/vouchers",
   },
   {
@@ -70,7 +72,7 @@ const SERVICES: ServiceItem[] = [
     title: "Explore Nearby",
     pill: "Near Me",
     arrowColor: "#DB2777",
-    image: require("../../public/img/loc.png"),
+    assetKey: CX.home.serviceLocation,
     route: "/home/service/near-me",
   },
 ];
@@ -134,10 +136,10 @@ function ServiceTile({
       </View>
 
       <View style={[styles.imageWrap, { width: iconWrap, height: iconWrap }]}>
-        <Image
-          source={item.image}
+        <AppAssetImage
+          assetKey={item.assetKey}
           style={{ width: imageSize, height: imageSize }}
-          resizeMode="contain"
+          contentFit="contain"
         />
       </View>
     </TouchableOpacity>

@@ -249,4 +249,5 @@ export declare const ApiErrorResponseSchema: z.ZodObject<{
 }, z.core.$strip>;
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 export * from "./wallet.js";
+export * from "./pricing.js";
 //# sourceMappingURL=index.d.ts.map

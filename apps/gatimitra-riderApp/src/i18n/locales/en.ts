@@ -476,6 +476,16 @@ export const en = {
       goToHome: "Go to Home",
       goToNextOrder: "Go to Next Order",
     },
+    tipEarned: {
+      badge: "You've Earned a Tip!",
+      tagline: "Your Service Made Someone Smile!",
+      messageLead: "Good news!",
+      messageMid: "appreciated your service with a",
+      messageSuffix: "tip.",
+      orderId: "Order ID",
+      customerFallback: "Customer",
+      footer: "Keep delivering excellence.",
+    },
     rideSuccess: {
       title: "Ride Completed",
       yay: "Yay! 🎉",

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { getDb } from "../../db/client.js";
+import { getDb, withSqlRetry } from "../../db/client.js";
 import { userProfiles, customers } from "../../db/schema.js";
 import { eq, and, ne } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
@@ -202,6 +202,14 @@ async function customerProfileResponse(
   };
 }
 
+/** PATCH responses skip the heavy lifetime-savings aggregate (GET /profile still returns it). */
+function customerPatchResponse(row: typeof customers.$inferSelect) {
+  return {
+    ...toResponseFromCustomer(row),
+    lifetime_savings_inr: 0,
+  };
+}
+
 async function ensureEmailAvatarForCustomer(
   db: ReturnType<typeof getDb>,
   row: typeof customers.$inferSelect,
@@ -254,14 +262,36 @@ export async function meRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const sub = req.auth!.sub;
       const role = req.auth!.role;
-      const db = getDb();
-      const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+      return withSqlRetry(async () => {
+        const db = getDb();
+        const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
 
-      if (customerId) {
+        if (customerId) {
+          const rows = await db
+            .select()
+            .from(customers)
+            .where(eq(customers.customerId, customerId))
+            .limit(1);
+          if (rows.length === 0) {
+            return reply.code(401).send({
+              error: "user_deleted",
+              message: "Your account is no longer available. Please sign in again.",
+            });
+          }
+          return customerProfileResponse(db, rows[0]!);
+        }
+
+        if (sub.startsWith("usr_")) {
+          return reply.code(401).send({
+            error: "session_revoked",
+            message: "Please log in again with the customer app to continue.",
+          });
+        }
+
         const rows = await db
           .select()
-          .from(customers)
-          .where(eq(customers.customerId, customerId))
+          .from(userProfiles)
+          .where(eq(userProfiles.userId, sub))
           .limit(1);
         if (rows.length === 0) {
           return reply.code(401).send({
@@ -269,28 +299,8 @@ export async function meRoutes(app: FastifyInstance) {
             message: "Your account is no longer available. Please sign in again.",
           });
         }
-        return customerProfileResponse(db, rows[0]!);
-      }
-
-      if (sub.startsWith("usr_")) {
-        return reply.code(401).send({
-          error: "session_revoked",
-          message: "Please log in again with the customer app to continue.",
-        });
-      }
-
-      const rows = await db
-        .select()
-        .from(userProfiles)
-        .where(eq(userProfiles.userId, sub))
-        .limit(1);
-      if (rows.length === 0) {
-        return reply.code(401).send({
-          error: "user_deleted",
-          message: "Your account is no longer available. Please sign in again.",
-        });
-      }
-      return { ...toResponseFromUserProfile(rows[0]!), lifetime_savings_inr: 0 };
+        return { ...toResponseFromUserProfile(rows[0]!), lifetime_savings_inr: 0 };
+      });
     }
   );
 
@@ -325,6 +335,7 @@ export async function meRoutes(app: FastifyInstance) {
             "PATCH /v1/me/profile permission payload"
           );
         }
+        return await withSqlRetry(async () => {
         const db = getDb();
         const emailNorm = body.email?.trim().toLowerCase();
         const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
@@ -427,7 +438,7 @@ export async function meRoutes(app: FastifyInstance) {
           if (!updated) {
             return reply.code(500).send({ message: "Could not save. Try again." } as any);
           }
-          return customerProfileResponse(db, updated);
+          return customerPatchResponse(updated);
         }
 
         if (sub.startsWith("usr_")) {
@@ -502,6 +513,7 @@ export async function meRoutes(app: FastifyInstance) {
           return reply.code(500).send({ message: "Could not save. Try again." } as any);
         }
         return { ...toResponseFromUserProfile(updated), lifetime_savings_inr: 0 };
+        });
       } catch (err: any) {
         req.log?.error?.({ err }, "PATCH /profile failed");
         const message = err?.message || err?.code || "Could not save. Try again.";

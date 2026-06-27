@@ -1,14 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
-  Image,
   Pressable,
   StyleSheet,
   Platform,
   Vibration,
   Alert,
 } from "react-native";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
   useAnimatedStyle,
@@ -21,6 +21,8 @@ import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
+import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 export type StoreMenuItemRowProps = {
   item: MenuItem;
@@ -61,8 +63,13 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
   const [addLocked, setAddLocked] = useState(false);
   const addLockUntilRef = useRef(0);
+  const imageUri = useMemo(
+    () => (item.imageUrl?.trim() ? (toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl) : null),
+    [item.imageUrl]
+  );
+  const imageWasPrefetched = imageUri ? isMenuItemImagePrefetched(imageUri) : false;
   const [imageFailed, setImageFailed] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(imageWasPrefetched);
   const addScale = useSharedValue(1);
 
   const isCustomisable = item.hasVariants || item.hasAddons || item.hasCustomizations;
@@ -82,8 +89,8 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 
   useEffect(() => {
     setImageFailed(false);
-    setImageLoaded(false);
-  }, [item.imageUrl]);
+    setImageLoaded(imageWasPrefetched);
+  }, [imageUri, imageWasPrefetched]);
 
   const runAddAnimation = useCallback(() => {
     addScale.value = withSpring(0.96, { damping: 15, stiffness: 320 }, () => {
@@ -147,7 +154,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
   const showDiscount = basePrice != null && basePrice > sellingPrice;
-  const showRemoteImage = !!item.imageUrl && !imageFailed;
+  const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
 
   return (
@@ -234,11 +241,15 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
           <View style={styles.imageWrap}>
             {showRemoteImage ? (
               <>
-                {!imageLoaded ? <View style={styles.imageShimmer} /> : null}
+                {!imageLoaded && !imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
                 <Image
-                  source={{ uri: item.imageUrl! }}
+                  source={{ uri: imageUri! }}
                   style={[styles.image, imageLoaded ? styles.imageVisible : styles.imageHidden]}
-                  resizeMode="cover"
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  recyclingKey={item.id}
+                  transition={imageWasPrefetched ? 0 : 120}
+                  allowDownscaling
                   onLoad={() => setImageLoaded(true)}
                   onError={() => setImageFailed(true)}
                 />

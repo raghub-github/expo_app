@@ -3,6 +3,11 @@
  */
 
 import api from "./api";
+import {
+  resolveSubscriptionExpiryIso,
+  formatSubscriptionExpiryLabel,
+  toIsoTimestampString,
+} from "@/lib/subscriptionExpiry";
 
 export type SubscriptionPlanPrice = {
   id: number;
@@ -82,11 +87,34 @@ export async function fetchActiveSubscriptionPlans(): Promise<SubscriptionPlan[]
 }
 
 export async function fetchCurrentSubscription(): Promise<CurrentSubscription> {
-  const res = await api.get<CurrentSubscription>("/v1/subscription/current", {
-    headers: { "X-Silent-Error": "1" },
-  });
-  return res.data;
+  const res = await api.get<CurrentSubscription & { subscription?: Record<string, unknown> | null }>(
+    "/v1/subscription/current",
+    { headers: { "X-Silent-Error": "1" } }
+  );
+  const data = res.data;
+  const rawSub = data.subscription as Record<string, unknown> | null;
+  if (!rawSub) return data;
+
+  const expiresIso = resolveSubscriptionExpiryIso(rawSub);
+  const startsIso = toIsoTimestampString(rawSub.startsAt ?? rawSub.starts_at);
+
+  return {
+    ...data,
+    subscription: {
+      id: Number(rawSub.id),
+      planId: Number(rawSub.planId ?? rawSub.plan_id),
+      planName: String(rawSub.planName ?? rawSub.plan_name ?? rawSub.name ?? ""),
+      planCode: String(rawSub.planCode ?? rawSub.plan_code ?? rawSub.code ?? ""),
+      billingCycle: String(rawSub.billingCycle ?? rawSub.billing_cycle ?? ""),
+      status: String(rawSub.status ?? "active"),
+      startsAt: startsIso,
+      expiresAt: expiresIso ?? "",
+      amountPaid: rawSub.amountPaid != null ? Number(rawSub.amountPaid) : rawSub.amount_paid != null ? Number(rawSub.amount_paid) : null,
+    },
+  };
 }
+
+export { formatSubscriptionExpiryLabel };
 
 export function formatPlanPriceLine(price: SubscriptionPlanPrice): string {
   return `₹${Math.round(price.amount)} for 1 ${price.cycleLabel}`;

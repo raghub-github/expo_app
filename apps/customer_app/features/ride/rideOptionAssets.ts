@@ -1,21 +1,29 @@
 import type { ImageSourcePropType } from "react-native";
-import { MAPAUTO_IMAGE, MAPBIKE_IMAGE, MAPCAB_IMAGE } from "@/lib/customer-map-assets";
+import { appAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
-/** List / sheet assets keyed by catalog image_key from backend. */
-const RIDE_IMAGE_BY_KEY: Record<string, ImageSourcePropType> = {
-  bike: require("../../public/img/bike.png"),
-  auto: require("../../public/img/auto.png"),
-  cab: require("../../public/img/ride1.png"),
-  cab_premium: require("../../public/img/cabpremium.png"),
-  travel: require("../../public/img/travel.png"),
+const RIDE_ASSET_BY_KEY: Record<string, string> = {
+  bike: CX.ride.bike,
+  auto: CX.ride.auto,
+  cab: CX.ride.cab,
+  cab_premium: CX.ride.cabPremium,
+  travel: CX.ride.travel,
 };
 
-/** Map marker PNGs on ride-booking maps (bike / auto / cab). */
-const MAP_MARKER_IMAGE_BY_KEY: Record<string, ImageSourcePropType> = {
-  bike: MAPBIKE_IMAGE,
-  auto: MAPAUTO_IMAGE,
-  cab: MAPCAB_IMAGE,
-  cab_premium: MAPCAB_IMAGE,
+const MAP_ASSET_BY_KEY: Record<string, string> = {
+  bike: CX.ride.mapBike,
+  auto: CX.ride.mapAuto,
+  cab: CX.ride.mapCab,
+  cab_premium: CX.ride.mapCab,
+  travel: CX.ride.mapTravel,
+};
+
+/** Bundled fallbacks when CMS map markers are not loaded yet. */
+const BUNDLED_MAP_MARKER_BY_KEY: Record<string, ImageSourcePropType> = {
+  bike: require("../../public/img/mapbike.png"),
+  auto: require("../../public/img/mapauto.png"),
+  cab: require("../../public/img/mapcab.png"),
+  cab_premium: require("../../public/img/mapcab.png"),
   travel: require("../../public/img/map/travel.png"),
 };
 
@@ -33,12 +41,28 @@ const VEHICLE_TYPE_TO_IMAGE_KEY: Record<string, string> = {
   ev_car: "cab",
 };
 
-export function resolveRideImage(imageKey: string): ImageSourcePropType {
-  return RIDE_IMAGE_BY_KEY[imageKey] ?? RIDE_IMAGE_BY_KEY.bike;
+function sourceForMap(
+  imageKey: string,
+  assetKey: string,
+  fallbackAssetKey: string
+): ImageSourcePropType | null {
+  const cms =
+    appAssetSource(assetKey) ??
+    appAssetSource(fallbackAssetKey) ??
+    appAssetSource(MAP_ASSET_BY_KEY.bike);
+  if (cms) return cms;
+  return BUNDLED_MAP_MARKER_BY_KEY[imageKey] ?? BUNDLED_MAP_MARKER_BY_KEY.bike ?? null;
 }
 
-export function resolveNearbyRiderMarkerImage(imageKey: string): ImageSourcePropType {
-  return MAP_MARKER_IMAGE_BY_KEY[imageKey] ?? MAP_MARKER_IMAGE_BY_KEY.bike;
+export function resolveRideImage(imageKey: string): ImageSourcePropType | null {
+  const assetKey = RIDE_ASSET_BY_KEY[imageKey] ?? RIDE_ASSET_BY_KEY.bike;
+  return appAssetSource(assetKey) ?? appAssetSource(RIDE_ASSET_BY_KEY.bike);
+}
+
+export function resolveNearbyRiderMarkerImage(imageKey: string): ImageSourcePropType | null {
+  const key = imageKey in MAP_ASSET_BY_KEY ? imageKey : "bike";
+  const assetKey = MAP_ASSET_BY_KEY[key] ?? MAP_ASSET_BY_KEY.bike;
+  return sourceForMap(key, assetKey, MAP_ASSET_BY_KEY.bike);
 }
 
 /** Map marker for selected ride option (bike / auto / cab / cab_premium). */
@@ -57,7 +81,15 @@ export function resolveSelectedRideMapMarkerImageKey(
 }
 
 /** Map icon from rider vehicle type (bike / auto / cab / …). */
-export function resolveRiderVehicleMarkerImage(vehicleType: string): ImageSourcePropType {
+export function resolveRiderVehicleMarkerImage(vehicleType: string): ImageSourcePropType | null {
   const key = VEHICLE_TYPE_TO_IMAGE_KEY[vehicleType.trim().toLowerCase()] ?? "bike";
   return resolveNearbyRiderMarkerImage(key);
+}
+
+export function resolveRideMapMarkerUri(imageKey: string): string {
+  const src = resolveNearbyRiderMarkerImage(imageKey);
+  if (src && typeof src === "object" && "uri" in src && typeof src.uri === "string") {
+    return src.uri;
+  }
+  return "";
 }

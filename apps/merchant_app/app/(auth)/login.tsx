@@ -32,6 +32,8 @@ import {
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
 import { GatiMitraMerchant, H_PADDING, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import LoginHeroBubbles from "./LoginHeroBubbles";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { MX } from "@/lib/appAssetKeys";
 
 const OTP_LEN = 6;
 
@@ -504,8 +506,8 @@ export default function LoginScreen() {
                   phoneKeyboardVisible ? (
                     <>
                       <View style={styles.sheetLogoRingCompact} accessibilityLabel="GatiMitra">
-                        <Image
-                          source={require("../../assets/onlylogo.png")}
+                        <AppAssetImage
+                          assetKey={MX.auth.logo}
                           style={styles.sheetLogoImgCompact}
                           resizeMode="contain"
                         />
@@ -518,8 +520,8 @@ export default function LoginScreen() {
                   ) : (
                   <>
                     <View style={styles.sheetLogoRing} accessibilityLabel="GatiMitra">
-                      <Image
-                        source={require("../../assets/onlylogo.png")}
+                      <AppAssetImage
+                        assetKey={MX.auth.logo}
                         style={styles.sheetLogoImg}
                         resizeMode="contain"
                       />

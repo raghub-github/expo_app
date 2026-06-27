@@ -33,8 +33,30 @@ import { getCached, setCached } from "@/lib/server-cache";
 import { getRiderLogoutSessionSnapshot } from "@/lib/db/operations/rider-logout-events";
 import { getRiderSelfieViewUrl } from "@/lib/rider-selfie-url";
 import { resolveOnboardingVehicleDisplayLabel } from "@/lib/rider-onboarding-vehicle-display.server";
+import type { RiderLogoutSessionSnapshot } from "@/lib/rider-logout-types";
 
 export const runtime = 'nodejs';
+
+const DEFAULT_LOGOUT_SESSION: RiderLogoutSessionSnapshot = {
+  status: "logged_in",
+  totalLogoutCount: 0,
+  activeDeviceCount: 0,
+  latest: null,
+};
+
+function withLogoutSessionDefault<T extends { data?: { logoutSession?: RiderLogoutSessionSnapshot } }>(
+  payload: T,
+): T {
+  const data = payload?.data;
+  if (!data || data.logoutSession) return payload;
+  return {
+    ...payload,
+    data: {
+      ...data,
+      logoutSession: DEFAULT_LOGOUT_SESSION,
+    },
+  };
+}
 
 type RiderPenaltyRow = InferSelectModel<typeof riderPenalties>;
 
@@ -137,13 +159,13 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary_v4:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v5:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
       const cached = getCached<unknown>(cacheKey);
       if (cached) {
-        return NextResponse.json(cached);
+        return NextResponse.json(withLogoutSessionDefault(cached as { data?: { logoutSession?: RiderLogoutSessionSnapshot } }));
       }
     }
 
@@ -152,8 +174,11 @@ export async function GET(
         const cached = await redis.get(cacheKey);
         if (cached) {
           const parsed = JSON.parse(cached) as unknown;
-          setCached(cacheKey, parsed, MEMORY_TTL_MS);
-          return NextResponse.json(parsed);
+          const normalized = withLogoutSessionDefault(
+            parsed as { data?: { logoutSession?: RiderLogoutSessionSnapshot } },
+          );
+          setCached(cacheKey, normalized, MEMORY_TTL_MS);
+          return NextResponse.json(normalized);
         }
       } catch {
         // ignore cache read errors
@@ -776,7 +801,7 @@ export async function GET(
         })() : null,
         orderMetrics,
         onboardingFees,
-        logoutSession,
+        logoutSession: logoutSession ?? DEFAULT_LOGOUT_SESSION,
       },
     } as const;
 

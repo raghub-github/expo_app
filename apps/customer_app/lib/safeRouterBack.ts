@@ -79,6 +79,13 @@ export function resolveAndroidBackFallback(segments: readonly string[]): SafeRou
   if (root === "wallet") {
     return PROFILE_TAB_FALLBACK;
   }
+  if (root === "profile") {
+    const screen = segments[1];
+    if (!screen || screen === "index") {
+      return FOOD_HOME_FALLBACK;
+    }
+    return PROFILE_TAB_FALLBACK;
+  }
   if (root === "search") {
     return HOME_TAB_FALLBACK;
   }

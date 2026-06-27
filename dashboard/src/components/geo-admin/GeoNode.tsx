@@ -6,6 +6,7 @@ import { ServiceSwitch } from "./ServiceSwitch";
 import { cn } from "@/lib/utils";
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
 import { formatGeoDeliverySlabPreview } from "./geoFeeLabel";
+import { prefetchDeliveryRateSlabs } from "@/lib/geo/deliveryRateSlabsCache";
 
 const kindBadge: Record<string, string> = {
   state: "border-violet-200 bg-violet-50 text-violet-800",
@@ -120,6 +121,14 @@ export const GeoNode = React.memo(function GeoNode(props: {
             </div>
             <button
               type="button"
+              onMouseEnter={() => {
+                prefetchDeliveryRateSlabs({
+                  level: row.kind,
+                  refId: row.id,
+                  serviceType: "food",
+                  actorType: "customer",
+                });
+              }}
               onClick={props.onDeliverySlabs}
               className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-800 shadow-sm transition hover:border-teal-300 hover:bg-teal-50/30"
             >

@@ -625,6 +625,18 @@ function OrdersPageContent() {
     } catch {}
   }, [storeId]);
 
+  const lastFreshnessSyncAtRef = useRef(0);
+  const refreshOnFocusOrVisible = useCallback(() => {
+    if (!storeId) return;
+    const now = Date.now();
+    if (now - lastFreshnessSyncAtRef.current < 1200) return;
+    lastFreshnessSyncAtRef.current = now;
+    // Read-only freshness sync: refetch latest backend state on return/focus.
+    void fetchStoreStatus();
+    void fetchOrders();
+    void fetchStats();
+  }, [storeId, fetchStoreStatus, fetchOrders, fetchStats]);
+
   useEffect(() => {
     if (!storeId) return;
     void fetch(
@@ -639,6 +651,19 @@ function OrdersPageContent() {
     window.addEventListener('partner-food-orders-refresh', onRefresh);
     return () => window.removeEventListener('partner-food-orders-refresh', onRefresh);
   }, [fetchOrders]);
+
+  useEffect(() => {
+    const onFocus = () => refreshOnFocusOrVisible();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshOnFocusOrVisible();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refreshOnFocusOrVisible]);
 
   useEffect(() => {
     fetchStats();
@@ -999,7 +1024,6 @@ function OrdersPageContent() {
     void confirmStoreClose();
   }, [closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, confirmStoreClose]);
 
-  const autoCancelFiredRef = useRef<Set<number>>(new Set());
   const orderPipelineByKeyRef = useRef<Map<number, string>>(new Map());
 
   const updateStatus = useCallback(
@@ -1279,7 +1303,9 @@ function OrdersPageContent() {
     const st = resolveOrderSidebarPipelineStatus(selectedOrder);
     if (st !== 'CREATED' && st !== 'NEW') return { label: undefined, disabled: false };
     const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-    const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
+    const deadline = selectedOrder.merchant_response_deadline_at
+      ? new Date(selectedOrder.merchant_response_deadline_at).getTime()
+      : new Date(selectedOrder.created_at).getTime() + mins * 60_000;
     const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
     const m = Math.floor(secondsLeft / 60);
     const s = secondsLeft % 60;
@@ -1294,7 +1320,9 @@ function OrdersPageContent() {
       const st = resolveOrderSidebarPipelineStatus(order);
       if (st !== 'CREATED' && st !== 'NEW') return { label: undefined as string | undefined, disabled: false };
       const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      const deadline = order.merchant_response_deadline_at
+        ? new Date(order.merchant_response_deadline_at).getTime()
+        : new Date(order.created_at).getTime() + mins * 60_000;
       const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
       const m = Math.floor(secondsLeft / 60);
       const s = secondsLeft % 60;
@@ -1305,31 +1333,6 @@ function OrdersPageContent() {
     },
     [acceptanceSettings?.acceptance_window_minutes, nowTick]
   );
-
-  useEffect(() => {
-    if (!storeId) return;
-    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-    for (const order of orders) {
-      const st = resolveOrderSidebarPipelineStatus(order);
-      if (st !== 'CREATED') continue;
-      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
-      if (nowTick < deadline) continue;
-      if (autoCancelFiredRef.current.has(order.id)) continue;
-      if (actionLoading === order.id) continue;
-      autoCancelFiredRef.current.add(order.id);
-      void updateStatus(order, 'CANCELLED', {
-        rejected_reason: 'Auto Cancelled',
-        cancel_mode: 'auto',
-      });
-    }
-  }, [
-    nowTick,
-    orders,
-    storeId,
-    acceptanceSettings?.acceptance_window_minutes,
-    actionLoading,
-    updateStatus,
-  ]);
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 

@@ -293,8 +293,6 @@ export function GlobalFloatingCart() {
     const ls = m.liveStatus;
     if (ls === "OPEN" || ls === "CLOSED") {
       useStoreStatusStore.getState().setStatusFromApi(merchantId, ls === "OPEN", ls);
-    } else if (m.isOpen != null) {
-      useStoreStatusStore.getState().setStatusFromApi(merchantId, m.isOpen);
     }
   }, [cartMerchantQuery.data, merchantId]);
 
@@ -305,7 +303,6 @@ export function GlobalFloatingCart() {
     const m = cartMerchantQuery.data;
     if (m?.liveStatus === "CLOSED") return true;
     if (m?.liveStatus === "OPEN") return false;
-    if (m?.isOpen === false) return true;
     return false;
   }, [merchantId, hasCart, liveStatusFromStore, cartMerchantQuery.data]);
 

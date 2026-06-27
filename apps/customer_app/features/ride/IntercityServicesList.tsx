@@ -3,9 +3,9 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Image,
   ActivityIndicator,
 } from "react-native";
+import { AppAssetImage } from "@/components/AppAssetImage";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { ALL_SERVICES, type ServiceId } from "./AllServicesGrid";
@@ -80,7 +80,11 @@ export function IntercityServicesList({
             >
               <View style={styles.iconWrap}>
                 {service ? (
-                  <Image source={service.image} style={styles.icon} resizeMode="contain" />
+                  <AppAssetImage
+                    assetKey={service.assetKey}
+                    style={styles.icon}
+                    contentFit="contain"
+                  />
                 ) : null}
               </View>
               <View style={styles.info}>

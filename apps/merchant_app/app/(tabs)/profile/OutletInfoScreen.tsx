@@ -32,6 +32,8 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getConfig } from "@/config/env";
 import { getOutlet, updateOutlet, updatePickupInstruction, resolveImageUrl, type OutletInfo, type OutletUpdateBody } from "@/services/outletApi";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { MX } from "@/lib/appAssetKeys";
 import { reverseGeocode, forwardGeocode, type GeocodeAddress } from "@/services/geocoding";
 import {
   fetchMenuCuisinesAndCatalog,
@@ -571,8 +573,8 @@ export default function OutletInfoScreen() {
                     onError={() => setLogoError(true)}
                   />
                 ) : (
-                  <Image
-                    source={require("@/assets/onlylogo.png")}
+                  <AppAssetImage
+                    assetKey={MX.auth.logo}
                     style={styles.logoImg}
                     resizeMode="contain"
                   />

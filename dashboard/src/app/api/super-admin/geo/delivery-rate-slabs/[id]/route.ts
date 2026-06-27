@@ -12,14 +12,14 @@ import { validateDeliveryRateSlabSet } from "@/lib/geo/deliveryRateSlabAdminVali
 export const runtime = "nodejs";
 
 const patchSchema = z.object({
-  minKm: z.number().nonnegative().optional(),
-  maxKm: z.number().nonnegative().nullable().optional(),
-  baseFare: z.number().nonnegative().nullable().optional(),
-  perKmRate: z.number().nonnegative().optional(),
-  minCharge: z.number().nonnegative().nullable().optional(),
-  waitingChargePerMin: z.number().nonnegative().nullable().optional(),
-  surgeMultiplier: z.number().nullable().optional(),
-  priority: z.number().int().optional(),
+  minKm: z.coerce.number().nonnegative().optional(),
+  maxKm: z.coerce.number().nonnegative().nullable().optional(),
+  baseFare: z.coerce.number().nonnegative().nullable().optional(),
+  perKmRate: z.coerce.number().nonnegative().optional(),
+  minCharge: z.coerce.number().nonnegative().nullable().optional(),
+  waitingChargePerMin: z.coerce.number().nonnegative().nullable().optional(),
+  surgeMultiplier: z.coerce.number().nullable().optional(),
+  priority: z.coerce.number().int().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -72,7 +72,23 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const msg = validateDeliveryRateSlabSet(next);
     if (msg) return NextResponse.json({ error: msg }, { status: 400 });
 
-    const updated = await updateDeliveryRateSlab(slabId, parsed.data);
+    const merged = {
+      minKm: parsed.data.minKm ?? current.minKm,
+      maxKm: parsed.data.maxKm === undefined ? current.maxKm : parsed.data.maxKm,
+      baseFare: parsed.data.baseFare === undefined ? current.baseFare : parsed.data.baseFare,
+      perKmRate: parsed.data.perKmRate ?? current.perKmRate,
+      minCharge: parsed.data.minCharge === undefined ? current.minCharge : parsed.data.minCharge,
+      waitingChargePerMin:
+        parsed.data.waitingChargePerMin === undefined
+          ? current.waitingChargePerMin
+          : parsed.data.waitingChargePerMin,
+      surgeMultiplier:
+        parsed.data.surgeMultiplier === undefined ? current.surgeMultiplier : parsed.data.surgeMultiplier,
+      priority: parsed.data.priority ?? current.priority,
+      isActive: parsed.data.isActive ?? current.isActive,
+    };
+
+    const updated = await updateDeliveryRateSlab(slabId, merged);
     if (!updated) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ slab: updated });
   } catch (e) {

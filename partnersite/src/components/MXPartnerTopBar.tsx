@@ -940,6 +940,27 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [refreshStoreOperations, resolvedStoreId]);
 
   useEffect(() => {
+    if (!resolvedStoreId) return;
+    let lastSyncAt = 0;
+    const refreshOnReturn = () => {
+      const now = Date.now();
+      if (now - lastSyncAt < 1200) return;
+      lastSyncAt = now;
+      void refreshStoreOperations();
+    };
+    const onFocus = () => refreshOnReturn();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshOnReturn();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [resolvedStoreId, refreshStoreOperations]);
+
+  useEffect(() => {
     licenseModalAutoOpenedRef.current = false;
   }, [resolvedStoreId]);
 

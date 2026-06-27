@@ -1,22 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
-import { syncExpiredOrderAcceptanceForStore } from '@/lib/order-acceptance-timeout-sync';
 import { fetchBackend } from '@/lib/fetch-backend';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-function getDb() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !supabaseServiceKey) {
-    throw new Error('Supabase env not configured');
-  }
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
 
 /**
  * POST /api/merchant/sync-acceptance-timeout?store_id=GMMC1001
@@ -50,11 +37,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const db = getDb();
-    const { cancelled } = await syncExpiredOrderAcceptanceForStore(db, gate.storeIdNum);
     return NextResponse.json(
-      { cancelled, store_id: String(storeId).trim() },
-      { headers: { 'Cache-Control': 'private, no-store, max-age=0' } }
+      { error: 'backend_unavailable', cancelled: 0, store_id: String(storeId).trim() },
+      { status: 503 }
     );
   } catch (e) {
     console.error('[sync-acceptance-timeout]', e);

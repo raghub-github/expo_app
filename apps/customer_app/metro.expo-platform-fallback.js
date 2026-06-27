@@ -19,21 +19,6 @@ function requestNeedsPlatformFallback(req) {
   return true;
 }
 
-function rewriteLegacyMapbikeAssetRequest(req) {
-  const url = req.url || "";
-  if (!url.includes("/assets")) return;
-  try {
-    const decoded = decodeURIComponent(url);
-    if (!decoded.includes("assets/images/mapbike.png")) return;
-    req.url = url
-      .replace(/assets%2Fimages%2Fmapbike\.png/gi, "public%2Fimg%2Fmapbike.png")
-      .replace(/assets\/images\/mapbike\.png/gi, "public/img/mapbike.png");
-  } catch {
-    /* ignore malformed URLs */
-  }
-}
-
-/** @param {import('expo/metro-config').MetroConfig} config */
 function withExpoPlatformFallback(config) {
   const previous = config.server?.enhanceMiddleware;
   config.server = {
@@ -41,7 +26,6 @@ function withExpoPlatformFallback(config) {
     enhanceMiddleware: (middleware, server) => {
       const chain = previous ? previous(middleware, server) : middleware;
       return (req, res, next) => {
-        rewriteLegacyMapbikeAssetRequest(req);
         if (requestNeedsPlatformFallback(req)) {
           const platform =
             platformFromUserAgent(req.headers["user-agent"]) ||

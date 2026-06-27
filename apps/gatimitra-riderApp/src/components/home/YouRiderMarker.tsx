@@ -1,7 +1,8 @@
 import React from "react";
 import { View, Text, Image, StyleSheet, Platform } from "react-native";
 import { colors } from "@/src/theme";
-import { MAPBIKE_IMAGE } from "@/src/lib/map-assets";
+import { useAppAssetSource } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
 const BRAND = colors.primary[500];
 
@@ -15,6 +16,7 @@ type YouRiderMarkerProps = {
 
 /** Home map rider pin: mint "You" bubble + mapbike (transparent ring, no white fill). */
 export function YouRiderMarker({ onReady }: YouRiderMarkerProps) {
+  const mapBike = useAppAssetSource(RX.map.bike);
   return (
     <View style={styles.wrap} onLayout={onReady} pointerEvents="none" collapsable={false}>
       <View style={styles.bubble}>
@@ -23,12 +25,14 @@ export function YouRiderMarker({ onReady }: YouRiderMarkerProps) {
         </Text>
       </View>
       <View style={styles.iconRing}>
-        <Image
-          source={MAPBIKE_IMAGE}
-          style={styles.icon}
-          resizeMode="contain"
-          onLoad={onReady}
-        />
+        {mapBike ? (
+          <Image
+            source={mapBike}
+            style={styles.icon}
+            resizeMode="contain"
+            onLoad={onReady}
+          />
+        ) : null}
       </View>
     </View>
   );

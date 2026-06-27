@@ -1,29 +1,15 @@
 /**
  * Search screen – category grid and mock data for search results.
- * Category images match home/public/img; slug used for navigation.
+ * Category images are loaded from backend app assets (Super Admin → App images).
  */
 
-export const SEARCH_CATEGORY_IMAGES: Record<string, ReturnType<typeof require>> = {
-  biryani: require("../public/img/biryani.png"),
-  chicken: require("../public/img/vegbiryani.png"),
-  pizza: require("../public/img/pizza.png"),
-  "north-indian": require("../public/img/Paratha.png"),
-  paneer: require("../public/img/vegbiryani.png"),
-  chinese: require("../public/img/Noodles.png"),
-  cake: require("../public/img/Cake.png"),
-  "veg-meal": require("../public/img/thali.png"),
-  sweets: require("../public/img/gulabjamun.png"),
-  thali: require("../public/img/thali.png"),
-  burger: require("../public/img/burger.png"),
-  rolls: require("../public/img/Paratha.png"),
-  noodles: require("../public/img/Noodles.png"),
-  dosa: require("../public/img/Dosa.png"),
-  momos: require("../public/img/ndf.png"),
-  "fried-rice": require("../public/img/Noodles.png"),
-  "chilli-chicken": require("../public/img/ndf.png"),
-  "pav-bhaji": require("../public/img/Pav Bhaji.png"),
-  default: require("../public/img/ndf.png"),
-};
+import { SEARCH_SLUG_TO_ASSET_KEY } from "@/lib/appAssetKeys";
+import { getAppAssetUrl } from "@/store/appAssetsStore";
+
+export function searchCategoryImageUrl(slug: string): string | null {
+  const key = SEARCH_SLUG_TO_ASSET_KEY[slug] ?? SEARCH_SLUG_TO_ASSET_KEY.default;
+  return key ? getAppAssetUrl(key) : null;
+}
 
 export type SearchCategory = { id: string; name: string; slug: string };
 

@@ -41,6 +41,8 @@ import {
   computeDeliveryFallbackFee,
   getDeliveryFallbackRates,
 } from "../delivery/deliveryFallback.config.js";
+import { computeFallbackCustomerFee } from "../fallback-pricing/fallbackSlabPricing.service.js";
+import { buildCustomerPricingBreakdown } from "../../lib/customer-pricing-breakdown.js";
 import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
 import { resolveRiderPayoutQuote } from "../rider-payout-pricing/resolveRiderPayoutQuote.js";
 import { loadEffectiveRideCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
@@ -108,6 +110,7 @@ export type StoreQuoteResult =
         approximate: boolean;
         pricing_engine:
           | "slab_geo"
+          | "fallback_slab"
           | "fallback_per_km"
           | "no_slab_configured"
           | "no_geo_match"
@@ -295,6 +298,7 @@ export async function resolveStoreDeliveryQuote(
   let deliveryFee = 0;
   let pricingEngine:
     | "slab_geo"
+    | "fallback_slab"
     | "fallback_per_km"
     | "no_slab_configured"
     | "no_geo_match"
@@ -589,8 +593,32 @@ export async function resolveStoreDeliveryQuote(
     pricingEngine === "no_geo_match" ||
     pricingEngine === "slab_invalid"
   ) {
-    const fallbackRates = await getDeliveryFallbackRates();
-    deliveryFee = computeDeliveryFallbackFee(distanceKm, fallbackRates);
+    const fallback = await computeFallbackCustomerFee({
+      service: serviceTypeSlab,
+      distanceKm,
+      vehicleType: input.rideVehicleType,
+    });
+    deliveryFee = fallback.fee;
+    if (fallback.engine === "fallback_slab" && fallback.slabQuote) {
+      pricingEngine = "fallback_slab";
+      const sq = fallback.slabQuote;
+      slabQuote = {
+        distanceKm: sq.distanceKm,
+        slabId: sq.segments[0]?.slabId ?? 0,
+        minKm: sq.segments[0]?.minKm ?? 0,
+        maxKm: sq.segments[0]?.maxKm ?? null,
+        baseFareApplied: sq.baseFareApplied,
+        perKmRate: sq.segments[0]?.perKmRate ?? 0,
+        rawDistanceAmount: fallback.distanceFare,
+        preMinChargeTotal: sq.finalAmount,
+        minCharge: null,
+        finalAmount: sq.finalAmount,
+        segments: sq.segments,
+      };
+    } else if (pricingEngine === "fallback_per_km") {
+      const fallbackRates = await getDeliveryFallbackRates();
+      deliveryFee = computeDeliveryFallbackFee(distanceKm, fallbackRates);
+    }
   }
 
   deliveryFee = round2(deliveryFee);
@@ -616,6 +644,7 @@ export async function resolveStoreDeliveryQuote(
       lat: drop.lat,
       lng: drop.lng,
       cityHint: drop.city,
+      trigger: "eta_calculation",
     });
     weatherDelayMinutes = weather.etaDelayMinutes;
     weatherImpactLabel = weather.etaImpactLabel;
@@ -627,6 +656,17 @@ export async function resolveStoreDeliveryQuote(
   }
 
   const adjustedDurationMin = round2(durationMin + weatherDelayMinutes);
+
+  const customerPricing = buildCustomerPricingBreakdown({
+    service: serviceTypeSlab,
+    pricingEngine,
+    distanceKm,
+    deliveryFee,
+    deliveryGst,
+    slabQuote,
+    appliedGeoLevel,
+    rideVehicleType: input.rideVehicleType ?? null,
+  });
 
   return {
     ok: true,
@@ -661,6 +701,7 @@ export async function resolveStoreDeliveryQuote(
       pricing_engine: pricingEngine,
       slab_quote: slabQuote,
       slab_validation_error: slabValidationError,
+      customer_pricing: customerPricing,
     },
   };
 }

@@ -36,8 +36,21 @@ async function tablesExist(): Promise<{ attrs: boolean; catalog: boolean }> {
   return { attrs: Boolean(row?.attrs), catalog: Boolean(row?.catalog) };
 }
 
+async function catalogChannelColumnExists(): Promise<boolean> {
+  const sql = getSql();
+  const [row] = await sql<{ ok: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'order_cancellation_reason_catalog'
+        AND column_name = 'channel'
+    ) AS ok
+  `;
+  return Boolean(row?.ok);
+}
+
 /**
- * Idempotent: only runs migration SQL when tables are missing (fast path after first run).
+ * Idempotent: only runs migration SQL when tables/columns are missing (fast path after first run).
  */
 export async function ensureCancellationCatalogSchema(): Promise<void> {
   if (schemaReady) return;
@@ -48,10 +61,6 @@ export async function ensureCancellationCatalogSchema(): Promise<void> {
 
   schemaEnsurePromise = (async () => {
     const existing = await tablesExist();
-    if (existing.attrs && existing.catalog) {
-      schemaReady = true;
-      return;
-    }
 
     if (!existing.attrs) {
       try {
@@ -72,6 +81,15 @@ export async function ensureCancellationCatalogSchema(): Promise<void> {
       const after = await tablesExist();
       if (!after.attrs) {
         await runSqlFile("0236_order_cancellation_attributes.sql");
+      }
+    }
+
+    if ((await tablesExist()).catalog && !(await catalogChannelColumnExists())) {
+      try {
+        await runSqlFile("0340_order_cancellation_app_channel.sql");
+      } catch (e) {
+        console.error("[ensureCancellationCatalogSchema] 0340 failed:", e);
+        throw e;
       }
     }
 

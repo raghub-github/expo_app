@@ -53,6 +53,8 @@ export const RIDER_AVAILABLE_ORDERS_QUERY_KEY = ["rider", "orders", "available"]
  * Hook to fetch available orders
  */
 export function useAvailableOrders() {
+  const session = useSessionStore((s) => s.session);
+  const sessionHydrated = useSessionStore((s) => s.hydrated);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const { data: dutyStatus } = useDutyStatus();
   const blockedServices = mergeRiderBlockedServices(dutyStatus?.blockedServiceTypes);
@@ -65,7 +67,8 @@ export function useAvailableOrders() {
   return useQuery({
     queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY,
     queryFn: () => riderApi.getAvailableOrders(),
-    enabled: isOnDuty && !dispatchBlocked,
+    enabled:
+      sessionHydrated && Boolean(session?.accessToken) && isOnDuty && !dispatchBlocked,
     refetchInterval: 5000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,

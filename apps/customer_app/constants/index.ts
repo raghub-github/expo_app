@@ -22,6 +22,12 @@ export const STORAGE_KEYS = {
   PROFILE_CACHE: "gm_customer_profile_cache_v1",
   /** Active subscription plans for instant checkout GMitra Plus row */
   SUBSCRIPTION_PLANS_CACHE: "gm_customer_subscription_plans_cache_v1",
+  /** Per-state food home layout for instant paint (classic / grid_first / discovery) */
+  FOOD_HOME_LAYOUT_CACHE: "gm_customer_food_home_layout_cache_v2",
+  /** Store menu payloads for instant revisit (SWR) */
+  MERCHANT_MENU_CACHE: "gm_customer_merchant_menu_cache_v1",
+  /** FOOD browse categories for instant home/search/category paint */
+  USER_APP_CATEGORIES_CACHE: "gm_customer_user_app_categories_cache_v1",
   /** Default delivery partner tip amount saved from tracking sheet */
   SAVED_DELIVERY_TIP: "gm_saved_delivery_tip_v1",
 } as const;

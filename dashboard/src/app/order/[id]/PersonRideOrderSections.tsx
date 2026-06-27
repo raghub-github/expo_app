@@ -18,6 +18,7 @@ type OrderLike = {
   customerAccountStatus: string | null;
   customerRiskFlag: string | null;
   customerUserType?: string | null;
+  customerFraudReasons?: string[];
   customerTrustTierLabel?: string | null;
   pickupAddressRaw?: string | null;
   pickupAddressNormalized?: string | null;
@@ -292,6 +293,7 @@ export default function PersonRideOrderSections({
             dropAddressNormalized: order.dropAddressNormalized,
             dropAddressGeocoded: order.dropAddressGeocoded,
             userType: order.customerUserType ?? order.customerTrustTierLabel ?? null,
+            fraudReasons: order.customerFraudReasons ?? [],
             locationMismatch: isLocationMismatch,
             accountStatus: order.customerAccountStatus,
             riskFlag: order.customerRiskFlag,

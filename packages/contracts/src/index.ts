@@ -215,5 +215,6 @@ export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 // (Node ESM requires file extensions; tsc with moduleResolution: Bundler
 // tolerates the `.js` even though the source is `.ts`).
 export * from "./wallet.js";
+export * from "./pricing.js";
 
 

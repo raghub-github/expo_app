@@ -94,6 +94,15 @@ export function riderEarningLikeFromDeliverySuccessParams(
   };
 }
 
+export function resolveRiderDeliveryTipAmount(
+  orderDetail: Pick<RiderOrderSummary, "customerTipAmount"> | null | undefined,
+  paramsTipAmount: number
+): number {
+  const fromOrder = Math.round(Number(orderDetail?.customerTipAmount) || 0);
+  const fromParams = Math.round(Number(paramsTipAmount) || 0);
+  return Math.max(fromOrder, fromParams);
+}
+
 export function parseFoodDeliverySuccessParams(
   raw: Record<string, string | string[] | undefined>
 ): FoodDeliverySuccessParams {

@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
         continue;
       }
       const maxDistanceKm = row.maxDistanceKm;
-      if (maxDistanceKm == null) continue;
+      if (maxDistanceKm == null || maxDistanceKm <= 0) continue;
       saved.push(
         await upsertRideVehicleLimit({
           stateId: parsed.data.stateId,

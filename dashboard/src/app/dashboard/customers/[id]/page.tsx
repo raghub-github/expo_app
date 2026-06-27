@@ -13,6 +13,7 @@ import {
   trustTierUserTypeClass,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
+import { CustomerFraudReasonModal } from "@/components/customers/CustomerFraudReasonModal";
 import type { CustomerAddressRow } from "@/lib/db/operations/customers";
 
 interface CustomerDetail {
@@ -85,6 +86,7 @@ interface CustomerDetail {
   contactTags?: string[] | null;
   referralInstallCount?: number;
   addresses?: CustomerAddressRow[];
+  fraudReasons?: string[];
 }
 
 /** Drop redundant "Current location: " prefix from saved label + address strings. */
@@ -267,6 +269,7 @@ function CustomerDetailsContent() {
   const [customerTickets, setCustomerTickets] = useState<CustomerTicketRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
+  const [fraudModalOpen, setFraudModalOpen] = useState(false);
   const router = useRouter();
   const pathname = useAppPathname();
 
@@ -658,7 +661,18 @@ function CustomerDetailsContent() {
 
           <DetailRow>
             <FieldItem label="User type ">
-              <span className={tierClass}>{tierLabel}</span>
+              {tier === "FRAUD" ? (
+                <button
+                  type="button"
+                  onClick={() => setFraudModalOpen(true)}
+                  className={`${tierClass} underline decoration-dotted underline-offset-2 hover:opacity-80`}
+                  title="View fraud reason"
+                >
+                  {tierLabel}
+                </button>
+              ) : (
+                <span className={tierClass}>{tierLabel}</span>
+              )}
             </FieldItem>
             <FieldItem label="Trust score">
               <span className="tabular-nums font-medium">
@@ -917,6 +931,14 @@ function CustomerDetailsContent() {
             </div>
           )}
         </section>
+      ) : null}
+
+      {fraudModalOpen && tier === "FRAUD" ? (
+        <CustomerFraudReasonModal
+          customerLabel={`${customer.customerId} · ${customer.fullName}`}
+          reasons={customer.fraudReasons ?? []}
+          onClose={() => setFraudModalOpen(false)}
+        />
       ) : null}
     </div>
   );

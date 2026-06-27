@@ -18,12 +18,12 @@ const postSchema = z.object({
   level: levelSchema,
   refId: z.string().uuid(),
   vehicleType: vehicleSchema,
-  minKm: z.number().nonnegative(),
-  maxKm: z.number().nonnegative().optional().nullable(),
-  baseFare: z.number().nonnegative().optional().nullable(),
-  perKmRate: z.number().nonnegative(),
-  minCharge: z.number().nonnegative().optional().nullable(),
-  priority: z.number().int().optional(),
+  minKm: z.coerce.number().nonnegative(),
+  maxKm: z.coerce.number().nonnegative().optional().nullable(),
+  baseFare: z.coerce.number().nonnegative().optional().nullable(),
+  perKmRate: z.coerce.number().nonnegative(),
+  minCharge: z.coerce.number().nonnegative().optional().nullable(),
+  priority: z.coerce.number().int().optional(),
   isActive: z.boolean().optional(),
 });
 

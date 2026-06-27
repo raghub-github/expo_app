@@ -31,6 +31,7 @@ import { tripKmFromCoords } from "@/lib/intercity-rides";
 import { RideHomePromoBanner, RideSafetyBanner } from "./RideHomeSections";
 import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { filterRideBookFeaturedOffers } from "@/lib/ride-offers";
+import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 
 const PAD = 18;
 const DUE_BANNER_H = 64;
@@ -241,13 +242,16 @@ export function RideBookingScreen() {
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={styles.bellBtn}
-            onPress={() => router.push("/notifications")}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="notifications-outline" size={20} color={GatiMitraColors.textPrimary} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <GatiCashHeaderPill />
+            <TouchableOpacity
+              style={styles.bellBtn}
+              onPress={() => router.push("/notifications")}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="notifications-outline" size={20} color={GatiMitraColors.textPrimary} />
+            </TouchableOpacity>
+          </View>
         </View>
       </LinearGradient>
 
@@ -299,8 +303,12 @@ const styles = StyleSheet.create({
   },
   headerBlock: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(187, 247, 208, 0.45)",
-    ...GatiMitraColors.elevationShadow,
+    borderBottomColor: "rgba(0, 0, 0, 0.03)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.015,
+    shadowRadius: 1,
+    elevation: 0,
   },
   titleBar: {
     flexDirection: "row",
@@ -351,6 +359,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#DCFCE7",
     alignItems: "center",
     justifyContent: "center",
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    flexShrink: 0,
+    marginTop: 1,
   },
   bellBtn: {
     width: 36,

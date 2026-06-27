@@ -1,34 +1,67 @@
 import type { User } from "@supabase/supabase-js";
+import type { NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import {
+  isInvalidRefreshToken,
+  isNetworkOrTransientError,
+  isTimeoutOrAbortError,
+} from "@/lib/auth/session-errors";
 
 const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
 
 export type ApiAuthFailure =
   | { ok: false; status: 401; body: { success: false; error: string; code: string } }
-  | { ok: false; status: 503; body: { success: false; error: string; code: string } };
+  | { ok: false; status: 503; body: { success: false; error: string; code: string } }
+  | { ok: false; status: 499; body: { success: false; error: string; code: string } };
 
 export type ApiAuthSuccess = { ok: true; user: User; supabase: Awaited<ReturnType<typeof createServerSupabaseClient>> };
+
+export function isTransientAuthError(err: unknown): boolean {
+  return isTimeoutOrAbortError(err) || isNetworkOrTransientError(err);
+}
 
 /**
  * Resolve the current dashboard user for API routes.
  * Retries transient Supabase/network failures so parallel tab loads do not surface false 401s.
  */
-export async function getAuthenticatedApiUser(): Promise<ApiAuthSuccess | ApiAuthFailure> {
+export async function getAuthenticatedApiUser(
+  request?: Pick<NextRequest, "signal">
+): Promise<ApiAuthSuccess | ApiAuthFailure> {
+  if (request?.signal.aborted) {
+    return {
+      ok: false,
+      status: 499,
+      body: { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+    };
+  }
+
   const supabase = await createServerSupabaseClient();
 
   let user: User | null = null;
   let userError: unknown = null;
 
   for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-    const result = await supabase.auth.getUser();
-    user = result.data?.user ?? null;
-    userError = result.error ?? null;
+    if (request?.signal.aborted) {
+      return {
+        ok: false,
+        status: 499,
+        body: { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+      };
+    }
+
+    try {
+      const result = await supabase.auth.getUser();
+      user = result.data?.user ?? null;
+      userError = result.error ?? null;
+    } catch (err) {
+      user = null;
+      userError = err;
+    }
 
     if (!userError && user) break;
     if (userError && isInvalidRefreshToken(userError)) break;
-    if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
+    if (userError && isTransientAuthError(userError) && attempt < maxGetUserAttempts) {
       const delay = retryDelaysMs[attempt - 1] ?? 1000;
       await new Promise((r) => setTimeout(r, delay));
       continue;
@@ -45,7 +78,7 @@ export async function getAuthenticatedApiUser(): Promise<ApiAuthSuccess | ApiAut
         body: { success: false, error: "Session invalid", code: "SESSION_INVALID" },
       };
     }
-    if (userError && isNetworkOrTransientError(userError)) {
+    if (userError && isTransientAuthError(userError)) {
       return {
         ok: false,
         status: 503,

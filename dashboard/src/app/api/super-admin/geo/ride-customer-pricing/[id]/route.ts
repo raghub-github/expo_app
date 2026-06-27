@@ -2,19 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import {
+  getRideCustomerPricingById,
+  listRideCustomerPricing,
   softDeleteRideCustomerPricing,
   updateRideCustomerPricing,
 } from "@/lib/db/operations/rider-payout-slabs-admin";
+import { validateDeliveryRateSlabSet } from "@/lib/geo/deliveryRateSlabAdminValidation";
 
 export const runtime = "nodejs";
 
 const patchSchema = z.object({
-  minKm: z.number().nonnegative().optional(),
-  maxKm: z.number().nonnegative().optional().nullable(),
-  baseFare: z.number().nonnegative().optional().nullable(),
-  perKmRate: z.number().nonnegative().optional(),
-  minCharge: z.number().nonnegative().optional().nullable(),
-  priority: z.number().int().optional(),
+  minKm: z.coerce.number().nonnegative().optional(),
+  maxKm: z.coerce.number().nonnegative().optional().nullable(),
+  baseFare: z.coerce.number().nonnegative().optional().nullable(),
+  perKmRate: z.coerce.number().nonnegative().optional(),
+  minCharge: z.coerce.number().nonnegative().optional().nullable(),
+  priority: z.coerce.number().int().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -37,7 +40,40 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   if (!parsed.success) return NextResponse.json({ error: "Validation failed" }, { status: 400 });
 
   try {
-    const slab = await updateRideCustomerPricing(id, parsed.data);
+    const current = await getRideCustomerPricingById(id);
+    if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const merged = {
+      minKm: parsed.data.minKm ?? current.minKm,
+      maxKm: parsed.data.maxKm === undefined ? current.maxKm : parsed.data.maxKm,
+      baseFare: parsed.data.baseFare === undefined ? current.baseFare : parsed.data.baseFare,
+      perKmRate: parsed.data.perKmRate ?? current.perKmRate,
+      minCharge: parsed.data.minCharge === undefined ? current.minCharge : parsed.data.minCharge,
+      priority: parsed.data.priority ?? current.priority,
+      isActive: parsed.data.isActive ?? current.isActive,
+    };
+
+    if (merged.maxKm != null && merged.maxKm <= merged.minKm) {
+      return NextResponse.json({ error: "maxKm must be > minKm" }, { status: 400 });
+    }
+    if ((merged.baseFare ?? 0) > 0 && merged.minKm !== 0) {
+      return NextResponse.json({ error: "baseFare allowed only for minKm=0" }, { status: 400 });
+    }
+
+    const existing = await listRideCustomerPricing({
+      level: current.geoLevel,
+      refId: current.geoRefId,
+      vehicleType: current.vehicleType,
+    });
+    const next = existing.map((s) =>
+      s.id === id
+        ? { minKm: merged.minKm, maxKm: merged.maxKm, baseFare: merged.baseFare }
+        : { minKm: s.minKm, maxKm: s.maxKm, baseFare: s.baseFare }
+    );
+    const msg = validateDeliveryRateSlabSet(next);
+    if (msg) return NextResponse.json({ error: msg }, { status: 400 });
+
+    const slab = await updateRideCustomerPricing(id, merged);
     if (!slab) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ slab });
   } catch (e) {

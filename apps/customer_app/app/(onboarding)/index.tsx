@@ -26,6 +26,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { STORAGE_KEYS } from "@/constants";
 import { profileService, GENDERS, AGE_GROUPS, type Gender } from "@/services/profile.service";
 import { setItem } from "@/utils/storage";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const PROFILE_GENDERS = GENDERS.filter((g) => g.value !== "others");
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -53,6 +55,7 @@ export default function OnboardingProfileScreen() {
   const [showAgePicker, setShowAgePicker] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const logoSource = useAppAssetSource(CX.auth.logo);
 
   const { data: profile, isLoading } = useQuery({
     queryKey: ["me", "profile"],
@@ -159,12 +162,14 @@ export default function OnboardingProfileScreen() {
         </View>
 
         <View style={styles.logoWrap}>
-          <Image
-            source={require("../../public/img/logo.png")}
-            style={styles.logoImage}
-            resizeMode="contain"
-            accessibilityLabel="GatiMitra logo"
-          />
+          {logoSource ? (
+            <Image
+              source={logoSource}
+              style={styles.logoImage}
+              resizeMode="contain"
+              accessibilityLabel="GatiMitra logo"
+            />
+          ) : null}
         </View>
 
         <View style={styles.card}>

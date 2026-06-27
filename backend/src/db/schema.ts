@@ -676,7 +676,7 @@ export const customers = pgTable(
     accountStatus: customerStatusEnum("account_status").notNull().default("ACTIVE"),
     statusReason: text("status_reason"),
     riskFlag: riskLevelEnum("risk_flag").default("LOW"),
-    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("5.0"),
     fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
     walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),
     walletLockedAmount: numeric("wallet_locked_amount", { precision: 12, scale: 2 }).default("0.0"),

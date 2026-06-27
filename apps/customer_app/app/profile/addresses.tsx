@@ -3,13 +3,14 @@
  */
 
 import { useLayoutEffect, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Share } from "react-native";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useRouter, useLocalSearchParams, useNavigation } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
+import { shareAddressViaLink } from "@/services/addressShare.service";
 import { useLocationStore } from "@/store/locationStore";
 
 const TEAL = "#14b8a6";
@@ -151,26 +152,10 @@ export default function AddressesScreen() {
   };
 
   const handleShare = async (addr: Address) => {
-    const parts: string[] = [];
-    const label = addr.label ?? t("addresses.other", "Other");
-    const name = addr.contactName ? ` – ${addr.contactName}` : "";
-    parts.push(`${label}${name}`);
-    parts.push(addr.fullAddress);
-    if (addr.contactMobile) {
-      parts.push(`Mobile: ${addr.contactMobile}`);
-    }
-    if (addr.latitude && addr.longitude) {
-      parts.push(
-        `Location: https://maps.google.com/?q=${addr.latitude},${addr.longitude}`
-      );
-    }
-    parts.push("");
-    parts.push("GatiMitra – order food, rides & parcels. Download the app to order now.");
-    const message = parts.join("\n");
     try {
-      await Share.share({ message });
+      await shareAddressViaLink(addr);
     } catch {
-      // ignore
+      Alert.alert("Share failed", "Could not create address link. Please try again.");
     }
   };
 

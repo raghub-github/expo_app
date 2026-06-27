@@ -162,4 +162,5 @@ export const ApiErrorResponseSchema = z.object({
 // (Node ESM requires file extensions; tsc with moduleResolution: Bundler
 // tolerates the `.js` even though the source is `.ts`).
 export * from "./wallet.js";
+export * from "./pricing.js";
 //# sourceMappingURL=index.js.map

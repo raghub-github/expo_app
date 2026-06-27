@@ -116,6 +116,8 @@ export type OrderRecord = {
   deliveryInstructions?: string | null;
   isScheduledOrder?: boolean;
   scheduledDeliverySummary?: string | null;
+  merchantResponseDeadlineAt?: string | null;
+  merchantResponseTimeoutSeconds?: number | null;
 };
 
 export type OrderCounts = {
@@ -308,6 +310,12 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     deliveryInstructions: o.delivery_instructions?.trim() || null,
     isScheduledOrder: Boolean(o.is_scheduled_order),
     scheduledDeliverySummary: o.scheduled_delivery_summary?.trim() || null,
+    merchantResponseDeadlineAt: coerceTimestamp(o.merchant_response_deadline_at),
+    merchantResponseTimeoutSeconds:
+      o.merchant_response_timeout_seconds != null &&
+      Number.isFinite(Number(o.merchant_response_timeout_seconds))
+        ? Math.max(0, Math.floor(Number(o.merchant_response_timeout_seconds)))
+        : null,
   };
 }
 

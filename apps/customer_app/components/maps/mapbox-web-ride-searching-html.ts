@@ -57,13 +57,12 @@ export function buildRideSearchingMapHtml(
     html, body, #map { width:100%; height:100%; touch-action: none; }
     .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display:none !important; }
     .mapboxgl-marker { background: transparent !important; }
-    .gm-vehicle-marker { background: transparent !important; pointer-events: none; }
+    .gm-vehicle-marker { background: transparent !important; pointer-events: none; z-index: 8; position: relative; }
     .gm-vehicle-marker img {
       display: block;
       background: transparent !important;
       border: 0;
-      mix-blend-mode: screen;
-      -webkit-mix-blend-mode: screen;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.32));
     }
     .radar-host {
       position:absolute; left:50%; bottom:0; width:160px; height:160px;
@@ -171,7 +170,7 @@ export function buildRideSearchingMapHtml(
           el.className = 'gm-vehicle-marker';
           el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:transparent;';
           var rot = r.heading != null && !isNaN(r.heading) ? 'rotate(' + r.heading + 'deg)' : 'none';
-          el.innerHTML = '<img src="' + riderMarkerUri + '" style="width:40px;height:40px;object-fit:contain;transform:' + rot + ';transform-origin:center center;background:transparent;border:0;" alt="" />';
+          el.innerHTML = '<img src="' + riderMarkerUri + '" style="width:44px;height:44px;object-fit:contain;transform:' + rot + ';transform-origin:center center;background:transparent;border:0;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.32));" alt="" />';
           var marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
             .setLngLat([r.lng, r.lat])
             .addTo(map);

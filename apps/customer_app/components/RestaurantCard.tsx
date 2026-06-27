@@ -16,6 +16,8 @@ import {
   Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -66,6 +68,7 @@ function formatDistance(km?: number): string | null {
 
 export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCardProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -115,9 +118,14 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
     router.push({ pathname: "/home/merchant/[id]", params: { id: merchant.id } });
   };
 
+  const warmMerchantDetail = useCallback(() => {
+    prefetchMerchantDetail(queryClient, merchant.id);
+  }, [queryClient, merchant.id]);
+
   return (
     <TouchableOpacity
       onPress={openMerchant}
+      onPressIn={warmMerchantDetail}
       style={[styles.card, CARD_SHADOW]}
       activeOpacity={0.92}
     >

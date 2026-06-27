@@ -34,13 +34,11 @@ export function mapboxHtmlHead(styleUrl: string): string {
     html, body, #map { width:100%; height:100%; touch-action: none; }
     .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display:none !important; }
     .mapboxgl-marker { background: transparent !important; }
-    .gm-vehicle-marker { background: transparent !important; pointer-events: none; }
+    .gm-vehicle-marker { background: transparent !important; pointer-events: none; z-index: 8; position: relative; }
     .gm-vehicle-marker img {
       display: block;
       background: transparent !important;
       border: 0;
-      mix-blend-mode: screen;
-      -webkit-mix-blend-mode: screen;
     }
   </style>`;
 }
@@ -67,7 +65,7 @@ export function mapboxEnableGesturesScript(): string {
   `;
 }
 
-/** Vehicle marker img HTML — black matte PNGs blend cleanly via screen mode. */
+/** Vehicle marker img inline style — visible on light Mapbox tiles (no blend mode). */
 export function mapboxVehicleMarkerImgStyle(sizePx: number, rotationDeg: string): string {
   return (
     "width:" +
@@ -76,7 +74,20 @@ export function mapboxVehicleMarkerImgStyle(sizePx: number, rotationDeg: string)
     sizePx +
     "px;object-fit:contain;transform:" +
     rotationDeg +
-    ";transform-origin:center center;"
+    ";transform-origin:center center;background:transparent;border:0;" +
+    "filter:drop-shadow(0 1px 2px rgba(0,0,0,0.32));"
+  );
+}
+
+/** Captain / booked vehicle marker on live ride tracking maps — vehicle icon only. */
+export function buildTrackingRiderMarkerInnerHtml(escapedUri: string): string {
+  const imgStyle = mapboxVehicleMarkerImgStyle(44, "none");
+  return (
+    '<img id="rider-img" class="gm-vehicle-marker-img" src="' +
+    escapedUri +
+    '" style="' +
+    imgStyle +
+    ';transition:transform 0.32s cubic-bezier(0.22,1,0.36,1);" alt="" />'
   );
 }
 

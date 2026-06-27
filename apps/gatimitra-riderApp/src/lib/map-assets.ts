@@ -1,10 +1,12 @@
-import { Image } from "react-native";
-
-/** GatiMitra mint-green bike marker asset (shared with customer app). */
-export const MAPBIKE_IMAGE = require("../../assets/images/mapbike.png");
+import { appAssetAbsoluteUrl, appAssetSource } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
 export function mapbikeAssetUri(): string {
-  return Image.resolveAssetSource(MAPBIKE_IMAGE).uri;
+  return appAssetAbsoluteUrl(RX.map.bike) ?? "";
+}
+
+export function mapbikeImageSource() {
+  return appAssetSource(RX.map.bike) ?? { uri: "" };
 }
 
 /**
@@ -23,7 +25,6 @@ export const MAPBOX_STREET_STYLE = "mapbox://styles/mapbox/streets-v12";
 export type NavMapViewMode = "navigation" | "street";
 
 export function mapStyleForNavViewMode(mode: NavMapViewMode): string {
-  // Reference UI uses a light labelled street map (Google Maps–like).
   return MAPBOX_STREET_STYLE;
 }
 

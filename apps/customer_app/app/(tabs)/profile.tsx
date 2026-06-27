@@ -74,8 +74,6 @@ export default function ProfileScreen() {
     subscriptionStatus?.subscription?.planName ??
     subscriptionStatus?.plan?.planName ??
     "Membership";
-  const subscriptionBenefits = subscriptionStatus?.plan?.benefits ?? [];
-  const freeDeliveryRadius = subscriptionStatus?.plan?.maxFreeDeliveryRadiusKm;
 
   useEffect(() => {
     setAvatarIndex(0);
@@ -99,38 +97,8 @@ export default function ProfileScreen() {
   }, []);
 
   const handleSubscriptionPress = useCallback(() => {
-    if (subscriptionActive) {
-      const benefitLines =
-        subscriptionBenefits.length > 0
-          ? subscriptionBenefits.map((b) => `• ${b}`).join("\n")
-          : "Your membership benefits are applied automatically on eligible orders.";
-      const radiusNote =
-        subscriptionStatus?.plan?.freeDeliveryEnabled && freeDeliveryRadius != null
-          ? `\n\nFree delivery within ${freeDeliveryRadius} km on eligible orders.`
-          : "";
-      Alert.alert(
-        `${subscriptionPlanName} Active`,
-        `${benefitLines}${radiusNote}`,
-        [{ text: "OK" }]
-      );
-      return;
-    }
-    Alert.alert(
-      `Join ${subscriptionPlanName}`,
-      `Add ${subscriptionPlanName} at checkout on your next order — save on delivery and unlock member-only offers.`,
-      [
-        { text: "Not now", style: "cancel" },
-        { text: "Browse restaurants", onPress: () => router.push("/(tabs)") },
-      ]
-    );
-  }, [
-    subscriptionActive,
-    subscriptionPlanName,
-    subscriptionBenefits,
-    subscriptionStatus?.plan?.freeDeliveryEnabled,
-    freeDeliveryRadius,
-    router,
-  ]);
+    router.push("/profile/subscription");
+  }, [router]);
 
   const handleReferNow = useCallback(() => {
     void shareReferralCode(referralCode, displayName);

@@ -4,7 +4,7 @@
  * Real data only. Spacing: 16px page, 18px cards, 24px section gap.
  */
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -18,19 +18,29 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import Animated, { createAnimatedComponent } from "react-native-reanimated";
+import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  useAnimatedReaction,
+  runOnJS,
+  interpolate,
+  Extrapolation,
+} from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { StatusBar } from "expo-status-bar";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { foodHomeRouterBack } from "@/lib/safeRouterBack";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
 import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
+import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
+import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { addressService } from "@/services/address.service";
-import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
+import { resolveCheckoutDeliveryAddress, matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
+import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import {
-  fetchUserAppCategories,
   type UserAppCategoryItem,
 } from "@/services/userAppCategory.service";
 import { useLocationStore } from "@/store/locationStore";
@@ -41,32 +51,52 @@ import { useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   CategoryRailSkeleton,
+  GMSkeleton,
   LovedMerchantsGridSkeleton,
   RestaurantListSkeleton,
 } from "@/components/ShimmerSkeleton";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
+import { FoodHomeHeroCarousel, gridFirstSkySectionHeight } from "@/components/home/FoodHomeHeroCarousel";
+import { FoodHomeGoldStrip } from "@/components/home/FoodHomeGoldStrip";
+import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
+import { FoodHomeGridFirstStickyChrome } from "@/components/home/FoodHomeGridFirstStickyChrome";
+import {
+  defaultGridFirstStickyMetrics,
+  gridFirstCategoryBlockHeight,
+  gridFirstCategoryStickScrollY,
+  gridFirstSearchStickScrollY,
+  type GridFirstStickyMetrics,
+} from "@/lib/gridFirstStickyLayout";
+import { FoodHomeCategoryTabs } from "@/components/home/FoodHomeCategoryTabs";
 import { MerchantGridCard } from "@/components/home/MerchantGridCard";
 import { pickLovedByCustomersMerchants } from "@/lib/lovedByCustomers";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import {
+  fetchUserAppCategoriesWithCache,
+  getUserAppCategoriesCachedAt,
   prefetchUserAppCategoryImages,
+  readSyncUserAppCategories,
   USER_APP_CATEGORIES_QUERY_OPTIONS,
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import { GMHeader } from "@/components/GMHeader";
-import { HEADER_TOP_PADDING_NONE } from "@/constants/layout";
+import { HEADER_TOP_PADDING_NONE, STATUS_BAR_TO_HEADER_GAP, DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import { GMSearchBar } from "@/components/GMSearchBar";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
 import { NON_SERVICEABLE_STATUS_BAR_BG } from "@/store/screenChromeStore";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   filterAndSortMerchants,
   merchantListingStoreCountLabel,
+  resolveMerchantLiveStatus,
 } from "@/lib/merchantListing";
 import { useFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
-
-const AnimatedScrollView = createAnimatedComponent(ScrollView);
+import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
+import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
+import { FoodHomeCategoryChips } from "@/components/home/FoodHomeCategoryVariants";
+import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
 
 const PAGE_PAD = 16;
 const SECTION_GAP = 24;
@@ -80,6 +110,7 @@ const OFFERS_SECTION_PAD = 10;
 const OFFER_CARD_HEIGHT = 136;
 const OFFER_GAP = 12;
 
+/** Grid-first food home immersive hero — scoped via screenChromeStore on focus. */
 type SortOption = "default" | "rating" | "distance";
 
 type DeliveryFilter = "any" | "30" | "45" | "60";
@@ -134,14 +165,14 @@ function computeCategoryRailMetrics(windowWidth: number, insetRight: number): Ca
     0,
     windowWidth - PAGE_PAD - Math.max(4, insetRight) - 2
   );
-  let columnGap = 6;
+  let columnGap = 37;
   let itemW = (usable - (n - 1) * columnGap) / n;
   if (itemW < 52) {
-    columnGap = 4;
+    columnGap = 7;
     itemW = (usable - (n - 1) * columnGap) / n;
   }
   if (itemW < 50) {
-    columnGap = 3;
+    columnGap = 5;
     itemW = (usable - (n - 1) * columnGap) / n;
   }
   itemW = Math.floor(Math.max(48, itemW));
@@ -154,6 +185,14 @@ export default function FoodMerchantsScreen() {
   const insets = useAppSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const openMerchantPage = useCallback(
+    (id: string) => {
+      prefetchMerchantDetail(queryClient, id);
+      router.push({ pathname: "/home/merchant/[id]", params: { id } });
+    },
+    [queryClient, router]
+  );
   const {
     address,
     coords,
@@ -164,6 +203,11 @@ export default function FoodMerchantsScreen() {
     requestPermissionAndFetch,
   } = useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
+  /** User-picked pin updates instantly; GPS drift stays debounced. */
+  const listingCoords = useMemo(() => {
+    if (locationSource === "selected" && coords) return coords;
+    return debouncedCoords;
+  }, [locationSource, coords, debouncedCoords]);
   const { data: addresses = [] } = useQuery({
     queryKey: ["addresses"],
     queryFn: () => addressService.getAddresses(),
@@ -186,19 +230,24 @@ export default function FoodMerchantsScreen() {
   const merchantsAnchorCoords = useMemo(() => {
     if (
       locationSource === "selected" &&
-      debouncedCoords?.latitude != null &&
-      debouncedCoords.longitude != null &&
-      addresses.length > 0
+      listingCoords?.latitude != null &&
+      listingCoords.longitude != null
     ) {
-      const resolved = resolveCheckoutDeliveryAddress(
-        addresses,
-        debouncedCoords,
-        locationSource,
-        activeLocation
-      );
-      if (resolved) {
-        return { latitude: resolved.latitude, longitude: resolved.longitude };
+      if (addresses.length > 0) {
+        const nearId = matchSavedAddressIdNearCoords(
+          addresses,
+          listingCoords.latitude,
+          listingCoords.longitude,
+          0.25
+        );
+        if (nearId != null) {
+          const addr = addresses.find((a) => a.id === nearId);
+          if (addr) {
+            return { latitude: addr.latitude, longitude: addr.longitude };
+          }
+        }
       }
+      return listingCoords;
     }
 
     if (
@@ -209,11 +258,11 @@ export default function FoodMerchantsScreen() {
       return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
     }
 
-    return debouncedCoords;
+    return listingCoords;
   }, [
     locationSource,
-    debouncedCoords?.latitude,
-    debouncedCoords?.longitude,
+    listingCoords?.latitude,
+    listingCoords?.longitude,
     addresses,
     activeLocation?.latitude,
     activeLocation?.longitude,
@@ -225,15 +274,32 @@ export default function FoodMerchantsScreen() {
   });
   const weatherDelayMinutes = weather?.etaDelayMinutes ?? 0;
   const { bookmarkSet, refetch: refetchBookmarks } = useStoreBookmarks();
+  const {
+    layoutKey: foodHomeLayoutKeyRaw,
+    layoutReady,
+    canQuery: layoutCanQuery,
+    gridFirstHeroMedia,
+    gridFirstSubscriptionRowEnabled,
+    gridFirstSubscriptionRowText,
+    gridFirstSubscriptionRowBgColor,
+  } = useFoodHomeLayout(address, merchantsAnchorCoords);
 
-  const [vegOnly, setVegOnly] = useState(false);
+  useEffect(() => {
+    if (gridFirstHeroMedia.length > 0) prefetchGridFirstHeroMedia(gridFirstHeroMedia);
+  }, [gridFirstHeroMedia]);
+
+  const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
+  const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
+  const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
   const [openNow, setOpenNow] = useState(true);
   const [sortBy, setSortBy] = useState<SortOption>("default");
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  const [gridFirstCategoryTabId, setGridFirstCategoryTabId] = useState("all");
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
   const [deliveryFilter, setDeliveryFilter] = useState<DeliveryFilter>("any");
   const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
   const [filterHasOffers, setFilterHasOffers] = useState(false);
+  const [noPackagingCharges, setNoPackagingCharges] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const { data: merchantsData, isLoading, isFetching, refetch } = useQuery({
@@ -254,8 +320,8 @@ export default function FoodMerchantsScreen() {
       }),
     // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
-    staleTime: 60 * 1000,
-    placeholderData: keepPreviousData,
+    staleTime: 0,
+    gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
@@ -285,15 +351,20 @@ export default function FoodMerchantsScreen() {
 
   const homeFeaturedOffers = featuredOffersData?.offers ?? [];
 
+  useEffect(() => {
+    void hydrateDietaryPreferences();
+  }, [hydrateDietaryPreferences]);
+
   const {
     data: apiHomeCategories = [],
-    isSuccess: homeCategoriesReady,
-    isLoading: homeCategoriesLoading,
+    isPending: homeCategoriesPending,
     refetch: refetchHomeCategories,
   } = useQuery({
     queryKey: userAppCategoriesQueryKey(HOME_CATEGORY_STORE_TYPE),
-    queryFn: () => fetchUserAppCategories({ storeType: HOME_CATEGORY_STORE_TYPE }),
+    queryFn: () => fetchUserAppCategoriesWithCache(HOME_CATEGORY_STORE_TYPE),
     ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+    initialData: () => readSyncUserAppCategories(HOME_CATEGORY_STORE_TYPE),
+    initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(HOME_CATEGORY_STORE_TYPE),
     placeholderData: (previousData) => previousData,
   });
 
@@ -304,7 +375,6 @@ export default function FoodMerchantsScreen() {
   }, [apiHomeCategories]);
 
   const homeCategoryRailItems = useMemo(() => {
-    if (!homeCategoriesReady) return [];
     const deduped = dedupeUserAppCategories(apiHomeCategories ?? []);
     return deduped.map((r) => ({
       id: String(r.id),
@@ -312,7 +382,10 @@ export default function FoodMerchantsScreen() {
       slug: String(r.id),
       imageUrl: r.imageUrl,
     }));
-  }, [homeCategoriesReady, apiHomeCategories]);
+  }, [apiHomeCategories]);
+
+  const categoryRailBootstrapping =
+    homeCategoryRailItems.length === 0 && homeCategoriesPending;
 
   const homeCategoryRailColumns = useMemo(
     () => chunkIntoPairs(homeCategoryRailItems),
@@ -370,9 +443,8 @@ export default function FoodMerchantsScreen() {
 
   useEffect(() => {
     merchants.forEach((m) => {
-      const raw = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
-      const liveStatus = raw === "OPEN" || raw === "CLOSED" ? (raw as "OPEN" | "CLOSED") : undefined;
-      if (liveStatus) setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
+      const liveStatus = resolveMerchantLiveStatus(m, {});
+      setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
     });
   }, [merchants, setStatusFromApi]);
 
@@ -388,8 +460,9 @@ export default function FoodMerchantsScreen() {
         filterHasOffers,
         deliveryFilter,
         selectedCuisines,
+        noPackagingCharges,
       }),
-    [merchants, statusMap, openNow, sortBy, deliveryFilter, selectedCuisines, filterHasOffers]
+    [merchants, statusMap, openNow, sortBy, deliveryFilter, selectedCuisines, filterHasOffers, noPackagingCharges]
   );
 
   const lovedByCustomers = useMemo(
@@ -404,10 +477,134 @@ export default function FoodMerchantsScreen() {
 
   const handleBack = () => foodHomeRouterBack(router);
   const handleSearch = () => router.push("/search");
-  const handleCategorySelect = (id: string, slug: string) => {
+  const handleLocationPress = () => router.push("/location");
+  const handleCategorySelect = useCallback((id: string, slug: string) => {
     setActiveCategoryId(id);
+    setGridFirstCategoryTabId(id);
     router.push(`/home/category/${slug}`);
-  };
+  }, [router]);
+
+  const gridFirstCategoryTabsEl = useMemo(() => {
+    if (categoryRailBootstrapping) {
+      return (
+        <CategoryRailSkeleton
+          columnCount={4}
+          itemW={categoryRailLayout.itemW}
+          columnGap={categoryRailLayout.columnGap}
+          circle={categoryRailLayout.circle}
+          rowGap={RAIL_ROW_GAP}
+        />
+      );
+    }
+    if (homeCategoryRailItems.length === 0) {
+      return (
+        <View style={styles.categoryRailLoading}>
+          <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+        </View>
+      );
+    }
+    return (
+      <FoodHomeCategoryTabs
+        items={homeCategoryRailItems}
+        onSelect={handleCategorySelect}
+        activeId={gridFirstCategoryTabId}
+        onActiveIdChange={setGridFirstCategoryTabId}
+        layout={categoryRailLayout}
+      />
+    );
+  }, [
+    categoryRailBootstrapping,
+    homeCategoryRailItems,
+    categoryRailLayout,
+    gridFirstCategoryTabId,
+    handleCategorySelect,
+  ]);
+
+  const classicCategoryRailEl = useMemo(() => {
+    if (categoryRailBootstrapping) {
+      return (
+        <CategoryRailSkeleton
+          columnCount={CATEGORY_RAIL_TARGET_COLUMNS}
+          itemW={categoryRailLayout.itemW}
+          columnGap={categoryRailLayout.columnGap}
+          circle={categoryRailLayout.circle}
+          rowGap={RAIL_ROW_GAP}
+        />
+      );
+    }
+    if (homeCategoryRailItems.length === 0) {
+      return (
+        <View style={styles.categoryRailLoading}>
+          <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+        </View>
+      );
+    }
+    return (
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        removeClippedSubviews={false}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.categoryRailScrollContent,
+          {
+            gap: categoryRailLayout.columnGap,
+            paddingRight:
+              PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
+            paddingEnd:
+              PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
+          },
+        ]}
+      >
+        {homeCategoryRailColumns.map((pair) => (
+          <View
+            key={`${pair[0]?.id ?? "x"}-${pair[1]?.id ?? ""}`}
+            style={styles.categoryRailColumn}
+          >
+            {pair.map((cat) => (
+              <TouchableOpacity
+                key={cat.id}
+                style={[styles.categoryRailItem, { width: categoryRailLayout.itemW }]}
+                onPress={() => handleCategorySelect(cat.id, cat.slug)}
+                activeOpacity={0.96}
+              >
+                <View
+                  style={[
+                    styles.categoryRailCircle,
+                    {
+                      width: categoryRailLayout.circle,
+                      height: categoryRailLayout.circle,
+                      borderRadius: categoryRailLayout.circle / 2,
+                    },
+                  ]}
+                >
+                  <UserAppCategoryImage
+                    imageUrl={cat.imageUrl}
+                    cacheKey={`category-${cat.id}`}
+                    style={{ width: categoryRailLayout.imgSize, height: categoryRailLayout.imgSize }}
+                  />
+                </View>
+                <Text
+                  style={[styles.categoryRailLabel, { width: categoryRailLayout.itemW }]}
+                  numberOfLines={2}
+                >
+                  {cat.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ))}
+        <View style={styles.categoryRailScrollTrail} />
+      </ScrollView>
+    );
+  }, [
+    categoryRailBootstrapping,
+    homeCategoryRailItems.length,
+    homeCategoryRailColumns,
+    categoryRailLayout,
+    insets.right,
+    handleCategorySelect,
+  ]);
   const toggleCuisine = (c: string) => {
     setSelectedCuisines((prev) =>
       prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
@@ -417,16 +614,23 @@ export default function FoodMerchantsScreen() {
     setDeliveryFilter("any");
     setSelectedCuisines([]);
     setFilterHasOffers(false);
+    setNoPackagingCharges(false);
   }, []);
   const applyFilters = useCallback(() => setFilterSheetVisible(false), []);
-  const hasActiveFilters = deliveryFilter !== "any" || selectedCuisines.length > 0 || filterHasOffers;
+  const hasActiveFilters =
+    deliveryFilter !== "any" ||
+    selectedCuisines.length > 0 ||
+    filterHasOffers ||
+    noPackagingCharges;
+  const isVegEmptyState = vegOnly && !showSkeleton && filteredAndSortedMerchants.length === 0;
   const activeFilterCount = useMemo(() => {
     let n = 0;
     if (deliveryFilter !== "any") n += 1;
     n += selectedCuisines.length;
     if (filterHasOffers) n += 1;
+    if (noPackagingCharges) n += 1;
     return n;
-  }, [deliveryFilter, selectedCuisines, filterHasOffers]);
+  }, [deliveryFilter, selectedCuisines, filterHasOffers, noPackagingCharges]);
   const onRefresh = async () => {
     setRefreshing(true);
     try {
@@ -442,6 +646,35 @@ export default function FoodMerchantsScreen() {
     }
   };
   const selectedLocationLabel = useMemo(() => {
+    if (locationSource === "selected" && address) {
+      if (
+        listingCoords?.latitude != null &&
+        listingCoords.longitude != null &&
+        addresses.length > 0
+      ) {
+        const nearId = matchSavedAddressIdNearCoords(
+          addresses,
+          listingCoords.latitude,
+          listingCoords.longitude,
+          0.25
+        );
+        if (nearId != null) {
+          const saved = addresses.find((a) => a.id === nearId);
+          const savedFull = saved?.fullAddress?.trim();
+          if (savedFull) return savedFull;
+        }
+      }
+
+      const full = address.fullAddress?.trim();
+      if (full && full.toLowerCase() !== "current location") return full;
+
+      const secondary = address.secondary?.trim();
+      if (secondary) return secondary;
+
+      const primary = address.primary?.trim();
+      if (primary) return primary;
+    }
+
     const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
     const fullParts = (address?.fullAddress ?? "")
       .split(",")
@@ -473,17 +706,276 @@ export default function FoodMerchantsScreen() {
     if (areaLocality && stateCandidate) return `${areaLocality} (${stateCandidate})`;
     if (areaLocality) return areaLocality;
     return address?.fullAddress ?? "Current location";
-  }, [address?.fullAddress, address?.secondary, address?.primary, address?.state]);
+  }, [
+    locationSource,
+    listingCoords?.latitude,
+    listingCoords?.longitude,
+    addresses,
+    address?.fullAddress,
+    address?.secondary,
+    address?.primary,
+    address?.state,
+  ]);
 
-  // No-service: only when there are zero stores listed for this location (not when all are closed).
-  if (!hasStoresInArea && !showSkeleton) {
+  const gridFirstLocationLabels = useMemo(() => {
+    if (locationSource === "selected" && address) {
+      const primary = address.primary?.trim() || "Home";
+      const secondaryRaw =
+        address.secondary?.trim() ||
+        address.fullAddress?.trim() ||
+        "Add delivery address";
+      const secondary =
+        secondaryRaw.length > 48 ? `${secondaryRaw.slice(0, 45)}…` : secondaryRaw;
+      return { primary, secondary };
+    }
+
+    const resolved = resolveCheckoutDeliveryAddress(
+      addresses,
+      listingCoords ?? null,
+      locationSource,
+      activeLocation
+    );
+    const primary = resolved?.label?.trim() || address?.primary?.trim() || "Home";
+    const secondaryRaw =
+      resolved?.fullAddress?.trim() ||
+      address?.secondary?.trim() ||
+      address?.fullAddress?.trim() ||
+      "Add delivery address";
+    const secondary =
+      secondaryRaw.length > 48 ? `${secondaryRaw.slice(0, 45)}…` : secondaryRaw;
+    return { primary, secondary };
+  }, [addresses, listingCoords, locationSource, activeLocation, address]);
+
+  const locationSyncKeyRef = useRef("");
+  useEffect(() => {
+    if (listingCoords?.latitude == null || listingCoords.longitude == null) return;
+    const syncKey = [
+      locationSource ?? "unset",
+      listingCoords.latitude.toFixed(5),
+      listingCoords.longitude.toFixed(5),
+      address?.pincode ?? "",
+      address?.state ?? "",
+      address?.fullAddress ?? "",
+    ].join("|");
+    if (locationSyncKeyRef.current === syncKey) return;
+    locationSyncKeyRef.current = syncKey;
+    void invalidateFoodHomeLocationQueries(queryClient);
+  }, [
+    listingCoords?.latitude,
+    listingCoords?.longitude,
+    locationSource,
+    address?.pincode,
+    address?.state,
+    address?.fullAddress,
+    queryClient,
+  ]);
+
+  const resolvedFoodHomeLayoutKey = foodHomeLayoutKeyRaw ?? "classic";
+  const isGridFirstLayout = layoutReady && resolvedFoodHomeLayoutKey === "grid_first";
+  const showGridFirstSubscriptionRow =
+    gridFirstSubscriptionRowEnabled && gridFirstSubscriptionRowText.trim().length > 0;
+  const useGridFirstCategoryTabs = isGridFirstLayout && showGridFirstSubscriptionRow;
+  const classicCategoryRailMinHeight =
+    categoryRailLayout.circle * 2 + RAIL_ROW_GAP + 38;
+  const setImmersiveStatusBarChrome = useScreenChromeStore((s) => s.setImmersiveStatusBarChrome);
+  const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
+  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
+  const isGridFirstLayoutRef = useRef(isGridFirstLayout);
+  isGridFirstLayoutRef.current = isGridFirstLayout;
+
+  const syncGridFirstStickyStatusBar = useCallback(
+    (searchSticky: boolean) => {
+      if (!isGridFirstLayoutRef.current) return;
+      if (searchSticky) {
+        setStatusBarBackground("#FFFFFF", "dark");
+      } else {
+        setStatusBarBackground("transparent", "dark");
+      }
+    },
+    [setStatusBarBackground]
+  );
+  const statusBarTopInset = insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
+
+  useFocusEffect(
+    useCallback(() => {
+      void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      if (merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords.longitude != null) {
+        void refetch();
+        void refetchFeaturedOffers();
+      }
+    }, [
+      queryClient,
+      merchantsAnchorCoords?.latitude,
+      merchantsAnchorCoords?.longitude,
+      refetch,
+      refetchFeaturedOffers,
+    ])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!isGridFirstLayout || !hasStoresInArea) {
+        if (!hasStoresInArea) {
+          setImmersiveStatusBarChrome(false);
+          setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
+        }
+        return;
+      }
+      setImmersiveStatusBarChrome(true);
+      return () => {
+        setImmersiveStatusBarChrome(false);
+        useScreenChromeStore.getState().resetStatusBarBackground();
+      };
+    }, [isGridFirstLayout, hasStoresInArea, setImmersiveStatusBarChrome, setStatusBarBackground])
+  );
+
+  const isNonServiceableScreen =
+    layoutCanQuery && layoutReady && !hasStoresInArea && !showSkeleton && !vegOnly;
+
+  useLayoutEffect(() => {
+    if (!isNonServiceableScreen) return;
+    const store = useScreenChromeStore.getState();
+    store.setImmersiveStatusBarChrome(false);
+    store.setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
+  }, [isNonServiceableScreen]);
+
+  const gridFirstSkyHeight = useMemo(
+    () => gridFirstSkySectionHeight(statusBarTopInset),
+    [statusBarTopInset]
+  );
+
+  const [gridFirstGoldStripH, setGridFirstGoldStripH] = useState(0);
+  const [gridFirstCategoryLayout, setGridFirstCategoryLayout] = useState({
+    y: 0,
+    height: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
+  });
+
+  useEffect(() => {
+    if (!showGridFirstSubscriptionRow) {
+      setGridFirstGoldStripH(0);
+    }
+  }, [showGridFirstSubscriptionRow]);
+
+  const gridFirstStickyMetrics = useMemo<GridFirstStickyMetrics>(() => {
+    const base = defaultGridFirstStickyMetrics(
+      statusBarTopInset,
+      gridFirstSkyHeight,
+      categoryRailLayout.circle
+    );
+    const goldStripHeight = showGridFirstSubscriptionRow
+      ? gridFirstGoldStripH > 0
+        ? gridFirstGoldStripH
+        : base.goldStripHeight
+      : 0;
+    const fallbackCategoryHeight = useGridFirstCategoryTabs
+      ? gridFirstCategoryBlockHeight(categoryRailLayout.circle)
+      : classicCategoryRailMinHeight;
+    return {
+      ...base,
+      goldStripHeight,
+      categoryBlockY:
+        gridFirstCategoryLayout.y > 0
+          ? gridFirstCategoryLayout.y
+          : gridFirstSkyHeight + goldStripHeight,
+      categoryBlockHeight: gridFirstCategoryLayout.height || fallbackCategoryHeight,
+    };
+  }, [
+    statusBarTopInset,
+    gridFirstSkyHeight,
+    gridFirstGoldStripH,
+    gridFirstCategoryLayout,
+    categoryRailLayout.circle,
+    showGridFirstSubscriptionRow,
+    useGridFirstCategoryTabs,
+    classicCategoryRailMinHeight,
+  ]);
+
+  const gridFirstSearchStickAt = useMemo(
+    () => gridFirstSearchStickScrollY(gridFirstStickyMetrics),
+    [gridFirstStickyMetrics]
+  );
+  const gridFirstCategoryStickAt = useMemo(
+    () => gridFirstCategoryStickScrollY(gridFirstStickyMetrics),
+    [gridFirstStickyMetrics]
+  );
+
+  const gridFirstScrollY = useSharedValue(0);
+  const gridFirstSearchStickAtSv = useSharedValue(0);
+  const gridFirstCategoryStickAtSv = useSharedValue(0);
+
+  useEffect(() => {
+    gridFirstSearchStickAtSv.value = gridFirstSearchStickAt;
+    gridFirstCategoryStickAtSv.value = gridFirstCategoryStickAt;
+  }, [gridFirstSearchStickAt, gridFirstCategoryStickAt, gridFirstSearchStickAtSv, gridFirstCategoryStickAtSv]);
+
+  const onGridFirstScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      gridFirstScrollY.value = e.nativeEvent.contentOffset.y;
+    },
+    [gridFirstScrollY]
+  );
+
+  const gridFirstCategoryFlowStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(
+      gridFirstScrollY.value,
+      [
+        gridFirstCategoryStickAtSv.value - 10,
+        gridFirstCategoryStickAtSv.value + 10,
+      ],
+      [1, 0],
+      Extrapolation.CLAMP
+    ),
+  }));
+
+  useAnimatedReaction(
+    () => gridFirstScrollY.value >= gridFirstSearchStickAtSv.value - 10,
+    (searchSticky, prev) => {
+      if (searchSticky === prev) return;
+      runOnJS(syncGridFirstStickyStatusBar)(searchSticky);
+    },
+    [syncGridFirstStickyStatusBar]
+  );
+
+  if (layoutCanQuery && !layoutReady) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="dark" />
+        <View style={[styles.layoutResolvingShell, { paddingTop: HEADER_TOP_PADDING_NONE }]}>
+          <GMSkeleton style={styles.layoutResolvingHero} />
+          <CategoryRailSkeleton
+            columnCount={4}
+            itemW={categoryRailLayout.itemW}
+            columnGap={categoryRailLayout.columnGap}
+            circle={categoryRailLayout.circle}
+            rowGap={RAIL_ROW_GAP}
+          />
+          <View style={styles.section}>
+            <RestaurantListSkeleton count={4} />
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  const foodHomeLayoutKey = resolvedFoodHomeLayoutKey;
+  const promoCardHeight =
+    foodHomeLayoutKey === "discovery" ? OFFER_CARD_HEIGHT + 16 : OFFER_CARD_HEIGHT;
+  const showLovedGrid =
+    foodHomeLayoutKey === "classic" || foodHomeLayoutKey === "grid_first";
+  const showLovedHorizontal = foodHomeLayoutKey === "discovery";
+  const lovedSectionTitle =
+    foodHomeLayoutKey === "grid_first" ? "RECOMMENDED WITH DEALS" : "LOVED BY CUSTOMERS";
+
+  // No-service screen should not block veg-mode discovery UX.
+  // If veg toggle is ON and no pure-veg stores are found, keep user on the same listing screen
+  // and show a contextual empty message in "Restaurants near you".
+  if (!hasStoresInArea && !showSkeleton && !vegOnly) {
     return (
       <View style={[styles.container, styles.nonServiceableContainer]}>
-        <StatusBar style="dark" backgroundColor={NON_SERVICEABLE_STATUS_BAR_BG} />
         <GMEmptyState
           header={
             <GMHeader
-              topInset={HEADER_TOP_PADDING_NONE}
+              topInset={hideStatusBarSpacer ? statusBarTopInset : HEADER_TOP_PADDING_NONE}
               onBack={handleBack}
               minimal
               blendBackground
@@ -498,26 +990,35 @@ export default function FoodMerchantsScreen() {
   // Single scroll: header in flow, then content (categories → filters → list). Sticky rail inside content area only.
   return (
     <View style={styles.container}>
-      <StatusBar style="dark" />
-
-      {/* Header in flow – no absolute; content starts below */}
-      <GMHeader
-        topInset={HEADER_TOP_PADDING_NONE}
-        compact
-        onBack={handleBack}
-        onSearchPress={handleSearch}
-        showActions={true}
-        vegOnly={vegOnly}
-        onVegChange={setVegOnly}
-        showCart={false}
-        searchElement={<GMSearchBar onPress={handleSearch} rotatingPlaceholder />}
+      <StatusBar
+        style="dark"
+        translucent={isGridFirstLayout}
+        backgroundColor={isGridFirstLayout ? "transparent" : undefined}
       />
 
+      {!isGridFirstLayout ? (
+        <GMHeader
+          topInset={HEADER_TOP_PADDING_NONE}
+          compact
+          onBack={handleBack}
+          onSearchPress={handleSearch}
+          showActions={true}
+          vegOnly={vegOnly}
+          onVegChange={setVegOnly}
+          showCart={false}
+          searchElement={<GMSearchBar onPress={handleSearch} rotatingPlaceholder />}
+        />
+      ) : null}
+
       <View style={styles.contentWrap}>
-        <AnimatedScrollView
+        <Animated.ScrollView
           style={styles.scroll}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
+          contentContainerStyle={{ paddingBottom: 8, flexGrow: 1 }}
+          endFillColor={GatiMitraColors.softBackground}
+          overScrollMode="never"
           showsVerticalScrollIndicator={false}
+          onScroll={isGridFirstLayout ? onGridFirstScroll : undefined}
+          scrollEventThrottle={isGridFirstLayout ? 16 : undefined}
           refreshControl={
             <RefreshControl
               refreshing={refreshing || (isFetching && !isLoading)}
@@ -527,144 +1028,245 @@ export default function FoodMerchantsScreen() {
             />
           }
         >
-          <View style={styles.offersSection}>
-            <HomePromoCarousel
-              offers={homeFeaturedOffers}
-              cardHeight={OFFER_CARD_HEIGHT}
-              mode="food"
-              showDefaultWhenEmpty
-            />
+          <View
+            style={
+              isGridFirstLayout
+                ? [
+                    styles.gridFirstSkyBlock,
+                    // Pull hero under root spacer only while spacer is still shown.
+                    // When immersive chrome hides the spacer, negative margin would push header into status bar.
+                    !hideStatusBarSpacer && { marginTop: -statusBarTopInset },
+                    !showGridFirstSubscriptionRow && styles.gridFirstSkyBlockRoundedBottom,
+                  ]
+                : styles.offersSection
+            }
+          >
+            {isGridFirstLayout ? (
+              <View style={[styles.gridFirstSkyInner, { height: gridFirstSkyHeight }]}>
+                <FoodHomeHeroCarousel
+                  heroMedia={gridFirstHeroMedia}
+                  offers={homeFeaturedOffers}
+                  embeddedInSky
+                  immersive
+                  topInset={statusBarTopInset}
+                />
+                <View
+                  style={[styles.gridFirstHeaderOverlay, { paddingTop: statusBarTopInset }]}
+                  pointerEvents="box-none"
+                >
+                  <FoodHomeGridFirstHeader
+                    topInset={STATUS_BAR_TO_HEADER_GAP}
+                    locationPrimary={gridFirstLocationLabels.primary}
+                    locationSecondary={gridFirstLocationLabels.secondary}
+                    onLocationPress={handleLocationPress}
+                    onSearchPress={handleSearch}
+                    vegOnly={vegOnly}
+                    onVegChange={setVegOnly}
+                    stickyScrollY={gridFirstScrollY}
+                    searchStickAt={gridFirstSearchStickAtSv}
+                  />
+                </View>
+              </View>
+            ) : (
+              <HomePromoCarousel
+                offers={homeFeaturedOffers}
+                cardHeight={promoCardHeight}
+                mode="food"
+                showDefaultWhenEmpty
+              />
+            )}
           </View>
-          <View style={styles.sectionGap} />
 
-          {/* Category rail – all user_app_category (FOOD), horizontal scroll by display_order */}
+          {isGridFirstLayout ? (
+            <View
+              onLayout={(e) => {
+                const h = e.nativeEvent.layout.height;
+                if (h > 0) setGridFirstGoldStripH(h);
+              }}
+            >
+              <FoodHomeGoldStrip
+                enabled={gridFirstSubscriptionRowEnabled}
+                message={gridFirstSubscriptionRowText}
+                backgroundColor={gridFirstSubscriptionRowBgColor}
+              />
+            </View>
+          ) : (
+            <View style={styles.sectionGap} />
+          )}
+
+          {isGridFirstLayout ? (
+            useGridFirstCategoryTabs ? (
+              <Animated.View
+                style={[styles.categoryTabsSection, gridFirstCategoryFlowStyle]}
+                onLayout={(e) => {
+                  const { y, height } = e.nativeEvent.layout;
+                  if (height > 0) {
+                    setGridFirstCategoryLayout({ y, height });
+                  }
+                }}
+              >
+                {gridFirstCategoryTabsEl}
+              </Animated.View>
+            ) : (
+              <View
+                style={[styles.categoryRailSection, { minHeight: classicCategoryRailMinHeight }]}
+                onLayout={(e) => {
+                  const { y, height } = e.nativeEvent.layout;
+                  if (height > 0) {
+                    setGridFirstCategoryLayout({ y, height });
+                  }
+                }}
+              >
+                {classicCategoryRailEl}
+              </View>
+            )
+          ) : foodHomeLayoutKey === "discovery" ? (
+            <View style={styles.categoryChipsSection}>
+              {categoryRailBootstrapping ? (
+                <CategoryRailSkeleton
+                  columnCount={4}
+                  itemW={categoryRailLayout.itemW}
+                  columnGap={categoryRailLayout.columnGap}
+                  circle={categoryRailLayout.circle}
+                  rowGap={RAIL_ROW_GAP}
+                />
+              ) : homeCategoryRailItems.length === 0 ? (
+                <View style={styles.categoryRailLoading}>
+                  <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+                </View>
+              ) : (
+                <FoodHomeCategoryChips items={homeCategoryRailItems} onSelect={handleCategorySelect} />
+              )}
+            </View>
+          ) : (
+          <>
           <View
             style={[
               styles.categoryRailSection,
               {
-                minHeight:
-                  categoryRailLayout.circle * 2 + RAIL_ROW_GAP + 38,
+                minHeight: classicCategoryRailMinHeight,
               },
             ]}
           >
-            {homeCategoriesLoading || !homeCategoriesReady ? (
-              <CategoryRailSkeleton
-                columnCount={CATEGORY_RAIL_TARGET_COLUMNS}
-                itemW={categoryRailLayout.itemW}
-                columnGap={categoryRailLayout.columnGap}
-                circle={categoryRailLayout.circle}
-                rowGap={RAIL_ROW_GAP}
-              />
-            ) : homeCategoryRailItems.length === 0 ? (
-              <View style={styles.categoryRailLoading}>
-                <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
-              </View>
-            ) : (
-              <ScrollView
-                horizontal
-                nestedScrollEnabled
-                removeClippedSubviews={false}
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={[
-                  styles.categoryRailScrollContent,
-                  {
-                    gap: categoryRailLayout.columnGap,
-                    paddingRight:
-                      PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
-                    paddingEnd:
-                      PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
-                  },
-                ]}
-              >
-                {homeCategoryRailColumns.map((pair) => (
-                  <View
-                    key={`${pair[0]?.id ?? "x"}-${pair[1]?.id ?? ""}`}
-                    style={styles.categoryRailColumn}
-                  >
-                    {pair.map((cat) => (
-                      <TouchableOpacity
-                        key={cat.id}
-                        style={[styles.categoryRailItem, { width: categoryRailLayout.itemW }]}
-                        onPress={() => handleCategorySelect(cat.id, cat.slug)}
-                        activeOpacity={0.96}
-                      >
-                        <View
-                          style={[
-                            styles.categoryRailCircle,
-                            {
-                              width: categoryRailLayout.circle,
-                              height: categoryRailLayout.circle,
-                              borderRadius: categoryRailLayout.circle / 2,
-                            },
-                          ]}
-                        >
-                          <UserAppCategoryImage
-                            imageUrl={cat.imageUrl}
-                            cacheKey={`category-${cat.id}`}
-                            style={{ width: categoryRailLayout.imgSize, height: categoryRailLayout.imgSize }}
-                          />
-                        </View>
-                        <Text
-                          style={[
-                            styles.categoryRailLabel,
-                            { width: categoryRailLayout.itemW },
-                          ]}
-                          numberOfLines={2}
-                        >
-                          {cat.name}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                ))}
-                {/* Ensures last column can scroll fully clear of screen edge */}
-                <View style={styles.categoryRailScrollTrail} />
-              </ScrollView>
-            )}
+            {classicCategoryRailEl}
           </View>
+          </>
+          )}
 
           {/* Dynamic filter bar – Open Now (default on) + Sort + Filters + store count */}
           <View style={[styles.section, styles.filterBar]}>
             <View style={styles.filterBarChipsRow}>
-              <TouchableOpacity
-                style={[styles.filterChip, openNow && styles.filterChipActive]}
-                onPress={() => setOpenNow((v) => !v)}
-              >
-                <Ionicons name="storefront-outline" size={18} color={openNow ? "#fff" : GatiMitraColors.primaryMint} />
-                <Text style={[styles.filterChipText, openNow && styles.filterChipTextActive]}>Open Now</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.filterChip, sortBy !== "default" && styles.filterChipActive]}
-                onPress={() =>
-                  setSortBy((s) => (s === "default" ? "rating" : s === "rating" ? "distance" : "default"))
-                }
-              >
-                <Ionicons
-                  name="swap-vertical"
-                  size={18}
-                  color={sortBy !== "default" ? "#fff" : GatiMitraColors.textPrimaryNew}
-                />
-                <Text style={[styles.filterChipText, sortBy !== "default" && styles.filterChipTextActive]}>
-                  {sortBy === "default" ? "Sort" : sortBy === "rating" ? "Rating" : "Distance"}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.filterChip, hasActiveFilters && styles.filterChipActive]}
-                onPress={() => setFilterSheetVisible(true)}
-              >
-                <Ionicons name="options-outline" size={18} color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew} />
-                <Text style={[styles.filterChipText, hasActiveFilters && styles.filterChipTextActive]}>Filters</Text>
-              </TouchableOpacity>
+              {foodHomeLayoutKey === "grid_first" ? (
+                <>
+                  <TouchableOpacity
+                    style={[styles.filterChip, hasActiveFilters && styles.filterChipActive]}
+                    onPress={() => setFilterSheetVisible(true)}
+                  >
+                    <Ionicons
+                      name="options-outline"
+                      size={16}
+                      color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
+                    />
+                    <Text style={[styles.filterChipText, hasActiveFilters && styles.filterChipTextActive]}>
+                      Filters
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.filterChip, sortBy === "distance" && styles.filterChipNearFast]}
+                    onPress={() => setSortBy((s) => (s === "distance" ? "default" : "distance"))}
+                  >
+                    <Ionicons
+                      name="flash"
+                      size={16}
+                      color={sortBy === "distance" ? "#15803D" : "#16A34A"}
+                    />
+                    <Text
+                      style={[
+                        styles.filterChipText,
+                        sortBy === "distance" && styles.filterChipTextNearFast,
+                      ]}
+                    >
+                      Near & Fast
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.filterChip, noPackagingCharges && styles.filterChipActive]}
+                    onPress={() => setNoPackagingCharges((v) => !v)}
+                    activeOpacity={0.85}
+                  >
+                    <Text
+                      style={[
+                        styles.filterChipText,
+                        noPackagingCharges && styles.filterChipTextActive,
+                      ]}
+                    >
+                      No packaging charges
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <TouchableOpacity
+                    style={[styles.filterChip, openNow && styles.filterChipActive]}
+                    onPress={() => setOpenNow((v) => !v)}
+                  >
+                    <Ionicons
+                      name="storefront-outline"
+                      size={18}
+                      color={openNow ? "#fff" : GatiMitraColors.primaryMint}
+                    />
+                    <Text style={[styles.filterChipText, openNow && styles.filterChipTextActive]}>
+                      Open Now
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.filterChip, sortBy !== "default" && styles.filterChipActive]}
+                    onPress={() =>
+                      setSortBy((s) =>
+                        s === "default" ? "rating" : s === "rating" ? "distance" : "default"
+                      )
+                    }
+                  >
+                    <Ionicons
+                      name="swap-vertical"
+                      size={18}
+                      color={sortBy !== "default" ? "#fff" : GatiMitraColors.textPrimaryNew}
+                    />
+                    <Text style={[styles.filterChipText, sortBy !== "default" && styles.filterChipTextActive]}>
+                      {sortBy === "default" ? "Sort" : sortBy === "rating" ? "Rating" : "Distance"}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.filterChip, hasActiveFilters && styles.filterChipActive]}
+                    onPress={() => setFilterSheetVisible(true)}
+                  >
+                    <Ionicons
+                      name="options-outline"
+                      size={18}
+                      color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
+                    />
+                    <Text style={[styles.filterChipText, hasActiveFilters && styles.filterChipTextActive]}>
+                      Filters
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
             <Text style={styles.filterStoreCount}>{storeCountLabel}</Text>
           </View>
 
-          {/* Loved by Customers — 3-col compact grid (Swiggy Recommended-style) */}
-          {(showSkeleton || lovedByCustomers.length > 0) && (
+          {/* Loved by Customers — layout-specific presentation */}
+          {(showSkeleton || lovedByCustomers.length > 0) && (showLovedGrid || showLovedHorizontal) ? (
             <View style={styles.lovedSection}>
-              <Text style={styles.sectionHeading}>LOVED BY CUSTOMERS</Text>
+              <Text style={styles.sectionHeading}>{lovedSectionTitle}</Text>
               {showSkeleton ? (
-                <LovedMerchantsGridSkeleton count={6} />
+                <LovedMerchantsGridSkeleton count={showLovedHorizontal ? 4 : 6} />
+              ) : showLovedHorizontal ? (
+                <LovedMerchantsHorizontal
+                  merchants={lovedByCustomers}
+                  weatherDelayMinutes={weatherDelayMinutes}
+                  onPressMerchant={openMerchantPage}
+                />
               ) : (
                 <View style={styles.merchantGrid}>
                   {lovedByCustomers.map((m) => (
@@ -672,15 +1274,13 @@ export default function FoodMerchantsScreen() {
                       key={`loved-${m.id}`}
                       merchant={m}
                       weatherDelayMinutes={weatherDelayMinutes}
-                      onPress={() =>
-                        router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })
-                      }
+                      onPress={() => openMerchantPage(m.id)}
                     />
                   ))}
                 </View>
               )}
             </View>
-          )}
+          ) : null}
 
           {/* All nearby restaurants (includes loved stores) */}
           <View style={[styles.section, styles.restaurantSection]}>
@@ -688,21 +1288,50 @@ export default function FoodMerchantsScreen() {
             {showSkeleton ? (
               <RestaurantListSkeleton count={3} cardWidth={restaurantCardWidth} />
             ) : filteredAndSortedMerchants.length === 0 ? (
-              <Text style={styles.restaurantEmptyHint}>No restaurants match your filters.</Text>
+              vegOnly ? (
+                <View style={styles.vegEmptyWrap}>
+                  <View style={styles.vegEmptyIconRing}>
+                    <Ionicons name="leaf" size={20} color={GatiMitraColors.primaryMint} />
+                  </View>
+                  <Text style={styles.vegEmptyTitle}>
+                    We couldn’t find any pure-veg stores in your area.
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.restaurantEmptyHint}>
+                  No restaurants match your filters.
+                </Text>
+              )
             ) : (
-              filteredAndSortedMerchants.map((m) => (
+              filteredAndSortedMerchants.map((m, idx) => (
                 <GMRestaurantCardV2
                   key={`near-${m.id}`}
                   merchant={m}
                   initialSaved={bookmarkSet.has(m.id)}
                   weatherDelayMinutes={weatherDelayMinutes}
+                  bottomSpacing={idx === filteredAndSortedMerchants.length - 1 ? 0 : 18}
                 />
               ))
             )}
           </View>
+          <View style={isVegEmptyState ? styles.footerDock : undefined}>
+            <BrandingFooter compact />
+          </View>
+        </Animated.ScrollView>
 
-          <BrandingFooter />
-        </AnimatedScrollView>
+        {isGridFirstLayout ? (
+          <FoodHomeGridFirstStickyChrome
+            scrollY={gridFirstScrollY}
+            metrics={gridFirstStickyMetrics}
+            searchStickAt={gridFirstSearchStickAtSv}
+            categoryStickAt={gridFirstCategoryStickAtSv}
+            onSearchPress={handleSearch}
+            vegOnly={vegOnly}
+            onVegChange={setVegOnly}
+            categories={useGridFirstCategoryTabs ? gridFirstCategoryTabsEl : null}
+            enableCategorySticky={useGridFirstCategoryTabs}
+          />
+        ) : null}
       </View>
 
       {/* Filter sheet — full-bleed bottom sheet, mint-forward */}
@@ -864,6 +1493,26 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: GatiMitraColors.softBackground,
   },
+  gridFirstSkyBlock: {
+    marginBottom: 4,
+    overflow: "hidden",
+  },
+  gridFirstSkyBlockRoundedBottom: {
+    borderBottomLeftRadius: 7,
+    borderBottomRightRadius: 7,
+  },
+  gridFirstSkyInner: {
+    position: "relative",
+    overflow: "hidden",
+  },
+  gridFirstHeaderOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    elevation: 12,
+  },
   nonServiceableContainer: {
     backgroundColor: NON_SERVICEABLE_STATUS_BAR_BG,
   },
@@ -904,6 +1553,30 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingVertical: 24,
   },
+  vegEmptyWrap: {
+    minHeight: 180,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    gap: 12,
+  },
+  vegEmptyIconRing: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(34, 197, 94, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.22)",
+  },
+  vegEmptyTitle: {
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "500",
+    color: GatiMitraColors.textSecondary,
+    textAlign: "center",
+  },
   sectionGap: {
     height: SECTION_GAP_SM,
   },
@@ -911,6 +1584,18 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginBottom: SECTION_GAP,
     overflow: "visible",
+  },
+  categoryGridSection: {
+    paddingVertical: 8,
+    marginBottom: SECTION_GAP_SM,
+  },
+  categoryTabsSection: {
+    paddingVertical: 6,
+    marginBottom: SECTION_GAP_SM,
+  },
+  categoryChipsSection: {
+    paddingVertical: 8,
+    marginBottom: SECTION_GAP_SM,
   },
   categoryRailScrollContent: {
     paddingLeft: PAGE_PAD,
@@ -962,10 +1647,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: SECTION_GAP,
-    paddingBottom: SECTION_GAP,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraColors.border,
+    marginBottom: 0,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(0, 0, 0, 0.06)",
   },
   filterBarChipsRow: {
     flexDirection: "row",
@@ -1000,10 +1685,20 @@ const styles = StyleSheet.create({
   filterChipTextActive: {
     color: "#fff",
   },
+  filterChipNearFast: {
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
+  },
+  filterChipTextNearFast: {
+    color: "#15803D",
+  },
   restaurantSection: {
     borderTopWidth: 0,
+    marginBottom: 0,
+    paddingTop: 12,
   },
   lovedSection: {
+    marginTop: 14,
     marginBottom: SECTION_GAP,
     overflow: "visible",
   },
@@ -1019,7 +1714,8 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.8,
     color: GatiMitraColors.textSecondary,
-    marginBottom: 12,
+    marginTop: 0,
+    marginBottom: 10,
     paddingHorizontal: 16,
     textTransform: "uppercase",
   },
@@ -1028,6 +1724,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: GatiMitraColors.textPrimaryNew,
     marginBottom: 12,
+  },
+  footerDock: {
+    marginTop: "auto",
   },
   filterOverlay: {
     flex: 1,
@@ -1220,5 +1919,15 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#fff",
     letterSpacing: 0.2,
+  },
+  layoutResolvingShell: {
+    flex: 1,
+    gap: SECTION_GAP,
+    paddingHorizontal: PAGE_PAD,
+  },
+  layoutResolvingHero: {
+    height: OFFER_CARD_HEIGHT + 48,
+    borderRadius: 16,
+    width: "100%",
   },
 });

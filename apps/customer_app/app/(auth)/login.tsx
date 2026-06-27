@@ -27,6 +27,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { authService } from "@/services/auth.service";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 import { COUNTRIES, DEFAULT_COUNTRY, type CountryOption } from "@/constants/countries";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
@@ -149,6 +151,7 @@ export default function LoginScreen() {
   const [selectedCountry, setSelectedCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = useState(false);
   const [logoError, setLogoError] = useState(false);
+  const logoSource = useAppAssetSource(CX.auth.logoWithName);
   const [apiUrlModalVisible, setApiUrlModalVisible] = useState(false);
   const [apiUrlInput, setApiUrlInput] = useState("");
   const [apiUrlSaving, setApiUrlSaving] = useState(false);
@@ -271,9 +274,9 @@ export default function LoginScreen() {
 
           <View style={styles.cardInner}>
             <View style={styles.header}>
-              {!logoError ? (
+              {!logoError && logoSource ? (
                 <Image
-                  source={require("../../public/img/logowithname.png")}
+                  source={logoSource}
                   style={styles.logoImage}
                   resizeMode="contain"
                   accessibilityLabel="GatiMitra logo"

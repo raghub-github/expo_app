@@ -8,9 +8,9 @@ import type { FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { z } from "zod";
 import { getDb } from "../../db/client.js";
-import { customers } from "../../db/schema.js";
-import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
+import type { AuthContext } from "../../plugins/auth.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import {
   listAddresses,
   addAddress,
@@ -22,10 +22,8 @@ import {
   doorImageProxyUrlFromR2Key,
 } from "./address.service.js";
 
-async function resolveCustomerPk(db: ReturnType<typeof getDb>, sub: string, role: string): Promise<number | null> {
-  if (role !== "customer" || !sub) return null;
-  const rows = await db.select({ id: customers.id }).from(customers).where(eq(customers.customerId, sub)).limit(1);
-  return rows[0]?.id ?? null;
+async function resolveCustomerPk(authCtx: AuthContext): Promise<number | null> {
+  return resolveCustomerPkForRequest(authCtx);
 }
 
 const addressBodySchema = z.object({
@@ -85,7 +83,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       try {
         const rows = await listAddresses(customerPk);
@@ -135,7 +133,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const body = addressBodySchema.parse(request.body);
       try {
@@ -174,7 +172,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const id = parseInt(request.params.id, 10);
       if (Number.isNaN(id)) return reply.status(400).send({ error: "Invalid id" });
@@ -200,7 +198,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const id = parseInt(request.params.id, 10);
       if (Number.isNaN(id)) return reply.status(400).send({ error: "Invalid id" });
@@ -229,7 +227,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const id = parseInt(request.params.id, 10);
       if (Number.isNaN(id)) return reply.status(400).send({ error: "Invalid id" });
@@ -285,7 +283,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const id = parseInt(request.params.id, 10);
       if (Number.isNaN(id)) return reply.status(400).send({ error: "Invalid id" });
@@ -314,7 +312,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       try {
         const row = await getActiveLocation(customerPk);
@@ -352,7 +350,7 @@ export async function addressRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const db = getDb();
-      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const body = activeLocationBodySchema.parse(request.body);
       const ok = await setActiveLocation(customerPk, body);

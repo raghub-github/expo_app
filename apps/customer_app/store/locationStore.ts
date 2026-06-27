@@ -11,6 +11,7 @@ import { create } from "zustand";
 import * as Location from "expo-location";
 import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { loadPersistedWeatherSnapshot } from "@/lib/weatherCacheStorage";
 
 /** Avoid indefinite hang from getCurrentPositionAsync (common with Highest accuracy indoors). */
 const GPS_ATTEMPT_MS = 14_000;
@@ -159,6 +160,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         parsed.address &&
         typeof parsed.address === "object"
       ) {
+        await loadPersistedWeatherSnapshot(parsed.coords.latitude, parsed.coords.longitude);
         set({
           coords: parsed.coords,
           address: parsed.address,
@@ -192,6 +194,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           showPermissionModal: false,
           locationSheetDismissedSession: false,
         });
+        const { locationSource, coords, address } = get();
+        if (locationSource === "selected" && coords && address) {
+          return;
+        }
         await get().requestPermissionAndFetch({ forceDevice: true });
         return;
       }

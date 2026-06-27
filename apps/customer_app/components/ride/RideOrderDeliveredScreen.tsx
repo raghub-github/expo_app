@@ -48,6 +48,8 @@ import {
   resolveRideVehicleImage,
 } from "@/lib/ride-order-display";
 import type { RideCaptainRatingSubmitPayload } from "@/components/ride/RideCaptainRatingSheet";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const MINT = GatiMitraColors.primaryMint;
 const MINT_DARK = GatiMitraColors.deepMintStart;
@@ -58,7 +60,6 @@ const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
 const ROLLER_MINT = GatiMitraColors.mintHighlight;
 const ROLLER_WHITE = "#FFFFFF";
-const SUPPORT_IMG = require("../../public/img/support.png");
 
 const CONFETTI_DOTS = [
   { top: 2, left: 14, color: "#22C55E", size: 7 },
@@ -484,20 +485,13 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
           </View>
 
           <TouchableOpacity style={styles.helpCard} onPress={onOpenHelp} activeOpacity={0.85}>
-            <Image source={SUPPORT_IMG} style={styles.helpImage} contentFit="contain" />
+            <AppAssetImage assetKey={CX.orders.support} style={styles.helpImage} contentFit="contain" />
             <View style={styles.helpTextWrap}>
               <Text style={styles.helpTitle}>Need help with your ride?</Text>
               <Text style={styles.helpSub}>Get help & support</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />
           </TouchableOpacity>
-
-          <View style={styles.disclaimerRow}>
-            <Ionicons name="information-circle-outline" size={14} color={MUTED} />
-            <Text style={styles.disclaimerText}>
-              Waiting or additional charges apply only when added to your final bill.
-            </Text>
-          </View>
         </View>
       </ScrollView>
 
@@ -756,8 +750,6 @@ const styles = StyleSheet.create({
   helpTextWrap: { flex: 1 },
   helpTitle: { fontSize: 14, fontWeight: "700", color: "#2563EB" },
   helpSub: { fontSize: 12, color: MUTED, marginTop: 2, fontWeight: "500" },
-  disclaimerRow: { flexDirection: "row", gap: 6, alignItems: "flex-start", paddingHorizontal: 4 },
-  disclaimerText: { flex: 1, fontSize: 11, color: MUTED, lineHeight: 16 },
   payFareBtn: {
     marginTop: 14,
     backgroundColor: MINT_DARK,

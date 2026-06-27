@@ -6,9 +6,11 @@
 
 
 
-import { View, Text, StyleSheet, Image, Dimensions } from "react-native";
+import { View, Text, StyleSheet, Dimensions } from "react-native";
 
 import { LinearGradient } from "expo-linear-gradient";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 
 
@@ -254,14 +256,10 @@ export function HomeBrandBanner({ bannerHeight = DEFAULT_BANNER_H }: Props) {
 
         <View style={[styles.artWrap, { height: bannerHeight, width: artW }]}>
 
-          <Image
-
-            source={require("../../public/img/gm.png")}
-
+          <AppAssetImage
+            assetKey={CX.home.brandBanner}
             style={{ width: artW, height: artH }}
-
-            resizeMode="contain"
-
+            contentFit="contain"
           />
 
         </View>

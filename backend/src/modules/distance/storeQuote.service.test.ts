@@ -5,9 +5,7 @@
  * heavy-integration path is covered via `ordersCoreSchema.integration.test.ts`
  * in the orders module when DB is available. These unit tests pin down:
  *
- *   1. Progressive/cumulative slab math used by the customer actor
- *      (no price-drop on slab switch; monotonic by distance).
- *   2. Progressive math used by the rider actor (`calculateProgressiveSlabAmount`)
+ *   1. Cumulative slab math used by the customer actor (shared @gatimitra/slab-pricing engine)
  *      applies base fare exactly once and sums segment amounts.
  *   3. Serviceability decision (distance > radius ⇒ out_of_range) matches what the
  *      engine emits downstream.
@@ -21,13 +19,9 @@ import {
 import type { DeliveryRateSlabRow } from "../delivery-slab-pricing/types.js";
 
 function productSpecSlabs(): DeliveryRateSlabRow[] {
-  // Progressive base-included delivery fee:
-  //  - ₹25 includes first 3 km
-  //  - ₹6/km from 3 km to 10 km
-  //  - ₹7/km after 10 km
   return [
     { id: 1, geoLevel: "pincode", geoRefId: "pc-1", serviceType: "food", actorType: "customer",
-      minKm: 0, maxKm: 3, baseFare: null, perKmRate: 0, minCharge: 25, priority: 100, isActive: true },
+      minKm: 0, maxKm: 3, baseFare: 25, perKmRate: 0, minCharge: null, priority: 100, isActive: true },
     { id: 2, geoLevel: "pincode", geoRefId: "pc-1", serviceType: "food", actorType: "customer",
       minKm: 3, maxKm: 10, baseFare: null, perKmRate: 6, minCharge: null, priority: 100, isActive: true },
     { id: 3, geoLevel: "pincode", geoRefId: "pc-1", serviceType: "food", actorType: "customer",

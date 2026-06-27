@@ -19,6 +19,10 @@ import {
   inArray,
   type SQL,
 } from "drizzle-orm";
+import {
+  buildCustomerFraudReasons,
+  type CustomerFraudAlertRow,
+} from "@/lib/customers/fraud-reason";
 export interface CustomerFilters {
   page?: number;
   limit?: number;
@@ -196,6 +200,47 @@ export async function getCustomerAddresses(
     ORDER BY is_default DESC NULLS LAST, id ASC
   `;
   return rows.map((r) => mapCustomerAddressRow(r as Record<string, unknown>));
+}
+
+export async function getCustomerFraudAlerts(
+  customerDbId: number
+): Promise<CustomerFraudAlertRow[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      alert_type,
+      alert_description,
+      alert_severity::text AS alert_severity,
+      created_at,
+      is_resolved
+    FROM customer_fraud_alerts
+    WHERE customer_id = ${customerDbId}
+    ORDER BY created_at DESC
+    LIMIT 20
+  `;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    alertType: String(r.alert_type ?? ""),
+    alertDescription: String(r.alert_description ?? ""),
+    alertSeverity: r.alert_severity != null ? String(r.alert_severity) : null,
+    createdAt: r.created_at as Date | string | null,
+    isResolved: r.is_resolved === true,
+  }));
+}
+
+async function attachCustomerFraudMeta<T extends {
+  id: number;
+  trustTier?: string | null;
+  trustScore?: string | number | null;
+  statusReason?: string | null;
+}>(customer: T) {
+  const fraudAlerts = await getCustomerFraudAlerts(customer.id);
+  const fraudReasons = buildCustomerFraudReasons({
+    trustTier: customer.trustTier ?? null,
+    trustScore: customer.trustScore ?? null,
+    statusReason: customer.statusReason ?? null,
+    fraudAlerts,
+  });
+  return { ...customer, fraudAlerts, fraudReasons };
 }
 
 export interface CustomerWithStats {
@@ -512,11 +557,11 @@ export async function getCustomerById(id: number) {
     getCustomerReferralInstallCount(id),
     getCustomerAddresses(id),
   ]);
-  return {
+  return attachCustomerFraudMeta({
     ...customer,
     referralInstallCount,
     addresses,
-  };
+  });
 }
 
 /** Get customer by public customer_id (e.g. GM…). */
@@ -535,9 +580,9 @@ export async function getCustomerByCustomerId(customerId: string) {
     getCustomerReferralInstallCount(customer.id),
     getCustomerAddresses(customer.id),
   ]);
-  return {
+  return attachCustomerFraudMeta({
     ...customer,
     referralInstallCount,
     addresses,
-  };
+  });
 }

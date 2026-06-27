@@ -29,7 +29,7 @@ export function formatDeliverySlabExplainSubtext(args: {
   const engine = args.pricingEngine ?? null;
   const q = args.slabQuote;
 
-  if (engine === "slab_geo" && q) {
+  if ((engine === "slab_geo" || engine === "fallback_slab") && q) {
     const base = Number(q.baseFareApplied ?? 0) || 0;
     const perKm = Number(q.perKmRate ?? 0) || 0;
     const includedKm = Number(q.includedKm ?? q.maxKm ?? 0) || 0;

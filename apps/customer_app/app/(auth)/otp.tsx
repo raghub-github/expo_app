@@ -27,6 +27,8 @@ import { writeCachedProfile } from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
 import { getDeviceIdAsync } from "@/utils/deviceId";
 import { OTP_LENGTH } from "@/constants";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const BG_SCREEN = "#F0F4F3";
 const CARD_GRADIENT_TOP = "#FFFFFF";
@@ -52,6 +54,7 @@ export default function OtpScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [logoError, setLogoError] = useState(false);
+  const logoSource = useAppAssetSource(CX.auth.logo);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [resendSeconds, setResendSeconds] = useState(60);
   const [resending, setResending] = useState(false);
@@ -152,9 +155,9 @@ export default function OtpScreen() {
 
           <View style={styles.cardInner}>
             {/* Logo – GatiMitra from public/img/logo.png */}
-            {!logoError ? (
+            {!logoError && logoSource ? (
               <Image
-                source={require("../../public/img/logo.png")}
+                source={logoSource}
                 style={styles.logoImage}
                 resizeMode="contain"
                 accessibilityLabel="GatiMitra logo"

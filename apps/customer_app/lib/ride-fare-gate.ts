@@ -17,3 +17,15 @@ export function isOutstandingRideFareOrder(order: OrderSummary): boolean {
 
 export const RIDE_DUE_FARE_NOTICE =
   "Please clear the previous due fare to complete or book a new ride.";
+
+/** POST ride-fare-payment returned 409 — fare already settled; refresh UI instead of failing. */
+export function isRideFareAlreadyPaidError(error: unknown): boolean {
+  const err = error as {
+    status?: number;
+    message?: string;
+    response?: { status?: number; data?: { message?: string } };
+  };
+  const status = err.status ?? err.response?.status;
+  const message = String(err.message ?? err.response?.data?.message ?? "").toLowerCase();
+  return status === 409 && message.includes("already paid");
+}

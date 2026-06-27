@@ -15,16 +15,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getConfig } from "@/config/env";
+import { useAppAssetSource } from "@/store/appAssetsStore";
+import { MX } from "@/lib/appAssetKeys";
 
 const { width, height } = Dimensions.get("window");
 const SLIDE_INTERVAL_MS = 4000;
 const BOTTOM_SECTION_HEIGHT = 140;
 const TOTAL_IMAGES = 6;
 
-// First cover: wlcm.png only (from assets — do not use logo.png or onlylogo.png)
-const FIRST_IMAGE_SOURCE: ImageSourcePropType = require("../../assets/wlcm.png");
-
-// Remaining 5: all store types (food, retail, grocery, pharmacy, general)
+// First cover from CMS app assets (merchant.auth.welcome)
 const REMOTE_IMAGES = [
   "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800",
   "https://images.unsplash.com/photo-1604719312566-8912e9227c6a?w=800",
@@ -33,17 +32,18 @@ const REMOTE_IMAGES = [
   "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800",
 ];
 
-function getBackgroundSource(index: number): ImageSourcePropType {
-  if (index === 0) return FIRST_IMAGE_SOURCE;
-  return { uri: REMOTE_IMAGES[index - 1] };
-}
-
 export default function WelcomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const welcomeImage = useAppAssetSource(MX.auth.welcome);
   const [currentIndex, setCurrentIndex] = useState(0);
   const loginScale = useRef(new Animated.Value(1)).current;
   const signupScale = useRef(new Animated.Value(1)).current;
+
+  const backgroundSource: ImageSourcePropType | null =
+    currentIndex === 0
+      ? welcomeImage
+      : { uri: REMOTE_IMAGES[currentIndex - 1] };
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -73,7 +73,7 @@ export default function WelcomeScreen() {
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) }]}>
       <ImageBackground
-        source={getBackgroundSource(currentIndex)}
+        source={backgroundSource ?? { uri: REMOTE_IMAGES[0] }}
         style={styles.background}
         resizeMode="cover"
       >

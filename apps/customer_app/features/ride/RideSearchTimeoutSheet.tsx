@@ -18,8 +18,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import type { ImageSourcePropType } from "react-native";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const TIP_OPTIONS = [
   { amount: 10, label: "+₹10" },
@@ -129,7 +129,9 @@ function NoTipBoostView({
     <>
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.heroWrap}>
-          <Image source={heroImage} style={styles.heroImage} resizeMode="contain" />
+          {heroImage ? (
+            <Image source={heroImage} style={styles.heroImage} resizeMode="contain" />
+          ) : null}
           <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
         </View>
 
@@ -306,7 +308,9 @@ function TipAlreadyAddedView({
         <View style={styles.searchHeroWrap}>
           <View style={styles.searchRingOuter} />
           <View style={styles.searchRingMid} />
-          <Image source={heroImage} style={styles.searchHeroImage} resizeMode="contain" />
+          {heroImage ? (
+            <Image source={heroImage} style={styles.searchHeroImage} resizeMode="contain" />
+          ) : null}
           <View style={styles.priorityActiveBadge}>
             <Ionicons name="checkmark-circle" size={16} color={GatiMitraColors.deepMintStart} />
             <View style={styles.priorityActiveTextWrap}>
@@ -432,12 +436,14 @@ export function RideTipBoostSheet({
   decisionRemainingSec = 90,
   orderTotal,
   existingTipAmount,
-  heroImage = MAPBIKE_IMAGE,
+  heroImage,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
 }: RideTipBoostSheetProps) {
   const insets = useSafeAreaInsets();
+  const defaultHero = useAppAssetSource(CX.ride.bike);
+  const resolvedHero = heroImage ?? defaultHero;
   const [selectedTip, setSelectedTip] = useState(20);
   const [showIncreaseTip, setShowIncreaseTip] = useState(false);
 
@@ -480,7 +486,7 @@ export function RideTipBoostSheet({
               onBackFromIncrease={() => setShowIncreaseTip(false)}
               loadingAction={loadingAction}
               decisionRemainingSec={decisionRemainingSec}
-              heroImage={heroImage}
+              heroImage={resolvedHero}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}
@@ -491,7 +497,7 @@ export function RideTipBoostSheet({
               onSelectTip={setSelectedTip}
               loadingAction={loadingAction}
               decisionRemainingSec={decisionRemainingSec}
-              heroImage={heroImage}
+              heroImage={resolvedHero}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}

@@ -20,6 +20,10 @@ import { Ionicons } from "@expo/vector-icons";
 import type { HomeBannerOffer } from "@/services/offers.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { formatRideOfferSubline } from "@/lib/ride-offers";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
+import { CX } from "@/lib/appAssetKeys";
+import type { ImageSourcePropType } from "react-native";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const CARD_W = SCREEN_W - 36;
@@ -27,18 +31,14 @@ const SLIDE_GAP = 12;
 const CARD_H = 148;
 const AUTO_MS = 5000;
 
-const RIDE_BANNER_ART = require("../../public/img/banner.png");
-const RIDE_BOTTOM_BANNER = require("../../public/img/ride-bottom-banner.png");
-const OFFER_ART_1 = require("../../public/img/offer1.png");
-const OFFER_ART_2 = require("../../public/img/offer2.png");
-const OFFER_ARTS = [OFFER_ART_1, OFFER_ART_2] as const;
+const OFFER_ASSET_KEYS = [CX.ride.banner, CX.home.promoRideOffer1, CX.home.promoRideOffer2] as const;
 
 type Slide = {
   id: string;
   title: string;
   titleAccent: string;
   sub: string;
-  image: number;
+  assetKey: string;
 };
 
 const DEFAULT_SLIDES: Slide[] = [
@@ -47,21 +47,21 @@ const DEFAULT_SLIDES: Slide[] = [
     title: "Go More, ",
     titleAccent: "Save More!",
     sub: "Get exciting offers on every ride.",
-    image: RIDE_BANNER_ART,
+    assetKey: CX.ride.banner,
   },
   {
     id: "default-2",
     title: "Ride safe, ",
     titleAccent: "ride smart",
     sub: "Trusted captains and insured trips.",
-    image: RIDE_BANNER_ART,
+    assetKey: CX.ride.banner,
   },
   {
     id: "default-3",
     title: "Book in ",
     titleAccent: "seconds",
     sub: "Auto, bike, or cab — your choice.",
-    image: RIDE_BANNER_ART,
+    assetKey: CX.ride.banner,
   },
 ];
 
@@ -70,7 +70,7 @@ function offerToSlide(offer: HomeBannerOffer, index: number): Slide {
   const parts = title.split(/\s+/);
   const accent = parts.length > 2 ? parts.slice(-2).join(" ") : parts[parts.length - 1] ?? title;
   const lead = parts.length > 2 ? `${parts.slice(0, -2).join(" ")} ` : "";
-  const art = index === 0 ? RIDE_BANNER_ART : OFFER_ARTS[(index - 1) % OFFER_ARTS.length];
+  const artKey = OFFER_ASSET_KEYS[index % OFFER_ASSET_KEYS.length] ?? CX.ride.banner;
   return {
     id: offer.id,
     title: lead,
@@ -79,7 +79,7 @@ function offerToSlide(offer: HomeBannerOffer, index: number): Slide {
       minFare: offer.min_order_amount,
       maxDiscount: offer.max_discount_amount,
     }),
-    image: art,
+    assetKey: artKey,
   };
 }
 
@@ -87,6 +87,61 @@ type PromoProps = {
   offers?: HomeBannerOffer[];
   onBookNow?: () => void;
 };
+
+function PromoSlideCard({
+  slide,
+  onBookNow,
+}: {
+  slide: Slide;
+  onBookNow?: () => void;
+}) {
+  useAppAssetsStore((s) => s.assets);
+  const bgUrl = getAppAssetUrl(slide.assetKey);
+
+  const content = (
+    <>
+      <LinearGradient
+        colors={["rgba(255,255,255,0.94)", "rgba(255,255,255,0.72)", "rgba(255,255,255,0.08)"]}
+        locations={[0, 0.42, 1]}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
+      <View style={promoStyles.textCol}>
+        <Text style={promoStyles.title} numberOfLines={2}>
+          {slide.title}
+          <Text style={promoStyles.titleAccent}>{slide.titleAccent}</Text>
+        </Text>
+        <Text style={promoStyles.sub} numberOfLines={2}>
+          {slide.sub}
+        </Text>
+        <View style={promoStyles.ctaBtn}>
+          <Text style={promoStyles.ctaText}>Book Now</Text>
+        </View>
+      </View>
+    </>
+  );
+
+  return (
+    <TouchableOpacity activeOpacity={0.92} onPress={onBookNow} style={promoStyles.cardOuter}>
+      {bgUrl ? (
+        <ImageBackground
+          source={{ uri: bgUrl }}
+          style={[promoStyles.card, { height: CARD_H }]}
+          imageStyle={promoStyles.cardImage}
+          resizeMode="cover"
+        >
+          {content}
+        </ImageBackground>
+      ) : (
+        <View style={[promoStyles.card, { height: CARD_H, backgroundColor: "#ECFDF5" }]}>
+          {content}
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+}
 
 export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
   const scrollRef = useRef<ScrollView>(null);
@@ -141,40 +196,12 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
         contentContainerStyle={promoStyles.scrollContent}
       >
         {slides.map((slide) => (
-          <TouchableOpacity
+          <View
             key={slide.id}
-            activeOpacity={0.92}
-            onPress={onBookNow}
-            style={[promoStyles.cardOuter, { width: CARD_W, marginRight: SLIDE_GAP }]}
+            style={[promoStyles.cardShadowClip, { width: CARD_W, marginRight: SLIDE_GAP }]}
           >
-            <ImageBackground
-              source={slide.image}
-              style={[promoStyles.card, { height: CARD_H }]}
-              imageStyle={promoStyles.cardImage}
-              resizeMode="cover"
-            >
-              <LinearGradient
-                colors={["rgba(255,255,255,0.94)", "rgba(255,255,255,0.72)", "rgba(255,255,255,0.08)"]}
-                locations={[0, 0.42, 1]}
-                start={{ x: 0, y: 0.5 }}
-                end={{ x: 1, y: 0.5 }}
-                style={StyleSheet.absoluteFill}
-                pointerEvents="none"
-              />
-              <View style={promoStyles.textCol}>
-                <Text style={promoStyles.title} numberOfLines={2}>
-                  {slide.title}
-                  <Text style={promoStyles.titleAccent}>{slide.titleAccent}</Text>
-                </Text>
-                <Text style={promoStyles.sub} numberOfLines={2}>
-                  {slide.sub}
-                </Text>
-                <View style={promoStyles.ctaBtn}>
-                  <Text style={promoStyles.ctaText}>Book Now</Text>
-                </View>
-              </View>
-            </ImageBackground>
-          </TouchableOpacity>
+            <PromoSlideCard slide={slide} onBookNow={onBookNow} />
+          </View>
         ))}
       </ScrollView>
 
@@ -193,7 +220,19 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
 const promoStyles = StyleSheet.create({
   wrap: { marginBottom: 16 },
   scrollContent: { paddingTop: 2 },
-  cardOuter: { borderRadius: 20, overflow: "hidden", ...GatiMitraColors.elevationShadow },
+  cardShadowClip: {
+    overflow: "hidden",
+    paddingLeft: 10,
+    marginLeft: -10,
+  },
+  cardOuter: {
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 4, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
   card: {
     borderRadius: 20,
     justifyContent: "center",
@@ -239,7 +278,11 @@ export function RideSafetyBanner() {
         </View>
 
         <View style={safetyStyles.rightArt}>
-          <Image source={RIDE_BOTTOM_BANNER} style={safetyStyles.rightArtImg} resizeMode="cover" />
+          <AppAssetImage
+            assetKey={CX.ride.bottomBanner}
+            style={safetyStyles.rightArtImg}
+            contentFit="cover"
+          />
         </View>
       </View>
     </View>

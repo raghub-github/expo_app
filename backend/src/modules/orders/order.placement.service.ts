@@ -1138,6 +1138,16 @@ export async function finalizeOrder(
   });
 
   if (orderCorePk != null && Number.isFinite(orderCorePk)) {
+    void import("../../lib/merchant-acceptance-deadline.js")
+      .then(({ ensureMerchantAcceptanceDeadlineForFoodOrder }) =>
+        ensureMerchantAcceptanceDeadlineForFoodOrder(getSql(), {
+          orderCorePk,
+          merchantStoreId: pending.merchantStoreId,
+        })
+      )
+      .catch((e) => {
+        console.error("[merchant-acceptance-deadline] finalizeOrder failed:", e);
+      });
     void maybeStartOrderDispatch(orderCorePk);
   }
 

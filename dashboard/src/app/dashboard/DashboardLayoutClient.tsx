@@ -1,5 +1,6 @@
 "use client";
 
+import { Toaster } from "sonner";
 import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from "react";
 
@@ -78,6 +79,7 @@ function DashboardLayoutClient({
 }) {
   return (
     <DashboardSearchParamsProvider>
+      <Toaster position="top-right" richColors closeButton />
       <DashboardLayoutClientInner>{children}</DashboardLayoutClientInner>
     </DashboardSearchParamsProvider>
   );

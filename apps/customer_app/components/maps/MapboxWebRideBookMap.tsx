@@ -5,13 +5,11 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { StyleSheet, View, Platform } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { getConfig } from "@/config/env";
-import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
-import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
+import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
 import { buildRideBookMapHtml } from "@/components/maps/mapbox-web-ride-book-html";
 import type { LatLng } from "@/services/directions.service";
@@ -67,18 +65,7 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
   const initialCenterRef = useRef(center);
 
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
-  const [markerDataUri, setMarkerDataUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const source = resolveNearbyRiderMarkerImage(riderMarkerImageKey);
-    void resolveMapImageDataUri(source).then((uri) => {
-      if (!cancelled) setMarkerDataUri(uri);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [riderMarkerImageKey]);
+  const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
 
   const html = useMemo(() => {
     if (!token || !markerDataUri) return "";

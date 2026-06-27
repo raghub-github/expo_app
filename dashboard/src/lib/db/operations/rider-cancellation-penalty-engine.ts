@@ -2,6 +2,8 @@ import { getSql } from "../client";
 import {
   getCancellationCatalogPayload,
 } from "./order-cancellation-reason-catalog";
+import { ensureCancellationCatalogSchema } from "./ensure-cancellation-catalog-schema";
+import { ensureRiderPenaltyEngineSchema } from "./ensure-rider-penalty-engine-schema";
 import type {
   PartyPenaltyPanelRow,
   PenaltyPartyCode,
@@ -46,6 +48,8 @@ export async function getRiderPenaltyEnginePayload(args?: {
   channel?: "web" | "app";
 }): Promise<RiderPenaltyEnginePayload> {
   const channel = args?.channel === "app" ? "app" : "web";
+  await ensureCancellationCatalogSchema();
+  await ensureRiderPenaltyEngineSchema();
   const { grouped } = await getCancellationCatalogPayload({ activeOnly: true, channel });
   const riderReasons = grouped.RIDER ?? [];
 
@@ -171,6 +175,8 @@ export async function getRiderPenaltyEnginePayload(args?: {
 export async function saveRiderPenaltyEngineConfig(
   input: SaveRiderPenaltyEngineInput
 ): Promise<RiderPenaltyEnginePayload> {
+  await ensureCancellationCatalogSchema();
+  await ensureRiderPenaltyEngineSchema();
   const sql = getSql();
 
   if (input.parties) {
@@ -291,8 +297,16 @@ export async function saveRiderPenaltyEngineConfig(
 
 /** Sync missing catalog reasons into penalty rules (web + app channels). */
 export async function syncRiderPenaltyReasonRulesFromCatalog(): Promise<void> {
+  try {
+    await ensureCancellationCatalogSchema();
+    await ensureRiderPenaltyEngineSchema();
+  } catch (e) {
+    if (isRelationMissingError(e)) return;
+    throw e;
+  }
   const sql = getSql();
-  await sql.unsafe(`
+  try {
+    await sql.unsafe(`
     INSERT INTO gm_rider_penalty_reason_rules (scenario_code, catalog_reason_id, applies_penalty)
     SELECT s.scenario_code, c.id, FALSE
     FROM order_cancellation_reason_catalog c
@@ -304,4 +318,8 @@ export async function syncRiderPenaltyReasonRulesFromCatalog(): Promise<void> {
       AND c.channel IN ('web', 'app')
     ON CONFLICT (scenario_code, catalog_reason_id) DO NOTHING
   `);
+  } catch (e) {
+    if (isRelationMissingError(e)) return;
+    throw e;
+  }
 }

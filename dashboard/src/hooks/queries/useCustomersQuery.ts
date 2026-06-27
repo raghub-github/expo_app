@@ -55,6 +55,9 @@ export async function fetchCustomers(
   if (params.sortOrder) searchParams.set("sortOrder", params.sortOrder);
 
   const response = await fetch(`/api/customers?${searchParams.toString()}`, { signal });
+  if (response.status === 499) {
+    throw new DOMException("Request aborted", "AbortError");
+  }
   let result: CustomersResponse = { success: false };
   try {
     const text = await response.text();

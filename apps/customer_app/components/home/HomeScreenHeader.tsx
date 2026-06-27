@@ -172,38 +172,59 @@ export function HomeLocationHeader({
 export function HomeWeatherBanner({
   weather,
   onWeatherPress,
-}: Pick<Props, "weather" | "onWeatherPress">) {
+  loading = false,
+}: Pick<Props, "weather" | "onWeatherPress"> & { loading?: boolean }) {
   const showWeather = hasLiveTemperature(weather);
   const headline = showWeather ? weatherHeadline(weather) : null;
   const promo = showWeather ? weatherPromo(weather) : null;
   const severity = weather?.severity ?? "CLEAR";
 
-  if (!showWeather || !headline || !promo) return null;
+  if (showWeather && headline && promo) {
+    return (
+      <View style={styles.weatherShell}>
+        <View style={styles.weatherWrap}>
+        <TouchableOpacity
+          style={styles.weatherBanner}
+          activeOpacity={0.88}
+          onPress={onWeatherPress}
+          accessibilityRole="button"
+        >
+          <View style={styles.weatherLeft}>
+            <Text style={styles.weatherIcon}>{weatherEmoji(severity)}</Text>
+            <Text style={styles.weatherTemp}>{headline.temp}</Text>
+            <Text style={styles.weatherLabel} numberOfLines={1}>
+              {headline.label}
+            </Text>
+          </View>
+
+          <View style={styles.weatherDivider} />
+
+          <View style={styles.weatherRight}>
+            <Text style={styles.weatherPromo}>{promo}</Text>
+            <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
+          </View>
+        </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  if (!loading) return null;
 
   return (
     <View style={styles.weatherShell}>
       <View style={styles.weatherWrap}>
-      <TouchableOpacity
-        style={styles.weatherBanner}
-        activeOpacity={0.88}
-        onPress={onWeatherPress}
-        accessibilityRole="button"
-      >
-        <View style={styles.weatherLeft}>
-          <Text style={styles.weatherIcon}>{weatherEmoji(severity)}</Text>
-          <Text style={styles.weatherTemp}>{headline.temp}</Text>
-          <Text style={styles.weatherLabel} numberOfLines={1}>
-            {headline.label}
-          </Text>
+        <View style={[styles.weatherBanner, styles.weatherSkeleton]} accessibilityLabel="Loading weather">
+          <View style={styles.weatherLeft}>
+            <View style={styles.skeletonIcon} />
+            <View style={styles.skeletonTemp} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.weatherDivider} />
+          <View style={styles.weatherRight}>
+            <View style={styles.skeletonPromo} />
+          </View>
         </View>
-
-        <View style={styles.weatherDivider} />
-
-        <View style={styles.weatherRight}>
-          <Text style={styles.weatherPromo}>{promo}</Text>
-          <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
-        </View>
-      </TouchableOpacity>
       </View>
     </View>
   );
@@ -413,5 +434,35 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     marginRight: 4,
     flexShrink: 0,
+  },
+  weatherSkeleton: {
+    opacity: 0.55,
+  },
+  skeletonIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#E5E7EB",
+    marginRight: 5,
+  },
+  skeletonTemp: {
+    width: 28,
+    height: 14,
+    borderRadius: 4,
+    backgroundColor: "#E5E7EB",
+    marginRight: 6,
+  },
+  skeletonLabel: {
+    width: 44,
+    height: 11,
+    borderRadius: 4,
+    backgroundColor: "#E5E7EB",
+  },
+  skeletonPromo: {
+    width: 120,
+    height: 11,
+    borderRadius: 4,
+    backgroundColor: "#E5E7EB",
+    marginRight: 4,
   },
 });

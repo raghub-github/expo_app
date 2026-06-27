@@ -642,7 +642,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [downloadOpen, setDownloadOpen] = useState(false);
 
   const hasNotifiedNew = useRef<Set<number>>(new Set());
-  const autoCancelFiredRef = useRef<Set<number>>(new Set());
   const acceptanceSyncDoneRef = useRef(false);
   const [incomingModalOpen, setIncomingModalOpen] = useState(false);
 
@@ -1061,7 +1060,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   useEffect(() => {
     acceptanceSyncDoneRef.current = false;
-    autoCancelFiredRef.current.clear();
   }, [storeId]);
 
   useEffect(() => {
@@ -1587,28 +1585,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     },
     [storeId, selectedOrder, closeOrderPanel, toast, fetchOrders, fetchStats]
   );
-
-  useEffect(() => {
-    if (!storeId || !acceptanceSettings) return;
-    const windowMins = Math.max(
-      1,
-      Math.min(180, Number(acceptanceSettings.acceptance_window_minutes ?? 5))
-    );
-    for (const order of orders) {
-      const st = normOrderStatus(order.order_status);
-      if (st !== 'CREATED' && st !== 'NEW') continue;
-      const deadline = new Date(order.created_at).getTime() + windowMins * 60_000;
-      if (nowTick < deadline) continue;
-      if (autoCancelFiredRef.current.has(order.id)) continue;
-      if (actionLoading === order.id) continue;
-      autoCancelFiredRef.current.add(order.id);
-      void updateStatus(order, 'CANCELLED', {
-        rejected_reason: 'Auto Cancelled',
-        cancel_mode: 'auto',
-        action_source: 'system',
-      });
-    }
-  }, [orders, nowTick, storeId, acceptanceSettings, actionLoading, updateStatus]);
 
   const extendPrepDelay = useCallback(
     async (order: OrdersFoodRow, additionalMinutes: number) => {

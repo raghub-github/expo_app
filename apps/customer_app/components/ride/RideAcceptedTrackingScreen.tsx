@@ -49,6 +49,7 @@ import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
 import { RideTripDetailsSheet } from "@/components/ride/RideTripDetailsSheet";
 import { RideInProgressNoticeCarousel } from "@/components/ride/RideInProgressNoticeCarousel";
 import { speakRideTollNotice } from "@/lib/speak-ride-notice";
+import { shouldShowRideTollNotice } from "@/lib/ride-toll-notice";
 import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { RideCancelReasonSheet } from "@/features/ride/RideCancelReasonSheet";
 import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
@@ -170,12 +171,15 @@ export function RideAcceptedTrackingScreen({
     rideStarted: liveRideStatus?.rideStarted ?? order.rideStarted ?? false,
   });
 
+  const rideCatalogId = resolveRideCatalogId(order);
+
   useEffect(() => {
     if (!rideInProgress) return;
+    if (!shouldShowRideTollNotice(rideCatalogId)) return;
     if (tollNoticeSpokenRef.current === order.orderId) return;
     tollNoticeSpokenRef.current = order.orderId;
     void speakRideTollNotice();
-  }, [rideInProgress, order.orderId]);
+  }, [rideInProgress, order.orderId, rideCatalogId]);
 
   const rideWaitFields = useMemo(
     () => ({
@@ -217,7 +221,6 @@ export function RideAcceptedTrackingScreen({
 
   const routeDestination = rideInProgress ? dropPoint : pickupPoint;
 
-  const rideCatalogId = resolveRideCatalogId(order);
   const riderMarkerImageKey = resolveRideMapMarkerImageKey(rideCatalogId);
   const rideVehicleImage = resolveRideVehicleImage(rideCatalogId);
   const {
@@ -667,7 +670,7 @@ export function RideAcceptedTrackingScreen({
               <Text style={styles.bannerText}>{bannerText}</Text>
             </View>
 
-            <RideInProgressNoticeCarousel />
+            <RideInProgressNoticeCarousel rideType={rideCatalogId} />
 
             <View style={[styles.etaBlock, styles.etaBlockNav]}>
               <View style={styles.etaRowSplit}>

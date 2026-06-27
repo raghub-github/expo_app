@@ -22,8 +22,12 @@ function formatPillBalance(value: number): string {
   return value % 1 === 0 ? String(Math.round(value)) : value.toFixed(0);
 }
 
-/** Compact wallet chip — circle on icon only, amount below (Zomato-style). */
-export function GatiCashHeaderPill() {
+type Props = {
+  variant?: "default" | "gridFirst";
+};
+
+/** Compact wallet chip — default: icon above amount; gridFirst: horizontal mint pill. */
+export function GatiCashHeaderPill({ variant = "default" }: Props) {
   const router = useRouter();
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
@@ -39,6 +43,29 @@ export function GatiCashHeaderPill() {
   const balance = balanceQ.data?.available_balance ?? balanceQ.data?.balance ?? 0;
   const displayAmount = formatPillBalance(balance);
   const loading = balanceQ.isLoading && !!session;
+
+  if (variant === "gridFirst") {
+    return (
+      <TouchableOpacity
+        style={styles.gridPill}
+        activeOpacity={0.82}
+        onPress={() => router.push("/wallet")}
+        accessibilityRole="button"
+        accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
+      >
+        <View style={styles.gridIconWrap}>
+          <Ionicons name="wallet" size={14} color="#FFFFFF" />
+        </View>
+        {loading ? (
+          <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
+        ) : (
+          <Text style={styles.gridAmount} numberOfLines={1}>
+            ₹{displayAmount}
+          </Text>
+        )}
+      </TouchableOpacity>
+    );
+  }
 
   return (
     <TouchableOpacity
@@ -77,6 +104,38 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 3,
     elevation: 2,
+  },
+  gridPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    height: 32,
+    paddingLeft: 4,
+    paddingRight: 9,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "rgba(16,185,129,0.18)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  gridIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: GatiMitraColors.primaryMint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gridAmount: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: TITLE_DARK,
+    letterSpacing: -0.2,
+    maxWidth: 52,
   },
   iconCircle: {
     width: 20,

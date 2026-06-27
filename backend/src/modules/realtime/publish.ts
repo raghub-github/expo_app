@@ -5,6 +5,7 @@
  *   order:GM10000042   — every customer-visible event for one order
  *   rider:42           — rider's own assignment / location updates
  *   store:45           — store-wide events (kitchen busy, schedule flip)
+ *   zone:grid:lat_lng  — rain weather updates for a grid cell
  *
  * Event envelope:
  *   { type: <verb>, at: <ISO>, ...payload }
@@ -47,4 +48,13 @@ export async function publishStoreEvent(
 ): Promise<void> {
   if (storeId == null) return;
   await safePublish(`store:${storeId}`, event);
+}
+
+/** Rain-affected grid cells — `zone:{zoneKey}` e.g. zone:grid:25.58_85.52 */
+export async function publishZoneWeatherEvent(
+  zoneKey: string,
+  event: RealtimeEvent,
+): Promise<void> {
+  if (!zoneKey?.trim()) return;
+  await safePublish(`zone:${zoneKey.trim()}`, event);
 }

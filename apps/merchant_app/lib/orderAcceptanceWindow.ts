@@ -1,4 +1,4 @@
-/** Partner Site parity — merchant must accept within platform window or order auto-cancels. */
+/** Display-only acceptance countdown — backend owns timeout / auto-cancel. */
 
 export const AUTO_CANCEL_REASON = "Auto Cancelled";
 
@@ -12,7 +12,15 @@ export function acceptanceWindowMs(minutes: number | null | undefined): number {
   return clampAcceptanceWindowMinutes(minutes) * 60_000;
 }
 
-export function acceptDeadlineMs(createdAt: string, windowMinutes: number | null | undefined): number {
+export function acceptDeadlineMs(
+  createdAt: string,
+  windowMinutes: number | null | undefined,
+  responseDeadlineAt?: string | null
+): number {
+  if (responseDeadlineAt) {
+    const deadline = new Date(responseDeadlineAt).getTime();
+    if (Number.isFinite(deadline)) return deadline;
+  }
   const created = new Date(createdAt).getTime();
   if (!Number.isFinite(created)) return Date.now();
   return created + acceptanceWindowMs(windowMinutes);
@@ -21,9 +29,10 @@ export function acceptDeadlineMs(createdAt: string, windowMinutes: number | null
 export function acceptSecondsLeft(
   createdAt: string,
   windowMinutes: number | null | undefined,
-  nowMs: number
+  nowMs: number,
+  responseDeadlineAt?: string | null
 ): number {
-  const deadline = acceptDeadlineMs(createdAt, windowMinutes);
+  const deadline = acceptDeadlineMs(createdAt, windowMinutes, responseDeadlineAt);
   return Math.max(0, Math.ceil((deadline - nowMs) / 1000));
 }
 
@@ -36,17 +45,4 @@ export function formatAcceptCountdown(secondsLeft: number): string {
 export function isCreatedPipelineStatus(pipelineStatus: string): boolean {
   const u = pipelineStatus.toUpperCase();
   return u === "CREATED" || u === "NEW" || u === "PLACED";
-}
-
-/** Shared across hook instances so only one PATCH runs per food order id. */
-const autoCancelFiredFoodIds = new Set<number>();
-
-export function claimAutoCancelFoodOrder(foodId: number): boolean {
-  if (autoCancelFiredFoodIds.has(foodId)) return false;
-  autoCancelFiredFoodIds.add(foodId);
-  return true;
-}
-
-export function releaseAutoCancelFoodOrder(foodId: number): void {
-  autoCancelFiredFoodIds.delete(foodId);
 }

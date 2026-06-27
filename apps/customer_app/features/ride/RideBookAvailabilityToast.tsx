@@ -1,5 +1,7 @@
-import { View, Text, Image, StyleSheet } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 type Props = {
   visible: boolean;
@@ -14,11 +16,7 @@ export function RideBookAvailabilityToast({ visible, message }: Props) {
     <View style={styles.wrap} pointerEvents="none">
       <View style={styles.pill}>
         <View style={styles.logoCircle}>
-          <Image
-            source={require("@/assets/images/splash-logo.png")}
-            style={styles.logo}
-            resizeMode="contain"
-          />
+          <AppAssetImage assetKey={CX.orders.toastLogo} style={styles.logo} contentFit="contain" />
         </View>
         <Text style={styles.text}>{message}</Text>
       </View>

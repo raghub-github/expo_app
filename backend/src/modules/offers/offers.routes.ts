@@ -12,9 +12,9 @@
 
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { eq, and, lte, gte, asc, inArray } from "drizzle-orm";
+import { eq, and, or, lte, gte, asc, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
-import { getDb, getSql } from "../../db/client.js";
+import { getDb, getSql, withSqlRetry, withDbSlot } from "../../db/client.js";
 import {
   merchantOffers,
   billingPlatformOffers,
@@ -639,6 +639,108 @@ function isRideFeaturedBannerEligible(banner: HomeBannerOffer): boolean {
   return true;
 }
 
+/** RIDE checkout/home: skip nearby-store listing (expensive Supabase RPC) — only global/geo platform + coupons. */
+async function fetchRideFeaturedOffersFast(params: {
+  pincode: string | null;
+  stateName: string | null;
+  cityName: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  limit: number;
+}): Promise<HomeBannerOffer[]> {
+  const db = getDb();
+  const now = new Date();
+
+  const geo = await resolveGeoLocation({
+    livePincode: params.pincode,
+    liveState: params.stateName,
+    liveCity: params.cityName,
+    latitude: params.latitude,
+    longitude: params.longitude,
+  });
+  const geoBoundIds = geo.geoBoundOfferIds;
+
+  const platformRows = await db
+      .select({
+        id: billingPlatformOffers.id,
+        name: billingPlatformOffers.name,
+        serviceType: billingPlatformOffers.serviceType,
+        offerKind: billingPlatformOffers.offerKind,
+        discountType: billingPlatformOffers.discountType,
+        valueNumeric: billingPlatformOffers.valueNumeric,
+        maxDiscountAmount: billingPlatformOffers.maxDiscountAmount,
+        minOrderAmount: billingPlatformOffers.minOrderAmount,
+        targetScope: billingPlatformOffers.targetScope,
+        offerAudience: billingPlatformOffers.offerAudience,
+        customerSegment: billingPlatformOffers.customerSegment,
+        startsAt: billingPlatformOffers.startsAt,
+        endsAt: billingPlatformOffers.endsAt,
+        priority: billingPlatformOffers.priority,
+      })
+      .from(billingPlatformOffers)
+      .where(
+        and(
+          eq(billingPlatformOffers.isActive, true),
+          eq(billingPlatformOffers.isHidden, false),
+          or(eq(billingPlatformOffers.serviceType, "RIDE"), eq(billingPlatformOffers.serviceType, "ALL"))
+        )
+      )
+      .orderBy(asc(billingPlatformOffers.priority));
+  const couponBanners = await fetchCouponBannerOffers("RIDE");
+
+  const platformBanners: HomeBannerOffer[] = [];
+  for (const o of platformRows) {
+    if (String(o.offerAudience ?? "CUSTOMER").toUpperCase() !== "CUSTOMER") continue;
+    if (o.startsAt && now < o.startsAt) continue;
+    if (o.endsAt && now > o.endsAt) continue;
+
+    const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
+    if (scope === "MERCHANT" || scope === "GEO_MERCHANT") continue;
+    if ((scope === "GEO" || scope === "GEO_MERCHANT") && !geoBoundIds.has(o.id)) continue;
+
+    const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
+    if (RIDE_EXCLUDED_PLATFORM_OFFER_KINDS.has(kind)) continue;
+
+    const value = n(o.valueNumeric);
+    const maxDisc = n(o.maxDiscountAmount);
+    const minOrder = n(o.minOrderAmount);
+    platformBanners.push({
+      id: scope === "GEO" ? `platform-geo-${o.id}` : `platform-global-${o.id}`,
+      store_id: "",
+      store_name: null,
+      title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
+      sub: buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment),
+      kind: "platform",
+      source_offer_id: o.id,
+      offer_type: kind,
+      coupon_code: null,
+      min_order_amount: minOrder,
+      max_discount_amount: maxDisc,
+      discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
+      discount_value: o.discountType !== "PERCENTAGE" ? value : null,
+      valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
+    });
+  }
+
+  const seen = new Set<string>();
+  const merged: HomeBannerOffer[] = [];
+  const push = (b: HomeBannerOffer) => {
+    if (!isRideFeaturedBannerEligible(b)) return;
+    const key = `${b.kind}::${b.source_offer_id}::${b.store_id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(b);
+  };
+
+  const globalPlatform = platformBanners.filter((b) => b.id.startsWith("platform-global-"));
+  const scopedPlatform = platformBanners.filter((b) => !b.id.startsWith("platform-global-"));
+  for (const b of globalPlatform) push(b);
+  for (const b of scopedPlatform) push(b);
+  for (const b of couponBanners) push(b);
+
+  return merged.slice(0, params.limit);
+}
+
 async function fetchHomeFeaturedOffers(params: {
   pincode: string | null;
   stateName: string | null;
@@ -648,20 +750,29 @@ async function fetchHomeFeaturedOffers(params: {
   serviceType: string;
   limit: number;
 }): Promise<HomeBannerOffer[]> {
+  if (params.serviceType.toUpperCase() === "RIDE") {
+    return fetchRideFeaturedOffersFast({
+      pincode: params.pincode,
+      stateName: params.stateName,
+      cityName: params.cityName,
+      latitude: params.latitude,
+      longitude: params.longitude,
+      limit: params.limit,
+    });
+  }
+
   const nearby = await resolveNearbyStores(params.latitude, params.longitude, 30);
-  const [merchantBanners, platformBanners, couponBanners] = await Promise.all([
-    fetchMerchantBannerOffers(nearby),
-    fetchPlatformBannerOffers(
-      params.pincode,
-      params.serviceType,
-      params.stateName,
-      params.cityName,
-      params.latitude,
-      params.longitude,
-      nearby
-    ),
-    fetchCouponBannerOffers(params.serviceType),
-  ]);
+  const merchantBanners = await fetchMerchantBannerOffers(nearby);
+  const platformBanners = await fetchPlatformBannerOffers(
+    params.pincode,
+    params.serviceType,
+    params.stateName,
+    params.cityName,
+    params.latitude,
+    params.longitude,
+    nearby
+  );
+  const couponBanners = await fetchCouponBannerOffers(params.serviceType);
 
   const seen = new Set<string>();
   const merged: HomeBannerOffer[] = [];
@@ -754,10 +865,10 @@ export async function offersRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Store not found" });
       }
 
-      const [merchant_offers, platform_offers] = await Promise.all([
-        fetchMerchantOffers(storeInternalId),
-        fetchPlatformOffers(pincode, serviceType, stateName, cityName, latitude, longitude),
-      ]);
+      const [merchant_offers, platform_offers] = [
+        await fetchMerchantOffers(storeInternalId),
+        await fetchPlatformOffers(pincode, serviceType, stateName, cityName, latitude, longitude),
+      ];
 
       return reply.send({ merchant_offers, platform_offers });
     }
@@ -812,15 +923,21 @@ export async function offersRoutes(app: FastifyInstance) {
       const serviceType = q.serviceType ?? "FOOD";
       const limit       = Number(q.limit ?? 6);
 
-      const offers = await fetchHomeFeaturedOffers({
-        pincode,
-        stateName,
-        cityName,
-        latitude,
-        longitude,
-        serviceType,
-        limit,
-      });
+      const offers = await withDbSlot(
+        () =>
+          withSqlRetry(() =>
+            fetchHomeFeaturedOffers({
+              pincode,
+              stateName,
+              cityName,
+              latitude,
+              longitude,
+              serviceType,
+              limit,
+            })
+          ),
+        req
+      );
       return reply.send({ offers });
     }
   );

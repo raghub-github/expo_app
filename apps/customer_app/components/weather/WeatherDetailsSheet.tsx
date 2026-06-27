@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import {
   Modal,
   View,
@@ -6,15 +7,15 @@ import {
   TouchableOpacity,
   StyleSheet,
   Platform,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { GatiMitraColors } from "@/constants/gatimitra";
-import type { CustomerWeatherContext, WeatherSeverity } from "@/services/weather.service";
+import type { CustomerWeatherContext } from "@/services/weather.service";
+import { buildWeatherPanelModel, type WeatherMetricCard, type WeatherPanelModel } from "@/lib/weatherPanelModel";
+import { WeatherPanelAnimations } from "./WeatherPanelAnimations";
 
-const BRAND = GatiMitraColors.splashMint;
-const BRAND_DARK = "#0D9488";
 const TITLE_DARK = "#111827";
 const TEXT_GRAY = "#6B7280";
 const TEXT_MUTED = "#9CA3AF";
@@ -25,98 +26,83 @@ type Props = {
   onClose: () => void;
 };
 
-function weatherEmoji(severity: WeatherSeverity): string {
-  switch (severity) {
-    case "EXTREME_WEATHER":
-    case "HEAVY_RAIN":
-      return "🌧";
-    case "MODERATE_RAIN":
-    case "LIGHT_RAIN":
-      return "🌦";
-    default:
-      return "🌤";
-  }
-}
+const BADGE_STYLES: Record<
+  WeatherPanelModel["badgeVariant"],
+  { bg: string; border: string; text: string }
+> = {
+  neutral: { bg: "rgba(255,255,255,0.22)", border: "rgba(255,255,255,0.35)", text: "#FFFFFF" },
+  success: { bg: "rgba(16,185,129,0.28)", border: "rgba(167,243,208,0.5)", text: "#FFFFFF" },
+  info: { bg: "rgba(56,189,248,0.28)", border: "rgba(186,230,253,0.5)", text: "#FFFFFF" },
+  warning: { bg: "rgba(251,191,36,0.32)", border: "rgba(254,243,199,0.55)", text: "#FFFFFF" },
+  danger: { bg: "rgba(239,68,68,0.35)", border: "rgba(254,202,202,0.55)", text: "#FFFFFF" },
+};
 
-function heroGradient(severity: WeatherSeverity): [string, string, string] {
-  switch (severity) {
-    case "EXTREME_WEATHER":
-    case "HEAVY_RAIN":
-      return ["#1E3A5F", "#334155", "#475569"];
-    case "MODERATE_RAIN":
-    case "LIGHT_RAIN":
-      return ["#0E7490", "#14B8A6", "#2DD4BF"];
-    default:
-      return ["#0D9488", "#14B8A6", "#5EEAD4"];
-  }
-}
+const MetricCard = memo(function MetricCard({ metric }: { metric: WeatherMetricCard }) {
+  return (
+    <View style={[styles.metricCard, { backgroundColor: metric.bg }]}>
+      <View style={styles.metricIconWrap}>
+        <Ionicons name={metric.icon as keyof typeof Ionicons.glyphMap} size={18} color={metric.tint} />
+      </View>
+      <Text style={styles.metricLabel}>{metric.label}</Text>
+      <Text style={styles.metricValue} numberOfLines={2}>
+        {metric.value}
+      </Text>
+    </View>
+  );
+});
 
-function statusLabel(weather: CustomerWeatherContext): string {
-  if (weather.chipLabel) {
-    return weather.chipLabel.replace(/^[^\p{L}\p{N}]+/u, "").trim() || weather.weatherCondition;
-  }
-  if (weather.severity === "CLEAR") return "Clear Weather";
-  return weather.weatherCondition;
-}
+const AdvisoryList = memo(function AdvisoryList({
+  title,
+  icon,
+  items,
+  tint,
+}: {
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  items: string[];
+  tint: string;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <View style={styles.advisoryBox}>
+      <View style={styles.advisoryHeader}>
+        <Ionicons name={icon} size={17} color={tint} />
+        <Text style={styles.advisoryTitle}>{title}</Text>
+      </View>
+      {items.map((line) => (
+        <View key={line} style={styles.advisoryRow}>
+          <View style={[styles.advisoryDot, { backgroundColor: tint }]} />
+          <Text style={styles.advisoryText}>{line}</Text>
+        </View>
+      ))}
+    </View>
+  );
+});
 
-export function WeatherDetailsSheet({ visible, weather, onClose }: Props) {
+function WeatherDetailsSheetInner({ visible, weather, onClose }: Props) {
   const insets = useSafeAreaInsets();
-  if (!weather) return null;
+
+  const panel = useMemo(() => (weather ? buildWeatherPanelModel(weather) : null), [
+    weather?.updatedAt,
+    weather?.temperatureC,
+    weather?.severity,
+    weather?.rainDetected,
+    weather?.rainIntensityMm,
+    weather?.windSpeedKmh,
+    weather?.weatherCondition,
+    weather?.details?.weatherId,
+    weather?.details?.cloudCoverPct,
+    weather?.etaDelayMinutes,
+  ]);
+
+  if (!weather || !panel) return null;
 
   const temp =
     weather.temperatureC != null ? `${Math.round(weather.temperatureC)}°` : "—°";
-  const emoji = weatherEmoji(weather.severity);
-  const gradient = heroGradient(weather.severity);
-
-  const metrics: Array<{
-    key: string;
-    label: string;
-    value: string;
-    icon: keyof typeof Ionicons.glyphMap;
-    tint: string;
-    bg: string;
-  }> = [];
-
-  if (weather.temperatureC != null) {
-    metrics.push({
-      key: "temp",
-      label: "Temperature",
-      value: `${Math.round(weather.temperatureC)}°C`,
-      icon: "thermometer-outline",
-      tint: "#EA580C",
-      bg: "#FFF7ED",
-    });
-  }
-  if (weather.humidityPct != null) {
-    metrics.push({
-      key: "humidity",
-      label: "Humidity",
-      value: `${Math.round(weather.humidityPct)}%`,
-      icon: "water-outline",
-      tint: "#2563EB",
-      bg: "#EFF6FF",
-    });
-  }
-  if (weather.windSpeedKmh != null) {
-    metrics.push({
-      key: "wind",
-      label: "Wind",
-      value: `${Math.round(weather.windSpeedKmh)} km/h`,
-      icon: "flag-outline",
-      tint: "#7C3AED",
-      bg: "#F5F3FF",
-    });
-  }
-  if (weather.rainDetected) {
-    metrics.push({
-      key: "rain",
-      label: "Rain",
-      value: `${weather.rainIntensityMm.toFixed(1)} mm/h`,
-      icon: "rainy-outline",
-      tint: "#0891B2",
-      bg: "#ECFEFF",
-    });
-  }
+  const badgeStyle = BADGE_STYLES[panel.badgeVariant];
+  const conditionLabel =
+    weather.details?.weatherDescription?.replace(/\b\w/g, (c) => c.toUpperCase()) ??
+    panel.title;
 
   return (
     <Modal
@@ -141,78 +127,100 @@ export function WeatherDetailsSheet({ visible, weather, onClose }: Props) {
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
             <View style={styles.handle} />
 
-            <LinearGradient
-              colors={gradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.hero}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              contentContainerStyle={styles.scrollContent}
             >
-              <View style={styles.heroDecorA} />
-              <View style={styles.heroDecorB} />
-              <Text style={styles.heroEmoji}>{emoji}</Text>
-              <Text style={styles.heroTemp}>{temp}</Text>
-              <Text style={styles.heroCondition}>{weather.weatherCondition}</Text>
-              <View style={styles.heroPill}>
-                <Text style={styles.heroPillText}>{statusLabel(weather)}</Text>
-              </View>
-              {weather.areaLabel ? (
-                <Text style={styles.heroArea} numberOfLines={1}>
-                  {weather.areaLabel}
-                </Text>
-              ) : null}
-            </LinearGradient>
-
-            {weather.bannerSubtitle ? (
-              <Text style={styles.bannerSubtitle}>{weather.bannerSubtitle}</Text>
-            ) : null}
-
-            {metrics.length > 0 ? (
-              <View style={styles.metricsGrid}>
-                {metrics.map((m) => (
-                  <View key={m.key} style={[styles.metricCard, { backgroundColor: m.bg }]}>
-                    <View style={[styles.metricIconWrap, { backgroundColor: "#FFFFFF" }]}>
-                      <Ionicons name={m.icon} size={18} color={m.tint} />
-                    </View>
-                    <Text style={styles.metricLabel}>{m.label}</Text>
-                    <Text style={styles.metricValue}>{m.value}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-
-            {weather.etaDelayMinutes > 0 ? (
-              <View style={styles.etaBox}>
-                <View style={styles.etaHeader}>
-                  <Ionicons name="time-outline" size={18} color={BRAND_DARK} />
-                  <Text style={styles.etaTitle}>Delivery impact</Text>
+              <LinearGradient
+                key={panel.cacheKey}
+                colors={panel.gradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.hero}
+              >
+                <WeatherPanelAnimations animation={panel.animation} />
+                <View style={styles.heroDecorA} />
+                <View style={styles.heroDecorB} />
+                <Text style={styles.heroEmoji}>{panel.heroIcon}</Text>
+                <Text style={styles.heroTemp}>{temp}</Text>
+                <Text style={styles.heroCondition}>{conditionLabel}</Text>
+                <View
+                  style={[
+                    styles.heroPill,
+                    { backgroundColor: badgeStyle.bg, borderColor: badgeStyle.border },
+                  ]}
+                >
+                  <Text style={[styles.heroPillText, { color: badgeStyle.text }]}>
+                    {panel.badgeLabel}
+                  </Text>
                 </View>
-                <Text style={styles.etaValue}>
-                  +{weather.etaDelayMinutes} mins to estimated arrival
-                </Text>
-                {weather.etaImpactLabel ? (
-                  <Text style={styles.etaHint}>{weather.etaImpactLabel}</Text>
+                {weather.areaLabel ? (
+                  <Text style={styles.heroArea} numberOfLines={1}>
+                    {weather.areaLabel}
+                  </Text>
+                ) : null}
+              </LinearGradient>
+
+              <Text style={styles.heroMessage}>{panel.heroMessage}</Text>
+
+              {panel.metrics.length > 0 ? (
+                <View style={styles.metricsGrid}>
+                  {panel.metrics.map((m) => (
+                    <MetricCard key={m.key} metric={m} />
+                  ))}
+                </View>
+              ) : null}
+
+              <View
+                style={[
+                  styles.impactBox,
+                  {
+                    backgroundColor: panel.deliveryImpact.bg,
+                    borderColor: panel.deliveryImpact.border,
+                  },
+                ]}
+              >
+                <View style={styles.impactHeader}>
+                  <Text style={styles.impactIcon}>{panel.deliveryImpact.icon}</Text>
+                  <Text style={[styles.impactTitle, { color: panel.deliveryImpact.color }]}>
+                    {panel.deliveryImpact.label}
+                  </Text>
+                </View>
+                {weather.etaDelayMinutes > 0 ? (
+                  <Text style={styles.impactDetail}>
+                    Estimated +{weather.etaDelayMinutes} min delivery time
+                  </Text>
+                ) : panel.deliveryImpact.level === "normal" ? (
+                  <Text style={styles.impactDetail}>No weather-related delivery delays right now.</Text>
                 ) : null}
               </View>
-            ) : (
-              <View style={styles.clearBox}>
-                <Ionicons name="checkmark-circle" size={20} color={BRAND} />
-                <Text style={styles.clearHint}>
-                  No weather-related delivery delays right now.
-                </Text>
-              </View>
-            )}
 
-            {weather.updatedAt ? (
-              <Text style={styles.updatedAt}>
-                Updated {new Date(weather.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </Text>
-            ) : null}
+              <AdvisoryList
+                title="Customer advisory"
+                icon="bag-handle-outline"
+                items={panel.customerAdvisory}
+                tint="#2563EB"
+              />
+
+              {weather.updatedAt ? (
+                <Text style={styles.updatedAt}>
+                  Updated{" "}
+                  {new Date(weather.updatedAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+              ) : null}
+            </ScrollView>
           </View>
         </View>
       </View>
     </Modal>
   );
 }
+
+export const WeatherDetailsSheet = memo(WeatherDetailsSheetInner);
 
 const styles = StyleSheet.create({
   overlay: {
@@ -226,6 +234,7 @@ const styles = StyleSheet.create({
   sheetWrap: {
     width: "100%",
     alignItems: "center",
+    maxHeight: "92%",
   },
   floatingClose: {
     width: 44,
@@ -253,6 +262,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 8,
     overflow: "hidden",
+    maxHeight: "100%",
+  },
+  scrollContent: {
+    paddingBottom: 8,
   },
   handle: {
     alignSelf: "center",
@@ -264,11 +277,12 @@ const styles = StyleSheet.create({
   },
   hero: {
     borderRadius: 18,
-    paddingVertical: 22,
+    paddingVertical: 24,
     paddingHorizontal: 18,
     alignItems: "center",
     overflow: "hidden",
     marginBottom: 14,
+    minHeight: 200,
   },
   heroDecorA: {
     position: "absolute",
@@ -289,34 +303,35 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   heroEmoji: {
-    fontSize: 36,
+    fontSize: 40,
     marginBottom: 6,
+    zIndex: 2,
   },
   heroTemp: {
-    fontSize: 44,
+    fontSize: 48,
     fontWeight: "800",
     color: "#FFFFFF",
     letterSpacing: -1,
+    zIndex: 2,
   },
   heroCondition: {
     fontSize: 15,
     fontWeight: "600",
     color: "rgba(255,255,255,0.92)",
     marginTop: 2,
+    zIndex: 2,
   },
   heroPill: {
     marginTop: 12,
-    backgroundColor: "rgba(255,255,255,0.22)",
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.35)",
+    zIndex: 2,
   },
   heroPillText: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#FFFFFF",
   },
   heroArea: {
     fontSize: 12,
@@ -324,12 +339,13 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.8)",
     marginTop: 8,
     maxWidth: "100%",
+    zIndex: 2,
   },
-  bannerSubtitle: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: TEXT_GRAY,
-    lineHeight: 20,
+  heroMessage: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: TITLE_DARK,
+    lineHeight: 22,
     marginBottom: 14,
     textAlign: "center",
   },
@@ -352,6 +368,7 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 10,
+    backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 10,
@@ -373,58 +390,70 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   metricValue: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "800",
     color: TITLE_DARK,
     marginTop: 4,
   },
-  etaBox: {
-    backgroundColor: "#F0FDF9",
+  impactBox: {
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: "#99F6E4",
-    marginBottom: 8,
+    marginBottom: 12,
   },
-  etaHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 6,
-  },
-  etaTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: BRAND_DARK,
-  },
-  etaValue: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: TITLE_DARK,
-  },
-  etaHint: {
-    fontSize: 12,
-    color: TEXT_GRAY,
-    marginTop: 4,
-    lineHeight: 17,
-  },
-  clearBox: {
+  impactHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#F0FDF9",
+  },
+  impactIcon: {
+    fontSize: 16,
+  },
+  impactTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  impactDetail: {
+    fontSize: 13,
+    color: TEXT_GRAY,
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  advisoryBox: {
+    backgroundColor: "#F9FAFB",
     borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "#CCFBF1",
+    borderColor: "#F3F4F6",
+    marginBottom: 10,
+  },
+  advisoryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginBottom: 8,
   },
-  clearHint: {
+  advisoryTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: TITLE_DARK,
+  },
+  advisoryRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginTop: 6,
+  },
+  advisoryDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 6,
+  },
+  advisoryText: {
     flex: 1,
     fontSize: 13,
-    fontWeight: "600",
-    color: "#047857",
+    color: TEXT_GRAY,
     lineHeight: 18,
   },
   updatedAt: {
@@ -432,5 +461,6 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
     textAlign: "center",
     marginTop: 4,
+    marginBottom: 4,
   },
 });

@@ -41,14 +41,13 @@ export function resolveCustomerBottomNavHeight(rawBottomInset: number): number {
   return CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT + resolveTabBarBottomInset(rawBottomInset);
 }
 
-/** Screens that position their own bottom nav chrome (same as tabs — no stack paddingBottom). */
+/** Screens that position their own bottom chrome — no stack paddingBottom (avoids double bottom gap). */
 export function screenManagesBottomNav(segments: readonly string[]): boolean {
   if (segments[0] === "(tabs)") return true;
-  return (
-    segments[0] === "home" &&
-    segments[1] === "service" &&
-    segments[2] === "ride"
-  );
+  if (segments[0] === "checkout") return true;
+  if (segments[0] === "home") return true;
+  if (segments[0] === "orders") return true;
+  return false;
 }
 
 /** Floating cart / dock — no artificial 48dp gap on Android. */

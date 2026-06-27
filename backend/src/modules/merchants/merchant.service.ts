@@ -320,14 +320,16 @@ export async function listStoresNearby(params: {
       error.code === "42703" || message.includes("logo_url") || message.includes("column ms.logo_url");
     if (missingFunction || removedLogoColumn) {
       // Fallback path when DB RPC is missing/outdated (e.g., ms.logo_url removed).
-      const { data: stores, error: storesError } = await supabase
+      let storesQuery = supabase
         .from("merchant_stores")
         .select(
-          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id"
+          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id, is_pure_veg"
         )
         .eq("status", "ACTIVE")
         .not("latitude", "is", null)
         .not("longitude", "is", null);
+      if (veg_mode) storesQuery = storesQuery.eq("is_pure_veg", true);
+      const { data: stores, error: storesError } = await storesQuery;
       if (storesError) throw storesError;
 
       const user = { lat: params.lat, lng: params.lng };
@@ -352,7 +354,30 @@ export async function listStoresNearby(params: {
     }
     throw error;
   }
-  return { items: (data ?? []) as NearbyStoreRow[] };
+  let items = (data ?? []) as NearbyStoreRow[];
+  if (veg_mode) {
+    /**
+     * Enforce veg toggle via merchant_stores.is_pure_veg so UI behavior is stable
+     * even if nearby RPC implementation changes or returns mixed rows.
+     */
+    const internalIds = items
+      .map((r) => Number(r.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (internalIds.length === 0) return { items: [] };
+    const { data: vegRows, error: vegErr } = await supabase
+      .from("merchant_stores")
+      .select("id, is_pure_veg")
+      .in("id", internalIds)
+      .eq("is_pure_veg", true);
+    if (vegErr) throw vegErr;
+    const vegIds = new Set(
+      ((vegRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
+        .filter((r) => r.is_pure_veg === true)
+        .map((r) => Number(r.id))
+    );
+    items = items.filter((r) => vegIds.has(Number(r.id)));
+  }
+  return { items };
 }
 
 /**
@@ -755,6 +780,173 @@ export async function getMenuByStoreId(
   }
 
   return { store, items: itemsWithCategory };
+}
+
+/** Lightweight menu fingerprint — epoch ms of latest menu/store/category change. */
+export async function getMenuVersion(
+  storeId: string
+): Promise<{ menuVersion: number; etag: string } | null> {
+  const store = await getStoreByStoreId(storeId);
+  if (!store) return null;
+
+  const storePk = Number(store.id);
+  if (!Number.isFinite(storePk) || storePk <= 0) return null;
+
+  const pg = getSql();
+  const [row] = await pg`
+    SELECT GREATEST(
+      COALESCE(
+        (SELECT MAX(EXTRACT(EPOCH FROM updated_at) * 1000)::bigint
+         FROM merchant_menu_items
+         WHERE store_id = ${storePk}),
+        0::bigint
+      ),
+      COALESCE(
+        (SELECT MAX(EXTRACT(EPOCH FROM updated_at) * 1000)::bigint
+         FROM merchant_menu_categories
+         WHERE store_id = ${storePk}),
+        0::bigint
+      ),
+      COALESCE(
+        (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint,
+        0::bigint
+      )
+    ) AS menu_version
+    FROM merchant_stores
+    WHERE id = ${storePk}
+    LIMIT 1
+  `;
+
+  const menuVersion = Number(row?.menu_version ?? 0);
+  const etag = `"gm-menu-${storeId}-${menuVersion}"`;
+  return { menuVersion, etag };
+}
+
+export type MenuDeltaRow = MerchantMenuItemRow & { category_name?: string | null };
+
+export type MenuDeltaResult = {
+  menuVersion: number;
+  unchanged?: boolean;
+  requiresFullSync?: boolean;
+  deletedItemIds?: string[];
+  changedRows?: MenuDeltaRow[];
+};
+
+/**
+ * Delta since client menuVersion (epoch ms). Returns changed rows + removals only.
+ * If client version is missing or too stale, signals full sync.
+ */
+export async function getMenuDelta(
+  storeId: string,
+  sinceVersionMs: number
+): Promise<MenuDeltaResult | null> {
+  const versionInfo = await getMenuVersion(storeId);
+  if (!versionInfo) return null;
+
+  const { menuVersion } = versionInfo;
+  if (!Number.isFinite(sinceVersionMs) || sinceVersionMs <= 0) {
+    return { menuVersion, requiresFullSync: true };
+  }
+  if (sinceVersionMs >= menuVersion) {
+    return { menuVersion, unchanged: true };
+  }
+
+  const store = await getStoreByStoreId(storeId);
+  if (!store) return null;
+
+  const storePk = Number(store.id);
+  const pg = getSql();
+  const effectiveInStock = getMenuItemEffectiveInStockExpr(pg);
+  const since = new Date(sinceVersionMs);
+
+  const changedRows = (await pg`
+    SELECT
+      m.id,
+      m.store_id,
+      m.category_id,
+      m.item_id,
+      m.item_name,
+      m.item_description,
+      m.item_image_url,
+      m.food_type,
+      m.spice_level,
+      m.cuisine_type,
+      m.base_price,
+      m.selling_price,
+      m.discount_percentage,
+      m.packaging_charges,
+      m.in_stock,
+      m.is_active,
+      m.is_popular,
+      m.is_recommended,
+      m.preparation_time_minutes,
+      m.has_customizations,
+      m.has_addons,
+      m.has_variants,
+      m.approval_status,
+      COALESCE(m.is_deleted, FALSE) AS is_deleted,
+      ${effectiveInStock} AS effective_in_stock,
+      c.category_name
+    FROM merchant_menu_items m
+    LEFT JOIN merchant_menu_categories c
+      ON c.id = m.category_id
+      AND c.store_id = ${storePk}
+      AND COALESCE(c.is_deleted, FALSE) = FALSE
+    WHERE m.store_id = ${storePk}
+      AND m.updated_at > ${since}
+    ORDER BY m.updated_at ASC
+  `) as unknown as (MenuDeltaRow & {
+    effective_in_stock?: boolean;
+    approval_status?: string | null;
+    is_deleted?: boolean;
+  })[];
+
+  const deletedItemIds: string[] = [];
+  const activeRows: MenuDeltaRow[] = [];
+
+  for (const row of changedRows) {
+    const itemId = String(row.item_id ?? "").trim();
+    if (!itemId) continue;
+
+    const approved = row.approval_status === "APPROVED";
+    const active =
+      row.is_active === true &&
+      row.is_deleted !== true &&
+      approved &&
+      row.effective_in_stock !== false;
+
+    if (!active) {
+      deletedItemIds.push(itemId);
+      continue;
+    }
+    activeRows.push(row);
+  }
+
+  const commission = await resolveStoreCommission(store.id);
+  for (const it of activeRows) {
+    const netRupees = parseFloat(String(it.selling_price ?? ""));
+    if (Number.isFinite(netRupees) && netRupees > 0) {
+      const { customerPaise } = customerPriceFromBase(
+        Math.round(netRupees * 100),
+        commission.percent
+      );
+      it.selling_price = (customerPaise / 100).toFixed(2);
+    }
+    const baseNet = parseFloat(String(it.base_price ?? ""));
+    if (Number.isFinite(baseNet) && baseNet > 0) {
+      const { customerPaise } = customerPriceFromBase(
+        Math.round(baseNet * 100),
+        commission.percent
+      );
+      it.base_price = (customerPaise / 100).toFixed(2);
+    }
+  }
+
+  return {
+    menuVersion,
+    deletedItemIds,
+    changedRows: activeRows,
+  };
 }
 
 export type MenuItemFullConfig = {
@@ -1644,6 +1836,7 @@ export async function search(params: {
   offset?: number;
   lat?: number;
   lng?: number;
+  veg_mode?: boolean;
 }): Promise<{
   dishes: MerchantMenuItemRow[];
   stores: MerchantStoreRow[];
@@ -1652,6 +1845,7 @@ export async function search(params: {
   const q = (params.q ?? "").trim();
   const limit = clampLimit(params.limit ?? SEARCH_LIMIT);
   const offset = Math.max(0, params.offset ?? 0);
+  const vegMode = params.veg_mode === true;
   const useNearby = validCoord(params.lat ?? 0, params.lng ?? 0);
 
   if (!q) {
@@ -1742,7 +1936,26 @@ export async function search(params: {
       preparation_time_minutes: null,
     }));
 
-    return { dishes: items, stores };
+    if (!vegMode) return { dishes: items, stores };
+    const storeIds = stores
+      .map((s) => Number(s.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (storeIds.length === 0) return { dishes: [], stores: [] };
+    const { data: pureRows, error: pureErr } = await supabase
+      .from("merchant_stores")
+      .select("id, is_pure_veg")
+      .in("id", storeIds)
+      .eq("is_pure_veg", true);
+    if (pureErr) throw pureErr;
+    const pureStoreIds = new Set(
+      ((pureRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
+        .filter((r) => r.is_pure_veg === true)
+        .map((r) => Number(r.id))
+    );
+    return {
+      stores: stores.filter((s) => pureStoreIds.has(Number(s.id))),
+      dishes: items.filter((d) => pureStoreIds.has(Number(d.store_id))),
+    };
   }
 
   let items: MerchantMenuItemRow[] = [];
@@ -1773,14 +1986,20 @@ export async function search(params: {
     return { dishes: items, stores: [] };
   }
 
-  const { data: storeRows, error: storeError } = await supabase
+  let storesQuery = supabase
     .from("merchant_stores")
     .select("id, store_id, store_name, store_display_name, store_description, banner_url, cuisine_types, city, is_active, is_accepting_orders, status")
     .in("id", storeIds)
     .eq("is_active", true);
+  if (vegMode) storesQuery = storesQuery.eq("is_pure_veg", true);
+  const { data: storeRows, error: storeError } = await storesQuery;
 
   if (storeError) throw storeError;
   const stores = (storeRows ?? []) as MerchantStoreRow[];
-
-  return { dishes: items, stores };
+  if (!vegMode) return { dishes: items, stores };
+  const pureStoreIdSet = new Set(stores.map((s) => Number(s.id)));
+  return {
+    dishes: items.filter((d) => pureStoreIdSet.has(Number(d.store_id))),
+    stores,
+  };
 }

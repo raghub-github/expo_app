@@ -1,0 +1,234 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { QueryClient } from "@tanstack/react-query";
+import { STORAGE_KEYS } from "@/constants";
+import type { FoodHomeLayoutKey } from "@/lib/foodHomeLayout";
+import {
+  DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
+  parseGridFirstSubscriptionRowBgColor,
+  parseGridFirstSubscriptionRowEnabled,
+} from "@/lib/foodHomeLayout";
+import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
+import {
+  getFoodHomeLayout,
+  type FoodHomeLayoutResult,
+} from "@/services/foodHomeLayout.service";
+import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
+import type { ReverseGeocodeResult } from "@/services/location.service";
+
+export const FOOD_HOME_LAYOUT_STALE_MS = 5 * 60 * 1000;
+export const FOOD_HOME_LAYOUT_GC_MS = 30 * 60 * 1000;
+
+type GeoHints = ReturnType<typeof extractCustomerGeoHints>;
+
+type CachedFoodHomeLayoutEntry = FoodHomeLayoutResult & { cachedAt: number };
+
+type FoodHomeLayoutCacheBlob = Record<string, CachedFoodHomeLayoutEntry>;
+
+const prefetchInFlight = new Map<string, Promise<void>>();
+
+const memoryByKey = new Map<string, CachedFoodHomeLayoutEntry>();
+
+function normalizeStateKey(state: string): string {
+  return state.trim().toLowerCase();
+}
+
+function cacheKeysForHints(hints: GeoHints, result?: FoodHomeLayoutResult): string[] {
+  const keys: string[] = [];
+  const state = hints.state?.trim() || result?.stateName?.trim();
+  if (state) keys.push(`state:${normalizeStateKey(state)}`);
+  if (hints.pincode) keys.push(`pincode:${hints.pincode.trim()}`);
+  if (result?.stateId) keys.push(`stateId:${result.stateId}`);
+  return keys;
+}
+
+function readMemoryEntry(hints: GeoHints): CachedFoodHomeLayoutEntry | undefined {
+  for (const key of cacheKeysForHints(hints)) {
+    const hit = memoryByKey.get(key);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+async function readPersistedBlob(): Promise<FoodHomeLayoutCacheBlob> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as FoodHomeLayoutCacheBlob;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writePersistedBlob(blob: FoodHomeLayoutCacheBlob): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE, JSON.stringify(blob));
+  } catch {
+    // Non-blocking — in-memory + React Query still work.
+  }
+}
+
+export function buildFoodHomeLayoutQueryKey(hints: GeoHints) {
+  return ["food-home-layout", hints.pincode, hints.state, hints.lat, hints.lng] as const;
+}
+
+export async function readCachedFoodHomeLayout(
+  hints: GeoHints
+): Promise<FoodHomeLayoutResult | undefined> {
+  const memoryHit = readMemoryEntry(hints);
+  if (memoryHit) {
+      return {
+        layoutKey: memoryHit.layoutKey,
+        stateId: memoryHit.stateId,
+        stateName: memoryHit.stateName,
+        gridFirstHeroMedia: memoryHit.gridFirstHeroMedia ?? [],
+        gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
+          memoryHit.gridFirstSubscriptionRowEnabled
+        ),
+        gridFirstSubscriptionRowText:
+          memoryHit.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
+        gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
+          memoryHit.gridFirstSubscriptionRowBgColor
+        ),
+      };
+  }
+
+  const blob = await readPersistedBlob();
+  for (const key of cacheKeysForHints(hints)) {
+    const hit = blob[key];
+    if (hit?.layoutKey) {
+      memoryByKey.set(key, hit);
+      return {
+        layoutKey: hit.layoutKey,
+        stateId: hit.stateId,
+        stateName: hit.stateName,
+        gridFirstHeroMedia: hit.gridFirstHeroMedia ?? [],
+        gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
+          hit.gridFirstSubscriptionRowEnabled
+        ),
+        gridFirstSubscriptionRowText:
+          hit.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
+        gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
+          hit.gridFirstSubscriptionRowBgColor
+        ),
+      };
+    }
+  }
+  return undefined;
+}
+
+export async function writeCachedFoodHomeLayout(
+  hints: GeoHints,
+  result: FoodHomeLayoutResult
+): Promise<void> {
+  const entry: CachedFoodHomeLayoutEntry = { ...result, cachedAt: Date.now() };
+  const keys = cacheKeysForHints(hints, result);
+  for (const key of keys) {
+    memoryByKey.set(key, entry);
+  }
+
+  const blob = await readPersistedBlob();
+  for (const key of keys) {
+    blob[key] = entry;
+  }
+  await writePersistedBlob(blob);
+}
+
+export async function fetchFoodHomeLayoutWithCache(
+  hints: GeoHints
+): Promise<FoodHomeLayoutResult> {
+  const result = await getFoodHomeLayout({
+    ...(hints.pincode ? { pincode: hints.pincode } : {}),
+    ...(hints.state ? { state: hints.state } : {}),
+    ...(hints.lat != null && hints.lng != null ? { lat: hints.lat, lng: hints.lng } : {}),
+  });
+  prefetchGridFirstHeroMedia(result.gridFirstHeroMedia);
+  await writeCachedFoodHomeLayout(hints, result);
+  return result;
+}
+
+export async function hydrateFoodHomeLayoutForHints(
+  queryClient: QueryClient,
+  hints: GeoHints
+): Promise<FoodHomeLayoutResult | undefined> {
+  const queryKey = buildFoodHomeLayoutQueryKey(hints);
+  const existing = queryClient.getQueryData<FoodHomeLayoutResult>(queryKey);
+  if (existing?.layoutKey) return existing;
+
+  const cached = await readCachedFoodHomeLayout(hints);
+  if (cached?.layoutKey) {
+    prefetchGridFirstHeroMedia(cached.gridFirstHeroMedia);
+    queryClient.setQueryData(queryKey, cached);
+  }
+  return cached;
+}
+
+export async function prefetchFoodHomeLayout(
+  queryClient: QueryClient,
+  address: ReverseGeocodeResult | null | undefined,
+  coords?: { latitude: number; longitude: number } | null
+): Promise<void> {
+  const hints = extractCustomerGeoHints(address, coords);
+  const canQuery = !!(hints.pincode || hints.state || (hints.lat != null && hints.lng != null));
+  if (!canQuery) return;
+
+  const queryKey = buildFoodHomeLayoutQueryKey(hints);
+  const key = JSON.stringify(queryKey);
+  const existing = queryClient.getQueryData<FoodHomeLayoutResult>(queryKey);
+  const queryState = queryClient.getQueryState({ queryKey });
+  const isFresh =
+    existing?.layoutKey &&
+    queryState?.dataUpdatedAt != null &&
+    Date.now() - queryState.dataUpdatedAt < FOOD_HOME_LAYOUT_STALE_MS;
+  if (isFresh) return;
+
+  const inflight = prefetchInFlight.get(key);
+  if (inflight) {
+    await inflight;
+    return;
+  }
+
+  const run = (async () => {
+    await hydrateFoodHomeLayoutForHints(queryClient, hints);
+    await queryClient.prefetchQuery({
+      queryKey,
+      queryFn: () => fetchFoodHomeLayoutWithCache(hints),
+      staleTime: FOOD_HOME_LAYOUT_STALE_MS,
+      gcTime: FOOD_HOME_LAYOUT_GC_MS,
+      retry: 1,
+    });
+  })();
+
+  prefetchInFlight.set(key, run);
+  try {
+    await run;
+  } finally {
+    prefetchInFlight.delete(key);
+  }
+}
+
+export function getSyncFoodHomeLayoutFromQueryClient(
+  queryClient: QueryClient,
+  hints: GeoHints
+): FoodHomeLayoutResult | undefined {
+  const fromQuery = queryClient.getQueryData<FoodHomeLayoutResult>(buildFoodHomeLayoutQueryKey(hints));
+  if (fromQuery?.layoutKey) return fromQuery;
+  const fromMemory = readMemoryEntry(hints);
+  if (!fromMemory?.layoutKey) return undefined;
+  return {
+    layoutKey: fromMemory.layoutKey,
+    stateId: fromMemory.stateId,
+    stateName: fromMemory.stateName,
+    gridFirstHeroMedia: fromMemory.gridFirstHeroMedia ?? [],
+    gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
+      fromMemory.gridFirstSubscriptionRowEnabled
+    ),
+    gridFirstSubscriptionRowText:
+      fromMemory.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
+    gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
+      fromMemory.gridFirstSubscriptionRowBgColor
+    ),
+  };
+}
+
+export type { FoodHomeLayoutKey };

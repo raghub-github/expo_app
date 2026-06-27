@@ -107,6 +107,7 @@ export function IncomingRideOrderHost() {
   const acceptingRef = useRef(false);
   const [rejectHydrated, setRejectHydrated] = useState(false);
   const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
+  const [acceptSwipeResetKey, setAcceptSwipeResetKey] = useState(0);
   const [poolEpoch, setPoolEpoch] = useState(0);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
@@ -440,6 +441,7 @@ export function IncomingRideOrderHost() {
               "Something went wrong. Check your connection and try again."
             )
         );
+        setAcceptSwipeResetKey((k) => k + 1);
       },
     });
   }, [acceptOrder, activeOrderId, activeOrder, closeModal, t, bumpPool, navigateAfterAccept]);
@@ -464,6 +466,7 @@ export function IncomingRideOrderHost() {
         visible={modalVisible && activeOrder != null}
         order={activeOrder}
         loading={acceptOrder.isPending}
+        acceptSwipeResetKey={acceptSwipeResetKey}
         onAccept={handleAccept}
         onReject={handleRejectPress}
         onExpired={handleExpired}

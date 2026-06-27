@@ -6,6 +6,29 @@ import { useQuery } from "@tanstack/react-query";
 import { queryKeys, type RiderSummaryParams } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import type { RiderSummary } from "@/types/rider-dashboard";
+import type { RiderLogoutSessionSnapshot } from "@/lib/rider-logout-types";
+
+const DEFAULT_LOGOUT_SESSION: RiderLogoutSessionSnapshot = {
+  status: "logged_in",
+  totalLogoutCount: 0,
+  activeDeviceCount: 0,
+  latest: null,
+};
+
+function normalizeRiderSummary(data: RiderSummary): RiderSummary {
+  if (!data.logoutSession) {
+    return { ...data, logoutSession: DEFAULT_LOGOUT_SESSION };
+  }
+  return {
+    ...data,
+    logoutSession: {
+      ...DEFAULT_LOGOUT_SESSION,
+      ...data.logoutSession,
+      activeDeviceCount: Number(data.logoutSession.activeDeviceCount ?? 0),
+      totalLogoutCount: Number(data.logoutSession.totalLogoutCount ?? 0),
+    },
+  };
+}
 
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
@@ -51,7 +74,7 @@ export async function fetchRiderSummary(
     throw new Error(result.error || "Failed to fetch rider summary");
   }
 
-  return result.data as RiderSummary;
+  return normalizeRiderSummary(result.data as RiderSummary);
 }
 
 /**
@@ -75,7 +98,7 @@ export function useRiderSummaryQuery(
   const SNAPSHOT_TTL_MS = 10_000;
   const snapshotKey = useMemo(() => {
     if (!enabled) return null;
-    return `dashboard_snapshot:rider_summary_v4:${pathname}:${riderId}:${JSON.stringify(params)}`;
+    return `dashboard_snapshot:rider_summary_v5:${pathname}:${riderId}:${JSON.stringify(params)}`;
   }, [enabled, pathname, riderId, params]);
 
   const initialSnapshot = useMemo(() => {

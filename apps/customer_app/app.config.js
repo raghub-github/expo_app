@@ -32,11 +32,23 @@ module.exports = {
     android: {
       ...appJson.expo.android,
       softwareKeyboardLayoutMode: "resize",
+      edgeToEdgeEnabled: false,
       icon: APP_ICON,
       adaptiveIcon: {
         foregroundImage: APP_ADAPTIVE_FOREGROUND,
         backgroundColor: APP_ICON_BG,
       },
+      intentFilters: [
+        {
+          action: "VIEW",
+          autoVerify: true,
+          data: [
+            { scheme: "https", host: "link.gatimitra.com", pathPrefix: "/addr" },
+            { scheme: "gatimitra", host: "address" },
+          ],
+          category: ["BROWSABLE", "DEFAULT"],
+        },
+      ],
     },
     plugins: [
       ...(appJson.expo.plugins || []),

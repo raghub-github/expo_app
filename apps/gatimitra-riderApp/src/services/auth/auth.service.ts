@@ -13,6 +13,8 @@
 import type { Session } from "@gatimitra/contracts";
 import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/src/lib/supabaseClient";
+import { getRiderLoginDeviceMeta } from "@/src/lib/riderDeviceInfo";
+import type { RiderLoginGeoPayload } from "@/src/lib/getRiderLoginGeoFromDevice";
 
 const AUTH_PREFIX = "/v1/auth";
 
@@ -36,6 +38,7 @@ export type VerifyOtpPayload = {
   phoneE164: string;
   otp: string;
   deviceId: string;
+  loginGeo?: RiderLoginGeoPayload;
 };
 
 export type RiderStatusResponse = {
@@ -291,11 +294,13 @@ export const riderAuthService = {
     const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/supabase/exchange-rider`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accessToken: sbToken,
-        phoneE164: payload.phoneE164,
-        deviceId: payload.deviceId,
-      }),
+        body: JSON.stringify({
+          accessToken: sbToken,
+          phoneE164: payload.phoneE164,
+          deviceId: payload.deviceId,
+          device: getRiderLoginDeviceMeta(),
+          loginGeo: payload.loginGeo,
+        }),
     });
     const raw = await res.text();
     let dataJson: Record<string, unknown> = {};
@@ -318,6 +323,7 @@ export const riderAuthService = {
   async exchangeRiderFromCurrentSupabaseSession(payload: {
     phoneE164: string;
     deviceId: string;
+    loginGeo?: RiderLoginGeoPayload;
   }): Promise<Session> {
     const supabase = getSupabaseAuth();
     if (!supabase) {
@@ -334,6 +340,8 @@ export const riderAuthService = {
         accessToken: data.session.access_token,
         phoneE164: payload.phoneE164,
         deviceId: payload.deviceId,
+        device: getRiderLoginDeviceMeta(),
+        loginGeo: payload.loginGeo,
       }),
     });
     const raw = await res.text();
@@ -368,5 +376,36 @@ export const riderAuthService = {
       );
     }
     return dataJson as RiderStatusResponse;
+  },
+
+  /** Re-issue a 7-day rider JWT when the current one is near expiry (device session must still be active). */
+  async refreshSession(payload: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<Session> {
+    const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/rider/refresh-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${payload.accessToken}`,
+      },
+      body: JSON.stringify({ deviceId: payload.deviceId }),
+    });
+    const raw = await res.text();
+    let dataJson: Record<string, unknown> = {};
+    try {
+      dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      throw new Error("Invalid response while refreshing session.");
+    }
+    if (!res.ok) {
+      throw new Error(
+        (typeof dataJson.message === "string" && dataJson.message) ||
+          (typeof dataJson.error === "string" && dataJson.error) ||
+          "Could not refresh session.",
+      );
+    }
+    assertSession(dataJson);
+    return dataJson;
   },
 };

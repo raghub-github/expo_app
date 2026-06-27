@@ -31,6 +31,19 @@ export async function getSnapshotByZoneKey(zoneKey: string): Promise<ZoneWeather
   return row ? rowToSnapshot(row) : null;
 }
 
+export async function getProviderPayloadByZoneKey(
+  zoneKey: string
+): Promise<Record<string, unknown> | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ providerPayload: zoneWeatherSnapshots.providerPayload })
+    .from(zoneWeatherSnapshots)
+    .where(eq(zoneWeatherSnapshots.zoneKey, zoneKey))
+    .limit(1);
+  const payload = row?.providerPayload;
+  return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+}
+
 export async function upsertZoneSnapshot(input: {
   zoneKey: string;
   city: string;

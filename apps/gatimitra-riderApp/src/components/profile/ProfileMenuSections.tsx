@@ -118,6 +118,15 @@ export function ProfileMenuSections({
             subtitleTone: notificationsEnabled ? "success" : "warning",
             onPress: () => router.push("/notification-settings"),
           },
+          {
+            key: "device-sessions",
+            icon: "phone-portrait-outline",
+            iconColor: "#4F46E5",
+            iconBg: "#EEF2FF",
+            title: t("profile.deviceSessions.menu", "Logged-in devices"),
+            subtitle: t("profile.deviceSessions.menuSub", "Manage sessions & log out others"),
+            onPress: () => router.push("/device-sessions"),
+          },
         ]}
       />
 

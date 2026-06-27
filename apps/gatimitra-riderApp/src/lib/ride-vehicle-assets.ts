@@ -1,11 +1,13 @@
 import type { ImageSourcePropType } from "react-native";
+import { appAssetSource } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
-const RIDE_IMAGE_BY_KEY: Record<string, ImageSourcePropType> = {
-  bike: require("../../assets/images/ride/bike.png"),
-  auto: require("../../assets/images/ride/auto.png"),
-  cab: require("../../assets/images/ride/ride1.png"),
-  cab_premium: require("../../assets/images/ride/cabpremium.png"),
-  travel: require("../../assets/images/ride/travel.png"),
+const RIDE_ASSET_BY_KEY: Record<string, string> = {
+  bike: RX.ride.bike,
+  auto: RX.ride.auto,
+  cab: RX.ride.cab,
+  cab_premium: RX.ride.cabPremium,
+  travel: RX.ride.travel,
 };
 
 const RIDE_TYPE_TO_IMAGE_KEY: Record<string, string> = {
@@ -24,5 +26,6 @@ export function resolveRideCatalogImageKey(rideType: string | null | undefined):
 
 export function resolveRideVehicleImage(rideType: string | null | undefined): ImageSourcePropType {
   const key = resolveRideCatalogImageKey(rideType);
-  return RIDE_IMAGE_BY_KEY[key] ?? RIDE_IMAGE_BY_KEY.bike;
+  const assetKey = RIDE_ASSET_BY_KEY[key] ?? RIDE_ASSET_BY_KEY.bike;
+  return appAssetSource(assetKey) ?? appAssetSource(RX.ride.bike) ?? { uri: "" };
 }

@@ -1,3 +1,11 @@
+/**
+ * Store operations API (Partner Site).
+ *
+ * Operational status transitions (open/close/schedule) are owned by the backend
+ * store-schedule-engine (30s tick) and merchant-partner status APIs. This route
+ * reads/writes status on merchant action; it must not be the only path that
+ * keeps schedule logic alive — merchants do not need this tab open.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { createClient } from '@supabase/supabase-js';
@@ -19,12 +27,6 @@ import {
   isBeforeFirstSlotToday,
   schedulePhaseLabel,
 } from '@/lib/storeScheduleEngine';
-import {
-  alignMerchantStoresIfAvailabilityScheduleOffline,
-  clampAvailabilityAcceptingFlagsIfOffline,
-  normalizeMerchantStoresOperationalPack,
-  syncOperationalStatusFromSchedule,
-} from '@/lib/storeScheduleSync';
 import { loadMerchantLicenseEvaluation } from '@/lib/syncMerchantLicenseCompliance';
 import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notifications-panel';
 
@@ -190,6 +192,12 @@ function deriveDisplayRestrictionType(args: {
   return 'TEMPORARY';
 }
 
+function parseManualCloseUntilDate(raw: string | null | undefined): Date | null {
+  if (!raw || String(raw).trim() === '') return null;
+  const d = new Date(String(raw).trim().replace(' ', 'T'));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /**
  * GET /api/store-operations?store_id=GMMC1001
  * Returns current effective status, manual_close_until, and whether auto-open is enabled.
@@ -258,94 +266,17 @@ export async function GET(req: NextRequest) {
       is_today_scheduled_closed: isTodayScheduledClosed,
     });
 
-    const syncResult = await syncOperationalStatusFromSchedule({
-      db,
-      storeInternalId,
-      storeTimezone: storeTz,
-      oh: ohRecord,
-      initialOperationalStatus: (store?.operational_status as string) || 'CLOSED',
-      avail,
-      schedule,
-      trace,
-    });
+    // Auto open/close is owned by backend store-schedule-engine (30s tick). GET is read-only.
+    const manualCloseUntil = parseManualCloseUntilDate(
+      avail?.manual_close_until as string | null | undefined
+    );
+    const availFinal = avail;
+    const licenseStatus = await loadMerchantLicenseEvaluation(db, storeInternalId);
 
-    const manualCloseUntil = syncResult.manualCloseUntil;
-    const availFinal = syncResult.availFinal;
-
-    const gatedRes = await db
-      .from('merchant_stores')
-      .select(
-        'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at'
-      )
-      .eq('id', storeInternalId)
-      .single();
-    let storeGated = gatedRes.data;
-
+    let storeGated = store;
     let displayOperational = effectiveOpenFromMerchantStoreRow(storeGated as MerchantStoreGateRow);
 
-    const availabilityClamped = await clampAvailabilityAcceptingFlagsIfOffline(db, storeInternalId, {
-      storeEffectivelyOpen: displayOperational === 'OPEN',
-      withinOperatingHours: withinHours,
-      isTodayScheduledClosed,
-      schedule,
-    });
-
-    const AVAIL_COLUMNS_FOR_RESPONSE =
-      'manual_close_until, close_reason, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, is_available, is_accepting_orders, is_manual_override, schedule_end_prompt_expires_at, schedule_end_prompted_at, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at';
-
-    let rawAvail: typeof availFinal | typeof avail | null | undefined =
-      availFinal ?? avail ?? null;
-
-    if (availabilityClamped) {
-      const { data: avAfterClamp } = await db
-        .from('merchant_store_availability')
-        .select(AVAIL_COLUMNS_FOR_RESPONSE)
-        .eq('store_id', storeInternalId)
-        .single();
-      if (avAfterClamp) rawAvail = avAfterClamp as typeof avail;
-    }
-
-    const storesAlignedSchedule = await alignMerchantStoresIfAvailabilityScheduleOffline(db, storeInternalId, {
-      gateSaysOpen: displayOperational === 'OPEN',
-      unavailableReason: rawAvail?.unavailable_reason,
-      isAvailable: rawAvail?.is_available,
-      isAcceptingOrders: rawAvail?.is_accepting_orders,
-      isManualOverride: (availFinal?.is_manual_override ?? rawAvail?.is_manual_override) === true,
-    });
-
-    if (storesAlignedSchedule) {
-      const { data: gatedAfterAlign } = await db
-        .from('merchant_stores')
-        .select(
-          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at'
-        )
-        .eq('id', storeInternalId)
-        .single();
-      if (gatedAfterAlign) {
-        storeGated = gatedAfterAlign;
-        displayOperational = effectiveOpenFromMerchantStoreRow(gatedAfterAlign as MerchantStoreGateRow);
-      }
-    }
-
-    const merchantOperationalPackNormalized = await normalizeMerchantStoresOperationalPack(
-      db,
-      storeInternalId,
-      displayOperational === 'OPEN'
-    );
-
-    if (merchantOperationalPackNormalized) {
-      const { data: gatedAfterNormalize } = await db
-        .from('merchant_stores')
-        .select(
-          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at'
-        )
-        .eq('id', storeInternalId)
-        .single();
-      if (gatedAfterNormalize) {
-        storeGated = gatedAfterNormalize;
-        displayOperational = effectiveOpenFromMerchantStoreRow(gatedAfterNormalize as MerchantStoreGateRow);
-      }
-    }
+    const rawAvail: typeof availFinal | typeof avail | null | undefined = availFinal ?? avail ?? null;
 
     const blockAutoOpen = rawAvail?.block_auto_open === true;
     const unavailNorm =
@@ -465,7 +396,11 @@ export async function GET(req: NextRequest) {
       };
     }
 
-    const licenseStatus = syncResult.licenseEvaluation;
+    const scheduleEndPromptExpiresAt = parseManualCloseUntilDate(
+      rawAvail?.schedule_end_prompt_expires_at as string | null | undefined
+    );
+    const scheduleEndPromptActive =
+      !!scheduleEndPromptExpiresAt && Date.now() < scheduleEndPromptExpiresAt.getTime();
 
     const responseBody: Record<string, unknown> = {
       operational_status: displayOperational,
@@ -502,8 +437,10 @@ export async function GET(req: NextRequest) {
       last_toggled_at: rawAvail?.last_toggled_at ?? null,
       within_hours_but_restricted: withinHoursButRestricted,
       is_manual_override: (availFinal?.is_manual_override ?? rawAvail?.is_manual_override) === true,
-      schedule_end_prompt_active: syncResult.scheduleEndPromptActive,
-      schedule_end_prompt_expires_at: syncResult.scheduleEndPromptExpiresAt,
+      schedule_end_prompt_active: scheduleEndPromptActive,
+      schedule_end_prompt_expires_at: scheduleEndPromptExpiresAt
+        ? scheduleEndPromptExpiresAt.toISOString()
+        : null,
       next_schedule_transition_at: nextScheduleTransitionAt,
       countdown_at: scheduleCountdown.at,
       countdown_kind: scheduleCountdown.kind,

@@ -8,7 +8,7 @@ import {
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
-import { RIDE_TOLL_NOTICE_DISPLAY } from "@/lib/ride-toll-notice";
+import { RIDE_TOLL_NOTICE_DISPLAY, shouldShowRideTollNotice } from "@/lib/ride-toll-notice";
 
 const SCREEN_W = Dimensions.get("window").width;
 const H_PAD = 16;
@@ -17,9 +17,14 @@ const AUTO_MS = 5000;
 
 const RIDE_IN_PROGRESS_NOTICES = [RIDE_TOLL_NOTICE_DISPLAY];
 
-export function RideInProgressNoticeCarousel() {
+type Props = {
+  rideType?: string | null;
+};
+
+export function RideInProgressNoticeCarousel({ rideType }: Props) {
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const showTollNotice = shouldShowRideTollNotice(rideType);
   const multi = RIDE_IN_PROGRESS_NOTICES.length > 1;
 
   useEffect(() => {
@@ -40,6 +45,8 @@ export function RideInProgressNoticeCarousel() {
     const idx = Math.round(x / SLIDE_W);
     setActiveIndex(Math.max(0, Math.min(idx, RIDE_IN_PROGRESS_NOTICES.length - 1)));
   }, [multi]);
+
+  if (!showTollNotice) return null;
 
   return (
     <View style={styles.wrap}>

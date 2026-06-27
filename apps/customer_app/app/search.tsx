@@ -13,7 +13,6 @@ import {
   Pressable,
   StyleSheet,
   ScrollView,
-  FlatList,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -33,12 +32,12 @@ import Animated, {
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
-  fetchUserAppCategories,
   type UserAppCategoryItem,
 } from "@/services/userAppCategory.service";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
@@ -51,16 +50,22 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import {
+  fetchUserAppCategoriesWithCache,
+  getUserAppCategoriesCachedAt,
   prefetchUserAppCategoryImages,
+  readSyncUserAppCategories,
   USER_APP_CATEGORIES_QUERY_OPTIONS,
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import {
-  SEARCH_CATEGORY_IMAGES,
+  searchCategoryImageUrl,
   MOCK_DISHES,
   type SearchDish,
 } from "@/constants/search";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 import type { MerchantSummary } from "@/services/merchant.service";
+import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 
 const { width, height } = Dimensions.get("window");
 const PAD = 16;
@@ -72,9 +77,6 @@ const SEARCH_CATEGORY_STORE_TYPE = "FOOD";
 
 const PLACEHOLDER = "Restaurant name or a dish...";
 const ACCENT_RED = "#dc2626";
-
-const EMPTY_IMAGE = require("../public/img/wrong.png");
-
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
   for (const r of rows) {
@@ -103,6 +105,7 @@ function normalizeSearchParam(raw: string | string[] | undefined): string {
 
 export default function SearchScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<{ voice?: string; q?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const voiceMode = params.voice === "1";
@@ -116,10 +119,13 @@ export default function SearchScreen() {
   }, [params.q]);
   const { items: recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, hydrate } = useRecentSearchStore();
   const { coords } = useLocationStore();
+  const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
+  const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
   const { results, isLoading } = useDebouncedSearch(
     query,
     coords?.latitude,
-    coords?.longitude
+    coords?.longitude,
+    vegOnly
   );
   const [showSkeleton, setShowSkeleton] = React.useState(false);
   useEffect(() => {
@@ -135,10 +141,16 @@ export default function SearchScreen() {
     hydrate();
   }, [hydrate]);
 
+  useEffect(() => {
+    void hydrateDietaryPreferences();
+  }, [hydrateDietaryPreferences]);
+
   const { data: apiMindCategories = [], isPending: mindCategoriesPending } = useQuery({
     queryKey: userAppCategoriesQueryKey(SEARCH_CATEGORY_STORE_TYPE),
-    queryFn: () => fetchUserAppCategories({ storeType: SEARCH_CATEGORY_STORE_TYPE }),
+    queryFn: () => fetchUserAppCategoriesWithCache(SEARCH_CATEGORY_STORE_TYPE),
     ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+    initialData: () => readSyncUserAppCategories(SEARCH_CATEGORY_STORE_TYPE),
+    initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(SEARCH_CATEGORY_STORE_TYPE),
     placeholderData: (previousData) => previousData,
   });
 
@@ -193,12 +205,14 @@ export default function SearchScreen() {
   const handleDishPress = (dish: SearchDish) => {
     addRecentSearch(query.trim());
     if (dish.storeId) {
+      prefetchMerchantDetail(queryClient, dish.storeId);
       router.push({ pathname: "/home/merchant/[id]", params: { id: dish.storeId } });
     }
   };
 
   const handleRestaurantPress = (id: string) => {
     addRecentSearch(query.trim());
+    prefetchMerchantDetail(queryClient, id);
     router.push({ pathname: "/home/merchant/[id]", params: { id } });
   };
 
@@ -245,7 +259,7 @@ export default function SearchScreen() {
       {showDefaultView ? (
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 80 }}
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 8) }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
@@ -293,15 +307,10 @@ export default function SearchScreen() {
               <ActivityIndicator size="small" color={GatiMitraColors.emerald} />
             </View>
           ) : (
-          <FlatList
-            data={mindGridData}
-            keyExtractor={(item) => item.id}
-            numColumns={GRID_COLS}
-            scrollEnabled={false}
-            columnWrapperStyle={styles.gridRow}
-            contentContainerStyle={styles.gridListContent}
-            renderItem={({ item: cat }) => (
+          <View style={styles.mindGrid}>
+            {mindGridData.map((cat) => (
               <TouchableOpacity
+                key={cat.id}
                 style={styles.gridItem}
                 onPress={() => handleCategoryPress(cat.slug)}
                 activeOpacity={0.85}
@@ -317,15 +326,14 @@ export default function SearchScreen() {
                   {cat.name}
                 </Text>
               </TouchableOpacity>
-            )}
-          />
+            ))}
+          </View>
           )}
-          <BrandingFooter />
         </ScrollView>
       ) : (
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + 80 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
@@ -365,6 +373,11 @@ function SearchResultsList({
 }) {
   const { category, dishes, restaurants } = results;
   const hasAny = !!(category || dishes.length > 0 || restaurants.length > 0);
+  const defaultCategoryImage = useAppAssetSource(CX.search.default);
+  const categoryImageUrl = category ? searchCategoryImageUrl(category.slug) : null;
+  const categoryImageSource = categoryImageUrl
+    ? { uri: categoryImageUrl }
+    : defaultCategoryImage;
 
   if (!hasAny) {
     return (
@@ -387,7 +400,7 @@ function SearchResultsList({
           activeOpacity={0.85}
         >
           <Image
-            source={SEARCH_CATEGORY_IMAGES[category.slug] ?? SEARCH_CATEGORY_IMAGES.default}
+            source={categoryImageSource ?? undefined}
             style={styles.categoryCardImage}
             resizeMode="cover"
           />
@@ -435,6 +448,7 @@ function SearchEmptyState({
   variant?: "default" | "no-results";
   onExplorePopular?: () => void;
 }) {
+  const emptyImage = useAppAssetSource(CX.common.emptySearch);
   const imageOpacity = useSharedValue(0);
   const imageTranslateY = useSharedValue(24);
   const titleOpacity = useSharedValue(0);
@@ -522,11 +536,13 @@ function SearchEmptyState({
 
       <View style={styles.emptyStateContent}>
         <Animated.View style={[styles.emptyStateImageWrap, imageAnimatedStyle]}>
-          <Image
-            source={EMPTY_IMAGE}
-            style={[styles.emptyStateImage, { height: EMPTY_IMAGE_HEIGHT }]}
-            resizeMode="contain"
-          />
+          {emptyImage ? (
+            <Image
+              source={emptyImage}
+              style={[styles.emptyStateImage, { height: EMPTY_IMAGE_HEIGHT }]}
+              resizeMode="contain"
+            />
+          ) : null}
         </Animated.View>
 
         <Animated.View style={[titleWrapAnimatedStyle, styles.emptyStateTitleWrap]}>
@@ -573,10 +589,16 @@ function SearchEmptyState({
 }
 
 function DishRow({ dish, onPress }: { dish: SearchDish; onPress: () => void }) {
-  const img = SEARCH_CATEGORY_IMAGES[dish.imageKey] ?? SEARCH_CATEGORY_IMAGES.default;
+  const fallback = useAppAssetSource(CX.search.default);
+  const url = searchCategoryImageUrl(dish.imageKey);
+  const source = url ? { uri: url } : fallback;
   return (
     <TouchableOpacity style={styles.resultRow} onPress={onPress} activeOpacity={0.8}>
-      <Image source={img} style={styles.resultRowImage} resizeMode="cover" />
+      {source ? (
+        <Image source={source} style={styles.resultRowImage} resizeMode="cover" />
+      ) : (
+        <View style={styles.resultRowImage} />
+      )}
       <View style={styles.resultRowText}>
         <Text style={styles.resultRowTitle} numberOfLines={1}>{dish.name}</Text>
         <Text style={styles.resultRowLabel}>Dish</Text>
@@ -593,18 +615,24 @@ function RestaurantRow({
   restaurant: MerchantSummary;
   onPress: (id: string) => void;
 }) {
-  const defaultImg = require("../public/img/ndf.png");
+  const defaultImg = useAppAssetSource(CX.common.defaultImage);
+  const imageUrl = (restaurant as { imageUrl?: string }).imageUrl;
+  const source = imageUrl ? { uri: imageUrl } : defaultImg;
   return (
     <TouchableOpacity
       style={styles.resultRow}
       onPress={() => onPress(restaurant.id)}
       activeOpacity={0.8}
     >
+        {source ? (
         <Image
-        source={((restaurant as { imageUrl?: string }).imageUrl) ? { uri: (restaurant as { imageUrl?: string }).imageUrl } : defaultImg}
+        source={source}
         style={styles.resultRowImage}
         resizeMode="cover"
       />
+        ) : (
+        <View style={styles.resultRowImage} />
+        )}
       <View style={styles.resultRowText}>
         <Text style={styles.resultRowTitle} numberOfLines={1}>{restaurant.name}</Text>
         {(restaurant.avgRating != null || (restaurant as { rating?: number }).rating != null) && (
@@ -722,13 +750,12 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     paddingHorizontal: PAD,
   },
-  gridListContent: {
+  mindGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
     paddingHorizontal: PAD,
-    paddingBottom: 24,
-  },
-  gridRow: {
-    gap: GRID_GAP,
-    marginBottom: GRID_GAP,
+    columnGap: GRID_GAP,
+    rowGap: GRID_GAP,
   },
   mindGridLoading: {
     paddingVertical: 32,
@@ -738,7 +765,6 @@ const styles = StyleSheet.create({
   gridItem: {
     width: CARD_WIDTH,
     alignItems: "center",
-    marginBottom: 2,
   },
   gridImageWrap: {
     width: CARD_WIDTH,

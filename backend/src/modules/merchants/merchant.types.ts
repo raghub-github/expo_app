@@ -88,6 +88,7 @@ export type MerchantStoreRow = {
   is_available: boolean | null;
   is_accepting_orders: boolean | null;
   status: string | null;
+  is_pure_veg?: boolean | null;
   created_at?: string | null;
   /** From DB generated column (migration 0054). UI must read this only. Fallback: computeLiveStatus(). */
   live_status?: string | null;

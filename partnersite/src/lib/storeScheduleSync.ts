@@ -1,6 +1,7 @@
 /**
  * Applies schedule-driven OPEN/CLOSE mutations to merchant_stores + merchant_store_availability.
- * Mirrors backend `store-schedule-engine.ts` (Partner Site runs this on every GET /api/store-operations).
+ * Mirrors backend `store-schedule-engine.ts`.
+ * Schedule mutations run on the backend 30s tick — Partner Site GET is read-only.
  *
  * Priority (highest wins):
  * 1. Active vacation / scheduled closure

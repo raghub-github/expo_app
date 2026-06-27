@@ -1,5 +1,6 @@
 import { ApiError } from "@gatimitra/sdk";
-import { notifySessionRevoked } from "@/src/services/sessionEvents";
+import { notifyForceLogoutIfNeeded, parseApiErrorCode } from "@/src/services/rider-auth-errors";
+import { useSessionStore } from "@/src/stores/sessionStore";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -75,18 +76,7 @@ export function isVehicleNotVerifiedError(error: unknown): boolean {
 }
 
 function maybeNotifySessionRevoked(status: number, body?: string) {
-  if (status !== 401 || !body) return;
-  try {
-    const parsed = JSON.parse(body) as { error?: string };
-    const err = parsed.error?.trim();
-    if (err === "session_revoked" || err === "invalid_token" || err === "user_deleted") {
-      notifySessionRevoked({
-        reason: err === "invalid_token" ? "invalid_token" : "revoked",
-      });
-    }
-  } catch {
-    // ignore non-JSON bodies
-  }
+  notifyForceLogoutIfNeeded(status, body);
 }
 
 function createTimeoutPromise(ms: number): Promise<never> {
@@ -214,16 +204,29 @@ export async function getJson<TResponse>(
 ): Promise<TResponse> {
   const timeout = init?.timeout ?? 30000;
 
-  const res = await fetchWithTimeout(
-    url,
-    {
-      method: "GET",
-      headers: {
-        ...(init?.headers ?? {}),
+  const doFetch = async (headers?: Record<string, string>) => {
+    return fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        headers: {
+          ...(init?.headers ?? {}),
+          ...(headers ?? {}),
+        },
       },
-    },
-    timeout,
-  );
+      timeout,
+    );
+  };
+
+  let res = await doFetch();
+
+  if (res.status === 401 && parseApiErrorCode(await res.clone().text().catch(() => "")) === "invalid_token") {
+    await useSessionStore.getState().refreshSessionIfNeeded({ force: true });
+    const token = useSessionStore.getState().session?.accessToken;
+    if (token) {
+      res = await doFetch({ authorization: `Bearer ${token}` });
+    }
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");

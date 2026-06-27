@@ -1,17 +1,14 @@
 /**
- * Dedicated ride fare payment screen — shown before the post-ride success summary.
+ * Post-ride payment pending — summary only; Pay opens full ride checkout.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Alert,
-  ActivityIndicator,
-  Modal,
   Platform,
   ImageBackground,
   type ImageStyle,
@@ -19,15 +16,11 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { HEADER_PADDING_TOP } from "@/constants/layout";
+import { HEADER_PADDING_TOP, resolveTabBarBottomInset } from "@/constants/layout";
 import type { OrderDetail } from "@/services/order.service";
-import { orderService } from "@/services/order.service";
-import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
-import { paymentService } from "@/services/payment.service";
-import { useProfile } from "@/hooks/useProfile";
 import {
   formatRideFare,
   getRideServiceLabel,
@@ -35,17 +28,15 @@ import {
   buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
 import { RideTollNoticeBanner, RideTollNoticeSheet } from "@/components/ride/RideTollNoticeSheet";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
+import {
+  resolveRideTypeForTollNotice,
+  shouldShowRideTollNotice,
+} from "@/lib/ride-toll-notice";
 
 const MINT_DARK = GatiMitraColors.deepMintStart;
 const PENDING_HERO_DELAY_MS = 3 * 60 * 1000;
-const WAITING_HERO_NATIVE = require("../../public/img/waiting.png");
-
-function waitingHeroSource() {
-  if (Platform.OS === "web") {
-    return { uri: "/img/waiting.png" };
-  }
-  return WAITING_HERO_NATIVE;
-}
 
 type Props = {
   order: OrderDetail;
@@ -95,99 +86,32 @@ function useWaitingHeroPhase(deliveredAtIso: string | null): { show: boolean; cl
 }
 
 export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
-  const queryClient = useQueryClient();
   const deliveredBill = parseRideDeliveredBill(order);
   const fareBreakdown = useMemo(() => buildRidePaymentFareBreakdown(order), [order]);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const rideLabel = getRideServiceLabel(order.rideType);
+  const vehicleType = rideLabel.replace(/\s*ride$/i, "").trim().toLowerCase() || "ride";
+  const showTollNotice = shouldShowRideTollNotice(resolveRideTypeForTollNotice(order));
   const deliveredAtIso = useMemo(() => getDeliveredAtIso(order), [order]);
   const { show: showWaitingHero, clear: heroImageClear } = useWaitingHeroPhase(deliveredAtIso);
+  const waitingHero = useAppAssetSource(CX.ride.waitingHero);
 
-  const [payingFare, setPayingFare] = useState(false);
-  const [razorpayVisible, setRazorpayVisible] = useState(false);
-  const [razorpayParams, setRazorpayParams] = useState<{
-    orderId: string;
-    keyId: string;
-    amount: number;
-  } | null>(null);
-  const [simulatedPayment, setSimulatedPayment] = useState<{
-    orderId: string;
-    amount: number;
-  } | null>(null);
-  const { data: profile } = useProfile();
-  const [tollSheetVisible, setTollSheetVisible] = useState(true);
+  const [tollSheetVisible, setTollSheetVisible] = useState(false);
+  const bottomPad = Math.max(resolveTabBarBottomInset(insets.bottom), 6);
+  const scrollBottomPad = bottomPad + 96;
 
   useEffect(() => {
-    setTollSheetVisible(true);
-  }, [order.orderId]);
+    setTollSheetVisible(showTollNotice);
+  }, [order.orderId, showTollNotice]);
 
-  const finalizeRidePayment = useCallback(
-    async (result: RazorpayPaymentResult) => {
-      setPayingFare(true);
-      try {
-        await orderService.payRideFare(order.orderId, {
-          razorpayOrderId: result.razorpayOrderId,
-          razorpayPaymentId: result.razorpayPaymentId,
-          razorpaySignature: result.razorpaySignature,
-        });
-        await queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
-        await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-        await queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
-      } catch (e) {
-        const msg =
-          (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-          "Payment could not be confirmed. Please try again.";
-        Alert.alert("Payment failed", msg);
-        throw e;
-      } finally {
-        setPayingFare(false);
-        setRazorpayVisible(false);
-        setRazorpayParams(null);
-        setSimulatedPayment(null);
-      }
-    },
-    [order.orderId, queryClient]
-  );
-
-  const handlePayRideFare = useCallback(async () => {
-    if (payingFare) return;
-    const amountPaise = Math.round(fareBreakdown.total * 100);
-    if (amountPaise <= 0) {
-      Alert.alert("Unavailable", "Ride fare amount is not available.");
-      return;
-    }
-    setPayingFare(true);
-    try {
-      const rz = await paymentService.createRazorpayOrder({
-        amountPaise,
-        receipt: `ride_${order.orderId}`,
-      });
-      setRazorpayParams({
-        orderId: rz.orderId,
-        keyId: rz.keyId,
-        amount: rz.amount,
-      });
-      if (rz.keyId === "dummy_key") {
-        setSimulatedPayment({ orderId: rz.orderId, amount: rz.amount });
-      } else {
-        setRazorpayVisible(true);
-      }
-    } catch {
-      Alert.alert("Payment unavailable", "Could not start payment. Please try again.");
-    } finally {
-      setPayingFare(false);
-    }
-  }, [payingFare, fareBreakdown.total, order.orderId]);
-
-  const handleSimulatedPaySuccess = useCallback(() => {
-    if (!simulatedPayment) return;
-    void finalizeRidePayment({
-      razorpayOrderId: simulatedPayment.orderId,
-      razorpayPaymentId: `pay_${simulatedPayment.orderId}`,
-      razorpaySignature: "simulated_signature",
+  const openCheckout = () => {
+    router.push({
+      pathname: "/checkout/ride-fare",
+      params: { orderId: order.orderId },
     });
-  }, [simulatedPayment, finalizeRidePayment]);
+  };
 
   return (
     <View style={styles.screen}>
@@ -201,12 +125,12 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
       </View>
 
       <ScrollView
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 120 }]}
+        contentContainerStyle={[styles.scroll, { paddingBottom: scrollBottomPad }]}
         showsVerticalScrollIndicator={false}
       >
-        {showWaitingHero ? (
+        {showWaitingHero && waitingHero ? (
           <ImageBackground
-            source={waitingHeroSource()}
+            source={waitingHero}
             style={styles.heroImageWrap}
             imageStyle={[
               styles.heroImageInner,
@@ -238,20 +162,9 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
         ) : null}
 
         <View style={styles.statusCard}>
-          <View style={styles.statusIconWrap}>
-            <Ionicons name="time-outline" size={22} color={MINT_DARK} />
-          </View>
-          <View style={styles.statusBody}>
-            <Text style={styles.statusTitle}>Complete your ride payment</Text>
-            <Text style={styles.statusSub}>
-              Your {rideLabel.toLowerCase()} is complete. Pay the fare to unlock your receipt and
-              book your next ride.
-            </Text>
-            <View style={styles.rideIdPill}>
-              <Text style={styles.rideIdPillText}>Ride ID: {displayOrderId}</Text>
-            </View>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
+          <Text style={styles.statusLine}>
+            Your {vehicleType} ride is completed order id {displayOrderId}
+          </Text>
         </View>
 
         <View style={styles.summaryCard}>
@@ -267,29 +180,6 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
                 <Text style={styles.walletCoinText}>₹</Text>
               </View>
             </View>
-          </View>
-
-          <View style={styles.routeDivider} />
-
-          <View style={styles.breakdownBlock}>
-            <Text style={styles.breakdownTitle}>Fare breakdown</Text>
-            {fareBreakdown.lines.map((line) => (
-              <View
-                key={line.label}
-                style={[styles.breakdownRow, line.emphasis && styles.breakdownRowTotal]}
-              >
-                <Text
-                  style={[styles.breakdownLabel, line.emphasis && styles.breakdownLabelTotal]}
-                >
-                  {line.label}
-                </Text>
-                <Text
-                  style={[styles.breakdownValue, line.emphasis && styles.breakdownValueTotal]}
-                >
-                  {formatRideFare(line.amount)}
-                </Text>
-              </View>
-            ))}
           </View>
 
           <View style={styles.routeDivider} />
@@ -311,7 +201,9 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           </View>
         </View>
 
-        <RideTollNoticeBanner onPress={() => setTollSheetVisible(true)} />
+        {showTollNotice ? (
+          <RideTollNoticeBanner onPress={() => setTollSheetVisible(true)} />
+        ) : null}
 
         <View style={styles.infoBanner}>
           <Ionicons name="information-circle" size={18} color="#4F46E5" />
@@ -322,11 +214,10 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
         </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+      <View style={[styles.footer, { paddingBottom: bottomPad }]}>
         <TouchableOpacity
-          style={[styles.payBtn, payingFare && styles.payBtnDisabled]}
-          onPress={() => void handlePayRideFare()}
-          disabled={payingFare}
+          style={styles.payBtn}
+          onPress={openCheckout}
           activeOpacity={0.9}
         >
           <LinearGradient
@@ -335,17 +226,11 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
             end={{ x: 1, y: 0 }}
             style={styles.payBtnGradient}
           >
-            {payingFare ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <>
-                <Ionicons name="lock-closed" size={18} color="#fff" />
-                <Text style={styles.payBtnText}>Pay {formatRideFare(fareBreakdown.total)}</Text>
-                <View style={styles.payBtnChevron}>
-                  <Ionicons name="chevron-forward" size={16} color="#fff" />
-                </View>
-              </>
-            )}
+            <Ionicons name="lock-closed" size={18} color="#fff" />
+            <Text style={styles.payBtnText}>Proceed to Payment</Text>
+            <View style={styles.payBtnChevron}>
+              <Ionicons name="chevron-forward" size={16} color="#fff" />
+            </View>
           </LinearGradient>
         </TouchableOpacity>
         <View style={styles.secureRow}>
@@ -354,41 +239,12 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
         </View>
       </View>
 
-      <RideTollNoticeSheet
-        visible={tollSheetVisible}
-        onClose={() => setTollSheetVisible(false)}
-      />
-
-      <RazorpayCheckoutModal
-        visible={razorpayVisible}
-        orderParams={razorpayParams}
-        prefill={{
-          name: profile?.fullName ?? undefined,
-          email: profile?.email ?? undefined,
-          contact: profile?.primaryMobile ?? undefined,
-        }}
-        themeColor={MINT_DARK}
-        onSuccess={(result) => void finalizeRidePayment(result)}
-        onCancel={() => {
-          setRazorpayVisible(false);
-          setRazorpayParams(null);
-        }}
-      />
-
-      <Modal visible={simulatedPayment != null} transparent animationType="fade">
-        <View style={styles.simOverlay}>
-          <View style={styles.simCard}>
-            <Text style={styles.simTitle}>Simulate payment</Text>
-            <Text style={styles.simSub}>Dev mode — mark ride fare as paid.</Text>
-            <TouchableOpacity style={styles.simBtn} onPress={handleSimulatedPaySuccess}>
-              <Text style={styles.simBtnText}>Mark paid</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setSimulatedPayment(null)}>
-              <Text style={styles.simCancel}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {showTollNotice ? (
+        <RideTollNoticeSheet
+          visible={tollSheetVisible}
+          onClose={() => setTollSheetVisible(false)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -422,9 +278,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0F172A",
     justifyContent: "flex-end",
   },
-  heroImageInner: {
-    borderRadius: 18,
-  },
+  heroImageInner: { borderRadius: 18 },
   heroMessageBox: {
     margin: 14,
     padding: 14,
@@ -442,40 +296,18 @@ const styles = StyleSheet.create({
   heroMessageHighlight: { color: "#FDE047", fontWeight: "800" },
   heroMessageSub: { fontSize: 12, color: "#CBD5E1", fontWeight: "500" },
   statusCard: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
     backgroundColor: GatiMitraColors.cardBg,
     borderRadius: 18,
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
   },
-  statusIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#ECFDF5",
-    alignItems: "center",
-    justifyContent: "center",
+  statusLine: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    lineHeight: 20,
   },
-  statusBody: { flex: 1, gap: 6 },
-  statusTitle: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary },
-  statusSub: {
-    fontSize: 13,
-    color: GatiMitraColors.textSecondary,
-    lineHeight: 19,
-    fontWeight: "500",
-  },
-  rideIdPill: {
-    alignSelf: "flex-start",
-    marginTop: 4,
-    backgroundColor: "#ECFDF5",
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  rideIdPillText: { fontSize: 11, fontWeight: "700", color: MINT_DARK },
   summaryCard: {
     backgroundColor: GatiMitraColors.cardBg,
     borderRadius: 18,
@@ -505,41 +337,17 @@ const styles = StyleSheet.create({
   walletCoin: {
     position: "absolute",
     right: 6,
-    top: 6,
+    bottom: 6,
     width: 18,
     height: 18,
     borderRadius: 9,
-    backgroundColor: "#FEF3C7",
+    backgroundColor: "#FDE047",
     alignItems: "center",
     justifyContent: "center",
   },
-  walletCoinText: { fontSize: 9, fontWeight: "800", color: "#B45309" },
-  breakdownBlock: { gap: 8 },
-  breakdownTitle: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: GatiMitraColors.textSecondary,
-    letterSpacing: 0.4,
-    textTransform: "uppercase",
-  },
-  breakdownRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 2,
-  },
-  breakdownRowTotal: {
-    marginTop: 4,
-    paddingTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: GatiMitraColors.border,
-  },
-  breakdownLabel: { fontSize: 13, color: GatiMitraColors.textSecondary, fontWeight: "600" },
-  breakdownLabelTotal: { fontSize: 14, color: GatiMitraColors.textPrimary, fontWeight: "800" },
-  breakdownValue: { fontSize: 13, color: GatiMitraColors.textPrimary, fontWeight: "700" },
-  breakdownValueTotal: { fontSize: 15, color: GatiMitraColors.textPrimary, fontWeight: "900" },
+  walletCoinText: { fontSize: 10, fontWeight: "900", color: "#854D0E" },
   routeDivider: { height: 1, backgroundColor: GatiMitraColors.border },
-  routeBlock: { flexDirection: "row", gap: 12, paddingTop: 2 },
+  routeBlock: { flexDirection: "row", gap: 12 },
   routeRailCol: { alignItems: "center", width: 14, paddingTop: 4 },
   routeDotPickup: {
     width: 10,
@@ -547,61 +355,59 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: MINT_DARK,
   },
-  routeRail: {
-    flex: 1,
-    width: 2,
-    minHeight: 28,
-    backgroundColor: "#E2E8F0",
-    marginVertical: 4,
-  },
+  routeRail: { flex: 1, width: 2, backgroundColor: "#CBD5E1", marginVertical: 4 },
   routeDotDrop: {
     width: 10,
     height: 10,
     borderRadius: 2,
-    backgroundColor: "#E23744",
+    backgroundColor: "#EF4444",
   },
-  routeTextCol: { flex: 1, justifyContent: "space-between", gap: 18 },
-  routeText: { fontSize: 13, color: GatiMitraColors.textPrimary, lineHeight: 18, fontWeight: "600" },
-  routeTextDrop: { color: "#334155" },
+  routeTextCol: { flex: 1, gap: 14 },
+  routeText: { fontSize: 13, color: GatiMitraColors.textPrimary, fontWeight: "600", lineHeight: 18 },
+  routeTextDrop: { color: GatiMitraColors.textSecondary },
   infoBanner: {
     flexDirection: "row",
     gap: 10,
     backgroundColor: "#EEF2FF",
     borderRadius: 14,
     padding: 14,
-    alignItems: "flex-start",
     borderWidth: 1,
     borderColor: "#C7D2FE",
   },
-  infoBannerText: { flex: 1, fontSize: 12, color: "#4338CA", lineHeight: 17, fontWeight: "500" },
+  infoBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#4338CA",
+    lineHeight: 18,
+    fontWeight: "600",
+  },
   footer: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: 16,
-    paddingTop: 10,
     backgroundColor: GatiMitraColors.cardBg,
     borderTopWidth: 1,
     borderTopColor: GatiMitraColors.border,
-    gap: 8,
-  },
-  payBtn: { borderRadius: 16, overflow: "hidden" },
-  payBtnDisabled: { opacity: 0.7 },
-  payBtnGradient: {
-    paddingVertical: 16,
+    paddingTop: 10,
     paddingHorizontal: 16,
+    gap: 6,
+  },
+  payBtn: { borderRadius: 14, overflow: "hidden" },
+  payBtnGradient: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
   },
-  payBtnText: { color: "#fff", fontSize: 16, fontWeight: "800", flex: 1, textAlign: "center" },
+  payBtnText: { flex: 1, textAlign: "center", fontSize: 16, fontWeight: "800", color: "#fff" },
   payBtnChevron: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.22)",
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -610,34 +416,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingBottom: 2,
+    paddingBottom: 0,
+    marginBottom: 0,
   },
-  secureText: { fontSize: 12, color: GatiMitraColors.textSecondary, fontWeight: "600" },
-  simOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-  },
-  simCard: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 20,
-    width: "100%",
-    maxWidth: 320,
-    alignItems: "center",
-    gap: 10,
-  },
-  simTitle: { fontSize: 17, fontWeight: "800" },
-  simSub: { fontSize: 13, color: GatiMitraColors.textSecondary, textAlign: "center" },
-  simBtn: {
-    marginTop: 8,
-    backgroundColor: MINT_DARK,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  simBtnText: { color: "#fff", fontWeight: "800" },
-  simCancel: { marginTop: 8, color: GatiMitraColors.textSecondary, fontWeight: "600" },
+  secureText: { fontSize: 11, color: GatiMitraColors.textSecondary, fontWeight: "600" },
 });

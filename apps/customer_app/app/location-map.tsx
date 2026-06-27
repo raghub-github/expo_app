@@ -28,6 +28,7 @@ import {
   parseMapCoordParam,
   resolveMapCenter,
 } from "@/lib/map-coordinates";
+import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 // Full address is collected on a separate screen after map confirm.
 
 const TEAL = "#14b8a6";
@@ -149,7 +150,7 @@ export default function LocationMapScreen() {
         primary: result.primary,
         fullAddress: result.fullAddress,
       });
-      queryClient.invalidateQueries({ queryKey: ["merchants"] });
+      void invalidateFoodHomeLocationQueries(queryClient);
       router.push({
         pathname: "/location-address",
         params: {

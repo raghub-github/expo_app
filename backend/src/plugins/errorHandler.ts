@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyError, FastifyRequest, FastifyReply } from "fastify";
 import { ZodError } from "zod";
 import fp from "fastify-plugin";
-import { isTransientDbError } from "../lib/db/is-transient-db-error.js";
+import { isTransientDbError, hasTransientDbCause } from "../lib/db/is-transient-db-error.js";
+import { isDbConnectionError } from "../db/client.js";
+import { AuthHttpError } from "./auth.js";
 
 /**
  * Global Error Handler
@@ -43,8 +45,10 @@ async function errorHandlerPlugin(app: FastifyInstance) {
 
     // Handle authentication errors
     if (error.statusCode === 401) {
+      const authCode =
+        error instanceof AuthHttpError ? error.errorCode : "unauthorized";
       return reply.status(401).send({
-        error: "unauthorized",
+        error: authCode,
         message: error.message || "Authentication required",
         requestId,
       });
@@ -78,7 +82,18 @@ async function errorHandlerPlugin(app: FastifyInstance) {
     }
 
     // Handle database / pool errors (don't expose internal details)
-    const dbUnavailable = isTransientDbError(error);
+    if (error instanceof AuthHttpError && error.statusCode === 503) {
+      return reply.status(503).send({
+        error: error.errorCode,
+        message: error.message,
+        requestId,
+      });
+    }
+
+    const dbUnavailable =
+      isTransientDbError(error) ||
+      isDbConnectionError(error) ||
+      hasTransientDbCause(error);
     if (dbUnavailable) {
       app.log.error({ error: error.message, stack: error.stack }, "Database error");
       return reply.status(503).send({

@@ -10,6 +10,8 @@ import {
   TRUST_TIER_LABEL,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
+import { buildCustomerFraudReasons } from "@/lib/customers/fraud-reason";
+import { getCustomerFraudAlerts } from "@/lib/db/operations/customers";
 import {
   buildMerchantInstructionsFromCheckout,
   buildRiderInstructionsFromCheckout,
@@ -54,6 +56,8 @@ export type OrderDetailEnrichment = {
   customerAccountStatus: string | null;
   /** Trust tier label from `customers` — shown as User Type on customer card. */
   customerUserType: string | null;
+  /** Populated when customer trust tier is FRAUD. */
+  customerFraudReasons: string[];
   riderInstructionsList: string[];
   merchantInstructionsList: string[];
   firstEtaAtIso: string | null;
@@ -924,6 +928,8 @@ export async function getOrderDetailEnrichment(
         preparationTimeMinutes: ordersFood.preparationTimeMinutes,
         trustTier: customers.trustTier,
         trustScore: customers.trustScore,
+        statusReason: customers.statusReason,
+        customerDbId: customers.id,
         accountStatus: customers.accountStatus,
       })
       .from(ordersCore)
@@ -1056,6 +1062,17 @@ export async function getOrderDetailEnrichment(
     );
     const customerTrustTierLabel = TRUST_TIER_LABEL[tier as CustomerTrustTier] ?? tier;
 
+    let customerFraudReasons: string[] = [];
+    if (tier === "FRAUD" && base.customerDbId != null) {
+      const fraudAlerts = await getCustomerFraudAlerts(Number(base.customerDbId));
+      customerFraudReasons = buildCustomerFraudReasons({
+        trustTier: tier,
+        trustScore: base.trustScore as number | string | null,
+        statusReason: base.statusReason as string | null,
+        fraudAlerts,
+      });
+    }
+
     let contactless =
       checkout?.leaveAtDoor === true ||
       checkout?.contactless === true ||
@@ -1128,6 +1145,7 @@ export async function getOrderDetailEnrichment(
       customerAccountStatus:
         base.accountStatus != null ? String(base.accountStatus) : null,
       customerUserType: customerTrustTierLabel,
+      customerFraudReasons,
       riderInstructionsList,
       merchantInstructionsList,
       firstEtaAtIso,

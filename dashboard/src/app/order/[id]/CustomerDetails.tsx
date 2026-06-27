@@ -8,6 +8,7 @@ import {
   trustTierUserTypeClass,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
+import { CustomerFraudReasonModal } from "@/components/customers/CustomerFraudReasonModal";
 import {
   collectCustomerLinkedContactPhones,
   formatLinkedContactPhone,
@@ -28,6 +29,7 @@ interface Order {
   dropAddressNormalized?: string | null;
   dropAddressGeocoded?: string | null;
   userType?: string | null;
+  fraudReasons?: string[] | null;
   accountStatus?: string | null;
   riskFlag?: string | null;
   locationMismatch?: boolean | null;
@@ -132,6 +134,13 @@ export default function CustomerDetails({
 }: CustomerDetailsProps) {
   const [copiedField, setCopiedField] = useState<"mobile" | "email" | "address" | null>(null);
   const [contactsOpen, setContactsOpen] = useState(false);
+  const [fraudModalOpen, setFraudModalOpen] = useState(false);
+
+  const isFraudUserType = useMemo(() => {
+    const label = order.userType?.trim();
+    if (!label) return false;
+    return label.toLowerCase() === "fraud";
+  }, [order.userType]);
 
   const linkedPhones = useMemo(
     () =>
@@ -229,11 +238,22 @@ export default function CustomerDetails({
               <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                 <span>{order.customerName || "—"}</span>
                 {order.userType?.trim() ? (
-                  <span
-                    className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
-                  >
-                    {order.userType.trim()}
-                  </span>
+                  isFraudUserType ? (
+                    <button
+                      type="button"
+                      onClick={() => setFraudModalOpen(true)}
+                      className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 cursor-pointer hover:bg-red-50 hover:ring-red-200 ${userTypeTierClass(order.userType)}`}
+                      title="View fraud reason"
+                    >
+                      {order.userType.trim()}
+                    </button>
+                  ) : (
+                    <span
+                      className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
+                    >
+                      {order.userType.trim()}
+                    </span>
+                  )
                 ) : null}
               </div>
               {showContacts ? (
@@ -429,6 +449,14 @@ export default function CustomerDetails({
           phones={linkedPhones}
           onCopy={onCopy}
           onClose={() => setContactsOpen(false)}
+        />
+      ) : null}
+
+      {fraudModalOpen ? (
+        <CustomerFraudReasonModal
+          customerLabel={order.customerName ?? undefined}
+          reasons={order.fraudReasons ?? []}
+          onClose={() => setFraudModalOpen(false)}
         />
       ) : null}
     </>

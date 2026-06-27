@@ -43,6 +43,7 @@ function toDutyIsoTimestamp(value: Date | string | null | undefined): string {
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
 import { deactivateRiderDeviceSessions } from "../../lib/rider-app-session.js";
+import { registerRiderDeviceSessionRoutes } from "./rider-device-session.routes.js";
 import {
   riders,
   riderDocuments,
@@ -89,6 +90,7 @@ export async function riderRoutes(app: FastifyInstance) {
   registerRiderSubscriptionRoutes(app);
   registerRiderIncentiveRoutes(app);
   registerRiderPenaltyPaymentRoutes(app);
+  registerRiderDeviceSessionRoutes(app, parseRiderIdFromAuth);
 
   app.post(
     "/logout",
@@ -134,7 +136,12 @@ export async function riderRoutes(app: FastifyInstance) {
       });
 
       try {
-        await deactivateRiderDeviceSessions(sql, { userId, deviceId });
+        await deactivateRiderDeviceSessions(sql, {
+          userId,
+          deviceId,
+          revokedBy: "rider_self",
+          revokeReason: body.reasonCode,
+        });
       } catch (sessErr) {
         req.log?.error?.({ err: sessErr, riderId }, "Rider logout: device session deactivate failed");
       }
@@ -1322,6 +1329,12 @@ export async function riderRoutes(app: FastifyInstance) {
           lon: body.lon ?? null,
           metadata: { trigger: "duty_toggle" },
         });
+        if (body.lat != null && body.lon != null) {
+          const { buildZoneKey } = await import("../weather/weather.classify.js");
+          const { leaveZonePresence } = await import("../weather/weather.zones-active.js");
+          const { zoneKey } = buildZoneKey(body.lat, body.lon, "", null);
+          leaveZonePresence(zoneKey, "rider", String(riderId));
+        }
         return {
           isOnDuty: false,
           allowedServiceTypes: [],
@@ -1447,6 +1460,17 @@ export async function riderRoutes(app: FastifyInstance) {
           blockedServices: blocked,
         },
       });
+
+      if (body.lat != null && body.lon != null && Number.isFinite(body.lat) && Number.isFinite(body.lon)) {
+        const { resolveZoneWeather } = await import("../weather/weather.service.js");
+        void resolveZoneWeather({
+          lat: body.lat,
+          lng: body.lon,
+          trigger: "rider_online",
+          actorId: String(riderId),
+          actorType: "rider",
+        }).catch(() => undefined);
+      }
 
       return {
         isOnDuty: true,

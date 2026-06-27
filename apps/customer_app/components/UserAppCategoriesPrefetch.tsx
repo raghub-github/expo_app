@@ -1,10 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { fetchUserAppCategories } from "@/services/userAppCategory.service";
 import {
-  prefetchUserAppCategoryImages,
-  USER_APP_CATEGORIES_QUERY_OPTIONS,
-  userAppCategoriesQueryKey,
+  prefetchUserAppCategories,
+  seedUserAppCategoriesQueryIfCached,
 } from "@/lib/userAppCategoryCache";
 
 const FOOD_STORE_TYPE = "FOOD";
@@ -13,20 +11,12 @@ const FOOD_STORE_TYPE = "FOOD";
 export function UserAppCategoriesPrefetch() {
   const queryClient = useQueryClient();
 
+  useLayoutEffect(() => {
+    seedUserAppCategoriesQueryIfCached(queryClient, FOOD_STORE_TYPE);
+  }, [queryClient]);
+
   useEffect(() => {
-    void (async () => {
-      const queryKey = userAppCategoriesQueryKey(FOOD_STORE_TYPE);
-      try {
-        const items = await queryClient.fetchQuery({
-          queryKey,
-          queryFn: () => fetchUserAppCategories({ storeType: FOOD_STORE_TYPE }),
-          ...USER_APP_CATEGORIES_QUERY_OPTIONS,
-        });
-        prefetchUserAppCategoryImages(items);
-      } catch {
-        // Non-blocking — screens still fetch on demand.
-      }
-    })();
+    void prefetchUserAppCategories(queryClient, FOOD_STORE_TYPE);
   }, [queryClient]);
 
   return null;

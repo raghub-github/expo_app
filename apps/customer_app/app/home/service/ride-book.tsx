@@ -41,7 +41,7 @@ import { resolveRideImage, resolveSelectedRideMapMarkerImageKey } from "@/featur
 import { filterRideCatalogOptions } from "@/lib/ride-catalog-display";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import type { RideAvailabilityOption } from "@/services/rideAvailability.service";
-import { estimateRideFare } from "@/features/ride/rideOptions";
+import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
 import { getRideFareQuote, type RideFareQuote } from "@/services/rideQuote.service";
 import { useLocationStore } from "@/store/locationStore";
 import { pickupGeoHintsFromAddress } from "@/lib/ride-geo-hints";
@@ -95,10 +95,6 @@ function truncateAddress(text: string, max = 24): string {
 function formatDropTime(etaMins: number): string {
   const d = new Date(Date.now() + etaMins * 60_000);
   return d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
-}
-
-function estimateFare(baseFare: number, tripKm: number | null): number {
-  return estimateRideFare(baseFare, tripKm);
 }
 
 function formatPickupKm(km: number | null | undefined): string | null {
@@ -165,13 +161,18 @@ function RideOptionCard({
       onPress={onSelect}
       activeOpacity={0.85}
     >
-      {fareDetailsEnabled ? (
-        <TouchableOpacity onPress={onImagePress} activeOpacity={0.75} hitSlop={6}>
-          <Image source={resolveRideImage(option.imageKey)} style={styles.rideImage} resizeMode="contain" />
-        </TouchableOpacity>
-      ) : (
-        <Image source={resolveRideImage(option.imageKey)} style={styles.rideImage} resizeMode="contain" />
-      )}
+      {(() => {
+        const src = resolveRideImage(option.imageKey);
+        if (!src) return null;
+        const img = <Image source={src} style={styles.rideImage} resizeMode="contain" />;
+        return fareDetailsEnabled ? (
+          <TouchableOpacity onPress={onImagePress} activeOpacity={0.75} hitSlop={6}>
+            {img}
+          </TouchableOpacity>
+        ) : (
+          img
+        );
+      })()}
       <View style={styles.rideInfo}>
         <View style={styles.rideNameRow}>
           <Text style={styles.rideName}>{option.name}</Text>
@@ -859,8 +860,8 @@ export default function RideBookScreen() {
       if (!selectedRide || !selectedRideId) return;
       const quoted = displayFareQuotes[selectedRideId];
       if (tripKm != null && tripKm > 0 && (quoted == null || quoted <= 0)) return;
-      const baseFare =
-        quoted != null && quoted > 0 ? quoted : estimateFare(selectedRide.baseFare, tripKm);
+      const baseFare = quoted != null && quoted > 0 ? quoted : 0;
+      if (baseFare <= 0) return;
       const navParams: Record<string, string> = {
         pickup: effectivePickupAddress,
         drop: String(params.drop ?? ""),
@@ -1013,7 +1014,7 @@ export default function RideBookScreen() {
 
       {!serviceUnavailableVisible ? (
         <View
-          style={[styles.bottomSheet, { paddingBottom: Math.max(insets.bottom - 18, 0) }]}
+          style={[styles.bottomSheet, { paddingBottom: Math.max(insets.bottom, 12) }]}
           onLayout={(event) => {
             const h = event.nativeEvent.layout.height;
             if (h > 0) setBottomSheetHeight(h);

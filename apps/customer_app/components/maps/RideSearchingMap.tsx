@@ -1,11 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { StyleSheet, View, Platform } from "react-native";
 import { WebView } from "react-native-webview";
 import { getConfig } from "@/config/env";
 import { buildRideSearchingMapHtml } from "@/components/maps/mapbox-web-ride-searching-html";
 import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
-import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
-import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
+import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
 import type { NearbySupplyRider } from "@/services/rideAvailability.service";
 
 type Props = {
@@ -34,18 +33,7 @@ export function RideSearchingMap({
   const readyRef = useRef(false);
   const initialCenterRef = useRef(center);
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
-  const [markerDataUri, setMarkerDataUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const source = resolveNearbyRiderMarkerImage(riderMarkerImageKey);
-    void resolveMapImageDataUri(source).then((uri) => {
-      if (!cancelled) setMarkerDataUri(uri);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [riderMarkerImageKey]);
+  const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
 
   const html = useMemo(() => {
     if (!token || !markerDataUri) return "";

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { getItem, setItem } from "@/src/utils/storage";
 import { riderApi } from "@/src/services/api/riderApi";
+import { useSessionStore } from "@/src/stores/sessionStore";
 
 const DUTY_STORE_KEY = "rider_duty_status";
 
@@ -43,6 +44,8 @@ export const useDutyStore = create<DutyStoreState>((set, get) => ({
   },
 
   syncFromServer: async () => {
+    const session = useSessionStore.getState().session;
+    if (!session?.accessToken) return;
     try {
       const status = await riderApi.getDutyStatus();
       await get().setDutyStatus(status.isOnDuty);

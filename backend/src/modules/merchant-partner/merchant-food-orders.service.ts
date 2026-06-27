@@ -143,6 +143,8 @@ export type MerchantFoodOrderDto = {
   prep_delay_use_count: number | null;
   last_prep_delay_minutes_added: number | null;
   prepared_late_minutes: number | null;
+  merchant_response_deadline_at: string | null;
+  merchant_response_timeout_seconds: number | null;
 };
 
 function num(v: unknown): number {
@@ -434,6 +436,8 @@ type FoodRow = {
   prep_delay_use_count: number | null;
   last_prep_delay_minutes_added: number | null;
   prepared_late_minutes: number | null;
+  merchant_acceptance_deadline_at: string | null;
+  merchant_acceptance_window_seconds: number | null;
 };
 
 export type MerchantFoodOrderRiderLogEntry = {
@@ -642,7 +646,9 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.prep_delay_minutes,
         of.prep_delay_use_count,
         of.last_prep_delay_minutes_added,
-        of.prepared_late_minutes
+        of.prepared_late_minutes,
+        of.merchant_acceptance_deadline_at,
+        of.merchant_acceptance_window_seconds
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND (of.order_id IN ${sql(corePks)} OR of.core_order_id IN ${sql(textIds)})
@@ -687,7 +693,9 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.prep_delay_minutes,
         of.prep_delay_use_count,
         of.last_prep_delay_minutes_added,
-        of.prepared_late_minutes
+        of.prepared_late_minutes,
+        of.merchant_acceptance_deadline_at,
+        of.merchant_acceptance_window_seconds
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.order_id IN ${sql(corePks)}
@@ -732,7 +740,9 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.prep_delay_minutes,
         of.prep_delay_use_count,
         of.last_prep_delay_minutes_added,
-        of.prepared_late_minutes
+        of.prepared_late_minutes,
+        of.merchant_acceptance_deadline_at,
+        of.merchant_acceptance_window_seconds
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.core_order_id IN ${sql(textIds)}
@@ -1058,6 +1068,12 @@ async function buildOrderDto(
         : null,
     prepared_late_minutes:
       food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
+    merchant_response_deadline_at: toIsoOrNull(food?.merchant_acceptance_deadline_at),
+    merchant_response_timeout_seconds:
+      food?.merchant_acceptance_window_seconds != null &&
+      Number.isFinite(Number(food.merchant_acceptance_window_seconds))
+        ? Math.max(0, Math.floor(Number(food.merchant_acceptance_window_seconds)))
+        : null,
   };
 }
 

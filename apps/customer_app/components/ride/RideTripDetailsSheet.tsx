@@ -14,6 +14,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { OrderDetail } from "@/services/order.service";
 import { formatRideFare } from "@/lib/ride-order-display";
+import {
+  RIDE_TOLL_NOTICE_DETAIL,
+  resolveRideTypeForTollNotice,
+  shouldShowRideTollNotice,
+} from "@/lib/ride-toll-notice";
 
 type RideTripDetailsSheetProps = {
   visible: boolean;
@@ -61,6 +66,7 @@ export function RideTripDetailsSheet({
 
   const showFareBreakdown =
     hasPickupWait || resolvedWaiting > 0 || (resolvedRideFare != null && resolvedTotal != null);
+  const showTollNotice = shouldShowRideTollNotice(resolveRideTypeForTollNotice(order));
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -68,13 +74,11 @@ export function RideTripDetailsSheet({
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 20 }]}>
         <Text style={styles.title}>Trip details</Text>
         <ScrollView showsVerticalScrollIndicator={false}>
-          <View style={styles.tollNote}>
-            <Text style={styles.tollNoteText}>
-              Toll charges are not included unless explicitly shown in your fare breakdown. If your
-              trip passes through a toll plaza, please pay the toll amount directly to the rider at
-              the time of travel.
-            </Text>
-          </View>
+          {showTollNotice ? (
+            <View style={styles.tollNote}>
+              <Text style={styles.tollNoteText}>{RIDE_TOLL_NOTICE_DETAIL}</Text>
+            </View>
+          ) : null}
           <View style={styles.row}>
             <View style={[styles.dot, styles.dotPickup]} />
             <View style={styles.textCol}>

@@ -4,38 +4,28 @@
  * Data from merchant_menu_items via GET /v1/merchants/:id/menu.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   TouchableOpacity,
-  SectionList,
   StyleSheet,
-  Dimensions,
   Platform,
   Modal,
   Pressable,
-  ScrollView,
   TextInput,
   Share,
   Alert,
   InteractionManager,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-  type View as RNView,
 } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import type { FlashListRef } from "@shopify/flash-list";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { LinearGradient } from "expo-linear-gradient";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  interpolate,
-  Extrapolation,
-} from "react-native-reanimated";
+import { useSharedValue } from "react-native-reanimated";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { merchantService, type MenuItem, type MerchantSummary, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import {
@@ -45,7 +35,6 @@ import { formatNextOpenTime, toTimestamp } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
 import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
 import { useMenuItemBookmarks, useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
@@ -55,7 +44,24 @@ import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
-import { MerchantDetailSkeleton } from "@/components/ShimmerSkeleton";
+import { MerchantDetailSkeleton, MenuListSkeleton } from "@/components/ShimmerSkeleton";
+import {
+  getMerchantDetailPlaceholder,
+  prefetchMerchantDetail,
+} from "@/lib/prefetchMerchantDetail";
+import {
+  fetchMerchantByIdWithCache,
+  getMerchantMenuCachedAt,
+  MERCHANT_DETAIL_GC_MS,
+  MERCHANT_DETAIL_QUERY_KEY,
+  MERCHANT_DETAIL_STALE_MS,
+  readSyncMerchantMenu,
+  seedMerchantMenuQueryIfCached,
+} from "@/lib/merchantMenuCache";
+import { syncMerchantMenuInBackground } from "@/lib/merchantMenuSync";
+import { useMerchantMenuRealtime } from "@/hooks/useMerchantMenuRealtime";
+import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
+import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
 import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import {
@@ -65,16 +71,12 @@ import {
 } from "@/lib/menu-item-config-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreTheme } from "@/constants/storeTheme";
-import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
-import { StoreInfoCard, StoreHeroLogo } from "@/components/store/StoreInfoCard";
-import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
+import type { StoreFilterId } from "@/components/store/StoreFilterBar";
 import {
   StoreFilterSheet,
   DEFAULT_STORE_MENU_FILTERS,
   type StoreMenuFilterState,
 } from "@/components/store/StoreFilterSheet";
-import { StorePastOrdersSection } from "@/components/store/StorePastOrdersSection";
-import { StoreComboSection } from "@/components/store/StoreComboSection";
 import {
   buildHighlyReorderedIds,
   mapOrderedTogetherPairsToCombos,
@@ -82,9 +84,35 @@ import {
   filterMenuItems,
   hasActiveAdvancedFilters,
 } from "@/components/store/storeMenuUtils";
-import { StoreSectionHeader } from "@/components/store/StoreSectionHeader";
-import { StoreFooterSection } from "@/components/store/StoreFooterSection";
-import { StoreMenuFab } from "@/components/store/StoreMenuFab";
+import { MerchantDetailFlashList } from "@/features/merchant-detail/components/MerchantDetailFlashList";
+import { MerchantStickyChrome } from "@/features/merchant-detail/components/MerchantStickyChrome";
+import { MerchantFloatingFab } from "@/features/merchant-detail/components/MerchantFloatingFab";
+import {
+  buildFlashListData,
+  findFlatIndexForScrollTarget,
+  getFlashListHeaderRowCount,
+} from "@/features/merchant-detail/lib/buildFlashListData";
+import {
+  attachListRowKeys,
+  buildMenuSections,
+  lowestAvailableMenuPrice,
+} from "@/features/merchant-detail/lib/menuSections";
+import {
+  scrollFlashListToFlatIndex,
+  scrollFlashListToOffset,
+} from "@/features/merchant-detail/lib/flashListScroll";
+import { useMerchantScrollAnimation } from "@/features/merchant-detail/hooks/useMerchantScrollAnimation";
+import { useMerchantScrollChromeState, COMPACT_SCROLL_THRESHOLD } from "@/features/merchant-detail/hooks/useMerchantScrollChromeState";
+import {
+  CART_BAR_HEIGHT,
+  MENU_FAB_HEIGHT,
+  MENU_SCROLL_STICKY_OFFSET,
+  MERCHANT_HEADER_TOP_GUTTER,
+  HEADER_IMAGE_HEIGHT,
+  SCREEN_WIDTH_EXPORT,
+  FILTER_BAR_HEIGHT,
+} from "@/features/merchant-detail/constants/layout";
+import type { MerchantFlashListItem, MenuSection } from "@/features/merchant-detail/types";
 import {
   StoreMenuSheet,
   type MenuSheetScrollTarget,
@@ -96,6 +124,7 @@ import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import { orderService } from "@/services/order.service";
 import { billingService } from "@/services/billing.service";
 import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import {
   useCouponAvailablePrompt,
@@ -103,171 +132,7 @@ import {
 } from "@/hooks/useCouponAvailablePrompt";
 import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
 
-/** Stable SectionList row id when the same dish appears in more than one section (RN keyExtractor is only (item, index)). */
-type MenuListRow = MenuItem & { listRowKey: string };
-
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
-const HEADER_IMAGE_HEIGHT = 196;
-const HEADER_COLLAPSED_THRESHOLD = 100;
-const FILTER_BAR_HEIGHT = 52;
-const CART_BAR_HEIGHT = 64;
-const MENU_FAB_HEIGHT = 48;
-
-/**
- * Root `app/_layout.tsx` already draws the status bar strip above the stack — do not add
- * `insets.top` again. Hero + sticky rows use `MERCHANT_HEADER_TOP_GUTTER` only (0 = flush).
- */
-const MERCHANT_HEADER_TOP_GUTTER = 0;
-/** Sticky search row (controls + search pill) approximate height; keep in sync with styles. */
-const MERCHANT_STICKY_HEADER_ROW_APPROX = 48;
-/** `stickyHeaderBar` paddingBottom (10) + row + top gutter. */
-const MERCHANT_STICKY_FILTER_TOP =
-  MERCHANT_HEADER_TOP_GUTTER + MERCHANT_STICKY_HEADER_ROW_APPROX + 10;
-const MENU_SCROLL_STICKY_OFFSET = MERCHANT_STICKY_FILTER_TOP + FILTER_BAR_HEIGHT + 6;
-/** Approximate ListHeaderComponent height before first menu section. */
-const MENU_LIST_HEADER_BEFORE_SECTIONS =
-  HEADER_IMAGE_HEIGHT + 248 + FILTER_BAR_HEIGHT;
-/** Scroll offset where the floating filter bar fades in (in-list filter has scrolled away). */
-const STICKY_FILTER_SHOW_Y = HEADER_IMAGE_HEIGHT + 200;
-
-/** Group menu by category_id / categoryName from DB. Section title = categoryName or fallback. */
-function groupMenuByCategory(menu: MenuItem[]): { title: string; data: MenuItem[] }[] {
-  const byKey = new Map<string, { title: string; data: MenuItem[] }>();
-  menu.forEach((item) => {
-    const name = (item.categoryName ?? item.category ?? "").trim() || "Other";
-    const key = item.categoryId != null ? `id:${item.categoryId}` : `name:${name}`;
-    if (!byKey.has(key)) byKey.set(key, { title: name, data: [] });
-    byKey.get(key)!.data.push(item);
-  });
-  const sections = Array.from(byKey.values()).filter((s) => s.data.length > 0);
-  if (sections.length === 0 && menu.length > 0) return [{ title: "Menu", data: menu }];
-  return sections;
-}
-
-/** Build menu sections: smart sections (Recommended, Best in category) first, then DB categories. All from API/DB. */
-function buildMenuSections(menu: MenuItem[]): { title: string; data: MenuItem[]; isSmart?: boolean }[] {
-  const out: { title: string; data: MenuItem[]; isSmart?: boolean }[] = [];
-  const recommended = menu.filter((m) => m.isRecommended);
-  const popular = menu.filter((m) => m.isPopular);
-  if (recommended.length > 0) {
-    out.push({ title: "Recommended for you", data: recommended, isSmart: true });
-  }
-  if (popular.length > 0) {
-    out.push({ title: "Best in category", data: popular, isSmart: true });
-  }
-  const categorySections = groupMenuByCategory(menu);
-  categorySections.forEach((s) => out.push({ ...s, isSmart: false }));
-  return out;
-}
-
-type MenuSection = { title: string; data: MenuItem[]; isSmart?: boolean };
-
-/** Lowest priced in-stock menu item (falls back to next available if cheapest is OOS). */
-function lowestAvailableMenuPrice(menu: MenuItem[]): number | null {
-  const prices = menu
-    .filter((m) => m.inStock !== false)
-    .map((m) => m.price)
-    .filter((p) => Number.isFinite(p) && p > 0);
-  return prices.length ? Math.min(...prices) : null;
-}
-
-function findSectionIndexForScrollTarget(
-  secList: MenuSection[],
-  target: MenuSheetScrollTarget
-): { sectionIndex: number; itemIndex: number } | null {
-  switch (target.kind) {
-    case "past-orders":
-    case "starting-at":
-      return null;
-    case "section-title": {
-      const want = target.title.trim().toLowerCase();
-      const idx = secList.findIndex((s) => s.title.trim().toLowerCase() === want);
-      return idx >= 0 ? { sectionIndex: idx, itemIndex: 0 } : null;
-    }
-    case "category": {
-      const normName = target.categoryName?.trim().toLowerCase();
-      let idx = secList.findIndex(
-        (s) => !s.isSmart && normName && s.title.trim().toLowerCase() === normName
-      );
-      if (idx < 0 && target.categoryId != null) {
-        idx = secList.findIndex(
-          (s) =>
-            !s.isSmart && s.data.some((item) => item.categoryId === target.categoryId)
-        );
-      }
-      if (idx < 0 && normName) {
-        idx = secList.findIndex((s) => s.title.trim().toLowerCase() === normName);
-      }
-      return idx >= 0 ? { sectionIndex: idx, itemIndex: 0 } : null;
-    }
-    case "menu-item": {
-      for (let s = 0; s < secList.length; s++) {
-        const idx = secList[s].data.findIndex(
-          (item) =>
-            item.id === target.itemId ||
-            (target.menuItemId != null && item.menuItemId === target.menuItemId)
-        );
-        if (idx >= 0) return { sectionIndex: s, itemIndex: idx };
-      }
-      return null;
-    }
-    default:
-      return null;
-  }
-}
-
-/** Animated SectionList refs may not expose scrollToOffset — use scroll responder fallback. */
-function scrollSectionListToOffset(
-  ref: React.RefObject<SectionList<MenuListRow> | null>,
-  offset: number,
-  animated = true
-) {
-  const list = ref.current as (SectionList<MenuListRow> & {
-    scrollToOffset?: (opts: { offset: number; animated?: boolean }) => void;
-    getScrollResponder?: () => { scrollTo?: (opts: { y: number; animated?: boolean }) => void } | null;
-  }) | null;
-  if (!list) return;
-  if (typeof list.scrollToOffset === "function") {
-    list.scrollToOffset({ offset, animated });
-    return;
-  }
-  const responder = list.getScrollResponder?.();
-  if (responder && typeof responder.scrollTo === "function") {
-    responder.scrollTo({ y: offset, animated });
-    return;
-  }
-  list.scrollToLocation?.({
-    sectionIndex: 0,
-    itemIndex: 0,
-    animated,
-    viewOffset: 0,
-  });
-}
-
-/** Measure anchor Y within the list header root (scroll offset for SectionList). */
-function measureHeaderAnchor(
-  anchorRef: React.RefObject<RNView | null>,
-  rootRef: React.RefObject<RNView | null>,
-  cb: (y: number) => void
-) {
-  const anchor = anchorRef.current;
-  const root = rootRef.current;
-  if (!anchor || !root) return;
-  anchor.measureLayout(
-    root,
-    (_x, y) => cb(y),
-    () => cb(0)
-  );
-}
-
-function scheduleMenuScroll(run: () => void) {
-  InteractionManager.runAfterInteractions(() => {
-    run();
-    setTimeout(run, 120);
-    setTimeout(run, 360);
-    setTimeout(run, 640);
-  });
-}
+const MENU_SEARCH_DEBOUNCE_MS = 200;
 
 export default function MerchantDetailScreen() {
   const { id, openCart, focusItemId } = useLocalSearchParams<{
@@ -278,15 +143,13 @@ export default function MerchantDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const merchantId = id ?? "";
-  const sectionListRef = useRef<SectionList>(null);
-  const headerRootRef = useRef<RNView>(null);
-  const pastOrdersAnchorRef = useRef<RNView>(null);
-  const startingAtAnchorRef = useRef<RNView>(null);
+  const flashListRef = useRef<FlashListRef<MerchantFlashListItem>>(null);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
   const [filtersSheetVisible, setFiltersSheetVisible] = useState(false);
   const [menuSheetVisible, setMenuSheetVisible] = useState(false);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
+  const debouncedMenuSearchQuery = useDebouncedValue(menuSearchQuery, MENU_SEARCH_DEBOUNCE_MS);
   const [optionsSheetVisible, setOptionsSheetVisible] = useState(false);
   const [groupOrderSheetVisible, setGroupOrderSheetVisible] = useState(false);
   const [reportSheetVisible, setReportSheetVisible] = useState(false);
@@ -308,7 +171,7 @@ export default function MerchantDetailScreen() {
   const openMerchantSearch = useCallback(() => {
     const y = useMerchantScrollStore.getState().scrollY;
     if (y > 48) {
-      scrollSectionListToOffset(sectionListRef, 0, true);
+      scrollFlashListToOffset(flashListRef, 0, true);
     }
     setHeaderSearchExpanded(true);
     const delay = y > 48 ? 340 : 80;
@@ -318,22 +181,100 @@ export default function MerchantDetailScreen() {
     setHeaderSearchExpanded(false);
     setMenuSearchQuery("");
   }, []);
-  const scrollY = useSharedValue(0);
+
+  const setStoreScrollOffset = useMerchantScrollStore((s) => s.setStoreScrollOffset);
+  const setScrollY = useMerchantScrollStore((s) => s.setScrollY);
+  const savedScrollOffset = useMerchantScrollStore((s) => s.getStoreScrollOffset(merchantId));
+  const didRestoreScrollRef = useRef(false);
+
+  const handleCartCompactChange = useCallback(
+    (compact: boolean) => {
+      setScrollY(compact ? COMPACT_SCROLL_THRESHOLD + 1 : 0);
+    },
+    [setScrollY]
+  );
+
+  const {
+    scrollY,
+    scrollHandler,
+    heroBannerStyle,
+    heroOverlayOpacityStyle,
+    infoOpacityStyle,
+    stickySearchStyle,
+    stickySearchBgStyle,
+    stickyFilterStyle,
+    fabStyle,
+    stickyFilterTop,
+  } = useMerchantScrollAnimation({
+    headerSearchExpandedSv,
+    onScrollEnd: (y) => {
+      setStoreScrollOffset(merchantId, y);
+      setScrollY(y);
+    },
+  });
+
+  const {
+    stickyFilterActive,
+    stickySearchActive,
+  } = useMerchantScrollChromeState({
+    scrollY,
+    onCartCompactChange: handleCartCompactChange,
+  });
 
   const queryClient = useQueryClient();
+  useMerchantMenuRealtime(merchantId, queryClient);
+
   const { bookmarkMenuItemIdSet } = useMenuItemBookmarks(merchantId);
   const { syncMenuItemBookmark } = useMenuItemBookmarkMutations();
-  const { data: merchant, isLoading, isError, refetch } = useQuery({
-    queryKey: ["merchant", merchantId],
-    queryFn: () => merchantService.getMerchantById(merchantId),
-    enabled: !!merchantId,
-    staleTime: 60 * 1000,
+
+  useLayoutEffect(() => {
+    if (!merchantId) return;
+    seedMerchantMenuQueryIfCached(queryClient, merchantId);
+  }, [merchantId, queryClient]);
+
+  useEffect(() => {
+    if (!merchantId) return;
+    prefetchMerchantDetail(queryClient, merchantId);
+  }, [merchantId, queryClient]);
+
+  const { data: merchant, isPending, isError, refetch } = useQuery({
+    queryKey: MERCHANT_DETAIL_QUERY_KEY(merchantId),
+    queryFn: () => fetchMerchantByIdWithCache(merchantId),
+    enabled: !!merchantId && !readSyncMerchantMenu(merchantId)?.menu?.length,
+    staleTime: MERCHANT_DETAIL_STALE_MS,
+    gcTime: MERCHANT_DETAIL_GC_MS,
+    refetchOnMount: false,
     refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
+    networkMode: "offlineFirst",
+    initialData: () => readSyncMerchantMenu(merchantId),
+    initialDataUpdatedAt: () => getMerchantMenuCachedAt(merchantId),
+    placeholderData: (previous) =>
+      previous ?? getMerchantDetailPlaceholder(queryClient, merchantId),
   });
+
+  const hasCachedMenu = (merchant?.menu?.length ?? 0) > 0;
+  const menuPending = !hasCachedMenu && isPending;
+
+  useEffect(() => {
+    if (!merchantId) return;
+    void syncMerchantMenuInBackground(queryClient, merchantId);
+  }, [merchantId, queryClient]);
+
+  useEffect(() => {
+    if (!merchantId || !hasCachedMenu || didRestoreScrollRef.current) return;
+    if (savedScrollOffset <= 0) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      scrollFlashListToOffset(flashListRef, savedScrollOffset, false);
+      scrollY.value = savedScrollOffset;
+      setScrollY(savedScrollOffset);
+      didRestoreScrollRef.current = true;
+    });
+    return () => task.cancel();
+  }, [merchantId, hasCachedMenu, savedScrollOffset, scrollY, setScrollY]);
 
   useEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
+    void prefetchMenuItemImagesForMenu(merchant.menu);
     prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
   }, [merchantId, merchant?.menu, queryClient]);
 
@@ -397,17 +338,6 @@ export default function MerchantDetailScreen() {
     }
     return null;
   }, [merchantId, queryClient]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!merchantId) return;
-      const updatedAt =
-        queryClient.getQueryState({ queryKey: ["merchant", merchantId] })?.dataUpdatedAt ?? 0;
-      if (Date.now() - updatedAt > 2 * 60 * 1000) {
-        void queryClient.invalidateQueries({ queryKey: ["merchant", merchantId] });
-      }
-    }, [merchantId, queryClient])
-  );
 
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
@@ -632,11 +562,11 @@ export default function MerchantDetailScreen() {
   const countForFilters = useCallback(
     (f: StoreMenuFilterState) =>
       filterMenuItems(merchant?.menu ?? [], {
-        searchQuery: menuSearchQuery,
+        searchQuery: debouncedMenuSearchQuery,
         highlyReorderedIds,
         advanced: f,
       }).length,
-    [merchant?.menu, menuSearchQuery, highlyReorderedIds]
+    [merchant?.menu, debouncedMenuSearchQuery, highlyReorderedIds]
   );
 
   const handleFilterChange = useCallback((id: StoreFilterId) => {
@@ -947,46 +877,18 @@ export default function MerchantDetailScreen() {
     const menu = merchant?.menu;
     if (!menu || !Array.isArray(menu) || menu.length === 0) return [];
     const list = filterMenuItems(menu, {
-      searchQuery: menuSearchQuery,
+      searchQuery: debouncedMenuSearchQuery,
       quickFilter: filter,
       advanced: advancedFilters,
       highlyReorderedIds,
     });
-    const raw = buildMenuSections(list);
-    return raw.map((sec, sIdx) => ({
-      ...sec,
-      data: sec.data.map(
-        (item, iIdx): MenuListRow => ({
-          ...item,
-          listRowKey: `${sIdx}-${String(item.menuItemId != null ? item.menuItemId : item.id)}-${iIdx}`,
-        })
-      ),
-    }));
-  }, [merchant?.menu, filter, menuSearchQuery, advancedFilters, highlyReorderedIds]);
+    return attachListRowKeys(buildMenuSections(list));
+  }, [merchant?.menu, filter, debouncedMenuSearchQuery, advancedFilters, highlyReorderedIds]);
 
-  const totalMenuRows = useMemo(
-    () => sections.reduce((sum, sec) => sum + sec.data.length, 0),
-    [sections]
-  );
-
-  /** Wider render window + no clipping — avoids blank gaps while scrolling the menu. */
-  const menuListVirtualization = useMemo(() => {
-    const total = totalMenuRows;
-    const renderAll = total > 0 && total <= 120;
-    return {
-      removeClippedSubviews: false as const,
-      initialNumToRender: renderAll ? total : Math.min(Math.max(total, 28), 56),
-      maxToRenderPerBatch: renderAll ? total : 28,
-      windowSize: renderAll ? Math.max(21, Math.ceil(total / 6)) : 17,
-      updateCellsBatchingPeriod: 16,
-    };
-  }, [totalMenuRows]);
-
-  /** Full menu sections (no search/filters) — used by menu sheet index for exact scroll targets. */
   const catalogSections = useMemo((): MenuSection[] => {
     const menu = merchant?.menu;
     if (!menu || !Array.isArray(menu) || menu.length === 0) return [];
-    return buildMenuSections(menu);
+    return attachListRowKeys(buildMenuSections(menu));
   }, [merchant?.menu]);
 
   const sectionStartingPrice = useMemo(
@@ -994,64 +896,14 @@ export default function MerchantDetailScreen() {
     [merchant?.menu]
   );
 
-  const scrollToMenuTarget = useCallback(
-    (target: MenuSheetScrollTarget, highlightItemId?: string | null) => {
-      const stickyPad = MENU_SCROLL_STICKY_OFFSET;
-
-      if (target.kind === "past-orders") {
-        measureHeaderAnchor(pastOrdersAnchorRef, headerRootRef, (y) => {
-          scrollSectionListToOffset(
-            sectionListRef,
-            Math.max(0, y - stickyPad),
-            true
-          );
-        });
-        return;
-      }
-      if (target.kind === "starting-at") {
-        measureHeaderAnchor(startingAtAnchorRef, headerRootRef, (y) => {
-          scrollSectionListToOffset(
-            sectionListRef,
-            Math.max(0, y - stickyPad),
-            true
-          );
-        });
-        return;
-      }
-
-      const secList = sections;
-      const loc = findSectionIndexForScrollTarget(secList, target);
-      if (!loc) return;
-
-      if (highlightItemId) {
-        setHighlightedMenuItemKey(highlightItemId);
-        setTimeout(() => setHighlightedMenuItemKey(null), 2600);
-      }
-
-      const runScroll = () => {
-        sectionListRef.current?.scrollToLocation({
-          sectionIndex: loc.sectionIndex,
-          itemIndex: loc.itemIndex,
-          viewPosition: 0,
-          animated: true,
-          viewOffset: stickyPad,
-        });
-      };
-      scheduleMenuScroll(runScroll);
-    },
-    [sections]
-  );
-
-  useEffect(() => {
-    const pending = pendingMenuNavRef.current;
-    if (!pending) return;
-    if (filter !== "all" || menuSearchQuery.trim()) return;
-    if (hasActiveAdvancedFilters(advancedFilters)) return;
-    if (sections.length === 0) return;
-
-    pendingMenuNavRef.current = null;
-    scheduleMenuScroll(() => scrollToMenuTarget(pending.scrollTarget));
-  }, [sections, filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]);
+  function scheduleMenuScroll(run: () => void) {
+    InteractionManager.runAfterInteractions(() => {
+      run();
+      setTimeout(run, 120);
+      setTimeout(run, 360);
+      setTimeout(run, 640);
+    });
+  }
 
   useEffect(() => {
     focusItemHandledRef.current = null;
@@ -1067,129 +919,10 @@ export default function MerchantDetailScreen() {
     setAdvancedFilters(DEFAULT_STORE_MENU_FILTERS);
   }, [focusItemId]);
 
-  useEffect(() => {
-    const target = focusItemId?.trim();
-    if (!target || focusItemHandledRef.current === target) return;
-    const sec = Array.isArray(sections) ? sections : [];
-    if (sec.length === 0) return;
-
-    let sectionIndex = -1;
-    let itemIndex = -1;
-    for (let s = 0; s < sec.length; s++) {
-      const idx = sec[s].data.findIndex(
-        (item) =>
-          item.id === target ||
-          (item.menuItemId != null && String(item.menuItemId) === target)
-      );
-      if (idx >= 0) {
-        sectionIndex = s;
-        itemIndex = idx;
-        break;
-      }
-    }
-    if (sectionIndex < 0) return;
-
-    focusItemHandledRef.current = target;
-    setHighlightedMenuItemKey(target);
-
-    const scrollToItem = () => {
-      sectionListRef.current?.scrollToLocation({
-        sectionIndex,
-        itemIndex,
-        viewPosition: 0,
-        animated: true,
-        viewOffset: MENU_SCROLL_STICKY_OFFSET,
-      });
-    };
-
-    const t1 = setTimeout(scrollToItem, 400);
-    const t2 = setTimeout(scrollToItem, 720);
-    const clearHighlight = setTimeout(() => setHighlightedMenuItemKey(null), 2600);
-
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(clearHighlight);
-    };
-  }, [focusItemId, sections]);
-
-  useEffect(() => {
-    const sec = Array.isArray(sections) ? sections : [];
-    if (openCart !== "1" || !merchantId || cartMerchantId !== merchantId || sec.length === 0) return;
-    const t = setTimeout(() => {
-      const lastSection = sec.length - 1;
-      if (lastSection < 0) return;
-      sectionListRef.current?.scrollToLocation({
-        sectionIndex: lastSection,
-        itemIndex: 0,
-        viewPosition: 1,
-        viewOffset: 0,
-      });
-    }, 600);
-    return () => clearTimeout(t);
-  }, [openCart, merchantId, cartMerchantId, sections.length]);
-
   const stickySearchHint = useMemo(() => {
     const n = (merchant?.name ?? "menu").trim();
     return n.length > 0 ? `Search in ${n}` : "Search menu";
   }, [merchant?.name]);
-
-  const setMerchantScrollY = useMerchantScrollStore((s) => s.setScrollY);
-  useEffect(() => () => setMerchantScrollY(0), [setMerchantScrollY]);
-
-  // Update shared scrollY on the JS thread — avoids Reanimated SectionList onScroll object crash on RN 0.81.
-  const handleMenuScroll = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      scrollY.value = e.nativeEvent.contentOffset.y;
-    },
-    [scrollY]
-  );
-
-  const commitMenuScrollY = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const y = e.nativeEvent.contentOffset.y;
-      scrollY.value = y;
-      setMerchantScrollY(y);
-    },
-    [scrollY, setMerchantScrollY]
-  );
-
-  /** In-list filters only near top of menu — never peek under sticky header while scrolling up. */
-  const inListFilterVisibilityStyle = useAnimatedStyle(() => {
-    if (headerSearchExpandedSv.value) {
-      return { opacity: 1, maxHeight: FILTER_BAR_HEIGHT };
-    }
-    if (scrollY.value <= STICKY_FILTER_SHOW_Y - 36) {
-      return { opacity: 1, maxHeight: FILTER_BAR_HEIGHT };
-    }
-    return { opacity: 0, maxHeight: 0, overflow: "hidden" as const };
-  });
-
-  const stickyHeaderVisible = useAnimatedStyle(() => {
-    if (headerSearchExpandedSv.value) {
-      return { opacity: 1 };
-    }
-    const opacity = interpolate(
-      scrollY.value,
-      [0, HEADER_COLLAPSED_THRESHOLD - 20, HEADER_COLLAPSED_THRESHOLD],
-      [0, 0, 1],
-      Extrapolation.CLAMP
-    );
-    return { opacity };
-  });
-
-  const stickyHeaderBgOpacity = useAnimatedStyle(() => {
-    if (headerSearchExpandedSv.value) {
-      return { opacity: 1 };
-    }
-    const opacity = interpolate(
-      scrollY.value,
-      [HEADER_COLLAPSED_THRESHOLD, HEADER_COLLAPSED_THRESHOLD + 30],
-      [0.88, 1],
-      Extrapolation.CLAMP
-    );
-    return { opacity };
-  });
 
   const totalInCart = (cartItems ?? []).reduce((n, i) => n + i.quantity, 0);
   const cartTotal = (cartItems ?? []).reduce((n, i) => n + i.price * i.quantity, 0);
@@ -1226,7 +959,8 @@ export default function MerchantDetailScreen() {
     toTimestamp(merchantNextOpenAt) != null || toTimestamp(merchantNextCloseAt) != null;
   const scheduleNow = useScheduleTick(scheduleTickEnabled);
 
-  const merchantLiveStatus = (merchant as { liveStatus?: "OPEN" | "CLOSED" } | undefined)?.liveStatus;
+  const merchantLiveStatus =
+    merchant != null ? resolveMerchantLiveStatus(merchant, {}) : "CLOSED";
   const isStoreClosedForStatus =
     merchant != null &&
     (liveStatusFromStore ?? merchantLiveStatus ?? "CLOSED") === "CLOSED";
@@ -1248,15 +982,120 @@ export default function MerchantDetailScreen() {
     ]
   );
 
+  const closedBannerMessage = useMemo(() => {
+    if (!merchant || !isStoreClosedForStatus) return null;
+    if (openStatusLabel.label === "Open soon" && openStatusLabel.sub) {
+      return `Opening soon — browse the menu. ${openStatusLabel.sub} remaining.`;
+    }
+    if (merchantNextOpenAt) {
+      return `Closed for now — browse the menu. ${formatNextOpenTime(toTimestamp(merchantNextOpenAt)!)}.`;
+    }
+    return "Closed for now — you can still browse the menu. Ordering resumes when we open.";
+  }, [merchant, isStoreClosedForStatus, openStatusLabel, merchantNextOpenAt]);
+
+  const { data: flashListData, indexMap: flashIndexMap } = useMemo(
+    () =>
+      buildFlashListData({
+        sections,
+        pastOrderItems,
+        comboPairs,
+        sectionStartingPrice,
+        visibleOffersCount: visibleOffers.length,
+        closedBannerMessage,
+        menuPending,
+      }),
+    [
+      sections,
+      pastOrderItems,
+      comboPairs,
+      sectionStartingPrice,
+      visibleOffers.length,
+      closedBannerMessage,
+      menuPending,
+    ]
+  );
+
+  const flashListHeaderRowCount = useMemo(
+    () => getFlashListHeaderRowCount(flashListData),
+    [flashListData]
+  );
+
+  const scrollToMenuTarget = useCallback(
+    (target: MenuSheetScrollTarget, highlightItemId?: string | null) => {
+      const flatIndex = findFlatIndexForScrollTarget(flashIndexMap, target);
+      if (flatIndex == null) return;
+
+      if (highlightItemId) {
+        setHighlightedMenuItemKey(highlightItemId);
+        setTimeout(() => setHighlightedMenuItemKey(null), 2600);
+      }
+
+      scheduleMenuScroll(() => {
+        scrollFlashListToFlatIndex(flashListRef, flatIndex, flashListHeaderRowCount, true);
+      });
+    },
+    [flashIndexMap, flashListHeaderRowCount]
+  );
+
   useEffect(() => {
-    if (merchant?.id != null && (merchant as { liveStatus?: "OPEN" | "CLOSED" }).liveStatus != null) {
+    const pending = pendingMenuNavRef.current;
+    if (!pending) return;
+    if (filter !== "all" || menuSearchQuery.trim()) return;
+    if (hasActiveAdvancedFilters(advancedFilters)) return;
+    if (sections.length === 0) return;
+
+    pendingMenuNavRef.current = null;
+    scheduleMenuScroll(() => scrollToMenuTarget(pending.scrollTarget));
+  }, [sections, filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]);
+
+  useEffect(() => {
+    const target = focusItemId?.trim();
+    if (!target || focusItemHandledRef.current === target) return;
+    if (sections.length === 0) return;
+
+    const flatIndex = flashIndexMap.menuItemByKey.get(target);
+    if (flatIndex == null) return;
+
+    focusItemHandledRef.current = target;
+    setHighlightedMenuItemKey(target);
+
+    const scrollToItem = () => {
+      scrollFlashListToFlatIndex(flashListRef, flatIndex, flashListHeaderRowCount, true);
+    };
+
+    const t1 = setTimeout(scrollToItem, 400);
+    const t2 = setTimeout(scrollToItem, 720);
+    const clearHighlight = setTimeout(() => setHighlightedMenuItemKey(null), 2600);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(clearHighlight);
+    };
+  }, [focusItemId, sections, flashIndexMap, flashListHeaderRowCount]);
+
+  useEffect(() => {
+    if (openCart !== "1" || !merchantId || cartMerchantId !== merchantId || flashListData.length === 0) {
+      return;
+    }
+    const footerIndex = flashListData.findIndex((row) => row.type === "footer");
+    if (footerIndex < 0) return;
+    const t = setTimeout(() => {
+      scrollFlashListToFlatIndex(flashListRef, footerIndex, flashListHeaderRowCount, true);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [openCart, merchantId, cartMerchantId, flashListData, flashListHeaderRowCount]);
+
+  useEffect(() => {
+    if (merchant?.id != null) {
+      const safeStatus = resolveMerchantLiveStatus(merchant, {});
       useStoreStatusStore.getState().setStatusFromApi(
         merchant.id,
-        (merchant as { liveStatus?: "OPEN" | "CLOSED" }).liveStatus === "OPEN",
-        (merchant as { liveStatus?: "OPEN" | "CLOSED" }).liveStatus
+        safeStatus === "OPEN",
+        safeStatus
       );
     }
-  }, [merchant?.id, (merchant as { liveStatus?: "OPEN" | "CLOSED" })?.liveStatus]);
+  }, [merchant]);
 
   const handleShareRestaurant = useCallback(async () => {
     closeOptionsSheet();
@@ -1366,66 +1205,6 @@ export default function MerchantDetailScreen() {
     [filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]
   );
 
-  const renderMenuSectionHeader = useCallback(
-    ({ section: { title } }: { section: { title: string } }) => (
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionHeaderText}>{title}</Text>
-      </View>
-    ),
-    []
-  );
-
-  const renderMenuRow = useCallback(
-    ({
-      item,
-      index,
-      section,
-    }: {
-      item: MenuListRow;
-      index: number;
-      section: { data: MenuListRow[] };
-    }) => {
-      const sectionData = section.data;
-      const isLast = index === sectionData.length - 1;
-      const menuItemPk = resolveMenuItemPk(item);
-      return (
-        <StoreMenuItemRow
-          item={item}
-          merchantId={merchantId}
-          goesWithName={goesWithNameByItemId[item.id] ?? null}
-          onAdd={handleAddItem}
-          onIncrement={handleIncrement}
-          onDecrement={handleDecrement}
-          isStoreClosed={isStoreClosedForStatus}
-          showDivider={!isLast}
-          isHighlyReordered={highlyReorderedIds.has(item.id)}
-          isBookmarked={menuItemPk != null && bookmarkMenuItemIdSet.has(menuItemPk)}
-          highlighted={
-            highlightedMenuItemKey != null &&
-            (item.id === highlightedMenuItemKey ||
-              (item.menuItemId != null && String(item.menuItemId) === highlightedMenuItemKey))
-          }
-          onBookmark={handleBookmarkMenuItem}
-          onShare={handleShareMenuItem}
-        />
-      );
-    },
-    [
-      merchantId,
-      handleAddItem,
-      handleIncrement,
-      handleDecrement,
-      isStoreClosedForStatus,
-      highlyReorderedIds,
-      bookmarkMenuItemIdSet,
-      highlightedMenuItemKey,
-      handleBookmarkMenuItem,
-      handleShareMenuItem,
-      goesWithNameByItemId,
-      resolveMenuItemPk,
-    ]
-  );
-
   const distanceKm = routeResult?.distanceKm ?? listCachedDistanceKm ?? null;
   const storeEtaLabel = useMemo(() => {
     if (storeQuote?.duration_min != null && Number.isFinite(storeQuote.duration_min)) {
@@ -1448,159 +1227,32 @@ export default function MerchantDetailScreen() {
     return formatEtaRange(range);
   }, [merchant, distanceKm, storeQuote]);
 
-  const closedBannerMessage = useMemo(() => {
-    if (!merchant || !isStoreClosedForStatus) return null;
-    if (openStatusLabel.label === "Open soon" && openStatusLabel.sub) {
-      return `Opening soon — browse the menu. ${openStatusLabel.sub} remaining.`;
-    }
-    if (merchantNextOpenAt) {
-      return `Closed for now — browse the menu. ${formatNextOpenTime(toTimestamp(merchantNextOpenAt)!)}.`;
-    }
-    return "Closed for now — you can still browse the menu. Ordering resumes when we open.";
-  }, [merchant, isStoreClosedForStatus, openStatusLabel, merchantNextOpenAt]);
+  const goBackFromMerchant = useCallback(() => {
+    safeRouterBack(router, FOOD_HOME_FALLBACK);
+  }, [router]);
 
-  const menuListHeader = useMemo(() => {
-    if (!merchant) return null;
-    return (
-      <View ref={headerRootRef} collapsable={false}>
-        <View style={styles.headerImageWrap}>
-          <StoreBannerCarousel
-            bannerUri={merchantBannerHeroUri}
-            galleryUris={merchantGalleryBannerUris}
-            width={SCREEN_WIDTH}
-            height={HEADER_IMAGE_HEIGHT}
-            initialBannerHoldMs={4000}
-            slideIntervalMs={5200}
-            slideDurationMs={750}
-            showDots={false}
-          />
-          <LinearGradient
-            colors={["rgba(0,0,0,0.15)", "rgba(0,0,0,0.45)"]}
-            style={StyleSheet.absoluteFill}
-            pointerEvents="none"
-          />
-          <StoreHeroLogo logoUrl={merchantLogoUri} name={merchant.name} />
-          <View style={styles.headerIcons} pointerEvents="box-none">
-            <TouchableOpacity onPress={() => router.back()} style={styles.heroCircleBtnDark} hitSlop={8}>
-              <Ionicons name="chevron-back" size={22} color="#fff" />
-            </TouchableOpacity>
-            <View style={styles.headerIconsRight}>
-              <TouchableOpacity style={styles.heroSearchPill} onPress={openMerchantSearch} hitSlop={8}>
-                <Ionicons name="search" size={16} color="#fff" />
-                <Text style={styles.heroSearchPillText}>Search</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.heroCircleBtnDark}
-                onPress={() => setGroupOrderSheetVisible(true)}
-                hitSlop={8}
-              >
-                <Ionicons name="people-outline" size={18} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.heroCircleBtnDark} onPress={openOptionsSheet} hitSlop={8}>
-                <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
+  const handleHeroBack = goBackFromMerchant;
 
-        <StoreInfoCard
-          name={merchant.name}
-          logoUrl={merchantLogoUri}
-          avgRating={merchant.avgRating}
-          totalReviews={merchant.totalReviews}
-          distanceKm={distanceKm}
-          areaLabel={merchant.city ?? merchant.address ?? undefined}
-          etaLabel={storeEtaLabel}
-          scheduledLabel={scheduledSlotLabel}
-          offerTexts={offerTickerTexts}
-          offerCount={visibleOffers.length}
-          isFrequentlyReordered={(merchant.completedOrderCount ?? 0) > 50}
-          onInfoPress={() => router.push(`/home/merchant/about/${merchantId}`)}
-          onOffersPress={openOffersSheet}
-          onSchedulePress={openScheduleSheet}
-        />
+  const handleHeroGroupOrder = useCallback(() => {
+    setGroupOrderSheetVisible(true);
+  }, []);
 
-        {isStoreClosedForStatus && closedBannerMessage ? (
-          <View style={styles.closedBanner}>
-            <View style={styles.closedBannerIconWrap}>
-              <Ionicons name="time-outline" size={18} color="#fff" />
-            </View>
-            <Text style={styles.closedBannerText}>{closedBannerMessage}</Text>
-          </View>
-        ) : null}
+  const handleMerchantInfoPress = useCallback(() => {
+    router.push(`/home/merchant/about/${merchantId}`);
+  }, [router, merchantId]);
 
-        <View style={styles.filterBarInList}>
-          <Animated.View style={inListFilterVisibilityStyle}>
-            <StoreFilterBar
-              active={filter}
-              onChange={handleFilterChange}
-              onOpenFilters={() => setFiltersSheetVisible(true)}
-              showHighlyReordered={showHighlyReorderedChip}
-              filtersActive={filtersActive}
-            />
-          </Animated.View>
-        </View>
+  const handleOpenFiltersSheet = useCallback(() => {
+    setFiltersSheetVisible(true);
+  }, []);
 
-        <View ref={pastOrdersAnchorRef} collapsable={false}>
-          <StorePastOrdersSection
-            items={pastOrderItems}
-            getQty={getQty}
-            onAdd={handleAddItem}
-            onIncrement={handleIncrement}
-            onDecrement={handleDecrement}
-            isStoreClosed={isStoreClosedForStatus}
-          />
-        </View>
+  const handleStickyBack = useCallback(() => {
+    if (headerSearchExpanded) closeMerchantSearch();
+    else goBackFromMerchant();
+  }, [headerSearchExpanded, closeMerchantSearch, goBackFromMerchant]);
 
-        <StoreComboSection
-          combos={comboPairs}
-          onAddCombo={handleAddCombo}
-          isStoreClosed={isStoreClosedForStatus}
-        />
-
-        {sections.length > 0 && sectionStartingPrice != null ? (
-          <View ref={startingAtAnchorRef} collapsable={false}>
-            <StoreSectionHeader
-              title={`Items starting at ₹${Math.round(sectionStartingPrice)}`}
-              couponLink={visibleOffers.length > 0}
-              onCouponPress={openOffersSheet}
-            />
-          </View>
-        ) : null}
-      </View>
-    );
-  }, [
-    merchant,
-    merchantBannerHeroUri,
-    merchantGalleryBannerUris,
-    merchantLogoUri,
-    distanceKm,
-    storeEtaLabel,
-    scheduledSlotLabel,
-    offerTickerTexts,
-    visibleOffers.length,
-    isStoreClosedForStatus,
-    closedBannerMessage,
-    filter,
-    handleFilterChange,
-    showHighlyReorderedChip,
-    filtersActive,
-    pastOrderItems,
-    getQty,
-    handleAddItem,
-    handleIncrement,
-    handleDecrement,
-    comboPairs,
-    handleAddCombo,
-    sections.length,
-    sectionStartingPrice,
-    merchantId,
-    openMerchantSearch,
-    openOptionsSheet,
-    openOffersSheet,
-    openScheduleSheet,
-    router,
-  ]);
+  const handleCloseFiltersSheet = useCallback(() => {
+    setFiltersSheetVisible(false);
+  }, []);
 
   if (!merchantId) {
     return (
@@ -1610,7 +1262,7 @@ export default function MerchantDetailScreen() {
     );
   }
 
-  if (isLoading && !merchant) {
+  if (isPending && !merchant) {
     return (
       <View style={styles.container}>
         <MerchantDetailSkeleton menuRowCount={5} />
@@ -1618,7 +1270,7 @@ export default function MerchantDetailScreen() {
     );
   }
 
-  if ((isError || !merchant) && !isLoading) {
+  if ((isError || !merchant) && !isPending) {
     return (
       <View style={styles.centered}>
         <Ionicons name="cloud-offline-outline" size={40} color={GatiMitraColors.textSecondary} />
@@ -1647,29 +1299,26 @@ export default function MerchantDetailScreen() {
     );
   }
 
-  const safeSections = Array.isArray(sections) ? sections : [];
-
   return (
-    <View style={styles.container}>
-      <Animated.View
-        style={[styles.stickyHeaderBarWrap, stickyHeaderVisible]}
+    <GestureHandlerRootView style={styles.container}>
+      <MerchantStickyChrome
+        topGutter={MERCHANT_HEADER_TOP_GUTTER}
+        stickySearchStyle={stickySearchStyle}
+        stickySearchBgStyle={stickySearchBgStyle}
+        stickyFilterStyle={stickyFilterStyle}
+        stickyFilterTop={stickyFilterTop}
         pointerEvents={headerSearchExpanded ? "auto" : "box-none"}
-      >
-        <Animated.View
-          style={[styles.stickyHeaderBar, { paddingTop: MERCHANT_HEADER_TOP_GUTTER }]}
-          pointerEvents="box-none"
-        >
-          <Animated.View style={[StyleSheet.absoluteFill, styles.stickyHeaderBarBg, stickyHeaderBgOpacity]} />
-          <Animated.View style={styles.stickyHeaderRowWrap} pointerEvents="box-none">
+        filter={filter}
+        onFilterChange={handleFilterChange}
+        onOpenFilters={handleOpenFiltersSheet}
+        showHighlyReordered={showHighlyReorderedChip}
+        filtersActive={filtersActive}
+        stickyFilterActive={stickyFilterActive}
+        stickySearchActive={stickySearchActive}
+        headerSearchExpanded={headerSearchExpanded}
+        searchRow={
           <View style={styles.stickyHeaderRow}>
-            <TouchableOpacity
-              onPress={() => {
-                if (headerSearchExpanded) closeMerchantSearch();
-                else router.back();
-              }}
-              style={styles.heroCircleBtnLight}
-              hitSlop={8}
-            >
+            <TouchableOpacity onPress={handleStickyBack} style={styles.heroCircleBtnLight} hitSlop={8}>
               <Ionicons name="chevron-back" size={22} color={StoreTheme.textPrimary} />
             </TouchableOpacity>
             {headerSearchExpanded ? (
@@ -1721,56 +1370,61 @@ export default function MerchantDetailScreen() {
               <Ionicons name="ellipsis-vertical" size={20} color={StoreTheme.textPrimary} />
             </TouchableOpacity>
           </View>
-        </Animated.View>
-        </Animated.View>
-      </Animated.View>
-
-      <SectionList
-        ref={sectionListRef}
-        style={styles.sectionList}
-        sections={safeSections}
-        keyExtractor={(item) =>
-          item?.listRowKey ?? `row-${String(item?.menuItemId != null ? item.menuItemId : item?.id ?? "x")}`
-        }
-        extraData={highlightedMenuItemKey}
-        stickySectionHeadersEnabled={Platform.OS === "ios"}
-        contentInsetAdjustmentBehavior="never"
-        onScroll={handleMenuScroll}
-        onScrollEndDrag={commitMenuScrollY}
-        onMomentumScrollEnd={commitMenuScrollY}
-        scrollEventThrottle={16}
-        scrollEnabled
-        keyboardShouldPersistTaps="always"
-        showsVerticalScrollIndicator
-        {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
-        onScrollToIndexFailed={(info) => {
-          setTimeout(() => {
-            sectionListRef.current?.scrollToLocation({
-              sectionIndex: info.sectionIndex,
-              itemIndex: Math.min(info.index, 0),
-              viewPosition: 0,
-              animated: true,
-              viewOffset: MENU_SCROLL_STICKY_OFFSET,
-            });
-          }, 120);
-        }}
-        contentContainerStyle={listContentContainerStyle}
-        {...menuListVirtualization}
-        ListHeaderComponent={menuListHeader}
-        renderSectionHeader={renderMenuSectionHeader}
-        renderItem={renderMenuRow}
-        ListFooterComponent={
-          <View style={styles.footerListGap}>
-            <StoreFooterSection similarMerchants={filteredSimilarMerchants} />
-          </View>
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyMenu}>
-            <Text style={styles.emptyMenuText}>No items match the selected filters.</Text>
-          </View>
         }
       />
 
+      <MerchantDetailFlashList
+        listRef={flashListRef}
+        data={flashListData}
+        scrollHandler={scrollHandler}
+        contentContainerStyle={listContentContainerStyle}
+        heroBannerStyle={heroBannerStyle}
+        heroOverlayOpacityStyle={heroOverlayOpacityStyle}
+        infoOpacityStyle={infoOpacityStyle}
+        merchantBannerHeroUri={merchantBannerHeroUri}
+        merchantGalleryBannerUris={merchantGalleryBannerUris}
+        merchantLogoUri={merchantLogoUri}
+        merchant={merchant}
+        merchantId={merchantId}
+        distanceKm={distanceKm}
+        storeEtaLabel={storeEtaLabel}
+        scheduledSlotLabel={scheduledSlotLabel}
+        offerTickerTexts={offerTickerTexts}
+        visibleOffersCount={visibleOffers.length}
+        onInfoPress={handleMerchantInfoPress}
+        onOffersPress={openOffersSheet}
+        onSchedulePress={openScheduleSheet}
+        onHeroBack={handleHeroBack}
+        onHeroSearch={openMerchantSearch}
+        onHeroGroupOrder={handleHeroGroupOrder}
+        onHeroOptions={openOptionsSheet}
+        filter={filter}
+        onFilterChange={handleFilterChange}
+        onOpenFilters={handleOpenFiltersSheet}
+        showHighlyReordered={showHighlyReorderedChip}
+        filtersActive={filtersActive}
+        getQty={getQty}
+        onAdd={handleAddItem}
+        onIncrement={handleIncrement}
+        onDecrement={handleDecrement}
+        isStoreClosed={isStoreClosedForStatus}
+        onAddCombo={handleAddCombo}
+        onCouponPress={openOffersSheet}
+        similarMerchants={filteredSimilarMerchants}
+        highlightedMenuItemKey={highlightedMenuItemKey}
+        highlyReorderedIds={highlyReorderedIds}
+        bookmarkMenuItemIdSet={bookmarkMenuItemIdSet}
+        goesWithNameByItemId={goesWithNameByItemId}
+        onBookmark={handleBookmarkMenuItem}
+        onShare={handleShareMenuItem}
+        resolveMenuItemPk={resolveMenuItemPk}
+      />
+
+      <MerchantFloatingFab
+        bottom={totalInCart > 0 ? CART_BAR_HEIGHT + 16 + insets.bottom : 24 + insets.bottom / 2}
+        onPress={() => setMenuSheetVisible(true)}
+        animatedStyle={fabStyle}
+      />
       <CouponAvailableBottomSheet
         visible={couponAvailablePrompt.visible}
         prompt={couponAvailablePrompt.prompt}
@@ -1788,7 +1442,7 @@ export default function MerchantDetailScreen() {
 
       <StoreFilterSheet
         visible={filtersSheetVisible}
-        onClose={() => setFiltersSheetVisible(false)}
+        onClose={handleCloseFiltersSheet}
         filters={advancedFilters}
         onApply={setAdvancedFilters}
         offerPriceTiers={offerPriceTiers}
@@ -1801,11 +1455,6 @@ export default function MerchantDetailScreen() {
         onClose={closeScheduleSheet}
         storeName={merchant.name}
         onConfirm={(label) => setScheduledSlotLabel(label)}
-      />
-
-      <StoreMenuFab
-        bottom={totalInCart > 0 ? CART_BAR_HEIGHT + 16 + insets.bottom : 24 + insets.bottom / 2}
-        onPress={() => setMenuSheetVisible(true)}
       />
 
       <StoreMenuSheet
@@ -1906,7 +1555,7 @@ export default function MerchantDetailScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </GestureHandlerRootView>
   );
 }
 
@@ -2117,11 +1766,11 @@ const styles = StyleSheet.create({
   reportOptionText: { fontSize: 16, fontWeight: "500", color: GatiMitraColors.textPrimary },
   headerImageWrap: {
     height: HEADER_IMAGE_HEIGHT,
-    width: SCREEN_WIDTH,
+    width: SCREEN_WIDTH_EXPORT,
     overflow: "hidden",
   },
   headerImage: {
-    width: SCREEN_WIDTH,
+    width: SCREEN_WIDTH_EXPORT,
     height: HEADER_IMAGE_HEIGHT,
   },
   bannerPreload: {

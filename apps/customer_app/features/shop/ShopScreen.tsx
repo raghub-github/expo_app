@@ -21,7 +21,7 @@ import { useShopCartStore } from "@/store/shopCartStore";
 import {
   SHOP_CATEGORIES,
   SHOP_PRODUCTS,
-  PRODUCT_IMAGES,
+  getShopProductImage,
   type ProductCategoryId,
   type ShopProduct,
 } from "./data";
@@ -138,7 +138,7 @@ export function ShopScreen() {
             <ProductCard
               key={product.id}
               product={product}
-              imageSource={PRODUCT_IMAGES[product.imageKey] ?? PRODUCT_IMAGES.p1}
+              imageKey={product.imageKey}
             />
           ))}
         </View>

@@ -140,7 +140,8 @@ function isMissingDbRelationError(err: unknown, relation: string): boolean {
   const msg = String(err);
   return msg.includes(relation) && /does not exist|42P01/i.test(msg);
 }
-import { getDb, getSql } from "../../db/client.js";
+import { getDb, getSql, withDbSlot } from "../../db/client.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
@@ -407,6 +408,28 @@ function isRiderPlausibleForPickup(
   return Number.isFinite(km) && km <= MAX_RIDER_PICKUP_TRACKING_KM;
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const safeLimit = Math.max(1, Math.min(limit, items.length));
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  async function run(): Promise<void> {
+    while (true) {
+      const current = index++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeLimit }, () => run()));
+  return results;
+}
+
 export async function orderRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
@@ -428,18 +451,15 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer only" });
       }
       const { limit, offset } = req.query as { limit: number; offset: number };
-      const db = getDb();
-      const [customerRow] = await db
-        .select({ id: customers.id })
-        .from(customers)
-        .where(eq(customers.customerId, sub))
-        .limit(1);
-      const customerPk = customerRow?.id ?? null;
+
+      return withDbSlot(async () => {
+      const customerPk = await resolveCustomerPkForRequest(req.auth!, req);
       if (customerPk === null) {
         return reply.status(403).send({ error: "Customer not found" });
       }
+      const db = getDb();
 
-      const allRows = await db
+      const pageRows = await db
         .select({
           id: ordersCore.id,
           orderId: ordersCore.orderId,
@@ -463,17 +483,18 @@ export async function orderRoutes(app: FastifyInstance) {
         })
         .from(ordersCore)
         .where(eq(ordersCore.customerId, customerPk))
-        .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt));
+        .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt))
+        .limit(limit)
+        .offset(offset);
 
       const storeBannerCache = new Map<number, string | null>();
       const storeRatingCache = new Map<number, { avgRating: number; totalReviews: number } | null>();
-      const storeIds = [...new Set(allRows.map((r) => (r.merchantStoreId != null ? Number(r.merchantStoreId) : null)).filter((v): v is number => v != null && Number.isFinite(v) && v > 0))];
+      const storeIds = [...new Set(pageRows.map((r) => (r.merchantStoreId != null ? Number(r.merchantStoreId) : null)).filter((v): v is number => v != null && Number.isFinite(v) && v > 0))];
       const ratingMap = await getStoreRatingsForStores(storeIds);
       for (const sid of storeIds) {
         storeRatingCache.set(sid, ratingMap.get(sid) ?? null);
       }
 
-      const pageRows = allRows.slice(offset, offset + limit);
       const pageOrderPks = pageRows.map((r) => r.id);
       const foodSummaryByCorePk = await loadOrdersFoodSummariesByCoreRows(db, pageRows);
       const customerOrderRatings =
@@ -512,8 +533,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      const summaries = await Promise.all(
-        pageRows.map(async (row) => {
+      const summaries = await mapWithConcurrency(pageRows, 2, async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
           const foodRow =
             row.orderType === "food" ? foodSummaryByCorePk.get(row.id) : undefined;
@@ -679,9 +699,9 @@ export async function orderRoutes(app: FastifyInstance) {
             cancellationReason: foodRow?.rejectedReason?.trim() || null,
             cancelledByLabel: foodRow?.cancelledByLabel?.trim() || null,
           };
-        })
-      );
+        });
       return summaries;
+      }, req);
     }
   );
 
@@ -2626,11 +2646,35 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  const rideFarePaymentBodySchema = z.object({
-    razorpayOrderId: z.string().min(1),
-    razorpayPaymentId: z.string().min(1),
-    razorpaySignature: z.string().min(1),
-  });
+  const rideFarePaymentBodySchema = z
+    .object({
+      razorpayOrderId: z.string().min(1).optional(),
+      razorpayPaymentId: z.string().min(1).optional(),
+      razorpaySignature: z.string().min(1).optional(),
+      gatiCashAmount: z.number().positive().optional(),
+      couponCode: z.string().min(1).optional(),
+      platformOfferId: z.coerce.number().int().positive().optional(),
+    })
+    .superRefine((body, ctx) => {
+      const hasWallet = (body.gatiCashAmount ?? 0) > 0;
+      const hasOffer =
+        Boolean(body.couponCode?.trim()) || (body.platformOfferId != null && body.platformOfferId > 0);
+      const hasRz = Boolean(
+        body.razorpayOrderId?.trim() &&
+          body.razorpayPaymentId?.trim() &&
+          body.razorpaySignature?.trim()
+      );
+      const partialRz =
+        Boolean(body.razorpayOrderId?.trim()) ||
+        Boolean(body.razorpayPaymentId?.trim()) ||
+        Boolean(body.razorpaySignature?.trim());
+      if (!hasWallet && !hasRz && !hasOffer) {
+        ctx.addIssue({ code: "custom", message: "payment_required" });
+      }
+      if (partialRz && !hasRz) {
+        ctx.addIssue({ code: "custom", message: "incomplete_razorpay" });
+      }
+    });
 
   app.post<{ Params: { id: string }; Body: z.infer<typeof rideFarePaymentBodySchema> }>(
     "/:id/ride-fare-payment",
@@ -2664,6 +2708,9 @@ export async function orderRoutes(app: FastifyInstance) {
           razorpayOrderId: body.razorpayOrderId,
           razorpayPaymentId: body.razorpayPaymentId,
           razorpaySignature: body.razorpaySignature,
+          gatiCashAmount: body.gatiCashAmount,
+          couponCode: body.couponCode,
+          platformOfferId: body.platformOfferId,
         });
         return result;
       } catch (err) {
@@ -3042,7 +3089,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const placeOfSupply =
         process.env.PLATFORM_INVOICE_PLACE_OF_SUPPLY?.trim() || "Bihar(10)";
 
-      const html = buildCustomerOrderTaxInvoiceHtml({
+      const html = await buildCustomerOrderTaxInvoiceHtml({
         orderId: coreRow.orderId ?? String(coreRow.id),
         formattedOrderId: orderIdDisplay,
         coreOrderId: coreRow.id,

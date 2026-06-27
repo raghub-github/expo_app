@@ -18,7 +18,7 @@ export type SearchResults = {
 
 async function runSearch(
   query: string,
-  opts: { signal?: AbortSignal; lat?: number; lng?: number }
+  opts: { signal?: AbortSignal; lat?: number; lng?: number; vegOnly?: boolean }
 ): Promise<SearchResults> {
   const q = query.trim().toLowerCase();
   if (!q) {
@@ -33,6 +33,7 @@ async function runSearch(
     limit: 30,
     lat: opts.lat,
     lng: opts.lng,
+    vegOnly: opts.vegOnly,
     signal: opts.signal,
   });
 
@@ -55,13 +56,13 @@ async function runSearch(
 }
 
 /** Returns debounced search results; empty query skips API. Cancels previous request. */
-export function useDebouncedSearch(query: string, lat?: number, lng?: number) {
+export function useDebouncedSearch(query: string, lat?: number, lng?: number, vegOnly?: boolean) {
   const debouncedQuery = useDebouncedValue(query.trim(), DEBOUNCE_MS);
   const enabled = debouncedQuery.length >= 1;
 
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ["food-search", debouncedQuery, lat, lng],
-    queryFn: ({ signal }) => runSearch(debouncedQuery, { signal, lat, lng }),
+    queryKey: ["food-search", debouncedQuery, lat, lng, vegOnly === true],
+    queryFn: ({ signal }) => runSearch(debouncedQuery, { signal, lat, lng, vegOnly }),
     enabled,
     staleTime: 5 * 1000,
   });

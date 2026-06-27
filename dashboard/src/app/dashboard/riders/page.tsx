@@ -38,6 +38,14 @@ const RiderLogoutHistorySideSheet = dynamic(
   { ssr: false },
 );
 
+const RiderDeviceSessionsSideSheet = dynamic(
+  () =>
+    import('@/components/riders/RiderDeviceSessionsSideSheet').then(
+      (m) => m.RiderDeviceSessionsSideSheet,
+    ),
+  { ssr: false },
+);
+
 const RiderBankAccountVerifySideSheet = dynamic(
   () =>
     import('@/components/riders/RiderBankAccountVerifySideSheet').then(
@@ -151,6 +159,7 @@ export default function RidersPage() {
   const [bankVerifyLoading, setBankVerifyLoading] = useState(false);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [logoutHistoryOpen, setLogoutHistoryOpen] = useState(false);
+  const [deviceSessionsOpen, setDeviceSessionsOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
   const [ordersPageSize, setOrdersPageSize] = useState(10);
   const [ticketsPage, setTicketsPage] = useState(1);
@@ -1061,37 +1070,12 @@ export default function RidersPage() {
                     }
                   />
                   <InfoInline
-                    label="Blocked"
-                    value={
-                      (() => {
-                        const byService = displaySummary?.blacklistStatusByService;
-                        const negWallet = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
-                        const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;
-                        const banned: string[] = [];
-                        if (globalWalletBlock) return <span className="font-medium text-red-600">All services (wallet ≤ -200)</span>;
-                        if (byService) {
-                          const all = byService.all as { isBanned?: boolean; partiallyAllowedServices?: string[] } | null;
-                          const allFullyBanned = all?.isBanned === true && !(all?.partiallyAllowedServices?.length);
-                          if (allFullyBanned) return <span className="font-medium text-red-600">All services (blacklist)</span>;
-                          if (byService.food?.isBanned) banned.push("Food (blacklist)");
-                          if (byService.parcel?.isBanned) banned.push("Parcel (blacklist)");
-                          if (byService.person_ride?.isBanned) banned.push("Person ride (blacklist)");
-                        }
-                        negWallet.forEach((b: { serviceType: string }) => {
-                          const label = b.serviceType === "person_ride" ? "Person ride" : b.serviceType ? b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1) : "";
-                          if (label && !banned.some((x) => x.startsWith(label))) banned.push(`${label} (negative wallet)`);
-                        });
-                        if (banned.length === 0) return "—";
-                        return <span className="text-amber-700">{banned.join(", ")}</span>;
-                      })()
-                    }
-                  />
-                  <InfoInline
                     label="App session"
                     value={
                       <RiderLogoutSessionInline
-                        session={riderSummary?.logoutSession}
+                        session={displaySummary?.logoutSession}
                         onOpenHistory={() => setLogoutHistoryOpen(true)}
+                        onOpenDevices={() => setDeviceSessionsOpen(true)}
                       />
                     }
                   />
@@ -1156,6 +1140,32 @@ export default function RidersPage() {
                       <span className="text-sm font-semibold text-gray-500">Not added</span>
                     )}
                   </div>
+                  <InfoInline
+                    label="Blocked"
+                    value={
+                      (() => {
+                        const byService = displaySummary?.blacklistStatusByService;
+                        const negWallet = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
+                        const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;
+                        const banned: string[] = [];
+                        if (globalWalletBlock) return <span className="font-medium text-red-600">All services (wallet ≤ -200)</span>;
+                        if (byService) {
+                          const all = byService.all as { isBanned?: boolean; partiallyAllowedServices?: string[] } | null;
+                          const allFullyBanned = all?.isBanned === true && !(all?.partiallyAllowedServices?.length);
+                          if (allFullyBanned) return <span className="font-medium text-red-600">All services (blacklist)</span>;
+                          if (byService.food?.isBanned) banned.push("Food (blacklist)");
+                          if (byService.parcel?.isBanned) banned.push("Parcel (blacklist)");
+                          if (byService.person_ride?.isBanned) banned.push("Person ride (blacklist)");
+                        }
+                        negWallet.forEach((b: { serviceType: string }) => {
+                          const label = b.serviceType === "person_ride" ? "Person ride" : b.serviceType ? b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1) : "";
+                          if (label && !banned.some((x) => x.startsWith(label))) banned.push(`${label} (negative wallet)`);
+                        });
+                        if (banned.length === 0) return "—";
+                        return <span className="text-amber-700">{banned.join(", ")}</span>;
+                      })()
+                    }
+                  />
                 </div>
 
                 {/* Vehicle details: inline line(s) in dropdown when expanded */}
@@ -2639,6 +2649,19 @@ export default function RidersPage() {
                     riderName={rider.name}
                     open
                     onClose={() => setLogoutHistoryOpen(false)}
+                  />
+                ) : null}
+
+                {deviceSessionsOpen ? (
+                  <RiderDeviceSessionsSideSheet
+                    riderId={rider.id}
+                    riderName={rider.name}
+                    open
+                    onClose={() => setDeviceSessionsOpen(false)}
+                    onRevoked={() => {
+                      if (riderId) invalidateRiderSummary(queryClient, riderId);
+                      refetchRiderSummary();
+                    }}
                   />
                 ) : null}
 

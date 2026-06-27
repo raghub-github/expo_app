@@ -15,21 +15,57 @@ export function isTransientDbError(reason: unknown): boolean {
 
   const msg = collectErrorMessages(reason).join(" ").toLowerCase();
   return (
+    msg.includes("database_slot_timeout") ||
+    msg.includes("connection_destroyed") ||
     msg.includes("echeckouttimeout") ||
     msg.includes("edbhandlerexited") ||
     msg.includes("connection to database closed") ||
     msg.includes("unable to check out connection") ||
     msg.includes("connection terminated") ||
     msg.includes("connect econnrefused") ||
-    msg.includes("connect etimedout")
+    msg.includes("connect etimedout") ||
+    msg.includes("write connection_closed")
+  );
+}
+
+/** Walk error.cause chains (Drizzle wraps pool failures as "Failed query: …"). */
+export function hasTransientDbCause(err: unknown, depth = 0): boolean {
+  if (!err || depth > 8) return false;
+  if (isTransientDbError(err) || isConnectionErr(err)) return true;
+  if (typeof err !== "object") return false;
+  const cause = (err as { cause?: unknown }).cause;
+  return cause ? hasTransientDbCause(cause, depth + 1) : false;
+}
+
+function isConnectionErr(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: string; errno?: string; message?: string };
+  const code = String(e.code ?? e.errno ?? "");
+  if (
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "CONNECTION_DESTROYED" ||
+    code === "57P01" ||
+    code === "08006" ||
+    code === "CONNECTION_CLOSED" ||
+    code === "XX000"
+  ) {
+    return true;
+  }
+  const msg = String(e.message ?? "").toLowerCase();
+  return (
+    msg.includes("connection_closed") ||
+    msg.includes("connection_destroyed") ||
+    msg.includes("write connection_closed")
   );
 }
 
 function collectPostgresCodes(err: unknown, depth = 0): string[] {
   if (!err || typeof err !== "object" || depth > 4) return [];
-  const e = err as { code?: unknown; cause?: unknown };
+  const e = err as { code?: unknown; errno?: unknown; cause?: unknown };
   const out: string[] = [];
   if (typeof e.code === "string" && e.code.trim()) out.push(e.code.trim());
+  if (typeof e.errno === "string" && e.errno.trim()) out.push(e.errno.trim());
   if (e.cause) out.push(...collectPostgresCodes(e.cause, depth + 1));
   return out;
 }

@@ -22,22 +22,22 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { formatRideOfferSubline } from "@/lib/ride-offers";
 import type { ImageSourcePropType } from "react-native";
+import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
+import { CX } from "@/lib/appAssetKeys";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
 const CARD_W = SCREEN_W - PAD * 2;
 const SLIDE_GAP = 12;
 const DEFAULT_CARD_H = 136;
-const OFFER_BANNER_ART = require("../../public/img/offerimg.png");
-const OFFER_BANNER_ART_2 = require("../../public/img/offer2.png");
-const RIDE_OFFER_BANNER_ART_1 = require("../../public/img/offer1.png");
-const RIDE_OFFER_BANNER_ART_2 = require("../../public/img/offer2.png");
-const FOOD_OFFER_BANNER_ARTS = [OFFER_BANNER_ART, OFFER_BANNER_ART_2] as const;
-const RIDE_OFFER_BANNER_ARTS = [RIDE_OFFER_BANNER_ART_1, RIDE_OFFER_BANNER_ART_2] as const;
+const FOOD_OFFER_ASSET_KEYS = [CX.home.promoOffer, CX.home.promoOffer2] as const;
+const RIDE_OFFER_ASSET_KEYS = [CX.home.promoRideOffer1, CX.home.promoRideOffer2] as const;
 
-function offerBannerArt(index: number, mode: "home" | "food" | "ride" = "home") {
-  const arts = mode === "ride" ? RIDE_OFFER_BANNER_ARTS : FOOD_OFFER_BANNER_ARTS;
-  return arts[index % arts.length];
+function offerBannerArt(index: number, mode: "home" | "food" | "ride" = "home"): ImageSourcePropType | null {
+  const keys = mode === "ride" ? RIDE_OFFER_ASSET_KEYS : FOOD_OFFER_ASSET_KEYS;
+  const key = keys[index % keys.length];
+  const uri = getAppAssetUrl(key);
+  return uri ? { uri } : null;
 }
 const PROMO_AUTO_MS = 5500;
 const LIMITED_TIME_MAX_DAYS = 5;
@@ -123,7 +123,7 @@ function slideBackgroundSource(
   index: number,
   imageFailed: boolean,
   mode: "home" | "food" | "ride"
-): ImageSourcePropType {
+): ImageSourcePropType | null {
   const useMerchantUpload =
     slide.kind === "merchant" && !!slide.imageUrl && !imageFailed;
   if (useMerchantUpload) return { uri: slide.imageUrl! };
@@ -205,20 +205,11 @@ function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideC
   const [imageFailed, setImageFailed] = useState(false);
   const customBanner = hasCustomMerchantBanner(slide, imageFailed);
   const showParty = slide.sub.toLowerCase().includes("first order");
+  const bgSource = slideBackgroundSource(slide, index, imageFailed, mode);
+  useAppAssetsStore((s) => s.assets);
 
-  return (
-    <TouchableOpacity
-      style={[styles.promoCardOuter, { width: CARD_W, height: cardHeight }]}
-      activeOpacity={0.92}
-      onPress={() => onPress(slide)}
-    >
-      <ImageBackground
-        source={slideBackgroundSource(slide, index, imageFailed, mode)}
-        style={[styles.promoCard, { height: cardHeight }]}
-        imageStyle={styles.promoBgImage}
-        resizeMode="cover"
-        onError={() => setImageFailed(true)}
-      >
+  const content = (
+    <>
         {!customBanner ? (
           <LinearGradient
             colors={["rgba(12,100,68,0.22)", "rgba(12,100,68,0.06)", "transparent"]}
@@ -260,7 +251,30 @@ function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideC
             <Ionicons name="chevron-forward" size={14} color={CTA_TEXT} />
           </View>
         </View>
-      </ImageBackground>
+    </>
+  );
+
+  return (
+    <TouchableOpacity
+      style={[styles.promoCardOuter, { width: CARD_W, height: cardHeight }]}
+      activeOpacity={0.92}
+      onPress={() => onPress(slide)}
+    >
+      {bgSource ? (
+        <ImageBackground
+          source={bgSource}
+          style={[styles.promoCard, { height: cardHeight }]}
+          imageStyle={styles.promoBgImage}
+          resizeMode="cover"
+          onError={() => setImageFailed(true)}
+        >
+          {content}
+        </ImageBackground>
+      ) : (
+        <View style={[styles.promoCard, { height: cardHeight }]}>
+          {content}
+        </View>
+      )}
     </TouchableOpacity>
   );
 }
@@ -283,6 +297,7 @@ export function HomePromoCarousel({
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  useAppAssetsStore((s) => s.assets);
 
   const slides: Slide[] = useMemo(() => {
     const picked = pickOffersForCarousel(offers, mode);

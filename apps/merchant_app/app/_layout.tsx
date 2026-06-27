@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import "react-native-gesture-handler";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -21,6 +22,8 @@ import AcceptanceTimeoutSync from "../components/AcceptanceTimeoutSync";
 import { IncomingOrderSheetProvider } from "@/context/IncomingOrderSheetContext";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
+import { fetchMerchantAppAssets } from "@/services/appAssets.service";
+import { isAppAssetsLoaded, setAppAssets } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 
 const queryClient = new QueryClient({
@@ -33,6 +36,13 @@ const queryClient = new QueryClient({
 });
 
 export default function RootLayout() {
+  useEffect(() => {
+    if (isAppAssetsLoaded()) return;
+    void fetchMerchantAppAssets()
+      .then((res) => setAppAssets(res.assets ?? {}))
+      .catch(() => setAppAssets({}));
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <GestureHandlerRootView style={{ flex: 1 }}>

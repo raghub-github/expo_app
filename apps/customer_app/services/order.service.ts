@@ -413,9 +413,12 @@ export const orderService = {
   async payRideFare(
     orderId: string,
     payload: {
-      razorpayOrderId: string;
-      razorpayPaymentId: string;
-      razorpaySignature: string;
+      razorpayOrderId?: string;
+      razorpayPaymentId?: string;
+      razorpaySignature?: string;
+      gatiCashAmount?: number;
+      couponCode?: string;
+      platformOfferId?: number;
     }
   ): Promise<{ ok: true; amountPaid: number }> {
     const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/ride-fare-payment`, payload);
