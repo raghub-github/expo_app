@@ -127,7 +127,7 @@ async function loadShareByToken(token: string): Promise<ShareRow | null> {
 export async function createAddressShareLink(args: {
   customerPk: number;
   addressId: number;
-}): Promise<{ token: string; shortCode: string; url: string; expiresAt: string; shareMessage: string }> {
+}): Promise<{ token: string; shortCode: string; url: string; expiresAt: string; shareMessage: string; linkPreviewSupported: boolean }> {
   const db = getDb();
   const [addr] = await db
     .select()

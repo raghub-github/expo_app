@@ -133,6 +133,13 @@ export type StoreQuoteResult =
         weather_severity?: string | null;
         weather_chip_label?: string | null;
         weather_show_impact?: boolean;
+        /**
+         * Itemised customer-facing breakdown (base fare, distance fare, min
+         * charge, GST, source). Built by `buildCustomerPricingBreakdown` so
+         * the checkout sheet and customer support tools see the same line
+         * items the billing engine used.
+         */
+        customer_pricing?: import("@gatimitra/contracts").CustomerPricingBreakdown;
       };
     }
   | { ok: false; code: string; message: string };

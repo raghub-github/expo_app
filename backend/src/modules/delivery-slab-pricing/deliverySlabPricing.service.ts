@@ -119,6 +119,16 @@ export type SelectedSlabQuote = {
   preMinChargeTotal: number;
   minCharge: number | null;
   finalAmount: number;
+  /**
+   * Per-slab segments used to compute the progressive total. Populated by
+   * storeQuote.service when a real slab calc ran; absent for legacy /
+   * pre-progressive callers. The `segments` shape is the same as
+   * `ProgressiveSlabQuote["segments"]` — kept loose here to avoid an
+   * import cycle.
+   */
+  segments?: import("./types.js").ProgressiveSlabSegment[];
+  /** Free distance included in the base fare (km). */
+  includedKm?: number;
 };
 
 /** @deprecated Unused — kept for API compatibility. Prefer calculateProgressiveSlabAmount. */
