@@ -41,6 +41,10 @@ import { SubscriptionPlansPrefetch } from "@/components/SubscriptionPlansPrefetc
 import { FoodHomeLayoutPrefetch } from "@/components/FoodHomeLayoutPrefetch";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import { profileService } from "@/services/profile.service";
+import {
+  getContactsPermissionGranted,
+  getSmsPermissionGranted,
+} from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT, resolveBottomSafeInset, screenManagesBottomNav } from "@/constants/layout";
@@ -195,7 +199,7 @@ export default function RootLayout() {
               <StoreStatusRealtimeSync />
               <OrderRealtimeSync />
               <SessionRevokedHandler />
-              <LocationPermissionRealtimeSync />
+              <CustomerPermissionsRealtimeSync />
               <LocationPermissionResumeCheck />
               <LanguageSync />
               <CustomerSystemChrome />
@@ -297,50 +301,68 @@ function SessionRevokedHandler() {
   return null;
 }
 
-function LocationPermissionRealtimeSync() {
+function CustomerPermissionsRealtimeSync() {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
-  const lastSyncedRef = useRef<boolean | null>(null);
-  const syncInFlightRef = useRef(false);
+  const lastSyncedRef = useRef<{
+    location: boolean;
+    sms: boolean;
+    contacts: boolean;
+  } | null>(null);
 
-  const syncLocationPermission = useCallback(async () => {
-    if (!hydrated || !session || syncInFlightRef.current) return;
-    syncInFlightRef.current = true;
+  const syncDevicePermissions = useCallback(async () => {
+    if (!hydrated || !session) return;
     try {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      const granted = status === "granted";
+      const [{ status: locStatus }, smsGranted, contactsGranted] = await Promise.all([
+        Location.getForegroundPermissionsAsync(),
+        getSmsPermissionGranted(),
+        getContactsPermissionGranted(),
+      ]);
+      const locationGranted = locStatus === "granted";
+      const snapshot = {
+        location: locationGranted,
+        sms: smsGranted,
+        contacts: contactsGranted,
+      };
 
-      if (lastSyncedRef.current === granted) return;
+      if (
+        lastSyncedRef.current &&
+        lastSyncedRef.current.location === snapshot.location &&
+        lastSyncedRef.current.sms === snapshot.sms &&
+        lastSyncedRef.current.contacts === snapshot.contacts
+      ) {
+        return;
+      }
 
       const currentCoords = useLocationStore.getState().coords;
       await profileService.updateProfile({
-        location_permission: granted,
-        ...(granted && currentCoords
+        location_permission: snapshot.location,
+        sms_permission: snapshot.sms,
+        contacts_permission: snapshot.contacts,
+        ...(snapshot.location && currentCoords
           ? { latitude: currentCoords.latitude, longitude: currentCoords.longitude }
           : {}),
       });
 
-      lastSyncedRef.current = granted;
+      lastSyncedRef.current = snapshot;
     } catch {
       // Keep silent; we'll retry on next app active tick.
-    } finally {
-      syncInFlightRef.current = false;
     }
   }, [hydrated, session]);
 
   useEffect(() => {
-    void syncLocationPermission();
+    void syncDevicePermissions();
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if (nextState === "active") void syncLocationPermission();
+      if (nextState === "active") void syncDevicePermissions();
     });
     const interval = setInterval(() => {
-      if (AppState.currentState === "active") void syncLocationPermission();
+      if (AppState.currentState === "active") void syncDevicePermissions();
     }, 15000);
     return () => {
       sub.remove();
       clearInterval(interval);
     };
-  }, [syncLocationPermission]);
+  }, [syncDevicePermissions]);
 
   return null;
 }

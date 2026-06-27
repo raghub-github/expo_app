@@ -233,7 +233,9 @@ export function LedgerScreen() {
                   </Pressable>
                   {toggleWithPeriodControl}
                 </View>
-                <LedgerGraphView data={graphData} loading={graphPending} />
+                {graphData ? (
+                  <LedgerGraphView data={graphData} loading={graphPending} />
+                ) : null}
               </>
             )}
           </View>

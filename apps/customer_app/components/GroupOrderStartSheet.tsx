@@ -23,7 +23,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useLocationStore } from "@/store/locationStore";
-import { useAuthStore } from "@/store/authStore";
+import { useProfile } from "@/hooks/useProfile";
 
 const MAX_GROUP_MEMBERS = 30;
 
@@ -67,8 +67,8 @@ export function GroupOrderStartSheet({
   const safeBottom = insets.bottom;
   const router = useRouter();
   const address = useLocationStore((s) => s.address);
-  const profile = useAuthStore((s) => s.profile);
-  const displayName = profile?.name?.trim() || profile?.primaryMobile || "You";
+  const profile = useProfile().data;
+  const displayName = profile?.full_name?.trim() || profile?.mobile_number || "You";
   const defaultOrderTitle = displayName === "You" ? "Your group order" : `${displayName}'s group order`;
 
   const [orderTitle, setOrderTitle] = useState(defaultOrderTitle);

@@ -15,8 +15,8 @@ import {
   Linking,
   BackHandler,
   Platform,
-  type ReactNode,
 } from "react-native";
+import type { ReactNode } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";

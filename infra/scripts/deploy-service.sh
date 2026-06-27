@@ -123,6 +123,25 @@ for old in "${old_cids[@]}"; do
   docker rm   "$old" >/dev/null || true
 done
 
+# Force nginx to re-resolve upstream hostnames. Without this, nginx caches the
+# old container's IP at startup; after a redeploy the new container gets a
+# fresh IP and traffic for that service silently 404s (or worse, lands on a
+# sibling service that took over the old IP — e.g. partnersite picking up
+# backend's old IP since both listen on :3000). The exec is best-effort: if
+# nginx isn't running yet (first deploy) or the reload fails, log it and
+# continue — we already verified the new container is healthy.
+if [[ "$svc" != "nginx" ]]; then
+  echo "▶ deploy: $svc — reloading nginx to re-resolve upstream DNS"
+  nginx_cid=$("${compose[@]}" ps -q nginx | head -1 || true)
+  if [[ -n "$nginx_cid" ]]; then
+    if docker exec "$nginx_cid" nginx -s reload 2>/dev/null; then
+      echo "✔ deploy: $svc — nginx reloaded"
+    else
+      echo "⚠ deploy: $svc — nginx reload failed (not fatal; manual restart may be needed)"
+    fi
+  fi
+fi
+
 echo "▶ deploy: $svc — pruning dangling images"
 docker image prune -f >/dev/null
 

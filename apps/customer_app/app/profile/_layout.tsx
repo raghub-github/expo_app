@@ -1,13 +1,9 @@
 import { Stack } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 
 const HEADER_BG = "#FFFFFF";
 
 export default function ProfileLayout() {
-  const insets = useSafeAreaInsets();
-  const statusBarHeight = insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
   return (
     <>
       <AndroidBackHandler />
@@ -18,7 +14,6 @@ export default function ProfileLayout() {
         headerTintColor: "#1A1A1A",
         headerTitleStyle: { fontWeight: "700", fontSize: 18 },
         headerShadowVisible: false,
-        headerStatusBarHeight: statusBarHeight,
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />

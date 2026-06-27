@@ -16,6 +16,7 @@ import { shareReferralCode } from "@/lib/referralShare";
 import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
 import { useProfile } from "@/hooks/useProfile";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
+import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMembershipSheet";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -68,6 +69,7 @@ export default function ProfileScreen() {
     return buildEmailAvatarCandidates(email, profileImageUrl);
   }, [showEmailAvatar, email, profileImageUrl]);
   const [avatarIndex, setAvatarIndex] = useState(0);
+  const [membershipSheetVisible, setMembershipSheetVisible] = useState(false);
   const avatarUri = avatarCandidates[avatarIndex] ?? null;
   const subscriptionActive = subscriptionStatus?.active ?? profile?.gmitra_plus_active ?? false;
   const subscriptionPlanName =
@@ -96,9 +98,14 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const freeDeliveryNote = useMemo(() => {
+    if (!subscriptionStatus?.plan?.freeDeliveryEnabled || freeDeliveryRadius == null) return null;
+    return `Free delivery within ${freeDeliveryRadius} km on eligible orders.`;
+  }, [subscriptionStatus?.plan?.freeDeliveryEnabled, freeDeliveryRadius]);
+
   const handleSubscriptionPress = useCallback(() => {
-    router.push("/profile/subscription");
-  }, [router]);
+    setMembershipSheetVisible(true);
+  }, []);
 
   const handleReferNow = useCallback(() => {
     void shareReferralCode(referralCode, displayName);
@@ -283,6 +290,21 @@ export default function ProfileScreen() {
 
         <BrandingFooter />
       </ScrollView>
+
+      <GmitraPlusMembershipSheet
+        visible={membershipSheetVisible}
+        onClose={() => setMembershipSheetVisible(false)}
+        active={subscriptionActive}
+        planName={subscriptionPlanName}
+        benefits={subscriptionBenefits}
+        freeDeliveryNote={freeDeliveryNote}
+        description={
+          subscriptionActive
+            ? null
+            : `Add ${subscriptionPlanName} at checkout on your next order — save on delivery and unlock member-only offers.`
+        }
+        onBrowseRestaurants={() => router.push("/(tabs)")}
+      />
     </View>
   );
 }

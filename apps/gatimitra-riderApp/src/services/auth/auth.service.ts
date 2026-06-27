@@ -185,9 +185,19 @@ export const riderAuthService = {
       );
     }
 
+    // Normalize phone to strict E.164 (same as partnersite). Supabase rejects
+    // mixed formats.
+    const normalizedPhone = payload.phoneE164.startsWith("+")
+      ? payload.phoneE164
+      : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
+
+    // IMPORTANT: do NOT pass `shouldCreateUser: true` for phone OTP. With the
+    // Send SMS Hook configured, the explicit flag triggers a user-creation
+    // flow that races the hook and Supabase returns 500 `unexpected_failure`
+    // for already-known numbers.
     const { error } = await supabase.auth.signInWithOtp({
-      phone: payload.phoneE164,
-      options: { channel: "sms", shouldCreateUser: true },
+      phone: normalizedPhone,
+      options: { channel: "sms" },
     });
 
     if (__DEV__) {
@@ -198,21 +208,25 @@ export const riderAuthService = {
           name: error.name,
           status: (error as { status?: number }).status,
           code: (error as { code?: string }).code,
+          phoneE164: normalizedPhone,
         });
       } else {
         // eslint-disable-next-line no-console
         console.log(
-          "[RiderAuth] sendOtp: Supabase OK (session stays null until verify — normal). If no SMS: set Auth → Hooks → Send SMS to your public API /v1/auth/supabase-send-sms with MSG91_* on the server.",
+          "[RiderAuth] sendOtp: Supabase OK — SMS via Send SMS Hook → MSG91.",
         );
       }
     }
 
     if (error) {
-      const hint =
-        /hook|sms|provider|phone/i.test(error.message || "")
-          ? " Check Supabase Auth (Phone enabled), Send SMS hook URL, and backend MSG91 / SUPABASE_SEND_SMS_HOOK_SECRET."
-          : "";
-      throw new Error((error.message || "Could not send OTP via Supabase.") + hint);
+      const msg = error.message || "Could not send OTP via Supabase.";
+      const hint = /provider|sms|phone|hook/i.test(msg)
+        ? " Check Supabase Dashboard → Auth → Providers → Phone (enabled) + Auth → Hooks → Send SMS (URL + secret)."
+        : "";
+      if ((error as { status?: number }).status === 429 || /rate.?limit|too many/i.test(msg)) {
+        throw new Error("Too many OTP attempts on this number. Wait an hour or use a different number.");
+      }
+      throw new Error(msg + hint);
     }
   },
 

@@ -1,0 +1,219 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============= ENUMS =============
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  EDITOR
+}
+
+enum PageStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum ServiceType {
+  LANDING_PAGE
+  FOOD
+  RIDE
+  PARCEL
+}
+
+// ============= CORE MODELS =============
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  password     String?
+  role         Role      @default(EDITOR)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  revisions    Revision[]
+  activityLogs ActivityLog[]
+}
+
+model GlobalSettings {
+  id              String   @id @default(cuid())
+  // Branding
+  brandName       String   @default("UserDash")
+  logoUrl         String?
+  faviconUrl      String?
+  
+  // Colors & Theme
+  primaryColor    String   @default("#3B82F6")
+  secondaryColor  String   @default("#1F2937")
+  accentColor     String   @default("#10B981")
+  backgroundColor String   @default("#FFFFFF")
+  textColor       String   @default("#1F2937")
+  
+  // Metadata
+  metaTitle       String?
+  metaDescription String?
+  
+  // Contact
+  supportEmail    String?
+  supportPhone    String?
+  
+  updatedAt       DateTime @updatedAt
+}
+
+// ============= PAGE & CONTENT MODELS =============
+model Page {
+  id               String   @id @default(cuid())
+  slug             String   @unique
+  title            String
+  description      String?
+  service          ServiceType
+  status           PageStatus @default(DRAFT)
+  order            Int      @default(0)
+  
+  // SEO & Metadata
+  seoTitle         String?
+  seoDescription   String?
+  seoKeywords      String?
+  ogImage          String?
+  
+  // Publishing
+  publishedAt      DateTime?
+  publishedBy      String?
+  
+  // Content
+  sections         Section[]
+  revisions        Revision[]
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Section {
+  id               String   @id @default(cuid())
+  pageId           String
+  page             Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  
+  type             String   // "hero", "banner", "cards", "content", "pricing", "testimonials", etc.
+  title            String?
+  description      String?
+  order            Int      @default(0)
+  visible          Boolean  @default(true)
+  
+  // Dynamic content stored as JSON
+  props            Json     @default("{}")
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([pageId])
+}
+
+// ============= DRAFT & VERSION CONTROL =============
+model Draft {
+  id               String   @id @default(cuid())
+  pageId           String
+  
+  title            String
+  description      String?
+  service          ServiceType
+  
+  seoTitle         String?
+  seoDescription   String?
+  seoKeywords      String?
+  ogImage          String?
+  
+  sections         Json     @default("[]") // Array of section objects
+  
+  lastSavedBy      String?
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([pageId])
+}
+
+model Revision {
+  id               String   @id @default(cuid())
+  pageId           String
+  page             Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  
+  authorId         String
+  author           User     @relation(fields: [authorId], references: [id])
+  
+  title            String
+  description      String?
+  
+  sections         Json     // Complete page snapshot
+  
+  changeNote       String?
+  
+  createdAt        DateTime @default(now())
+
+  @@index([pageId, createdAt])
+}
+
+// ============= MEDIA MANAGEMENT =============
+model Media {
+  id               String   @id @default(cuid())
+  url              String
+  key              String   @unique
+  fileName         String
+  mimeType         String
+  size             Int
+  
+  width            Int?
+  height           Int?
+  
+  uploader         String?  // User ID who uploaded
+  altText          String?
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([createdAt])
+}
+
+// ============= ANALYTICS & LOGGING =============
+model ActivityLog {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  
+  action           String   // "created", "updated", "published", "reverted"
+  resourceType     String   // "page", "section", "settings"
+  resourceId       String?
+  
+  details          Json?    // Additional info about the change
+  
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([resourceType, createdAt])
+}
+
+model Analytics {
+  id               String   @id @default(cuid())
+  service          ServiceType
+  date             DateTime
+  
+  totalOrders      Int      @default(0)
+  totalUsers       Int      @default(0)
+  totalRevenue     Float    @default(0)
+  
+  pageViews        Int      @default(0)
+  uniqueVisitors   Int      @default(0)
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([service, date])
+}
+
+

@@ -159,7 +159,8 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { data: chatUnreadCount = 0 } = usePartnerChatUnread(order.orderId, Boolean(order.rider));
+  const { data: chatUnreadData } = usePartnerChatUnread(order.orderId, Boolean(order.rider));
+  const chatUnreadCount = chatUnreadData?.unreadCount ?? 0;
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
 
@@ -188,7 +189,6 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
     const raw = order.rider?.rating;
     if (raw == null) return null;
     if (typeof raw === "number" && Number.isFinite(raw)) return raw.toFixed(1);
-    if (typeof raw === "string" && raw.trim()) return raw.trim();
     return null;
   })();
   const existingTip = Math.max(0, deliveredBill.tip);

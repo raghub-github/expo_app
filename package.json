@@ -36,6 +36,7 @@
     "expo-notifications": "~0.32.17",
     "react-native-reanimated": "4.1.1",
     "react-native-worklets": "0.5.1",
+    "drizzle-orm": "0.45.2",
     "bullmq": {
       "ioredis": "$ioredis"
     }

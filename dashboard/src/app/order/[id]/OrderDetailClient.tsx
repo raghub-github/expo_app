@@ -1682,6 +1682,7 @@ export default function OrderDetailClient({
             <CustomerDetails
               order={{
                 userId: order.customerExternalId ?? order.customerId ?? order.id,
+                customerDbId: order.customerId,
                 customerLatLon:
                   order.dropLat != null && order.dropLon != null
                     ? `${order.dropLat}, ${order.dropLon}`

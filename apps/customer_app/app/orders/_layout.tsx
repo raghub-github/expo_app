@@ -8,7 +8,6 @@ export default function OrdersLayout() {
       <Stack
       screenOptions={{
         headerShown: true,
-        headerStatusBarHeight: 0,
       }}
     >
       {/* Hide the native stack header on the tracking screen — the screen

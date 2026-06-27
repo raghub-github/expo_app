@@ -272,6 +272,28 @@ const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().positive().max(100)
   ).default(22),
+
+  /**
+   * Google Play Review Mode.
+   *
+   * When ALL three are set AND `GOOGLE_REVIEW_MODE=true`, the OTP /request
+   * path skips the SMS provider for the single phone `GOOGLE_REVIEW_PHONE`
+   * and seeds the stored OTP as `GOOGLE_REVIEW_OTP`. Verification continues
+   * through the existing pipeline — same JWT, same role, same middleware.
+   *
+   * Any other phone, or `GOOGLE_REVIEW_MODE=false`, behaves exactly as
+   * before (real SMS via MSG91). Disabling is a single env flip — no code
+   * change required.
+   *
+   * Security: these values are server-only. They are never returned in any
+   * API response, never logged in full, and never read by the client.
+   */
+  GOOGLE_REVIEW_MODE: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  GOOGLE_REVIEW_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),
+  GOOGLE_REVIEW_OTP: z.preprocess(emptyToUndefined, z.string().regex(/^\d{4,8}$/).optional()),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

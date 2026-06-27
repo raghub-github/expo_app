@@ -10,9 +10,18 @@ export type OrderBillBreakdown = {
   platformFee: number;
   donation: number;
   tipAmount: number;
+  surgeFee: number;
+  smallOrderFee: number;
+  convenienceFee: number;
+  miscFee: number;
+  subscriptionLabel: string | null;
+  subscriptionFee: number;
   grandTotal: number;
   couponCode: string | null;
   couponDiscount: number;
+  gatiCashApplied: number;
+  missedOfferDiscount: number;
+  missedOfferWalletAdd: number;
   paid: number;
   totalSavings: number;
 };
@@ -65,6 +74,53 @@ function extractCouponFromDiscounts(snapshot: Record<string, unknown>): {
   return { code, amount };
 }
 
+function pickSubscriptionFromCharges(snapshot: Record<string, unknown>): {
+  label: string | null;
+  amount: number;
+} {
+  const charges = Array.isArray(snapshot.charges) ? snapshot.charges : [];
+  const visible = charges.filter((raw) => {
+    if (!raw || typeof raw !== "object") return false;
+    const c = raw as { amount?: unknown; hidden?: boolean; meta?: Record<string, unknown> };
+    if (c.hidden) return false;
+    if (num(c.amount) <= 0.005) return false;
+    if (c.meta?.source === "customer_subscription_delivery_waived_marker") return false;
+    return true;
+  });
+
+  const checkout = visible.find((raw) => {
+    const c = raw as { meta?: Record<string, unknown> };
+    return c.meta?.source === "customer_subscription_checkout";
+  });
+  if (checkout && typeof checkout === "object") {
+    const c = checkout as { label?: unknown; amount?: unknown };
+    return {
+      label: String(c.label ?? "Membership").trim() || "Membership",
+      amount: num(c.amount),
+    };
+  }
+
+  const subscription = visible.find((raw) => {
+    const c = raw as { label?: unknown; meta?: Record<string, unknown> };
+    const lbl = String(c.label ?? "").toLowerCase();
+    return (
+      lbl.includes("gmitra") ||
+      lbl.includes("plus") ||
+      lbl.includes("gold") ||
+      lbl.includes("subscription")
+    );
+  });
+  if (subscription && typeof subscription === "object") {
+    const c = subscription as { label?: unknown; amount?: unknown };
+    return {
+      label: String(c.label ?? "Membership").trim() || "Membership",
+      amount: num(c.amount),
+    };
+  }
+
+  return { label: null, amount: 0 };
+}
+
 export function parseOrderBillFromSnapshot(
   snapshot: Record<string, unknown> | null | undefined,
   fallbackTotal: number | null | undefined,
@@ -89,13 +145,22 @@ export function parseOrderBillFromSnapshot(
   const donation = num(snap.donation_amount);
   const tipAmount =
     num(snap.tip_amount) > 0.005 ? num(snap.tip_amount) : num(fallbackTipAmount);
-  const extraFees =
-    num(snap.surge_fee) +
-    num(snap.small_order_fee) +
-    num(snap.convenience_fee) +
-    num(snap.misc_fee);
+  const surgeFee = num(snap.surge_fee);
+  const smallOrderFee = num(snap.small_order_fee);
+  const convenienceFee = num(snap.convenience_fee);
+  const miscFee = num(snap.misc_fee);
+  const { label: subscriptionLabel, amount: subscriptionFee } = pickSubscriptionFromCharges(snap);
+
+  const checkoutAdj =
+    snap.checkoutAdjustments && typeof snap.checkoutAdjustments === "object"
+      ? (snap.checkoutAdjustments as Record<string, unknown>)
+      : null;
+  const gatiCashApplied = num(checkoutAdj?.gatiCashApplied);
+  const missedOfferDiscount = num(checkoutAdj?.missedOfferDiscount);
+  const missedOfferWalletAdd = num(checkoutAdj?.missedOfferWalletAdd);
 
   const paid = num(snap.final_amount) || fallbackTotal || 0;
+  const baseFinalAmount = num(snap.baseFinalAmount);
 
   const discountTotal = num(snap.discount_total);
   const discountFromLines = sumDiscountLines(snap);
@@ -113,8 +178,25 @@ export function parseOrderBillFromSnapshot(
           : 0;
 
   const deliveryForGrand = deliveryFeeOriginal ?? deliveryFee;
+  const componentGrand =
+    itemTotal +
+    gstAndPackaging +
+    deliveryForGrand +
+    platformFee +
+    donation +
+    tipAmount +
+    surgeFee +
+    smallOrderFee +
+    convenienceFee +
+    miscFee +
+    subscriptionFee;
+
   const grandTotal =
-    itemTotal + gstAndPackaging + deliveryForGrand + platformFee + donation + tipAmount + extraFees;
+    baseFinalAmount > 0.005
+      ? baseFinalAmount
+      : componentGrand > 0.005
+        ? componentGrand
+        : paid + couponDiscount + gatiCashApplied + missedOfferDiscount - missedOfferWalletAdd;
 
   let deliverySavings = 0;
   if (deliveryFeeQuoted > deliveryFee + 0.005) {
@@ -131,9 +213,18 @@ export function parseOrderBillFromSnapshot(
     platformFee,
     donation,
     tipAmount,
+    surgeFee,
+    smallOrderFee,
+    convenienceFee,
+    miscFee,
+    subscriptionLabel,
+    subscriptionFee,
     grandTotal,
     couponCode,
     couponDiscount,
+    gatiCashApplied,
+    missedOfferDiscount,
+    missedOfferWalletAdd,
     paid,
     totalSavings,
   };

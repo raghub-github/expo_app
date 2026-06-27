@@ -19,7 +19,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useLocationStore } from "@/store/locationStore";
-import { useAuthStore } from "@/store/authStore";
+import { useProfile } from "@/hooks/useProfile";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 
@@ -35,8 +35,8 @@ export default function GroupOrderScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const address = useLocationStore((s) => s.address);
-  const profile = useAuthStore((s) => s.profile);
-  const displayName = profile?.name?.trim() || profile?.primaryMobile || "You";
+  const profile = useProfile().data;
+  const displayName = profile?.full_name?.trim() || profile?.mobile_number || "You";
 
   useEnsureStoreLiveStatus(storeId ?? null);
   const storeStatus = useStoreStatusStore((s) => (storeId ? (s.statusMap[storeId] ?? null) : null));

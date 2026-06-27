@@ -9,6 +9,7 @@ import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { AlertCircle } from "lucide-react";
 import { isStructuredCustomerSearch } from "@/lib/customers/search-kind";
+import { buildCustomerDetailHref } from "@/lib/navigation/customer-dashboard-from-order";
 
 /**
  * Global customer search: matches customer_id, mobile, name, email (API).
@@ -80,13 +81,23 @@ export function CustomersGlobalSearchView() {
     if (customersSorted.length === 0) return;
     const q = encodeURIComponent(trimmed);
     if (customersSorted.length === 1) {
-      router.replace(`/dashboard/customers/${customersSorted[0].id}?search=${q}`);
+      router.replace(
+        buildCustomerDetailHref(customersSorted[0].id, {
+          search: trimmed,
+          fromOrderSource: searchParams,
+        })
+      );
       return;
     }
     if (customersSorted.length > 1 && structured) {
-      router.replace(`/dashboard/customers/${customersSorted[0].id}?search=${q}`);
+      router.replace(
+        buildCustomerDetailHref(customersSorted[0].id, {
+          search: trimmed,
+          fromOrderSource: searchParams,
+        })
+      );
     }
-  }, [isLoading, isError, shouldFetch, customersSorted, router, structured, trimmed]);
+  }, [isLoading, isError, shouldFetch, customersSorted, router, structured, trimmed, searchParams]);
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);

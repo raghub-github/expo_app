@@ -1,0 +1,217 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
+import { getSupabaseServiceRole } from '@/lib/supabaseServiceRole'
+
+/** Map merchant_stores row to the shape expected by RestaurantPage. Exact DB values only, no defaults for status. */
+function mapStoreToRestaurant(row: Record<string, unknown>) {
+  const storeName = (row.store_display_name ?? row.store_name ?? '') as string
+  const cuisineTypes = (row.cuisine_types as string[] | null) ?? []
+  const cuisineType = cuisineTypes.length > 0 ? cuisineTypes.join(', ') : ''
+  return {
+    id: row.id,
+    store_id: row.store_id,
+    restaurant_id: row.store_id,
+    restaurant_name: storeName,
+    name: storeName,
+    address: row.full_address,
+    full_address: row.full_address,
+    landmark: row.landmark,
+    city: row.city,
+    state: row.state,
+    postal_code: row.postal_code,
+    country: row.country,
+    image_url: row.banner_url,
+    banner_url: row.banner_url,
+    store_img: row.store_img ?? null,
+    cuisine_type: cuisineType,
+    cuisine_types: cuisineTypes,
+    is_veg: row.is_pure_veg ?? false,
+    is_pure_veg: row.is_pure_veg ?? false,
+    avg_preparation_time_minutes: row.avg_preparation_time_minutes ?? null,
+    min_order_amount: row.min_order_amount ?? null,
+    delivery_radius_km: row.delivery_radius_km ?? null,
+    is_active: row.is_active ?? null,
+    is_accepting_orders: row.is_accepting_orders ?? null,
+    status: row.status ?? null,
+    approval_status: row.approval_status ?? null,
+    is_verified: (row.approval_status as string) === 'APPROVED',
+    store_name: row.store_name,
+    store_display_name: row.store_display_name,
+    store_description: row.store_description,
+    store_email: row.store_email,
+    store_phones: row.store_phones ?? null,
+    gallery_images: row.gallery_images ?? null,
+    latitude: row.latitude ?? null,
+    longitude: row.longitude ?? null,
+    /** Exact value from merchant_stores.operational_status – OPEN, CLOSED, TEMPORARILY_CLOSED, or null. No frontend default. */
+    operational_status: row.operational_status ?? null,
+    opening_time: row.opening_time ?? null,
+    closing_time: row.closing_time ?? null,
+    phone: Array.isArray(row.store_phones) && (row.store_phones as string[]).length > 0
+      ? (row.store_phones as string[])[0]
+      : (row.store_phones as string) || null,
+    fssai_license: (row.fssai_license as string) || (row.fssai_license_number as string) || null,
+  }
+}
+
+const DEBUG = process.env.NODE_ENV !== 'production' || process.env.DEBUG === '1'
+function log(...args: unknown[]) {
+  if (DEBUG) console.log('[GET /api/restaurants/[storeId]]', new Date().toISOString(), ...args)
+}
+
+/** Format time from DB (e.g. "09:00:00") to "9:00 AM" / "12:30 PM" */
+function formatTime(t: string | null | undefined): string | null {
+  if (t == null || String(t).trim() === '') return null
+  const s = String(t).trim()
+  const part = s.split(':')
+  const h = parseInt(part[0], 10)
+  if (Number.isNaN(h)) return null
+  const m = part[1] ? parseInt(part[1], 10) : 0
+  if (Number.isNaN(m)) return null
+  if (h === 0 && m === 0) return '12:00 AM'
+  if (h < 12) return `${h}:${m.toString().padStart(2, '0')} AM`
+  if (h === 12) return `12:${m.toString().padStart(2, '0')} PM`
+  return `${h - 12}:${m.toString().padStart(2, '0')} PM`
+}
+
+/** Normalize closed_days[] entries for comparison with weekday keys and labels */
+function isDayMarkedClosed(
+  dayKey: string,
+  dayLabel: string,
+  closedDays: unknown
+): boolean {
+  if (!Array.isArray(closedDays) || closedDays.length === 0) return false
+  const label = dayLabel.toLowerCase()
+  const key = dayKey.toLowerCase()
+  for (const raw of closedDays) {
+    const s = String(raw).trim().toLowerCase()
+    if (!s) continue
+    if (s === label || s === key) return true
+  }
+  return false
+}
+
+function buildOneDaySlots(
+  day: string,
+  dayLabel: string,
+  row: Record<string, unknown>,
+  is24: boolean
+): { day: string; open: boolean; slots: string[] } {
+  const inClosedDays = isDayMarkedClosed(day, dayLabel, row.closed_days)
+  const open = row[`${day}_open`] === true && !inClosedDays
+  const slot1Start = formatTime(row[`${day}_slot1_start`] as string)
+  const slot1End = formatTime(row[`${day}_slot1_end`] as string)
+  const slot2Start = formatTime(row[`${day}_slot2_start`] as string)
+  const slot2End = formatTime(row[`${day}_slot2_end`] as string)
+  const slots: string[] = []
+  if (open && is24) slots.push('24 hours')
+  else if (open && slot1Start && slot1End) {
+    slots.push(`${slot1Start} – ${slot1End}`)
+    if (slot2Start && slot2End) slots.push(`${slot2Start} – ${slot2End}`)
+  } else if (open) slots.push('Open')
+  return { day: dayLabel, open, slots }
+}
+
+/** Build per-day slots from merchant_store_operating_hours row */
+function buildOperatingHoursSlots(row: Record<string, unknown>): { day: string; open: boolean; slots: string[] }[] {
+  const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const
+  const dayLabels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+  const is24 = row.is_24_hours === true
+  let result = days.map((day, i) => buildOneDaySlots(day, dayLabels[i], row, is24))
+
+  if (row.same_for_all_days === true) {
+    const sample =
+      result.find((r) => r.slots.length > 0) ?? result.find((r) => r.open && is24) ?? result[0]
+    if (sample) {
+      result = result.map((r) => ({
+        day: r.day,
+        open: sample.open,
+        slots: [...sample.slots],
+      }))
+    }
+  }
+  return result
+}
+
+/** When no row in merchant_store_operating_hours, show merchant_stores.opening_time / closing_time for every day */
+function buildSyntheticOperatingHoursFromDaily(
+  openingRaw: unknown,
+  closingRaw: unknown
+): { day: string; open: boolean; slots: string[] }[] | null {
+  const o = formatTime(openingRaw as string)
+  const c = formatTime(closingRaw as string)
+  if (!o && !c) return null
+  const dayLabels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+  const slots: string[] = []
+  if (o && c) slots.push(`${o} – ${c}`)
+  else if (o) slots.push(o)
+  else if (c) slots.push(`Until ${c}`)
+  return dayLabels.map((day) => ({ day, open: true, slots: [...slots] }))
+}
+
+// GET /api/restaurants/[storeId] — single store from merchant_stores + operating hours (for detail page)
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ storeId: string }> }
+) {
+  try {
+    const { storeId } = await params
+    log('storeId:', storeId)
+    if (!storeId) {
+      return NextResponse.json({ error: 'Missing store id' }, { status: 400 })
+    }
+
+    const idParam = String(storeId).trim()
+    const numericId = /^\d+$/.test(idParam) ? parseInt(idParam, 10) : null
+
+    /** Prefer service role so RLS on merchant_stores does not hide gallery_images etc. from anon. */
+    const storeClient = getSupabaseServiceRole() ?? supabase
+
+    let data: Record<string, unknown> | null = null
+    const byStoreId = await storeClient.from('merchant_stores').select('*').eq('store_id', idParam).maybeSingle()
+    if (byStoreId.data) {
+      data = byStoreId.data as Record<string, unknown>
+    } else if (numericId != null) {
+      const byId = await storeClient.from('merchant_stores').select('*').eq('id', numericId).maybeSingle()
+      if (byId.data) data = byId.data as Record<string, unknown>
+    }
+
+    if (byStoreId.error) log('Supabase store by store_id error:', byStoreId.error.message)
+
+    if (!data) {
+      log('No store found for store_id:', storeId)
+      return NextResponse.json({ error: 'Restaurant not found' }, { status: 404 })
+    }
+
+    const storeIdNum = data.id as number
+    /** Prefer service role so RLS on merchant_store_operating_hours does not hide rows from anon. */
+    const hoursClient = getSupabaseServiceRole() ?? supabase
+    const { data: hoursRow, error: hoursErr } = await hoursClient
+      .from('merchant_store_operating_hours')
+      .select('*')
+      .eq('store_id', storeIdNum)
+      .maybeSingle()
+
+    if (hoursErr) log('Supabase merchant_store_operating_hours error:', hoursErr.message)
+
+    const payload = mapStoreToRestaurant(data)
+    if (hoursRow) {
+      ;(payload as Record<string, unknown>).operating_hours = buildOperatingHoursSlots(
+        hoursRow as Record<string, unknown>
+      )
+      ;(payload as Record<string, unknown>).operating_hours_raw = hoursRow
+    } else {
+      const synthetic = buildSyntheticOperatingHoursFromDaily(data.opening_time, data.closing_time)
+      ;(payload as Record<string, unknown>).operating_hours = synthetic
+      ;(payload as Record<string, unknown>).operating_hours_raw = null
+    }
+
+    log('Returning store:', data.store_id, data.store_name ?? data.store_display_name)
+    const res = NextResponse.json(payload)
+    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    return res
+  } catch (err) {
+    log('Unhandled error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}

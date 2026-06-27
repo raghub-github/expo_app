@@ -245,6 +245,37 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           onClose={() => setTollSheetVisible(false)}
         />
       ) : null}
+
+      <RazorpayCheckoutModal
+        visible={razorpayVisible}
+        orderParams={razorpayParams}
+        prefill={{
+          name: profile?.full_name ?? undefined,
+          email: profile?.email ?? undefined,
+          contact: profile?.mobile_number ?? undefined,
+        }}
+        themeColor={MINT_DARK}
+        onSuccess={(result) => void finalizeRidePayment(result)}
+        onCancel={() => {
+          setRazorpayVisible(false);
+          setRazorpayParams(null);
+        }}
+      />
+
+      <Modal visible={simulatedPayment != null} transparent animationType="fade">
+        <View style={styles.simOverlay}>
+          <View style={styles.simCard}>
+            <Text style={styles.simTitle}>Simulate payment</Text>
+            <Text style={styles.simSub}>Dev mode — mark ride fare as paid.</Text>
+            <TouchableOpacity style={styles.simBtn} onPress={handleSimulatedPaySuccess}>
+              <Text style={styles.simBtnText}>Mark paid</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setSimulatedPayment(null)}>
+              <Text style={styles.simCancel}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

@@ -3,6 +3,7 @@
  * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
  * Hidden on main Home tab (/(tabs)/index) — use Food tab or merchant page for cart access.
  * Hidden on /orders/[id] (order detail — no floating cart or track pill; tracking is on-screen).
+ * Hidden on Profile and Orders tabs (order list / account — no floating track pill).
  * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
  */
 
@@ -60,13 +61,13 @@ const SHEET_BRAND_RED = GatiMitraColors.closedRed;
 
 /** Show on main tab screens (Home, Food, Orders, Profile). */
 function useIsOnMainTabs(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   return segments[0] === "(tabs)";
 }
 
 /** Home tab only — floating cart is hidden here; food/browse keeps the cart bar. */
 function useIsOnHomeTab(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   if (segments[0] !== "(tabs)") return false;
   const tab = segments[1];
   return tab === "index" || tab == null;
@@ -75,7 +76,7 @@ function useIsOnHomeTab(): boolean {
 /** Show on: /home, /home/merchant/*, /home/category/*, /search. */
 function useIsFoodServicePage(): boolean {
   const pathname = usePathname();
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
@@ -98,7 +99,7 @@ function useIsOnOrdersArea(): boolean {
 /** Hide floating track pill on screens where tracking is redundant or clutters checkout/payment flow. */
 function useHideFloatingOrderTrackingPill(): boolean {
   const pathname = usePathname();
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
 
@@ -106,6 +107,14 @@ function useHideFloatingOrderTrackingPill(): boolean {
 
   if (p.startsWith("/orders/payment-")) return true;
 
+  // Profile & Orders tabs — no floating order dock (orders list already shows actives).
+  if (segments[0] === "(tabs)") {
+    const tab = String(segments[1] ?? "");
+    if (tab === "profile" || tab === "orders") return true;
+  }
+  if (p === "/profile" || p.startsWith("/profile/")) return true;
+  if (p === "/orders") return true;
+  // Ride searching screen owns its own bottom UI — no floating pill.
   if (p.startsWith("/home/service/ride-searching")) return true;
 
   if (segments[0] === "home" && segments[1] === "merchant" && segments.length >= 3) {
@@ -117,13 +126,13 @@ function useHideFloatingOrderTrackingPill(): boolean {
 
 /** Hide floating cart on order detail / live tracking — map + status already on screen. */
 function useHideFloatingCart(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   return segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0;
 }
 
 /** True when current route is restaurant detail and it's the same as cart merchant */
 function useIsInsideCartRestaurant(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const cartMerchantId = useCartStore((s) => s.merchantId);
   const isMerchantPage = segments[0] === "home" && segments[1] === "merchant";
   const currentMerchantId = isMerchantPage ? (segments[2] as string) : null;
@@ -215,7 +224,7 @@ export function GlobalFloatingCart() {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const session = useAuthStore((s) => s.session);
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const isFoodServicePage = useIsFoodServicePage();
   const isOnMainTabs = useIsOnMainTabs();
   const isOnHomeTab = useIsOnHomeTab();

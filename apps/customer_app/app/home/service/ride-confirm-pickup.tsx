@@ -23,6 +23,7 @@ import {
   type PickupSnapPoint,
 } from "@/lib/nearby-pickup-points";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
+import * as Location from "expo-location";
 import { parseRideStopsParam } from "@/lib/ride-serviceability";
 import {
   fetchAndStoreRideRoute,

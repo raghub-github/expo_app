@@ -1,0 +1,31 @@
+import {
+  bigserial,
+  bigint,
+  boolean,
+  integer,
+  numeric,
+  pgTable,
+  text,
+  timestamp,
+} from 'drizzle-orm/pg-core'
+
+export const customerAddresses = pgTable('customer_addresses', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  customerId: bigint('customer_id', { mode: 'number' }).notNull(),
+  addressId: text('address_id').notNull(),
+  label: text('label').notNull().default('HOME'),
+  customLabel: text('custom_label'),
+  addressLine1: text('address_line1').notNull(),
+  city: text('city').notNull(),
+  state: text('state').notNull(),
+  postalCode: text('postal_code').notNull(),
+  latitude: numeric('latitude', { precision: 10, scale: 8 }),
+  longitude: numeric('longitude', { precision: 11, scale: 8 }),
+  isDefault: boolean('is_default').default(false),
+  isActive: boolean('is_active').default(true),
+  isLastUsed: boolean('is_last_used').default(false),
+  orderCount: integer('order_count').default(0),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'string' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true, mode: 'string' }),
+})

@@ -2,8 +2,8 @@ import { rideDistanceKmForFare } from "@/lib/ride-route-snapshot";
 import { useRideRouteStore } from "@/store/rideRouteStore";
 
 export type RideFareDistanceParams = {
-  routeDistanceKm?: string;
-  tripKm?: string;
+  routeDistanceKm?: string | number;
+  tripKm?: string | number;
 };
 
 /** Parse canonical fare route km from navigation params (booking → confirm → searching). */
