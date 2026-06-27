@@ -65,3 +65,11 @@ agent-transcripts
 *.tmp
 tmp
 temp
+
+# ── Whitelisted assets needed by cxsite Dockerfile ───────────────────────
+# cxsite's prebuild reads apps/customer_app/legal/*.md as the source-of-
+# truth for every legal page (one bundle for both web + app). These two
+# `!`-rules override (a) the apps/customer_app exclusion and (b) the
+# **/*.md exclusion above. Order matters — must be after both.
+!apps/customer_app/legal
+!apps/customer_app/legal/*.md
