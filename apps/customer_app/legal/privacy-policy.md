@@ -168,7 +168,7 @@ Material changes (new data category, new purpose, new third-party processor outs
 | DPDPA matters | dpo@gatimitra.com |
 | Grievance | grievance.officer@gatimitra.com |
 | Data download | https://gatimitra.com/account/data-download |
-| Account deletion | https://gatimitra.com/account/delete |
+| Account deletion | https://gatimitra.com/account-deletion |
 | Security disclosure | security@gatimitra.com |
 
 ---

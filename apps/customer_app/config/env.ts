@@ -123,6 +123,13 @@ export function getConfig(): {
   supabaseAnonKey: string | null;
   /** When true, OTP uses `POST /v1/auth/otp/request` (backend + MSG91). Default: Supabase hook (same as merchant). */
   phoneOtpUseBackendOnly: boolean;
+  /**
+   * Google Play review phone (E.164). When the login phone matches this, OTP is
+   * forced through the backend path so the server-side review-mode short-circuit
+   * (GOOGLE_REVIEW_*) applies instead of Supabase. Not a secret — the fixed OTP
+   * stays server-side. Override via EXPO_PUBLIC_REVIEW_PHONE.
+   */
+  reviewPhone: string | null;
 } {
   const port = apiDevPort();
   const fromEnv = asNonEmptyString(process.env.EXPO_PUBLIC_API_BASE_URL);
@@ -190,6 +197,11 @@ export function getConfig(): {
     phoneOtpBackendRaw?.toLowerCase() === "yes" ||
     phoneOtpBackendRaw?.toLowerCase() === "on";
 
+  const reviewPhone =
+    asNonEmptyString(process.env.EXPO_PUBLIC_REVIEW_PHONE) ??
+    asNonEmptyString(extra?.EXPO_PUBLIC_REVIEW_PHONE as string) ??
+    "+919999999999";
+
   return {
     apiBaseUrl,
     wsBaseUrl: resolveWsBaseUrl(apiBaseUrl),
@@ -199,6 +211,7 @@ export function getConfig(): {
     supabaseUrl,
     supabaseAnonKey,
     phoneOtpUseBackendOnly,
+    reviewPhone,
   };
 }
 
