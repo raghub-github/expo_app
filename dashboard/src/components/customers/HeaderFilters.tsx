@@ -1,7 +1,6 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect } from "react";
 import { Filter, X } from "lucide-react";
 import { DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";

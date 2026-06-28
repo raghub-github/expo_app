@@ -1,7 +1,6 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useMemo } from "react";
 
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";

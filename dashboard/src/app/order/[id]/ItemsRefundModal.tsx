@@ -1,7 +1,6 @@
 'use client';
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { usePermission } from '@/hooks/usePermission';
 

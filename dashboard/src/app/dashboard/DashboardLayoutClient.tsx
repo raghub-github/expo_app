@@ -2,7 +2,6 @@
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { Toaster } from "sonner";
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
