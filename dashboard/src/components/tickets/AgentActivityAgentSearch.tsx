@@ -1,7 +1,8 @@
 "use client";
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState, startTransition } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { AGENT_ACTIVITY_PATH } from "@/lib/tickets/ticket-path-utils";
 
@@ -9,7 +10,7 @@ type AgentOption = { id: number; name: string; email: string };
 
 export function AgentActivityAgentSearch() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
 
   const section = searchParams.get("section") === "automation" ? "automation" : "activity";
 

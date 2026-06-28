@@ -4,7 +4,8 @@ import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react
 import Link from 'next/link';
 import { Bell, ChevronUp } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+
 import { useStoreContext } from '@/app/dashboard/merchants/stores/[id]/StoreContext';
 import { subscribeMenuItemFormModalOpen } from '@/lib/merchant-menu-form-modal-bus';
 
@@ -22,8 +23,8 @@ const POLL_MS = 12_000;
  */
 function MerchantPendingNewOrdersBarInner() {
   const { storeId } = useStoreContext();
-  const pathname = usePathname() || '';
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname() || '';
+  const searchParams = useAppSearchParams();
   const onNewOrdersList = isOnNewOrdersSection(pathname, searchParams?.get('filter') ?? null);
   const [pending, setPending] = useState(0);
   const [menuItemFormOpen, setMenuItemFormOpen] = useState(false);

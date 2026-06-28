@@ -8,10 +8,10 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
-  Image,
-  ImageSourcePropType,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 
@@ -26,56 +26,27 @@ export type ServiceId =
   | "cab-economy"
   | "bike"
   | "bike-lite"
-  | "cab-premium"
-  | "travel";
+  | "cab-premium";
 
 type ServiceBadge = "discount" | "premium";
 
 type RideService = {
   id: ServiceId;
   label: string;
-  image: ImageSourcePropType;
+  assetKey: string;
   badge?: ServiceBadge;
   disabled?: boolean;
 };
 
-/** Temporarily disabled on Book a Ride — enable when travel is live. */
-export const DISABLED_SERVICE_IDS: ServiceId[] = ["travel"];
+/** @deprecated Travel removed from customer booking. */
+export const DISABLED_SERVICE_IDS: ServiceId[] = [];
 
 export const ALL_SERVICES: RideService[] = [
-  {
-    id: "auto",
-    label: "Auto",
-    image: require("../../public/img/auto.png"),
-  },
-  {
-    id: "cab-economy",
-    label: "Cab Economy",
-    image: require("../../public/img/ride1.png"),
-  },
-  {
-    id: "bike",
-    label: "Bike",
-    image: require("../../public/img/bike.png"),
-  },
-  {
-    id: "bike-lite",
-    label: "Bike Lite",
-    image: require("../../public/img/bike.png"),
-    badge: "discount",
-  },
-  {
-    id: "cab-premium",
-    label: "Cab Premium",
-    image: require("../../public/img/cabpremium.png"),
-    badge: "premium",
-  },
-  {
-    id: "travel",
-    label: "Travel",
-    image: require("../../public/img/travel.png"),
-    disabled: true,
-  },
+  { id: "auto", label: "Auto", assetKey: CX.ride.auto },
+  { id: "cab-economy", label: "Cab Economy", assetKey: CX.ride.cab },
+  { id: "bike", label: "Bike", assetKey: CX.ride.bike },
+  { id: "bike-lite", label: "Bike Lite", assetKey: CX.ride.bike, badge: "discount" },
+  { id: "cab-premium", label: "Cab Premium", assetKey: CX.ride.cabPremium, badge: "premium" },
 ];
 
 function ServiceBadgeIcon({ type }: { type: ServiceBadge }) {
@@ -111,10 +82,10 @@ function ServiceTile({
       disabled={disabled}
     >
       <View style={[styles.iconArea, { width: TILE_W, height: ICON_SIZE }]}>
-        <Image
-          source={service.image}
+        <AppAssetImage
+          assetKey={service.assetKey}
           style={{ width: ICON_SIZE, height: ICON_SIZE }}
-          resizeMode="contain"
+          contentFit="contain"
         />
         {service.badge && !disabled ? <ServiceBadgeIcon type={service.badge} /> : null}
         {disabled ? (

@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil } from "lucide-react";
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
 import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
@@ -423,7 +424,7 @@ export function MerchantsSearchClient({
 }: {
   canTogglePortal?: boolean;
 }) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const router = useRouter();
   const merchantsSearch = useMerchantsSearch();
   const verificationSheet = useStoreVerificationSheetOptional();

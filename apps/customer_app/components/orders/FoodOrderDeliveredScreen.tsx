@@ -40,6 +40,8 @@ import {
   RESTAURANT_RATING_TAGS,
   defaultTagsForRating,
 } from "@/lib/post-delivery-rating-tags";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const ZOMATO_GREEN_DARK = "#1C6A37";
 const ZOMATO_GREEN = "#2D9547";
@@ -55,8 +57,6 @@ const MUTED = GatiMitraColors.textSecondary;
 const ZOMATO_RED = "#E23744";
 const CALL_BTN_BG = "#FFF0F0";
 const CALL_BTN_BORDER = "#FFD6D6";
-const POST_DEL_HERO = require("../../public/img/postdel.png");
-const SUPPORT_IMG = require("../../public/img/support.png");
 
 type FoodOrderDeliveredScreenProps = {
   order: OrderDetail;
@@ -184,7 +184,8 @@ export function FoodOrderDeliveredScreen({
       return () => resetStatusBarBackground();
     }, [setStatusBarBackground, resetStatusBarBackground])
   );
-  const { data: chatUnreadCount = 0 } = usePartnerChatUnread(order.orderId);
+  const { data: chatUnreadData } = usePartnerChatUnread(order.orderId);
+  const chatUnreadCount = chatUnreadData?.unreadCount ?? 0;
 
   const [tipSheetVisible, setTipSheetVisible] = useState(false);
   const [safetySheetVisible, setSafetySheetVisible] = useState(false);
@@ -553,11 +554,10 @@ export function FoodOrderDeliveredScreen({
               {deliveredTime ? (
                 <Text style={styles.receiptSub}>Delivered at {deliveredTime}</Text>
               ) : null}
-              <Image
-                source={POST_DEL_HERO}
+              <AppAssetImage
+                assetKey={CX.orders.postDeliveryHero}
                 style={styles.receiptHero}
                 contentFit="contain"
-                transition={0}
               />
               <Text style={styles.receiptThanks}>Thank your delivery partner</Text>
               {displayTipAmount <= 0 ? (
@@ -722,7 +722,7 @@ export function FoodOrderDeliveredScreen({
         <DeliveredDetailsCard {...deliveryDetailsView} />
 
         <TouchableOpacity style={styles.helpCard} onPress={onOpenHelp} activeOpacity={0.85}>
-          <Image source={SUPPORT_IMG} style={styles.helpImage} contentFit="contain" />
+          <AppAssetImage assetKey={CX.orders.support} style={styles.helpImage} contentFit="contain" />
           <View style={styles.helpTextWrap}>
             <Text style={styles.helpTitle}>Need help with your order?</Text>
             <Text style={styles.helpSub}>Get help & support</Text>

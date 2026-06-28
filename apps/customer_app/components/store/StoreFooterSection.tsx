@@ -15,8 +15,8 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { BrandingFooter } from "@/components/BrandingFooter";
-
-const FOOTER_PROMO_IMAGE = require("../../public/img/f.png");
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 export type StoreFooterSectionProps = {
   similarMerchants: MerchantSummary[];
@@ -94,10 +94,10 @@ export function StoreFooterSection({ similarMerchants }: StoreFooterSectionProps
           </View>
         </View>
         <View style={styles.promoImageClip}>
-          <Image
-            source={FOOTER_PROMO_IMAGE}
+          <AppAssetImage
+            assetKey={CX.store.footerPromo}
             style={styles.promoImage}
-            resizeMode="contain"
+            contentFit="contain"
           />
         </View>
       </LinearGradient>

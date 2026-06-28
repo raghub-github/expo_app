@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSql } from "../../db/client.js";
 import { resolveGeoServiceAvailability } from "./geoServiceAvailability.service.js";
+import { resolveFoodHomeLayout } from "../cxapp-home/cxappFoodHomeLayout.service.js";
 
 const ResolveQuerySchema = z.object({
   pincode: z.string().min(3).max(12),
@@ -49,6 +50,29 @@ export async function geoRoutes(app: FastifyInstance) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";
       request.log.error({ err: e }, "geo_resolve_failed");
+      return reply.code(500).send({ error: "resolve_failed", message: msg });
+    }
+  });
+
+  /** Customer food home — per-state active CXApp Home layout variant. */
+  app.get("/geo/food-home-layout", async (request, reply) => {
+    const q = ServicesQuerySchema.safeParse(request.query);
+    if (!q.success) {
+      return reply.code(400).send({ error: "invalid_query", details: q.error.flatten() });
+    }
+    const { pincode, state, lat, lng } = q.data;
+    if (!pincode && !state && (lat == null || lng == null)) {
+      return reply.code(400).send({
+        error: "missing_location",
+        message: "Provide pincode, state, or lat+lng",
+      });
+    }
+    try {
+      const result = await resolveFoodHomeLayout({ pincode, state, lat, lng });
+      return reply.send({ ok: true, ...result });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "resolve_failed";
+      request.log.error({ err: e }, "food_home_layout_resolve_failed");
       return reply.code(500).send({ error: "resolve_failed", message: msg });
     }
   });

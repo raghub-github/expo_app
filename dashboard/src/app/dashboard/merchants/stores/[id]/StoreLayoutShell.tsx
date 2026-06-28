@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { StoreQueryHydrator } from "./StoreQueryHydrator";
 import { StoreProvider, type StoreContextStore } from "./StoreContext";
 import { MerchantIncomingOrderModal } from "@/components/merchant/MerchantIncomingOrderModal";
@@ -38,7 +39,7 @@ function StoreLayoutFallback({
   children: React.ReactNode;
 }) {
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const { store, isLoading } = useStore(storeId);
   const isOrdersPage = pathname.includes("/orders");
 
@@ -102,8 +103,8 @@ export function StoreLayoutShell({
   children: React.ReactNode;
 }) {
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const fromAdmin = searchParams.get("fromAdmin") === "1";
   const [showAdminPopup, setShowAdminPopup] = useState(false);
   const [showDelistedModal, setShowDelistedModal] = useState(false);

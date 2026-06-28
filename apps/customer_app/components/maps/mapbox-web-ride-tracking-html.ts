@@ -2,6 +2,8 @@ import { MAPBOX_RIDE_STYLE } from "@/lib/customer-map-assets";
 import {
   escToken,
   escJson,
+  buildTrackingRiderMarkerInnerHtml,
+  mapboxEnableGesturesScript,
   mapboxHtmlHead,
   mapboxLabelRestoreScript,
 } from "@/components/maps/mapbox-web-shared";
@@ -33,7 +35,15 @@ export function buildRideTrackingMapHtml(
   <script>
     (function(){
       var token = '${escToken(token)}';
+      var riderMarkerUri = '${uri}';
       var riderMarker = null;
+
+      window.setRiderMarkerIcon = function(nextUri) {
+        if (!nextUri) return;
+        riderMarkerUri = nextUri;
+        var img = document.getElementById('rider-img');
+        if (img) img.src = riderMarkerUri;
+      };
 
       mapboxgl.accessToken = token;
       var map = new mapboxgl.Map({
@@ -45,9 +55,11 @@ export function buildRideTrackingMapHtml(
         maxZoom: 18,
         pitch: ${initialPitch},
         bearing: 0,
-        attributionControl: false
+        attributionControl: false,
+        cooperativeGestures: false
       });
       ${mapboxLabelRestoreScript()}
+      ${mapboxEnableGesturesScript()}
 
       map.on('style.load', function() { ensureMapLabelsVisible(map); });
       map.on('move', function() {
@@ -85,8 +97,9 @@ export function buildRideTrackingMapHtml(
         }
         if (!riderMarker) {
           var el = document.createElement('div');
-          el.style.cssText = 'width:48px;height:48px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
-          el.innerHTML = '<div id="rider-shell" style="width:48px;height:48px;display:flex;align-items:center;justify-content:center;pointer-events:none;transition:transform 0.28s cubic-bezier(0.22,1,0.36,1);"><div style="width:44px;height:44px;border-radius:22px;background:#fff;box-shadow:0 2px 10px rgba(26,115,232,0.28),0 1px 4px rgba(0,0,0,0.18);display:flex;align-items:center;justify-content:center;border:2px solid #1A73E8;"><img id="rider-img" src="${uri}" style="width:32px;height:32px;object-fit:contain;transform-origin:center center;transition:transform 0.32s cubic-bezier(0.22,1,0.36,1);" alt="" /></div></div>';
+          el.className = 'gm-vehicle-marker';
+          el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:8;position:relative;background:transparent;';
+          el.innerHTML = '${buildTrackingRiderMarkerInnerHtml(uri)}';
           riderMarker = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
         } else {
           riderMarker.setLngLat([lng, lat]);

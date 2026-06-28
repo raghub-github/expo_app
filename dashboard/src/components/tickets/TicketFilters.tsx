@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { Search, X, ChevronDown, Loader2 } from "lucide-react";
 import { useTicketFilters } from "@/hooks/tickets/useTicketFilters";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
@@ -73,7 +73,7 @@ type TicketFiltersProps = {
 };
 
 export function TicketFilters({ variant = "sidebar", onClose, dark = false }: TicketFiltersProps) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const [applyBusy, setApplyBusy] = useState(false);
   const {
     filters,

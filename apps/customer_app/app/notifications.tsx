@@ -1,9 +1,8 @@
 /**
- * Notifications – list of app notifications with read/unread, empty state.
- * GatiMitra styling: cards, emerald accents, compact layout.
+ * Notifications — grouped inbox with filters, read/unread, empty state.
  */
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -14,16 +13,18 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
-import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
+import { HEADER_PADDING_TOP } from "@/constants/layout";
 
-const PAD = 20;
-const CARD_RADIUS = 14;
+const PAD = 16;
 
 type NotificationType = "order" | "offer" | "ride" | "general";
+type FilterId = "all" | NotificationType;
+type TimeGroup = "today" | "yesterday" | "earlier";
 
 type NotificationItem = {
   id: string;
@@ -31,14 +32,31 @@ type NotificationItem = {
   title: string;
   body: string;
   time: string;
+  timeGroup: TimeGroup;
   read: boolean;
 };
 
-const NOTIFICATION_ICONS: Record<NotificationType, keyof typeof Ionicons.glyphMap> = {
-  order: "receipt-outline",
-  offer: "pricetag-outline",
-  ride: "car-outline",
-  general: "notifications-outline",
+const FILTER_TABS: { id: FilterId; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "offer", label: "Offers" },
+  { id: "order", label: "Orders" },
+  { id: "ride", label: "Rides" },
+];
+
+const GROUP_LABELS: Record<TimeGroup, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  earlier: "Earlier",
+};
+
+const TYPE_META: Record<
+  NotificationType,
+  { icon: keyof typeof Ionicons.glyphMap; bg: string; color: string }
+> = {
+  offer: { icon: "pricetag", bg: "#FEF3C7", color: "#D97706" },
+  order: { icon: "bag-handle", bg: "#DCFCE7", color: "#16A34A" },
+  ride: { icon: "car", bg: "#DBEAFE", color: "#2563EB" },
+  general: { icon: "sparkles", bg: "#F3E8FF", color: "#7C3AED" },
 };
 
 const MOCK_NOTIFICATIONS: NotificationItem[] = [
@@ -48,6 +66,7 @@ const MOCK_NOTIFICATIONS: NotificationItem[] = [
     title: "20% off your next ride",
     body: "Use code GATI20 at checkout. Valid till this weekend.",
     time: "2h ago",
+    timeGroup: "today",
     read: false,
   },
   {
@@ -56,6 +75,7 @@ const MOCK_NOTIFICATIONS: NotificationItem[] = [
     title: "Order delivered",
     body: "Your order #12345 has been delivered. Thank you for choosing GatiMitra!",
     time: "Yesterday",
+    timeGroup: "yesterday",
     read: false,
   },
   {
@@ -64,6 +84,7 @@ const MOCK_NOTIFICATIONS: NotificationItem[] = [
     title: "Ride completed",
     body: "Your ride from MG Road to Airport has been completed. Rate your experience.",
     time: "2 days ago",
+    timeGroup: "earlier",
     read: true,
   },
   {
@@ -72,17 +93,12 @@ const MOCK_NOTIFICATIONS: NotificationItem[] = [
     title: "Welcome to GatiMitra",
     body: "Book rides, order food, send parcels and more. Explore the app.",
     time: "1 week ago",
+    timeGroup: "earlier",
     read: true,
   },
 ];
 
-const SHADOW = {
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 1 },
-  shadowOpacity: 0.04,
-  shadowRadius: 4,
-  elevation: 2,
-};
+const GROUP_ORDER: TimeGroup[] = ["today", "yesterday", "earlier"];
 
 function NotificationCard({
   item,
@@ -91,23 +107,37 @@ function NotificationCard({
   item: NotificationItem;
   onPress: () => void;
 }) {
-  const iconName = NOTIFICATION_ICONS[item.type];
+  const meta = TYPE_META[item.type];
+
   return (
     <TouchableOpacity
-      style={[styles.card, item.read ? styles.cardRead : styles.cardUnread, SHADOW]}
+      style={[styles.card, !item.read && styles.cardUnread]}
       onPress={onPress}
       activeOpacity={0.85}
     >
-      {!item.read && <View style={styles.unreadDot} />}
-      <View style={styles.iconWrap}>
-        <Ionicons name={iconName} size={24} color={GatiMitraColors.emerald} />
+      <View style={styles.cardRow}>
+        <View style={[styles.iconWrap, { backgroundColor: meta.bg }]}>
+          <Ionicons name={meta.icon} size={20} color={meta.color} />
+          {!item.read ? <View style={styles.unreadDot} /> : null}
+        </View>
+
+        <View style={styles.cardBody}>
+          <View style={styles.cardTopRow}>
+            <Text
+              style={[styles.cardTitle, !item.read && styles.cardTitleUnread]}
+              numberOfLines={1}
+            >
+              {item.title}
+            </Text>
+            <Text style={styles.cardTime}>{item.time}</Text>
+          </View>
+          <Text style={styles.cardText} numberOfLines={2}>
+            {item.body}
+          </Text>
+        </View>
+
+        <Ionicons name="chevron-forward" size={16} color="#C4C9D4" style={styles.chevron} />
       </View>
-      <View style={styles.cardBody}>
-        <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-        <Text style={styles.cardText} numberOfLines={2}>{item.body}</Text>
-        <Text style={styles.cardTime}>{item.time}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
     </TouchableOpacity>
   );
 }
@@ -115,53 +145,167 @@ function NotificationCard({
 export default function NotificationsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [notifications] = useState<NotificationItem[]>(MOCK_NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<NotificationItem[]>(MOCK_NOTIFICATIONS);
+  const [activeFilter, setActiveFilter] = useState<FilterId>("all");
+
+  const unreadCount = useMemo(
+    () => notifications.filter((n) => !n.read).length,
+    [notifications]
+  );
+
+  const filteredNotifications = useMemo(() => {
+    if (activeFilter === "all") return notifications;
+    return notifications.filter((n) => n.type === activeFilter);
+  }, [notifications, activeFilter]);
+
+  const groupedSections = useMemo(() => {
+    return GROUP_ORDER.map((group) => ({
+      group,
+      label: GROUP_LABELS[group],
+      items: filteredNotifications.filter((n) => n.timeGroup === group),
+    })).filter((section) => section.items.length > 0);
+  }, [filteredNotifications]);
+
+  const markRead = useCallback((id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+    );
+  }, []);
+
+  const markAllRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  }, []);
+
   const hasNotifications = notifications.length > 0;
+  const hasFilteredResults = groupedSections.length > 0;
 
   return (
     <>
       <AndroidBackHandler />
       <View style={styles.container}>
         <StatusBar style="dark" />
-        <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
-          <TouchableOpacity
-            style={styles.backBtn}
-          onPress={() => router.back()}
-          activeOpacity={0.8}
+
+        <LinearGradient
+          colors={["#FFFFFF", "#F4FBF6", "#FFFFFF"]}
+          locations={[0, 0.55, 1]}
+          style={[styles.headerBlock, { paddingTop: HEADER_PADDING_TOP }]}
         >
-          <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Notifications</Text>
-        <View style={styles.headerRight} />
-      </View>
+          <View style={styles.headerRow}>
+            <TouchableOpacity
+              style={styles.backBtn}
+              onPress={() => router.back()}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="arrow-back" size={20} color={GatiMitraColors.textPrimary} />
+            </TouchableOpacity>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
-        showsVerticalScrollIndicator={false}
-      >
-        {!hasNotifications ? (
-          <View style={styles.emptyWrap}>
-            <View style={styles.emptyIconWrap}>
-              <Ionicons name="notifications-off-outline" size={48} color={GatiMitraColors.textSecondary} />
+            <View style={styles.headerCenter}>
+              <Text style={styles.headerTitle}>Notifications</Text>
+              {unreadCount > 0 ? (
+                <Text style={styles.headerSub}>
+                  {unreadCount} unread {unreadCount === 1 ? "update" : "updates"}
+                </Text>
+              ) : (
+                <Text style={styles.headerSub}>You're all caught up</Text>
+              )}
             </View>
-            <Text style={styles.emptyTitle}>No notifications yet</Text>
-            <Text style={styles.emptySub}>
-              When you get orders, offers or updates, they'll show up here.
-            </Text>
-          </View>
-        ) : (
-          notifications.map((item) => (
-            <NotificationCard
-              key={item.id}
-              item={item}
-              onPress={() => {}}
-            />
-          ))
-        )}
 
-        <BrandingFooter />
-      </ScrollView>
+            {unreadCount > 0 ? (
+              <TouchableOpacity
+                style={styles.markAllBtn}
+                onPress={markAllRead}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="checkmark-done-outline" size={16} color={GatiMitraColors.deepMintStart} />
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.headerSpacer} />
+            )}
+          </View>
+
+          {hasNotifications ? (
+            <View style={styles.filterRow}>
+              {FILTER_TABS.map((tab) => {
+                const active = activeFilter === tab.id;
+                const count =
+                  tab.id === "all"
+                    ? notifications.length
+                    : notifications.filter((n) => n.type === tab.id).length;
+                if (tab.id !== "all" && count === 0) return null;
+                return (
+                  <TouchableOpacity
+                    key={tab.id}
+                    style={[styles.filterChip, active && styles.filterChipActive]}
+                    onPress={() => setActiveFilter(tab.id)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                      {tab.label}
+                    </Text>
+                    {count > 0 ? (
+                      <View style={[styles.filterCount, active && styles.filterCountActive]}>
+                        <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>
+                          {count}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : null}
+        </LinearGradient>
+
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: insets.bottom + 20 },
+            !hasNotifications && styles.scrollContentEmpty,
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
+          {!hasNotifications ? (
+            <View style={styles.emptyWrap}>
+              <LinearGradient
+                colors={["#ECFDF5", "#FFFFFF"]}
+                style={styles.emptyIconWrap}
+              >
+                <Ionicons name="notifications-off-outline" size={40} color={GatiMitraColors.deepMintStart} />
+              </LinearGradient>
+              <Text style={styles.emptyTitle}>No notifications yet</Text>
+              <Text style={styles.emptySub}>
+                Orders, ride updates, offers and account alerts will appear here when you have
+                activity on GatiMitra.
+              </Text>
+            </View>
+          ) : !hasFilteredResults ? (
+            <View style={styles.emptyWrap}>
+              <View style={styles.emptyIconWrap}>
+                <Ionicons name="filter-outline" size={36} color={GatiMitraColors.textSecondary} />
+              </View>
+              <Text style={styles.emptyTitle}>Nothing in this filter</Text>
+              <Text style={styles.emptySub}>Try another category or check back later.</Text>
+            </View>
+          ) : (
+            groupedSections.map((section) => (
+              <View key={section.group} style={styles.section}>
+                <Text style={styles.sectionLabel}>{section.label}</Text>
+                <View style={styles.sectionCards}>
+                  {section.items.map((item) => (
+                    <NotificationCard
+                      key={item.id}
+                      item={item}
+                      onPress={() => markRead(item.id)}
+                    />
+                  ))}
+                </View>
+              </View>
+            ))
+          )}
+
+          {hasNotifications ? <BrandingFooter compact /> : null}
+        </ScrollView>
       </View>
     </>
   );
@@ -170,34 +314,231 @@ export default function NotificationsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: GatiMitraColors.background,
+    minHeight: 0,
+    backgroundColor: GatiMitraColors.softBackground,
   },
-  header: {
+  headerBlock: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(0, 0, 0, 0.04)",
+  },
+  headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: GatiMitraColors.background,
     paddingHorizontal: PAD,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraColors.border,
-    ...GatiMitraColors.searchShadow,
+    paddingTop: 8,
+    paddingBottom: 12,
+    gap: 10,
   },
-  backBtn: { padding: 6, marginRight: 4 },
-  headerTitle: {
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#ECFDF3",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(16, 185, 129, 0.15)",
+  },
+  headerCenter: {
     flex: 1,
-    fontSize: 18,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
+    minWidth: 0,
   },
-  headerRight: { width: 40 },
-  scroll: { flex: 1 },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: GatiMitraColors.textPrimary,
+    letterSpacing: -0.3,
+  },
+  headerSub: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "500",
+    color: GatiMitraColors.textSecondary,
+  },
+  markAllBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(16, 185, 129, 0.2)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  headerSpacer: {
+    width: 36,
+  },
+  filterRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    paddingHorizontal: PAD,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  filterChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "rgba(0, 0, 0, 0.06)",
+  },
+  filterChipActive: {
+    backgroundColor: GatiMitraColors.deepMintStart,
+    borderColor: GatiMitraColors.deepMintStart,
+  },
+  filterChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraColors.textSecondary,
+  },
+  filterChipTextActive: {
+    color: "#FFFFFF",
+  },
+  filterCount: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterCountActive: {
+    backgroundColor: "rgba(255, 255, 255, 0.22)",
+  },
+  filterCountText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: GatiMitraColors.textSecondary,
+  },
+  filterCountTextActive: {
+    color: "#FFFFFF",
+  },
+  scroll: {
+    flex: 1,
+    minHeight: 0,
+  },
   scrollContent: {
     paddingHorizontal: PAD,
     paddingTop: 16,
   },
+  scrollContentEmpty: {
+    flexGrow: 1,
+    justifyContent: "center",
+  },
+  section: {
+    marginBottom: 20,
+  },
+  sectionLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: GatiMitraColors.textSecondary,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginBottom: 10,
+    marginLeft: 2,
+  },
+  sectionCards: {
+    width: "100%",
+  },
+  card: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "rgba(0, 0, 0, 0.05)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+    overflow: "hidden",
+  },
+  cardUnread: {
+    borderColor: "rgba(22, 163, 74, 0.14)",
+    backgroundColor: "#FAFFFC",
+  },
+  cardRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+  },
+  unreadDot: {
+    position: "absolute",
+    top: -1,
+    right: -1,
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: GatiMitraColors.deepMintStart,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+  },
+  iconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+    flexShrink: 0,
+    position: "relative",
+  },
+  cardBody: {
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    marginRight: 8,
+  },
+  cardTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 4,
+  },
+  cardTime: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#9CA3AF",
+    flexShrink: 0,
+  },
+  cardTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 15,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+    letterSpacing: -0.2,
+  },
+  cardTitleUnread: {
+    fontWeight: "800",
+  },
+  cardText: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+    lineHeight: 19,
+  },
+  chevron: {
+    flexShrink: 0,
+    marginLeft: 2,
+  },
   emptyWrap: {
     alignItems: "center",
-    paddingVertical: 48,
-    paddingHorizontal: 24,
+    paddingVertical: 40,
+    paddingHorizontal: 28,
   },
   emptyIconWrap: {
     width: 88,
@@ -207,72 +548,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(16, 185, 129, 0.12)",
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: "700",
+    fontWeight: "800",
     color: GatiMitraColors.textPrimary,
     marginBottom: 8,
     textAlign: "center",
+    letterSpacing: -0.2,
   },
   emptySub: {
-    fontSize: 15,
+    fontSize: 14,
     color: GatiMitraColors.textSecondary,
     textAlign: "center",
-    lineHeight: 22,
-  },
-  card: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: GatiMitraColors.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    position: "relative",
-  },
-  cardRead: {
-    opacity: 0.92,
-  },
-  cardUnread: {
-    backgroundColor: "#d1fae540",
-    borderColor: "#05966930",
-  },
-  unreadDot: {
-    position: "absolute",
-    top: 14,
-    left: 14,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: GatiMitraColors.emerald,
-  },
-  iconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 6,
-    marginRight: 12,
-  },
-  cardBody: { flex: 1, minWidth: 0 },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-    marginBottom: 2,
-  },
-  cardText: {
-    fontSize: 13,
-    color: GatiMitraColors.textSecondary,
-    lineHeight: 18,
-  },
-  cardTime: {
-    fontSize: 12,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 4,
+    lineHeight: 21,
   },
 });

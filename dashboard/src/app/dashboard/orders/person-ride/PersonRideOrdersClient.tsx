@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Filter, User, Car } from "lucide-react";
 import { normalizePersonRideSearchType } from "@/lib/orders/person-ride-search";
@@ -161,7 +162,7 @@ function getButtonStyles(isActive: boolean) {
 
 export default function PersonRideOrdersClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const queryClient = useQueryClient();
   const [hasMounted, setHasMounted] = useState(false);
 

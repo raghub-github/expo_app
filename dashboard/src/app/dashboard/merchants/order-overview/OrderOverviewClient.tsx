@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { Store, Loader2 } from "lucide-react";
 
 type ChildRow = {
@@ -27,7 +28,7 @@ type ParentRow = {
 
 export function OrderOverviewClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const query = (searchParams.get("search") || "").trim();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

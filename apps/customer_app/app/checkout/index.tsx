@@ -29,6 +29,8 @@ import * as Location from "expo-location";
 import * as Contacts from "expo-contacts";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
+import { resolveTabBarBottomInset } from "@/constants/layout";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { LinearGradient } from "expo-linear-gradient";
@@ -48,6 +50,7 @@ import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { applyWeatherToEtaRange } from "@/services/weather.service";
 import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
+import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
@@ -475,7 +478,9 @@ const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
 
 export default function CheckoutScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
+  const rawInsets = useSafeAreaInsets();
+  const footerBottomInset = Math.max(resolveTabBarBottomInset(rawInsets.bottom), 8);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
@@ -1057,15 +1062,10 @@ export default function CheckoutScreen() {
   );
 
   const shareCheckoutAddress = useCallback(async (addr: Address) => {
-    const label = addr.label ?? "Address";
-    const name = addr.contactName ? ` – ${addr.contactName}` : "";
-    const parts: string[] = [`${label}${name}`, addr.fullAddress];
-    if (addr.contactMobile) parts.push(`Phone: ${addr.contactMobile}`);
-    parts.push(`Location: https://maps.google.com/?q=${addr.latitude},${addr.longitude}`, "", "GatiMitra");
     try {
-      await Share.share({ message: parts.join("\n") });
+      await shareAddressViaLink(addr);
     } catch {
-      // ignore
+      Alert.alert("Share failed", "Could not create address link. Please try again.");
     }
   }, []);
 
@@ -2200,11 +2200,11 @@ export default function CheckoutScreen() {
 
   const checkoutScrollBottomInset = useMemo(
     () =>
-      insets.bottom +
+      footerBottomInset +
       CHECKOUT_SCROLL_FOOTER_BASE +
       CHECKOUT_SCROLL_BRANDING_CLEARANCE +
       (showGatiCashWalletBar ? CHECKOUT_SCROLL_GATICASH_BAR_EXTRA : 0),
-    [insets.bottom, showGatiCashWalletBar]
+    [footerBottomInset, showGatiCashWalletBar]
   );
 
   const toPayAmount = useMemo(() => {
@@ -3804,7 +3804,7 @@ export default function CheckoutScreen() {
       )}
 
       {/* Footer: fixed-width delivery / takeaway toggle + Place Order CTA (width = screen − padding − gap − toggle; same corner radius as toggle shell). */}
-      <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + 8 }]}>
+      <View style={[styles.fixedBottom, { paddingBottom: footerBottomInset }]}>
         {showGatiCashWalletBar && (
           <View style={styles.gatiCashWalletBarWrap}>
             <CheckoutGatiCashWalletBar
@@ -7400,7 +7400,7 @@ const styles = StyleSheet.create({
     minHeight: 50,
     overflow: "hidden",
   },
-  checkoutLegalFooter: { marginTop: 6, lineHeight: 16, fontSize: 11 },
+  checkoutLegalFooter: { marginTop: 4, lineHeight: 16, fontSize: 11 },
   cancellationBlock: {
     marginTop: 8,
     marginBottom: 4,

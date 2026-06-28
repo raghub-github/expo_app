@@ -84,7 +84,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   footerWrap: { paddingHorizontal: 16, paddingVertical: 10 },
-  footerWrapCompact: { paddingHorizontal: 4, paddingVertical: 4 },
+  footerWrapCompact: { paddingHorizontal: 4, paddingTop: 4, paddingBottom: 0 },
   footer: { fontSize: 11.5, color: MUTED, lineHeight: 17, textAlign: "center" },
 });
 

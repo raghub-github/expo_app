@@ -71,7 +71,7 @@ export type StoreDeliveryQuote = {
   source: "mapbox" | "osrm" | "haversine";
   cached: boolean;
   approximate: boolean;
-  pricing_engine: "slab_geo" | "fallback_per_km" | "no_slab_configured" | "no_geo_match";
+  pricing_engine: "slab_geo" | "fallback_slab" | "fallback_per_km" | "no_slab_configured" | "no_geo_match" | "slab_invalid";
   /** Geo level at which slabs were resolved (pincode/post_office/district/region/state). */
   applied_geo_level?: string | null;
   slab_quote?: unknown;
@@ -82,6 +82,16 @@ export type StoreDeliveryQuote = {
   weather_severity?: string | null;
   weather_chip_label?: string | null;
   weather_show_impact?: boolean;
+  customer_pricing?: {
+    service_type: "food" | "parcel" | "ride";
+    pricing_source: string;
+    distance_km: number | null;
+    base_fare: number;
+    distance_charge: number;
+    delivery_fee: number;
+    min_charge_applied?: number;
+    taxes?: number;
+  };
 };
 
 export async function getStoreDeliveryQuote(params: {

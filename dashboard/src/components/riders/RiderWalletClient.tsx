@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { RiderSectionHeader } from "./RiderSectionHeader";
@@ -149,7 +149,7 @@ function ServiceBadge({ serviceLabel }: { serviceLabel: string }) {
 }
 
 export function RiderWalletClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const riderContext = useRiderDashboardOptional();
   const riderFromContext = useMemo<RiderInfo | null>(() => {
     const info = riderContext?.currentRiderInfo;

@@ -1,5 +1,6 @@
 import React from "react";
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { ScrollView } from "react-native-gesture-handler";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
@@ -29,7 +30,7 @@ export type StoreFilterBarProps = {
   style?: object;
 };
 
-export function StoreFilterBar({
+export const StoreFilterBar = React.memo(function StoreFilterBar({
   active,
   onChange,
   onOpenFilters,
@@ -45,8 +46,12 @@ export function StoreFilterBar({
     <View style={[styles.wrap, style]}>
       <ScrollView
         horizontal
+        nestedScrollEnabled
+        directionalLockEnabled
         showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.scroll}
+        style={styles.scrollView}
       >
         {filters.map((f) => {
           const isActive = f.type === "filters" ? filtersActive : active === f.id;
@@ -85,7 +90,7 @@ export function StoreFilterBar({
       </ScrollView>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   wrap: {
@@ -93,6 +98,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: StoreTheme.border,
+  },
+  scrollView: {
+    flexGrow: 0,
   },
   scroll: {
     paddingHorizontal: 16,

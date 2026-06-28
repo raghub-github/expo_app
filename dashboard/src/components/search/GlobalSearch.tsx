@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { Search, X, Settings, Ticket, User } from "lucide-react";
 
 const STORAGE_RECENT_SEARCHES = "global-search-recent";
@@ -82,8 +83,8 @@ function clearRecentViewed() {
 
 export function GlobalSearch() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const pathname = usePathname();
+  const searchParams = useAppSearchParams();
+  const pathname = useAppPathname();
   const [expanded, setExpanded] = useState(false);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");

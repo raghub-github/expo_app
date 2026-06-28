@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Briefcase, CalendarOff, ChevronRight, Clock, LogOut, Timer, X, Zap } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -324,7 +324,7 @@ function DetailModal({
 const CUSTOM_RANGE_MAX_DAYS = 366;
 
 export function QueueSupervisorAgentStatusHistoryClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const agentIdRaw = (searchParams.get("agentId") ?? "").trim();
   const agentIdNum = agentIdRaw ? Number(agentIdRaw) : NaN;
   const validAgent = Number.isFinite(agentIdNum) && agentIdNum > 0;

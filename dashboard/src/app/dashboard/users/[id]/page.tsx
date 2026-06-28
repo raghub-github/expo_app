@@ -1,7 +1,8 @@
 "use client";
+import { useAppParams } from "@/hooks/useAppSearchParams";
 
 import { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { UserForm } from "@/components/users/UserForm";
 import { Edit, ArrowLeft, CheckCircle, XCircle, User, Mail, Phone, Shield, Building, Users, Clock, Lock, AlertCircle, CheckCircle2, XCircle as XCircleIcon, Calendar, UserCheck, UserX } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
@@ -74,7 +75,7 @@ interface UserAccessPoint {
 }
 
 export default function UserDetailsPage() {
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
   const { isSuperAdmin, systemUserId, loading: permissionsLoading } = usePermissions();
   const userId = parseInt(params.id as string);
@@ -803,3 +804,4 @@ export default function UserDetailsPage() {
     </div>
   );
 }
+

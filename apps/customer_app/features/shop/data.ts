@@ -1,26 +1,22 @@
 /**
  * Shop / Marketplace – categories, products, promo slides.
- * Product images from public folder: use public/img for placeholders;
- * for production add public/products/product1.png etc. and extend PRODUCT_IMAGES.
+ * Product images from CMS app assets (CX.shop.product keys).
  */
 
 import type { ImageSourcePropType } from "react-native";
+import { CX } from "@/lib/appAssetKeys";
+import { getAppAssetUrl } from "@/store/appAssetsStore";
 
-// Product images: from public/img (placeholders). Add public/products/*.png and map here for production.
-export const PRODUCT_IMAGES: Record<string, ImageSourcePropType> = {
-  p1: require("../../public/img/ndf.png"),
-  p2: require("../../public/img/biryani.png"),
-  p3: require("../../public/img/pizza.png"),
-  p4: require("../../public/img/burger.png"),
-  p5: require("../../public/img/thali.png"),
-  p6: require("../../public/img/Cake.png"),
-  p7: require("../../public/img/vegbiryani.png"),
-  p8: require("../../public/img/Pav Bhaji.png"),
-  p9: require("../../public/img/Paratha.png"),
-  p10: require("../../public/img/Dosa.png"),
-  p11: require("../../public/img/Noodles.png"),
-  p12: require("../../public/img/gulabjamun.png"),
-};
+function shopProductSource(n: number): ImageSourcePropType | null {
+  const url = getAppAssetUrl(CX.shop.product(n));
+  return url ? { uri: url } : null;
+}
+
+export function getShopProductImage(key: string): ImageSourcePropType | null {
+  const n = Number(String(key).replace(/^p/, ""));
+  if (!Number.isFinite(n) || n < 1) return shopProductSource(1);
+  return shopProductSource(n);
+}
 
 export type ProductCategoryId =
   | "all"

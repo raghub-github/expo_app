@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
@@ -79,7 +80,7 @@ export default function RidersPage() {
   // ALL HOOKS MUST BE CALLED FIRST - BEFORE ANY CONDITIONAL RETURNS
   const { data: permissionsData, isLoading: permissionsLoading, error: permissionsError } = usePermissionsQuery();
   const { data: dashboardAccessData, isLoading: dashboardAccessLoading, error: dashboardAccessError } = useDashboardAccessQuery();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const searchFromUrl = searchParams.get("search")?.trim() ?? "";
   const router = useRouter();
   const queryClient = useQueryClient();

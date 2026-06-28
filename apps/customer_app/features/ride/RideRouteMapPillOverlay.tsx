@@ -16,7 +16,8 @@ import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import type { LatLng } from "@/services/directions.service";
 import {
-  RIDE_MAP_DOT_SIZE,
+  RIDE_MAP_PIN_HEIGHT,
+  RIDE_MAP_PIN_WIDTH,
   RIDE_MAP_PILL_HEIGHT,
   RIDE_MAP_PILL_WIDTH,
   RIDE_MAP_STEM_HEIGHT,
@@ -25,6 +26,7 @@ import {
   type MarkerOverlayLayout,
   type ScreenPoint,
 } from "@/features/ride/ride-map-pill-layout";
+import { RideMapLocationPin } from "@/features/ride/RideMapLocationPin";
 
 const PICKUP_GREEN = "#22C55E";
 const DROP_RED = "#EF4444";
@@ -47,19 +49,8 @@ type RideRouteMapPillOverlayProps = {
   onEditDrop: () => void;
 };
 
-function RouteDot({ variant }: { variant: "pickup" | "drop" }) {
-  if (variant === "pickup") {
-    return (
-      <View style={styles.pickupDotOuter}>
-        <View style={styles.pickupDotInner} />
-      </View>
-    );
-  }
-  return (
-    <View style={styles.dropDotOuter}>
-      <View style={styles.dropDotInner} />
-    </View>
-  );
+function RouteMapPin({ variant }: { variant: "pickup" | "drop" }) {
+  return <RideMapLocationPin variant={variant} />;
 }
 
 function RouteMarker({
@@ -118,10 +109,10 @@ function RouteMarker({
         pointerEvents="none"
       />
       <View
-        style={[styles.dotWrap, { left: layout.dotLeft, top: layout.dotTop }]}
+        style={[styles.pinWrap, { left: layout.dotLeft, top: layout.dotTop }]}
         pointerEvents="none"
       >
-        <RouteDot variant={variant} />
+        <RouteMapPin variant={variant} />
       </View>
     </>
   );
@@ -264,43 +255,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#D1D5DB",
     borderRadius: 1,
   },
-  dotWrap: {
+  pinWrap: {
     position: "absolute",
-    width: RIDE_MAP_DOT_SIZE,
-    height: RIDE_MAP_DOT_SIZE,
-  },
-  pickupDotOuter: {
-    width: RIDE_MAP_DOT_SIZE,
-    height: RIDE_MAP_DOT_SIZE,
-    borderRadius: RIDE_MAP_DOT_SIZE / 2,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
+    width: RIDE_MAP_PIN_WIDTH,
+    height: RIDE_MAP_PIN_HEIGHT,
+    zIndex: 12,
+    elevation: 12,
     ...dotShadow,
-  },
-  pickupDotInner: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: PICKUP_GREEN,
-    borderWidth: 2.5,
-    borderColor: "#FFFFFF",
-  },
-  dropDotOuter: {
-    width: RIDE_MAP_DOT_SIZE,
-    height: RIDE_MAP_DOT_SIZE,
-    borderRadius: RIDE_MAP_DOT_SIZE / 2,
-    backgroundColor: DROP_RED,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2.5,
-    borderColor: "#FFFFFF",
-    ...dotShadow,
-  },
-  dropDotInner: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: "#FFFFFF",
   },
 });

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
@@ -91,7 +92,7 @@ interface ReferralDataResponse {
 }
 
 export function RiderReferralsClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const router = useRouter();
   const riderContext = useRiderDashboardOptional();
   const searchValue = (searchParams.get("search") || "").trim();

@@ -30,13 +30,15 @@ export function buildAcceptedByLabel(
   mode: MerchantOrderActionMode
 ): string {
   if (source === 'admin') return 'Accepted by GatiMitra Team';
-  if (source === 'app') {
-    return mode === 'auto' ? 'Accepted - Merchant App (Auto)' : 'Accepted - Merchant App (Manual)';
-  }
-  if (source === 'system') return 'Accepted - System (Auto)';
-  return mode === 'auto'
-    ? 'Accepted - Merchant portal (Auto)'
-    : 'Accepted - Merchant portal (Manual)';
+  if (mode === 'auto') return 'Auto accepted';
+  if (source === 'app') return 'Accepted - Merchant App (Manual)';
+  if (source === 'system') return 'Auto accepted';
+  return 'Accepted - Merchant portal (Manual)';
+}
+
+/** Timeline node title for order_timelines.status */
+export function buildAcceptanceTimelineStatus(mode: MerchantOrderActionMode): string {
+  return mode === 'auto' ? 'Auto Accepted' : 'Accepted';
 }
 
 export function buildCancelledByLabel(

@@ -2,8 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Image, type ImageStyle } from "expo-image";
 import type { StyleProp } from "react-native";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { getAppAssetUrl } from "@/store/appAssetsStore";
+import { CX } from "@/lib/appAssetKeys";
 
-const DEFAULT_CATEGORY_IMAGE = require("../../public/img/ndf.png");
+function defaultCategorySource() {
+  const url = getAppAssetUrl(CX.common.defaultImage);
+  return url ? { uri: url } : null;
+}
 
 type Props = {
   imageUrl: string | null;
@@ -43,9 +48,12 @@ export function UserAppCategoryImage({
     );
   }
 
+  const fallback = defaultCategorySource();
+  if (!fallback) return null;
+
   return (
     <Image
-      source={DEFAULT_CATEGORY_IMAGE}
+      source={fallback}
       style={style}
       contentFit={contentFit}
       cachePolicy="memory-disk"

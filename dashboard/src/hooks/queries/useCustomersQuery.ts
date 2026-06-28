@@ -1,7 +1,8 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useQuery } from "@tanstack/react-query";
-import { usePathname } from "next/navigation";
+
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { CustomerWithStats } from "@/lib/db/operations/customers";
@@ -91,7 +92,7 @@ export async function fetchCustomers(
  * Uses React Query for automatic caching and refetching
  */
 export function useCustomersQuery(params: CustomersQueryParams = {}) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const auth = useAuthOptional();
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
@@ -109,3 +110,4 @@ export function useCustomersQuery(params: CustomersQueryParams = {}) {
     ...getCacheConfig(CacheTier.MEDIUM), // Customers list is medium frequency
   });
 }
+

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense, useRef } from "react";
 import dynamic from "next/dynamic";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { SummaryCards } from "@/components/customers/SummaryCards";
 import { UserCategoryCards } from "@/components/customers/UserCategoryCards";
@@ -68,7 +68,7 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 }
 
 function CustomersPageContent() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);

@@ -46,12 +46,17 @@ export type OrderSummary = {
   cancellationReason?: string | null;
   /** Who cancelled — e.g. Cancelled by me, Rejected by Restaurant. */
   cancelledByLabel?: string | null;
+  /** From order_cancellation_reasons — Refunded line on history when completed. */
+  refundStatus?: string | null;
   orderType?: string | null;
   rideType?: string | null;
   deliveryAddress?: string | null;
   pickupOtp?: string | null;
   pickupLat?: number | null;
   pickupLng?: number | null;
+  /** Trip distance in km when available (rides). Mirrors OrderDetail.distanceKm. */
+  distanceKm?: number | null;
+  billingSnapshot?: Record<string, unknown> | null;
 };
 
 export type OrderDetail = OrderSummary & {
@@ -413,9 +418,12 @@ export const orderService = {
   async payRideFare(
     orderId: string,
     payload: {
-      razorpayOrderId: string;
-      razorpayPaymentId: string;
-      razorpaySignature: string;
+      razorpayOrderId?: string;
+      razorpayPaymentId?: string;
+      razorpaySignature?: string;
+      gatiCashAmount?: number;
+      couponCode?: string;
+      platformOfferId?: number;
     }
   ): Promise<{ ok: true; amountPaid: number }> {
     const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/ride-fare-payment`, payload);
@@ -454,6 +462,12 @@ export const orderService = {
   /** Platform + delivery GST tax invoices (HTML for in-app viewer). */
   async fetchOrderInvoice(orderId: string): Promise<{ html: string; title: string }> {
     const { data } = await api.get(`${ORDERS_PREFIX}/${orderId}/invoice`);
+    return data;
+  },
+
+  /** Order summary receipt (Bill Summary download — Zomato-style). */
+  async fetchOrderReceipt(orderId: string): Promise<{ html: string; title: string }> {
+    const { data } = await api.get(`${ORDERS_PREFIX}/${orderId}/receipt`);
     return data;
   },
 

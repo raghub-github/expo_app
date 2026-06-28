@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { resolvePartnerMenuImageSrc } from '@/lib/menu-image-url';
 
 const RENEW_ENDPOINT = '/api/media/renew-signed-url';
 const MAX_RETRIES = 3;
@@ -79,6 +80,8 @@ export type R2ImageProps = {
   fallbackSrc?: string;
   /** Object fit for the img. */
   fit?: 'cover' | 'contain' | 'fill' | 'none';
+  /** When true (default), defer loading until near viewport. */
+  lazy?: boolean;
   [key: string]: unknown;
 };
 
@@ -97,13 +100,16 @@ export function R2Image({
   // Inline 1x1 transparent PNG to avoid 404s when fallback is used
   fallbackSrc = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2SP0YAAAAASUVORK5CYII=',
   fit = 'cover',
+  lazy = true,
   ...rest
 }: R2ImageProps) {
   const [displayUrl, setDisplayUrl] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [inView, setInView] = useState(!lazy);
   const loadingRef = useRef(false);
   const mountedRef = useRef(true);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   const effectiveKey =
     fileKeyProp && String(fileKeyProp).trim()
@@ -135,7 +141,28 @@ export function R2Image({
   }, []);
 
   useEffect(() => {
+    if (!lazy || inView) return;
+    const el = rootRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setInView(true);
+          obs.disconnect();
+        }
+      },
+      { rootMargin: '200px' }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [lazy, inView]);
+
+  useEffect(() => {
     mountedRef.current = true;
+    if (!inView) return;
     if (!src?.trim()) {
       setDisplayUrl(null);
       setError(false);
@@ -143,15 +170,9 @@ export function R2Image({
       return;
     }
     const trimmedSrc = src.trim();
-    if (isAttachmentProxyUrl(trimmedSrc)) {
-      const forImg =
-        /^api\/attachments\/proxy/i.test(trimmedSrc) &&
-        !trimmedSrc.startsWith('http://') &&
-        !trimmedSrc.startsWith('https://') &&
-        !trimmedSrc.startsWith('/')
-          ? `/${trimmedSrc}`
-          : trimmedSrc;
-      setDisplayUrl(forImg);
+    const resolved = resolvePartnerMenuImageSrc(trimmedSrc);
+    if (resolved && (isAttachmentProxyUrl(trimmedSrc) || resolved.startsWith('http'))) {
+      setDisplayUrl(resolved);
       setError(false);
       setRetryCount(0);
       return;
@@ -172,7 +193,7 @@ export function R2Image({
     return () => {
       mountedRef.current = false;
     };
-  }, [src, effectiveKey, isLegacyUrl, isInlineSrc, loadUrl]);
+  }, [src, effectiveKey, isLegacyUrl, isInlineSrc, loadUrl, inView]);
 
   const handleError = useCallback(() => {
     if (retryCount >= MAX_RETRIES) {
@@ -209,7 +230,20 @@ export function R2Image({
         alt={alt}
         className={className}
         style={{ objectFit: fit }}
+        loading={lazy ? 'lazy' : 'eager'}
+        decoding="async"
         {...rest}
+      />
+    );
+  }
+
+  if (lazy && !inView) {
+    return (
+      <div
+        ref={rootRef}
+        className={className}
+        style={{ background: '#f3f4f6', minHeight: 48 }}
+        aria-hidden
       />
     );
   }
@@ -219,22 +253,26 @@ export function R2Image({
 
   if (!currentSrc && !showFallback && effectiveKey) {
     return (
-      <div className={className} style={{ background: '#f3f4f6', minHeight: 48 }}>
+      <div ref={rootRef} className={className} style={{ background: '#f3f4f6', minHeight: 48 }}>
         <span className="sr-only">Loading image</span>
       </div>
     );
   }
 
-  return (
+  const img = (
     <img
       src={currentSrc || fallbackSrc}
       alt={alt}
       className={className}
       style={{ objectFit: fit }}
+      loading={lazy ? 'lazy' : 'eager'}
+      decoding="async"
       onError={handleError}
       {...rest}
     />
   );
+
+  return img;
 }
 
 export default R2Image;

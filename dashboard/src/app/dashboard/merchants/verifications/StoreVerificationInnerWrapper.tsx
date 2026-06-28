@@ -1,6 +1,6 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { StoreVerificationInner } from "./StoreVerificationInner";
 
 export function StoreVerificationInnerWrapper({
@@ -10,7 +10,7 @@ export function StoreVerificationInnerWrapper({
   storeId: string;
   returnTo: string | null;
 }) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const returnToFromUrl = searchParams.get("returnTo");
 
   return (

@@ -1,9 +1,10 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import { ChevronLeft, LogOut, X } from "lucide-react";
@@ -40,7 +41,7 @@ interface HierarchicalSidebarProps {
 }
 
 export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard, onNavigationStart }: HierarchicalSidebarProps) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const queryClient = useQueryClient();
   const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
   const handleNavPrefetch = useCallback(
@@ -454,3 +455,4 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     </>
   );
 }
+

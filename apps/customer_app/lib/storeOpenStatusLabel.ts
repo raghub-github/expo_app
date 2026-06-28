@@ -29,8 +29,14 @@ export function buildStoreOpenStatusLabel(params: {
     if (nextCloseTs != null) {
       const msLeft = nextCloseTs - nowMs;
       if (msLeft <= 0) {
-        const sub = nextOpenTs != null ? formatNextOpenTime(nextOpenTs) : null;
-        return { label: "Closed", isGreen: false, sub };
+        /**
+         * When countdown crosses zero, badge must immediately leave OPEN state.
+         * This avoids showing stale "Open" until the next backend refresh arrives.
+         */
+        if (nextOpenTs != null && nextOpenTs > nowMs) {
+          return { label: "Closed", isGreen: false, sub: formatNextOpenTime(nextOpenTs) };
+        }
+        return { label: "Closed", isGreen: false, sub: null };
       }
       if (msLeft <= CLOSING_SOON_WINDOW_MS) {
         return {

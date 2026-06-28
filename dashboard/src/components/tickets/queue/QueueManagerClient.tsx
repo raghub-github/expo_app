@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
 import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 import { QueueAutoAssignCapSection } from "@/components/tickets/queue/QueueAutoAssignCapSection";
@@ -50,7 +50,7 @@ const SECTION_HEADING: Record<
 };
 
 export function QueueManagerClient() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const section = useMemo(
     () => normalizeQueueManagerSection(searchParams.get("section")),
     [searchParams]

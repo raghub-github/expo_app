@@ -1,8 +1,9 @@
 'use client';
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { usePermission } from '@/hooks/usePermission';
-import { usePathname } from 'next/navigation';
+
 import { getDashboardTypeFromPath } from '@/lib/permissions/path-mapping';
 import type { DashboardType } from '@/lib/db/schema';
 import { Package, X, Image, Truck, RotateCcw, CheckCircle, AlertTriangle, Loader2, Shield, User, ChevronDown, Info, FileText, ShieldCheck, IndianRupee } from 'lucide-react';
@@ -492,7 +493,7 @@ export default function ItemsRefundModal({
   onRefundCreated,
   orderCancelledOnTimeline = false,
 }: ItemsRefundModalProps) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const resolvedDashboard = dashboardTypeProp ?? getDashboardTypeFromPath(pathname ?? '') ?? 'ORDER_FOOD';
   const { canPerformAction, isSuperAdmin } = usePermission();
 
@@ -1977,3 +1978,4 @@ export default function ItemsRefundModal({
     </>
   );
 }
+

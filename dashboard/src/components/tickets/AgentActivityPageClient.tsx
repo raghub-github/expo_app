@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Calendar } from "lucide-react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
@@ -148,7 +149,7 @@ function MetricTableRow({ label, value, valueClassName }: { label: string; value
 export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed }) {
   const queryClient = useQueryClient();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const sectionFromUrl = searchParams.get("section") === "automation" ? "automation" : "activity";
   const activityQueryEnabled = embed === "ticketSettingsActivity" || sectionFromUrl !== "automation";
 

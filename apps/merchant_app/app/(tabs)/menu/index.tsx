@@ -196,6 +196,10 @@ function normalizeOosUntilIso(value: unknown): string | null {
   return d ? d.toISOString() : null;
 }
 
+function isMenuItemPlanLocked(item: MenuItemRow): boolean {
+  return item.is_locked_by_plan === true;
+}
+
 function MenuItemCard({
   item,
   categoryName,
@@ -235,12 +239,13 @@ function MenuItemCard({
   if (item.has_customizations) tags.push("Customizations");
   if (item.has_addons) tags.push("Add-ons");
   const oosLabel = getItemOosLabel(item);
+  const isLocked = isMenuItemPlanLocked(item);
 
   const imageUri = resolveImageUrl(item.item_image_url);
   const showImage = imageUri && !imageError;
 
   const handleToggle = () => {
-    if (toggling) return;
+    if (toggling || isLocked) return;
     const current = effectiveInStock(item);
     const nextInStock = !current;
     setToggling(true);
@@ -264,25 +269,40 @@ function MenuItemCard({
   const hasAnyOptions = variantsCount + groupsCount + addonsCount > 0;
 
   return (
-    <View style={styles.itemCard}>
+    <View style={[styles.itemCard, isLocked && styles.itemCardLocked]}>
       <TouchableOpacity
         style={styles.itemTouchable}
-        onPress={() => onEdit(item.id)}
+        onPress={() => {
+          if (isLocked) {
+            Alert.alert(
+              "Item locked",
+              "This item is locked because your plan limit is reached. Upgrade your plan to unlock it."
+            );
+            return;
+          }
+          onEdit(item.id);
+        }}
         activeOpacity={0.85}
       >
-        <View style={styles.itemImageWrap}>
+        <View style={[styles.itemImageWrap, isLocked && styles.itemImageWrapLocked]}>
           {showImage ? (
             <Image
               source={{ uri: imageUri }}
-              style={styles.itemImage}
+              style={[styles.itemImage, isLocked && styles.itemImageLocked]}
               resizeMode="cover"
               onError={() => setImageError(true)}
             />
           ) : (
-            <View style={styles.itemImagePlaceholder}>
+            <View style={[styles.itemImagePlaceholder, isLocked && styles.itemImageLocked]}>
               <Ionicons name="restaurant-outline" size={32} color={GatiMitraMerchant.primary} />
             </View>
           )}
+          {isLocked ? (
+            <View style={styles.lockedBadge}>
+              <Ionicons name="lock-closed" size={10} color="#fff" />
+              <Text style={styles.lockedBadgeText}>Locked</Text>
+            </View>
+          ) : null}
           {item.approval_status === "PENDING" && (
             <View style={styles.pendingBadge}>
               <Text style={styles.pendingBadgeText}>Pending</Text>
@@ -301,9 +321,9 @@ function MenuItemCard({
             </View>
           )}
         </View>
-        <View style={styles.itemBody}>
+        <View style={[styles.itemBody, isLocked && styles.itemBodyLocked]}>
           <View style={styles.itemHeaderRow}>
-            <Text style={styles.itemName} numberOfLines={2}>
+            <Text style={[styles.itemName, isLocked && styles.itemNameLocked]} numberOfLines={2}>
               {item.item_name}
             </Text>
             <View style={styles.itemHeaderActions}>
@@ -311,6 +331,7 @@ function MenuItemCard({
                 onPress={() => onMoreOptions(item)}
                 style={styles.moreBtn}
                 hitSlop={8}
+                disabled={isLocked}
               >
                 <Ionicons
                   name="ellipsis-vertical"
@@ -322,7 +343,7 @@ function MenuItemCard({
                 <Switch
                   value={effectiveInStock(item)}
                   onValueChange={handleToggle}
-                  disabled={toggling}
+                  disabled={toggling || isLocked}
                   trackColor={{
                     false: GatiMitraMerchant.border,
                     true: GatiMitraMerchant.primary,
@@ -337,7 +358,11 @@ function MenuItemCard({
               {item.item_description.trim()}
             </Text>
           ) : null}
-          {oosLabel ? (
+          {isLocked ? (
+            <Text style={styles.lockedSubtext} numberOfLines={2}>
+              Plan limit — hidden from customers
+            </Text>
+          ) : oosLabel ? (
             <Text style={styles.oosSubtext} numberOfLines={2}>
               {oosLabel}
             </Text>
@@ -1692,6 +1717,10 @@ export default function MenuScreen() {
     () => allItems.filter(itemHasCustomizationContent).length,
     [allItems]
   );
+  const lockedItemsCount = useMemo(
+    () => allItems.filter((i) => isMenuItemPlanLocked(i)).length,
+    [allItems]
+  );
   const catalogKindTab: CatalogKindTab =
     kindFilter === "COMBOS" ? "COMBOS" : kindFilter === "ADDONS" ? "ADDONS" : "ALL";
   const showCatalogKindToggle = effectiveCategoryId == null;
@@ -2287,6 +2316,13 @@ export default function MenuScreen() {
       ) : null}
 
       <View style={styles.section}>
+        {lockedItemsCount > 0 ? (
+          <View style={styles.lockedBanner}>
+            <Text style={styles.lockedBannerText} numberOfLines={1}>
+              <Text style={styles.lockedBannerCount}>{lockedItemsCount}</Text> locked · newest items auto-locked
+            </Text>
+          </View>
+        ) : null}
         {showCatalogKindToggle ? (
           <CatalogKindToggle
             active={catalogKindTab}
@@ -2469,17 +2505,42 @@ export default function MenuScreen() {
 
                         {isOpen && (
                           <View style={styles.treeItemsWrap}>
-                            {group.items.map((item) => (
-                              <View key={item.id} style={styles.treeRow}>
+                            {group.items.map((item) => {
+                              const treeLocked = isMenuItemPlanLocked(item);
+                              return (
+                              <View key={item.id} style={[styles.treeRow, treeLocked && styles.treeRowLocked]}>
                                 <TouchableOpacity
                                   style={styles.treeRowLeft}
-                                  onPress={() => handleOpenItemDetails(item.id)}
+                                  onPress={() => {
+                                    if (treeLocked) {
+                                      Alert.alert(
+                                        "Item locked",
+                                        "This item is locked because your plan limit is reached."
+                                      );
+                                      return;
+                                    }
+                                    handleOpenItemDetails(item.id);
+                                  }}
                                   activeOpacity={0.8}
                                 >
-                                  <Text style={styles.treeItemName} numberOfLines={1}>
-                                    {item.item_name}
-                                  </Text>
-                                  {getItemOosLabel(item) ? (
+                                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+                                    <Text
+                                      style={[styles.treeItemName, treeLocked && styles.treeItemNameLocked]}
+                                      numberOfLines={1}
+                                    >
+                                      {item.item_name}
+                                    </Text>
+                                    {treeLocked ? (
+                                      <View style={styles.treeLockedPill}>
+                                        <Text style={styles.treeLockedPillText}>Locked</Text>
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                  {treeLocked ? (
+                                    <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                                      Plan limit — hidden from customers
+                                    </Text>
+                                  ) : getItemOosLabel(item) ? (
                                     <Text style={styles.treeOosSubtext} numberOfLines={2}>
                                       {getItemOosLabel(item)}
                                     </Text>
@@ -2496,6 +2557,7 @@ export default function MenuScreen() {
                                   <Switch
                                     value={effectiveInStock(item)}
                                     onValueChange={(v) => handleToggleEffectiveStock(item, v)}
+                                    disabled={treeLocked}
                                     trackColor={{
                                       false: GatiMitraMerchant.border,
                                       true: GatiMitraMerchant.primary,
@@ -2504,7 +2566,8 @@ export default function MenuScreen() {
                                   />
                                 </View>
                               </View>
-                            ))}
+                            );
+                            })}
                           </View>
                         )}
                       </View>
@@ -3138,6 +3201,48 @@ const styles = StyleSheet.create({
     borderColor: GatiMitraMerchant.border,
     ...GatiMitraMerchant.shadowSm,
   },
+  itemCardLocked: {
+    borderColor: "#fecaca",
+    backgroundColor: "#fafafa",
+  },
+  itemImageWrapLocked: { opacity: 0.55 },
+  itemImageLocked: { opacity: 0.7 },
+  itemBodyLocked: { opacity: 0.85 },
+  itemNameLocked: { color: GatiMitraMerchant.textSecondary },
+  lockedBadge: {
+    position: "absolute",
+    top: 4,
+    left: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#dc2626",
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+  },
+  lockedBadgeText: { fontSize: 9, fontWeight: "800", color: "#fff", textTransform: "uppercase" },
+  lockedSubtext: { fontSize: 11, color: "#dc2626", fontWeight: "700", marginTop: 2 },
+  lockedBanner: {
+    marginBottom: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    backgroundColor: "#fffbeb",
+  },
+  lockedBannerText: { fontSize: 12, fontWeight: "600", color: "#92400e" },
+  lockedBannerCount: { fontWeight: "800" },
+  treeRowLocked: { backgroundColor: "#fafafa" },
+  treeItemNameLocked: { color: GatiMitraMerchant.textSecondary },
+  treeLockedPill: {
+    backgroundColor: "#fee2e2",
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  treeLockedPillText: { fontSize: 9, fontWeight: "800", color: "#b91c1c", textTransform: "uppercase" },
   itemTouchable: { flexDirection: "row", padding: 14 },
   itemImageWrap: { position: "relative", marginRight: 10 },
   itemImage: { width: 88, height: 88, borderRadius: 12 },

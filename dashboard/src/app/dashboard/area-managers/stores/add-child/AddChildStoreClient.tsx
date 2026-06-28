@@ -3,7 +3,8 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, Menu, X, Loader2 } from "lucide-react";
 import Step3MenuUpload, { MenuUploadMode } from "@/components/onboarding/Step3MenuUpload";
 import Step4Documents, { Step4Patch, Step4SectionKey } from "@/components/onboarding/Step4Documents";
@@ -61,7 +62,7 @@ const STEP2_DEFAULT: Step2FormData = {
 
 export function AddChildStoreClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const parentIdParam = searchParams.get("parentId") ?? searchParams.get("parentid");
   const parentId = parentIdParam ? parseInt(parentIdParam, 10) : null;
   const storeInternalIdParam = searchParams.get("storeInternalId");

@@ -1,7 +1,8 @@
 "use client";
 import SearchBar from "./SearchBar";
 import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 
 import type { Metadata } from "next";
 import { Inter, Roboto_Mono } from "next/font/google";
@@ -38,7 +39,7 @@ function RiderDashboardLayoutInner({
   children: React.ReactNode;
 }>) {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const initialSearch = searchParams.get('search') || "";
   const [filter, setFilter] = useState<string>(initialSearch);
   const [loading, setLoading] = useState<boolean>(false);
@@ -143,10 +144,10 @@ export default function RiderDashboardLayout({
   );
 }
 
-import { usePathname } from "next/navigation";
+
 
 function SidebarButton({ label, href, compact }: { label: string; href: string; compact?: boolean }) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const isActive = pathname === href;
   return (
     <Link href={href}

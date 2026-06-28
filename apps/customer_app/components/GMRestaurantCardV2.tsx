@@ -23,6 +23,8 @@ import Animated, {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations } from "@/hooks/useStoreBookmarks";
@@ -56,6 +58,7 @@ export type GMRestaurantCardV2Props = {
   merchant: MerchantSummary;
   initialSaved?: boolean;
   weatherDelayMinutes?: number;
+  bottomSpacing?: number;
 };
 
 function StoreOpenStatusBadge({
@@ -110,8 +113,10 @@ function GMRestaurantCardV2Inner({
   merchant,
   initialSaved = false,
   weatherDelayMinutes = 0,
+  bottomSpacing = CARD_GAP,
 }: GMRestaurantCardV2Props) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { syncBookmark } = useStoreBookmarkMutations();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
@@ -173,6 +178,7 @@ function GMRestaurantCardV2Inner({
   }));
 
   const onPressIn = () => {
+    prefetchMerchantDetail(queryClient, merchant.id);
     scale.value = withSpring(0.97, { damping: 18, stiffness: 260 });
   };
   const onPressOut = () => {
@@ -180,7 +186,7 @@ function GMRestaurantCardV2Inner({
   };
 
   return (
-    <Animated.View style={[styles.card, animatedCardStyle]}>
+    <Animated.View style={[styles.card, { marginBottom: bottomSpacing }, animatedCardStyle]}>
       <Pressable
         onPress={openMerchant}
         onPressIn={onPressIn}
@@ -270,6 +276,7 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
   return (
     prev.initialSaved === next.initialSaved &&
     prev.weatherDelayMinutes === next.weatherDelayMinutes &&
+    prev.bottomSpacing === next.bottomSpacing &&
     a.id === b.id &&
     a.name === b.name &&
     a.liveStatus === b.liveStatus &&
@@ -291,12 +298,11 @@ const styles = StyleSheet.create({
   card: {
     width: CARD_WIDTH,
     alignSelf: "center",
-    marginBottom: CARD_GAP,
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
     overflow: "hidden",
-    ...GatiMitraColors.restaurantCardShadow,
-    ...(Platform.OS === "ios" ? {} : { elevation: 6 }),
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
   },
   cardPress: {
     width: "100%",

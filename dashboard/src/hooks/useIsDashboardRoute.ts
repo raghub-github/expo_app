@@ -1,6 +1,7 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { usePathname } from "next/navigation";
+
 
 /**
  * Returns true when the current pathname is under the given dashboard route.
@@ -11,7 +12,8 @@ import { usePathname } from "next/navigation";
  * useQuery({ queryKey: [...], queryFn: fetchAnalytics, enabled: isOnAnalytics });
  */
 export function useIsDashboardRoute(routePrefix: string): boolean {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const clean = pathname?.split("?")[0].split("#")[0] ?? "";
   return routePrefix === clean || clean.startsWith(routePrefix + "/");
 }
+

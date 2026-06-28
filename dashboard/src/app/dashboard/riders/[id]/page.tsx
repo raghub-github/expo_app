@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from 'react';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useAppParams, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from '@tanstack/react-query';
 import { useGetRiderDetailsQuery } from '@/store/api/riderApi';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
@@ -191,9 +192,9 @@ export default function RiderDetailsPage() {
   const hasCachedPermissions = permissionsData != null;
   const hasCachedDashboardAccess = dashboardAccessData != null;
   const accessLoading = (permissionsLoading && !hasCachedPermissions) || (dashboardAccessLoading && !hasCachedDashboardAccess);
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const queryClient = useQueryClient();
   const riderId = parseInt(params.id as string);
   const returnToParam = searchParams.get("returnTo");

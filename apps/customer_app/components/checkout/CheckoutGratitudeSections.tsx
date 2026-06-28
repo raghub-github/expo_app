@@ -10,10 +10,10 @@ import {
   formatDonationScopeLabel,
   type DonationScope,
 } from "@/components/checkout/DonateWithBottomSheet";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const GM = GatiMitraColors;
-const RX_TIP_IMG = require("../../public/img/rxtip.png");
-const FED_IMG = require("../../public/img/fed.png");
 
 const TIP_CHIP_AMOUNTS = [15, 20, 30] as const;
 const DONATION_PRESETS = [5, 10, 15] as const;
@@ -66,6 +66,8 @@ export function CheckoutGratitudeSections({
   donationScope = "every_order",
   sectionOrder = "feeding-first",
 }: CheckoutGratitudeSectionsProps) {
+  const rxTipImg = useAppAssetSource(CX.checkout.rxTip);
+  const fedImg = useAppAssetSource(CX.checkout.fed);
   const donationValue =
     donationEnabled && donationPreset != null && donationPreset !== "custom"
       ? donationPreset
@@ -124,7 +126,9 @@ export function CheckoutGratitudeSections({
             </View>
           ) : null}
         </View>
-        <Image source={RX_TIP_IMG} style={styles.tipRiderImg} resizeMode="contain" accessibilityLabel="Delivery partner" />
+        {rxTipImg ? (
+          <Image source={rxTipImg} style={styles.tipRiderImg} resizeMode="contain" accessibilityLabel="Delivery partner" />
+        ) : null}
       </View>
       {showTipConfirm ? (
         <View style={styles.gratitudeConfirmRow}>
@@ -160,7 +164,9 @@ export function CheckoutGratitudeSections({
             Together, we can fuel young minds to grow, learn, and thrive
           </Text>
         </View>
-        <Image source={FED_IMG} style={styles.feedingArt} resizeMode="contain" accessibilityLabel="Feeding India" />
+        {fedImg ? (
+          <Image source={fedImg} style={styles.feedingArt} resizeMode="contain" accessibilityLabel="Feeding India" />
+        ) : null}
       </LinearGradient>
 
       <Pressable style={styles.feedingDonateRowWrap} onPress={onDonateEveryOrderPress}>

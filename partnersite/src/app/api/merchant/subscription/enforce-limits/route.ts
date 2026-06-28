@@ -80,11 +80,6 @@ export async function POST(req: NextRequest) {
 
     const { data, error } = await db.rpc('enforce_plan_limits', { p_store_id: store.id });
     if (error) {
-      // Backwards-compat: some environments removed plan-locking columns/functions.
-      const msg = String(error.message || '').toLowerCase();
-      if (error.code === '42703' || msg.includes('is_locked_by_plan')) {
-        return NextResponse.json({ success: true, skipped: true, reason: 'plan_locking_not_supported' });
-      }
       console.error('[enforce-limits] error:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
@@ -149,23 +144,32 @@ export async function GET(req: NextRequest) {
       plan = freePlan;
     }
 
-    // Count items
-    const { count: totalItems } = await db
-      .from('merchant_menu_items')
-      .select('id', { count: 'exact', head: true })
-      .eq('store_id', store.id)
-      .eq('is_deleted', false);
+    const countRows = async (
+      table: 'merchant_menu_items' | 'merchant_menu_categories',
+      extra?: { lockedOnly?: boolean }
+    ): Promise<number | null> => {
+      try {
+        let q = db
+          .from(table)
+          .select('id', { count: 'exact', head: true })
+          .eq('store_id', store.id)
+          .eq('is_deleted', false)
+        if (extra?.lockedOnly) {
+          q = q.eq('is_locked_by_plan', true)
+        }
+        const { count, error } = await q
+        if (error) throw error
+        return count ?? 0
+      } catch {
+        return null
+      }
+    }
 
-    // Plan-locking removed in some schemas; treat as 0 locked.
-    const lockedItems = 0;
-
-    const { count: totalCategories } = await db
-      .from('merchant_menu_categories')
-      .select('id', { count: 'exact', head: true })
-      .eq('store_id', store.id)
-      .eq('is_deleted', false);
-
-    const lockedCategories = 0;
+    const totalItems = (await countRows('merchant_menu_items')) ?? 0
+    const lockedItems = await countRows('merchant_menu_items', { lockedOnly: true })
+    const totalCategories = (await countRows('merchant_menu_categories')) ?? 0
+    const lockedCategories = await countRows('merchant_menu_categories', { lockedOnly: true })
+    const planLockingSupported = lockedItems != null && lockedCategories != null
 
     return NextResponse.json({
       plan: {
@@ -175,12 +179,17 @@ export async function GET(req: NextRequest) {
         maxCategories: plan?.max_menu_categories ?? 5,
       },
       usage: {
-        totalItems: totalItems ?? 0,
-        unlockedItems: (totalItems ?? 0) - (lockedItems ?? 0),
+        totalItems,
+        unlockedItems: planLockingSupported
+          ? totalItems - (lockedItems ?? 0)
+          : totalItems,
         lockedItems: lockedItems ?? 0,
-        totalCategories: totalCategories ?? 0,
-        unlockedCategories: (totalCategories ?? 0) - (lockedCategories ?? 0),
+        totalCategories,
+        unlockedCategories: planLockingSupported
+          ? totalCategories - (lockedCategories ?? 0)
+          : totalCategories,
         lockedCategories: lockedCategories ?? 0,
+        planLockingSupported,
       },
     });
   } catch (e: any) {

@@ -13,6 +13,8 @@ import Animated, {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const SPRING = { damping: 18, stiffness: 260 };
 
@@ -25,8 +27,6 @@ const RIDE_CONFIG: Record<
     subtitle: string;
     title: string;
     etaTag?: string;
-    /** Image from public/img – add bike.png, auto.png, cab.png for per-type images */
-    imageSource?: number;
   }
 > = {
   bike: {
@@ -34,21 +34,18 @@ const RIDE_CONFIG: Record<
     subtitle: "Beat the traffic",
     title: "Bike Ride",
     etaTag: "Within 2-5 min",
-    imageSource: require("../../public/img/ridecard.png"),
   },
   auto: {
     icon: "bus",
     subtitle: "Quick city rides",
     title: "Auto",
     etaTag: "Within 2-5 min",
-    imageSource: require("../../public/img/ridecard.png"),
   },
   cab: {
     icon: "car-sport",
     subtitle: "Comfortable travel",
     title: "Cab",
     etaTag: "Within 2-5 min",
-    imageSource: require("../../public/img/ridecard.png"),
   },
   all: {
     icon: "grid",
@@ -68,6 +65,8 @@ const CARD_HEIGHT = 148;
 
 export function RideCard({ type, onPress, cardWidth }: RideCardProps) {
   const config = RIDE_CONFIG[type];
+  const rideCardImage = useAppAssetSource(CX.ride.rideCard);
+  const imageSource = rideCardImage ?? undefined;
   const showEtaTag = !!config.etaTag;
   const scale = useSharedValue(1);
 
@@ -103,9 +102,9 @@ export function RideCard({ type, onPress, cardWidth }: RideCardProps) {
               </View>
             )}
             <View style={styles.iconWrap}>
-              {config.imageSource != null ? (
+              {imageSource != null ? (
                 <Image
-                  source={config.imageSource}
+                  source={imageSource}
                   style={styles.cardImage}
                   resizeMode="contain"
                 />

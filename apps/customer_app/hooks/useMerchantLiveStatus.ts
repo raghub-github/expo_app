@@ -5,22 +5,17 @@
 import { useEffect } from "react";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { useStoreStatusStore, type LiveStatus } from "@/store/storeStatusStore";
+import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
 
 export function useMerchantLiveStatus(
-  merchant: Pick<MerchantSummary, "id" | "liveStatus">
+  merchant: Pick<MerchantSummary, "id" | "liveStatus" | "nextOpenAt" | "nextCloseAt">
 ): LiveStatus {
   const statusFromMap = useStoreStatusStore((s) => s.statusMap[merchant.id]);
   const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
-
-  const rawApi = (merchant.liveStatus ?? "").toString().trim().toUpperCase();
-  const apiStatus: LiveStatus | null =
-    rawApi === "OPEN" ? "OPEN" : rawApi === "CLOSED" ? "CLOSED" : null;
+  const apiStatus = resolveMerchantLiveStatus(merchant, {});
 
   useEffect(() => {
-    if (apiStatus) {
-      setStatusFromApi(merchant.id, apiStatus === "OPEN", apiStatus);
-    }
+    setStatusFromApi(merchant.id, apiStatus === "OPEN", apiStatus);
   }, [merchant.id, apiStatus, setStatusFromApi]);
-
-  return statusFromMap ?? apiStatus ?? "CLOSED";
+  return statusFromMap ?? apiStatus;
 }

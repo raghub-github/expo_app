@@ -36,8 +36,12 @@ export type GMHeaderProps = {
   blendBackground?: boolean;
   /** Location line for minimal header (e.g. "Current location" or address.primary) */
   locationLabel?: string;
+  /** Max lines for minimal header location (default 2 for full address). */
+  locationLabelLines?: number;
   /** Tighter vertical padding (food home — root already reserves status bar). */
   compact?: boolean;
+  /** Transparent header wrap for grid-first sky hero (status bar + hero share sky tint). */
+  skyBackground?: boolean;
 };
 
 export function GMHeader({
@@ -54,7 +58,9 @@ export function GMHeader({
   minimal = false,
   blendBackground = false,
   locationLabel = "Current location",
+  locationLabelLines = 2,
   compact = false,
+  skyBackground = false,
 }: GMHeaderProps) {
   const bottomPad = compact ? 8 : HEADER_VERTICAL_PADDING;
   if (minimal) {
@@ -78,7 +84,7 @@ export function GMHeader({
           </TouchableOpacity>
           <Text
             style={[styles.locationLabelMinimal, blendBackground && styles.locationLabelBlend]}
-            numberOfLines={1}
+            numberOfLines={locationLabelLines}
           >
             {locationLabel}
           </Text>
@@ -89,7 +95,14 @@ export function GMHeader({
   }
 
   return (
-    <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: bottomPad }]}>
+    <View
+      style={[
+        styles.wrap,
+        styles.wrapInFlow,
+        skyBackground && styles.wrapBlend,
+        { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: bottomPad },
+      ]}
+    >
       <View style={[styles.inner, styles.innerSolid]}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimaryNew} />
@@ -182,12 +195,13 @@ const styles = StyleSheet.create({
   },
   locationLabelMinimal: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
     color: "#374151",
     textAlign: "center",
     letterSpacing: -0.12,
     paddingHorizontal: 4,
+    lineHeight: 18,
   },
   locationLabelBlend: {
     color: "#1F2937",

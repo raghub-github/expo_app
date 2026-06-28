@@ -5,13 +5,11 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
-  useState,
 } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, View, Platform } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { getConfig } from "@/config/env";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
-import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
+import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
 import { buildRideBookMapHtml } from "@/components/maps/mapbox-web-ride-book-html";
 import type { LatLng } from "@/services/directions.service";
@@ -29,11 +27,17 @@ type Props = {
   showRoadPolyline: boolean;
   stopCoords: LatLng[];
   nearbyRiders: NearbySupplyRider[];
+  riderMarkerImageKey?: string;
   onMapReady?: () => void;
   onRegionChange?: () => void;
   onRegionChangeComplete?: () => void;
+  onUserMapGesture?: () => void;
   style?: object;
 };
+
+function escJsString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
 
 export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function MapboxWebRideBookMap(
   {
@@ -42,9 +46,11 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
     showRoadPolyline,
     stopCoords,
     nearbyRiders,
+    riderMarkerImageKey = "bike",
     onMapReady,
     onRegionChange,
     onRegionChangeComplete,
+    onUserMapGesture,
     style,
   },
   ref
@@ -56,24 +62,19 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
     new Map<number, (value: { x: number; y: number } | null) => void>()
   );
   const pointSeq = useRef(0);
+  const initialCenterRef = useRef(center);
 
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
-  const [bikeDataUri, setBikeDataUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void resolveMapImageDataUri(MAPBIKE_IMAGE).then((uri) => {
-      if (!cancelled) setBikeDataUri(uri);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
 
   const html = useMemo(() => {
-    if (!token || !bikeDataUri) return "";
-    return buildRideBookMapHtml(token, center, bikeDataUri);
-  }, [token, center.latitude, center.longitude, bikeDataUri]);
+    if (!token || !markerDataUri) return "";
+    return buildRideBookMapHtml(token, initialCenterRef.current, markerDataUri);
+  }, [token, markerDataUri]);
+
+  useEffect(() => {
+    readyRef.current = false;
+  }, [html]);
 
   const ridersPayload = useMemo(
     () =>
@@ -109,11 +110,20 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
     webRef.current?.injectJavaScript(`window.updateStops && window.updateStops(${json}); true;`);
   }, [stopCoords]);
 
+  const injectMarkerIcon = useCallback(() => {
+    if (!readyRef.current || !markerDataUri) return;
+    const uri = escJsString(markerDataUri);
+    webRef.current?.injectJavaScript(
+      `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
+    );
+  }, [markerDataUri]);
+
   const syncLayers = useCallback(() => {
+    injectMarkerIcon();
     injectRoute();
     injectRiders();
     injectStops();
-  }, [injectRoute, injectRiders, injectStops]);
+  }, [injectMarkerIcon, injectRoute, injectRiders, injectStops]);
 
   const applyFitToCoordinates = useCallback((coords: LatLng[], options: FitOptions) => {
     if (coords.length < 1) return;
@@ -182,6 +192,10 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
         }
         return;
       }
+      if (msg.type === "usergesture") {
+        onUserMapGesture?.();
+        return;
+      }
       if (msg.type === "ready") {
         readyRef.current = true;
         syncLayers();
@@ -199,7 +213,7 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
     } catch {
       // ignore malformed messages
     }
-  }, [onMapReady, onRegionChange, onRegionChangeComplete, syncLayers, flushPendingFit]);
+  }, [onMapReady, onRegionChange, onRegionChangeComplete, onUserMapGesture, syncLayers, flushPendingFit]);
 
   useEffect(() => {
     if (!readyRef.current) return;
@@ -220,6 +234,12 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
         javaScriptEnabled
         domStorageEnabled
         scrollEnabled={false}
+        nestedScrollEnabled={Platform.OS === "android"}
+        overScrollMode="never"
+        androidLayerType="hardware"
+        allowFileAccess
+        allowUniversalAccessFromFileURLs
+        mixedContentMode="always"
         onMessage={onMessage}
         onLoadEnd={() => {
           if (readyRef.current) syncLayers();

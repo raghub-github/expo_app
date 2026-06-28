@@ -4,7 +4,8 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 
 export interface FilterConfig<T extends string> {
   paramName: string;
@@ -30,7 +31,7 @@ export function useUrlFilters(
   isInitialized: boolean;
 } {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Initialize filters from URL params

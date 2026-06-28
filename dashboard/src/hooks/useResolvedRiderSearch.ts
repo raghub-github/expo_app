@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
@@ -30,7 +30,7 @@ function searchMatchesRider(search: string, rider: ResolvedRiderSearchInfo): boo
  * is already in RiderDashboardContext (e.g. switching Activity Logs → Orders).
  */
 export function useResolvedRiderSearch() {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const riderContext = useRiderDashboardOptional();
   const searchValue = (searchParams.get("search") || "").trim();
   const hasSearch = Boolean(searchValue);

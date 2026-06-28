@@ -1,7 +1,8 @@
 "use client";
+import { useAppParams } from "@/hooks/useAppSearchParams";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
@@ -116,7 +117,7 @@ export default function RiderOnboardingClient() {
   const isSuperAdmin = permissionsData?.isSuperAdmin ?? false;
   const exists = permissionsData?.exists ?? false;
 
-  const params = useParams();
+  const params = useAppParams();
   const router = useRouter();
   const queryClient = useQueryClient();
   const riderDashboard = useRiderDashboardOptional();
@@ -1348,3 +1349,4 @@ function VehicleInfoItem({ label, value, highlight }: { label: string; value: st
     </div>
   );
 }
+

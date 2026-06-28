@@ -5,6 +5,8 @@ import { merchantKeys } from '@/lib/query-keys';
 import { fetchStoreOperations } from '@/hooks/useMerchantApi';
 import { mapInsightsDatePreset } from '@/components/merchant/LivePreviewInsightsPanel';
 import { prefetchGrowthInsights } from '@/lib/merchant-growth/growth-insights-cache';
+import { prefetchStoreOperationsPanel } from '@/lib/store-operations-panel-cache';
+import { prefetchMerchantProfile } from '@/lib/merchant-profile-cache';
 
 async function fetchWalletForStore(storeId: string) {
   const res = await fetch(`/api/merchant/wallet?storeId=${encodeURIComponent(storeId)}`);
@@ -82,6 +84,16 @@ export function prefetchPartnerRouteData(
       queryFn: () => fetchOrderHistoryForStore(storeId),
       staleTime: 30 * 1000,
     });
+    return;
+  }
+
+  if (path.includes('/store-settings')) {
+    void prefetchStoreOperationsPanel(storeId);
+    return;
+  }
+
+  if (path.includes('/profile')) {
+    void prefetchMerchantProfile(storeId);
     return;
   }
 

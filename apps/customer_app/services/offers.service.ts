@@ -98,7 +98,7 @@ export const offersService = {
   }): Promise<FeaturedOffersResponse> {
     const query: Record<string, string | number> = {
       serviceType: params?.serviceType ?? "FOOD",
-      limit: params?.limit ?? 5,
+      limit: Math.min(Math.max(1, params?.limit ?? 5), 12),
     };
     if (params?.pincode) query.pincode = params.pincode;
     if (params?.state) query.state = params.state;

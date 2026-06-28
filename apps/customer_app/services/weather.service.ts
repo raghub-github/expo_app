@@ -10,6 +10,27 @@ export type WeatherSeverity =
   | "HEAVY_RAIN"
   | "EXTREME_WEATHER";
 
+export type WeatherPanelDetails = {
+  feelsLikeC: number | null;
+  pressureHpa: number | null;
+  visibilityKm: number | null;
+  cloudCoverPct: number | null;
+  windGustKmh: number | null;
+  weatherId: number | null;
+  weatherMain: string | null;
+  weatherDescription: string | null;
+  sunriseAt: string | null;
+  sunsetAt: string | null;
+  rainfallMm1h: number | null;
+  uvIndex: number | null;
+  aqi: number | null;
+  aqiLabel: string | null;
+  rainProbabilityPct?: number | null;
+  windDirectionDeg?: number | null;
+  isDay?: boolean | null;
+  snowfallCm?: number | null;
+};
+
 export type CustomerWeatherContext = {
   severity: WeatherSeverity;
   rainDetected: boolean;
@@ -30,6 +51,8 @@ export type CustomerWeatherContext = {
   etaImpactLabel: string | null;
   trackingMessage: string | null;
   updatedAt: string | null;
+  zoneKey?: string | null;
+  details?: WeatherPanelDetails | null;
   futureHooks: {
     surgeEligible: boolean;
     weatherPriorityBoost: boolean;
@@ -69,6 +92,7 @@ export const CLEAR_WEATHER_CONTEXT: CustomerWeatherContext = {
   etaImpactLabel: null,
   trackingMessage: null,
   updatedAt: null,
+  zoneKey: null,
   futureHooks: {
     surgeEligible: false,
     weatherPriorityBoost: false,
@@ -78,7 +102,7 @@ export const CLEAR_WEATHER_CONTEXT: CustomerWeatherContext = {
   },
 };
 
-const WEATHER_API_TIMEOUT_MS = 8_000;
+const WEATHER_API_TIMEOUT_MS = 5_000;
 
 function sanitizeWeatherParam(value?: string | null): string | undefined {
   if (!value?.trim()) return undefined;

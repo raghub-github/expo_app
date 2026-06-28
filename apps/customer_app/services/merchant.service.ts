@@ -3,6 +3,7 @@
  */
 
 import api from "./api";
+import type { MenuDeltaPayload } from "@/lib/merchantMenuDelta";
 import {
   getCachedMenuItemFullConfig,
   setCachedMenuItemFullConfig,
@@ -48,6 +49,8 @@ export type MerchantSummary = {
   liveStatus?: "OPEN" | "CLOSED";
   /** Delivered food orders for this store (Loved by Customers ranking). */
   completedOrderCount?: number;
+  /** Store-level restaurant packaging charge (₹); 0 = none. */
+  packagingChargeAmount?: number | null;
 };
 
 export type MenuItem = {
@@ -139,6 +142,9 @@ export type OrderedTogetherRecommendations = {
 
 export type MerchantDetail = MerchantSummary & {
   menu: MenuItem[];
+  /** Epoch ms fingerprint from backend — drives delta sync. */
+  menuVersion?: number;
+  etag?: string;
   /** Hero banner from GET /menu (store banner_url). */
   imageUrl?: string | null;
   address?: string;
@@ -288,6 +294,15 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;
     })(),
+    packagingChargeAmount: (() => {
+      const raw =
+        item.packagingChargeAmount ??
+        (item as Record<string, unknown>).packagingChargeAmount ??
+        (item as Record<string, unknown>).packaging_charge_amount;
+      if (raw == null || raw === "") return 0;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    })(),
     liveStatus: (() => {
       const raw =
         item.liveStatus ??
@@ -297,8 +312,6 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       if (normalized === "OPEN" || normalized === "CLOSED") {
         return normalized as "OPEN" | "CLOSED";
       }
-      if (item.isOpen === true) return "OPEN";
-      if (item.isOpen === false) return "CLOSED";
       return undefined;
     })(),
   };
@@ -364,10 +377,21 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     avgRating,
     totalReviews,
     liveStatus:
-      data.liveStatus ??
-      (r.liveStatus === "OPEN" || r.liveStatus === "CLOSED" ? r.liveStatus : undefined),
+      (() => {
+        const raw = data.liveStatus ?? r.liveStatus ?? r.live_status;
+        const normalized = (raw ?? "").toString().trim().toUpperCase();
+        if (normalized === "OPEN" || normalized === "CLOSED") {
+          return normalized as "OPEN" | "CLOSED";
+        }
+        return undefined;
+      })(),
     nextOpenAt: pickOpenAtValue(data.nextOpenAt, r.nextOpenAt, r.next_open_at),
     nextCloseAt: pickOpenAtValue(data.nextCloseAt, r.nextCloseAt, r.next_close_at),
+    menuVersion:
+      data.menuVersion != null && Number.isFinite(Number(data.menuVersion))
+        ? Number(data.menuVersion)
+        : undefined,
+    etag: typeof data.etag === "string" ? data.etag : undefined,
   };
 }
 
@@ -486,10 +510,47 @@ export const merchantService = {
     }
   },
 
-  async getMerchantById(id: string, searchInMenu?: string): Promise<MerchantDetail> {
+  async getMenuVersion(id: string): Promise<{ menuVersion: number; etag: string } | null> {
+    try {
+      const { data } = await api.get<{ menuVersion: number; etag: string }>(
+        `${MERCHANTS_PREFIX}/${id}/menu/version`
+      );
+      if (data?.menuVersion == null) return null;
+      return { menuVersion: Number(data.menuVersion), etag: String(data.etag ?? "") };
+    } catch {
+      return null;
+    }
+  },
+
+  async getMenuDelta(id: string, sinceVersion: number): Promise<MenuDeltaPayload | null> {
+    try {
+      const { data } = await api.get<MenuDeltaPayload>(
+        `${MERCHANTS_PREFIX}/${id}/menu/delta`,
+        { params: { sinceVersion } }
+      );
+      return data ?? null;
+    } catch {
+      return null;
+    }
+  },
+
+  async getMerchantById(
+    id: string,
+    searchInMenu?: string,
+    options?: { ifNoneMatch?: string }
+  ): Promise<MerchantDetail | null> {
     const params = searchInMenu?.trim() ? { q: searchInMenu.trim() } : undefined;
-    const { data } = await api.get<MerchantDetail>(`${MERCHANTS_PREFIX}/${id}/menu`, { params });
-    return normalizeMerchantDetail(data);
+    const headers =
+      options?.ifNoneMatch && !searchInMenu?.trim()
+        ? { "If-None-Match": options.ifNoneMatch }
+        : undefined;
+    const response = await api.get<MerchantDetail>(`${MERCHANTS_PREFIX}/${id}/menu`, {
+      params,
+      headers,
+      validateStatus: (status) => status === 200 || status === 304,
+    });
+    if (response.status === 304) return null;
+    return normalizeMerchantDetail(response.data);
   },
 
   /** About page: store info (full_address, operational_status, etc.) */
@@ -583,6 +644,7 @@ export const merchantService = {
     offset?: number;
     lat?: number;
     lng?: number;
+    vegOnly?: boolean;
     signal?: AbortSignal;
   }): Promise<SearchApiResponse> {
     try {
@@ -591,6 +653,7 @@ export const merchantService = {
           q: params.q.trim(),
           limit: params.limit ?? 30,
           offset: params.offset ?? 0,
+          veg: params.vegOnly === true ? "true" : undefined,
           ...(params.lat != null && params.lng != null ? { lat: params.lat, lng: params.lng } : {}),
         },
         signal: params.signal,

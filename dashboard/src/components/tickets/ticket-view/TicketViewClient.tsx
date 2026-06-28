@@ -1,8 +1,9 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useTicketUrlPanel, useTicketPanelNavigation } from "@/hooks/tickets/useTicketUrlPanel";
 import {
   useTicketDetail,
@@ -153,7 +154,7 @@ function setStoredLastViewed(ticketId: number, ticket: TicketDetail) {
 /** Persist ticket inner view across refresh: ?panel=activities | ?panel=csat */
 export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const urlPanel = useTicketUrlPanel();
   const setTicketPanel = useTicketPanelNavigation(pathname, router);
   const rightSidebar = useRightSidebar();
@@ -795,3 +796,4 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     </div>
   );
 }
+

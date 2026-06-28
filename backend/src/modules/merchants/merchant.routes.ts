@@ -20,6 +20,7 @@ import { getCompletedOrderCountsForStores } from "./merchant-store-order-stats.j
 import {
   averagePrepMinutesFromMenuItemRows,
   getAverageMenuPrepMinutesForStores,
+  getPreparationBufferMinutesForStores,
   resolveStorePrepMinutesForEta,
 } from "./merchant-menu-prep.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
@@ -219,7 +220,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           return empty;
         }
       };
-      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs] =
+      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs, prepBuffers] =
         await Promise.all([
         settleEnrichment("offer-headlines", getPrimaryOfferHeadlinesForStores(storeInternalIds), new Map()),
         settleEnrichment("rating-summaries", getStoreRatingsForStores(storeInternalIds), new Map()),
@@ -228,6 +229,11 @@ export async function merchantRoutes(app: FastifyInstance) {
         settleEnrichment(
           "menu-prep-averages",
           getAverageMenuPrepMinutesForStores(storeInternalIds),
+          new Map()
+        ),
+        settleEnrichment(
+          "prep-buffers",
+          getPreparationBufferMinutesForStores(storeInternalIds),
           new Map()
         ),
       ]);
@@ -252,7 +258,11 @@ export async function merchantRoutes(app: FastifyInstance) {
           Number.isFinite(storeInternalId) && storeInternalId > 0
             ? menuPrepAvgs.get(storeInternalId) ?? null
             : null;
-        const prepMin = resolveStorePrepMinutesForEta(menuAvgPrep, storeLevelPrep);
+        const prepBuffer =
+          Number.isFinite(storeInternalId) && storeInternalId > 0
+            ? prepBuffers.get(storeInternalId) ?? 0
+            : 0;
+        const prepMin = resolveStorePrepMinutesForEta(menuAvgPrep, storeLevelPrep, prepBuffer);
         // ETA range: canonical "(prep + distance/18kmh) + 5..10 min buffer"
         // formula stamped server-side so list, merchant detail header, and
         // checkout all show the same numbers for one store.
@@ -643,9 +653,14 @@ export async function merchantRoutes(app: FastifyInstance) {
         .filter((row): row is NonNullable<ReturnType<typeof mapCustomerMenuItem>> => row != null);
 
       const menuAvgPrep = averagePrepMinutesFromMenuItemRows(items);
+      const prepBuffers = await getPreparationBufferMinutesForStores(
+        Number.isFinite(storeInternalId) && storeInternalId > 0 ? [storeInternalId] : []
+      );
+      const prepBuffer = prepBuffers.get(storeInternalId) ?? 0;
       const prepMin = resolveStorePrepMinutesForEta(
         menuAvgPrep,
-        store.avg_preparation_time_minutes
+        store.avg_preparation_time_minutes,
+        prepBuffer
       );
 
       const rawLiveStatus = (store as { live_status?: string | null }).live_status;

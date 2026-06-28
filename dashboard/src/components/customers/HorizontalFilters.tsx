@@ -1,13 +1,14 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
 import { DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
-import { usePathname } from "next/navigation";
+
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 
 export function HorizontalFilters() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const { isSuperAdmin } = usePermissions();
   const [localFilters, setLocalFilters] = useState<DashboardStatsFilters>({});
   const [appliedFilters, setAppliedFilters] = useState<DashboardStatsFilters>({});
@@ -231,3 +232,4 @@ export function HorizontalFilters() {
     </div>
   );
 }
+

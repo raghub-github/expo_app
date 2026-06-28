@@ -185,7 +185,13 @@ export type CheckoutOffersResponse = {
   merchantOffers: Array<
     CheckoutOfferMerchantRow & { estimatedSavingsInr?: number | null }
   >;
-  merchantOffersIneligible?: Array<CheckoutOfferMerchantRow & { reason: string; lockReason: string }>;
+  merchantOffersIneligible?: Array<
+    CheckoutOfferMerchantRow & {
+      reason: string;
+      lockReason: string;
+      estimatedSavingsInr?: number | null;
+    }
+  >;
   platformOffers: {
     id: number;
     name: string | null;

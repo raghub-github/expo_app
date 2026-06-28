@@ -14,10 +14,14 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import Animated, {
+  cancelAnimation,
   Easing,
+  interpolate,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
+  withRepeat,
+  withSequence,
   withTiming,
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
@@ -164,6 +168,7 @@ export function StoreBannerCarousel({
 
   const slideProgress = useSharedValue(0);
   const slideDir = useSharedValue(1);
+  const kenBurns = useSharedValue(0);
 
   holdMsRef.current = resolvedHoldMs;
   slideMsRef.current = resolvedSlideMs;
@@ -280,6 +285,26 @@ export function StoreBannerCarousel({
     return clearHoldTimer;
   }, [showCarousel, dataKey, clearHoldTimer, startAutoLoop]);
 
+  useEffect(() => {
+    if (!showCarousel && slides.length === 1) {
+      kenBurns.value = 0;
+      kenBurns.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 4200, easing: Easing.inOut(Easing.quad) }),
+          withTiming(0, { duration: 4200, easing: Easing.inOut(Easing.quad) })
+        ),
+        -1,
+        false
+      );
+      return () => {
+        cancelAnimation(kenBurns);
+        kenBurns.value = 0;
+      };
+    }
+    cancelAnimation(kenBurns);
+    kenBurns.value = 0;
+  }, [showCarousel, slides.length, kenBurns]);
+
   const resetAutoAfterGesture = useCallback(() => {
     if (showCarouselRef.current) startAutoLoop();
   }, [startAutoLoop]);
@@ -337,6 +362,16 @@ export function StoreBannerCarousel({
     transform: [{ translateX: slideDir.value * (width - slideProgress.value * width) }],
   }));
 
+  const singleSlideMotionStyle = useAnimatedStyle(() => {
+    const progress = kenBurns.value;
+    return {
+      transform: [
+        { scale: interpolate(progress, [0, 1], [1.01, 1.06]) },
+        { translateX: interpolate(progress, [0, 1], [-4, 4]) },
+      ],
+    };
+  });
+
   const radiusStyle = {
     borderTopLeftRadius: borderRadius,
     borderTopRightRadius: borderRadius,
@@ -359,7 +394,9 @@ export function StoreBannerCarousel({
   if (!showCarousel) {
     const inner = (
       <>
-        <BannerImage uri={slides[0]} width={width} height={height} />
+        <Animated.View style={[styles.singleSlideMotion, singleSlideMotionStyle]}>
+          <BannerImage uri={slides[0]} width={width} height={height} />
+        </Animated.View>
         {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
       </>
     );
@@ -421,6 +458,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   slideLayer: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  singleSlideMotion: {
     ...StyleSheet.absoluteFillObject,
   },
   preload: {

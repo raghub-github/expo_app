@@ -15,7 +15,7 @@ import {
   Share,
   Alert,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -39,6 +39,7 @@ import {
   getCustomerOrderCancellationDisplayLabel,
   getHistoryOrderStatusLabel,
   isActiveOrderStatus,
+  isCustomerOrderRefundCompleted,
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
 } from "@/lib/customer-order-status-display";
@@ -246,9 +247,16 @@ function HistoryOrderCard({
   const showActionRow = delivered || paymentFailed;
   const cancellationDisplayLabel = getCustomerOrderCancellationDisplayLabel({
     status: order.status,
+    paymentStatus: order.paymentStatus,
     cancellationReason: order.cancellationReason,
     cancelledByLabel: order.cancelledByLabel,
   });
+  const showRefunded =
+    statusNorm === "CANCELLED" &&
+    isCustomerOrderRefundCompleted({
+      paymentStatus: order.paymentStatus,
+      refundStatus: order.refundStatus,
+    });
   const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
 
   const { data: storeQuote } = useStoreDeliveryQuote({
@@ -404,11 +412,14 @@ function HistoryOrderCard({
           <View style={styles.actionRow}>
             <View style={styles.actionLeft}>
               {paymentFailed ? (
-                <View style={styles.actionLeftRow}>
-                  <Ionicons name="alert-circle" size={16} color={ERROR} />
-                  <Text style={styles.paymentFailedText} numberOfLines={2}>
-                    {cancellationDisplayLabel}
-                  </Text>
+                <View style={styles.cancelStatusBlock}>
+                  <View style={styles.actionLeftRow}>
+                    <Ionicons name="alert-circle" size={16} color={ERROR} />
+                    <Text style={styles.paymentFailedText}>{cancellationDisplayLabel}</Text>
+                  </View>
+                  {showRefunded ? (
+                    <Text style={styles.refundedText}>Refunded</Text>
+                  ) : null}
                 </View>
               ) : hasRating ? (
                 <View style={styles.ratingBlock}>
@@ -452,7 +463,7 @@ function HistoryOrderCard({
 export default function OrdersScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const [tab, setTab] = useState<OrdersTab>("active");
   const [search, setSearch] = useState("");
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
@@ -1086,7 +1097,21 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    flexWrap: "wrap",
+  },
+  cancelStatusBlock: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    gap: 2,
+    paddingRight: 4,
+  },
+  refundedText: {
+    marginLeft: 22,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "600",
+    color: GREEN,
   },
   ratingBlock: {
     gap: 2,
@@ -1124,12 +1149,11 @@ const styles = StyleSheet.create({
     color: GREEN,
   },
   paymentFailedText: {
-    flex: 1,
-    flexShrink: 1,
     fontSize: 14,
     lineHeight: 18,
     fontWeight: "600",
     color: ERROR,
+    flexShrink: 0,
   },
   deliveredText: {
     fontSize: 14,
@@ -1162,7 +1186,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     backgroundColor: "#B9BDCA",
     borderRadius: 8,
-    maxWidth: "58%",
+    maxWidth: "52%",
+    flexShrink: 1,
   },
   notDeliveringText: {
     fontSize: 11,

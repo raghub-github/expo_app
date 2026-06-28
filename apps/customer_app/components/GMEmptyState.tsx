@@ -268,15 +268,17 @@ export function GMEmptyState({ header }: { header?: React.ReactNode }) {
   const router = useRouter();
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
+  const setImmersiveStatusBarChrome = useScreenChromeStore((s) => s.setImmersiveStatusBarChrome);
   const heroY = useSharedValue(0);
   const fade = useSharedValue(0);
   const copyY = useSharedValue(14);
   const ctaY = useSharedValue(18);
 
   useEffect(() => {
-    setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG);
+    setImmersiveStatusBarChrome(false);
+    setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
     return () => resetStatusBarBackground();
-  }, [setStatusBarBackground, resetStatusBarBackground]);
+  }, [setImmersiveStatusBarChrome, setStatusBarBackground, resetStatusBarBackground]);
 
   useEffect(() => {
     heroY.value = withRepeat(

@@ -636,6 +636,7 @@ export async function getMenuByStoreId(
       .select("id, category_name, display_order")
       .eq("store_id", store.id)
       .eq("is_active", true)
+      .eq("is_locked_by_plan", false)
       .order("display_order", { ascending: true }),
     trimmedSearch
       ? pg`
@@ -670,6 +671,7 @@ export async function getMenuByStoreId(
             AND COALESCE(c.is_deleted, FALSE) = FALSE
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
+            AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND m.is_active = TRUE
             AND m.approval_status = 'APPROVED'
             AND ${effectiveInStock} = TRUE
@@ -708,6 +710,7 @@ export async function getMenuByStoreId(
             AND COALESCE(c.is_deleted, FALSE) = FALSE
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
+            AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND m.is_active = TRUE
             AND m.approval_status = 'APPROVED'
             AND ${effectiveInStock} = TRUE
@@ -1466,6 +1469,8 @@ export async function getMenuItemFullConfig(
     .eq("store_id", store.id)
     .eq("item_id", itemId)
     .eq("is_active", true)
+    .eq("is_deleted", false)
+    .eq("is_locked_by_plan", false)
     .eq("approval_status", "APPROVED")
     .maybeSingle();
 
@@ -1480,6 +1485,8 @@ export async function getMenuItemFullConfig(
         .eq("store_id", store.id)
         .eq("id", numericId)
         .eq("is_active", true)
+        .eq("is_deleted", false)
+        .eq("is_locked_by_plan", false)
         .eq("approval_status", "APPROVED")
         .maybeSingle();
       if (!byPkError && byPk) itemRow = byPk;
@@ -1634,6 +1641,33 @@ export async function getMenuItemFullConfig(
   };
 }
 
+/** Exclude plan-locked dishes from customer search results. */
+async function filterLockedDishesFromSearch<
+  T extends { store_id: number; item_id: string },
+>(dishes: T[]): Promise<T[]> {
+  if (dishes.length === 0) return dishes;
+  const supabase = getSupabase();
+  const storeIds = [...new Set(dishes.map((d) => d.store_id).filter((id) => Number.isFinite(id)))];
+  if (storeIds.length === 0) return dishes;
+
+  const { data: lockedRows, error } = await supabase
+    .from("merchant_menu_items")
+    .select("store_id, item_id")
+    .in("store_id", storeIds)
+    .eq("is_deleted", false)
+    .eq("is_locked_by_plan", true);
+
+  if (error) {
+    console.warn("[search] locked-item filter failed:", error.message);
+    return dishes;
+  }
+
+  const lockedKeys = new Set(
+    (lockedRows ?? []).map((r) => `${r.store_id}:${String(r.item_id ?? "")}`)
+  );
+  return dishes.filter((d) => !lockedKeys.has(`${d.store_id}:${String(d.item_id ?? "")}`));
+}
+
 /**
  * Search menu items and stores. When lat/lng provided, uses scored nearby RPCs (15km, approval_status).
  * Otherwise uses FTS search_menu_items + store fetch (no location filter).
@@ -1742,7 +1776,8 @@ export async function search(params: {
       preparation_time_minutes: null,
     }));
 
-    return { dishes: items, stores };
+    const visibleItems = await filterLockedDishesFromSearch(items);
+    return { dishes: visibleItems, stores };
   }
 
   let items: MerchantMenuItemRow[] = [];
@@ -1754,11 +1789,14 @@ export async function search(params: {
 
   if (!rpcError && Array.isArray(rpcData) && rpcData.length >= 0) {
     items = rpcData as MerchantMenuItemRow[];
+    items = await filterLockedDishesFromSearch(items);
   } else {
     const { data: ilikeData, error: ilikeError } = await supabase
       .from("merchant_menu_items")
       .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, in_stock, is_active, is_popular, is_recommended")
       .eq("is_active", true)
+      .eq("is_deleted", false)
+      .eq("is_locked_by_plan", false)
       .eq("in_stock", true)
       .or(`item_name.ilike.%${q}%,item_description.ilike.%${q}%,cuisine_type.ilike.%${q}%`)
       .limit(limit)

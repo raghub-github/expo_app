@@ -3,13 +3,14 @@
  * Hydrates auth and cart before showing main UI.
  */
 
+import "react-native-gesture-handler";
 import "../global.css";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback, useRef, useState } from "react";
-import { View, LogBox, Alert, AppState, type AppStateStatus } from "react-native";
+import { View, LogBox, Alert, AppState, Platform, type AppStateStatus } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
@@ -22,25 +23,38 @@ import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
 import { LegalConsentGate } from "@/components/LegalConsentGate";
 import { AddressesPrefetch } from "@/components/AddressesPrefetch";
 import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
+import { WeatherPrefetch } from "@/components/WeatherPrefetch";
+import { WeatherRealtimeSync } from "@/components/WeatherRealtimeSync";
+import { resumePendingAddressShare } from "@/lib/pendingAddressShare";
+import { extendStartupApiGate } from "@/lib/startup-api-gate";
+import { isNetworkError } from "@/utils/networkError";
 import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
 import { ProfilePrefetch } from "@/components/ProfilePrefetch";
 import { SubscriptionPlansPrefetch } from "@/components/SubscriptionPlansPrefetch";
+import { FoodHomeLayoutPrefetch } from "@/components/FoodHomeLayoutPrefetch";
+import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import { profileService } from "@/services/profile.service";
+import {
+  getContactsPermissionGranted,
+  getSmsPermissionGranted,
+} from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
-import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT, resolveBottomSafeInset, screenManagesBottomNav } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl } from "@/config/env";
 import { ensureMapboxSearchReady } from "@/services/location.service";
+import { restoreAndPrefetchLocationWeather } from "@/hooks/useLocationWeather";
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
@@ -80,7 +94,24 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, staleTime: 60 * 1000 },
+    queries: {
+      staleTime: 60 * 1000,
+      retry: (failureCount, error) => {
+        if (failureCount >= 3) return false;
+        const status = (error as { status?: number })?.status;
+        if (status === 503 || isNetworkError(error)) return true;
+        return failureCount < 1;
+      },
+      retryDelay: (attempt) => Math.min(1500 * 2 ** attempt, 10_000),
+    },
+    mutations: {
+      retry: (failureCount, error) => {
+        if (failureCount >= 2) return false;
+        const status = (error as { status?: number })?.status;
+        return status === 503 || isNetworkError(error);
+      },
+      retryDelay: (attempt) => 2000 * (attempt + 1),
+    },
   },
 });
 
@@ -113,20 +144,35 @@ export default function RootLayout() {
     hydrateAuth();
     hydrateCart();
     hydrateLanguage();
-  }, [hydrateAuth, hydrateCart, hydrateLanguage]);
+    void hydrateLocation();
+  }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation]);
+
+  useEffect(() => {
+    if (hydrated && useAuthStore.getState().session) {
+      extendStartupApiGate(12_000);
+    }
+  }, [hydrated]);
 
   useEffect(() => {
     if (!hydrated || !cartHydrated) return;
     void (async () => {
       await hydrateLocation();
+      let { coords, address, locationSource } = useLocationStore.getState();
+      if (coords) {
+        await restoreAndPrefetchLocationWeather(queryClient, address, coords);
+      }
+      if (locationSource === "selected" && coords && address) {
+        await promptLocationPermissionIfNeeded({ force: false });
+        return;
+      }
       await promptLocationPermissionIfNeeded({ force: true });
-      const { locationSource, coords, address } = useLocationStore.getState();
+      ({ locationSource, coords, address } = useLocationStore.getState());
       const readiness = await getDeviceLocationReadiness();
       if (!readiness.isReady) return;
       if (locationSource === "selected" && coords && address) return;
       await requestPermissionAndFetch({ forceDevice: true });
     })();
-  }, [hydrated, cartHydrated, hydrateLocation, promptLocationPermissionIfNeeded, requestPermissionAndFetch]);
+  }, [hydrated, cartHydrated, hydrateLocation, promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
 
   const onLayoutRootView = useCallback(() => {
     if (ready && splashExited) {
@@ -145,15 +191,18 @@ export default function RootLayout() {
             backgroundColor: splashExited ? colors.background.light : GatiMitraColors.splashMint,
           }}
         >
+          <AppAssetsPrefetch />
+          <UserAppCategoriesPrefetch />
           {ready ? (
             <>
               <ReactQueryFocusSync />
               <StoreStatusRealtimeSync />
               <OrderRealtimeSync />
               <SessionRevokedHandler />
-              <LocationPermissionRealtimeSync />
+              <CustomerPermissionsRealtimeSync />
               <LocationPermissionResumeCheck />
               <LanguageSync />
+              <CustomerSystemChrome />
               <RootStack onLayoutRootView={onLayoutRootView} />
               <GlobalFloatingCart />
               <LocationModalWrapper />
@@ -161,7 +210,10 @@ export default function RootLayout() {
               <LegalConsentGate />
               <AddressesPrefetch />
               <FeaturedOffersPrefetch />
-              <UserAppCategoriesPrefetch />
+              <WeatherPrefetch />
+              <WeatherRealtimeSync />
+              <PendingAddressShareResume />
+              <FoodHomeLayoutPrefetch />
               <ProfilePrefetch />
               <SubscriptionPlansPrefetch />
             </>
@@ -225,6 +277,19 @@ function LanguageSync() {
   return null;
 }
 
+function PendingAddressShareResume() {
+  const router = useRouter();
+  const session = useAuthStore((s) => s.session);
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  useEffect(() => {
+    if (!hydrated || !session?.accessToken) return;
+    void resumePendingAddressShare(router);
+  }, [hydrated, router, session?.accessToken]);
+
+  return null;
+}
+
 function SessionRevokedHandler() {
   const router = useRouter();
   useEffect(() => {
@@ -236,46 +301,68 @@ function SessionRevokedHandler() {
   return null;
 }
 
-function LocationPermissionRealtimeSync() {
+function CustomerPermissionsRealtimeSync() {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
-  const lastSyncedRef = useRef<boolean | null>(null);
+  const lastSyncedRef = useRef<{
+    location: boolean;
+    sms: boolean;
+    contacts: boolean;
+  } | null>(null);
 
-  const syncLocationPermission = useCallback(async () => {
+  const syncDevicePermissions = useCallback(async () => {
     if (!hydrated || !session) return;
     try {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      const granted = status === "granted";
+      const [{ status: locStatus }, smsGranted, contactsGranted] = await Promise.all([
+        Location.getForegroundPermissionsAsync(),
+        getSmsPermissionGranted(),
+        getContactsPermissionGranted(),
+      ]);
+      const locationGranted = locStatus === "granted";
+      const snapshot = {
+        location: locationGranted,
+        sms: smsGranted,
+        contacts: contactsGranted,
+      };
 
-      if (lastSyncedRef.current === granted) return;
+      if (
+        lastSyncedRef.current &&
+        lastSyncedRef.current.location === snapshot.location &&
+        lastSyncedRef.current.sms === snapshot.sms &&
+        lastSyncedRef.current.contacts === snapshot.contacts
+      ) {
+        return;
+      }
 
       const currentCoords = useLocationStore.getState().coords;
       await profileService.updateProfile({
-        location_permission: granted,
-        ...(granted && currentCoords
+        location_permission: snapshot.location,
+        sms_permission: snapshot.sms,
+        contacts_permission: snapshot.contacts,
+        ...(snapshot.location && currentCoords
           ? { latitude: currentCoords.latitude, longitude: currentCoords.longitude }
           : {}),
       });
 
-      lastSyncedRef.current = granted;
+      lastSyncedRef.current = snapshot;
     } catch {
       // Keep silent; we'll retry on next app active tick.
     }
   }, [hydrated, session]);
 
   useEffect(() => {
-    void syncLocationPermission();
+    void syncDevicePermissions();
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if (nextState === "active") void syncLocationPermission();
+      if (nextState === "active") void syncDevicePermissions();
     });
     const interval = setInterval(() => {
-      if (AppState.currentState === "active") void syncLocationPermission();
+      if (AppState.currentState === "active") void syncDevicePermissions();
     }, 15000);
     return () => {
       sub.remove();
       clearInterval(interval);
     };
-  }, [syncLocationPermission]);
+  }, [syncDevicePermissions]);
 
   return null;
 }
@@ -327,6 +414,19 @@ function LocationModalWrapper() {
   );
 }
 
+function StatusBarSystemUISync() {
+  const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    void import("expo-system-ui")
+      .then((SystemUI) => SystemUI.setBackgroundColorAsync(statusBarBackground))
+      .catch(() => {});
+  }, [statusBarBackground]);
+
+  return null;
+}
+
 function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
@@ -336,13 +436,20 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
     inProfileStack || inLegalStack ? 0 : insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
   const statusBarStyle = useScreenChromeStore((s) => s.statusBarStyle);
+  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
+  const effectiveStatusBarHeight =
+    inProfileStack || inLegalStack || hideStatusBarSpacer ? 0 : statusBarHeight;
+  const stackBottomInset = screenManagesBottomNav(segments)
+    ? 0
+    : resolveBottomSafeInset(insets.bottom);
 
   return (
     <>
+      <StatusBarSystemUISync />
       <StatusBar style={statusBarStyle} backgroundColor={statusBarBackground} />
       <View
         style={{
-          height: statusBarHeight,
+          height: effectiveStatusBarHeight,
           backgroundColor: statusBarBackground,
           width: "100%",
         }}
@@ -351,7 +458,10 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
         <Stack
           screenOptions={{
             headerShown: false,
-            contentStyle: { backgroundColor: colors.background.light },
+            contentStyle: {
+              backgroundColor: colors.background.light,
+              paddingBottom: stackBottomInset,
+            },
             animation: "slide_from_right",
           }}
         >

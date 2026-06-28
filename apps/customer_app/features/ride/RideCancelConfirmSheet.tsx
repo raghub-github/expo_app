@@ -15,7 +15,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
+import { appAssetSource, useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 export type RideCancelConfirmSheetProps = {
   visible: boolean;
@@ -23,6 +24,7 @@ export type RideCancelConfirmSheetProps = {
   message?: string;
   confirmLabel?: string;
   keepLabel?: string;
+  heroImage?: ImageSourcePropType;
   onConfirm: () => void;
   onKeepSearching: () => void;
   onClose: () => void;
@@ -38,11 +40,14 @@ export function RideCancelConfirmSheet({
   message = "By cancelling this ride, you'll have to restart the search that may lead to delay in finding a rider.",
   confirmLabel = "Cancel my ride",
   keepLabel = "Keep searching",
+  heroImage,
   onConfirm,
   onKeepSearching,
   onClose,
 }: RideCancelConfirmSheetProps) {
   const insets = useSafeAreaInsets();
+  const defaultHero = useAppAssetSource(CX.ride.bike);
+  const hero = heroImage ?? defaultHero;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -63,7 +68,7 @@ export function RideCancelConfirmSheet({
           <View style={styles.handle} />
 
           <View style={styles.heroWrap}>
-            <Image source={MAPBIKE_IMAGE} style={styles.heroImage} resizeMode="contain" />
+            {hero ? <Image source={hero} style={styles.heroImage} resizeMode="contain" /> : null}
           </View>
 
           <Text style={styles.title}>Are you sure you want to cancel this ride?</Text>

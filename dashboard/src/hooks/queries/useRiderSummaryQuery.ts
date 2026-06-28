@@ -1,11 +1,12 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys, type RiderSummaryParams } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import type { RiderSummary } from "@/types/rider-dashboard";
-import { usePathname } from "next/navigation";
+
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
@@ -62,7 +63,7 @@ export function useRiderSummaryQuery(
   params: RiderSummaryParams
 ) {
   const cacheConfig = getCacheConfig(CacheTier.MEDIUM);
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const auth = useAuthOptional();
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
@@ -108,3 +109,4 @@ export function useRiderSummaryQuery(
 
   return query;
 }
+

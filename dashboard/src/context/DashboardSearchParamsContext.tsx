@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 const DashboardSearchParamsContext = createContext<URLSearchParams>(
   new URLSearchParams()
@@ -20,7 +20,7 @@ function SearchParamsSync({
 }: {
   onChange: (params: URLSearchParams) => void;
 }) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
 
   useLayoutEffect(() => {
     onChange(new URLSearchParams(searchParams.toString()));

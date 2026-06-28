@@ -5,6 +5,20 @@ const ITEM_PLACEHOLDER_SVG = "data:image/svg+xml," + encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" fill="#f3f4f6"/><path d="M32 18c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9zm0 14c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5z" fill="#d1d5db"/><path d="M20 38l4 12h16l4-12H20z" fill="#9ca3af"/><ellipse cx="32" cy="44" rx="12" ry="3" fill="#e5e7eb"/></svg>'
 );
 
+function isMenuItemLockedByPlan(item: { is_locked_by_plan?: boolean }): boolean {
+  return item.is_locked_by_plan === true;
+}
+
+function menuItemLockBadgeLabel(item: { locked_reason?: string | null }): string {
+  return item.locked_reason === 'manual_admin_lock' ? 'Admin locked' : 'Plan locked';
+}
+
+function menuItemLockHint(item: { locked_reason?: string | null }): string {
+  return item.locked_reason === 'manual_admin_lock'
+    ? 'Locked by admin — hidden from customers.'
+    : 'Plan limit reached — hidden from customers. Upgrade to unlock.';
+}
+
 // Helper to generate menu item id like GMI1001, GMI1002, ...
 function generateMenuItemId() {
   if (typeof window !== 'undefined') {
@@ -82,7 +96,10 @@ interface MenuItem {
   spice_level?: string;
   cuisine_type?: string;
   is_active?: boolean;
+  is_deleted?: boolean | null;
   store_id?: number;
+  is_locked_by_plan?: boolean;
+  locked_reason?: string | null;
 }
 
 interface Customization {
@@ -154,7 +171,7 @@ import React, { useState, useEffect, Suspense, useCallback, useMemo, useRef } fr
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye, LayoutGrid, ListTree, SlidersHorizontal } from 'lucide-react'
+import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye, LayoutGrid, ListTree, SlidersHorizontal, Lock } from 'lucide-react'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
@@ -174,6 +191,7 @@ import {
 } from '@/lib/database'
 import { MenuItemsGridSkeleton, MenuPageSkeleton } from '@/components/PageSkeleton'
 import { R2Image } from '@/components/R2Image'
+import { markPlanEnforceRan, shouldRunPlanEnforce } from '@/lib/plan-usage-cache'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/menuItemImageValidationClient'
@@ -1724,6 +1742,7 @@ function MenuContent() {
   // Modal states
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [lockedPlanBannerDismissed, setLockedPlanBannerDismissed] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [oosModal, setOosModal] = useState<
     | null
@@ -2056,10 +2075,13 @@ function MenuContent() {
       comboRows: MenuCombo[]
     ) => {
       try {
-        await fetch(
-          `/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(currentStoreId)}`,
-          { method: 'POST' }
-        );
+        if (shouldRunPlanEnforce(currentStoreId)) {
+          await fetch(
+            `/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(currentStoreId)}`,
+            { method: 'POST' }
+          );
+          markPlanEnforceRan(currentStoreId);
+        }
       } catch {
         // Non-blocking
       }
@@ -3817,7 +3839,10 @@ function MenuContent() {
   }, []);
 
   // Plan-driven: no hardcoding. When planLimits is null (no plan) = no restrictions
-  const canAddItem = planLimits == null || planLimits.maxMenuItems == null || menuItems.length < planLimits.maxMenuItems;
+  const canAddItem =
+    planLimits == null ||
+    planLimits.maxMenuItems == null ||
+    menuItems.filter((i) => !i.is_deleted).length < planLimits.maxMenuItems;
   const canAddCategory = planLimits == null || planLimits.maxMenuCategories == null || categories.length < planLimits.maxMenuCategories;
   // Image count from server-side API (accurate); fallback to client status for backward compat
   const imageUsed = storeImageCount?.totalUsed ?? imageUploadStatus?.totalUsed ?? 0;
@@ -3872,8 +3897,9 @@ function MenuContent() {
       <style>{globalStyles}</style>
 
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
-      <header id="mx-menu-toolbar" className="shrink-0 z-20 bg-white border-b border-gray-200 shadow-sm">
-        <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex items-center gap-2 justify-between flex-nowrap">
+      <div id="mx-menu-toolbar" className="shrink-0 z-20 bg-white shadow-sm">
+        <div className="border-b border-gray-200">
+        <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex items-center gap-2 justify-between flex-nowrap py-2">
           <div className="flex items-center gap-1.5 min-w-0 shrink">
             <MobileHamburgerButton />
             <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto scrollbar-hide">
@@ -3981,28 +4007,41 @@ function MenuContent() {
             </button>
           </div>
         </div>
+        </div>
 
-        {/* Locked items banner – prompt to upgrade */}
         {(() => {
-          const lockedCount = menuItems.filter((i) => !!(i as any).is_locked_by_plan).length;
-          if (lockedCount === 0) return null;
+          const lockedCount = menuItems.filter((i) => isMenuItemLockedByPlan(i)).length;
+          if (lockedCount === 0 || lockedPlanBannerDismissed) return null;
           return (
-            <div className="mx-3 sm:mx-4 mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-medium text-amber-900">
-                <span className="font-bold">{lockedCount}</span> item{lockedCount !== 1 ? 's are' : ' is'} locked because your plan limit is exceeded. Upgrade to unlock and manage them.
-              </p>
-              <a
-                href="/mx/store-settings?tab=plans"
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-600 text-white font-semibold text-sm hover:bg-amber-700 transition-colors"
-              >
-                Upgrade plan
-              </a>
+            <div className="px-3 sm:px-4 pt-2.5 pb-1">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+                <p className="min-w-0 truncate text-xs font-medium text-amber-900">
+                  <span className="font-bold">{lockedCount}</span> item{lockedCount !== 1 ? 's' : ''} locked
+                  <span className="hidden sm:inline"> — newest items auto-locked (plan limit)</span>
+                </p>
+                <div className="flex shrink-0 items-center gap-1">
+                  <a
+                    href="/mx/store-settings?tab=plans"
+                    className="inline-flex items-center rounded-md bg-amber-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-amber-700 transition-colors"
+                  >
+                    Upgrade
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setLockedPlanBannerDismissed(true)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-amber-800 hover:bg-amber-100 transition-colors"
+                    aria-label="Dismiss locked items notice"
+                  >
+                    <X size={14} strokeWidth={2.5} />
+                  </button>
+                </div>
+              </div>
             </div>
           );
         })()}
 
         {/* Search and Categories - single row, sticky All + horizontal scroll */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3 border-b border-gray-200">
           <div className="flex-1 max-w-sm min-w-0 order-2 sm:order-1">
             <input
               type="text"
@@ -4077,7 +4116,7 @@ function MenuContent() {
             </div>
           </div>
         </div>
-      </header>
+      </div>
 
       <div
         ref={menuListScrollRef}
@@ -4280,10 +4319,33 @@ function MenuContent() {
               const discount = Number(item.discount_percentage);
               const hasDiscount = discount > 0;
               
-              const isLockedByPlan = false;
+              const isLockedByPlan = isMenuItemLockedByPlan(item);
               return (
-                <div key={item.item_id} className={`rounded-xl border shadow-sm hover:shadow-md transition-all overflow-hidden ${isLockedByPlan ? 'bg-gray-50 border-gray-300 opacity-75' : 'bg-white border-gray-200'}`}>
-                  <div className="flex p-2.5 h-full gap-2.5">
+                <div
+                  key={item.item_id}
+                  className={`relative rounded-xl border shadow-sm transition-all overflow-hidden ${
+                    isLockedByPlan
+                      ? 'border-red-200/90 bg-gray-50 ring-1 ring-red-100'
+                      : 'bg-white border-gray-200 hover:shadow-md'
+                  }`}
+                >
+                  {isLockedByPlan ? (
+                    <>
+                      <div
+                        className="pointer-events-none absolute inset-0 z-[1] bg-gray-200/40"
+                        aria-hidden
+                      />
+                      <span className="absolute left-2 top-2 z-[2] inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-md">
+                        <Lock size={11} strokeWidth={2.5} aria-hidden />
+                        Locked
+                      </span>
+                    </>
+                  ) : null}
+                  <div
+                    className={`relative z-0 flex p-2.5 h-full gap-2.5 ${
+                      isLockedByPlan ? 'opacity-60 saturate-[0.35] grayscale' : ''
+                    }`}
+                  >
                     <div className={`w-14 h-14 flex-shrink-0 rounded-lg border overflow-hidden ${isLockedByPlan ? 'border-gray-300 bg-gray-200' : 'border-gray-200 bg-gray-100'}`}>
                       <R2Image
                         src={item.item_image_url}
@@ -4295,14 +4357,14 @@ function MenuContent() {
                     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                       <div className="flex items-start justify-between gap-1 mb-0.5">
                         <div className="flex-1 min-w-0">
-                          <div className="font-bold text-sm text-gray-900 truncate flex items-center gap-1.5">
+                          <div className="font-bold text-sm text-gray-900 truncate flex items-center gap-1.5 pr-14">
                             {item.item_name}
-                            {isLockedByPlan && (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-100 text-red-700 border border-red-200 whitespace-nowrap" title="This item is locked because your plan limit is exceeded. Upgrade to unlock.">
-                                🔒 Locked
-                              </span>
-                            )}
                           </div>
+                          {isLockedByPlan ? (
+                            <p className="mt-0.5 text-[10px] font-semibold text-red-600 leading-snug">
+                              {menuItemLockHint(item)}
+                            </p>
+                          ) : null}
                           <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">
                             {category?.category_name || 'Uncategorized'}
                           </div>
@@ -4405,8 +4467,19 @@ function MenuContent() {
                           </button>
                         ) : null}
                         <button
-                          onClick={() => handleOpenEditModal(item)}
-                          className="min-w-0 flex-1 flex items-center justify-center gap-0.5 px-1 py-1 bg-gray-100 text-gray-700 font-bold rounded-md border border-gray-200 hover:bg-gray-200 transition-all text-[10px]"
+                          onClick={() => {
+                            if (isLockedByPlan) {
+                              toast.error('This item is locked. Upgrade your plan to unlock and edit it.');
+                              return;
+                            }
+                            handleOpenEditModal(item);
+                          }}
+                          disabled={isLockedByPlan}
+                          className={`min-w-0 flex-1 flex items-center justify-center gap-0.5 px-1 py-1 font-bold rounded-md border transition-all text-[10px] ${
+                            isLockedByPlan
+                              ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400'
+                              : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                          }`}
                         >
                           <Eye size={10} />
                           <span className="truncate">View Full Details</span>
@@ -4606,11 +4679,30 @@ function MenuContent() {
                   {isOpen && (
                     <div className="divide-y divide-gray-100">
                       {group.items.map((item) => {
-                        const isLockedByPlan = !!(item as any).is_locked_by_plan;
+                        const isLockedByPlan = isMenuItemLockedByPlan(item);
                         return (
-                          <div key={item.item_id} className="px-3 py-2 flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold text-gray-900 truncate">{item.item_name}</div>
+                          <div
+                            key={item.item_id}
+                            className={`px-3 py-2 flex items-center justify-between gap-3 ${
+                              isLockedByPlan ? 'bg-gray-50/90' : ''
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div
+                                  className={`text-sm font-semibold truncate ${
+                                    isLockedByPlan ? 'text-gray-500' : 'text-gray-900'
+                                  }`}
+                                >
+                                  {item.item_name}
+                                </div>
+                                {isLockedByPlan ? (
+                                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-red-700">
+                                    <Lock size={9} aria-hidden />
+                                    {menuItemLockBadgeLabel(item)}
+                                  </span>
+                                ) : null}
+                              </div>
                               {getItemOosLabel(item) ? (
                                 <div className="text-xs font-semibold text-red-600 mt-0.5">
                                   {getItemOosLabel(item)}

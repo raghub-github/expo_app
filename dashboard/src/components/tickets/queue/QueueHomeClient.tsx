@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useTransition } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { TicketDashboardClient } from "@/components/tickets/TicketDashboardClient";
 import { QUEUE_HOME_ACTIVE_STATUSES_URL } from "@/lib/tickets/queue-ticket-filters";
@@ -9,8 +10,8 @@ import { QUEUE_HOME_ACTIVE_STATUSES_URL } from "@/lib/tickets/queue-ticket-filte
 /** Queue → Home: ticket board filtered to the signed-in agent. */
 export function QueueHomeClient() {
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const [, startTransition] = useTransition();
   const { data: agentsData, isSuccess } = useTicketsAgentsQuery();
 

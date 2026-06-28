@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { invalidateRiderSummary } from "@/lib/cache-invalidation";
@@ -61,7 +61,7 @@ const PENALTY_TYPES = [
 
 export function RiderPenaltiesClient() {
   const queryClient = useQueryClient();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const searchValue = (searchParams.get("search") || "").trim();
   const riderContext = useRiderDashboardOptional();
   const riderFromContext = riderContext?.currentRiderInfo ?? null;

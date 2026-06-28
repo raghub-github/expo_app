@@ -12,6 +12,9 @@ export const ROUTES = {
   SEARCH: "/(tabs)/search",
   ORDERS: "/(tabs)/orders",
   PROFILE: "/(tabs)/profile",
+  /** Push from stack screens (e.g. food home) — back() returns to the previous route. */
+  PROFILE_STACK: "/profile",
+  SUBSCRIPTION: "/profile/subscription",
   MERCHANT: "/home/merchant/[id]",
   CART: "/checkout",
   CHECKOUT: "/checkout",

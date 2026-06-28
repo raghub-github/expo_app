@@ -114,12 +114,14 @@ function apiDevPort(): string {
 
 export function getConfig(): {
   apiBaseUrl: string;
+  wsBaseUrl: string;
+  wsEnabled: boolean;
   mapboxAccessToken: string | null;
   /** Same token baked into native Maps via app.config.js (Android / iOS). */
   googleMapsApiKey: string | null;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
-  /** When true, OTP is sent via backend POST /v1/auth/otp/request (MSG91). */
+  /** When true, OTP uses `POST /v1/auth/otp/request` (backend + MSG91). Default: Supabase hook (same as merchant). */
   phoneOtpUseBackendOnly: boolean;
 } {
   const port = apiDevPort();
@@ -178,20 +180,49 @@ export function getConfig(): {
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string) ??
     null;
 
-  const phoneOtpUseBackendOnly = (() => {
-    const flag = (process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ?? "").trim().toLowerCase();
-    if (flag === "true" || flag === "1" || flag === "yes") return true;
-    if (flag === "false" || flag === "0" || flag === "no") return false;
-    // Dev default: Supabase Send SMS hook needs a public URL; backend MSG91 works on LAN.
-    return __DEV__;
-  })();
+  const extra = Constants.expoConfig?.extra as Record<string, unknown> | undefined;
+  const phoneOtpBackendRaw =
+    asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
+    asNonEmptyString(extra?.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND as string);
+  const phoneOtpUseBackendOnly =
+    phoneOtpBackendRaw === "1" ||
+    phoneOtpBackendRaw?.toLowerCase() === "true" ||
+    phoneOtpBackendRaw?.toLowerCase() === "yes" ||
+    phoneOtpBackendRaw?.toLowerCase() === "on";
 
   return {
     apiBaseUrl,
+    wsBaseUrl: resolveWsBaseUrl(apiBaseUrl),
+    wsEnabled: isCustomerWsEnabled(),
     mapboxAccessToken,
     googleMapsApiKey,
     supabaseUrl,
     supabaseAnonKey,
     phoneOtpUseBackendOnly,
   };
+}
+
+/** Realtime weather + order sockets (ws-gateway). Disable when only REST backend is running. */
+export function isCustomerWsEnabled(): boolean {
+  const flag = process.env.EXPO_PUBLIC_WS_ENABLED?.trim().toLowerCase();
+  if (flag === "false" || flag === "0" || flag === "no") return false;
+  return true;
+}
+
+/** REST (:3000) and ws-gateway (:4100) are separate services in local dev. */
+export function resolveWsBaseUrl(apiBaseUrl: string): string {
+  const fromEnv = process.env.EXPO_PUBLIC_WS_BASE_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+
+  try {
+    const parsed = new URL(apiBaseUrl);
+    const wsPort = process.env.EXPO_PUBLIC_WS_PORT?.trim() || "4100";
+    if (parsed.port === "3000" || parsed.port === "4000" || parsed.port === "") {
+      parsed.port = wsPort;
+    }
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    return parsed.origin;
+  } catch {
+    return __DEV__ ? "ws://localhost:4100" : "wss://ws.gatimitra.com";
+  }
 }

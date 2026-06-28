@@ -386,6 +386,15 @@ const FLOW_STEP_INDEX: Record<string, number> = Object.fromEntries(
   FLOW_STEP_DEFS.map((d, i) => [d.key, i])
 );
 
+/** Timeline row label for auto vs manual acceptance. */
+export function displayLabelForAcceptedStep(order: OrdersFoodRow): string {
+  const label = (order.accepted_by_label ?? '').trim();
+  if (/^auto accepted$/i.test(label) || (/\bauto\b/i.test(label) && /accept/i.test(label))) {
+    return 'Auto Accepted';
+  }
+  return 'Accepted';
+}
+
 /** Timeline row label for cancelled orders (merchant / partner UIs). */
 export function displayLabelForCancelledStep(order: OrdersFoodRow): string {
   const lbl = (order.cancelled_by_label ?? '').trim();
@@ -496,9 +505,11 @@ export function buildMerchantVisibleTimeline(
   return steps
     .filter((s) => s.at)
     .sort((a, b) => (FLOW_STEP_INDEX[a.key] ?? 99) - (FLOW_STEP_INDEX[b.key] ?? 99))
-    .map((s) =>
-      s.key === 'cancelled' ? { ...s, label: displayLabelForCancelledStep(order) } : s
-    );
+    .map((s) => {
+      if (s.key === 'cancelled') return { ...s, label: displayLabelForCancelledStep(order) };
+      if (s.key === 'accepted') return { ...s, label: displayLabelForAcceptedStep(order) };
+      return s;
+    });
 }
 
 export function formatTimelineDate(s: string | null | undefined): string {

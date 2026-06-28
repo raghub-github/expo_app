@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft,
   LayoutGrid,
   Pencil,
   Plus,
@@ -466,15 +465,9 @@ export default function CustomerAppCategoriesPage() {
 
   return (
     <div className="w-full min-w-0 max-w-none space-y-4">
-      <div className="flex flex-wrap items-start gap-3">
-        <Link
-          href="/dashboard/super-admin"
-          className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50 shrink-0"
-        >
-          <ArrowLeft className="h-4 w-4 text-gray-600" />
-        </Link>
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="p-1.5 rounded-lg bg-cyan-50 text-cyan-600 shrink-0">
+          <div className="p-1.5 rounded-lg bg-cyan-50 text-cyan-600 shrink-0 mt-0.5">
             <LayoutGrid className="h-5 w-5" />
           </div>
           <div>
@@ -483,6 +476,17 @@ export default function CustomerAppCategoriesPage() {
               Tiles for the mobile app — images, active/inactive, store vertical.
             </p>
           </div>
+        </div>
+        <div className="inline-flex items-center rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
+          <span className="rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white">
+            App Category
+          </span>
+          <Link
+            href="/dashboard/super-admin/cxapp-home"
+            className="rounded-md px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+          >
+            CXApp Home
+          </Link>
         </div>
       </div>
 

@@ -253,6 +253,32 @@ function isMerchantR2ObjectPath(pathNoLeadingSlash: string): boolean {
   return false;
 }
 
+/**
+ * True when R2_PUBLIC_BASE_URL points at a browser-accessible CDN (e.g. *.r2.dev or custom domain).
+ * Private S3 API hosts (*.r2.cloudflarestorage.com) must be streamed via GetObject, not redirected.
+ */
+export function isPublicR2CdnBase(base: string): boolean {
+  try {
+    const host = new URL(base.trim()).hostname.toLowerCase();
+    if (host.endsWith(".r2.cloudflarestorage.com")) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Normalize all *_url fields on a store-documents row to proxy URLs. */
+export function normalizeStoreDocumentRowUrls<T extends Record<string, unknown>>(row: T): T {
+  const out = { ...row };
+  for (const [key, value] of Object.entries(out)) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    if (!/_url$/i.test(key)) continue;
+    const normalized = toStoredDocumentUrl(value);
+    if (normalized) (out as Record<string, unknown>)[key] = normalized;
+  }
+  return out;
+}
+
 /** R2 public / S3-style URLs whose object key we can derive for stable proxy storage. */
 export function isR2HostedHttpUrl(trimmed: string): boolean {
   try {
@@ -310,7 +336,23 @@ export function toStoredDocumentUrl(value: string | null | undefined): string | 
   if (trimmed.startsWith("/v1/attachments/proxy")) {
     return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
   }
-  if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
+  if (trimmed.startsWith("/api/attachments/proxy")) {
+    if (trimmed.includes("url=") && !trimmed.includes("key=")) {
+      try {
+        const u = new URL(trimmed, "http://dummy");
+        const inner = u.searchParams.get("url");
+        if (inner?.trim()) {
+          const key = objectKeyForProxyFromHttpUrl(inner.trim());
+          if (key) {
+            return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
+          }
+        }
+      } catch {
+        /* keep original proxy url */
+      }
+    }
+    return trimmed;
+  }
   if (trimmed.includes("://")) {
     try {
       const u = new URL(trimmed);

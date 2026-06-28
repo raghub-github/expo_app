@@ -1,10 +1,11 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAuthOptional } from "@/providers/AuthProvider";
-import { usePathname } from "next/navigation";
+
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 import { humanizeTicketsFetchError } from "@/lib/tickets/humanize-tickets-fetch-error";
@@ -235,7 +236,7 @@ export function useTickets(
   const permissions = auth?.permissions;
   const authReady = auth?.authReady ?? false;
   const isAllowed = Boolean(authReady && sessionUser && permissions);
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const isOnTicketsRoute = pathname.startsWith("/dashboard/tickets");
   const extraEnabled = options?.enabled ?? true;
   const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
@@ -278,3 +279,4 @@ export function useTickets(
 
   return query;
 }
+

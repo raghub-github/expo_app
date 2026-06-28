@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect } from "react";
-import { View, StyleSheet, Dimensions, ViewStyle } from "react-native";
+import { View, StyleSheet, Dimensions, type StyleProp, type ViewStyle } from "react-native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -27,7 +27,7 @@ export function GMSkeleton({
   style,
   children,
 }: {
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
 }) {
   const translateX = useSharedValue(-GM_STRIP_WIDTH);

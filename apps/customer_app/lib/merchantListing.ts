@@ -5,17 +5,34 @@
 
 import type { MerchantSummary } from "@/services/merchant.service";
 import type { LiveStatus } from "@/store/storeStatusStore";
+import { toTimestamp } from "@/lib/storeScheduleUi";
 
 export type MerchantListSort = "default" | "rating" | "distance";
 export type DeliveryFilter = "any" | "30" | "45" | "60";
 
 export function resolveMerchantLiveStatus(
-  merchant: Pick<MerchantSummary, "id" | "liveStatus">,
+  merchant: Pick<MerchantSummary, "id" | "liveStatus" | "nextOpenAt" | "nextCloseAt">,
   statusMap: Record<string, LiveStatus | undefined>
 ): LiveStatus {
   const rawApi = (merchant.liveStatus ?? "").toString().trim().toUpperCase();
-  const apiStatus: LiveStatus | null =
+  let apiStatus: LiveStatus | null =
     rawApi === "OPEN" ? "OPEN" : rawApi === "CLOSED" ? "CLOSED" : null;
+  /**
+   * Backend guardrail for occasional inconsistent payloads:
+   * if API says OPEN but also provides a future nextOpenAt and no nextCloseAt,
+   * treat it as CLOSED on UI until backend payload stabilizes.
+   */
+  if (apiStatus === "OPEN") {
+    const nextOpenTs = toTimestamp(merchant.nextOpenAt);
+    const nextCloseTs = toTimestamp(merchant.nextCloseAt);
+    // Countdown crossed zero: treat stale OPEN payload as CLOSED until API catches up.
+    if (nextCloseTs != null && nextCloseTs <= Date.now()) {
+      apiStatus = "CLOSED";
+    }
+    if (nextOpenTs != null && nextOpenTs > Date.now() && nextCloseTs == null) {
+      apiStatus = "CLOSED";
+    }
+  }
   return statusMap[merchant.id] ?? apiStatus ?? "CLOSED";
 }
 
@@ -23,10 +40,17 @@ export type MerchantListingFilters = {
   filterHasOffers?: boolean;
   deliveryFilter?: DeliveryFilter;
   selectedCuisines?: string[];
+  noPackagingCharges?: boolean;
 };
+
+function merchantHasPackagingCharge(m: MerchantSummary): boolean {
+  const amount = m.packagingChargeAmount ?? 0;
+  return Number.isFinite(amount) && amount > 0;
+}
 
 function passesListingFilters(m: MerchantSummary, filters: MerchantListingFilters): boolean {
   if (filters.filterHasOffers && !m.offerText) return false;
+  if (filters.noPackagingCharges && merchantHasPackagingCharge(m)) return false;
   if (filters.deliveryFilter && filters.deliveryFilter !== "any" && m.deliveryTime) {
     const mins = parseInt(m.deliveryTime.replace(/\D/g, ""), 10);
     if (!Number.isNaN(mins)) {

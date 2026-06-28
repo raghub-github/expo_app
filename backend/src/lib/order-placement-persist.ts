@@ -20,6 +20,7 @@ import {
 } from "./food-order-payload.js";
 import { generateOrderOtps } from "./food-order-otps.js";
 import { recordPlacementTimelines } from "./order-placement-timeline.js";
+import { resolveBulkOrderPlacement } from "./bulk-order.js";
 
 function sanitizeStringForDb(s: string | null | undefined): string | null {
   if (s == null) return null;
@@ -225,6 +226,10 @@ export async function insertPlacedOrderCoreWithTimelines(
   const vegAgg = aggregateVegNonVeg(foodPayload);
   const foodItemsCount = sumFoodItemQuantities(items);
   const etaSeconds = etaSecondsFromBillingSnapshot(billing);
+  const { isBulkOrder, bulkOrderGroupId } = resolveBulkOrderPlacement(
+    pending.grandTotal,
+    orderIdText
+  );
 
   const [inserted] = await tx
     .insert(ordersCore)
@@ -241,6 +246,8 @@ export async function insertPlacedOrderCoreWithTimelines(
       addonTotal: pending.addonTotal ?? "0",
       grandTotal: pending.grandTotal,
       tipAmount: pending.tipAmount ?? "0",
+      isBulkOrder,
+      bulkOrderGroupId: bulkOrderGroupId ?? undefined,
       placedAt: finalizedAt,
       pickupAddressRaw: pickupRaw || " ",
       pickupLat,

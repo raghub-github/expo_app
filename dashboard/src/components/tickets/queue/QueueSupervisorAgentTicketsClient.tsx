@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Copy } from "lucide-react";
 import { fetchTickets } from "@/hooks/tickets/useTickets";
@@ -80,8 +81,8 @@ function statusLabel(raw: string): string {
 export function QueueSupervisorAgentTicketsClient() {
   const queryClient = useQueryClient();
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const agentIdFromUrl = (searchParams.get("agentId") ?? "").trim();
 
   const { data: agentsData, isLoading: agentsLoading } = useTicketsAgentsQuery({ includePresence: false });

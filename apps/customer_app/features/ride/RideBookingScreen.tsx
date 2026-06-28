@@ -21,8 +21,9 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP } from "@/constants/layout";
 import { AllServicesGrid, type ServiceId } from "./AllServicesGrid";
 import { IntercityServicesList } from "./IntercityServicesList";
-import { RideServiceBottomNav, type RideServiceTab } from "./RideServiceBottomNav";
+import { RideServiceBottomNav, type RideServiceTab, getRideServiceBottomNavHeight } from "./RideServiceBottomNav";
 import { ActiveRideBottomSheet } from "@/components/ride/ActiveRideBottomSheet";
+import type { OrderSummary } from "@/services/order.service";
 import { useActivePersonRideOrders } from "@/hooks/useActivePersonRideOrders";
 import { RIDE_DUE_FARE_NOTICE } from "@/lib/ride-fare-gate";
 import { resolvePersonRideTrackingNavigation } from "@/lib/person-ride-orders";
@@ -30,11 +31,13 @@ import { tripKmFromCoords } from "@/lib/intercity-rides";
 import { RideHomePromoBanner, RideSafetyBanner } from "./RideHomeSections";
 import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { filterRideBookFeaturedOffers } from "@/lib/ride-offers";
+import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 
 const PAD = 18;
-const BOTTOM_NAV_H = 72;
 const DUE_BANNER_H = 64;
 const TRACKING_PILL_H = 76;
+const TRACKING_PILL_MULTI_HINT_H = 24;
+const TRACKING_FLOAT_GAP = 6;
 
 type RideRouteParams = {
   tab?: string;
@@ -94,8 +97,22 @@ export function RideBookingScreen() {
   }, [routeParams.tab]);
 
   const locationDisplay = address?.fullAddress ?? address?.primary ?? "Select location";
-  const { trackingRide, hasDueFare } = useActivePersonRideOrders(true);
-  const showTrackingPill = trackingRide != null;
+  const { activeRides, dueFareRide, hasDueFare } = useActivePersonRideOrders(true);
+  const trackingRides = useMemo(() => {
+    const byId = new Map<string, OrderSummary>();
+    for (const ride of activeRides) {
+      byId.set(ride.orderId, ride);
+    }
+    if (dueFareRide && !byId.has(dueFareRide.orderId)) {
+      byId.set(dueFareRide.orderId, dueFareRide);
+    }
+    return [...byId.values()].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [activeRides, dueFareRide]);
+
+  const trackingRide = trackingRides[0] ?? null;
+  const showTrackingPill = trackingRides.length > 0;
 
   const intercityTripKm = tripKmFromCoords(
     routeParams.pickupLat,
@@ -108,10 +125,15 @@ export function RideBookingScreen() {
     Boolean(routeParams.drop?.trim()) &&
     intercityTripKm != null;
 
+  const rideNavH = getRideServiceBottomNavHeight(insets.bottom);
+  const trackingPillStackH = showTrackingPill
+    ? TRACKING_PILL_H +
+      (trackingRides.length > 1 ? TRACKING_PILL_MULTI_HINT_H : 0) +
+      TRACKING_FLOAT_GAP
+    : 0;
+
   const bottomStackH =
-    BOTTOM_NAV_H +
-    (showTrackingPill ? TRACKING_PILL_H : 0) +
-    (hasDueFare ? DUE_BANNER_H : 0);
+    rideNavH + trackingPillStackH + (hasDueFare ? DUE_BANNER_H : 0);
 
   const openIntercityPickup = useCallback(() => {
     if (hasDueFare && trackingRide) {
@@ -177,8 +199,12 @@ export function RideBookingScreen() {
   const goToLocation = () => router.push("/location");
   const openDefaultRide = () => goToRideBook("bike");
 
-  const trackingBottom = insets.bottom + BOTTOM_NAV_H + 12;
-  const bannerBottom = trackingBottom + (showTrackingPill ? TRACKING_PILL_H + 8 : 0);
+  const trackingBottom = rideNavH + TRACKING_FLOAT_GAP;
+  const bannerBottom =
+    trackingBottom +
+    (showTrackingPill
+      ? TRACKING_PILL_H + (trackingRides.length > 1 ? TRACKING_PILL_MULTI_HINT_H : 0) + TRACKING_FLOAT_GAP
+      : 0);
 
   return (
     <View style={styles.container}>
@@ -216,13 +242,16 @@ export function RideBookingScreen() {
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={styles.bellBtn}
-            onPress={() => router.push("/notifications")}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="notifications-outline" size={20} color={GatiMitraColors.textPrimary} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <GatiCashHeaderPill />
+            <TouchableOpacity
+              style={styles.bellBtn}
+              onPress={() => router.push("/notifications")}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="notifications-outline" size={20} color={GatiMitraColors.textPrimary} />
+            </TouchableOpacity>
+          </View>
         </View>
       </LinearGradient>
 
@@ -230,7 +259,7 @@ export function RideBookingScreen() {
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: insets.bottom + bottomStackH + 8, flexGrow: 1 },
+          { paddingBottom: bottomStackH + 8, flexGrow: 1 },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -259,14 +288,10 @@ export function RideBookingScreen() {
       ) : null}
 
       {showTrackingPill ? (
-        <ActiveRideBottomSheet rides={[trackingRide]} bottomInset={trackingBottom} />
+        <ActiveRideBottomSheet rides={trackingRides} bottomInset={trackingBottom} />
       ) : null}
 
-      <RideServiceBottomNav
-        activeTab={activeTab}
-        onTabChange={handleTabChange}
-        bottomInset={insets.bottom}
-      />
+      <RideServiceBottomNav activeTab={activeTab} onTabChange={handleTabChange} />
     </View>
   );
 }
@@ -278,8 +303,12 @@ const styles = StyleSheet.create({
   },
   headerBlock: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(187, 247, 208, 0.45)",
-    ...GatiMitraColors.elevationShadow,
+    borderBottomColor: "rgba(0, 0, 0, 0.03)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.015,
+    shadowRadius: 1,
+    elevation: 0,
   },
   titleBar: {
     flexDirection: "row",
@@ -331,6 +360,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    flexShrink: 0,
+    marginTop: 1,
+  },
   bellBtn: {
     width: 36,
     height: 36,
@@ -351,8 +387,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   safetySpacer: {
-    flexGrow: 1,
-    minHeight: 40,
+    minHeight: 12,
   },
   scroll: {
     flex: 1,

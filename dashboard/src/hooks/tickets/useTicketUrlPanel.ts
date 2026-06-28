@@ -68,7 +68,7 @@ function subscribeSearch(onStoreChange: () => void) {
 }
 
 /**
- * Reads `?panel=activities|csat` from the URL without `useSearchParams()`, so the ticket
+ * Reads `?panel=activities|csat` from the URL without `useAppSearchParams()`, so the ticket
  * detail tree does not sit behind a Suspense boundary that can remount the whole page
  * when the query string updates.
  *
@@ -80,7 +80,7 @@ export function useTicketUrlPanel(): TicketUrlPanel {
   return useMemo(() => parsePanel(search), [search]);
 }
 
-/** Raw `window.location.search` (including `?`) for building links without `useSearchParams()`. */
+/** Raw `window.location.search` (including `?`) for building links without `useAppSearchParams()`. */
 export function useTicketLocationSearch(): string {
   return useSyncExternalStore(subscribeSearch, getSearchSnapshot, getServerSearchSnapshot);
 }

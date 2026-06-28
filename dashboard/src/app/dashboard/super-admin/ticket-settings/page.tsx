@@ -5,7 +5,8 @@ import { FolderGit2, Tag, Plus, Pencil, Trash2, X, List, ListTree, BookMarked, G
 import { TicketHelpTopicsPanel } from "@/components/tickets/admin/TicketHelpTopicsPanel";
 import { TicketPrioritiesPanel } from "@/components/tickets/admin/TicketPrioritiesPanel";
 import { usePermissions } from "@/hooks/usePermissions";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import {
   useListTicketGroupsAdminQuery,
   useListTicketTagsAdminQuery,
@@ -200,8 +201,8 @@ function formatRtkQueryError(e: unknown): string {
 
 function TicketSettingsPageContent() {
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const { isSuperAdmin, loading } = usePermissions();
   const [mounted, setMounted] = useState(false);
 

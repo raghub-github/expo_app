@@ -25,6 +25,7 @@ export type NearbySupplyRider = {
   distanceKm: number;
   vehicleType: string;
   vehicleTypes: string[];
+  acType?: string | null;
 };
 
 export type RideAvailabilityResponse = {

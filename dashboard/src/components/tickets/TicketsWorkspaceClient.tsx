@@ -1,7 +1,8 @@
 "use client";
+import { useAppParams } from "@/hooks/useAppSearchParams";
 
 import { useEffect } from "react";
-import { useParams } from "next/navigation";
+
 import { TicketDashboardClient } from "./TicketDashboardClient";
 import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
 
@@ -11,7 +12,7 @@ import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
  * and reset scroll/state). The list stays mounted (hidden) while a ticket is open.
  */
 export function TicketsWorkspaceClient() {
-  const params = useParams();
+  const params = useAppParams();
   const slug = (params?.slug as string[] | undefined) ?? [];
 
   // Strict: the Tickets workspace should never scroll the main window.
@@ -63,3 +64,4 @@ export function TicketsWorkspaceClient() {
     </div>
   );
 }
+

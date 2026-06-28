@@ -8,6 +8,7 @@ import { logStoreActivity } from '@/lib/store-activity-feed'
 import { buildMenuItemOosModePatch, buildMenuItemStockTogglePatch } from '@/lib/merchant-menu-item-stock'
 import { client as pgClient } from '@/lib/drizzle'
 import { expireTimedMenuOutOfStockForStore } from '@/lib/menu-oos-expiry'
+import { enforcePlanLimitsForStoreNumericId } from '@/lib/plan-enforce'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -259,7 +260,16 @@ export async function POST(req: NextRequest) {
       maxItems = freePlan?.max_menu_items ?? 15;
     }
 
-    const willExceedLimit = maxItems !== null && (currentItemCount ?? 0) >= maxItems;
+    const willExceedLimit = maxItems !== null && (currentItemCount ?? 0) >= maxItems
+    if (willExceedLimit) {
+      return NextResponse.json(
+        {
+          error: 'Menu item limit reached for your plan. Upgrade to add more items.',
+          code: 'plan_limit_reached',
+        },
+        { status: 403 }
+      )
+    }
 
     const categoryId = body.category_id ?? null
     if (categoryId) {
@@ -431,6 +441,8 @@ export async function POST(req: NextRequest) {
         actorType: 'merchant',
       });
     } catch (_) {}
+
+    await enforcePlanLimitsForStoreNumericId(store.id);
 
     return NextResponse.json(data)
   } catch (err: unknown) {

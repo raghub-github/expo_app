@@ -30,7 +30,10 @@ import {
 } from "@/lib/ride-search-toast-copy";
 import { resolvePlaceDisplayName } from "@/services/location.service";
 import { rideLabelsFromCheckoutMetadata } from "@/lib/ride-address-labels";
-import { resolveRideImage } from "@/features/ride/rideOptionAssets";
+import {
+  resolveRideImage,
+  resolveSelectedRideMapMarkerImageKey,
+} from "@/features/ride/rideOptionAssets";
 import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
 import { RideTipBoostSheet, type TipBoostLoadingAction } from "@/features/ride/RideSearchTimeoutSheet";
 import { RideSearchingTripDetailsSheet } from "@/features/ride/RideSearchingTripDetailsSheet";
@@ -302,6 +305,7 @@ export default function RideSearchingScreen() {
   const [tipBoostDecisionRemainingSec, setTipBoostDecisionRemainingSec] = useState(
     RIDE_TIP_BOOST_DECISION_SEC
   );
+  const [dispatchDeclinedCount, setDispatchDeclinedCount] = useState(0);
 
   useEffect(() => {
     if (!isResumeMode) return;
@@ -347,7 +351,6 @@ export default function RideSearchingScreen() {
     navigatedToLiveRef.current = false;
   }, [orderId]);
 
-  const progress = 1 - remainingSec / Math.max(1, searchTimeoutSec);
   const elapsedSec = Math.max(0, searchTimeoutSec - remainingSec);
 
   const mapCenter = useMemo(() => {
@@ -369,19 +372,13 @@ export default function RideSearchingScreen() {
     pickupLat,
     pickupLng,
     fareTripKm ?? tripKm,
-    pickupGeoHints
+    pickupGeoHints,
+    rideTypeId
   );
 
-  const nearbyRiders = useMemo(() => {
-    const all = availability?.riders ?? [];
-    const selectedOption = availability?.options?.find((o) => o.id === rideTypeId);
-    if (!selectedOption?.vehicleTypes?.length) return all;
-    const allowed = new Set(selectedOption.vehicleTypes);
-    return all.filter((rider) => {
-      const types = rider.vehicleTypes?.length ? rider.vehicleTypes : [rider.vehicleType];
-      return types.some((type) => allowed.has(type));
-    });
-  }, [availability, rideTypeId]);
+  const nearbyRiders = useMemo(() => availability?.riders ?? [], [availability?.riders]);
+
+  const riderMarkerImageKey = resolveSelectedRideMapMarkerImageKey(rideTypeId, rideImageKey);
 
   const selectedRideOption = useMemo(
     () => availability?.options?.find((o) => o.id === rideTypeId) ?? null,
@@ -401,6 +398,16 @@ export default function RideSearchingScreen() {
   }, [selectedRideOption?.nearestRiderKm, params.pickupDistanceFromBookerKm]);
 
   const showFastestTag = rideTypeId === "bike";
+
+  const activeMitraSathiCount = useMemo(() => {
+    if (
+      selectedRideOption?.nearbyRiderCount != null &&
+      selectedRideOption.nearbyRiderCount > 0
+    ) {
+      return selectedRideOption.nearbyRiderCount;
+    }
+    return nearbyRiders.length;
+  }, [selectedRideOption?.nearbyRiderCount, nearbyRiders.length]);
 
   const sheetPhase = phase === "error" ? "error" : phase === "tip_boost" ? "tip_boost" : phase === "placing" ? "placing" : "searching";
 
@@ -866,15 +873,15 @@ export default function RideSearchingScreen() {
         primary: pickupLabel,
         fullAddress: pickupAddress,
       }),
-      pickupLat,
-      pickupLng,
+      pickupLat: pickupLat!,
+      pickupLng: pickupLng!,
       dropAddress: dropAddress.trim(),
       dropLabel: resolvePlaceDisplayName({
         primary: dropLabel,
         fullAddress: dropAddress,
       }),
-      dropLat,
-      dropLng,
+      dropLat: dropLat!,
+      dropLng: dropLng!,
       intermediateStops: stopsForApi.length > 0 ? stopsForApi : undefined,
       rideType: rideTypeId,
       estimatedFare: Number.isFinite(fare) ? fare : 0,
@@ -989,6 +996,7 @@ export default function RideSearchingScreen() {
 
     try {
       const status = await getRideOrderStatus(orderId);
+      setDispatchDeclinedCount(status.dispatchDeclinedCount ?? 0);
 
       if (isRideCaptainAssigned(status)) {
         tryOpenLiveRideTracking(status.orderId);
@@ -1212,6 +1220,7 @@ export default function RideSearchingScreen() {
         <RideSearchingMap
           center={mapCenter}
           nearbyRiders={nearbyRiders}
+          riderMarkerImageKey={riderMarkerImageKey}
           bottomMapPadding={mapBottomPadding}
           style={StyleSheet.absoluteFill}
         />
@@ -1244,7 +1253,6 @@ export default function RideSearchingScreen() {
                 ? formatElapsedSec(elapsedSec)
                 : undefined
             }
-            progress={progress}
             fare={totalFare}
             rideImage={rideImage}
             rideName={rideName}
@@ -1254,6 +1262,8 @@ export default function RideSearchingScreen() {
             pickupDistanceKm={pickupDistanceKm}
             routeEtaMins={routeEtaMins}
             nearbyRidersCount={nearbyRiders.length}
+            activeMitraSathiCount={activeMitraSathiCount}
+            dispatchDeclinedCount={dispatchDeclinedCount}
             showFastestTag={showFastestTag}
             placementError={placementError}
             bottomInset={insets.bottom}
@@ -1273,6 +1283,7 @@ export default function RideSearchingScreen() {
         decisionRemainingSec={tipBoostDecisionRemainingSec}
         orderTotal={fare}
         existingTipAmount={activeTipAmount}
+        heroImage={rideImage}
         onAddTipAndContinue={(tip) => void handleExtendSearch(tip)}
         onContinueWithoutTip={handleContinueWithoutTip}
         onCancelOrder={handleTipBoostCancel}
@@ -1309,6 +1320,7 @@ export default function RideSearchingScreen() {
       <RideCancelConfirmSheet
         visible={cancelFlowStep === "confirm"}
         loading={cancelLoading}
+        heroImage={rideImage}
         onConfirm={() => void executeCancelRide()}
         onKeepSearching={closeCancelFlow}
         onClose={closeCancelFlow}

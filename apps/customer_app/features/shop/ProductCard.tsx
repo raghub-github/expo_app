@@ -10,12 +10,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
-  ImageSourcePropType,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useShopCartStore } from "@/store/shopCartStore";
+import { useAppAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 import type { ShopProduct } from "./data";
+import { getShopProductImage } from "./data";
 
 const { width } = Dimensions.get("window");
 const PAD = 16;
@@ -24,10 +26,13 @@ const CARD_WIDTH = (width - PAD * 2 - GAP) / 2;
 
 type ProductCardProps = {
   product: ShopProduct;
-  imageSource: ImageSourcePropType;
+  imageKey: string;
 };
 
-export function ProductCard({ product, imageSource }: ProductCardProps) {
+export function ProductCard({ product, imageKey }: ProductCardProps) {
+  const n = Number(String(imageKey).replace(/^p/, ""));
+  const assetKey = CX.shop.product(Number.isFinite(n) && n >= 1 ? n : 1);
+  const imageSource = useAppAssetSource(assetKey) ?? getShopProductImage(imageKey);
   const addItem = useShopCartStore((s) => s.addItem);
   const updateQuantity = useShopCartStore((s) => s.updateQuantity);
   const items = useShopCartStore((s) => s.items);
@@ -52,7 +57,9 @@ export function ProductCard({ product, imageSource }: ProductCardProps) {
   return (
     <View style={styles.card}>
       <View style={styles.imageWrap}>
-        <Image source={imageSource} style={styles.image} resizeMode="cover" />
+        {imageSource ? (
+          <Image source={imageSource} style={styles.image} resizeMode="cover" />
+        ) : null}
         {discount != null && (
           <View style={styles.discountBadge}>
             <Text style={styles.discountText}>{discount}% OFF</Text>

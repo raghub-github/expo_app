@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
-import { useSearchParams, usePathname, useRouter } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
@@ -14,8 +15,8 @@ import { isStructuredCustomerSearch } from "@/lib/customers/search-kind";
  * - Name-style search with 2+ matches → table list only; Customer ID links to detail.
  */
 export function CustomersGlobalSearchView() {
-  const searchParams = useSearchParams();
-  const pathname = usePathname();
+  const searchParams = useAppSearchParams();
+  const pathname = useAppPathname();
   const router = useRouter();
   const { loading: permissionsLoading } = usePermissions();
   const [search, setSearch] = useState("");

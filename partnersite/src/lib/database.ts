@@ -165,7 +165,9 @@ async function fetchStoreByIdViaApi(storeId: string): Promise<MerchantStore | nu
     );
     if (res.status === 404) return null;
     if (!res.ok) return null;
-    return (await res.json()) as MerchantStore;
+    const row = (await res.json()) as unknown;
+    const { normalizeProfileStore } = await import('@/lib/merchant-profile-cache');
+    return normalizeProfileStore(row as Parameters<typeof normalizeProfileStore>[0]) as MerchantStore;
   } catch {
     return null;
   }

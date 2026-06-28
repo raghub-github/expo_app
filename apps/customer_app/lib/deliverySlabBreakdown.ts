@@ -39,7 +39,7 @@ export function formatDeliverySlabExplainSubtext(args: {
   const engine = args.pricingEngine ?? null;
   const q = args.slabQuote;
 
-  if (engine === "slab_geo" && q) {
+  if ((engine === "slab_geo" || engine === "fallback_slab") && q) {
     const base = Number(q.baseFareApplied ?? 0) || 0;
     const perKm = Number(q.perKmRate ?? 0) || 0;
     const includedKm = Number(q.includedKm ?? q.maxKm ?? 0) || 0;
@@ -83,7 +83,14 @@ export function formatDeliverySlabExplainSubtext(args: {
   }
 
   if (engine === "fallback_per_km" || engine === "no_geo_match" || engine === "slab_invalid") {
-    return "₹25 per order plus ₹5 per km";
+    if (q && (q.baseFareApplied != null || q.perKmRate != null)) {
+      const base = Number(q.baseFareApplied ?? 0) || 0;
+      const perKm = Number(q.perKmRate ?? 0) || 0;
+      if (base > 0 && perKm > 0) {
+        return `₹${fmtInr(base)} per order plus ₹${fmtInr(perKm)} per km`;
+      }
+    }
+    return null;
   }
 
   return null;

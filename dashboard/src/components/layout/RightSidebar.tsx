@@ -3,7 +3,8 @@
 import { useMemo, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+
 import {
   Zap,
   LineChart,
@@ -82,8 +83,8 @@ export function RightSidebar({
   dockSide = "right",
   ticketPropertiesRailOpen,
 }: RightSidebarProps) {
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
   const currentRoute = useCurrentRoute();
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();

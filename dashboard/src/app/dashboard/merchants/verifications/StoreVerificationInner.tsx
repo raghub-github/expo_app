@@ -3,7 +3,8 @@
 import dynamic from "next/dynamic";
 import React, { useEffect, useState, useRef } from "react";
 import { flushSync } from "react-dom";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -4051,7 +4052,7 @@ export function StoreVerificationInner({
   canPerformVerify?: boolean;
 }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const reviewRejected = searchParams.get("reviewRejected") === "1";
   const portalParam = searchParams.get("portal");
   const portalForLinks =

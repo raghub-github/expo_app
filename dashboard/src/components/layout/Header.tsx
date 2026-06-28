@@ -2,7 +2,8 @@
 
 import { memo, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   LogOut,
@@ -69,9 +70,9 @@ const ORDER_HUB_MINT = "#4EE5C1";
 
 // Order type switcher — replaces the orders right sidebar (Food / Parcel / Person Ride)
 function OrderTypeDropdown() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const { hasDashboardAccess, isSuperAdmin, loading: permissionsLoading } = usePermission();
   const [showDropdown, setShowDropdown] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -184,9 +185,9 @@ function OrderTypeDropdown() {
 
 // Order Search Bar — syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isPersonRideOrders = cleanPath.startsWith("/dashboard/orders/person-ride");
 
@@ -352,9 +353,9 @@ const OFFERS_SUPER_ADMIN_PATH = "/dashboard/offers";
 const OFFERS_MERCHANTS_PATH = "/dashboard/merchants/offers";
 
 function HeaderComponent() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const pathnameClean = useMemo(
     () => pathname.split("?")[0].split("#")[0],
     [pathname]

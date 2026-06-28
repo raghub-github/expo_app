@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
+
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets, fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
@@ -58,9 +59,9 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 }
 
 export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportAndSidebarToggle?: boolean } = {}) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const isQueueHome = pathname === "/dashboard/tickets/queue/home";
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const detailHrefForTicket = useCallback(
     (ticketId: number) => {
       if (isQueueHome) {

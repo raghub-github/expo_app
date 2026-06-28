@@ -54,12 +54,19 @@ export function buildPannableMapHtml(
       map.on('style.load', function() { ensureMapLabelsVisible(map); });
 
       var mapReady = false;
+      var lastPosted = null;
 
       function postRegion(phase) {
         if (!mapReady) return;
         var c = map.getCenter();
         if (!c || !isFinite(c.lat) || !isFinite(c.lng)) return;
         if (Math.abs(c.lat) < 1e-4 && Math.abs(c.lng) < 1e-4) return;
+        if (lastPosted) {
+          var dLat = Math.abs(c.lat - lastPosted.lat);
+          var dLng = Math.abs(c.lng - lastPosted.lng);
+          if (dLat < 1e-6 && dLng < 1e-6) return;
+        }
+        lastPosted = { lat: c.lat, lng: c.lng };
         if (window.ReactNativeWebView) {
           window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'region',
@@ -70,7 +77,22 @@ export function buildPannableMapHtml(
         }
       }
 
-      map.on('move', function() { postRegion('change'); });
+      function syncCircleToCenter() {
+        if (${circleRadius} <= 0) return;
+        var src = map.getSource('pin-range');
+        if (!src) return;
+        var c = map.getCenter();
+        if (!c || !isFinite(c.lat) || !isFinite(c.lng)) return;
+        src.setData({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [c.lng, c.lat] }
+        });
+      }
+
+      map.on('move', function() {
+        syncCircleToCenter();
+        postRegion('change');
+      });
       map.on('moveend', function() { postRegion('complete'); });
 
       function clearSnapMarkers() {

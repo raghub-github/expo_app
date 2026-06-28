@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 import { useToast } from '@/context/ToastContext';
 import {
   Clock,
@@ -512,7 +513,7 @@ function FormattedOrderId({
 }
 
 function OrdersPageContent({ storeId }: { storeId: string }) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const router = useRouter();
   const storeInternalId = parseInt(storeId, 10);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);

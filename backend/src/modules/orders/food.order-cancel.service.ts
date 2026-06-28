@@ -150,6 +150,7 @@ export async function cancelFoodOrderForCustomer(
       cancelled_at = ${now.toISOString()}::timestamptz,
       rejected_reason = ${displayReason},
       cancelled_by_label = ${CUSTOMER_FOOD_CANCELLED_BY_LABEL},
+      cancelled_by_type = 'customer',
       rider_id = NULL,
       updated_at = ${now.toISOString()}::timestamptz
     WHERE id = ${row.ordersFoodId}

@@ -37,6 +37,7 @@ import { mapboxSearchSuggest } from "@/services/mapboxSearch.service";
 import { isValidMapCoordinate } from "@/lib/map-coordinates";
 import { reverseGeocode } from "@/services/location.service";
 import { addressService, type Address, type LocalSuggestionResult } from "@/services/address.service";
+import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
@@ -46,6 +47,7 @@ import { NearbyLocationConfirmBottomSheet } from "@/components/address/NearbyLoc
 import { LocationWeatherBanner, WeatherDetailsSheet } from "@/components/weather";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
+import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -290,22 +292,6 @@ function formatPhoneLine(mobile: string | null | undefined): string | null {
   if (!digits) return null;
   const local = digits.length > 10 ? digits.slice(-10) : digits;
   return `Phone number: +91-${local}`;
-}
-
-function buildShareMessage(saved: Address): string {
-  const parts: string[] = [];
-  const label = saved.label ?? "Address";
-  const name = saved.contactName ? ` – ${saved.contactName}` : "";
-  parts.push(`${label}${name}`);
-  parts.push(saved.fullAddress);
-  const phone = formatPhoneLine(saved.contactMobile);
-  if (phone) parts.push(phone);
-  if (saved.latitude && saved.longitude) {
-    parts.push(`Location: https://maps.google.com/?q=${saved.latitude},${saved.longitude}`);
-  }
-  parts.push("");
-  parts.push("GatiMitra – order food, rides & parcels. Download the app to order now.");
-  return parts.join("\n");
 }
 
 export default function SelectLocationScreen() {
@@ -753,6 +739,7 @@ export default function SelectLocationScreen() {
             { latitude: best.addr.latitude, longitude: best.addr.longitude },
             { source: "selected" }
           );
+          void invalidateFoodHomeLocationQueries(queryClient);
         } finally {
           safeBack();
         }
@@ -767,6 +754,16 @@ export default function SelectLocationScreen() {
         longitude: latestCoords.longitude,
         address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
       });
+      setAddressAndCoords(
+        latestAddress ?? {
+          primary: "Current location",
+          secondary: "",
+          fullAddress: "Current location",
+        },
+        latestCoords,
+        { source: "current" }
+      );
+      void invalidateFoodHomeLocationQueries(queryClient);
     } finally {
       safeBack();
     }
@@ -887,8 +884,7 @@ export default function SelectLocationScreen() {
         { latitude: resolved.latitude, longitude: resolved.longitude },
         { source: "selected" }
       );
-      queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      void invalidateFoodHomeLocationQueries(queryClient);
       setPendingNearbyPlace(null);
       safeBack();
     } finally {
@@ -931,8 +927,7 @@ export default function SelectLocationScreen() {
         { latitude: addr.latitude, longitude: addr.longitude },
         { source: "selected" }
       );
-      queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      void invalidateFoodHomeLocationQueries(queryClient);
       safeBack();
     } catch {
       safeBack();
@@ -975,6 +970,7 @@ export default function SelectLocationScreen() {
         { latitude: place.latitude, longitude: place.longitude },
         { source: "selected" }
       );
+      void invalidateFoodHomeLocationQueries(queryClient);
     } finally {
       safeBack();
     }
@@ -1306,9 +1302,9 @@ export default function SelectLocationScreen() {
                           style={styles.savedActionBtn}
                           onPress={async () => {
                             try {
-                              await Share.share({ message: buildShareMessage(saved) });
+                              await shareAddressViaLink(saved);
                             } catch {
-                              // ignore
+                              Alert.alert("Share failed", "Could not create address link. Please try again.");
                             }
                           }}
                           hitSlop={8}

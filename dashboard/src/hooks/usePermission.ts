@@ -1,7 +1,8 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useMemo } from "react";
-import { usePathname } from "next/navigation";
+
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { useDashboardAccessQuery, type AccessPoint } from "@/hooks/queries/useDashboardAccessQuery";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
@@ -15,7 +16,7 @@ import type { DashboardType, ActionType } from "@/lib/db/schema";
  * repeated server calls. API routes must still enforce permissions server-side.
  */
 export function usePermission() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const { data: permissionsData, isLoading: permissionsLoading, error: permissionsError } = usePermissionsQuery();
   const { data: dashboardAccessData, isLoading: dashboardAccessLoading, error: dashboardAccessError } = useDashboardAccessQuery();
 
@@ -114,3 +115,4 @@ export function usePermission() {
     dashboardAccess: dashboardAccessData ?? null,
   };
 }
+

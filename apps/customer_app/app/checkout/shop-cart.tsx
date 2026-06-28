@@ -16,7 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useShopCartStore } from "@/store/shopCartStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { BrandingFooter } from "@/components/BrandingFooter";
-import { PRODUCT_IMAGES } from "@/features/shop/data";
+import { getShopProductImage } from "@/features/shop/data";
 
 const PAD = 20;
 const SHADOW = GatiMitraColors.elevationShadow;
@@ -67,11 +67,14 @@ export default function ShopCartScreen() {
                 items.indexOf(item) < items.length - 1 && styles.itemRowBorder,
               ]}
             >
-              <Image
-                source={PRODUCT_IMAGES[item.imageKey] ?? PRODUCT_IMAGES.p1}
-                style={styles.itemImage}
-                resizeMode="cover"
-              />
+              {(() => {
+                const src = getShopProductImage(item.imageKey);
+                return src ? (
+                  <Image source={src} style={styles.itemImage} resizeMode="cover" />
+                ) : (
+                  <View style={styles.itemImage} />
+                );
+              })()}
               <View style={styles.itemInfo}>
                 <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                 <Text style={styles.itemPrice}>₹{item.price}</Text>

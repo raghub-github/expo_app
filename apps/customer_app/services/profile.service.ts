@@ -99,6 +99,9 @@ export const GENDERS: { value: Gender; label: string }[] = [
   { value: "others", label: "Others" },
 ];
 
+let profileUpdateInFlight: Promise<UserProfile> | null = null;
+let profileUpdatePending: UpdateProfilePayload | null = null;
+
 export const profileService = {
   async getProfile(): Promise<UserProfile> {
     const { data } = await api.get<UserProfile>(PROFILE_PATH);
@@ -106,8 +109,28 @@ export const profileService = {
   },
 
   async updateProfile(payload: UpdateProfilePayload): Promise<UserProfile> {
-    const { data } = await api.patch<UserProfile>(PROFILE_PATH, payload);
-    return data;
+    profileUpdatePending = { ...profileUpdatePending, ...payload };
+    if (profileUpdateInFlight) return profileUpdateInFlight;
+
+    profileUpdateInFlight = (async () => {
+      let last: UserProfile | null = null;
+      try {
+        while (profileUpdatePending) {
+          const batch = profileUpdatePending;
+          profileUpdatePending = null;
+          const { data } = await api.patch<UserProfile>(PROFILE_PATH, batch);
+          last = data;
+        }
+        return last!;
+      } finally {
+        profileUpdateInFlight = null;
+        if (profileUpdatePending) {
+          void profileService.updateProfile({});
+        }
+      }
+    })();
+
+    return profileUpdateInFlight;
   },
 
   async sendEmailVerificationCode(): Promise<{ sent: boolean; email: string }> {

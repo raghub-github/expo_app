@@ -28,7 +28,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
-import { fetchUserAppCategories, type UserAppCategoryItem } from "@/services/userAppCategory.service";
+import { type UserAppCategoryItem } from "@/services/userAppCategory.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
@@ -38,13 +38,19 @@ import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import {
+  fetchUserAppCategoriesWithCache,
+  getUserAppCategoriesCachedAt,
   prefetchUserAppCategoryImages,
+  readSyncUserAppCategories,
   USER_APP_CATEGORIES_QUERY_OPTIONS,
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
-import { filterAndSortMerchants } from "@/lib/merchantListing";
+import { filterAndSortMerchants, resolveMerchantLiveStatus } from "@/lib/merchantListing";
+import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
+import { appAssetSource } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
@@ -129,6 +135,7 @@ const OFFER_PILLS = [
 ];
 
 type DeliveryFilter = "any" | "30" | "45" | "60";
+type VegPageOverride = "use_global" | "force_on" | "force_off";
 const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
   { id: "any", label: "Any" },
   { id: "30", label: "Under 30 min" },
@@ -137,7 +144,9 @@ const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
 ];
 const CUISINE_OPTIONS = ["North Indian", "South Indian", "Chinese", "Fast Food", "Bakery", "Desserts"];
 
-const DEFAULT_MERCHANT_IMAGE = require("../../../public/img/ndf.png");
+function defaultMerchantImage(): ImageSourcePropType | null {
+  return appAssetSource(CX.common.defaultImage);
+}
 
 function CuisinesSheetTileImage({
   remoteUri,
@@ -162,7 +171,9 @@ function CuisinesSheetTileImage({
   if (localSource) {
     return <Image source={localSource} style={style} resizeMode="contain" />;
   }
-  return <Image source={DEFAULT_MERCHANT_IMAGE} style={style} resizeMode="contain" />;
+  const fallback = defaultMerchantImage();
+  if (!fallback) return null;
+  return <Image source={fallback} style={style} resizeMode="contain" />;
 }
 
 /** Same hero as home cards: displayImage / banner_url from GET /merchants (not legacy imageUrl). */
@@ -193,7 +204,7 @@ function DishCard({
         {imageUrl ? (
           <Image source={{ uri: imageUrl }} style={styles.dishImage} resizeMode="cover" />
         ) : (
-          <Image source={DEFAULT_MERCHANT_IMAGE} style={styles.dishImage} resizeMode="cover" />
+          <Image source={defaultMerchantImage()} style={styles.dishImage} resizeMode="cover" />
         )}
         {offerBadge ? (
           <View style={[styles.offerTag, offerBadge.includes("50") && styles.offerTagBlue]}>
@@ -251,6 +262,15 @@ export default function CategoryBrowseScreen() {
   const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
   const [filterHasOffers, setFilterHasOffers] = useState(false);
   const [openNow, setOpenNow] = useState(true);
+  const [vegPageOverride, setVegPageOverride] = useState<VegPageOverride>("use_global");
+  const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
+  const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
+  const effectiveVegOnly =
+    vegPageOverride === "force_on"
+      ? true
+      : vegPageOverride === "force_off"
+        ? false
+        : vegOnly;
 
   const setCategoryRoute = useCallback(
     (slug: string) => {
@@ -276,24 +296,31 @@ export default function CategoryBrowseScreen() {
   const { coords } = useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
   const { data, isLoading } = useQuery({
-    queryKey: ["merchants", activeCategory, debouncedCoords?.latitude, debouncedCoords?.longitude],
+    queryKey: ["merchants", activeCategory, debouncedCoords?.latitude, debouncedCoords?.longitude, effectiveVegOnly],
     queryFn: () =>
       merchantService.getMerchants({
         limit: activeCategory !== "all" ? 50 : 20,
         ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
           ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
           : {}),
+        vegOnly: effectiveVegOnly,
       }),
     enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
     staleTime: 60 * 1000,
     placeholderData: (prev) => prev,
   });
 
+  useEffect(() => {
+    void hydrateDietaryPreferences();
+  }, [hydrateDietaryPreferences]);
+
   const { data: apiSheetCategories = [], isSuccess: sheetCategoriesReady, isFetching: sheetCategoriesFetching } =
     useQuery({
       queryKey: userAppCategoriesQueryKey(SHEET_STORE_TYPE),
-      queryFn: () => fetchUserAppCategories({ storeType: SHEET_STORE_TYPE }),
+      queryFn: () => fetchUserAppCategoriesWithCache(SHEET_STORE_TYPE),
       ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+      initialData: () => readSyncUserAppCategories(SHEET_STORE_TYPE),
+      initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(SHEET_STORE_TYPE),
       placeholderData: (previousData) => previousData,
     });
 
@@ -368,9 +395,8 @@ export default function CategoryBrowseScreen() {
 
   useEffect(() => {
     merchants.forEach((m) => {
-      const raw = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
-      const liveStatus = raw === "OPEN" || raw === "CLOSED" ? (raw as "OPEN" | "CLOSED") : undefined;
-      if (liveStatus) setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
+      const liveStatus = resolveMerchantLiveStatus(m, {});
+      setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
     });
   }, [merchants, setStatusFromApi]);
 
@@ -700,6 +726,34 @@ export default function CategoryBrowseScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.pillsWrap}
         >
+          {effectiveVegOnly ? (
+            <View style={styles.vegModePill}>
+              <Ionicons name="leaf" size={14} color={TEAL} />
+              <Text style={styles.vegModePillText}>Pure Veg</Text>
+            </View>
+          ) : null}
+          <TouchableOpacity
+            style={styles.vegOverridePill}
+            activeOpacity={0.85}
+            onPress={() =>
+              setVegPageOverride((prev) =>
+                prev === "use_global"
+                  ? "force_on"
+                  : prev === "force_on"
+                    ? "force_off"
+                    : "use_global"
+              )
+            }
+          >
+            <Ionicons name="options-outline" size={14} color={TEXT_GRAY} />
+            <Text style={styles.vegOverridePillText}>
+              {vegPageOverride === "use_global"
+                ? `Diet: Global (${vegOnly ? "Pure Veg" : "All"})`
+                : vegPageOverride === "force_on"
+                  ? "Diet: Force Pure Veg"
+                  : "Diet: Show All (Temp)"}
+            </Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
             activeOpacity={0.8}
@@ -794,7 +848,7 @@ export default function CategoryBrowseScreen() {
                       {featuredHero ? (
                         <Image source={{ uri: featuredHero }} style={styles.featuredImage} resizeMode="cover" />
                       ) : (
-                        <Image source={DEFAULT_MERCHANT_IMAGE} style={styles.featuredImage} resizeMode="cover" />
+                        <Image source={defaultMerchantImage()} style={styles.featuredImage} resizeMode="cover" />
                       )}
                       <View style={styles.featuredOfferTag}>
                         <Text style={styles.featuredOfferText}>Flat 50% OFF</Text>
@@ -1224,6 +1278,38 @@ const styles = StyleSheet.create({
   pillNewTagText: { fontSize: 10, fontWeight: "700", color: "#fff" },
   pillText: { fontSize: 13, fontWeight: "600", color: TITLE_DARK },
   pillTextNew: { color: "#991b1b" },
+  vegModePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "rgba(20, 184, 166, 0.35)",
+  },
+  vegModePillText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: TEAL,
+  },
+  vegOverridePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: CARD_BG,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  vegOverridePillText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: TEXT_GRAY,
+  },
   sectionHeading: {
     fontSize: 14,
     fontWeight: "800",

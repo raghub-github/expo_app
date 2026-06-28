@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { useSearchParams } from "next/navigation";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import {
   Power,
   Package,
@@ -142,7 +142,7 @@ function getPlanBenefits(plan: {
 }
 
 export function StoreSettingsClient({ storeId }: { storeId: string }) {
-  const searchParams = useSearchParams();
+  const searchParams = useAppSearchParams();
   const { store: layoutStore } = useStoreContext();
   const { store: queryStore } = useStore(storeId);
   const [loading, setLoading] = useState(() => !(layoutStore as StoreDetail));

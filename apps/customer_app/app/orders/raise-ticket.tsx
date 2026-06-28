@@ -15,8 +15,8 @@ import {
   Linking,
   BackHandler,
   Platform,
-  type ReactNode,
 } from "react-native";
+import type { ReactNode } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -24,6 +24,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Image } from "expo-image";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { CX } from "@/lib/appAssetKeys";
 import {
   customerSupportService,
   type HelpSection,
@@ -61,7 +63,6 @@ const TEXT = "#1C1C1C";
 const MUTED = "#828282";
 const HERO_TOP = "#E8F3FA";
 const HERO_BOTTOM = "#F7FAFC";
-const SUPPORT_HERO_IMG = require("../../public/img/support-hero.png");
 
 type Step = "hub" | "chat" | "topics" | "details";
 
@@ -873,12 +874,10 @@ export default function OrderRaiseTicketScreen() {
                 <Text style={styles.heroSub}>How can we help you?</Text>
               </View>
               <View style={styles.heroImageWrap}>
-                <Image
-                  source={SUPPORT_HERO_IMG}
+                <AppAssetImage
+                  assetKey={CX.orders.supportHero}
                   style={styles.heroImage}
                   contentFit="contain"
-                  transition={0}
-                  accessible
                   accessibilityLabel="Support agent"
                 />
               </View>
