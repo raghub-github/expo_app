@@ -35,7 +35,7 @@ export function weatherMultiplier(state: WeatherState): number {
   }
 }
 
-/** Resolves weather via centralized OpenWeather-backed zone cache. */
+/** Resolves weather via shared zone cache (no direct Open-Meteo calls from ETA). */
 export async function resolveWeatherState(
   lat: number,
   lng: number,

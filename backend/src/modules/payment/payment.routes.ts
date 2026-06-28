@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../../db/client.js";
 import { riders, onboardingPayments, paymentWebhookEvents } from "../../db/schema.js";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, or, sql } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { ensureRiderOnboardingStageForPayment } from "../../lib/rider-onboarding-progress.js";
 import {
@@ -523,6 +523,17 @@ export async function paymentRoutes(app: FastifyInstance) {
         },
       });
 
+      // Supersede stale pending attempts so verify always matches the latest order.
+      await db
+        .update(onboardingPayments)
+        .set({ status: "failed", updatedAt: new Date() })
+        .where(
+          and(
+            eq(onboardingPayments.riderId, riderIdInt),
+            eq(onboardingPayments.status, "pending"),
+          ),
+        );
+
       const refId = `rpay_${ulid()}`;
       await db.insert(onboardingPayments).values({
         riderId: riderIdInt,
@@ -598,11 +609,19 @@ export async function paymentRoutes(app: FastifyInstance) {
         throw new Error("Invalid rider ID");
       }
 
-      // Find payment record
       const paymentRows = await db
         .select()
         .from(onboardingPayments)
-        .where(eq(onboardingPayments.riderId, riderIdInt))
+        .where(
+          and(
+            eq(onboardingPayments.riderId, riderIdInt),
+            or(
+              eq(onboardingPayments.paymentId, razorpayOrderId),
+              sql`${onboardingPayments.metadata}->>'razorpayOrderId' = ${razorpayOrderId}`,
+            ),
+          ),
+        )
+        .orderBy(desc(onboardingPayments.createdAt))
         .limit(1);
 
       if (paymentRows.length === 0) {
@@ -610,11 +629,17 @@ export async function paymentRoutes(app: FastifyInstance) {
       }
 
       const payment = paymentRows[0]!;
-      
-      // Verify the order ID matches
-      const metadata = payment.metadata as any;
-      if (metadata?.razorpayOrderId !== razorpayOrderId) {
-        throw new Error("Payment order ID mismatch");
+      const metadata = (payment.metadata ?? {}) as Record<string, unknown>;
+
+      if (payment.status === "completed") {
+        return {
+          success: true,
+          paymentId: String(payment.id),
+        };
+      }
+
+      if (payment.status === "failed") {
+        throw new Error("Payment order expired. Please start payment again.");
       }
 
       // For simulated payments in development, skip Razorpay API call
@@ -666,7 +691,7 @@ export async function paymentRoutes(app: FastifyInstance) {
 
       return {
         success: paymentStatus === "captured",
-        paymentId: payment.id,
+        paymentId: String(payment.id),
       };
     },
   );

@@ -1,7 +1,8 @@
 import * as Linking from "expo-linking";
 
 /** Compatible with expo-router typed routes and plain string paths. */
-export type RouterLike = { push: (href: unknown) => void };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type RouterLike = { push: (href: any) => void };
 
 function asString(v: unknown): string {
   return typeof v === "string" ? v : "";

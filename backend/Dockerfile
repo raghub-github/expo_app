@@ -32,6 +32,7 @@ COPY packages/financial-rules/package.json   ./packages/financial-rules/package.
 COPY packages/logger/package.json            ./packages/logger/package.json
 COPY packages/queue/package.json             ./packages/queue/package.json
 COPY packages/redis/package.json             ./packages/redis/package.json
+COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 # shared-config is a config-only workspace (no source, no build step) — but
 # event-contracts/logger/queue/redis all have
 #   "extends": "@gatimitra/shared-config/tsconfig.node.json"
@@ -69,6 +70,7 @@ COPY packages/financial-rules ./packages/financial-rules
 COPY packages/logger          ./packages/logger
 COPY packages/queue           ./packages/queue
 COPY packages/redis           ./packages/redis
+COPY packages/slab-pricing    ./packages/slab-pricing
 # shared-config carries the tsconfig.*.json files the 4 packages above extend.
 # No build step here (no source) — it's a config-only workspace.
 COPY packages/shared-config   ./packages/shared-config
@@ -95,6 +97,7 @@ RUN npm run build \
       --workspace=@gatimitra/redis \
       --workspace=@gatimitra/event-contracts \
       --workspace=@gatimitra/financial-rules \
+      --workspace=@gatimitra/slab-pricing \
       --workspace=@gatimitra/logger \
       --workspace=@gatimitra/queue \
       --workspace=@gatimitra/backend

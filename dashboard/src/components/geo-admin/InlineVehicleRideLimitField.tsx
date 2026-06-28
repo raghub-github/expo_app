@@ -11,8 +11,8 @@ import {
 const inputCls =
   "w-28 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm font-mono shadow-sm focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400";
 
-function num(v: string): number | null {
-  const t = v.trim();
+function num(v: string | null | undefined): number | null {
+  const t = (v ?? "").trim();
   if (!t) return null;
   const n = Number(t);
   return Number.isFinite(n) ? n : null;

@@ -1,6 +1,7 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useEffect, useState } from "react";
 
 import type { QueryClient } from "@tanstack/react-query";

@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 
 const docRequirementsSchema = z.object({
   required_docs: z.array(z.string()).optional(),
+  optional_docs: z.array(z.string()).optional(),
   has_own_vehicle: z.boolean().optional(),
   requires_max_speed: z.boolean().optional(),
 });

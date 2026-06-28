@@ -75,6 +75,7 @@ type Props = {
   visible: boolean;
   order: IncomingDispatchOrder | null;
   loading?: boolean;
+  acceptSwipeResetKey?: number;
   onAccept: () => void;
   onReject: () => void;
   onExpired?: () => void;
@@ -216,6 +217,7 @@ function AcceptRideSwipeButton({
   timeProgress,
   urgent,
   label,
+  resetKey = 0,
   onPress,
 }: {
   loading: boolean;
@@ -224,6 +226,7 @@ function AcceptRideSwipeButton({
   timeProgress: number;
   urgent: boolean;
   label: string;
+  resetKey?: number;
   onPress: () => void;
 }) {
   const trackWidth = useRef(0);
@@ -256,13 +259,18 @@ function AcceptRideSwipeButton({
     }).start();
   }, [dragX]);
 
+  useEffect(() => {
+    resetDrag();
+  }, [resetKey, resetDrag]);
+
   const confirmSwipe = useCallback(() => {
     if (confirmedRef.current || disabled || loading) return;
     confirmedRef.current = true;
     Vibration.vibrate(15);
+    const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
+    dragX.setValue(max);
     onPress();
-    setTimeout(resetDrag, 320);
-  }, [disabled, loading, onPress, resetDrag]);
+  }, [disabled, loading, onPress, dragX]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -280,7 +288,7 @@ function AcceptRideSwipeButton({
           return;
         }
         const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
-        const threshold = max * 0.72;
+        const threshold = Math.max(22, max * 0.15);
         if (gesture.dx >= threshold) {
           RNAnimated.timing(dragX, {
             toValue: max,
@@ -362,6 +370,7 @@ export function IncomingOrderModal({
   visible,
   order,
   loading = false,
+  acceptSwipeResetKey = 0,
   onAccept,
   onReject,
   onExpired,
@@ -633,12 +642,14 @@ export function IncomingOrderModal({
 
             <View style={[styles.footer, { paddingBottom: footerBottomInset }]}>
               <AcceptRideSwipeButton
+                key={order.id}
                 loading={loading}
                 disabled={secondsLeft <= 0}
                 countdown={mmss}
                 timeProgress={fuseProgress}
                 urgent={fuseUrgent}
                 label={acceptLabel}
+                resetKey={acceptSwipeResetKey}
                 onPress={onAccept}
               />
             </View>

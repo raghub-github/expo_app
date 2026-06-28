@@ -17,13 +17,14 @@ import Animated, {
   withSequence,
   withTiming,
   Easing,
-  runOnJS,
 } from "react-native-reanimated";
 import { colors } from "@/src/theme";
 
 const TRACK_H = 58;
 const THUMB = 48;
 const PAD = 5;
+const SLIDE_COMPLETE_RATIO = 0.15;
+const SLIDE_COMPLETE_MIN_PX = 22;
 
 type Props = {
   title: string;
@@ -53,6 +54,23 @@ export function SlideToReachPickup({
   const firedRef = useRef(false);
 
   const maxDrag = () => Math.max(0, trackWidthRef.current - THUMB - PAD * 2);
+
+  const slideThreshold = (max: number) =>
+    max > 0 ? Math.max(SLIDE_COMPLETE_MIN_PX, max * SLIDE_COMPLETE_RATIO) : SLIDE_COMPLETE_MIN_PX;
+
+  const tryCompleteSlide = (dx: number) => {
+    const max = maxDrag();
+    if (dx < slideThreshold(max)) return false;
+    if (max > 0) {
+      translateX.value = withSpring(max, { damping: 20, stiffness: 240 });
+    }
+    isDragging.value = false;
+    if (!firedRef.current) {
+      firedRef.current = true;
+      onComplete();
+    }
+    return true;
+  };
 
   useEffect(() => {
     if (disabled || loading || completed) return;
@@ -100,24 +118,18 @@ export function SlideToReachPickup({
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => !disabled && !loading && !completed,
-        onMoveShouldSetPanResponder: () => !disabled && !loading && !completed,
+        onMoveShouldSetPanResponder: (_, g) =>
+          !disabled && !loading && !completed && Math.abs(g.dx) > 4,
         onPanResponderGrant: () => {
           isDragging.value = true;
         },
         onPanResponderMove: (_, g) => {
           const max = maxDrag();
           translateX.value = Math.max(0, Math.min(g.dx, max));
+          tryCompleteSlide(g.dx);
         },
-        onPanResponderRelease: () => {
-          const max = maxDrag();
-          if (max > 0 && translateX.value >= max * 0.72) {
-            translateX.value = withSpring(max, { damping: 20, stiffness: 240 });
-            isDragging.value = false;
-            if (!firedRef.current) {
-              firedRef.current = true;
-              runOnJS(onComplete)();
-            }
-          } else {
+        onPanResponderRelease: (_, g) => {
+          if (!tryCompleteSlide(g.dx)) {
             resetThumb();
           }
         },
@@ -183,6 +195,7 @@ export function SlideToReachPickup({
       onLayout={(e) => {
         trackWidthRef.current = e.nativeEvent.layout.width;
       }}
+      {...(disabled || loading ? {} : pan.panHandlers)}
     >
       <LinearGradient
         colors={[colors.primary[700], colors.primary[500], colors.primary[400]]}
@@ -201,7 +214,7 @@ export function SlideToReachPickup({
           </Text>
         </View>
 
-        <View {...pan.panHandlers} style={styles.thumbHit} accessibilityRole="adjustable">
+        <View style={styles.thumbHit} pointerEvents="none" accessibilityRole="adjustable">
           <Animated.View style={[styles.thumb, thumbStyle]}>
             {loading ? (
               <ActivityIndicator color={colors.primary[700]} />
@@ -281,6 +294,7 @@ const styles = StyleSheet.create({
     width: THUMB + PAD * 2 + 24,
     justifyContent: "center",
     zIndex: 2,
+    pointerEvents: "none",
   },
   thumb: {
     marginLeft: PAD,

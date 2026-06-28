@@ -30,6 +30,7 @@ COPY package.json package-lock.json ./
 COPY dashboard/package.json            ./dashboard/package.json
 COPY packages/contracts/package.json         ./packages/contracts/package.json
 COPY packages/financial-rules/package.json   ./packages/financial-rules/package.json
+COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 COPY packages/shared-config/package.json ./packages/shared-config/package.json
 
 # --ignore-scripts: avoid running lifecycle hooks during install (some
@@ -55,19 +56,32 @@ COPY --from=deps /repo /repo
 COPY dashboard            ./dashboard
 COPY packages/contracts         ./packages/contracts
 COPY packages/financial-rules   ./packages/financial-rules
+COPY packages/slab-pricing      ./packages/slab-pricing
 COPY packages/shared-config ./packages/shared-config
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
 # Next bakes `NEXT_PUBLIC_*` env into the JS bundle at build time, so pass
-# them via build args (set in the workflow / docker-compose).
+# them via build args (set in the workflow / docker-compose). Anything that
+# the client bundle dereferences via `process.env.NEXT_PUBLIC_*` MUST be
+# here — runtime `env_file:` injection is too late for client-side code.
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_MAPBOX_TOKEN
+ARG NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY
+ARG NEXT_PUBLIC_MERCHANT_R2_BASE_URL
+ARG NEXT_PUBLIC_DISABLE_CURRENT_LOCATION
+ARG NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+ENV NEXT_PUBLIC_MAPBOX_TOKEN=${NEXT_PUBLIC_MAPBOX_TOKEN}
+ENV NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY=${NEXT_PUBLIC_MERCHANT_ATTACHMENT_PROXY}
+ENV NEXT_PUBLIC_MERCHANT_R2_BASE_URL=${NEXT_PUBLIC_MERCHANT_R2_BASE_URL}
+ENV NEXT_PUBLIC_DISABLE_CURRENT_LOCATION=${NEXT_PUBLIC_DISABLE_CURRENT_LOCATION}
+ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER}
 
 # Targeted workspace build. Critically NOT `npm run build` (which would
 # pick up the root script `turbo run build` and try to build every
@@ -86,6 +100,7 @@ ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 RUN npm run build \
       --workspace=@gatimitra/contracts \
       --workspace=@gatimitra/financial-rules \
+      --workspace=@gatimitra/slab-pricing \
       --workspace=dashboard
 
 # ────────────────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ export default async function StoreDashboardPage({
 }) {
   const { id } = await params;
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+    <div className="flex flex-1 flex-col min-h-0 w-full max-w-full overflow-hidden">
       <StoreDashboardClient storeId={id} />
     </div>
   );

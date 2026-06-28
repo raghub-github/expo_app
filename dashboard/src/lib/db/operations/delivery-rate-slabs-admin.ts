@@ -233,7 +233,7 @@ export async function insertDeliveryRateSlab(args: {
   };
 }
 
-export async function updateDeliveryRateSlab(id: number, patch: Partial<{
+export async function updateDeliveryRateSlab(id: number, patch: {
   minKm: number;
   maxKm: number | null;
   baseFare: number | null;
@@ -243,7 +243,7 @@ export async function updateDeliveryRateSlab(id: number, patch: Partial<{
   surgeMultiplier: number | null;
   priority: number;
   isActive: boolean;
-}>): Promise<DeliveryRateSlabRow | null> {
+}): Promise<DeliveryRateSlabRow | null> {
   const sql = getSql();
   const rows = await sql<
     {
@@ -267,15 +267,15 @@ export async function updateDeliveryRateSlab(id: number, patch: Partial<{
   >`
     UPDATE delivery_rate_slabs
     SET
-      min_km = COALESCE(${patch.minKm ?? null}, min_km),
-      max_km = ${patch.maxKm === undefined ? sql`max_km` : patch.maxKm},
-      base_fare = ${patch.baseFare === undefined ? sql`base_fare` : patch.baseFare},
-      per_km_rate = COALESCE(${patch.perKmRate ?? null}, per_km_rate),
-      min_charge = ${patch.minCharge === undefined ? sql`min_charge` : patch.minCharge},
-      waiting_charge_per_min = ${patch.waitingChargePerMin === undefined ? sql`waiting_charge_per_min` : patch.waitingChargePerMin},
-      surge_multiplier = ${patch.surgeMultiplier === undefined ? sql`surge_multiplier` : patch.surgeMultiplier},
-      priority = COALESCE(${patch.priority ?? null}, priority),
-      is_active = COALESCE(${patch.isActive ?? null}, is_active),
+      min_km = ${patch.minKm},
+      max_km = ${patch.maxKm},
+      base_fare = ${patch.baseFare},
+      per_km_rate = ${patch.perKmRate},
+      min_charge = ${patch.minCharge},
+      waiting_charge_per_min = ${patch.waitingChargePerMin},
+      surge_multiplier = ${patch.surgeMultiplier},
+      priority = ${patch.priority},
+      is_active = ${patch.isActive},
       updated_at = now()
     WHERE id = ${id}
     RETURNING *

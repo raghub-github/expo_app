@@ -119,7 +119,7 @@ export function RiderCancellationPenaltyPanel({ party, onPartyChange, refreshKey
         );
         const data = await readApiJson(res);
         if (!res.ok || !data.success) {
-          if (!silent) toast(String(data.error ?? "Load failed"), "error");
+          toast(String(data.error ?? "Load failed"), "error");
           return;
         }
         applyPayload(data as RiderPenaltyEnginePayload & { success?: boolean });
@@ -262,8 +262,10 @@ export function RiderCancellationPenaltyPanel({ party, onPartyChange, refreshKey
       {migrationRequired ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           Run migration{" "}
-          <code className="font-mono">backend/drizzle/0270_rider_cancellation_penalty_engine.sql</code>{" "}
-          on Supabase SQL editor.
+          <code className="font-mono">dashboard/drizzle/0270_rider_cancellation_penalty_engine.sql</code>{" "}
+          (and{" "}
+          <code className="font-mono">0340_order_cancellation_app_channel.sql</code> for App
+          Cancellation) on your database.
         </div>
       ) : null}
 

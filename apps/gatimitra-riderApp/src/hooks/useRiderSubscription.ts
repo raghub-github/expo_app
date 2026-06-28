@@ -64,6 +64,7 @@ export type RiderSubscriptionAlertBanner = {
   dispatchBlocked: boolean;
   negativeLimit: number;
   incomeFreezeDays: number;
+  penaltyStreakDays?: number;
 };
 
 export type RiderSubscriptionDues = {

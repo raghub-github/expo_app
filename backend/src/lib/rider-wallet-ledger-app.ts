@@ -1,4 +1,5 @@
 import { getSql } from "../db/client.js";
+import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
 
 export type RiderLedgerSegment =
   | "all"
@@ -556,6 +557,241 @@ export async function getRiderSubscriptionDebitedTotal(riderId: number): Promise
     }
     return Math.round(total * 100) / 100;
   }
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function startOfDay(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function dayKeyIst(date: Date): string {
+  return startOfDay(date).toISOString();
+}
+
+function eachDayInclusive(from: Date, to: Date): Date[] {
+  const days: Date[] = [];
+  const cur = startOfDay(from);
+  const end = startOfDay(to);
+  while (cur.getTime() <= end.getTime()) {
+    days.push(new Date(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
+}
+
+function formatGraphRangeLabel(from: Date, to: Date): string {
+  const sameYear = from.getFullYear() === to.getFullYear();
+  const left = from.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+  const right = to.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return `${left} - ${right}`;
+}
+
+function parseEarningRef(ref: string | null): { kind: "delivery" | "tip"; coreId: number } | null {
+  const value = ref?.trim() ?? "";
+  const match = value.match(/^rider_earn:(delivery|tip):(\d+)$/);
+  if (!match) return null;
+  const coreId = Number(match[2]);
+  if (!Number.isFinite(coreId) || coreId <= 0) return null;
+  return { kind: match[1] as "delivery" | "tip", coreId };
+}
+
+function splitDeliveryLedgerAmount(
+  amount: number,
+  billingSnapshot: unknown,
+  metadata: Record<string, unknown> | null,
+): { orderEarning: number; surge: number; waiting: number } {
+  const ledgerAmount = round2(Math.max(0, amount));
+  if (ledgerAmount <= 0) {
+    return { orderEarning: 0, surge: 0, waiting: 0 };
+  }
+
+  const metaBase = round2(Number(metadata?.baseEarning ?? metadata?.base_earning ?? 0));
+  const metaWait = round2(Number(metadata?.waitingEarning ?? metadata?.waiting_earning ?? 0));
+  const metaSurge = round2(Number(metadata?.surgeEarning ?? metadata?.surge_earning ?? 0));
+  const metaSubtotal = round2(metaBase + metaWait + metaSurge);
+
+  let base = 0;
+  let waiting = 0;
+  let surge = 0;
+
+  if (metaSubtotal > 0) {
+    base = metaBase;
+    waiting = metaWait;
+    surge = metaSurge;
+  } else {
+    const snap = readRideRiderPayoutSnapshot(billingSnapshot);
+    if (snap) {
+      base = snap.baseEarning;
+      waiting = snap.waitingEarning;
+      surge = snap.surgeEarning;
+    }
+  }
+
+  const subtotal = round2(base + waiting + surge);
+  if (subtotal <= 0) {
+    return { orderEarning: ledgerAmount, surge: 0, waiting: 0 };
+  }
+
+  const scale = ledgerAmount / subtotal;
+  let orderEarning = round2(base * scale);
+  let waitingPart = round2(waiting * scale);
+  let surgePart = round2(surge * scale);
+  const remainder = round2(ledgerAmount - (orderEarning + waitingPart + surgePart));
+  orderEarning = round2(orderEarning + remainder);
+
+  return { orderEarning, surge: surgePart, waiting: waitingPart };
+}
+
+export type RiderLedgerGraphDayBarDto = {
+  date: string;
+  day: number;
+  amount: number;
+  orderCount: number;
+};
+
+export type RiderLedgerGraphBreakdownDto = {
+  totalEarning: number;
+  orderEarning: number;
+  incentive: number;
+  surge: number;
+  waiting: number;
+  orderCount: number;
+  rangeLabel: string;
+  from: string;
+  to: string;
+  dailyBars: RiderLedgerGraphDayBarDto[];
+};
+
+export async function getRiderLedgerGraphForApp(args: {
+  riderId: number;
+  segment?: RiderLedgerSegment;
+  from: Date;
+  to: Date;
+}): Promise<RiderLedgerGraphBreakdownDto> {
+  const segment = args.segment ?? "all";
+  const from = startOfDay(args.from);
+  const to = endOfDay(args.to);
+
+  const rows = (await fetchLedgerRows(args.riderId, from, to)).filter((row) =>
+    segmentMatchesRow(segment, row),
+  );
+
+  const coreIds = [
+    ...new Set(
+      rows
+        .map((row) => parseEarningRef(row.ref)?.coreId)
+        .filter((id): id is number => id != null),
+    ),
+  ];
+
+  const sql = getSql();
+  const billingByCoreId = new Map<number, unknown>();
+  if (coreIds.length > 0) {
+    const billingRows = (await sql`
+      SELECT id, billing_snapshot
+      FROM orders_core
+      WHERE id = ANY(${coreIds}::int[])
+    `) as { id: number; billing_snapshot: unknown }[];
+    for (const row of billingRows) {
+      billingByCoreId.set(Number(row.id), row.billing_snapshot);
+    }
+  }
+
+  let totalEarning = 0;
+  let orderEarning = 0;
+  let incentive = 0;
+  let surge = 0;
+  let waiting = 0;
+  const orderIds = new Set<number>();
+  const creditByDay = new Map<string, number>();
+  const ordersByDay = new Map<string, Set<number>>();
+
+  for (const row of rows) {
+    const entryType = row.entry_type.toLowerCase();
+    if (!isCreditEntryType(entryType)) continue;
+
+    const amount = round2(Math.abs(Number(row.amount ?? 0)));
+    if (amount <= 0) continue;
+
+    totalEarning = round2(totalEarning + amount);
+
+    const dayKey = dayKeyIst(new Date(row.created_at));
+    creditByDay.set(dayKey, round2((creditByDay.get(dayKey) ?? 0) + amount));
+
+    if (INCENTIVE_ENTRY_TYPES.has(entryType)) {
+      incentive = round2(incentive + amount);
+      continue;
+    }
+
+    const parsedRef = parseEarningRef(row.ref);
+    if (parsedRef) {
+      orderIds.add(parsedRef.coreId);
+      const dayOrders = ordersByDay.get(dayKey) ?? new Set<number>();
+      dayOrders.add(parsedRef.coreId);
+      ordersByDay.set(dayKey, dayOrders);
+
+      const billingSnapshot = billingByCoreId.get(parsedRef.coreId);
+      const meta =
+        row.metadata != null && typeof row.metadata === "object"
+          ? (row.metadata as Record<string, unknown>)
+          : null;
+
+      if (parsedRef.kind === "tip") {
+        orderEarning = round2(orderEarning + amount);
+        continue;
+      }
+
+      const split = splitDeliveryLedgerAmount(amount, billingSnapshot, meta);
+      orderEarning = round2(orderEarning + split.orderEarning);
+      surge = round2(surge + split.surge);
+      waiting = round2(waiting + split.waiting);
+      continue;
+    }
+
+    // Other credits (refund, penalty_reversal, etc.) count toward total + order earning bucket.
+    orderEarning = round2(orderEarning + amount);
+  }
+
+  const breakdownSum = round2(orderEarning + incentive + surge + waiting);
+  if (breakdownSum !== totalEarning) {
+    orderEarning = round2(orderEarning + round2(totalEarning - breakdownSum));
+  }
+
+  const dailyBars = eachDayInclusive(from, to).map((day) => {
+    const key = dayKeyIst(day);
+    return {
+      date: key,
+      day: day.getDate(),
+      amount: creditByDay.get(key) ?? 0,
+      orderCount: ordersByDay.get(key)?.size ?? 0,
+    };
+  });
+
+  return {
+    totalEarning,
+    orderEarning,
+    incentive,
+    surge,
+    waiting,
+    orderCount: orderIds.size,
+    rangeLabel: formatGraphRangeLabel(from, to),
+    from: from.toISOString(),
+    to: to.toISOString(),
+    dailyBars,
+  };
 }
 
 export async function getRiderLedgerForApp(args: {

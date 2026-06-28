@@ -390,3 +390,87 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
 export function haversineDistanceKm(a: LatLng, b: LatLng): number {
   return haversineMeters(a, b) / 1000;
 }
+
+/**
+ * One-to-many road distances via Mapbox Directions Matrix API.
+ *
+ * Mapbox accepts up to 25 coordinates per matrix request (1 source + 24
+ * destinations). For more, we split into batches and merge.
+ *
+ * Returns parallel arrays aligned to `destinations`. Entries are `null`
+ * when Mapbox couldn't route to that destination (water, restricted
+ * area, malformed coord). The caller decides whether to fall back to
+ * haversine for those.
+ *
+ * Why Matrix instead of N Directions calls:
+ *   - 1 HTTP request instead of N (~3-4× faster for typical N=15)
+ *   - Single rate-limit charge instead of N
+ *   - Same accuracy — Matrix uses the same routing engine as Directions
+ *
+ * Failure handling: if the whole HTTP call fails (network, 5xx, quota,
+ * timeout), we return all-nulls. The caller must be prepared to fall
+ * back. We never throw — this is a best-effort enrichment.
+ */
+export type MatrixDistance = {
+  /** Road distance in metres. */
+  distanceMeters: number;
+  /** Driving duration in seconds — null when Mapbox didn't return one. */
+  durationSeconds: number | null;
+};
+
+export async function getMatrixDistances(args: {
+  origin: LatLng;
+  destinations: LatLng[];
+  mapboxToken: string;
+  profile?: RoutingProfile;
+  /** Per-batch HTTP timeout in ms. Default 8000. */
+  timeoutMs?: number;
+}): Promise<Array<MatrixDistance | null>> {
+  const { origin, destinations, mapboxToken } = args;
+  if (destinations.length === 0) return [];
+  const profile = args.profile ?? "driving";
+  const timeoutMs = args.timeoutMs ?? 8000;
+  // Mapbox Matrix accepts up to 25 coords total: 1 source + up to 24 dests.
+  const MAX_DESTS_PER_REQUEST = 24;
+  const mapboxProfile = profile === "bike" ? "driving" : "driving";
+
+  const out: Array<MatrixDistance | null> = new Array(destinations.length).fill(null);
+
+  for (let offset = 0; offset < destinations.length; offset += MAX_DESTS_PER_REQUEST) {
+    const slice = destinations.slice(offset, offset + MAX_DESTS_PER_REQUEST);
+    const coords = [origin, ...slice].map((p) => `${p.lng},${p.lat}`).join(";");
+    const destinationIndices = Array.from({ length: slice.length }, (_, i) => i + 1).join(";");
+    const url = new URL(
+      `https://api.mapbox.com/directions-matrix/v1/mapbox/${mapboxProfile}/${coords}`
+    );
+    url.searchParams.set("access_token", mapboxToken);
+    url.searchParams.set("annotations", "distance,duration");
+    url.searchParams.set("sources", "0");
+    url.searchParams.set("destinations", destinationIndices);
+
+    try {
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        distances?: number[][];
+        durations?: number[][];
+      };
+      const distRow = data.distances?.[0] ?? [];
+      const durRow = data.durations?.[0] ?? [];
+      for (let i = 0; i < slice.length; i++) {
+        const meters = distRow[i];
+        const seconds = durRow[i];
+        if (typeof meters === "number" && Number.isFinite(meters)) {
+          out[offset + i] = {
+            distanceMeters: meters,
+            durationSeconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : null,
+          };
+        }
+      }
+    } catch {
+      // best-effort: leave nulls for this batch
+    }
+  }
+
+  return out;
+}

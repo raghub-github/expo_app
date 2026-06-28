@@ -1,6 +1,7 @@
-import { ApiClient } from "@gatimitra/sdk";
+import { ApiClient, ApiError } from "@gatimitra/sdk";
 import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { notifyForceLogoutIfNeeded } from "@/src/services/rider-auth-errors";
 import { z } from "zod";
 
 // API Response Schemas
@@ -258,6 +259,26 @@ const RiderLedgerResponseSchema = z.object({
   summary: RiderLedgerSummarySchema,
 });
 
+const RiderLedgerGraphSchema = z.object({
+  totalEarning: z.number(),
+  orderEarning: z.number(),
+  incentive: z.number(),
+  surge: z.number(),
+  waiting: z.number(),
+  orderCount: z.number(),
+  rangeLabel: z.string(),
+  from: z.string(),
+  to: z.string(),
+  dailyBars: z.array(
+    z.object({
+      date: z.string(),
+      day: z.number(),
+      amount: z.number(),
+      orderCount: z.number(),
+    }),
+  ),
+});
+
 export type RiderLedgerSegment = z.infer<typeof RiderLedgerSegmentSchema>;
 export type RiderLedgerPeriod = z.infer<typeof RiderLedgerPeriodSchema>;
 export type RiderLedgerEntry = z.infer<typeof RiderLedgerEntrySchema>;
@@ -268,6 +289,26 @@ export type RiderLedgerFilters = {
   period?: RiderLedgerPeriod;
   limit?: number;
   offset?: number;
+};
+
+export type RiderLedgerGraphDayBar = {
+  date: string;
+  day: number;
+  amount: number;
+  orderCount: number;
+};
+
+export type RiderLedgerGraphData = {
+  totalEarning: number;
+  orderEarning: number;
+  incentive: number;
+  surge: number;
+  waiting: number;
+  orderCount: number;
+  rangeLabel: string;
+  from: string;
+  to: string;
+  dailyBars: RiderLedgerGraphDayBar[];
 };
 
 export type RiderOrderSummary = z.infer<typeof OrderSummarySchema>;
@@ -287,16 +328,95 @@ const EmergencyContactsResponseSchema = z.object({
   }),
 });
 
+const RiderDeviceSessionSchema = z.object({
+  id: z.number(),
+  deviceId: z.string().nullable(),
+  deviceType: z.string().nullable(),
+  deviceName: z.string().nullable(),
+  deviceModel: z.string().nullable(),
+  os: z.string().nullable(),
+  osVersion: z.string().nullable(),
+  appVersion: z.string().nullable(),
+  ipAddress: z.string().nullable(),
+  location: z.string().nullable(),
+  loginState: z.string().nullable(),
+  loginDistrict: z.string().nullable(),
+  loginTown: z.string().nullable(),
+  loginVillage: z.string().nullable(),
+  loginMethod: z.string().nullable(),
+  loginTime: z.string(),
+  lastActive: z.string(),
+  isActive: z.boolean(),
+  isCurrentDevice: z.boolean(),
+});
+
+export type RiderDeviceSession = z.infer<typeof RiderDeviceSessionSchema>;
+
 // Create API client instance
-function createApiClient(): ApiClient {
-  const config = getRiderAppConfig();
-  return new ApiClient({
-    baseUrl: resolveUrlForDevice(config.apiBaseUrl),
-    getAccessToken: async () => {
-      const session = useSessionStore.getState().session;
-      return session?.accessToken ?? null;
-    },
-  });
+let refreshInFlight: Promise<void> | null = null;
+
+async function ensureSessionRefreshed(force = false): Promise<boolean> {
+  const store = useSessionStore.getState();
+  if (!store.session?.accessToken) return false;
+
+  if (!refreshInFlight) {
+    refreshInFlight = store.refreshSessionIfNeeded({ force }).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  await refreshInFlight;
+  return Boolean(useSessionStore.getState().session?.accessToken);
+}
+
+type RiderRequestInit<T> = RequestInit & {
+  responseSchema?: z.ZodSchema<T>;
+  idempotencyKey?: string;
+};
+
+function apiErrorBody(err: ApiError): string | undefined {
+  if (err.payload == null) return undefined;
+  return typeof err.payload === "string" ? err.payload : JSON.stringify(err.payload);
+}
+
+function apiErrorCode(err: ApiError): string {
+  if (!err.payload || typeof err.payload !== "object") return "";
+  return String((err.payload as { error?: string }).error ?? "");
+}
+
+async function riderRequest<T>(path: string, init: RiderRequestInit<T> = {}): Promise<T> {
+  const run = () => {
+    const config = getRiderAppConfig();
+    const client = new ApiClient({
+      baseUrl: resolveUrlForDevice(config.apiBaseUrl),
+      getAccessToken: async () => useSessionStore.getState().session?.accessToken ?? null,
+    });
+    return client.request<T>(path, init);
+  };
+
+  try {
+    return await run();
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.status !== 401) throw err;
+    if (apiErrorCode(err) === "invalid_token") {
+      const refreshed = await ensureSessionRefreshed(true);
+      if (refreshed) {
+        try {
+          return await run();
+        } catch (retryErr) {
+          if (retryErr instanceof ApiError && retryErr.status === 401) {
+            notifyForceLogoutIfNeeded(retryErr.status, apiErrorBody(retryErr));
+          }
+          throw retryErr;
+        }
+      }
+    }
+    notifyForceLogoutIfNeeded(err.status, apiErrorBody(err));
+    throw err;
+  }
+}
+
+function createApiClient(): { request: typeof riderRequest } {
+  return { request: riderRequest };
 }
 
 // API Service
@@ -751,6 +871,54 @@ export const riderApi = {
     );
   },
 
+  async createWithdrawalRequest(amount: number) {
+    const client = createApiClient();
+    const RiderWithdrawalSchema = z.object({
+      id: z.number(),
+      amount: z.number(),
+      status: z.string(),
+      bankAccMasked: z.string(),
+      ifsc: z.string(),
+      accountHolderName: z.string(),
+      transactionId: z.string().nullable(),
+      failureReason: z.string().nullable(),
+      createdAt: z.string(),
+      processedAt: z.string().nullable(),
+    });
+    return client.request<{ withdrawal: z.infer<typeof RiderWithdrawalSchema> }>(
+      "/v1/rider/withdrawals",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount }),
+        responseSchema: z.object({ withdrawal: RiderWithdrawalSchema }),
+      },
+    );
+  },
+
+  async listWithdrawals(limit = 20) {
+    const client = createApiClient();
+    const RiderWithdrawalSchema = z.object({
+      id: z.number(),
+      amount: z.number(),
+      status: z.string(),
+      bankAccMasked: z.string(),
+      ifsc: z.string(),
+      accountHolderName: z.string(),
+      transactionId: z.string().nullable(),
+      failureReason: z.string().nullable(),
+      createdAt: z.string(),
+      processedAt: z.string().nullable(),
+    });
+    return client.request<{ withdrawals: z.infer<typeof RiderWithdrawalSchema>[] }>(
+      `/v1/rider/withdrawals?limit=${limit}`,
+      {
+        method: "GET",
+        responseSchema: z.object({ withdrawals: z.array(RiderWithdrawalSchema) }),
+      },
+    );
+  },
+
   async getLedger(filters: RiderLedgerFilters = {}) {
     const client = createApiClient();
     const params = new URLSearchParams();
@@ -764,6 +932,25 @@ export const riderApi = {
       method: "GET",
       responseSchema: RiderLedgerResponseSchema,
     });
+  },
+
+  async getLedgerGraph(args: {
+    segment?: RiderLedgerSegment;
+    from: string;
+    to: string;
+  }) {
+    const client = createApiClient();
+    const params = new URLSearchParams();
+    if (args.segment) params.set("segment", args.segment);
+    params.set("from", args.from);
+    params.set("to", args.to);
+    return client.request<z.infer<typeof RiderLedgerGraphSchema>>(
+      `/v1/rider/wallet/ledger/graph?${params.toString()}`,
+      {
+        method: "GET",
+        responseSchema: RiderLedgerGraphSchema,
+      },
+    );
   },
 
   /**
@@ -809,6 +996,44 @@ export const riderApi = {
         body: JSON.stringify(body),
         responseSchema: DutyStatusSchema,
       }
+    );
+  },
+
+  async getDeviceSessions() {
+    const client = createApiClient();
+    return client.request<{
+      activeCount: number;
+      sessions: RiderDeviceSession[];
+    }>("/v1/rider/me/device-sessions", {
+      method: "GET",
+      responseSchema: z.object({
+        activeCount: z.number(),
+        sessions: z.array(RiderDeviceSessionSchema),
+      }),
+    });
+  },
+
+  async logoutDeviceSessions(sessionIds: number[]) {
+    const client = createApiClient();
+    return client.request<{ ok: true; revokedCount: number }>(
+      "/v1/rider/me/device-sessions/logout",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionIds }),
+      },
+    );
+  },
+
+  async logoutAllOtherDeviceSessions() {
+    const client = createApiClient();
+    return client.request<{ ok: true; revokedCount: number }>(
+      "/v1/rider/me/device-sessions/logout-all",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ includeCurrent: false }),
+      },
     );
   },
 

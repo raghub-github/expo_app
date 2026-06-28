@@ -20,6 +20,11 @@ const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().positive().max(120)
   ).optional(),
+  /** Postgres.js pool size. Keep low in dev — Supabase transaction pooler is easy to exhaust. */
+  DATABASE_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(50)
+  ).optional(),
 
   // Supabase
   SUPABASE_URL: z.string().url(),
@@ -154,8 +159,8 @@ const EnvSchema = z.object({
   ).default("refund"),
 
   /**
-   * Dev helper: disable background intervals (store schedule tick + payment reconciler).
-   * Use when DATABASE_URL is unreachable so local API debugging isn't spammed by ETIMEDOUT/ECONNRESET.
+   * Dev helper: disable all in-process background ticks (store schedule, order timeouts,
+   * dispatch waves, payment reconciler, weather, ETA, etc.). Use locally to reduce DB load.
    */
   DISABLE_BACKGROUND_JOBS: z.preprocess(
     (v) => v === true || v === "true" || v === "1",
@@ -167,10 +172,11 @@ const EnvSchema = z.object({
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   /** Public live trip share page base, e.g. https://track.gatimitra.com/trip */
   TRACK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  /** Public address share link base, e.g. https://link.gatimitra.com */
+  ADDRESS_LINK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
-  /** OpenWeather — backend-only. Mobile apps must use /v1/weather/* endpoints. */
-  OPENWEATHER_API_KEY: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
+  /** Open-Meteo — no API key (see weather.constants.ts). */
 
   /**
    * Legacy flag; billing always runs for checkout. Kept for dashboards/scripts that read env.
@@ -248,6 +254,46 @@ const EnvSchema = z.object({
 
   /** Secret for POST /v1/push/send-notification (dashboard / internal). */
   PUSH_NOTIFICATION_ADMIN_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  /** Days to retain sampled rider_location_events audit rows. */
+  RIDER_LOCATION_EVENT_RETENTION_DAYS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(365)
+  ).default(30),
+
+  /** Background prune interval for rider_location_events (hours; default daily). */
+  RIDER_LOCATION_MAINTENANCE_INTERVAL_HOURS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(168)
+  ).default(24),
+
+  /** Speed (m/s) at which rider app should use high-frequency GPS pings (~80 km/h). */
+  RIDER_LOCATION_HIGH_SPEED_MPS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().positive().max(100)
+  ).default(22),
+
+  /**
+   * Google Play Review Mode.
+   *
+   * When ALL three are set AND `GOOGLE_REVIEW_MODE=true`, the OTP /request
+   * path skips the SMS provider for the single phone `GOOGLE_REVIEW_PHONE`
+   * and seeds the stored OTP as `GOOGLE_REVIEW_OTP`. Verification continues
+   * through the existing pipeline — same JWT, same role, same middleware.
+   *
+   * Any other phone, or `GOOGLE_REVIEW_MODE=false`, behaves exactly as
+   * before (real SMS via MSG91). Disabling is a single env flip — no code
+   * change required.
+   *
+   * Security: these values are server-only. They are never returned in any
+   * API response, never logged in full, and never read by the client.
+   */
+  GOOGLE_REVIEW_MODE: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  GOOGLE_REVIEW_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),
+  GOOGLE_REVIEW_OTP: z.preprocess(emptyToUndefined, z.string().regex(/^\d{4,8}$/).optional()),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

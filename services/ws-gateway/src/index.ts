@@ -16,8 +16,9 @@
  *        │ ─────────────────────────────►   ws-gateway ◄── Redis pub/sub
  *        │   wss://ws.host/v1/ws?ticket=…      │       channels:
  *        │                                     │         order:{id}
- *        │                                     │         rider:{id}
+ *                                     │         rider:{id}
  *        │                                     │         store:{id}
+ *        │                                     │         zone:{zoneKey}
  *
  * The ticket is single-use — once consumed, the gateway burns it in Redis so
  * a replay can't open a second socket on someone else's session. Auth lives
@@ -40,6 +41,37 @@ const PORT = Number(process.env.PORT ?? 4100);
 const JWT_SECRET = process.env.JWT_SECRET;
 const HEARTBEAT_MS = 25_000;
 const STALE_SOCKET_MS = 60_000;
+const BACKEND_INTERNAL_URL = (process.env.BACKEND_INTERNAL_URL ?? "http://127.0.0.1:3001").replace(/\/+$/, "");
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? "";
+
+function zoneKeyFromChannel(channel: string): string | null {
+  if (!channel.startsWith("zone:")) return null;
+  return channel.slice("zone:".length);
+}
+
+function notifyZonePresence(action: "join" | "leave", channel: string, actorId: string, role?: string): void {
+  const zoneKey = zoneKeyFromChannel(channel);
+  if (!zoneKey || !INTERNAL_API_TOKEN) return;
+  void fetch(`${BACKEND_INTERNAL_URL}/v1/internal/weather/zone-presence`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-internal-token": INTERNAL_API_TOKEN,
+    },
+    body: JSON.stringify({ action, zoneKey, actorId, role }),
+  }).catch(() => undefined);
+}
+
+function notifyZoneChannelsPresence(
+  action: "join" | "leave",
+  channels: Iterable<string>,
+  actorId: string,
+  role?: string
+): void {
+  for (const ch of channels) {
+    if (zoneKeyFromChannel(ch)) notifyZonePresence(action, ch, actorId, role);
+  }
+}
 
 // Startup env validation — fail loud + early. JWT_SECRET_PREVIOUS is
 // intentionally optional (used only during a rotation window).
@@ -106,6 +138,7 @@ function subscribe(channel: string, sub: Subscriber): void {
 }
 
 function unsubscribeAll(sub: Subscriber): void {
+  const leaving = Array.from(sub.channels);
   for (const channel of sub.channels) {
     const set = channelSubscribers.get(channel);
     if (set) {
@@ -115,6 +148,7 @@ function unsubscribeAll(sub: Subscriber): void {
   }
   sub.channels.clear();
   allSockets.delete(sub);
+  notifyZoneChannelsPresence("leave", leaving, sub.userId);
 }
 
 /* ─── Redis pub/sub bridge (1 subscriber connection for all channels) ─── */
@@ -139,9 +173,9 @@ try {
   }
   // Pattern subscribe so we don't have to subscribe/unsubscribe per client.
   // Three domains: orders, riders, stores. Backend publishes onto these.
-  await subscriber.psubscribe("order:*", "rider:*", "store:*");
+  await subscriber.psubscribe("order:*", "rider:*", "store:*", "zone:*");
   redisReady = true;
-  app.log.info("redis pattern-subscribed: order:*, rider:*, store:*");
+  app.log.info("redis pattern-subscribed: order:*, rider:*, store:*, zone:*");
 } catch (err) {
   app.log.error(
     { err },
@@ -237,6 +271,7 @@ app.register(async (instance) => {
         subscribe(ch, sub);
       }
     }
+    notifyZoneChannelsPresence("join", sub.channels, sub.userId, claims.role);
     socket.send(JSON.stringify({ type: "ready", channels: Array.from(sub.channels) }));
 
     socket.on("pong", () => { sub.lastPong = Date.now(); });

@@ -18,11 +18,17 @@ import { SignJWT } from "jose";
 import { ulid } from "ulid";
 import { auth } from "../../plugins/auth.js";
 import { getEnv } from "../../config/env.js";
+import { handleZonePresenceJoin } from "../weather/weather.presence.js";
+import { getCachedZoneWeatherContext } from "../weather/weather.service.js";
 
 const body = z.object({
   orderIds: z.array(z.string().min(1).max(64)).max(20).optional(),
   riderId: z.coerce.string().min(1).max(64).optional(),
+  /** Grid weather channels — `grid:lat_lng` keys from /v1/weather/location.zoneKey */
+  zoneKeys: z.array(z.string().min(4).max(64)).max(8).optional(),
 });
+
+const ZONE_KEY_RE = /^grid:-?\d+(\.\d+)?_-?\d+(\.\d+)?$/;
 
 const TICKET_TTL_SEC = 60;
 
@@ -72,6 +78,19 @@ export async function wsTicketRoutes(app: FastifyInstance) {
           if (role === "rider" && riderIdText && /^[0-9]+$/.test(riderIdText)) {
             channels.push(`rider:${riderIdText}`);
           }
+          if (Array.isArray(input.zoneKeys)) {
+            for (const zk of input.zoneKeys) {
+              const trimmed = zk.trim();
+              if (ZONE_KEY_RE.test(trimmed)) {
+                channels.push(`zone:${trimmed}`);
+                void handleZonePresenceJoin({
+                  zoneKey: trimmed,
+                  actorId: String(userId),
+                  role,
+                });
+              }
+            }
+          }
           // We could later: query orders_core to verify the caller actually
           // owns those order ids. Skipping for now because order ids are
           // already opaque ULIDs — a non-owner can't guess them.
@@ -87,11 +106,22 @@ export async function wsTicketRoutes(app: FastifyInstance) {
             .setExpirationTime(`${TICKET_TTL_SEC}s`)
             .sign(new TextEncoder().encode(secret));
 
+          const zoneWeather: Record<string, unknown> = {};
+          if (Array.isArray(input.zoneKeys)) {
+            for (const zk of input.zoneKeys) {
+              const trimmed = zk.trim();
+              if (!ZONE_KEY_RE.test(trimmed)) continue;
+              const cached = await getCachedZoneWeatherContext(trimmed);
+              if (cached) zoneWeather[trimmed] = cached;
+            }
+          }
+
           return reply.send({
             ok: true,
             ticket,
             expiresIn: TICKET_TTL_SEC,
             channels,
+            zoneWeather: Object.keys(zoneWeather).length > 0 ? zoneWeather : undefined,
           });
         } catch (err) {
           req.log.error({ err }, "ws_ticket_mint_failed");

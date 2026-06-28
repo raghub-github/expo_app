@@ -7,13 +7,17 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { validateUserForLogin } from "@/lib/auth/user-validation";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
+import { isTransientAuthError } from "@/lib/auth/api-session";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getSystemUserById } from "@/lib/db/operations/users";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
 
 export const runtime = "nodejs";
+
+const maxSetSessionAttempts = 3;
+const retryDelaysMs = [800, 1600];
 
 function normalizeSupabaseCookieOptions(options: any) {
   // Supabase sets `secure` based on request context; in Next dev this can end up true,
@@ -98,14 +102,42 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // ✅ SET SESSION
-    const { data, error } = await supabase.auth.setSession({
-      access_token,
-      refresh_token,
-    });
+    // ✅ SET SESSION (retry transient Supabase/network failures)
+    let data: Awaited<ReturnType<typeof supabase.auth.setSession>>["data"] | null = null;
+    let sessionError: unknown = null;
 
-    if (error) {
-      if (isInvalidRefreshToken(error)) {
+    for (let attempt = 1; attempt <= maxSetSessionAttempts; attempt++) {
+      if (request.signal.aborted) {
+        return NextResponse.json(
+          { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+          { status: 499 }
+        );
+      }
+
+      try {
+        const result = await supabase.auth.setSession({
+          access_token,
+          refresh_token,
+        });
+        data = result.data;
+        sessionError = result.error ?? null;
+      } catch (err) {
+        data = null;
+        sessionError = err;
+      }
+
+      if (!sessionError && data?.session) break;
+      if (sessionError && isInvalidRefreshToken(sessionError)) break;
+      if (sessionError && isTransientAuthError(sessionError) && attempt < maxSetSessionAttempts) {
+        const delay = retryDelaysMs[attempt - 1] ?? 1000;
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      break;
+    }
+
+    if (sessionError || !data?.session) {
+      if (sessionError && isInvalidRefreshToken(sessionError)) {
         try {
           await supabase.auth.signOut();
         } catch {
@@ -116,9 +148,28 @@ export async function POST(request: NextRequest) {
           { status: 401 }
         );
       }
-      console.error("[set-cookie] Supabase error:", error);
+      if (sessionError && isTransientAuthError(sessionError)) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Service temporarily unavailable",
+            code: "SERVICE_UNAVAILABLE",
+          },
+          { status: 503 }
+        );
+      }
+      const message =
+        sessionError instanceof Error
+          ? sessionError.message
+          : typeof sessionError === "object" &&
+              sessionError != null &&
+              "message" in sessionError &&
+              typeof (sessionError as { message?: unknown }).message === "string"
+            ? (sessionError as { message: string }).message
+            : "Failed to set session";
+      console.error("[set-cookie] Supabase error:", sessionError);
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: message, code: "SET_SESSION_FAILED" },
         { status: 400 }
       );
     }
@@ -192,13 +243,23 @@ export async function POST(request: NextRequest) {
     }
 
     return response;
-  } catch (e: any) {
+  } catch (e: unknown) {
+    if (isTimeoutOrAbortError(e) || isNetworkOrTransientError(e)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
+    }
     console.error("[set-cookie] FATAL ERROR:", e);
 
     return NextResponse.json(
       {
         success: false,
-        error: e?.message || "SET_COOKIE_ERROR",
+        error: e instanceof Error ? e.message : "SET_COOKIE_ERROR",
         code: "SET_COOKIE_ERROR",
       },
       { status: 500 }

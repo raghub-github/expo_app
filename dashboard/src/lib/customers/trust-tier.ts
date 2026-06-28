@@ -24,8 +24,8 @@ export const TRUST_TIER_LABEL: Record<CustomerTrustTier, string> = {
 export function trustTierFromScore(
   score: number | string | null | undefined
 ): CustomerTrustTier {
-  const s = score == null ? 100 : Number(score);
-  if (Number.isNaN(s)) return "FRAUD";
+  const s = score == null ? 5 : Number(score);
+  if (Number.isNaN(s)) return "VERY_GOOD";
   if (s >= 0 && s <= 10) return "PREMIUM";
   if (s <= 25) return "VERY_GOOD";
   if (s <= 45) return "GOOD";

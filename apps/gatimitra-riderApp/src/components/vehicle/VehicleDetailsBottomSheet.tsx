@@ -6,7 +6,7 @@ import { BlockingBottomSheetShell } from "@/src/components/vehicle/BlockingBotto
 import { VehicleDetailsForm } from "@/src/components/vehicle/VehicleDetailsForm";
 import { useUpsertRiderVehicle } from "@/src/hooks/useRiderVehicle";
 import { extractApiErrorMessage } from "@/src/services/http";
-import type { RiderVehicleDto } from "@/src/hooks/useRiderVehicle";
+import type { RiderVehicleDto, RiderVehicleOnboardingPrefill } from "@/src/hooks/useRiderVehicle";
 import { colors } from "@/src/theme";
 
 const TEAL = colors.primary[600];
@@ -14,12 +14,18 @@ const TEAL = colors.primary[600];
 type VehicleDetailsBottomSheetProps = {
   visible: boolean;
   initial?: RiderVehicleDto | null;
+  onboardingVehicleChoice?: string | null;
+  onboardingVehicleCategoryCode?: string | null;
+  onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
   onCompleted: () => void;
 };
 
 export function VehicleDetailsBottomSheet({
   visible,
   initial,
+  onboardingVehicleChoice,
+  onboardingVehicleCategoryCode,
+  onboardingPrefill,
   onCompleted,
 }: VehicleDetailsBottomSheetProps) {
   const { t } = useTranslation();
@@ -48,6 +54,10 @@ export function VehicleDetailsBottomSheet({
 
       <VehicleDetailsForm
         initial={initial}
+        onboardingVehicleChoice={onboardingVehicleChoice}
+        onboardingVehicleCategoryCode={onboardingVehicleCategoryCode}
+        onboardingPrefill={onboardingPrefill}
+        onDismissError={() => setApiError(null)}
         submitting={upsert.isPending}
         errorMessage={apiError}
         onSubmit={async (payload) => {
@@ -57,8 +67,14 @@ export function VehicleDetailsBottomSheet({
             if (result.isComplete) {
               onCompleted();
             } else {
+              const missingServices = !result.vehicle?.serviceTypes?.length;
               setApiError(
-                t("vehicle.form.incomplete", "Please fill all required fields"),
+                missingServices
+                  ? t(
+                      "vehicle.form.serviceNotSaved",
+                      "Services could not be saved for your vehicle type. Pick a different service or contact support.",
+                    )
+                  : t("vehicle.form.incomplete", "Please fill all required fields"),
               );
             }
           } catch (e) {

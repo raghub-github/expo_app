@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 import { getUserPermissions, canAccessPage } from "@/lib/permissions/engine";
 import { toPermissionKeys } from "@/lib/permissions/constants";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { apiErrorResponse } from "@/lib/api-errors";
-
-const maxGetUserAttempts = 3;
-const retryDelaysMs = [800, 1600]; // after attempt 1 and 2
 
 /**
  * GET /api/auth/permissions
@@ -15,45 +12,11 @@ const retryDelaysMs = [800, 1600]; // after attempt 1 and 2
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-
-    let user: { id: string; email?: string } | null = null;
-    let userError: unknown = null;
-
-    for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      const result = await supabase.auth.getUser();
-      user = result.data?.user ?? null;
-      userError = result.error ?? null;
-
-      if (!userError && user) break;
-      if (userError && isInvalidRefreshToken(userError)) break;
-      if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
-        const delay = retryDelaysMs[attempt - 1] ?? 1000;
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      break;
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
-
-    if (userError || !user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
-      if (userError && isNetworkOrTransientError(userError)) {
-        return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
-        );
-      }
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const { user } = auth;
 
     const email = user.email;
     if (!email) {
@@ -107,13 +70,13 @@ export async function GET(request: NextRequest) {
     });
     return response;
   } catch (error) {
-    console.error("[permissions API] Error:", error);
-    if (isNetworkOrTransientError(error)) {
+    if (isTimeoutOrAbortError(error) || isNetworkOrTransientError(error)) {
       return NextResponse.json(
         { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
         { status: 503 }
       );
     }
+    console.error("[permissions API] Error:", error);
     const { body, status } = apiErrorResponse(error);
     return NextResponse.json(body, { status });
   }
@@ -143,43 +106,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-
-    let user: { id: string; email?: string } | null = null;
-    let userError: unknown = null;
-    for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      const result = await supabase.auth.getUser();
-      user = result.data?.user ?? null;
-      userError = result.error ?? null;
-      if (!userError && user) break;
-      if (userError && isInvalidRefreshToken(userError)) break;
-      if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
-        const delay = retryDelaysMs[attempt - 1] ?? 1000;
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      break;
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
-
-    if (userError || !user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
-      if (userError && isNetworkOrTransientError(userError)) {
-        return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
-        );
-      }
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const { user } = auth;
 
     const email = user.email;
     if (!email) {
@@ -200,13 +131,13 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("[permissions API] Error checking page access:", error);
-    if (isNetworkOrTransientError(error)) {
+    if (isTimeoutOrAbortError(error) || isNetworkOrTransientError(error)) {
       return NextResponse.json(
         { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
         { status: 503 }
       );
     }
+    console.error("[permissions API] Error checking page access:", error);
     const { body, status } = apiErrorResponse(error);
     return NextResponse.json(body, { status });
   }

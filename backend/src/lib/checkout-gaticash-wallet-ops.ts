@@ -27,6 +27,42 @@ export async function getCustomerGatiCashAvailable(
 }
 
 /** Debit GatiCash applied at checkout and credit missed-offer wallet add after order is placed. Idempotent by order id. */
+/** Debit GatiCash toward post-delivery ride fare payment. Idempotent by order id. */
+export async function debitCustomerGatiCashForRideFare(
+  sql: Sql,
+  args: {
+    customerInternalId: number;
+    orderIdText: string;
+    amount: number;
+  }
+): Promise<void> {
+  const amount = Math.round((Number(args.amount) || 0) * 100) / 100;
+  if (amount <= 0.005) return;
+
+  await ensureCustomerWallet(sql, args.customerInternalId);
+  const debitKey = `ride_gaticash_${args.orderIdText}`.slice(0, 120);
+  const existingDebit = await sql`
+    SELECT id FROM public.customer_wallet_transactions
+    WHERE transaction_id = ${debitKey}
+    LIMIT 1
+  `;
+  if (existingDebit.length > 0) return;
+
+  await sql`
+    SELECT public.customer_wallet_debit(
+      ${args.customerInternalId},
+      ${amount},
+      'DEBIT'::public.wallet_transaction_type,
+      ${args.orderIdText},
+      ${"ride_fare_payment"},
+      ${"GatiCash applied on ride fare"},
+      ${debitKey},
+      ${JSON.stringify({ orderId: args.orderIdText })}::jsonb,
+      FALSE
+    )
+  `;
+}
+
 export async function fulfillCheckoutGatiCashWalletOps(
   sql: Sql,
   args: {

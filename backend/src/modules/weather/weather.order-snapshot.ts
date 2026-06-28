@@ -36,6 +36,9 @@ export async function captureOrderWeatherSnapshot(
       lat: args.dropLat,
       lng: args.dropLon,
       cityHint: args.cityHint,
+      trigger: "order_created",
+      actorId: args.orderIdText,
+      actorType: "order",
     });
     const serviceZone = await resolveServiceZone({
       lat: args.dropLat,

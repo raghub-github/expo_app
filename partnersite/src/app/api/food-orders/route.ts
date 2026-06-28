@@ -606,6 +606,12 @@ export async function GET(req: NextRequest) {
           cancellation_details: food?.cancellation_details ?? core.cancellation_details ?? null,
           created_at: String(food?.created_at ?? core.created_at),
           updated_at: String(food?.updated_at ?? core.updated_at),
+          merchant_response_deadline_at:
+            (food?.merchant_acceptance_deadline_at as string | null | undefined) ?? null,
+          merchant_response_timeout_seconds:
+            food?.merchant_acceptance_window_seconds != null
+              ? Number(food.merchant_acceptance_window_seconds)
+              : null,
           items,
           item_total: core.item_total != null ? Number(core.item_total) : null,
           addon_total: core.addon_total != null ? Number(core.addon_total) : null,

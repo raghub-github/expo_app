@@ -12,8 +12,8 @@ type RiderAppConfig = {
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
   /**
-   * When true, phone OTP uses POST /v1/auth/otp/request (backend + MSG91) — same as customer/merchant
-   * with EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true (typical for LAN dev when Supabase hook is not public).
+   * When true, phone OTP uses `POST /v1/auth/otp/request` (backend + MSG91).
+   * Default (same as merchant): Supabase signInWithOtp → Send SMS hook → MSG91.
    */
   phoneOtpUseBackendOnly: boolean;
   mapboxToken?: string;
@@ -61,13 +61,11 @@ export function getRiderAppConfig(): RiderAppConfig {
   const phoneOtpBackendRaw =
     asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
     asNonEmptyString(extra.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND);
-  const phoneOtpUseBackendOnly = (() => {
-    const flag = phoneOtpBackendRaw?.toLowerCase();
-    if (flag === "1" || flag === "true" || flag === "yes" || flag === "on") return true;
-    if (flag === "false" || flag === "0" || flag === "no" || flag === "off") return false;
-    // Dev default: Supabase Send SMS hook needs a public URL; backend MSG91 works on LAN.
-    return __DEV__;
-  })();
+  const phoneOtpUseBackendOnly =
+    phoneOtpBackendRaw === "1" ||
+    phoneOtpBackendRaw?.toLowerCase() === "true" ||
+    phoneOtpBackendRaw?.toLowerCase() === "yes" ||
+    phoneOtpBackendRaw?.toLowerCase() === "on";
   const fromExtra = asNonEmptyString(extra.API_BASE_URL);
 
   // Production safety net — see merchant_app/config/env.ts for rationale.

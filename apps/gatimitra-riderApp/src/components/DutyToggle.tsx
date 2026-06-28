@@ -2,6 +2,7 @@ import React, { useState, useCallback } from "react";
 import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { useTranslation } from "react-i18next";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
+import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { OffDutyConfirmModal } from "@/src/components/home/OffDutyConfirmModal";
 import { LORA_BOLD } from "@/src/theme/headerFonts";
 
@@ -13,16 +14,18 @@ interface DutyToggleProps {
 export function DutyToggle({ compact = false, variant = "default" }: DutyToggleProps) {
   const { t } = useTranslation();
   const { isOnDuty, setDuty, isPending } = useDutyToggle();
+  const { data: subscriptionStatus } = useRiderSubscriptionStatus();
+  const dutyLocked = subscriptionStatus?.dues?.dispatchBlocked === true;
   const [confirmVisible, setConfirmVisible] = useState(false);
 
   const requestToggle = useCallback(() => {
-    if (isPending) return;
+    if (isPending || dutyLocked) return;
     if (isOnDuty) {
       setConfirmVisible(true);
       return;
     }
     void setDuty(true);
-  }, [isOnDuty, isPending, setDuty]);
+  }, [dutyLocked, isOnDuty, isPending, setDuty]);
 
   const handleConfirmOffDuty = useCallback(() => {
     void setDuty(false).finally(() => setConfirmVisible(false));
@@ -42,8 +45,8 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
       <View style={styles.host} collapsable={false}>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending}
-          style={[styles.statusPill, isPending && { opacity: 0.75 }]}
+          disabled={isPending || dutyLocked}
+          style={[styles.statusPill, (isPending || dutyLocked) && { opacity: 0.75 }]}
           accessibilityRole="switch"
           accessibilityState={{ checked: isOnDuty }}
         >
@@ -66,10 +69,11 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
       <View style={styles.pillHost} collapsable={false}>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending}
+          disabled={isPending || dutyLocked}
           style={({ pressed }) => [
             isPending && { opacity: 0.75 },
-            pressed && styles.pillPressed,
+            dutyLocked && { opacity: 0.55 },
+            pressed && !dutyLocked && styles.pillPressed,
           ]}
           accessibilityRole="switch"
           accessibilityState={{ checked: isOnDuty }}
@@ -98,7 +102,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
       <View style={styles.host} collapsable={false}>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending}
+          disabled={isPending || dutyLocked}
           style={{
             width: 48,
             height: 28,
@@ -106,6 +110,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
             backgroundColor: isOnDuty ? "#16A34A" : "#D1D5DB",
             justifyContent: "center",
             paddingHorizontal: 3,
+            opacity: isPending || dutyLocked ? 0.55 : 1,
           }}
         >
           <View
@@ -131,7 +136,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         </Text>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending}
+          disabled={isPending || dutyLocked}
           style={{
             width: 56,
             height: 28,
@@ -139,6 +144,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
             backgroundColor: isOnDuty ? "#16A34A" : "#D1D5DB",
             justifyContent: "center",
             paddingHorizontal: 3,
+            opacity: isPending || dutyLocked ? 0.55 : 1,
           }}
         >
           <View

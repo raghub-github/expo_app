@@ -399,6 +399,7 @@ export async function getRiderSubscriptionStatus(riderId: number) {
             duesOutstanding: 0,
             totalDue: 0,
             dispatchBlocked: false,
+            penaltyStreakDays: 0,
             lastIncomeAt: null,
           }),
         },

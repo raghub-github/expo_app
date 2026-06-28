@@ -63,8 +63,9 @@ function checkIdentityDocsVerified(
   }
 
   const hasSelfie = docs.some((d) => d.docType === "selfie" && d.verified);
-  const hasPan = docs.some((d) => d.docType === "pan" && d.verified);
-  return hasAadhaar && hasSelfie && hasPan;
+  const panDoc = docs.find((d) => d.docType === "pan");
+  const panOk = !panDoc || Boolean(panDoc.verified);
+  return hasAadhaar && hasSelfie && panOk;
 }
 
 function checkVehicleDocsVerified(

@@ -7,8 +7,9 @@ const DEFAULTS: WeatherThresholds = {
   heavyRainThresholdMm: 7.0,
   extremeRainThresholdMm: 15.0,
   extremeWindSpeedKmh: 50,
-  cacheTtlMinutes: 12,
-  refreshIntervalMinutes: 12,
+  cacheTtlMinutes: 10080,
+  /** Deprecated — background refresh removed; rain events drive updates. */
+  refreshIntervalMinutes: 0,
   etaDelayLightMinutes: 3,
   etaDelayModerateMinutes: 5,
   etaDelayHeavyMinutes: 8,

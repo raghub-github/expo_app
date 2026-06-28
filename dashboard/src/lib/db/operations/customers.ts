@@ -4,7 +4,7 @@
  */
 
 import { getDb, getSql } from "../client";
-import { customers, ordersCore } from "../schema";
+import { customers, customerWallet, ordersCore } from "../schema";
 import {
   eq,
   and,
@@ -19,6 +19,10 @@ import {
   inArray,
   type SQL,
 } from "drizzle-orm";
+import {
+  buildCustomerFraudReasons,
+  type CustomerFraudAlertRow,
+} from "@/lib/customers/fraud-reason";
 export interface CustomerFilters {
   page?: number;
   limit?: number;
@@ -51,6 +55,21 @@ export interface CustomerAddressRow {
   isDefault: boolean;
   landmark: string | null;
   addressAuto: string | null;
+}
+
+export interface CustomerWalletSummary {
+  currentBalance: number;
+  availableBalance: number;
+  lockedAmount: number;
+  currency: string;
+  isActive: boolean | null;
+  lastTransactionAt: Date | null;
+}
+
+function toWalletAmount(v: unknown): number {
+  if (v === null || v === undefined) return 0;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isNaN(n) ? 0 : n;
 }
 
 function numPk(v: unknown): number {
@@ -171,6 +190,36 @@ export async function getCustomerReferralInstallCount(
   return Number(row?.cnt ?? 0);
 }
 
+/** GatiCash wallet row from customer_wallet (source of truth for balance). */
+export async function getCustomerWallet(
+  customerDbId: number
+): Promise<CustomerWalletSummary | null> {
+  const db = getDb();
+  const [wallet] = await db
+    .select({
+      currentBalance: customerWallet.currentBalance,
+      availableBalance: customerWallet.availableBalance,
+      lockedAmount: customerWallet.lockedAmount,
+      currency: customerWallet.currency,
+      isActive: customerWallet.isActive,
+      lastTransactionAt: customerWallet.lastTransactionAt,
+    })
+    .from(customerWallet)
+    .where(eq(customerWallet.customerId, customerDbId))
+    .limit(1);
+
+  if (!wallet) return null;
+
+  return {
+    currentBalance: toWalletAmount(wallet.currentBalance),
+    availableBalance: toWalletAmount(wallet.availableBalance),
+    lockedAmount: toWalletAmount(wallet.lockedAmount),
+    currency: wallet.currency ?? "INR",
+    isActive: wallet.isActive ?? null,
+    lastTransactionAt: wallet.lastTransactionAt ?? null,
+  };
+}
+
 export async function getCustomerAddresses(
   customerDbId: number
 ): Promise<CustomerAddressRow[]> {
@@ -196,6 +245,47 @@ export async function getCustomerAddresses(
     ORDER BY is_default DESC NULLS LAST, id ASC
   `;
   return rows.map((r) => mapCustomerAddressRow(r as Record<string, unknown>));
+}
+
+export async function getCustomerFraudAlerts(
+  customerDbId: number
+): Promise<CustomerFraudAlertRow[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      alert_type,
+      alert_description,
+      alert_severity::text AS alert_severity,
+      created_at,
+      is_resolved
+    FROM customer_fraud_alerts
+    WHERE customer_id = ${customerDbId}
+    ORDER BY created_at DESC
+    LIMIT 20
+  `;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    alertType: String(r.alert_type ?? ""),
+    alertDescription: String(r.alert_description ?? ""),
+    alertSeverity: r.alert_severity != null ? String(r.alert_severity) : null,
+    createdAt: r.created_at as Date | string | null,
+    isResolved: r.is_resolved === true,
+  }));
+}
+
+async function attachCustomerFraudMeta<T extends {
+  id: number;
+  trustTier?: string | null;
+  trustScore?: string | number | null;
+  statusReason?: string | null;
+}>(customer: T) {
+  const fraudAlerts = await getCustomerFraudAlerts(customer.id);
+  const fraudReasons = buildCustomerFraudReasons({
+    trustTier: customer.trustTier ?? null,
+    trustScore: customer.trustScore ?? null,
+    statusReason: customer.statusReason ?? null,
+    fraudAlerts,
+  });
+  return { ...customer, fraudAlerts, fraudReasons };
 }
 
 export interface CustomerWithStats {
@@ -508,35 +598,40 @@ export async function getCustomerById(id: number) {
     .limit(1);
 
   if (!customer) return null;
-  const [referralInstallCount, addresses] = await Promise.all([
+  const [referralInstallCount, addresses, wallet] = await Promise.all([
     getCustomerReferralInstallCount(id),
     getCustomerAddresses(id),
+    getCustomerWallet(id),
   ]);
-  return {
+  return attachCustomerFraudMeta({
     ...customer,
     referralInstallCount,
     addresses,
-  };
+    wallet,
+  });
 }
 
 /** Get customer by public customer_id (e.g. GM…). */
 export async function getCustomerByCustomerId(customerId: string) {
   const db = getDb();
+  const compact = customerId.trim().replace(/\s/g, "");
 
   const [customer] = await db
     .select(customerSelectFields)
     .from(customers)
-    .where(eq(customers.customerId, customerId))
+    .where(sql`LOWER(TRIM(${customers.customerId})) = LOWER(${compact})`)
     .limit(1);
 
   if (!customer) return null;
-  const [referralInstallCount, addresses] = await Promise.all([
+  const [referralInstallCount, addresses, wallet] = await Promise.all([
     getCustomerReferralInstallCount(customer.id),
     getCustomerAddresses(customer.id),
+    getCustomerWallet(customer.id),
   ]);
-  return {
+  return attachCustomerFraudMeta({
     ...customer,
     referralInstallCount,
     addresses,
-  };
+    wallet,
+  });
 }

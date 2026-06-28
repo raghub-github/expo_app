@@ -89,7 +89,7 @@ const StoreQuoteResponseSchema = z.object({
   source: z.enum(["mapbox", "osrm", "haversine"]),
   cached: z.boolean(),
   approximate: z.boolean(),
-  pricing_engine: z.enum(["slab_geo", "fallback_per_km", "no_slab_configured", "no_geo_match"]),
+  pricing_engine: z.enum(["slab_geo", "fallback_slab", "fallback_per_km", "no_slab_configured", "no_geo_match", "slab_invalid"]),
   applied_geo_level: z.string().nullable().optional(),
   slab_quote: z.any().optional().nullable(),
   base_duration_min: z.number().optional(),

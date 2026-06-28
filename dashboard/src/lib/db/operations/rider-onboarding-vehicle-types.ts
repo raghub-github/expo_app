@@ -4,6 +4,7 @@ import { riderOnboardingVehicleTypes } from "@/lib/db/schema";
 
 export type OnboardingVehicleDocRequirements = {
   required_docs?: string[];
+  optional_docs?: string[];
   has_own_vehicle?: boolean;
   requires_max_speed?: boolean;
 };
@@ -184,4 +185,31 @@ export async function deactivateRiderOnboardingVehicleType(
   id: number
 ): Promise<RiderOnboardingVehicleTypeRow | null> {
   return updateRiderOnboardingVehicleType(id, { isActive: false });
+}
+
+/** Human-readable label for an onboarding vehicle type code (e.g. sedan_ac → Sedan (AC)). */
+export async function getOnboardingVehicleLabelByCode(
+  code: string
+): Promise<string | null> {
+  const trimmed = code.trim();
+  if (!trimmed) return null;
+  const sql = getSql();
+  const rows = await sql<{ label: string }[]>`
+    SELECT label
+    FROM rider_onboarding_vehicle_types
+    WHERE code = ${trimmed}
+    LIMIT 1
+  `;
+  const label = rows[0]?.label?.trim();
+  return label || null;
+}
+
+/** Permanently removes a vehicle type (service assignments cascade by code). */
+export async function deleteRiderOnboardingVehicleType(id: number): Promise<boolean> {
+  const db = getDb();
+  const [deleted] = await db
+    .delete(riderOnboardingVehicleTypes)
+    .where(eq(riderOnboardingVehicleTypes.id, id))
+    .returning({ id: riderOnboardingVehicleTypes.id });
+  return Boolean(deleted);
 }

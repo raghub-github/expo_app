@@ -37,6 +37,7 @@ export type RiderSubscriptionDuesSnapshot = {
   duesOutstanding: number;
   totalDue: number;
   dispatchBlocked: boolean;
+  penaltyStreakDays: number;
   lastIncomeAt: string | null;
 };
 
@@ -60,6 +61,7 @@ export type RiderSubscriptionAlertBanner = {
   dispatchBlocked: boolean;
   negativeLimit: number;
   incomeFreezeDays: number;
+  penaltyStreakDays: number;
 };
 
 function formatInr(amount: number): string {
@@ -67,6 +69,16 @@ function formatInr(amount: number): string {
     minimumFractionDigits: amount % 1 === 0 ? 0 : 2,
     maximumFractionDigits: 2,
   });
+}
+
+function todayIstDateStr(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
+function yesterdayIstDateStr(): string {
+  const d = new Date(`${todayIstDateStr()}T12:00:00+05:30`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 }
 
 export function buildRiderSubscriptionAlertBanner(
@@ -87,6 +99,7 @@ export function buildRiderSubscriptionAlertBanner(
     dispatchBlocked: snapshot.dispatchBlocked,
     negativeLimit: MAX_SUBSCRIPTION_NEGATIVE_BALANCE,
     incomeFreezeDays: SUBSCRIPTION_INCOME_FREEZE_DAYS,
+    penaltyStreakDays: snapshot.penaltyStreakDays,
   };
 
   const {
@@ -95,6 +108,7 @@ export function buildRiderSubscriptionAlertBanner(
     duesOutstanding,
     totalDue,
     dispatchBlocked,
+    penaltyStreakDays,
   } = snapshot;
   if (totalDue <= 0 && !dispatchBlocked && subscriptionWalletNegative <= 0 && duesOutstanding <= 0) {
     return base;
@@ -103,11 +117,7 @@ export function buildRiderSubscriptionAlertBanner(
   const payableNow =
     walletBalance > 0 ? round2(Math.min(walletBalance, totalDue)) : 0;
   const payButtonLabel =
-    payableNow > 0
-      ? `Pay ₹${formatInr(payableNow)}`
-      : totalDue > 0
-        ? `Pay ₹${formatInr(totalDue)}`
-        : "Pay Now";
+    totalDue > 0 ? `Pay ₹${formatInr(totalDue)}` : "Pay Now";
 
   if (dispatchBlocked) {
     let subtitle: string;
@@ -115,9 +125,9 @@ export function buildRiderSubscriptionAlertBanner(
       duesOutstanding > 0 &&
       subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE
     ) {
-      subtitle = `Subscription dues ₹${formatInr(totalDue)} pending (subscription wallet −₹${formatInr(subscriptionWalletNegative)}, outstanding ₹${formatInr(duesOutstanding)}). No delivery earnings in ${SUBSCRIPTION_INCOME_FREEZE_DAYS} days — orders are paused.`;
+      subtitle = `Subscription penalty for ${penaltyStreakDays} days. Clear ₹${formatInr(totalDue)} to go online and receive orders again.`;
     } else if (subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
-      subtitle = `Subscription wallet at −₹${formatInr(subscriptionWalletNegative)} (limit −₹${MAX_SUBSCRIPTION_NEGATIVE_BALANCE}). Clear ₹${formatInr(totalDue)} to receive orders again.`;
+      subtitle = `Subscription wallet at −₹${formatInr(subscriptionWalletNegative)}. Clear ₹${formatInr(totalDue)} to receive orders again.`;
     } else if (duesOutstanding > 0) {
       subtitle = `₹${formatInr(duesOutstanding)} subscription fee outstanding. Clear ₹${formatInr(totalDue)} to resume orders.`;
     } else {
@@ -129,7 +139,7 @@ export function buildRiderSubscriptionAlertBanner(
       visible: true,
       variant: "restricted",
       reasonCode: "dispatch_blocked",
-      title: "Orders paused — subscription dues pending",
+      title: "Duty Stop Due to Subscription Penalty",
       subtitle,
       totalDue,
       payableNow,
@@ -139,14 +149,16 @@ export function buildRiderSubscriptionAlertBanner(
     };
   }
 
+  const hasSubscriptionPenalty = totalDue > 0 || subscriptionWalletNegative > 0 || duesOutstanding > 0;
+
   if (subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
     return {
       ...base,
       visible: true,
       variant: "warning",
       reasonCode: "negative_limit",
-      title: "Wallet limit reached",
-      subtitle: `Subscription balance −₹${formatInr(subscriptionWalletNegative)} (max −₹${MAX_SUBSCRIPTION_NEGATIVE_BALANCE}). Pay ₹${formatInr(totalDue)} to avoid order restrictions after ${SUBSCRIPTION_INCOME_FREEZE_DAYS} days without earnings.`,
+      title: "Subscription Penalty Due",
+      subtitle: `Subscription balance −₹${formatInr(subscriptionWalletNegative)} (day ${Math.max(penaltyStreakDays, 1)} of ${SUBSCRIPTION_INCOME_FREEZE_DAYS}). Total due ₹${formatInr(totalDue)}.`,
       totalDue,
       payableNow,
       payButtonLabel,
@@ -155,17 +167,18 @@ export function buildRiderSubscriptionAlertBanner(
   }
 
   if (subscriptionWalletNegative > 0) {
+    const dayLabel = Math.max(penaltyStreakDays, 1);
     const subtitle =
       duesOutstanding > 0
-        ? `Subscription wallet −₹${formatInr(subscriptionWalletNegative)} · Outstanding ₹${formatInr(duesOutstanding)} · Total to clear ₹${formatInr(totalDue)}.`
-        : `Subscription wallet −₹${formatInr(subscriptionWalletNegative)} · Pay ₹${formatInr(totalDue)} from wallet to avoid restrictions.`;
+        ? `Day ${dayLabel} — subscription wallet −₹${formatInr(subscriptionWalletNegative)} · Outstanding ₹${formatInr(duesOutstanding)} · Total ₹${formatInr(totalDue)}.`
+        : `Day ${dayLabel} — subscription wallet −₹${formatInr(subscriptionWalletNegative)}. Total due ₹${formatInr(totalDue)}.`;
 
     return {
       ...base,
       visible: true,
       variant: "warning",
       reasonCode: "negative_wallet",
-      title: "Wallet balance is negative",
+      title: "Subscription Penalty Due",
       subtitle,
       totalDue,
       payableNow,
@@ -180,8 +193,8 @@ export function buildRiderSubscriptionAlertBanner(
       visible: true,
       variant: "warning",
       reasonCode: "dues_outstanding",
-      title: "Subscription fee pending",
-      subtitle: `₹${formatInr(duesOutstanding)} could not be deducted from wallet. Total due ₹${formatInr(totalDue)}.`,
+      title: "Subscription Penalty Due",
+      subtitle: `Day ${Math.max(penaltyStreakDays, 1)} — ₹${formatInr(duesOutstanding)} could not be deducted. Total due ₹${formatInr(totalDue)}.`,
       totalDue,
       payableNow,
       payButtonLabel,
@@ -189,14 +202,14 @@ export function buildRiderSubscriptionAlertBanner(
     };
   }
 
-  if (totalDue > 0) {
+  if (hasSubscriptionPenalty && totalDue > 0) {
     return {
       ...base,
       visible: true,
       variant: "warning",
       reasonCode: "dues_outstanding",
-      title: "Subscription payment due",
-      subtitle: `Pay ₹${formatInr(totalDue)} from your wallet to keep Gatimitra Max active.`,
+      title: "Subscription Penalty Due",
+      subtitle: `Total subscription due ₹${formatInr(totalDue)}.`,
       totalDue,
       payableNow,
       payButtonLabel,
@@ -245,6 +258,8 @@ async function readRiderDuesMeta(riderId: number): Promise<{
   duesOutstanding: number;
   dispatchBlocked: boolean;
   lastIncomeAt: Date | null;
+  penaltyStreakDays: number;
+  penaltyLastDate: string | null;
 }> {
   const sql = getSql();
   try {
@@ -252,7 +267,9 @@ async function readRiderDuesMeta(riderId: number): Promise<{
       SELECT
         COALESCE(subscription_dues_outstanding, 0) AS dues_outstanding,
         COALESCE(subscription_dispatch_blocked, FALSE) AS dispatch_blocked,
-        last_rider_income_at
+        last_rider_income_at,
+        COALESCE(subscription_penalty_streak_days, 0) AS penalty_streak_days,
+        subscription_penalty_last_date::text AS penalty_last_date
       FROM riders
       WHERE id = ${riderId}
       LIMIT 1
@@ -261,16 +278,93 @@ async function readRiderDuesMeta(riderId: number): Promise<{
       dues_outstanding?: unknown;
       dispatch_blocked?: unknown;
       last_rider_income_at?: Date | null;
+      penalty_streak_days?: unknown;
+      penalty_last_date?: string | null;
     } | undefined;
     return {
       duesOutstanding: round2(Number(row?.dues_outstanding ?? 0)),
       dispatchBlocked: Boolean(row?.dispatch_blocked),
       lastIncomeAt: parseDbDate(row?.last_rider_income_at),
+      penaltyStreakDays: Number(row?.penalty_streak_days ?? 0),
+      penaltyLastDate: row?.penalty_last_date?.slice(0, 10) ?? null,
     };
   } catch (err: unknown) {
     if ((err as { code?: string })?.code !== "42703") throw err;
-    return { duesOutstanding: 0, dispatchBlocked: false, lastIncomeAt: null };
+    return {
+      duesOutstanding: 0,
+      dispatchBlocked: false,
+      lastIncomeAt: null,
+      penaltyStreakDays: 0,
+      penaltyLastDate: null,
+    };
   }
+}
+
+export async function bumpSubscriptionPenaltyStreak(riderId: number): Promise<number> {
+  const sql = getSql();
+  const today = todayIstDateStr();
+  const yesterday = yesterdayIstDateStr();
+  try {
+    const meta = await readRiderDuesMeta(riderId);
+    if (meta.penaltyLastDate === today) return meta.penaltyStreakDays;
+
+    const next =
+      meta.penaltyLastDate === yesterday ? Math.max(1, meta.penaltyStreakDays + 1) : 1;
+
+    await sql`
+      UPDATE riders
+      SET
+        subscription_penalty_streak_days = ${next},
+        subscription_penalty_last_date = ${today}::date,
+        updated_at = NOW()
+      WHERE id = ${riderId}
+    `;
+    return next;
+  } catch (err: unknown) {
+    if ((err as { code?: string })?.code !== "42703") throw err;
+    return 0;
+  }
+}
+
+async function resetSubscriptionPenaltyStreak(riderId: number): Promise<void> {
+  const sql = getSql();
+  try {
+    await sql`
+      UPDATE riders
+      SET
+        subscription_penalty_streak_days = 0,
+        subscription_penalty_last_date = NULL,
+        updated_at = NOW()
+      WHERE id = ${riderId}
+    `;
+  } catch (err: unknown) {
+    if ((err as { code?: string })?.code !== "42703") throw err;
+  }
+}
+
+export async function forceRiderOffDutyForSubscriptionPenalty(riderId: number): Promise<void> {
+  const { desc, eq } = await import("drizzle-orm");
+  const { getDb } = await import("../db/client.js");
+  const { dutyLogs } = await import("../db/schema.js");
+  const { recordRiderDutyLog } = await import("./rider-duty-log.service.js");
+
+  const db = getDb();
+  const latest = await db
+    .select({ status: dutyLogs.status })
+    .from(dutyLogs)
+    .where(eq(dutyLogs.riderId, riderId))
+    .orderBy(desc(dutyLogs.timestamp))
+    .limit(1);
+
+  if (latest[0]?.status !== "ON") return;
+
+  await recordRiderDutyLog({
+    riderId,
+    status: "AUTO_OFF",
+    serviceTypes: [],
+    source: "system",
+    metadata: { reason: "subscription_dispatch_blocked" },
+  });
 }
 
 export function computeTotalSubscriptionDue(
@@ -312,6 +406,7 @@ export async function getRiderSubscriptionDuesSnapshot(
       meta.duesOutstanding
     ),
     dispatchBlocked: meta.dispatchBlocked,
+    penaltyStreakDays: meta.penaltyStreakDays,
     lastIncomeAt: toIsoTimestamp(meta.lastIncomeAt),
   };
   return {
@@ -484,6 +579,10 @@ export async function debitRiderSubscriptionFee(args: {
     }
   }
 
+  if (debited > 0 || addedToOutstanding > 0 || balanceAfter < 0) {
+    await bumpSubscriptionPenaltyStreak(args.riderId);
+  }
+
   await refreshRiderSubscriptionDispatchBlock(args.riderId);
   return { debited, addedToOutstanding, balanceAfter };
 }
@@ -517,11 +616,16 @@ export async function refreshRiderSubscriptionDispatchBlock(riderId: number): Pr
   ]);
 
   const walletRow = await readRiderWalletRowForSplit(riderId);
-  const split = splitWalletNegativeBalance(balance, walletRow);
-  const atNegativeLimit =
-    split.subscriptionNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE || meta.duesOutstanding > 0;
-  const shouldBlock = atNegativeLimit && incomeStale(meta.lastIncomeAt);
+  const split = splitWalletNegativeBalance(balance, walletRow, {
+    subscriptionDuesOutstanding: meta.duesOutstanding,
+  });
   const totalDue = computeTotalSubscriptionDue(split.subscriptionNegative, meta.duesOutstanding);
+  const hasSubscriptionDue = totalDue > 0 || split.subscriptionNegative > 0 || meta.duesOutstanding > 0;
+
+  const shouldBlock =
+    hasSubscriptionDue &&
+    meta.penaltyStreakDays >= SUBSCRIPTION_INCOME_FREEZE_DAYS &&
+    balance <= 0;
 
   try {
     if (shouldBlock && !meta.dispatchBlocked) {
@@ -533,10 +637,14 @@ export async function refreshRiderSubscriptionDispatchBlock(riderId: number): Pr
           updated_at = NOW()
         WHERE id = ${riderId}
       `;
+      await forceRiderOffDutyForSubscriptionPenalty(riderId);
       return;
     }
 
     if (!shouldBlock && (meta.dispatchBlocked || totalDue <= 0)) {
+      if (totalDue <= 0) {
+        await resetSubscriptionPenaltyStreak(riderId);
+      }
       await sql`
         UPDATE riders
         SET
@@ -546,6 +654,11 @@ export async function refreshRiderSubscriptionDispatchBlock(riderId: number): Pr
           updated_at = NOW()
         WHERE id = ${riderId}
       `;
+      return;
+    }
+
+    if (shouldBlock && meta.dispatchBlocked) {
+      await forceRiderOffDutyForSubscriptionPenalty(riderId);
     }
   } catch (err: unknown) {
     if ((err as { code?: string })?.code !== "42703") throw err;
@@ -620,6 +733,14 @@ export async function payRiderSubscriptionDues(riderId: number): Promise<{
     totalDueBefore,
     totalDueAfter: after.totalDue,
   };
+}
+
+/** After delivery earnings credit, auto-settle subscription dues from positive wallet balance. */
+export async function autoSettleSubscriptionDuesFromEarnings(riderId: number): Promise<void> {
+  const snapshot = await getRiderSubscriptionDuesSnapshot(riderId);
+  if (snapshot.totalDue <= 0) return;
+  if (snapshot.walletBalance <= 0) return;
+  await payRiderSubscriptionDues(riderId);
 }
 
 export async function evaluateAllRiderSubscriptionRestrictions(): Promise<{

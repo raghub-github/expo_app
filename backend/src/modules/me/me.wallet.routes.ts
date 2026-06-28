@@ -211,9 +211,13 @@ async function resolveCustomerInternalId(
   sql: ReturnType<typeof getSql>,
   sub: string,
   role: string,
-  phone: string | undefined
+  phone: string | undefined,
+  customerPk?: number
 ): Promise<{ internalId: number; customerId: string } | null> {
   let customerId = sub.startsWith("GM") ? sub : role === "customer" ? sub : null;
+  if (customerPk != null && customerPk > 0 && customerId) {
+    return { internalId: customerPk, customerId };
+  }
   if (!customerId && phone) {
     const rows = await sql`
       SELECT customer_id FROM customers WHERE primary_mobile = ${phone} LIMIT 1
@@ -249,7 +253,8 @@ export async function meWalletRoutes(app: FastifyInstance) {
         sql,
         req.auth!.sub,
         req.auth!.role,
-        req.auth?.phone
+        req.auth?.phone,
+        req.auth?.customerPk
       );
       if (!resolved) {
         return reply.code(401).send({ message: "Customer not found" });
@@ -325,7 +330,8 @@ export async function meWalletRoutes(app: FastifyInstance) {
         sql,
         req.auth!.sub,
         req.auth!.role,
-        req.auth?.phone
+        req.auth?.phone,
+        req.auth?.customerPk
       );
       if (!resolved) {
         return reply.code(401).send({ message: "Customer not found" });
@@ -407,7 +413,8 @@ export async function meWalletRoutes(app: FastifyInstance) {
         sql,
         req.auth!.sub,
         req.auth!.role,
-        req.auth?.phone
+        req.auth?.phone,
+        req.auth?.customerPk
       );
       if (!resolved) {
         return reply.code(401).send({ message: "Customer not found" });
@@ -452,7 +459,8 @@ export async function meWalletRoutes(app: FastifyInstance) {
         sql,
         req.auth!.sub,
         req.auth!.role,
-        req.auth?.phone
+        req.auth?.phone,
+        req.auth?.customerPk
       );
       if (!resolved) {
         return reply.code(401).send({ message: "Customer not found" });
@@ -547,7 +555,8 @@ export async function meWalletRoutes(app: FastifyInstance) {
         sql,
         req.auth!.sub,
         req.auth!.role,
-        req.auth?.phone
+        req.auth?.phone,
+        req.auth?.customerPk
       );
       if (!resolved) {
         return reply.code(401).send({ message: "Customer not found" });
@@ -699,7 +708,8 @@ export async function meWalletRoutes(app: FastifyInstance) {
         sql,
         req.auth!.sub,
         req.auth!.role,
-        req.auth?.phone
+        req.auth?.phone,
+        req.auth?.customerPk
       );
       if (!resolved) {
         return reply.code(401).send({ message: "Customer not found" });

@@ -22,6 +22,7 @@ import {
   systemUsers,
   onboardingPayments,
   riderPaymentMethods,
+  riderDocuments,
 } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
@@ -31,8 +32,31 @@ import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
 import { getRiderLogoutSessionSnapshot } from "@/lib/db/operations/rider-logout-events";
 import { getRiderSelfieViewUrl } from "@/lib/rider-selfie-url";
+import { resolveOnboardingVehicleDisplayLabel } from "@/lib/rider-onboarding-vehicle-display.server";
+import type { RiderLogoutSessionSnapshot } from "@/lib/rider-logout-types";
 
 export const runtime = 'nodejs';
+
+const DEFAULT_LOGOUT_SESSION: RiderLogoutSessionSnapshot = {
+  status: "logged_in",
+  totalLogoutCount: 0,
+  activeDeviceCount: 0,
+  latest: null,
+};
+
+function withLogoutSessionDefault<T extends { data?: { logoutSession?: RiderLogoutSessionSnapshot } }>(
+  payload: T,
+): T {
+  const data = payload?.data;
+  if (!data || data.logoutSession) return payload;
+  return {
+    ...payload,
+    data: {
+      ...data,
+      logoutSession: DEFAULT_LOGOUT_SESSION,
+    },
+  };
+}
 
 type RiderPenaltyRow = InferSelectModel<typeof riderPenalties>;
 
@@ -135,13 +159,13 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary_v4:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v5:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
       const cached = getCached<unknown>(cacheKey);
       if (cached) {
-        return NextResponse.json(cached);
+        return NextResponse.json(withLogoutSessionDefault(cached as { data?: { logoutSession?: RiderLogoutSessionSnapshot } }));
       }
     }
 
@@ -150,8 +174,11 @@ export async function GET(
         const cached = await redis.get(cacheKey);
         if (cached) {
           const parsed = JSON.parse(cached) as unknown;
-          setCached(cacheKey, parsed, MEMORY_TTL_MS);
-          return NextResponse.json(parsed);
+          const normalized = withLogoutSessionDefault(
+            parsed as { data?: { logoutSession?: RiderLogoutSessionSnapshot } },
+          );
+          setCached(cacheKey, normalized, MEMORY_TTL_MS);
+          return NextResponse.json(normalized);
         }
       } catch {
         // ignore cache read errors
@@ -579,6 +606,52 @@ export async function GET(
       }
     });
 
+    const limitationFlags =
+      activeVehicle?.limitationFlags &&
+      typeof activeVehicle.limitationFlags === "object" &&
+      !Array.isArray(activeVehicle.limitationFlags)
+        ? (activeVehicle.limitationFlags as Record<string, unknown>)
+        : null;
+    let onboardingVehicleCode =
+      (typeof limitationFlags?.onboardingVehicleTypeCode === "string"
+        ? limitationFlags.onboardingVehicleTypeCode
+        : null) ||
+      (typeof (rider as { vehicleChoice?: string | null }).vehicleChoice === "string"
+        ? (rider as { vehicleChoice: string }).vehicleChoice
+        : null);
+
+    const isLegacyFuelVehicleChoice = (code: string | null | undefined) => {
+      if (!code?.trim()) return true;
+      const upper = code.trim().toUpperCase();
+      return upper === "EV" || upper === "PETROL";
+    };
+
+    if (!onboardingVehicleCode || isLegacyFuelVehicleChoice(onboardingVehicleCode)) {
+      const [selectionRow] = await db
+        .select({ metadata: riderDocuments.metadata })
+        .from(riderDocuments)
+        .where(
+          and(
+            eq(riderDocuments.riderId, riderId),
+            eq(riderDocuments.docType, "onboarding_vehicle_selection")
+          )
+        )
+        .limit(1);
+      const meta =
+        selectionRow?.metadata &&
+        typeof selectionRow.metadata === "object" &&
+        !Array.isArray(selectionRow.metadata)
+          ? (selectionRow.metadata as Record<string, unknown>)
+          : null;
+      const fromDoc =
+        typeof meta?.vehicleChoice === "string" ? meta.vehicleChoice.trim() : null;
+      if (fromDoc && !isLegacyFuelVehicleChoice(fromDoc)) {
+        onboardingVehicleCode = fromDoc;
+      }
+    }
+
+    const onboardingVehicle = await resolveOnboardingVehicleDisplayLabel(onboardingVehicleCode);
+
     const payload = {
       success: true,
       data: {
@@ -593,7 +666,8 @@ export async function GET(
           status: rider.status,
           onboardingStage: rider.onboardingStage,
           kycStatus: rider.kycStatus,
-          vehicleChoice: (rider as any).vehicleChoice ?? null, // 'EV' or 'Petrol' from rider profile
+          vehicleChoice: (rider as any).vehicleChoice ?? null,
+          onboardingVehicleLabel: onboardingVehicle.label,
           selfieUrl: selfieUrl ?? null,
           isOnline,
           lastDutyStatus: latestDutyLog?.status || 'OFF',
@@ -641,6 +715,8 @@ export async function GET(
         vehicle: activeVehicle ? {
           id: activeVehicle.id,
           vehicleType: activeVehicle.vehicleType,
+          onboardingVehicleCode: onboardingVehicle.code,
+          onboardingVehicleLabel: onboardingVehicle.label,
           registrationNumber: activeVehicle.registrationNumber,
           make: activeVehicle.make,
           model: activeVehicle.model,
@@ -725,7 +801,7 @@ export async function GET(
         })() : null,
         orderMetrics,
         onboardingFees,
-        logoutSession,
+        logoutSession: logoutSession ?? DEFAULT_LOGOUT_SESSION,
       },
     } as const;
 

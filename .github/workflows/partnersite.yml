@@ -49,6 +49,38 @@ jobs:
       - name: Typecheck (turbo affected)
         run: npx turbo run typecheck --filter='gmmportal' --filter='@gatimitra/*'
 
+      # Refuse to build the image if any NEXT_PUBLIC_* secret is empty.
+      # Without this guard, an empty secret silently produces a client bundle
+      # with `undefined` — see docs/CI_SECRETS.md for the 2026-06-25 incident
+      # ("Phone login is not enabled" on partner.gatimitra.com).
+      - name: Validate NEXT_PUBLIC_* secrets
+        run: |
+          set -e
+          missing=""
+          for var in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY \
+                     NEXT_PUBLIC_MAPBOX_TOKEN \
+                     NEXT_PUBLIC_R2_PUBLIC_BASE_URL \
+                     NEXT_PUBLIC_DISABLE_CURRENT_LOCATION \
+                     NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN \
+                     NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER ; do
+            val="${!var}"
+            if [ -z "$val" ]; then missing="$missing $var"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub Action secrets:$missing"
+            echo "::error::Without these, the client bundle ships undefined values."
+            echo "::error::Fix: docs/CI_SECRETS.md → gh secret set <name> --body '<value>'"
+            exit 1
+          fi
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_MAPBOX_TOKEN: ${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
+          NEXT_PUBLIC_R2_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_R2_PUBLIC_BASE_URL }}
+          NEXT_PUBLIC_DISABLE_CURRENT_LOCATION: ${{ secrets.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION }}
+          NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN: ${{ secrets.NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN }}
+          NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER: ${{ secrets.NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -71,20 +103,37 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-            NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_APP_URL=https://partner.gatimitra.com
+            NEXT_PUBLIC_MAPBOX_TOKEN=${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
+            NEXT_PUBLIC_R2_PUBLIC_BASE_URL=${{ secrets.NEXT_PUBLIC_R2_PUBLIC_BASE_URL }}
+            NEXT_PUBLIC_DISABLE_CURRENT_LOCATION=${{ secrets.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION }}
+            NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN=${{ secrets.NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN }}
+            NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${{ secrets.NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER }}
           cache-from: type=gha,scope=partnersite
           cache-to: type=gha,mode=max,scope=partnersite
 
-      - name: Zero-downtime deploy on VPS
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Zero-downtime deploy on VPS (with retry)
+        uses: nick-fields/retry@v3
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: error
+          command: |
+            cat <<'EOF' > /tmp/_ssh_script.sh
             set -e
             cd /opt/gatimitra
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
             infra/scripts/deploy-service.sh partnersite http://localhost:3000/api/health 90
+            EOF
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+            ssh -o ConnectTimeout=20 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+                -i ~/.ssh/id_ed25519 \
+                ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                'bash -s' < /tmp/_ssh_script.sh

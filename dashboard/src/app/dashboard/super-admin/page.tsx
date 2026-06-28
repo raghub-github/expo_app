@@ -1,6 +1,7 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import React from "react";
 import Link from "next/link";
 
@@ -44,6 +45,11 @@ const TicketSettingsIcon = dynamic(async () => {
 const CategoriesIcon = dynamic(async () => {
   const { LayoutGrid } = await import("lucide-react");
   return (props: { className?: string }) => <LayoutGrid {...props} />;
+});
+
+const AppImagesIcon = dynamic(async () => {
+  const { Image } = await import("lucide-react");
+  return (props: { className?: string }) => <Image {...props} />;
 });
 
 // ✅ Your features
@@ -156,6 +162,14 @@ const adminOptions: AdminOption[] = [
     description: "Manage customer app categories",
     color: "text-cyan-600",
     bgColor: "bg-cyan-50 hover:bg-cyan-100",
+  },
+  {
+    name: "App images",
+    href: "/dashboard/super-admin/app-images",
+    Icon: AppImagesIcon,
+    description: "Upload & manage static images for Customer, Rider & Merchant apps",
+    color: "text-sky-700",
+    bgColor: "bg-sky-50 hover:bg-sky-100",
   },
   {
     name: "Push Notification",

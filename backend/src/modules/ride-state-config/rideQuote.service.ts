@@ -2,6 +2,10 @@ import { calculateProgressiveSlabAmount } from "../delivery-slab-pricing/deliver
 import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
 import { loadEffectiveRideCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
+import {
+  fallbackSlabsToDeliveryRows,
+  loadFallbackCustomerSlabs,
+} from "../fallback-pricing/fallbackSlabPricing.repository.js";
 import { catalogCodeToPricingVehicle } from "./catalogVehicleMap.js";
 import {
   loadRideVehicleLimitsForState,
@@ -93,38 +97,72 @@ export async function quoteCustomerRideFare(args: {
     };
   }
 
-  if (!pricingVehicle || !pricingGeo) {
+  if (!pricingVehicle) {
     return { ok: false, code: "NO_PRICING_CONTEXT", message: "Could not resolve ride pricing context" };
   }
 
-  const pricing = await loadEffectiveRideCustomerPricing({
-    level: pricingGeo.level,
-    refId: pricingGeo.refId,
-    vehicleType: pricingVehicle,
-  });
+  let rideSlabs: DeliveryRateSlabRow[] = [];
+  let pricingGeoLevel: string | null = pricingGeo?.level ?? null;
+  let pricingGeoRefId: string | null = pricingGeo?.refId ?? null;
+  let rateCardSlabs: import("../rider-payout-pricing/types.js").RideCustomerPricingRow[] = [];
 
-  if (pricing.slabs.length === 0) {
+  if (pricingGeo) {
+    const pricing = await loadEffectiveRideCustomerPricing({
+      level: pricingGeo.level,
+      refId: pricingGeo.refId,
+      vehicleType: pricingVehicle,
+    });
+    rateCardSlabs = pricing.slabs;
+    pricingGeoLevel = pricing.applied?.level ?? pricingGeo.level;
+    pricingGeoRefId = pricing.applied?.refId ?? pricingGeo.refId;
+    if (pricing.slabs.length > 0) {
+      rideSlabs = pricing.slabs.map((s) => ({
+        id: s.id,
+        geoLevel: s.geoLevel,
+        geoRefId: s.geoRefId,
+        serviceType: "person_ride" as DeliveryServiceType,
+        actorType: "customer" as DeliveryActorType,
+        minKm: s.minKm,
+        maxKm: s.maxKm,
+        baseFare: s.baseFare,
+        perKmRate: s.perKmRate,
+        minCharge: s.minCharge,
+        priority: s.priority,
+        isActive: s.isActive,
+      }));
+    }
+  }
+
+  if (rideSlabs.length === 0) {
+    const fallbackSlabs = await loadFallbackCustomerSlabs({
+      service: "person_ride",
+      vehicleType: pricingVehicle,
+    });
+    rideSlabs = fallbackSlabsToDeliveryRows(fallbackSlabs, "person_ride");
+    rateCardSlabs = fallbackSlabs.map((s) => ({
+      id: s.id,
+      geoLevel: "state" as const,
+      geoRefId: "00000000-0000-0000-0000-000000000000",
+      vehicleType: s.vehicleType!,
+      minKm: s.minKm,
+      maxKm: s.maxKm,
+      baseFare: s.baseFare,
+      perKmRate: s.perKmRate,
+      minCharge: s.minCharge,
+      priority: s.priority,
+      isActive: s.isActive,
+    }));
+    pricingGeoLevel = "fallback";
+    pricingGeoRefId = null;
+  }
+
+  if (rideSlabs.length === 0) {
     return {
       ok: false,
       code: "NO_SLABS",
-      message: "No ride customer pricing configured for this pickup area",
+      message: "No ride customer pricing configured for this pickup area or fallback",
     };
   }
-
-  const rideSlabs: DeliveryRateSlabRow[] = pricing.slabs.map((s) => ({
-    id: s.id,
-    geoLevel: s.geoLevel,
-    geoRefId: s.geoRefId,
-    serviceType: "person_ride" as DeliveryServiceType,
-    actorType: "customer" as DeliveryActorType,
-    minKm: s.minKm,
-    maxKm: s.maxKm,
-    baseFare: s.baseFare,
-    perKmRate: s.perKmRate,
-    minCharge: s.minCharge,
-    priority: s.priority,
-    isActive: s.isActive,
-  }));
 
   const slabQuote = calculateProgressiveSlabAmount({
     distanceKm: tripKm,
@@ -151,36 +189,45 @@ export async function quoteCustomerRideFare(args: {
     }
   }
 
-  const rateCardSummary = formatRideCustomerRateCardSummary(pricing.slabs);
+  const rateCardSummary = formatRideCustomerRateCardSummary(rateCardSlabs);
   let waitingChargeNote: string | null = null;
-  if (pricingVehicle && pricingGeo) {
+  if (pricingVehicle) {
     const freeMinutes = await resolveRidePickupFreeWaitMinutes({
       pickupLat: args.pickupLat,
       pickupLng: args.pickupLng,
       rideType: args.catalogCode,
     });
-    const { slabs: pickupSlabs } = await loadEffectiveRiderPickupSlabs({
-      level: pricingGeo.level,
-      refId: pricingGeo.refId,
-      service: "ride",
-      vehicleType: pricingVehicle,
-    });
-    const sortedPickup = [...pickupSlabs].sort(
-      (a, b) =>
-        a.minKm - b.minKm ||
-        (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
-        b.priority - a.priority ||
-        a.id - b.id
-    );
-    const perMin = sortedPickup[0]?.waitingChargePerMin ?? 0;
+    let perMin = 0;
+    if (pricingGeo) {
+      const { slabs: pickupSlabs } = await loadEffectiveRiderPickupSlabs({
+        level: pricingGeo.level,
+        refId: pricingGeo.refId,
+        service: "ride",
+        vehicleType: pricingVehicle,
+      });
+      const sortedPickup = [...pickupSlabs].sort(
+        (a, b) =>
+          a.minKm - b.minKm ||
+          (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
+          b.priority - a.priority ||
+          a.id - b.id
+      );
+      perMin = sortedPickup[0]?.waitingChargePerMin ?? 0;
+    } else {
+      const fallbackSlabs = await loadFallbackCustomerSlabs({
+        service: "person_ride",
+        vehicleType: pricingVehicle,
+      });
+      perMin = fallbackSlabs[0]?.waitingChargePerMin ?? 0;
+    }
     waitingChargeNote = formatRideWaitingChargeNote(freeMinutes, perMin ?? 0);
   }
 
   return {
     ok: true,
     stateId,
-    pricingGeoLevel: pricing.applied?.level ?? pricingGeo.level,
-    pricingGeoRefId: pricing.applied?.refId ?? pricingGeo.refId,
+    pricingGeoLevel,
+    pricingGeoRefId,
     pricingVehicle,
     eligible: true,
     maxDistanceKm,

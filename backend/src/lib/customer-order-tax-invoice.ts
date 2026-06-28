@@ -3,9 +3,7 @@
  */
 
 import { createHash } from "crypto";
-import { existsSync, readFileSync } from "fs";
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
+import { getInvoiceSignatureDataUri } from "./invoice-signature-source.js";
 
 type GstLine = {
   taxable: number;
@@ -140,25 +138,9 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function getSignatureDataUri(): string | null {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(here, "../../assets/invoice-signature.png"),
-    join(process.cwd(), "assets/invoice-signature.png"),
-    join(process.cwd(), "../apps/customer_app/public/img/signature.png"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) {
-      return `data:image/png;base64,${readFileSync(p).toString("base64")}`;
-    }
-  }
-  return null;
-}
-
-function renderAuthorisedSignatory(platformName: string): string {
-  const sig = getSignatureDataUri();
-  const sigImg = sig
-    ? `<img src="${sig}" alt="Authorised signature" class="sign-img" />`
+function renderAuthorisedSignatory(platformName: string, signatureDataUri: string | null): string {
+  const sigImg = signatureDataUri
+    ? `<img src="${signatureDataUri}" alt="Authorised signature" class="sign-img" />`
     : "";
   return `
     <div class="sign">
@@ -195,7 +177,8 @@ function invoiceStyles(): string {
 function renderPlatformInvoice(
   input: CustomerOrderInvoiceInput,
   line: GstLine,
-  invoiceNo: string
+  invoiceNo: string,
+  signatureDataUri: string | null
 ): string {
   const platformName =
     process.env.PLATFORM_LEGAL_NAME?.trim() ||
@@ -265,7 +248,7 @@ function renderPlatformInvoice(
         (${escapeHtml(input.formattedOrderId)}) dated (${escapeHtml(invoiceDate)}).
         Tax is not payable on reverse charge basis.
       </p>
-      ${renderAuthorisedSignatory(platformName)}
+      ${renderAuthorisedSignatory(platformName, signatureDataUri)}
     </div>
   `;
 }
@@ -273,7 +256,8 @@ function renderPlatformInvoice(
 function renderDeliveryInvoice(
   input: CustomerOrderInvoiceInput,
   line: GstLine,
-  invoiceNo: string
+  invoiceNo: string,
+  signatureDataUri: string | null
 ): string {
   const platformName =
     process.env.PLATFORM_LEGAL_NAME?.trim() ||
@@ -338,17 +322,20 @@ function renderDeliveryInvoice(
         ${cin ? `<div>CIN: ${escapeHtml(cin)}</div>` : ""}
         ${gstin ? `<div>GST: ${escapeHtml(gstin)}</div>` : ""}
         ${platformFssai ? `<div>FSSAI: ${escapeHtml(platformFssai)}</div>` : ""}
-        ${getSignatureDataUri() ? `<img src="${getSignatureDataUri()}" alt="Authorised signature" class="sign-img" />` : ""}
+        ${signatureDataUri ? `<img src="${signatureDataUri}" alt="Authorised signature" class="sign-img" />` : ""}
         <div class="sign-line">Authorised Signatory</div>
       </div>
     </div>
   `;
 }
 
-export function buildCustomerOrderTaxInvoiceHtml(input: CustomerOrderInvoiceInput): string {
+export async function buildCustomerOrderTaxInvoiceHtml(
+  input: CustomerOrderInvoiceInput
+): Promise<string> {
   const snap = input.billingSnapshot ?? {};
   const platformLine = readGstComponent(snap, "platform", "platform_fee");
   const deliveryLine = readGstComponent(snap, "delivery", "delivery_fee");
+  const signatureDataUri = await getInvoiceSignatureDataUri();
 
   const platformInvoiceNo = buildCustomerInvoiceNumber({
     invoiceKind: "platform",
@@ -367,10 +354,10 @@ export function buildCustomerOrderTaxInvoiceHtml(input: CustomerOrderInvoiceInpu
 
   const sections: string[] = [];
   if (platformLine.taxable > 0) {
-    sections.push(renderPlatformInvoice(input, platformLine, platformInvoiceNo));
+    sections.push(renderPlatformInvoice(input, platformLine, platformInvoiceNo, signatureDataUri));
   }
   if (deliveryLine.taxable > 0) {
-    sections.push(renderDeliveryInvoice(input, deliveryLine, deliveryInvoiceNo));
+    sections.push(renderDeliveryInvoice(input, deliveryLine, deliveryInvoiceNo, signatureDataUri));
   }
 
   if (sections.length === 0) {

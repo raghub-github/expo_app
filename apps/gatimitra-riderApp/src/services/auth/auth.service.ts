@@ -1,9 +1,9 @@
 /**
- * Rider auth service — mirrors merchant app OTP architecture.
+ * Rider auth service — same OTP architecture as merchant app.
  *
- * Phone flow (default — same as merchant):
- *  1. sendOtp   → Supabase signInWithOtp (Send SMS hook → MSG91 Flow DLT)
- *  2. verifyOtp → Supabase verifyOtp → /supabase/exchange-rider
+ * Flow (Phone):
+ *  1. sendOtp   → Supabase signInWithOtp (Send SMS hook → MSG91)
+ *  2. verifyOtp → Supabase verifyOtp, then exchange for backend rider session
  *
  * Fallback when Supabase is not configured or EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true:
  *  1. sendOtp   → POST /v1/auth/otp/request + MSG91
@@ -13,6 +13,8 @@
 import type { Session } from "@gatimitra/contracts";
 import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/src/lib/supabaseClient";
+import { getRiderLoginDeviceMeta } from "@/src/lib/riderDeviceInfo";
+import type { RiderLoginGeoPayload } from "@/src/lib/getRiderLoginGeoFromDevice";
 
 const AUTH_PREFIX = "/v1/auth";
 
@@ -36,6 +38,7 @@ export type VerifyOtpPayload = {
   phoneE164: string;
   otp: string;
   deviceId: string;
+  loginGeo?: RiderLoginGeoPayload;
 };
 
 export type RiderStatusResponse = {
@@ -53,65 +56,6 @@ function shouldSendPhoneOtpViaBackend(): boolean {
   const { phoneOtpUseBackendOnly } = getRiderAppConfig();
   if (phoneOtpUseBackendOnly) return true;
   return getSupabaseAuth() == null;
-}
-
-function isSupabaseSmsDeliveryError(message: string, status?: number): boolean {
-  if (status != null && status >= 500) return true;
-  return /hook|sms|provider|phone|otp|unexpected_failure|authretryablefetch|deliver|rate.?limit|too many/i.test(
-    message,
-  );
-}
-
-async function sendOtpViaBackend(payload: SendOtpPayload, phoneTail: string): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/otp/request`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phoneE164: payload.phoneE164 }),
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (/network request failed|failed to fetch|network error|aborted/i.test(msg)) {
-      throw new Error("Unable to send OTP. Please try again.");
-    }
-    throw error;
-  }
-
-  const raw = await res.text();
-  let dataJson: Record<string, unknown> = {};
-  try {
-    dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-  } catch {
-    throw new Error("Invalid response from server while requesting OTP.");
-  }
-
-  if (!res.ok) {
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.warn("[RiderAuth] SMS Failed (backend)", { status: res.status, dataJson, phoneTail });
-    }
-    const msg =
-      (typeof dataJson.message === "string" && dataJson.message) ||
-      (typeof dataJson.error === "string" && dataJson.error) ||
-      "Unable to send OTP. Please try again.";
-    throw new Error(msg);
-  }
-
-  const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
-  if (!rid) {
-    throw new Error("Server did not return an OTP request id. Check backend /v1/auth/otp/request.");
-  }
-  _lastBackendOtpRequestId = rid;
-
-  if (__DEV__) {
-    // eslint-disable-next-line no-console
-    console.log("[RiderAuth] SMS Sent (backend path)", {
-      requestId: rid,
-      smsSent: dataJson.smsSent === true,
-      phoneTail,
-    });
-  }
 }
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
@@ -180,8 +124,8 @@ function normalizeOtpErrorMessage(message: string): string {
 
 export const riderAuthService = {
   /**
-   * Send OTP — same logic as merchantAuthService.sendOtp.
-   * Default: Supabase signInWithOtp → Send SMS hook → MSG91 (proven merchant path).
+   * Send OTP — same as merchant: Supabase signInWithOtp when configured (Send SMS hook → MSG91).
+   * Set EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true only when Supabase hook cannot reach your API.
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
     _lastBackendOtpRequestId = null;
@@ -192,7 +136,7 @@ export const riderAuthService = {
 
     if (__DEV__) {
       // eslint-disable-next-line no-console
-      console.log("[RiderAuth] OTP Requested", {
+      console.log("[RiderAuth] sendOtp: start", {
         phoneTail: phoneTail ? `…${phoneTail}` : "(short)",
         channel: viaBackend ? "backend" : "supabase",
         supabase: envInfo,
@@ -200,53 +144,89 @@ export const riderAuthService = {
     }
 
     if (viaBackend) {
-      await sendOtpViaBackend(payload, phoneTail ? `…${phoneTail}` : "(short)");
+      const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/otp/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phoneE164: payload.phoneE164 }),
+      });
+      const raw = await res.text();
+      let dataJson: Record<string, unknown> = {};
+      try {
+        dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      } catch {
+        throw new Error("Invalid response from server while requesting OTP.");
+      }
+      if (!res.ok) {
+        const msg =
+          (typeof dataJson.message === "string" && dataJson.message) ||
+          (typeof dataJson.error === "string" && dataJson.error) ||
+          `Could not send OTP (HTTP ${res.status}).`;
+        throw new Error(msg);
+      }
+      const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
+      if (!rid) {
+        throw new Error("Server did not return an OTP request id. Check backend /v1/auth/otp/request.");
+      }
+      _lastBackendOtpRequestId = rid;
+      if (__DEV__) {
+        // eslint-disable-next-line no-console
+        console.log(
+          "[RiderAuth] sendOtp: backend OK — SMS via MSG91 on API server.",
+          dataJson.otp != null ? { devOtp: dataJson.otp } : {},
+        );
+      }
       return;
     }
 
     const supabase = getSupabaseAuth();
     if (!supabase) {
-      await sendOtpViaBackend(payload, phoneTail ? `…${phoneTail}` : "(short)");
-      return;
+      throw new Error(
+        "Supabase is not configured for rider OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
+      );
     }
 
+    // Normalize phone to strict E.164 (same as partnersite). Supabase rejects
+    // mixed formats.
+    const normalizedPhone = payload.phoneE164.startsWith("+")
+      ? payload.phoneE164
+      : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
+
+    // IMPORTANT: do NOT pass `shouldCreateUser: true` for phone OTP. With the
+    // Send SMS Hook configured, the explicit flag triggers a user-creation
+    // flow that races the hook and Supabase returns 500 `unexpected_failure`
+    // for already-known numbers.
     const { error } = await supabase.auth.signInWithOtp({
-      phone: payload.phoneE164,
-      options: { channel: "sms", shouldCreateUser: true },
+      phone: normalizedPhone,
+      options: { channel: "sms" },
     });
 
     if (__DEV__) {
       if (error) {
         // eslint-disable-next-line no-console
-        console.warn("[RiderAuth] SMS Failed (Supabase)", {
+        console.warn("[RiderAuth] sendOtp: Supabase error", {
           message: error.message,
           name: error.name,
           status: (error as { status?: number }).status,
           code: (error as { code?: string }).code,
+          phoneE164: normalizedPhone,
         });
       } else {
         // eslint-disable-next-line no-console
         console.log(
-          "[RiderAuth] SMS Sent (Supabase path — hook → MSG91). Session stays null until verify; that is normal.",
+          "[RiderAuth] sendOtp: Supabase OK — SMS via Send SMS Hook → MSG91.",
         );
       }
     }
 
     if (error) {
-      const errMsg = error.message || "Unable to send OTP. Please try again.";
-      const status = (error as { status?: number }).status;
-      if (isSupabaseSmsDeliveryError(errMsg, status)) {
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.warn("[RiderAuth] Falling back to backend MSG91 OTP");
-        }
-        await sendOtpViaBackend(payload, phoneTail ? `…${phoneTail}` : "(short)");
-        return;
-      }
-      const hint = isSupabaseSmsDeliveryError(errMsg, status)
-        ? " Check Supabase Auth (Phone enabled), Send SMS hook URL, and backend MSG91 / SUPABASE_SEND_SMS_HOOK_SECRET."
+      const msg = error.message || "Could not send OTP via Supabase.";
+      const hint = /provider|sms|phone|hook/i.test(msg)
+        ? " Check Supabase Dashboard → Auth → Providers → Phone (enabled) + Auth → Hooks → Send SMS (URL + secret)."
         : "";
-      throw new Error(errMsg + hint);
+      if ((error as { status?: number }).status === 429 || /rate.?limit|too many/i.test(msg)) {
+        throw new Error("Too many OTP attempts on this number. Wait an hour or use a different number.");
+      }
+      throw new Error(msg + hint);
     }
   },
 
@@ -328,11 +308,13 @@ export const riderAuthService = {
     const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/supabase/exchange-rider`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accessToken: sbToken,
-        phoneE164: payload.phoneE164,
-        deviceId: payload.deviceId,
-      }),
+        body: JSON.stringify({
+          accessToken: sbToken,
+          phoneE164: payload.phoneE164,
+          deviceId: payload.deviceId,
+          device: getRiderLoginDeviceMeta(),
+          loginGeo: payload.loginGeo,
+        }),
     });
     const raw = await res.text();
     let dataJson: Record<string, unknown> = {};
@@ -355,6 +337,7 @@ export const riderAuthService = {
   async exchangeRiderFromCurrentSupabaseSession(payload: {
     phoneE164: string;
     deviceId: string;
+    loginGeo?: RiderLoginGeoPayload;
   }): Promise<Session> {
     const supabase = getSupabaseAuth();
     if (!supabase) {
@@ -371,6 +354,8 @@ export const riderAuthService = {
         accessToken: data.session.access_token,
         phoneE164: payload.phoneE164,
         deviceId: payload.deviceId,
+        device: getRiderLoginDeviceMeta(),
+        loginGeo: payload.loginGeo,
       }),
     });
     const raw = await res.text();
@@ -405,5 +390,36 @@ export const riderAuthService = {
       );
     }
     return dataJson as RiderStatusResponse;
+  },
+
+  /** Re-issue a 7-day rider JWT when the current one is near expiry (device session must still be active). */
+  async refreshSession(payload: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<Session> {
+    const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/rider/refresh-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${payload.accessToken}`,
+      },
+      body: JSON.stringify({ deviceId: payload.deviceId }),
+    });
+    const raw = await res.text();
+    let dataJson: Record<string, unknown> = {};
+    try {
+      dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      throw new Error("Invalid response while refreshing session.");
+    }
+    if (!res.ok) {
+      throw new Error(
+        (typeof dataJson.message === "string" && dataJson.message) ||
+          (typeof dataJson.error === "string" && dataJson.error) ||
+          "Could not refresh session.",
+      );
+    }
+    assertSession(dataJson);
+    return dataJson;
   },
 };

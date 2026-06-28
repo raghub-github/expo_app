@@ -51,11 +51,7 @@ import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import {
   acceptSecondsLeft,
   acceptDeadlineMs,
-  acceptanceWindowMs,
-  AUTO_CANCEL_REASON,
-  claimAutoCancelFoodOrder,
   formatAcceptCountdown,
-  releaseAutoCancelFoodOrder,
 } from "@/lib/orderAcceptanceWindow";
 import {
   clampPrepMinutes,
@@ -404,7 +400,6 @@ export default function IncomingOrderModal() {
   const seenFoodIdsRef = useRef<Set<string>>(new Set());
   const initializedRef = useRef(false);
   const shownCoreIdsRef = useRef<Set<string>>(new Set());
-  const autoCancelToastShownRef = useRef<number | null>(null);
   const soundPlayedForOrderRef = useRef<string | null>(null);
 
   const openIfNew = useCallback(
@@ -422,15 +417,17 @@ export default function IncomingOrderModal() {
       if (shownCoreIdsRef.current.has(dedupeKey)) return;
       shownCoreIdsRef.current.add(dedupeKey);
 
-      const windowMs = Math.max(60_000, acceptanceWindowMs(acceptanceWindowMinutes));
-      const age = Date.now() - new Date(order.createdAt).getTime();
-      if (age >= windowMs) {
+      const deadline = acceptDeadlineMs(
+        order.createdAt,
+        acceptanceWindowMinutes,
+        order.merchantResponseDeadlineAt
+      );
+      if (Date.now() >= deadline) {
         await addDismissed(order.ordersCoreId);
         return;
       }
 
       setSheetOrder(order);
-      autoCancelToastShownRef.current = null;
 
       if (soundPlayedForOrderRef.current !== order.id) {
         soundPlayedForOrderRef.current = order.id;
@@ -444,7 +441,6 @@ export default function IncomingOrderModal() {
     (order: OrderRecord) => {
       if (order.status !== "created" || order.id.startsWith("core-")) return;
       setSheetOrder(order);
-      autoCancelToastShownRef.current = null;
       const dedupeKey = `c:${order.ordersCoreId}`;
       shownCoreIdsRef.current.add(dedupeKey);
     },
@@ -500,9 +496,18 @@ export default function IncomingOrderModal() {
       setFuseBaselineMs(0);
       return;
     }
-    const deadline = acceptDeadlineMs(sheetOrder.createdAt, acceptanceWindowMinutes);
+    const deadline = acceptDeadlineMs(
+      sheetOrder.createdAt,
+      acceptanceWindowMinutes,
+      sheetOrder.merchantResponseDeadlineAt
+    );
     setFuseBaselineMs(Math.max(1000, deadline - Date.now()));
-  }, [sheetOrder?.id, sheetOrder?.createdAt, acceptanceWindowMinutes]);
+  }, [
+    sheetOrder?.id,
+    sheetOrder?.createdAt,
+    sheetOrder?.merchantResponseDeadlineAt,
+    acceptanceWindowMinutes,
+  ]);
 
   useEffect(() => {
     if (!sheetOrder) return;
@@ -512,14 +517,23 @@ export default function IncomingOrderModal() {
 
   const secondsLeft = useMemo(() => {
     if (!sheetOrder) return 0;
-    return acceptSecondsLeft(sheetOrder.createdAt, acceptanceWindowMinutes, nowTick);
+    return acceptSecondsLeft(
+      sheetOrder.createdAt,
+      acceptanceWindowMinutes,
+      nowTick,
+      sheetOrder.merchantResponseDeadlineAt
+    );
   }, [sheetOrder, acceptanceWindowMinutes, nowTick]);
 
   const mmss = useMemo(() => formatAcceptCountdown(secondsLeft), [secondsLeft]);
   /** 1 when modal opens → 0 when accept timer hits zero (visible live fuse) */
   const fuseProgress = useMemo(() => {
     if (!sheetOrder || fuseBaselineMs <= 0) return 1;
-    const deadline = acceptDeadlineMs(sheetOrder.createdAt, acceptanceWindowMinutes);
+    const deadline = acceptDeadlineMs(
+      sheetOrder.createdAt,
+      acceptanceWindowMinutes,
+      sheetOrder.merchantResponseDeadlineAt
+    );
     const msLeft = Math.max(0, deadline - nowTick);
     return Math.min(1, msLeft / fuseBaselineMs);
   }, [sheetOrder, fuseBaselineMs, acceptanceWindowMinutes, nowTick]);
@@ -598,8 +612,6 @@ export default function IncomingOrderModal() {
         if (status === "CANCELLED" && isInvalidTransitionError(err)) {
           if (mode === "auto") showToast("Order cancelled");
           await dismissSheet();
-        } else if (status === "CANCELLED" && mode === "auto") {
-          releaseAutoCancelFoodOrder(foodId);
         }
       } finally {
         setActionLoading(false);
@@ -623,22 +635,6 @@ export default function IncomingOrderModal() {
       void dismissSheet();
     }
   }, [orders, sheetOrder, dismissSheet]);
-
-  useEffect(() => {
-    if (!sheetOrder) return;
-    if (actionLoading || secondsLeft > 0) return;
-    const foodId = parseInt(sheetOrder.id, 10);
-    if (!Number.isFinite(foodId)) return;
-    if (!claimAutoCancelFoodOrder(foodId)) {
-      if (autoCancelToastShownRef.current !== sheetOrder.ordersCoreId) {
-        autoCancelToastShownRef.current = sheetOrder.ordersCoreId;
-        showToast("Order cancelled");
-      }
-      void dismissSheet();
-      return;
-    }
-    void patchStatus("CANCELLED", { rejected_reason: AUTO_CANCEL_REASON }, "auto");
-  }, [secondsLeft, sheetOrder, actionLoading, patchStatus, dismissSheet, showToast]);
 
   if (!storeId) return null;
 

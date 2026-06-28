@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
@@ -19,17 +20,9 @@ import {
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
 import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
 import { prefetchMerchantTimelineEnrichment } from "@/lib/merchantTimelineEnrichmentCache";
-import { getStoreSettings } from "@/services/storeSettingsApi";
-import {
-  acceptSecondsLeft,
-  AUTO_CANCEL_REASON,
-  claimAutoCancelFoodOrder,
-  releaseAutoCancelFoodOrder,
-} from "@/lib/orderAcceptanceWindow";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
 import {
-  apiStatusToStage,
   mapApiOrder,
   stageTransitionToApi,
   type OrderCounts,
@@ -99,8 +92,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [orderNowMs, setOrderNowMs] = useState(() => Date.now());
-  const autoAcceptedRef = useRef<Set<number>>(new Set());
-  const autoAcceptTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const refetchInFlightRef = useRef<Promise<void> | null>(null);
   const transitionInFlightRef = useRef<Set<string>>(new Set());
 
@@ -118,9 +109,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     const run = (async () => {
       setError(null);
       try {
-        const [list, storeSettings] = await Promise.all([
+        const [list] = await Promise.all([
           fetchFoodOrders(storeId, token, { limit: 200 }),
-          getStoreSettings(storeId, token).catch(() => null),
         ]);
         const mapped = list.map(mapApiOrder);
         setOrders(mapped);
@@ -140,35 +130,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (storeSettings?.auto_accept_orders) {
-          const delayMs =
-            Math.max(0, Math.min(600, storeSettings.auto_accept_time_seconds || 0)) * 1000;
-          for (const row of list) {
-            const st = apiStatusToStage(row.order_status);
-            if (st !== "created" || row.core_only) continue;
-            const fid = row.orders_food_id;
-            if (autoAcceptedRef.current.has(fid)) continue;
-            if (autoAcceptTimersRef.current.has(fid)) continue;
-            const timer = setTimeout(() => {
-              autoAcceptTimersRef.current.delete(fid);
-              if (autoAcceptedRef.current.has(fid)) return;
-              autoAcceptedRef.current.add(fid);
-              void patchFoodOrderStatus(storeId, fid, token, "ACCEPTED", undefined, {
-                action_source: "app",
-                accept_mode: "auto",
-              })
-                .then((updated) => {
-                  setOrders((prev) =>
-                    prev.map((o) => (o.id === String(fid) ? mapApiOrder(updated) : o))
-                  );
-                })
-                .catch(() => {
-                  autoAcceptedRef.current.delete(fid);
-                });
-            }, delayMs);
-            autoAcceptTimersRef.current.set(fid, timer);
-          }
-        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load orders");
       } finally {
@@ -217,39 +178,21 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [pollIntervalMs, refetch]);
 
+  // Read-only freshness sync when app is resumed.
+  useEffect(() => {
+    if (!token || !storeId) return;
+    const onAppState = (state: AppStateStatus) => {
+      if (state === "active") void refetch();
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+    return () => sub.remove();
+  }, [token, storeId, refetch]);
+
   useEffect(() => {
     if (!hasPendingAccept) return undefined;
     const id = setInterval(() => setOrderNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [hasPendingAccept]);
-
-  useEffect(() => {
-    if (!token || !storeId) return;
-    for (const order of orders) {
-      if (order.status !== "created" || order.id.startsWith("core-")) continue;
-      const foodId = parseInt(order.id, 10);
-      if (!Number.isFinite(foodId)) continue;
-      const secondsLeft = acceptSecondsLeft(
-        order.createdAt,
-        acceptanceWindowMinutes,
-        orderNowMs
-      );
-      if (secondsLeft > 0) continue;
-      if (!claimAutoCancelFoodOrder(foodId)) continue;
-      void patchFoodOrderStatus(storeId, foodId, token, "CANCELLED", AUTO_CANCEL_REASON, {
-        action_source: "app",
-        cancel_mode: "auto",
-      })
-        .then((updated) => {
-          setOrders((prev) =>
-            prev.map((o) => (o.id === order.id ? mapApiOrder(updated) : o))
-          );
-        })
-        .catch(() => {
-          releaseAutoCancelFoodOrder(foodId);
-        });
-    }
-  }, [orders, orderNowMs, storeId, token, acceptanceWindowMinutes]);
 
   const transitionOrder = useCallback(
     async (

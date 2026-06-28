@@ -4,6 +4,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { getDb, getSql } from "../client";
 import { riderLogoutEvents } from "../schema";
 import { riderLogoutReasonLabel } from "@/lib/rider-logout-reasons";
+import { countActiveRiderDeviceSessionsForDashboard } from "@/lib/db/operations/rider-device-sessions";
 import type {
   RiderLogoutEventRow,
   RiderLogoutSessionSnapshot,
@@ -49,7 +50,7 @@ async function hasActiveRiderAppSession(riderId: number): Promise<boolean> {
     const rows = await sqlClient`
       SELECT 1 AS ok
       FROM user_device_sessions
-      WHERE user_id = ${userId} AND is_active = TRUE
+      WHERE (user_id = ${userId} OR rider_id = ${riderId}) AND is_active = TRUE
       LIMIT 1
     `;
     return Array.isArray(rows) && rows.length > 0;
@@ -65,6 +66,7 @@ export async function getRiderLogoutSessionSnapshot(
   const fallback: RiderLogoutSessionSnapshot = {
     status: "logged_in",
     totalLogoutCount: 0,
+    activeDeviceCount: 0,
     latest: null,
   };
 
@@ -88,11 +90,13 @@ export async function getRiderLogoutSessionSnapshot(
 
     const latest = latestRow ? mapEvent(latestRow) : null;
     const hasActiveSession = await hasActiveRiderAppSession(riderId);
+    const activeDeviceCount = await countActiveRiderDeviceSessionsForDashboard(riderId);
     const isLoggedIn = hasActiveSession || totalLogoutCount === 0;
 
     return {
       status: isLoggedIn ? "logged_in" : "logged_out",
       totalLogoutCount,
+      activeDeviceCount,
       latest: latest
         ? {
             id: latest.id,

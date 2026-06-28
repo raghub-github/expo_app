@@ -8,7 +8,7 @@ import {
   resolveOnboardingHref,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
-import { isRiderNotFoundError, isUnauthorizedError } from "@/src/services/http";
+import { isRiderNotFoundError } from "@/src/services/http";
 
 export function useOnboardingGate() {
   const sessionHydrated = useSessionStore((s) => s.hydrated);
@@ -19,12 +19,14 @@ export function useOnboardingGate() {
   const currentStep = useOnboardingStore((s) => s.data.currentStep);
   const vehicleChoice = useOnboardingStore((s) => s.data.vehicleChoice);
   const vehicleOnboardingFlow = useOnboardingStore((s) => s.data.vehicleOnboardingFlow);
+  const vehicleOnboardingSubmittedFor = useOnboardingStore(
+    (s) => s.data.vehicleOnboardingSubmittedFor
+  );
   const setStep = useOnboardingStore((s) => s.setStep);
   const clearOnboarding = useOnboardingStore((s) => s.clear);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
   const hydrateSession = useSessionStore((s) => s.hydrate);
   const clearedStaleRiderRef = useRef(false);
-  const clearedStaleSessionRef = useRef(false);
 
   useEffect(() => {
     void hydrateSession();
@@ -33,16 +35,16 @@ export function useOnboardingGate() {
 
   const { data: riderStatus, isLoading, isError, error } = useRiderStatus(riderId);
   const riderNotFound = isError && isRiderNotFoundError(error);
-  const sessionUnauthorized = isError && isUnauthorizedError(error);
 
   const serverStep = (riderStatus?.nextOnboardingStep ?? null) as ServerOnboardingStep | null;
 
-  // Expired/revoked JWT or inactive device session — clear local session.
-  useEffect(() => {
-    if (!sessionUnauthorized || clearedStaleSessionRef.current) return;
-    clearedStaleSessionRef.current = true;
-    void setSession(null);
-  }, [sessionUnauthorized, setSession]);
+  const completedOnboardingSteps = useMemo(() => {
+    const base = riderStatus?.completedOnboardingSteps ?? [];
+    if (riderStatus?.selfieUrl && !base.includes("pan_selfie")) {
+      return [...base, "pan_selfie"];
+    }
+    return base;
+  }, [riderStatus?.completedOnboardingSteps, riderStatus?.selfieUrl]);
 
   // Stale local riderId (deleted from DB) — clear cached onboarding and sign out.
   useEffect(() => {
@@ -70,23 +72,23 @@ export function useOnboardingGate() {
   const ready = useMemo(() => {
     if (!sessionHydrated || !onboardingHydrated) return false;
     if (!session) return true;
-    if (riderNotFound || sessionUnauthorized) return true;
+    if (riderNotFound) return true;
     if (!riderId) return true;
     // Only block on the first load — background refetches must not blank the home screen.
     if (isLoading && !riderStatus) return false;
     return true;
-  }, [sessionHydrated, onboardingHydrated, session, riderId, riderNotFound, sessionUnauthorized, isLoading, riderStatus]);
+  }, [sessionHydrated, onboardingHydrated, session, riderId, riderNotFound, isLoading, riderStatus]);
 
   const href = useMemo(() => {
     if (!session) return null;
-    if (riderNotFound || sessionUnauthorized) return "/(auth)/login" as const;
+    if (riderNotFound) return "/(auth)/login" as const;
     if (!riderId) return "/(auth)/login" as const;
-    if (isError) return "/(auth)/login" as const;
     return resolveOnboardingHref(riderStatus?.onboardingStatus, currentStep, serverStep, {
       vehicleChoice,
       vehicleOnboardingFlow,
+      vehicleOnboardingSubmittedFor,
       accountStatus: riderStatus?.accountStatus,
-      completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+      completedOnboardingSteps,
       approvalStatus: riderStatus?.approvalStatus,
     });
   }, [
@@ -95,13 +97,12 @@ export function useOnboardingGate() {
     riderStatus?.onboardingStatus,
     currentStep,
     serverStep,
-    isError,
     riderNotFound,
-    sessionUnauthorized,
     vehicleChoice,
     vehicleOnboardingFlow,
+    vehicleOnboardingSubmittedFor,
     riderStatus?.accountStatus,
-    riderStatus?.completedOnboardingSteps,
+    completedOnboardingSteps,
     riderStatus?.approvalStatus,
   ]);
 

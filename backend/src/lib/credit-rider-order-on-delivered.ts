@@ -292,6 +292,7 @@ export async function creditRiderOrderEarningOnDelivered(
   displayId = displayId || orderIdText || String(coreId);
 
   const serviceType = input.orderType;
+  const payoutSnap = readRideRiderPayoutSnapshot(row.billing_snapshot);
   const baseMeta = {
     ordersCoreId: coreId,
     orderIdText,
@@ -299,6 +300,13 @@ export async function creditRiderOrderEarningOnDelivered(
     orderPublicId: displayId,
     serviceType,
     source: "order_delivered",
+    ...(payoutSnap
+      ? {
+          baseEarning: payoutSnap.baseEarning,
+          waitingEarning: payoutSnap.waitingEarning,
+          surgeEarning: payoutSnap.surgeEarning,
+        }
+      : {}),
   };
 
   let deliveryCredited = false;
@@ -351,8 +359,12 @@ export async function creditRiderOrderEarningOnDelivered(
     }
 
     if (deliveryCredited || tipCredited) {
-      const { touchRiderIncomeTimestamp } = await import("./rider-subscription-wallet.js");
+      const {
+        touchRiderIncomeTimestamp,
+        autoSettleSubscriptionDuesFromEarnings,
+      } = await import("./rider-subscription-wallet.js");
       await touchRiderIncomeTimestamp(riderId);
+      await autoSettleSubscriptionDuesFromEarnings(riderId);
     }
 
     return { credited: true, deliveryCredited, tipCredited };

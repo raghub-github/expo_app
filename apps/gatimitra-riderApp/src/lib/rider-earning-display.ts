@@ -33,32 +33,20 @@ function round0(n: number): number {
   return Math.round(n);
 }
 
-/** Rider-facing payout — never customer/passenger fare. */
+/** Rider-facing payout from backend slab engine — display only, never recalculate from distance. */
 export function resolveRiderDisplayedEarning(
   order: RiderEarningLike | null | undefined
 ): number {
   if (!order) return 0;
+  const total = Number(order.totalEarning);
+  if (Number.isFinite(total) && total > 0) return round0(total);
+  const estimated = Number(order.estimatedEarning);
+  if (Number.isFinite(estimated) && estimated > 0) return round0(estimated);
   const base = round0(Number(order.baseEarning) || 0);
   const waiting = round0(Number(order.waitingEarning) || 0);
   const surge = round0(Number(order.surgeEarning) || 0);
   const tip = round0(Number(order.customerTipAmount) || 0);
-  const appliedSurgeTotal = (order.appliedSurges ?? []).reduce(
-    (sum, line) => sum + round0(Number(line.amount) || 0),
-    0
-  );
-  const surgeFromLines = appliedSurgeTotal > 0 ? appliedSurgeTotal : surge;
-  const componentTotal = base + waiting + surgeFromLines + tip;
-
-  const total = Number(order.totalEarning);
-  if (Number.isFinite(total) && total > 0) {
-    return round0(Math.max(componentTotal, total));
-  }
-  const estimated = Number(order.estimatedEarning);
-  if (Number.isFinite(estimated) && estimated > 0) {
-    return round0(Math.max(componentTotal, estimated));
-  }
-  if (componentTotal > 0) return componentTotal;
-  return 0;
+  return base + waiting + surge + tip;
 }
 
 function buildRiderEarningBreakdownInternal(

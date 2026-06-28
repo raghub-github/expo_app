@@ -1,6 +1,7 @@
 "use client";
 import { useAppParams } from "@/hooks/useAppSearchParams";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";

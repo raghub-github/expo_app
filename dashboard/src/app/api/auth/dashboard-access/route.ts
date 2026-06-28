@@ -5,61 +5,24 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 import { getUserDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getDb, getSql } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
 import { apiErrorResponse } from "@/lib/api-errors";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { and, eq } from "drizzle-orm";
 
 export const runtime = "nodejs";
 
-const maxGetUserAttempts = 3;
-const retryDelaysMs = [800, 1600];
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-
-    let user: { id: string; email?: string } | null = null;
-    let userError: unknown = null;
-
-    for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      const result = await supabase.auth.getUser();
-      user = result.data?.user ?? null;
-      userError = result.error ?? null;
-
-      if (!userError && user) break;
-      if (userError && isInvalidRefreshToken(userError)) break;
-      if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
-        const delay = retryDelaysMs[attempt - 1] ?? 1000;
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      break;
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
-
-    if (userError || !user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
-      if (userError && isNetworkOrTransientError(userError)) {
-        return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
-        );
-      }
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const { user } = auth;
 
     const mapped = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!mapped) {
@@ -173,13 +136,13 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("[GET /api/auth/dashboard-access] Error:", error);
-    if (isNetworkOrTransientError(error)) {
+    if (isTimeoutOrAbortError(error) || isNetworkOrTransientError(error)) {
       return NextResponse.json(
         { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
         { status: 503 }
       );
     }
+    console.error("[GET /api/auth/dashboard-access] Error:", error);
     const { body, status } = apiErrorResponse(error);
     return NextResponse.json(body, { status });
   }

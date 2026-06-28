@@ -1,5 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   Alert,
   Pressable,
   StyleSheet,
+  ActivityIndicator,
+  BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -18,16 +20,18 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { useSaveOnboardingStep, useRiderStatus } from "@/src/hooks/useOnboarding";
+import { useSaveOnboardingStep, useRiderStatus, useDlRegistrationCheck, useRcRegistrationCheck } from "@/src/hooks/useOnboarding";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import { onboardingStepToRoute, isVehicleOnboardingComplete, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
+import { onboardingStepToRoute, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument } from "@/src/hooks/useDocuments";
 import {
   ContinueButton,
   ErrorBanner,
+  SkipDocumentButton,
   onboardingFormStyles as form,
 } from "@/src/components/onboarding/OnboardingFormUi";
 import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
@@ -38,20 +42,24 @@ import {
   categoryHasActiveVehicles,
   findVehicleCategory,
   findVehicleType,
-  FALLBACK_ONBOARDING_VEHICLE_CATEGORIES,
-  FALLBACK_ONBOARDING_VEHICLE_TYPES,
+  formatVehicleRowTitle,
   vehiclesForCategory,
   type OnboardingVehicleType,
 } from "@/src/lib/onboarding-vehicle-types";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   docRequiresBackPhoto,
   docUploadToStorePatch,
   findDocumentType,
-  findFirstIncompleteDocStep,
+  resolveVehicleWizardDocStep,
+  filterSkippedDocsForVehicle,
   getDocUploadState,
+  isDocSkipped,
+  isDocStepComplete,
+  isDocStepSatisfied,
   metadataKeyForDocText,
-  resolveVehicleRequiredDocs,
-  type OnboardingDocumentTypeDef,
+  resolveVehicleOnboardingDocs,
+  type VehicleOnboardingDocStep,
 } from "@/src/lib/onboarding-document-types";
 import { VehicleDocumentCaptureStep } from "@/src/components/onboarding/VehicleDocumentCaptureStep";
 import { colors } from "@/src/theme";
@@ -108,7 +116,6 @@ const COPY = {
   upload: "Upload from gallery",
   cancel: "Cancel",
   continue: "Continue",
-  nextRc: "Continue to RC",
   uploading: "Uploading…",
   changePhoto: "Change photo",
   dlRequired: "Please enter your Driving License number",
@@ -130,6 +137,12 @@ const COPY = {
   cameraPermissionMessage: "Camera permission is required to capture document photos",
   galleryPermissionTitle: "Gallery access needed",
   galleryPermissionMessage: "Allow photo access to upload from gallery",
+  catalogLoading: "Loading vehicle categories…",
+  catalogEmpty: "No vehicle categories are available right now. Please try again later.",
+  catalogError: "Could not load vehicle categories. Check your connection and try again.",
+  dlAlreadyRegistered: "Driving License Already Registered , Please try with Diff one .",
+  rcAlreadyRegistered: "RC Already Registered , Please try with Diff one .",
+  skipOptionalDoc: "Skip this document",
 } as const;
 
 function resolveVehicleIcon(icon?: string | null): keyof typeof Ionicons.glyphMap {
@@ -137,6 +150,16 @@ function resolveVehicleIcon(icon?: string | null): keyof typeof Ionicons.glyphMa
     return icon as keyof typeof Ionicons.glyphMap;
   }
   return "car-outline";
+}
+
+function continueToNextDocLabel(
+  docs: Array<{ label: string }>,
+  currentIndex: number,
+  finalLabel: string
+): string {
+  if (currentIndex < 0 || currentIndex >= docs.length - 1) return finalLabel;
+  const nextDoc = docs[currentIndex + 1];
+  return nextDoc ? `Continue to ${nextDoc.label}` : finalLabel;
 }
 
 function documentFileEntries(
@@ -212,11 +235,10 @@ function VehicleOptionCard({
               selected && styles.vehicleTitleSelected,
               inactive && styles.vehicleTitleInactive,
             ]}
-            numberOfLines={1}
           >
             {title}
           </Text>
-          <Text style={[styles.vehicleHint, inactive && styles.vehicleHintInactive]} numberOfLines={2}>
+          <Text style={[styles.vehicleHint, inactive && styles.vehicleHintInactive]}>
             {inactive ? "Inactive — not available right now" : hint}
           </Text>
         </View>
@@ -242,15 +264,16 @@ function resolveInitialWizardStep(
     vehicleCategoryCode?: string;
     vehicleChoice?: string;
     hasOwnVehicle?: boolean;
+    skippedOnboardingDocs?: string[];
   },
   vehicleType: OnboardingVehicleType | undefined,
-  docs: OnboardingDocumentTypeDef[]
+  docs: VehicleOnboardingDocStep[]
 ): WizardStep {
   if (!data.vehicleCategoryCode) return "category";
   if (!data.vehicleChoice) return "vehicle";
-  if (vehicleType?.onboardingFlow !== "dl_rc") return "vehicle";
+  if (vehicleType?.onboardingFlow === "payment") return "vehicle";
   if (!docs.length) return "vehicle";
-  return findFirstIncompleteDocStep(data, docs) ?? docs[0]!.code;
+  return resolveVehicleWizardDocStep(data, docs) ?? docs[0]!.code;
 }
 
 export default function DlRcScreen() {
@@ -260,55 +283,68 @@ export default function DlRcScreen() {
 
   const session = useSessionStore((s) => s.session);
   const { data, setData, setStep, hydrate } = useOnboardingStore();
+  const queryClient = useQueryClient();
   const saveStep = useSaveOnboardingStep();
   const saveDocument = useSaveDocument();
   const { data: riderStatus } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
-  const { data: vehicleTypes = FALLBACK_ONBOARDING_VEHICLE_TYPES } = useOnboardingVehicleTypes();
-  const { data: vehicleCategories = FALLBACK_ONBOARDING_VEHICLE_CATEGORIES } =
-    useOnboardingVehicleCategories();
-  const { data: documentCatalog = [] } = useOnboardingDocumentTypes("dl_rc");
+  const { data: vehicleTypes = [], isLoading: vehicleTypesLoading, isError: vehicleTypesError } =
+    useOnboardingVehicleTypes();
+  const {
+    data: vehicleCategories = [],
+    isLoading: vehicleCategoriesLoading,
+    isError: vehicleCategoriesError,
+  } = useOnboardingVehicleCategories();
+  const { data: documentCatalog = [] } = useOnboardingDocumentTypes();
 
-  const sortedCategories = useMemo(
-    () => [...vehicleCategories].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id),
-    [vehicleCategories]
-  );
+  const catalogLoading = vehicleTypesLoading || vehicleCategoriesLoading;
+  const catalogError = vehicleTypesError || vehicleCategoriesError;
 
   const sortedVehicleTypes = useMemo(
-    () => [...vehicleTypes].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id),
+    () =>
+      [...vehicleTypes]
+        .filter((t) => t.isActive)
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id),
     [vehicleTypes]
+  );
+
+  const sortedCategories = useMemo(
+    () =>
+      [...vehicleCategories]
+        .filter(
+          (c) => c.isActive && categoryHasActiveVehicles(sortedVehicleTypes, c.code)
+        )
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id),
+    [vehicleCategories, sortedVehicleTypes]
   );
 
   useEffect(() => {
     const next = riderStatus?.nextOnboardingStep;
-    if (!next || next === "dl_rc" || next === "pan_selfie" || next === "aadhaar_name") return;
+    if (!next) return;
+    // Stay on vehicle doc wizard until rider taps Continue on the last step — never auto-skip ahead.
     if (
+      next === "dl_rc" ||
+      next === "rental_ev" ||
       next === "payment" ||
-      (next === "rental_ev" &&
-        isVehicleOnboardingComplete(
-          next as ServerOnboardingStep,
-          riderStatus?.completedOnboardingSteps,
-          data.vehicleOnboardingFlow
-        ))
+      next === "pan_selfie" ||
+      next === "aadhaar_name"
     ) {
-      router.replace("/(onboarding)/payment");
-      return;
-    }
-    if (next === "rental_ev") {
-      router.replace("/(onboarding)/rental-ev");
       return;
     }
     router.replace(onboardingStepToRoute(next as ServerOnboardingStep));
-  }, [
-    riderStatus?.nextOnboardingStep,
-    riderStatus?.completedOnboardingSteps,
-    data.vehicleOnboardingFlow,
-  ]);
+  }, [riderStatus?.nextOnboardingStep]);
 
   const [categoryChoice, setCategoryChoice] = useState<string>(
     () => data.vehicleCategoryCode ?? ""
   );
   const [vehicleChoice, setVehicleChoice] = useState<string>(() => data.vehicleChoice ?? "");
+  const [wizardStep, setWizardStep] = useState<WizardStep>("category");
+  const [docDraftText, setDocDraftText] = useState("");
+  const [docDraftUri, setDocDraftUri] = useState<string | null>(null);
+  const [docDraftBackUri, setDocDraftBackUri] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const vehicleWizardBootstrappedRef = useRef(false);
 
   const selectedCategory = useMemo(
     () => findVehicleCategory(sortedCategories, categoryChoice),
@@ -325,18 +361,17 @@ export default function DlRcScreen() {
     [sortedVehicleTypes, vehicleChoice]
   );
 
-  const dlRcRequiredDocs = useMemo(
-    () => resolveVehicleRequiredDocs(selectedVehicleType, documentCatalog, "dl_rc"),
+  const vehicleOnboardingDocs = useMemo(
+    () => resolveVehicleOnboardingDocs(selectedVehicleType, documentCatalog),
     [selectedVehicleType, documentCatalog]
   );
 
-  const [wizardStep, setWizardStep] = useState<WizardStep>("category");
-  const [docDraftText, setDocDraftText] = useState("");
-  const [docDraftUri, setDocDraftUri] = useState<string | null>(null);
-  const [docDraftBackUri, setDocDraftBackUri] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const currentDocStep = useMemo(
+    () => vehicleOnboardingDocs.find((d) => d.code === wizardStep),
+    [vehicleOnboardingDocs, wizardStep]
+  );
+
+  const isOptionalDocStep = Boolean(currentDocStep?.optional);
 
   const currentDocDef = useMemo(() => {
     if (wizardStep === "category" || wizardStep === "vehicle") return undefined;
@@ -344,24 +379,27 @@ export default function DlRcScreen() {
   }, [wizardStep, documentCatalog]);
 
   const currentDocIndex = useMemo(
-    () => dlRcRequiredDocs.findIndex((d) => d.code === wizardStep),
-    [dlRcRequiredDocs, wizardStep]
+    () => vehicleOnboardingDocs.findIndex((d) => d.code === wizardStep),
+    [vehicleOnboardingDocs, wizardStep]
   );
 
   const docStepLabels = useMemo(
-    () => dlRcRequiredDocs.map((d) => d.label),
-    [dlRcRequiredDocs]
+    () => vehicleOnboardingDocs.map((d) => d.label),
+    [vehicleOnboardingDocs]
   );
 
   useEffect(() => {
     if (!sortedVehicleTypes.length || !sortedCategories.length) return;
-    if (!data.vehicleCategoryCode && !data.vehicleChoice) return;
-    const vehicle = findVehicleType(sortedVehicleTypes, data.vehicleChoice);
-    const docs = resolveVehicleRequiredDocs(vehicle, documentCatalog, "dl_rc");
-    const next = resolveInitialWizardStep(data, vehicle, docs);
-    if (next !== "category") setWizardStep(next);
     if (data.vehicleCategoryCode) setCategoryChoice(data.vehicleCategoryCode);
     if (data.vehicleChoice) setVehicleChoice(data.vehicleChoice);
+    if (vehicleWizardBootstrappedRef.current) return;
+    if (!data.vehicleCategoryCode && !data.vehicleChoice) return;
+
+    vehicleWizardBootstrappedRef.current = true;
+    const vehicle = findVehicleType(sortedVehicleTypes, data.vehicleChoice);
+    const docs = resolveVehicleOnboardingDocs(vehicle, documentCatalog);
+    const next = resolveInitialWizardStep(data, vehicle, docs);
+    if (next !== "category") setWizardStep(next);
   }, [
     sortedVehicleTypes,
     sortedCategories,
@@ -379,13 +417,35 @@ export default function DlRcScreen() {
   }, [wizardStep, currentDocDef, data]);
 
   const needsBackPhoto = currentDocDef ? docRequiresBackPhoto(currentDocDef) : false;
+  const docTextMinLength = Math.max(currentDocDef?.minTextLength ?? 1, 1);
   const docTextValid =
-    !currentDocDef?.requiresTextField ||
-    docDraftText.trim().length >= Math.max(currentDocDef?.minTextLength ?? 1, 1);
+    !currentDocDef?.requiresTextField || docDraftText.trim().length >= docTextMinLength;
+  const dlCheckQuery = useDlRegistrationCheck(
+    wizardStep === "dl" ? docDraftText : "",
+    data.riderId,
+    docTextMinLength
+  );
+  const rcCheckQuery = useRcRegistrationCheck(
+    wizardStep === "rc" ? docDraftText : "",
+    data.riderId,
+    docTextMinLength
+  );
+  const docDuplicateCheckQuery = wizardStep === "dl" ? dlCheckQuery : wizardStep === "rc" ? rcCheckQuery : null;
+  const docAlreadyRegistered = docDuplicateCheckQuery?.data?.registered === true;
+  const checkingDocDuplicate =
+    Boolean(currentDocDef?.requiresTextField) &&
+    docTextValid &&
+    Boolean(docDuplicateCheckQuery?.isFetching || docDuplicateCheckQuery?.isLoading);
   const docFrontPhotoValid = Boolean(docDraftUri);
   const docBackPhotoValid = !needsBackPhoto || Boolean(docDraftBackUri);
   const docPhotoValid = docFrontPhotoValid && docBackPhotoValid;
-  const canContinueDoc = docTextValid && docPhotoValid && !uploading && !submitting;
+  const canContinueDoc =
+    docTextValid &&
+    !docAlreadyRegistered &&
+    !checkingDocDuplicate &&
+    docPhotoValid &&
+    !uploading &&
+    !submitting;
   const canContinueCategory =
     Boolean(selectedCategory?.isActive) &&
     categoryHasActiveVehicles(sortedVehicleTypes, categoryChoice) &&
@@ -415,14 +475,17 @@ export default function DlRcScreen() {
     }
     const doc = findDocumentType(documentCatalog, wizardStep);
     const stepNum = currentDocIndex >= 0 ? currentDocIndex + 1 : 1;
-    const total = dlRcRequiredDocs.length || 1;
+    const total = vehicleOnboardingDocs.length || 1;
     return {
       icon: (doc?.icon ?? "document-text-outline") as keyof typeof Ionicons.glyphMap,
       stepLabel: `Step 3 · ${doc?.label ?? "Document"} (${stepNum} of ${total})`,
       title: doc?.label ?? "Upload document",
-      subtitle: doc?.hint ?? "Upload a clear photo of your document",
+      subtitle:
+        currentDocIndex === 0 && selectedVehicleType?.infoMessage && !isOptionalDocStep
+          ? selectedVehicleType.infoMessage
+          : doc?.hint ?? "Upload a clear photo of your document",
     };
-  }, [wizardStep, tx, documentCatalog, currentDocIndex, dlRcRequiredDocs.length]);
+  }, [wizardStep, tx, documentCatalog, currentDocIndex, vehicleOnboardingDocs.length, selectedVehicleType, isOptionalDocStep]);
 
   useEffect(() => {
     hydrate();
@@ -475,7 +538,7 @@ export default function DlRcScreen() {
         return result.assets[0].uri;
       }
     } catch {
-      setError(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
+      notifyOnboardingToast(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
     }
     return null;
   };
@@ -487,7 +550,6 @@ export default function DlRcScreen() {
         onPress: () => {
           void pickPhoto("camera").then((uri) => {
             if (!uri) return;
-            setError(null);
             if (side === "front") setDocDraftUri(uri);
             else setDocDraftBackUri(uri);
           });
@@ -498,7 +560,6 @@ export default function DlRcScreen() {
         onPress: () => {
           void pickPhoto("library").then((uri) => {
             if (!uri) return;
-            setError(null);
             if (side === "front") setDocDraftUri(uri);
             else setDocDraftBackUri(uri);
           });
@@ -508,12 +569,11 @@ export default function DlRcScreen() {
     ]);
   };
 
-  const handleBack = () => {
-    setError(null);
+  const handleBack = useCallback(() => {
     if (wizardStep !== "category" && wizardStep !== "vehicle") {
-      const idx = dlRcRequiredDocs.findIndex((d) => d.code === wizardStep);
+      const idx = vehicleOnboardingDocs.findIndex((d) => d.code === wizardStep);
       if (idx > 0) {
-        setWizardStep(dlRcRequiredDocs[idx - 1]!.code);
+        setWizardStep(vehicleOnboardingDocs[idx - 1]!.code);
         return;
       }
       setWizardStep("vehicle");
@@ -524,12 +584,19 @@ export default function DlRcScreen() {
       return;
     }
     goBackOrReplace("/(onboarding)/pan-selfie");
-  };
+  }, [wizardStep, vehicleOnboardingDocs]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [handleBack]);
 
   const handleCategoryContinue = async () => {
     if (!selectedCategory?.isActive) return;
     if (!categoryHasActiveVehicles(sortedVehicleTypes, categoryChoice)) return;
-    setError(null);
     await setData({ vehicleCategoryCode: categoryChoice });
     setVehicleChoice("");
     setWizardStep("vehicle");
@@ -541,15 +608,14 @@ export default function DlRcScreen() {
 
     if (selected.onboardingFlow === "payment") {
       if (!data.riderId) {
-        setError(tx("riderNotFound"));
+        notifyOnboardingToast(tx("riderNotFound"));
         return;
       }
       if (!session?.accessToken) {
-        setError(tx("notAuthenticated"));
+        notifyOnboardingToast(tx("notAuthenticated"));
         return;
       }
 
-      setError(null);
       setSubmitting(true);
       try {
         await saveStep.mutateAsync({
@@ -572,60 +638,38 @@ export default function DlRcScreen() {
         });
         router.push("/(onboarding)/payment");
       } catch (e) {
-        setError(e instanceof Error ? e.message : tx("uploadError"));
+        notifyOnboardingToast(e instanceof Error ? e.message : tx("uploadError"));
       } finally {
         setSubmitting(false);
       }
       return;
     }
 
-    if (selected.onboardingFlow === "rental_ev") {
-      if (!data.riderId) {
-        setError(tx("riderNotFound"));
-        return;
-      }
-      setError(null);
-      setSubmitting(true);
-      try {
-        await saveStep.mutateAsync({
-          riderId: data.riderId,
-          step: "dl_rc",
-          data: {
-            hasOwnVehicle: false,
-            vehicleCategoryCode: categoryChoice,
-            vehicleChoice: selected.code,
-            onboardingFlow: "rental_ev",
-          },
-        });
-        await setData({
-          hasOwnVehicle: false,
-          vehicleCategoryCode: categoryChoice,
-          vehicleChoice: selected.code,
-          vehicleOnboardingFlow: "rental_ev",
-          currentStep: "rental_ev",
-        });
-        await setStep("rental_ev");
-        router.push("/(onboarding)/rental-ev");
-      } catch (e) {
-        setError(e instanceof Error ? e.message : tx("uploadError"));
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
-
-    const docs = resolveVehicleRequiredDocs(selected, documentCatalog, "dl_rc");
+    const docs = resolveVehicleOnboardingDocs(selected, documentCatalog);
     if (!docs.length) {
-      setError("No documents configured for this vehicle type.");
+      notifyOnboardingToast("No documents configured for this vehicle type.");
       return;
     }
 
-    setError(null);
-    await setData({
+    const onboardingFlow = selected.onboardingFlow;
+    const skippedOnboardingDocs = filterSkippedDocsForVehicle(docs, data.skippedOnboardingDocs);
+    const mergedData = {
+      ...data,
       hasOwnVehicle: Boolean(selected.documentRequirements?.has_own_vehicle),
       vehicleCategoryCode: categoryChoice,
       vehicleChoice: selected.code,
-      vehicleOnboardingFlow: "dl_rc",
+      vehicleOnboardingFlow: onboardingFlow,
+      vehicleOnboardingSubmittedFor: undefined,
+      skippedOnboardingDocs,
+    };
+
+    await setData({
+      hasOwnVehicle: mergedData.hasOwnVehicle,
+      vehicleCategoryCode: categoryChoice,
+      vehicleChoice: selected.code,
+      vehicleOnboardingFlow: onboardingFlow,
+      vehicleOnboardingSubmittedFor: undefined,
+      skippedOnboardingDocs,
     });
     if (data.riderId) {
       void saveStep.mutateAsync({
@@ -635,42 +679,166 @@ export default function DlRcScreen() {
           hasOwnVehicle: Boolean(selected.documentRequirements?.has_own_vehicle),
           vehicleCategoryCode: categoryChoice,
           vehicleChoice: selected.code,
-          onboardingFlow: "dl_rc",
+          onboardingFlow,
         },
       });
     }
-    setWizardStep(docs[0]!.code);
+    const nextDocStep = resolveVehicleWizardDocStep(mergedData, docs);
+    if (nextDocStep) setWizardStep(nextDocStep);
+  };
+
+  const finalizeVehicleOnboarding = async (
+    mergedData: import("@/src/stores/onboardingStore").OnboardingData
+  ) => {
+    if (!data.riderId) {
+      notifyOnboardingToast(tx("riderNotFound"));
+      return;
+    }
+    const onboardingFlow = selectedVehicleType?.onboardingFlow ?? "dl_rc";
+    const stepPayload: Record<string, unknown> = {
+      hasOwnVehicle: Boolean(selectedVehicleType?.documentRequirements?.has_own_vehicle),
+      vehicleChoice: selectedVehicleType?.code ?? vehicleChoice,
+      vehicleCategoryCode: categoryChoice,
+      onboardingFlow,
+      submitVehicleDocs: true,
+    };
+    for (const stepDoc of vehicleOnboardingDocs) {
+      if (stepDoc.optional && isDocSkipped(mergedData, stepDoc.code)) continue;
+      const saved = getDocUploadState(mergedData, stepDoc.code);
+      if (stepDoc.requiresTextField && saved.textValue.trim()) {
+        stepPayload[metadataKeyForDocText(stepDoc.code)] = saved.textValue.trim().toUpperCase();
+      }
+      if (saved.signedUrl && stepDoc.code === "rental_proof") {
+        stepPayload.rentalProofSignedUrl = saved.signedUrl;
+      }
+      if (saved.signedUrl && stepDoc.code === "ev_proof") {
+        stepPayload.evProofSignedUrl = saved.signedUrl;
+      }
+    }
+
+    await saveStep.mutateAsync({
+      riderId: data.riderId,
+      step: "dl_rc",
+      data: stepPayload,
+    });
+
+    if (onboardingFlow === "rental_ev") {
+      const rentalState = getDocUploadState(mergedData, "rental_proof");
+      const evState = getDocUploadState(mergedData, "ev_proof");
+      const rentalEvPayload: Record<string, unknown> = {};
+      if (rentalState.signedUrl) {
+        rentalEvPayload.rentalProofSignedUrl = rentalState.signedUrl;
+        rentalEvPayload.uploadedDocCode = "rental_proof";
+        rentalEvPayload.uploadedDocSignedUrl = rentalState.signedUrl;
+      } else if (evState.signedUrl) {
+        rentalEvPayload.evProofSignedUrl = evState.signedUrl;
+        rentalEvPayload.uploadedDocCode = "ev_proof";
+        rentalEvPayload.uploadedDocSignedUrl = evState.signedUrl;
+      }
+      if (rentalEvPayload.uploadedDocSignedUrl) {
+        await saveStep.mutateAsync({
+          riderId: data.riderId,
+          step: "rental_ev",
+          data: rentalEvPayload,
+        });
+      }
+    }
+
+    await setData({
+      hasOwnVehicle: Boolean(selectedVehicleType?.documentRequirements?.has_own_vehicle),
+      vehicleCategoryCode: categoryChoice,
+      vehicleChoice: selectedVehicleType?.code ?? vehicleChoice,
+      vehicleOnboardingFlow: onboardingFlow,
+      skippedOnboardingDocs: mergedData.skippedOnboardingDocs,
+      vehicleOnboardingSubmittedFor: selectedVehicleType?.code ?? vehicleChoice,
+      currentStep: onboardingFlow === "rental_ev" ? "rental_ev" : "dl_rc",
+    });
+    if (data.riderId) {
+      await queryClient.refetchQueries({ queryKey: ["rider", data.riderId] });
+    }
+    router.replace("/(onboarding)/payment");
+  };
+
+  const handleDocStepSkip = async () => {
+    if (!isOptionalDocStep || wizardStep === "category" || wizardStep === "vehicle") return;
+    const skipped = Array.from(new Set([...(data.skippedOnboardingDocs ?? []), wizardStep]));
+    const mergedData = { ...data, skippedOnboardingDocs: skipped };
+    await setData({ skippedOnboardingDocs: skipped });
+    const isLastDoc = currentDocIndex >= vehicleOnboardingDocs.length - 1;
+    if (!isLastDoc) {
+      setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await finalizeVehicleOnboarding(mergedData);
+    } catch (e) {
+      notifyOnboardingToast(e instanceof Error ? e.message : tx("dlSaveError"));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleDocStepContinue = async () => {
     const doc = currentDocDef;
     if (!doc) return;
 
-    if (!docTextValid) {
-      setError(`Please enter ${doc.textFieldLabel ?? "document number"}`);
-      return;
-    }
-    if (!docDraftUri) {
-      setError(needsBackPhoto ? tx("dlFrontPhotoRequired") : tx("dlPhotoRequired"));
-      return;
-    }
-    if (needsBackPhoto && !docDraftBackUri) {
-      setError(tx("dlBackPhotoRequired"));
-      return;
-    }
-    if (!data.riderId) {
-      setError(tx("riderNotFound"));
-      return;
-    }
-    if (!session?.accessToken) {
-      setError(tx("notAuthenticated"));
+    const isLastDoc = currentDocIndex >= vehicleOnboardingDocs.length - 1;
+    const docAlreadyComplete = isDocStepComplete(data, doc);
+
+    if (docAlreadyComplete) {
+      if (!isLastDoc) {
+        setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+        return;
+      }
+      if (!data.riderId) {
+        notifyOnboardingToast(tx("riderNotFound"));
+        return;
+      }
+      setSubmitting(true);
+      try {
+        await finalizeVehicleOnboarding(data);
+      } catch (e) {
+        notifyOnboardingToast(e instanceof Error ? e.message : tx("rcSaveError"));
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
 
-    setError(null);
+    if (!docTextValid) {
+      notifyOnboardingToast(`Please enter ${doc.textFieldLabel ?? "document number"}`);
+      return;
+    }
+    if (docAlreadyRegistered) {
+      notifyOnboardingToast(
+        wizardStep === "dl"
+          ? tx("dlAlreadyRegistered")
+          : wizardStep === "rc"
+            ? tx("rcAlreadyRegistered")
+            : "This document number is already registered."
+      );
+      return;
+    }
+    if (!docDraftUri) {
+      notifyOnboardingToast(needsBackPhoto ? tx("dlFrontPhotoRequired") : tx("dlPhotoRequired"));
+      return;
+    }
+    if (needsBackPhoto && !docDraftBackUri) {
+      notifyOnboardingToast(tx("dlBackPhotoRequired"));
+      return;
+    }
+    if (!data.riderId) {
+      notifyOnboardingToast(tx("riderNotFound"));
+      return;
+    }
+    if (!session?.accessToken) {
+      notifyOnboardingToast(tx("notAuthenticated"));
+      return;
+    }
+
     setUploading(true);
     const uploadedKeys: string[] = [];
-    const isLastDoc = currentDocIndex >= dlRcRequiredDocs.length - 1;
 
     try {
       const riderId = parseInt(data.riderId, 10);
@@ -708,7 +876,8 @@ export default function DlRcScreen() {
         files: documentFileEntries(frontUpload, backUpload),
       });
 
-      await setData({
+      const mergedAfterUpload = {
+        ...data,
         ...docUploadToStorePatch(data, doc.code, {
           localUri: docDraftUri,
           signedUrl: frontUpload.proxyUrl,
@@ -717,53 +886,20 @@ export default function DlRcScreen() {
           textValue,
         }),
         hasOwnVehicle: Boolean(selectedVehicleType?.documentRequirements?.has_own_vehicle),
-      });
+      };
+
+      await setData(mergedAfterUpload);
 
       if (!isLastDoc) {
-        setWizardStep(dlRcRequiredDocs[currentDocIndex + 1]!.code);
+        setDocDraftText("");
+        setDocDraftUri(null);
+        setDocDraftBackUri(null);
+        setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
         return;
       }
 
       setSubmitting(true);
-      const stepPayload: Record<string, unknown> = {
-        hasOwnVehicle: Boolean(selectedVehicleType?.documentRequirements?.has_own_vehicle),
-        vehicleChoice: selectedVehicleType?.code ?? vehicleChoice,
-        vehicleCategoryCode: categoryChoice,
-        onboardingFlow: "dl_rc",
-      };
-      for (const requiredDoc of dlRcRequiredDocs) {
-        const saved = getDocUploadState(
-          {
-            ...data,
-            ...docUploadToStorePatch(data, doc.code, {
-              localUri: docDraftUri,
-              signedUrl: frontUpload.proxyUrl,
-              backLocalUri: docDraftBackUri,
-              backSignedUrl: backUpload?.proxyUrl ?? null,
-              textValue,
-            }),
-          },
-          requiredDoc.code
-        );
-        if (requiredDoc.requiresTextField) {
-          stepPayload[metadataKeyForDocText(requiredDoc.code)] = saved.textValue.trim().toUpperCase();
-        }
-      }
-
-      await saveStep.mutateAsync({
-        riderId: data.riderId,
-        step: "dl_rc",
-        data: stepPayload,
-      });
-
-      await setData({
-        hasOwnVehicle: Boolean(selectedVehicleType?.documentRequirements?.has_own_vehicle),
-        vehicleCategoryCode: categoryChoice,
-        vehicleChoice: selectedVehicleType?.code ?? vehicleChoice,
-        vehicleOnboardingFlow: "dl_rc",
-        currentStep: "dl_rc",
-      });
-      router.push("/(onboarding)/payment");
+      await finalizeVehicleOnboarding(mergedAfterUpload);
     } catch (e) {
       for (const key of uploadedKeys) {
         try {
@@ -772,7 +908,7 @@ export default function DlRcScreen() {
           console.error(`[Rollback] Failed to delete R2 ${key}:`, rollbackError);
         }
       }
-      setError(e instanceof Error ? e.message : tx("dlSaveError"));
+      notifyOnboardingToast(e instanceof Error ? e.message : tx("dlSaveError"));
     } finally {
       setUploading(false);
       setSubmitting(false);
@@ -820,36 +956,37 @@ export default function DlRcScreen() {
             <View style={form.formCard}>
               {wizardStep === "category" ? (
                 <>
-                  <View style={styles.vehicleList}>
-                    {sortedCategories.map((category) => {
-                      const inactive =
-                        !category.isActive ||
-                        !categoryHasActiveVehicles(sortedVehicleTypes, category.code);
-                      return (
+                  {catalogLoading ? (
+                    <View style={styles.catalogState}>
+                      <ActivityIndicator color={ACCENT_DARK} />
+                      <Text style={styles.catalogStateText}>{tx("catalogLoading")}</Text>
+                    </View>
+                  ) : catalogError ? (
+                    <ErrorBanner message={tx("catalogError")} />
+                  ) : sortedCategories.length === 0 ? (
+                    <ErrorBanner message={tx("catalogEmpty")} />
+                  ) : (
+                    <View style={styles.vehicleList}>
+                      {sortedCategories.map((category) => (
                         <VehicleOptionCard
                           key={category.code}
                           selected={categoryChoice === category.code}
-                          inactive={inactive}
                           title={category.label}
                           hint={buildCategoryHint(category, sortedVehicleTypes)}
                           icon={resolveVehicleIcon(category.icon)}
                           onPress={() => {
-                            if (inactive) return;
                             setCategoryChoice(category.code);
                             setVehicleChoice("");
-                            setError(null);
                           }}
                         />
-                      );
-                    })}
-                  </View>
-
-                  {error ? <ErrorBanner message={error} /> : null}
+                      ))}
+                    </View>
+                  )}
 
                   <ContinueButton
                     label={tx("continue")}
                     onPress={() => void handleCategoryContinue()}
-                    disabled={!canContinueCategory}
+                    disabled={!canContinueCategory || catalogLoading || catalogError}
                     loading={submitting}
                   />
                 </>
@@ -857,23 +994,29 @@ export default function DlRcScreen() {
 
               {wizardStep === "vehicle" ? (
                 <>
-                  <View style={styles.vehicleList}>
-                    {vehiclesInCategory.map((type) => (
-                      <VehicleOptionCard
-                        key={type.code}
-                        selected={vehicleChoice === type.code}
-                        inactive={!type.isActive}
-                        title={type.label}
-                        hint={type.hint ?? ""}
-                        icon={resolveVehicleIcon(type.icon)}
-                        onPress={() => {
-                          if (!type.isActive) return;
-                          setVehicleChoice(type.code);
-                          setError(null);
-                        }}
-                      />
-                    ))}
-                  </View>
+                  {catalogLoading ? (
+                    <View style={styles.catalogState}>
+                      <ActivityIndicator color={ACCENT_DARK} />
+                      <Text style={styles.catalogStateText}>{tx("catalogLoading")}</Text>
+                    </View>
+                  ) : vehiclesInCategory.length === 0 ? (
+                    <ErrorBanner message={tx("catalogEmpty")} />
+                  ) : (
+                    <View style={styles.vehicleList}>
+                      {vehiclesInCategory.map((type) => (
+                        <VehicleOptionCard
+                          key={type.code}
+                          selected={vehicleChoice === type.code}
+                          title={formatVehicleRowTitle(type)}
+                          hint={type.hint ?? ""}
+                          icon={resolveVehicleIcon(type.icon)}
+                          onPress={() => {
+                            setVehicleChoice(type.code);
+                          }}
+                        />
+                      ))}
+                    </View>
+                  )}
 
                   {selectedVehicleType?.infoMessage ? (
                     <View style={styles.rentalInfoCard}>
@@ -882,12 +1025,10 @@ export default function DlRcScreen() {
                     </View>
                   ) : null}
 
-                  {error ? <ErrorBanner message={error} /> : null}
-
                   <ContinueButton
                     label={tx("continue")}
                     onPress={() => void handleVehicleContinue()}
-                    disabled={!canContinueVehicle}
+                    disabled={!canContinueVehicle || catalogLoading}
                     loading={submitting}
                   />
                 </>
@@ -911,22 +1052,41 @@ export default function DlRcScreen() {
                     changePhotoLabel={tx("changePhoto")}
                     frontPhotoLabel={tx("frontLabel")}
                     backPhotoLabel={tx("backLabel")}
+                    checkingDuplicate={checkingDocDuplicate}
+                    alreadyRegistered={docAlreadyRegistered}
+                    duplicateWarning={
+                      wizardStep === "dl"
+                        ? tx("dlAlreadyRegistered")
+                        : wizardStep === "rc"
+                          ? tx("rcAlreadyRegistered")
+                          : undefined
+                    }
+                    optional={isOptionalDocStep}
+                    skipped={isDocSkipped(data, wizardStep)}
                   />
-
-                  {error ? <ErrorBanner message={error} /> : null}
 
                   <ContinueButton
                     label={
                       uploading
                         ? tx("uploading")
-                        : currentDocIndex >= dlRcRequiredDocs.length - 1
-                          ? tx("continue")
-                          : tx("nextRc")
+                        : continueToNextDocLabel(
+                            vehicleOnboardingDocs,
+                            currentDocIndex,
+                            tx("continue")
+                          )
                     }
                     onPress={() => void handleDocStepContinue()}
                     disabled={!canContinueDoc}
                     loading={submitting || uploading || saveStep.isPending}
                   />
+
+                  {isOptionalDocStep ? (
+                    <SkipDocumentButton
+                      label={tx("skipOptionalDoc")}
+                      onPress={() => void handleDocStepSkip()}
+                      disabled={uploading || submitting || saveStep.isPending}
+                    />
+                  ) : null}
                 </>
               ) : null}
             </View>
@@ -941,6 +1101,17 @@ const styles = StyleSheet.create({
   vehicleList: {
     gap: 10,
   },
+  catalogState: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingVertical: 28,
+  },
+  catalogStateText: {
+    fontSize: 13,
+    color: colors.gray[600],
+    textAlign: "center",
+  },
   vehicleCardOuter: {
     width: "100%",
     borderRadius: 14,
@@ -951,7 +1122,7 @@ const styles = StyleSheet.create({
   },
   vehicleCardRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     width: "100%",
     minHeight: 68,
     paddingVertical: 12,
@@ -973,13 +1144,14 @@ const styles = StyleSheet.create({
     width: 44,
     flexShrink: 0,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-start",
+    paddingTop: 2,
   },
   vehicleCenterCol: {
     flex: 1,
     flexShrink: 1,
     minWidth: 0,
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "center",
     paddingHorizontal: 10,
   },
@@ -987,7 +1159,8 @@ const styles = StyleSheet.create({
     width: 22,
     flexShrink: 0,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-start",
+    paddingTop: 4,
   },
   vehicleIconWrap: {
     width: 44,
@@ -1011,8 +1184,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: colors.gray[800],
-    textAlign: "center",
+    textAlign: "left",
     width: "100%",
+    lineHeight: 20,
     ...Platform.select({
       android: { includeFontPadding: false },
     }),
@@ -1027,7 +1201,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.gray[500],
     lineHeight: 16,
-    textAlign: "center",
+    textAlign: "left",
     width: "100%",
     marginTop: 2,
     ...Platform.select({

@@ -1,4 +1,5 @@
 import type { CustomerWeatherContext, MerchantWeatherContext, WeatherSeverity } from "./weather.types.js";
+import { extractWeatherPanelDetails } from "./weather.panel-details.js";
 import {
   dispatchPriorityBoostForSeverity,
   surgeEligibleForSeverity,
@@ -19,9 +20,12 @@ export function buildCustomerWeatherPresentation(args: {
   areaLabel?: string | null;
   etaDelayMinutes: number;
   updatedAt: string | null;
+  zoneKey?: string | null;
+  providerPayload?: Record<string, unknown> | null;
 }): CustomerWeatherContext {
   const area = (args.areaLabel ?? args.city ?? "your area").trim();
   const { severity } = args;
+  const details = extractWeatherPanelDetails(args.providerPayload);
 
   if (severity === "CLEAR") {
     return {
@@ -44,6 +48,8 @@ export function buildCustomerWeatherPresentation(args: {
       etaImpactLabel: null,
       trackingMessage: null,
       updatedAt: args.updatedAt,
+      zoneKey: args.zoneKey ?? null,
+      details,
       futureHooks: buildFutureHooks("CLEAR"),
     };
   }
@@ -102,6 +108,8 @@ export function buildCustomerWeatherPresentation(args: {
     etaImpactLabel,
     trackingMessage,
     updatedAt: args.updatedAt,
+    zoneKey: args.zoneKey ?? null,
+    details,
     futureHooks: buildFutureHooks(severity),
   };
 }

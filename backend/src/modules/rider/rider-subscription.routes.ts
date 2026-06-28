@@ -2,6 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { formatSubscriptionWalletError } from "../../lib/rider-subscription-wallet.js";
 import {
+  createRiderSubscriptionDuesPaymentOrder,
+  verifyRiderSubscriptionDuesPayment,
+} from "../../lib/rider-subscription-dues-payment.service.js";
+import {
   createRiderSubscriptionPaymentOrder,
   getRiderSubscriptionStatus,
   listRiderSubscriptionPlans,
@@ -138,6 +142,51 @@ export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
       return reply.code(result.status).send({ success: false, error: result.error });
     }
     return reply.send({ success: true, ...result });
+  });
+
+  app.post("/subscription/dues/create-payment-order", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const result = await createRiderSubscriptionDuesPaymentOrder(riderId);
+    if (!result.ok) {
+      return reply.code(result.status).send({ success: false, error: result.error });
+    }
+    return reply.send({
+      success: true,
+      orderId: result.orderId,
+      keyId: result.keyId,
+      amount: result.amount,
+      amountRupees: result.amountRupees,
+      currency: result.currency,
+      dummyMode: result.dummyMode,
+      totalDue: result.totalDue,
+    });
+  });
+
+  app.post("/subscription/dues/verify-payment", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const body = z
+      .object({
+        razorpayOrderId: z.string().min(1),
+        razorpayPaymentId: z.string().min(1),
+        razorpaySignature: z.string().min(1),
+      })
+      .parse(req.body ?? {});
+    const result = await verifyRiderSubscriptionDuesPayment({
+      riderId,
+      razorpayOrderId: body.razorpayOrderId,
+      razorpayPaymentId: body.razorpayPaymentId,
+      razorpaySignature: body.razorpaySignature,
+    });
+    if (!result.ok) {
+      return reply.code(result.status).send({ success: false, error: result.error });
+    }
+    return reply.send({ ...result, success: true });
   });
 
   app.post("/subscription/pay-dues", async (req, reply) => {

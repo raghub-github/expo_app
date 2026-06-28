@@ -118,6 +118,15 @@ export function ProfileMenuSections({
             subtitleTone: notificationsEnabled ? "success" : "warning",
             onPress: () => router.push("/notification-settings"),
           },
+          {
+            key: "device-sessions",
+            icon: "phone-portrait-outline",
+            iconColor: "#4F46E5",
+            iconBg: "#EEF2FF",
+            title: t("profile.deviceSessions.menu", "Logged-in devices"),
+            subtitle: t("profile.deviceSessions.menuSub", "Manage sessions & log out others"),
+            onPress: () => router.push("/device-sessions"),
+          },
         ]}
       />
 
@@ -154,8 +163,11 @@ export function ProfileMenuSections({
             iconColor: "#7C3AED",
             iconBg: "#EDE9FE",
             title: t("profile.teamLeader.menu", "Connect with Team Leader"),
-            subtitle: t("profile.teamLeader.menuSub", "Call or chat with coordinator"),
-            onPress: () => router.push("/team-leader"),
+            subtitle: t(
+              "profile.teamLeader.temporarilyUnavailable",
+              "Temporarily unavailable"
+            ),
+            disabled: true,
           },
         ]}
       />

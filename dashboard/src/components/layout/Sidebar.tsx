@@ -1,6 +1,7 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useMemo, memo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";

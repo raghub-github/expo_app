@@ -3,6 +3,8 @@ import type { FastifyInstance } from "fastify";
 import {
   listStores,
   getMenuByStoreId,
+  getMenuVersion,
+  getMenuDelta,
   getStoreLiveStatus,
   getMenuItemFullConfig,
   getOrderedTogetherPairs,
@@ -26,6 +28,7 @@ import {
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import type { MerchantMenuItemRow } from "./merchant.types.js";
+import { getSupabase } from "../../lib/supabase.js";
 
 function toFiniteInt(v: unknown): number | undefined {
   if (v == null || v === "") return undefined;
@@ -99,6 +102,10 @@ const searchQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional().default(0),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
+  veg: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
 });
 
 const nearbyStoresQuerySchema = z.object({
@@ -181,6 +188,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 nextCloseAt: z.union([z.string(), z.number()]).nullable().optional(),
                 nextOpenAt: z.union([z.string(), z.number()]).nullable().optional(),
                 completedOrderCount: z.number().optional(),
+                packagingChargeAmount: z.number().nullable().optional(),
               })
             ),
           }),
@@ -200,6 +208,51 @@ export async function merchantRoutes(app: FastifyInstance) {
       const storeInternalIds = items
         .map((s) => Number((s as { id?: number }).id))
         .filter((id) => Number.isFinite(id) && id > 0);
+      const mediaByStoreId = new Map<
+        number,
+        {
+          banner_url: string | null;
+          gallery_images: string[] | null;
+          packaging_charge_amount: number | null;
+        }
+      >();
+      if (storeInternalIds.length > 0) {
+        try {
+          const supabase = getSupabase();
+          const { data: mediaRows, error: mediaErr } = await supabase
+            .from("merchant_stores")
+            .select("id, banner_url, gallery_images, packaging_charge_amount")
+            .in("id", storeInternalIds);
+          if (mediaErr) throw mediaErr;
+          for (const row of (mediaRows ??
+            []) as Array<{
+            id: number;
+            banner_url?: string | null;
+            gallery_images?: string[] | null;
+            packaging_charge_amount?: number | string | null;
+          }>) {
+            const packagingRaw = row.packaging_charge_amount;
+            const packagingNum =
+              packagingRaw != null && packagingRaw !== ""
+                ? Number(packagingRaw)
+                : null;
+            mediaByStoreId.set(Number(row.id), {
+              banner_url: row.banner_url ?? null,
+              gallery_images: Array.isArray(row.gallery_images)
+                ? row.gallery_images.filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+                : null,
+              packaging_charge_amount:
+                packagingNum != null && Number.isFinite(packagingNum) ? packagingNum : null,
+            });
+          }
+        } catch (err) {
+          const e = err as { code?: string; message?: string };
+          request.log.warn(
+            { code: e?.code, msg: e?.message },
+            "merchant-list media enrichment failed; proceeding with RPC media fields"
+          );
+        }
+      }
       // These four lookups enrich the card (offer labels, rating, schedule,
       // order count) but none of them are load-bearing — if any one fails
       // (e.g. pgBouncer statement_timeout under burst load), we still want
@@ -241,14 +294,25 @@ export async function merchantRoutes(app: FastifyInstance) {
       const body = items.map((s) => {
         const nearby = s as NearbyStoreRow;
         const storeInternalId = Number(s.id);
+        const mediaRow =
+          Number.isFinite(storeInternalId) && storeInternalId > 0
+            ? mediaByStoreId.get(storeInternalId)
+            : undefined;
+        const mediaGallery = Array.isArray(mediaRow?.gallery_images)
+          ? mediaRow?.gallery_images ?? []
+          : [];
         const displayImageRaw =
           nearby.display_image ??
           s.banner_url ??
+          mediaRow?.banner_url ??
           (Array.isArray(s.gallery_images) && s.gallery_images[0] ? s.gallery_images[0] : null) ??
+          (mediaGallery[0] ?? null) ??
           null;
         const displayImage = toAbsoluteClientMediaUrl(displayImageRaw);
-        const bannerAbs = toAbsoluteClientMediaUrl(s.banner_url ?? null);
-        const galleryRaw = Array.isArray(s.gallery_images) ? s.gallery_images : [];
+        const bannerAbs = toAbsoluteClientMediaUrl(s.banner_url ?? mediaRow?.banner_url ?? null);
+        const galleryRaw = Array.isArray(s.gallery_images) && s.gallery_images.length > 0
+          ? s.gallery_images
+          : mediaGallery;
         const galleryImages = galleryRaw
           .map((u) => toAbsoluteClientMediaUrl(typeof u === "string" ? u : null))
           .filter((u): u is string => Boolean(u))
@@ -321,6 +385,10 @@ export async function merchantRoutes(app: FastifyInstance) {
           completedOrderCount:
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? orderCounts.get(storeInternalId) ?? 0
+              : 0,
+          packagingChargeAmount:
+            Number.isFinite(storeInternalId) && storeInternalId > 0
+              ? mediaByStoreId.get(storeInternalId)?.packaging_charge_amount ?? 0
               : 0,
         };
       });
@@ -571,6 +639,102 @@ export async function merchantRoutes(app: FastifyInstance) {
   );
 
   const menuQuerystringSchema = z.object({ q: z.string().max(200).optional() });
+  const menuDeltaQuerystringSchema = z.object({
+    sinceVersion: z.coerce.number().int().nonnegative(),
+  });
+
+  // GET /v1/merchants/:id/menu/version – lightweight version check (<200 bytes).
+  app.get<{ Params: { id: string } }>(
+    "/merchants/:id/menu/version",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            menuVersion: z.number(),
+            etag: z.string(),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const version = await getMenuVersion(id);
+      if (!version) return reply.status(404).send({ error: "Store not found" });
+      return reply.send(version);
+    }
+  );
+
+  // GET /v1/merchants/:id/menu/delta?sinceVersion= – changed items only (SWR).
+  app.get<{
+    Params: { id: string };
+    Querystring: z.infer<typeof menuDeltaQuerystringSchema>;
+  }>(
+    "/merchants/:id/menu/delta",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: menuDeltaQuerystringSchema,
+        response: {
+          200: z.object({
+            menuVersion: z.number(),
+            unchanged: z.boolean().optional(),
+            requiresFullSync: z.boolean().optional(),
+            deletedItemIds: z.array(z.string()).optional(),
+            changedItems: z
+              .array(
+                z.object({
+                  id: z.string(),
+                  menuItemId: z.number(),
+                  name: z.string(),
+                  description: z.string().optional(),
+                  price: z.number(),
+                  basePrice: z.number().optional(),
+                  imageUrl: z.string().nullable().optional(),
+                  isVeg: z.boolean(),
+                  foodType: z.string().optional(),
+                  spiceLevel: z.string().optional(),
+                  category: z.string().optional(),
+                  categoryId: z.number().nullable().optional(),
+                  categoryName: z.string().nullable().optional(),
+                  isPopular: z.boolean().optional(),
+                  isRecommended: z.boolean().optional(),
+                  prepTimeMinutes: z.number().optional(),
+                  discountPercentage: z.number().optional(),
+                  hasCustomizations: z.boolean().optional(),
+                  hasAddons: z.boolean().optional(),
+                  hasVariants: z.boolean().optional(),
+                  inStock: z.boolean().optional(),
+                })
+              )
+              .optional(),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const sinceVersion = Number((request.query as { sinceVersion?: number }).sinceVersion ?? 0);
+      const delta = await getMenuDelta(id, sinceVersion);
+      if (!delta) return reply.status(404).send({ error: "Store not found" });
+
+      const changedItems =
+        delta.changedRows
+          ?.map((m) => mapCustomerMenuItem(m))
+          .filter((row): row is NonNullable<ReturnType<typeof mapCustomerMenuItem>> => row != null) ??
+        [];
+
+      return reply.send({
+        menuVersion: delta.menuVersion,
+        unchanged: delta.unchanged,
+        requiresFullSync: delta.requiresFullSync,
+        deletedItemIds: delta.deletedItemIds,
+        changedItems: changedItems.length > 0 ? changedItems : undefined,
+      });
+    }
+  );
 
   // GET /v1/merchants/:id/menu – store detail + menu (id = store_id string). Optional ?q= filters menu by item name.
   app.get<{ Params: { id: string }; Querystring: z.infer<typeof menuQuerystringSchema> }>(
@@ -625,6 +789,8 @@ export async function merchantRoutes(app: FastifyInstance) {
             liveStatus: z.enum(["OPEN", "CLOSED"]).optional(),
             nextOpenAt: z.string().nullable().optional(),
             nextCloseAt: z.string().nullable().optional(),
+            menuVersion: z.number().optional(),
+            etag: z.string().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -633,6 +799,15 @@ export async function merchantRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params;
       const q = (request.query as { q?: string }).q;
+
+      const versionInfo = q?.trim() ? null : await getMenuVersion(id);
+      if (versionInfo) {
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch === versionInfo.etag) {
+          return reply.status(304).send();
+        }
+      }
+
       const { store, items } = await getMenuByStoreId(id, q);
       if (!store) {
         return reply.status(404).send({ error: "Store not found" });
@@ -702,6 +877,8 @@ export async function merchantRoutes(app: FastifyInstance) {
         totalReviews: rating?.totalReviews ?? null,
         nextOpenAt: sched?.nextOpenAt ?? null,
         nextCloseAt: sched?.nextCloseAt ?? null,
+        menuVersion: versionInfo?.menuVersion,
+        etag: versionInfo?.etag,
       });
     }
   );
@@ -745,6 +922,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         offset: q.offset,
         lat: q.lat,
         lng: q.lng,
+        veg_mode: q.veg ?? false,
       });
       const storeMap = new Map(stores.map((s) => [s.id, s]));
       const dishes = items.map((m) => {

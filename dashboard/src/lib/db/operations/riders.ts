@@ -450,9 +450,16 @@ function checkIdentityDocsVerifiedFromList(
   }
 
   const hasSelfie = docs.some((d) => d.docType === "selfie" && d.verified);
-  const hasPan = docs.some((d) => d.docType === "pan" && d.verified);
 
-  return hasAadhaar && hasSelfie && hasPan;
+  return hasAadhaar && hasSelfie && isPanIdentityRequirementMet(docs);
+}
+
+function isPanIdentityRequirementMet(
+  docs: Array<{ docType: string; verified?: boolean | null }>
+): boolean {
+  const panDoc = docs.find((d) => d.docType === "pan");
+  if (!panDoc) return true;
+  return Boolean(panDoc.verified);
 }
 
 // Helper function to check vehicle docs from list

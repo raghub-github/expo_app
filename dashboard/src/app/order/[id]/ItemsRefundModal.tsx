@@ -1,6 +1,7 @@
 'use client';
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { usePermission } from '@/hooks/usePermission';
 
@@ -541,6 +542,12 @@ export default function ItemsRefundModal({
   const [imagePanelLoading, setImagePanelLoading] = useState(false);
 
   const isThreePlFaultSelected = fault === '3pl_fault' || fault === '3pl';
+  const isMerchantOrCustomerFault =
+    fault === 'merchant_fault' || fault === 'customer_fault';
+  const isExceptionalFault = fault === 'exceptional';
+  const isCompactConfirmModal = isMerchantOrCustomerFault || isExceptionalFault;
+  const showEnginePreviewInConfirm =
+    !isThreePlFaultSelected && !isMerchantOrCustomerFault && !isExceptionalFault;
 
   const fetchRiderPenaltyPreview = useCallback(
     async (orderId: number, riderId?: number | null) => {
@@ -1159,7 +1166,7 @@ export default function ItemsRefundModal({
       try {
         if (isThreePlFaultSelected) {
           await fetchRiderPenaltyPreview(orderId);
-        } else {
+        } else if (showEnginePreviewInConfirm) {
           const totalAmount = calculateTotalRefundAmount();
           const previewAmount =
             refundType === 'refund_with_cancellation'
@@ -1387,8 +1394,16 @@ export default function ItemsRefundModal({
     <>
       {showWarning && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[10000] p-5">
-          <div className="bg-white rounded-xl w-full max-w-[min(1000px,94vw)] shadow-[0_20px_40px_rgba(0,0,0,0.3)] animate-[fadeIn_0.3s_ease] overflow-hidden">
-            <div className="flex items-center justify-between px-5 pt-5 pb-1">
+          <div
+            className={`bg-white rounded-xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.3)] animate-[fadeIn_0.3s_ease] overflow-hidden ${
+              isCompactConfirmModal ? 'max-w-md' : 'max-w-[min(1000px,94vw)]'
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between ${
+                isCompactConfirmModal ? 'px-4 pt-4 pb-1' : 'px-5 pt-5 pb-1'
+              }`}
+            >
               <h3 className="text-lg font-semibold text-slate-900 flex items-center gap-2.5 m-0">
                 <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" strokeWidth={2.25} />
                 Confirm Refund
@@ -1403,13 +1418,30 @@ export default function ItemsRefundModal({
               </button>
             </div>
 
-            <div className="px-5 pb-5">
-              <p className="text-sm text-slate-500 leading-snug mb-3 m-0 whitespace-nowrap">
-                You are about to create a refund. Once submitted, this action cannot be undone.{' '}
-                You will be responsible for this refund.
-              </p>
+            <div className={isCompactConfirmModal ? 'px-4 pb-4' : 'px-5 pb-5'}>
+              {isExceptionalFault ? (
+                <div className="rounded-lg border border-violet-200 bg-violet-50 px-3.5 py-3 mb-4">
+                  <p className="text-sm text-violet-950 leading-relaxed m-0">
+                    This resolution will charge the compensation or refund from GatiMitra&apos;s
+                    account, not from the customer, rider, or merchant. Please verify all case
+                    details before proceeding.
+                  </p>
+                </div>
+              ) : isMerchantOrCustomerFault ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 mb-4">
+                  <p className="text-sm text-slate-600 leading-relaxed m-0">
+                    You are about to create a refund. Once submitted, this action cannot be undone.
+                    You will be responsible for this refund.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500 leading-relaxed mb-3 m-0">
+                  You are about to create a refund. Once submitted, this action cannot be undone.{' '}
+                  You will be responsible for this refund.
+                </p>
+              )}
 
-              {previewLoading && !isThreePlFaultSelected && (
+              {previewLoading && showEnginePreviewInConfirm && (
                 <p className="mb-4 flex items-center gap-2 text-sm text-slate-500">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Calculating rule engine outcome…
@@ -1519,7 +1551,7 @@ export default function ItemsRefundModal({
                 </div>
               )}
 
-              {!isThreePlFaultSelected && enginePreview && !previewLoading && (
+              {showEnginePreviewInConfirm && enginePreview && !previewLoading && (
                 <div className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 text-xs text-slate-700">
                   <p className="font-semibold text-indigo-900">Financial Rule Engine preview</p>
                   <p className="mt-1 text-[11px] text-slate-500">
@@ -1563,7 +1595,7 @@ export default function ItemsRefundModal({
                 </div>
               )}
 
-              <div className="flex justify-end gap-3 mt-4">
+              <div className={`flex justify-end gap-3 ${isCompactConfirmModal ? 'mt-2' : 'mt-4'}`}>
                 <button
                   type="button"
                   onClick={cancelRefund}

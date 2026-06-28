@@ -73,6 +73,7 @@ export const documentTypeEnum = pgEnum("document_type", [
   "selfie",
   "rental_proof",
   "ev_proof",
+  "onboarding_vehicle_selection",
   "insurance",
   "bank_proof",
   "upi_qr_proof",
@@ -675,7 +676,7 @@ export const customers = pgTable(
     accountStatus: customerStatusEnum("account_status").notNull().default("ACTIVE"),
     statusReason: text("status_reason"),
     riskFlag: riskLevelEnum("risk_flag").default("LOW"),
-    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("5.0"),
     fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
     walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),
     walletLockedAmount: numeric("wallet_locked_amount", { precision: 12, scale: 2 }).default("0.0"),
@@ -1038,7 +1039,8 @@ export const riderVehicles = pgTable(
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
     vehicleType: vehicleTypeEnum("vehicle_type").notNull(),
-    fuelType: fuelTypeEnum("fuel_type"),
+    /** TEXT or fuel_type enum in production — app layer resolves the stored label. */
+    fuelType: text("fuel_type"),
     vehicleCategory: text("vehicle_category"),
     vehicleNumber: text("vehicle_number"),
     isCommercial: boolean("is_commercial").notNull().default(false),
@@ -1168,6 +1170,30 @@ export const riderOnboardingVehicleCategories = pgTable(
 );
 
 /**
+ * Super-admin: which dispatch services each vehicle category may receive offers for.
+ */
+export const riderVehicleCategoryServiceAssignments = pgTable(
+  "rider_vehicle_category_service_assignments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    categoryCode: text("category_code")
+      .notNull()
+      .references((): any => riderOnboardingVehicleCategories.code, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(),
+    isAssigned: boolean("is_assigned").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    categoryServiceUq: uniqueIndex("rider_vcsa_category_service_uq").on(
+      table.categoryCode,
+      table.serviceType
+    ),
+    categoryIdx: index("rider_vcsa_category_idx").on(table.categoryCode),
+  })
+);
+
+/**
  * Rider onboarding vehicle types — super-admin catalog for operating vehicle selection UI.
  */
 export const riderOnboardingVehicleTypes = pgTable(
@@ -1196,6 +1222,30 @@ export const riderOnboardingVehicleTypes = pgTable(
       table.sortOrder,
       table.id
     ),
+  })
+);
+
+/**
+ * Super-admin: per onboarding vehicle type → dispatch service (granular vs category).
+ */
+export const riderOnboardingVehicleTypeServiceAssignments = pgTable(
+  "rider_onboarding_vehicle_type_service_assignments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    vehicleTypeCode: text("vehicle_type_code")
+      .notNull()
+      .references((): any => riderOnboardingVehicleTypes.code, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(),
+    isAssigned: boolean("is_assigned").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vehicleServiceUq: uniqueIndex("rider_ovtsa_vehicle_service_uq").on(
+      table.vehicleTypeCode,
+      table.serviceType
+    ),
+    vehicleIdx: index("rider_ovtsa_vehicle_idx").on(table.vehicleTypeCode),
   })
 );
 
@@ -1402,6 +1452,11 @@ export const riderLocationEvents = pgTable(
     userDeviceIdx: index("rider_location_events_user_device_idx").on(
       table.userId,
       table.deviceId
+    ),
+    userDeviceTsIdx: index("rider_location_events_user_device_ts_idx").on(
+      table.userId,
+      table.deviceId,
+      table.tsMs
     ),
   })
 );
@@ -2343,15 +2398,33 @@ export const deliveryAssignments = pgTable(
   })
 );
 
-export const riderLiveLocations = pgTable("rider_live_locations", {
-  riderId: integer("rider_id").primaryKey().references(() => riders.id, { onDelete: "cascade" }),
-  latitude: numeric("latitude", { precision: 10, scale: 7 }).notNull(),
-  longitude: numeric("longitude", { precision: 10, scale: 7 }).notNull(),
-  speedKmh: numeric("speed_kmh", { precision: 5, scale: 2 }),
-  heading: numeric("heading", { precision: 6, scale: 2 }),
-  accuracyMeters: numeric("accuracy_meters", { precision: 6, scale: 2 }),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+/** Latest rider GPS — one UPSERT row per rider; dispatch source of truth. */
+export const riderCurrentLocations = pgTable(
+  "rider_current_locations",
+  {
+    userId: text("user_id").primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .unique()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    deviceId: text("device_id"),
+    lat: doublePrecision("lat").notNull(),
+    lng: doublePrecision("lng").notNull(),
+    accuracyM: doublePrecision("accuracy_m"),
+    speedMps: doublePrecision("speed_mps"),
+    headingDeg: doublePrecision("heading_deg"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_current_locations_rider_id_idx").on(table.riderId),
+    updatedAtIdx: index("rider_current_locations_updated_at_idx").on(table.updatedAt),
+    lastSeenAtIdx: index("rider_current_locations_last_seen_at_idx").on(table.lastSeenAt),
+  })
+);
+
+/** @deprecated Read-only SQL view alias — use riderCurrentLocations in application code. */
+export const riderLiveLocations = riderCurrentLocations;
 
 export const riderLocationHistory = pgTable(
   "rider_location_history",
@@ -4697,6 +4770,210 @@ export const riderIncentiveParticipationRelations = relations(riderIncentivePart
   rider:     one(riders,          { fields: [riderIncentiveParticipation.riderId],    references: [riders.id] }),
   incentive: one(riderIncentives, { fields: [riderIncentiveParticipation.incentiveId], references: [riderIncentives.id] }),
 }));
+
+// ============================================================================
+// RIDER INCENTIVE ENGINE (V1 — state-scoped programs, PRD 0354)
+// ============================================================================
+
+export const incentivePrograms = pgTable(
+  "incentive_programs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").notNull().unique(),
+    name: text("name").notNull(),
+    description: text("description"),
+    service: text("service").notNull(),
+    vehicleType: text("vehicle_type"),
+    status: text("status").notNull().default("draft"),
+    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+    endAt: timestamp("end_at", { withTimezone: true }).notNull(),
+    timezone: text("timezone").notNull().default("Asia/Kolkata"),
+    recurrenceType: text("recurrence_type").notNull().default("one_time"),
+    slotMode: text("slot_mode").notNull().default("all_day"),
+    slotDayMode: text("slot_day_mode").notNull().default("full_week"),
+    activeDays: jsonb("active_days").notNull().default([]),
+    calendarBadges: jsonb("calendar_badges").notNull().default([]),
+    geoScopeMode: text("geo_scope_mode").notNull().default("selected_states"),
+    visibilityMode: text("visibility_mode").notNull().default("scoped_visible"),
+    requiresGmitraMax: boolean("requires_gmitra_max").notNull().default(true),
+    showToNonSubscribers: boolean("show_to_non_subscribers").notNull().default(true),
+    showBeforeEligible: boolean("show_before_eligible").notNull().default(true),
+    rewardType: text("reward_type").notNull(),
+    payoutMode: text("payout_mode").notNull().default("manual_approve"),
+    payoutCapMode: text("payout_cap_mode").notNull().default("top_n"),
+    maxWinners: integer("max_winners"),
+    maxTotalPayout: numeric("max_total_payout", { precision: 12, scale: 2 }),
+    maxPayoutPerRider: numeric("max_payout_per_rider", { precision: 12, scale: 2 }),
+    stopOnBudgetExhaust: boolean("stop_on_budget_exhaust").notNull().default(false),
+    sortBasis: text("sort_basis"),
+    tieBreaker: text("tie_breaker"),
+    isActive: boolean("is_active").notNull().default(false),
+    isPaused: boolean("is_paused").notNull().default(false),
+    createdBy: integer("created_by"),
+    updatedBy: integer("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    serviceStatusIdx: index("incentive_programs_service_status_idx").on(table.service, table.status),
+    activeDatesIdx: index("incentive_programs_active_dates_idx").on(table.isActive, table.startAt, table.endAt),
+  }),
+);
+
+export const incentiveProgramGeoScopes = pgTable(
+  "incentive_program_geo_scopes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => incentivePrograms.id, { onDelete: "cascade" }),
+    scopeType: text("scope_type").notNull(),
+    stateId: uuid("state_id"),
+    cityId: uuid("city_id"),
+    zoneId: uuid("zone_id"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    programIdx: index("incentive_program_geo_scopes_program_idx").on(table.programId),
+    stateIdx: index("incentive_program_geo_scopes_state_idx").on(table.stateId),
+  }),
+);
+
+export const incentiveProgramRules = pgTable("incentive_program_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  programId: uuid("program_id")
+    .notNull()
+    .unique()
+    .references(() => incentivePrograms.id, { onDelete: "cascade" }),
+  minCompletedOrders: integer("min_completed_orders"),
+  minAcceptedOrders: integer("min_accepted_orders"),
+  minActiveMinutes: integer("min_active_minutes"),
+  minAcceptanceRate: numeric("min_acceptance_rate", { precision: 5, scale: 2 }),
+  maxCancellationRate: numeric("max_cancellation_rate", { precision: 5, scale: 2 }),
+  minCustomerRating: numeric("min_customer_rating", { precision: 3, scale: 2 }),
+  minLoginDays: integer("min_login_days"),
+  minPeakSlotOrders: integer("min_peak_slot_orders"),
+  maxFraudScore: integer("max_fraud_score").default(0),
+  excludeSuspendedRiders: boolean("exclude_suspended_riders").notNull().default(true),
+  excludeLowRatingRiders: boolean("exclude_low_rating_riders").notNull().default(false),
+  excludeIfAnyFraudFlag: boolean("exclude_if_any_fraud_flag").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const incentiveProgramTimeWindows = pgTable(
+  "incentive_program_time_windows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => incentivePrograms.id, { onDelete: "cascade" }),
+    dayOfWeek: integer("day_of_week"),
+    startTime: text("start_time").notNull(),
+    endTime: text("end_time").notNull(),
+    label: text("label"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    programIdx: index("incentive_program_time_windows_program_idx").on(table.programId),
+  }),
+);
+
+export const incentiveProgramRewardTiers = pgTable(
+  "incentive_program_reward_tiers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => incentivePrograms.id, { onDelete: "cascade" }),
+    tierNo: integer("tier_no").notNull(),
+    tierType: text("tier_type").notNull(),
+    minOrders: integer("min_orders"),
+    maxOrders: integer("max_orders"),
+    rankFrom: integer("rank_from"),
+    rankTo: integer("rank_to"),
+    rewardAmount: numeric("reward_amount", { precision: 12, scale: 2 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    programIdx: index("incentive_program_reward_tiers_program_idx").on(table.programId, table.tierNo),
+  }),
+);
+
+export const riderIncentiveProgress = pgTable(
+  "rider_incentive_progress",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => incentivePrograms.id, { onDelete: "cascade" }),
+    riderUserId: text("rider_user_id").notNull(),
+    riderId: integer("rider_id").references(() => riders.id, { onDelete: "set null" }),
+    stateId: uuid("state_id"),
+    service: text("service").notNull(),
+    cycleStartAt: timestamp("cycle_start_at", { withTimezone: true }).notNull(),
+    cycleEndAt: timestamp("cycle_end_at", { withTimezone: true }).notNull(),
+    completedOrders: integer("completed_orders").notNull().default(0),
+    acceptedOrders: integer("accepted_orders").notNull().default(0),
+    cancelledOrders: integer("cancelled_orders").notNull().default(0),
+    activeMinutes: integer("active_minutes").notNull().default(0),
+    grossEarnings: numeric("gross_earnings", { precision: 12, scale: 2 }).notNull().default("0"),
+    acceptanceRate: numeric("acceptance_rate", { precision: 5, scale: 2 }),
+    cancellationRate: numeric("cancellation_rate", { precision: 5, scale: 2 }),
+    customerRating: numeric("customer_rating", { precision: 3, scale: 2 }),
+    fraudScore: integer("fraud_score").notNull().default(0),
+    fraudFlags: jsonb("fraud_flags").notNull().default([]),
+    visible: boolean("visible").notNull().default(false),
+    baseEligible: boolean("base_eligible").notNull().default(false),
+    rankEligible: boolean("rank_eligible").notNull().default(false),
+    winnerSelected: boolean("winner_selected").notNull().default(false),
+    disqualified: boolean("disqualified").notNull().default(false),
+    riderStatus: text("rider_status").notNull().default("NOT_ELIGIBLE_YET"),
+    projectedReward: numeric("projected_reward", { precision: 12, scale: 2 }),
+    finalReward: numeric("final_reward", { precision: 12, scale: 2 }),
+    rankPosition: integer("rank_position"),
+    payoutStatus: text("payout_status"),
+    lastEvaluatedAt: timestamp("last_evaluated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    programIdx: index("rider_incentive_progress_program_idx").on(table.programId),
+    riderUserIdx: index("rider_incentive_progress_rider_idx").on(table.riderUserId),
+    programRiderIdx: index("rider_incentive_progress_program_rider_idx").on(table.programId, table.riderUserId),
+    cycleUniq: uniqueIndex("rider_incentive_progress_cycle_uniq").on(
+      table.programId,
+      table.riderUserId,
+      table.cycleStartAt,
+      table.cycleEndAt,
+    ),
+  }),
+);
+
+export const incentiveRewardLedger = pgTable(
+  "incentive_reward_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => incentivePrograms.id),
+    riderUserId: text("rider_user_id").notNull(),
+    riderProgressId: uuid("rider_progress_id").references(() => riderIncentiveProgress.id, { onDelete: "set null" }),
+    rewardAmount: numeric("reward_amount", { precision: 12, scale: 2 }).notNull(),
+    rewardStatus: text("reward_status").notNull().default("pending"),
+    approvalNote: text("approval_note"),
+    creditedAt: timestamp("credited_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    programIdx: index("incentive_reward_ledger_program_idx").on(table.programId),
+    riderIdx: index("incentive_reward_ledger_rider_idx").on(table.riderUserId),
+    statusIdx: index("incentive_reward_ledger_status_idx").on(table.rewardStatus),
+  }),
+);
 
 // ============================================================================
 // MERCHANT OFFER RELATIONS

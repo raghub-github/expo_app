@@ -95,6 +95,7 @@ export type BillContext = {
    */
   deliveryPricingEngine?:
     | "slab_geo"
+    | "fallback_slab"
     | "fallback_per_km"
     | "no_slab_configured"
     | "no_geo_match"

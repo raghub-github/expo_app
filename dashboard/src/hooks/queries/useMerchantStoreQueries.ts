@@ -1,6 +1,7 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { STORE_KEY } from "@/hooks/useStore";

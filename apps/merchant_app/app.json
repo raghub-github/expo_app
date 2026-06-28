@@ -8,7 +8,7 @@
     "userInterfaceStyle": "automatic",
     "icon": "./assets/onlylogo.png",
     "splash": {
-      "image": "./assets/wlcm.png",
+      "image": "./assets/onlylogo.png",
       "backgroundColor": "#16A34A"
     },
     "androidStatusBar": {

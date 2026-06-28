@@ -73,6 +73,7 @@ export const documentTypeEnum = pgEnum("document_type", [
   "selfie",
   "rental_proof",
   "ev_proof",
+  "onboarding_vehicle_selection",
   "insurance",
   "bank_proof",
   "upi_qr_proof",
@@ -1547,6 +1548,30 @@ export const riderOnboardingVehicleCategories = pgTable(
 );
 
 /**
+ * Super-admin: which dispatch services each vehicle category may receive offers for.
+ */
+export const riderVehicleCategoryServiceAssignments = pgTable(
+  "rider_vehicle_category_service_assignments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    categoryCode: text("category_code")
+      .notNull()
+      .references((): any => riderOnboardingVehicleCategories.code, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(),
+    isAssigned: boolean("is_assigned").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    categoryServiceUq: uniqueIndex("rider_vcsa_category_service_uq").on(
+      table.categoryCode,
+      table.serviceType
+    ),
+    categoryIdx: index("rider_vcsa_category_idx").on(table.categoryCode),
+  })
+);
+
+/**
  * Rider onboarding vehicle types — super-admin catalog for operating vehicle selection UI.
  */
 export const riderOnboardingVehicleTypes = pgTable(
@@ -1575,6 +1600,27 @@ export const riderOnboardingVehicleTypes = pgTable(
       table.sortOrder,
       table.id
     ),
+  })
+);
+
+export const riderOnboardingVehicleTypeServiceAssignments = pgTable(
+  "rider_onboarding_vehicle_type_service_assignments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    vehicleTypeCode: text("vehicle_type_code")
+      .notNull()
+      .references((): any => riderOnboardingVehicleTypes.code, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(),
+    isAssigned: boolean("is_assigned").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vehicleServiceUq: uniqueIndex("rider_ovtsa_vehicle_service_uq").on(
+      table.vehicleTypeCode,
+      table.serviceType
+    ),
+    vehicleIdx: index("rider_ovtsa_vehicle_idx").on(table.vehicleTypeCode),
   })
 );
 
@@ -2576,7 +2622,7 @@ export const customers = pgTable(
     accountStatus: customerStatusEnum("account_status").notNull().default("ACTIVE"),
     statusReason: text("status_reason"),
     riskFlag: riskLevelEnum("risk_flag").default("LOW"),
-    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("5.0"),
     trustTier: customerTrustTierEnum("trust_tier"),
     fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
     walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),

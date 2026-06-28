@@ -30,6 +30,10 @@ export interface SaveOnboardingStepRequest {
     dlNumber?: string;
     rcNumber?: string;
     hasOwnVehicle?: boolean;
+    vehicleChoice?: string;
+    vehicleCategoryCode?: string;
+    onboardingFlow?: "dl_rc" | "rental_ev" | "payment";
+    submitVehicleDocs?: boolean;
     rentalProofSignedUrl?: string;
     evProofSignedUrl?: string;
     maxSpeedDeclaration?: number;
@@ -211,6 +215,109 @@ export function useRiderStatus(riderId: string | undefined) {
       if (isRiderNotFoundError(error) || isUnauthorizedError(error)) return false;
       return failureCount < 2;
     },
+  });
+}
+
+export type CheckAadhaarResponse = {
+  registered: boolean;
+};
+
+/** Live check: is this Aadhaar already linked to another rider? */
+export function useAadhaarRegistrationCheck(aadhaarDigits: string, riderId?: string) {
+  const session = useSessionStore((s) => s.session);
+
+  return useQuery({
+    queryKey: ["onboarding", "check-aadhaar", aadhaarDigits, riderId],
+    queryFn: async (): Promise<CheckAadhaarResponse> => {
+      if (!session?.accessToken) {
+        throw new Error("Not authenticated");
+      }
+      return postJson<CheckAadhaarResponse>(
+        `${API_BASE()}/v1/onboarding/check-aadhaar`,
+        { aadhaarNumber: aadhaarDigits, riderId },
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+    enabled: aadhaarDigits.length === 12 && Boolean(session?.accessToken),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export type CheckPanResponse = {
+  registered: boolean;
+};
+
+/** Live check: is this PAN already linked to another rider? */
+export function usePanRegistrationCheck(panValue: string, riderId?: string) {
+  const session = useSessionStore((s) => s.session);
+  const pan = panValue.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+
+  return useQuery({
+    queryKey: ["onboarding", "check-pan", pan, riderId],
+    queryFn: async (): Promise<CheckPanResponse> => {
+      if (!session?.accessToken) {
+        throw new Error("Not authenticated");
+      }
+      return postJson<CheckPanResponse>(
+        `${API_BASE()}/v1/onboarding/check-pan`,
+        { panNumber: pan, riderId },
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+    enabled: /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan) && Boolean(session?.accessToken),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export type CheckDocNumberResponse = {
+  registered: boolean;
+};
+
+/** Live check: is this DL number already linked to another rider? */
+export function useDlRegistrationCheck(dlValue: string, riderId?: string, minLength = 4) {
+  const session = useSessionStore((s) => s.session);
+  const dl = dlValue.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+
+  return useQuery({
+    queryKey: ["onboarding", "check-dl", dl, riderId],
+    queryFn: async (): Promise<CheckDocNumberResponse> => {
+      if (!session?.accessToken) {
+        throw new Error("Not authenticated");
+      }
+      return postJson<CheckDocNumberResponse>(
+        `${API_BASE()}/v1/onboarding/check-dl`,
+        { dlNumber: dl, riderId },
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+    enabled: dl.length >= minLength && Boolean(session?.accessToken),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** Live check: is this RC number already linked to another rider? */
+export function useRcRegistrationCheck(rcValue: string, riderId?: string, minLength = 4) {
+  const session = useSessionStore((s) => s.session);
+  const rc = rcValue.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+
+  return useQuery({
+    queryKey: ["onboarding", "check-rc", rc, riderId],
+    queryFn: async (): Promise<CheckDocNumberResponse> => {
+      if (!session?.accessToken) {
+        throw new Error("Not authenticated");
+      }
+      return postJson<CheckDocNumberResponse>(
+        `${API_BASE()}/v1/onboarding/check-rc`,
+        { rcNumber: rc, riderId },
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+    enabled: rc.length >= minLength && Boolean(session?.accessToken),
+    staleTime: 30_000,
+    retry: false,
   });
 }
 

@@ -19,6 +19,8 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useActiveTab } from "@/context/ActiveTabContext";
 import { useAuth } from "@/context/AuthContext";
 import { useNotifications } from "@/context/NotificationContext";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { MX } from "@/lib/appAssetKeys";
 import { getOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
 import {
   getNextOpenDayStartIso,
@@ -166,8 +168,8 @@ function MainHeader({
               <Ionicons name="chevron-back" size={26} color={GatiMitraMerchant.textPrimary} />
             </Pressable>
           ) : (
-            <Image
-              source={require("../assets/onlylogo.png")}
+            <AppAssetImage
+              assetKey={MX.auth.logo}
               style={styles.logo}
               resizeMode="contain"
               accessibilityLabel="GatiMitra"
@@ -1503,8 +1505,8 @@ export function MerchantCustomHeader() {
 
 export function MerchantHeaderLogo() {
   return (
-    <Image
-      source={require("../assets/onlylogo.png")}
+    <AppAssetImage
+      assetKey={MX.auth.logo}
       style={styles.logo}
       resizeMode="contain"
       accessibilityLabel="GatiMitra"

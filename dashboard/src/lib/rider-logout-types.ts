@@ -14,6 +14,7 @@ export type RiderLogoutEventRow = {
 export type RiderLogoutSessionSnapshot = {
   status: "logged_in" | "logged_out";
   totalLogoutCount: number;
+  activeDeviceCount: number;
   latest: {
     id: string;
     reasonCode: string;

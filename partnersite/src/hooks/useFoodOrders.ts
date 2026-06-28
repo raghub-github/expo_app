@@ -146,6 +146,8 @@ export interface OrdersFoodRow {
   /** Kitchen / state machine (PLACED, ACCEPTED, PREPARING, …) — drives tabs with orders_core.status */
   current_status?: string | null;
   order_type?: string | null;
+  merchant_response_deadline_at?: string | null;
+  merchant_response_timeout_seconds?: number | null;
 }
 
 export interface FoodOrderStats {

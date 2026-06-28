@@ -13,6 +13,7 @@ import { useOnboardingStore } from "../stores/onboardingStore";
 import { useLanguageStore } from "../stores/languageStore";
 import { colors } from "../theme";
 import { SessionRevokedGate } from "@/src/components/SessionRevokedGate";
+import { AppAssetsPrefetch } from "@/src/components/AppAssetsPrefetch";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const i18n = useMemo(() => initI18n(), []);
@@ -36,6 +37,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   );
 
   const hydrateSession = useSessionStore((s) => s.hydrate);
+  const refreshSessionIfNeeded = useSessionStore((s) => s.refreshSessionIfNeeded);
   const session = useSessionStore((s) => s.session);
   const sessionHydrated = useSessionStore((s) => s.hydrated);
   const hydratePermissions = usePermissionStore((s) => s.hydrate);
@@ -58,8 +60,9 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!sessionHydrated || !session) return;
+    void refreshSessionIfNeeded();
     void syncDutyFromServer();
-  }, [sessionHydrated, session, syncDutyFromServer]);
+  }, [sessionHydrated, session, refreshSessionIfNeeded, syncDutyFromServer]);
 
   if (!i18n || !queryClient) {
     return (
@@ -74,6 +77,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       <RiderSystemChrome />
       <I18nextProvider i18n={i18n}>
         <QueryClientProvider client={queryClient}>
+          <AppAssetsPrefetch />
           <SessionRevokedGate />
           {children}
         </QueryClientProvider>

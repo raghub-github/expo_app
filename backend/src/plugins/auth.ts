@@ -3,8 +3,10 @@ import fp from "fastify-plugin";
 import { jwtVerify } from "jose";
 import { createSecretKey } from "node:crypto";
 import { getEnv } from "../config/env.js";
-import { getDb, getSql } from "../db/client.js";
-import { userProfiles, customers } from "../db/schema.js";
+import { getDb, getSql, withSqlRetry, isDbConnectionError, withDbSlot } from "../db/client.js";
+import { isTransientDbError, hasTransientDbCause } from "../lib/db/is-transient-db-error.js";
+import { DbSlotTimeoutError } from "../lib/db/db-slot.js";
+import { customers } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 
 export type AuthContext = {
@@ -12,6 +14,8 @@ export type AuthContext = {
   role: string;
   phone?: string;
   device_id?: string;
+  /** customers.id — populated for customer JWTs to avoid per-route PK lookups */
+  customerPk?: number;
 };
 
 declare module "fastify" {
@@ -24,13 +28,50 @@ type AuthPluginOpts = {
   required?: boolean;
 };
 
+type CustomerSessionCacheEntry = {
+  invalidBeforeSec: number;
+  customerPk: number | null;
+  checkedAt: number;
+};
+
+const customerSessionCache = new Map<string, CustomerSessionCacheEntry>();
+const CUSTOMER_SESSION_CACHE_MS = 45_000;
+
+/** Throw (don't reply.send) so route Zod response schemas don't reject auth errors. */
+export class AuthHttpError extends Error {
+  statusCode: number;
+  errorCode: string;
+
+  constructor(statusCode: number, errorCode: string, message: string) {
+    super(message);
+    this.name = "AuthHttpError";
+    this.statusCode = statusCode;
+    this.errorCode = errorCode;
+  }
+}
+
+function throwAuthError(statusCode: number, errorCode: string, message: string): never {
+  throw new AuthHttpError(statusCode, errorCode, message);
+}
+
+function readCustomerSessionCache(sub: string, iat: number): CustomerSessionCacheEntry | "revoked" | null {
+  const cached = customerSessionCache.get(sub);
+  if (!cached || Date.now() - cached.checkedAt > CUSTOMER_SESSION_CACHE_MS) return null;
+  if (cached.invalidBeforeSec > 0 && iat > 0 && iat < cached.invalidBeforeSec) return "revoked";
+  return cached;
+}
+
+function isDbUnavailable(err: unknown): boolean {
+  return (
+    err instanceof DbSlotTimeoutError ||
+    isTransientDbError(err) ||
+    isDbConnectionError(err) ||
+    hasTransientDbCause(err)
+  );
+}
+
 const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
   const env = getEnv();
-  /**
-   * JWT key rotation: verify against CURRENT first, then PREVIOUS (if set).
-   * During a rotation window both are active so already-signed tokens stay
-   * valid until they expire naturally. See env.ts for the procedure.
-   */
   const currentKey = createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8"));
   const previousKey = env.SUPABASE_JWT_SECRET_PREVIOUS
     ? createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET_PREVIOUS, "utf-8"))
@@ -42,24 +83,23 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
       return await jwtVerify(token, currentKey);
     } catch (e) {
       if (!previousKey) throw e;
-      // Tokens signed before the rotation are still legal for their TTL.
       return await jwtVerify(token, previousKey);
     }
   }
 
-  app.addHook("preHandler", async (req, reply) => {
+  app.addHook("preHandler", async (req) => {
     const header = req.headers.authorization;
     if (!header) {
       if (!required) return;
-      return reply.code(401).send({ error: "missing_authorization" });
+      throwAuthError(401, "missing_authorization", "Authentication required");
     }
-    const m = /^Bearer\s+(.+)$/.exec(header);
+    const m = /^Bearer\s+(.+)$/.exec(header!);
     if (!m) {
       if (!required) return;
-      return reply.code(401).send({ error: "invalid_authorization" });
+      throwAuthError(401, "invalid_authorization", "Invalid authorization header");
     }
 
-    const token = m[1]!;
+    const token = m![1]!;
 
     try {
       const { payload } = await verifyWithRotation(token);
@@ -75,54 +115,89 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
 
       if (!req.auth.sub || !req.auth.role) {
         if (!required) return;
-        return reply.code(401).send({ error: "invalid_token" });
+        throwAuthError(401, "invalid_token", "Invalid token");
       }
 
       if (role === "customer") {
         const iat = typeof (payload as any).iat === "number" ? (payload as any).iat : 0;
-        const db = getDb();
-        const rows = await db
-          .select({ sessionsInvalidBefore: customers.sessionsInvalidBefore })
-          .from(customers)
-          .where(eq(customers.customerId, sub))
-          .limit(1);
-        const invalidBefore = rows[0]?.sessionsInvalidBefore;
-        if (invalidBefore && iat > 0) {
-          const invalidBeforeSec = Math.floor(invalidBefore.getTime() / 1000);
-          if (iat < invalidBeforeSec) {
-            return reply.code(401).send({ error: "session_revoked", message: "Signed out from all devices." });
-          }
+        const cached = readCustomerSessionCache(sub, iat);
+        if (cached === "revoked") {
+          throwAuthError(401, "session_revoked", "Signed out from all devices.");
+        }
+        if (cached) {
+          if (cached.customerPk != null) req.auth!.customerPk = cached.customerPk;
+        } else {
+          await withDbSlot(
+            () =>
+            withSqlRetry(async () => {
+              const db = getDb();
+              const rows = await db
+                .select({
+                  sessionsInvalidBefore: customers.sessionsInvalidBefore,
+                  id: customers.id,
+                })
+                .from(customers)
+                .where(eq(customers.customerId, sub))
+                .limit(1);
+              const row = rows[0];
+              const invalidBeforeSec = row?.sessionsInvalidBefore
+                ? Math.floor(row.sessionsInvalidBefore.getTime() / 1000)
+                : 0;
+              const customerPk = row?.id ?? null;
+              customerSessionCache.set(sub, {
+                invalidBeforeSec,
+                customerPk,
+                checkedAt: Date.now(),
+              });
+              if (customerPk != null) req.auth!.customerPk = customerPk;
+              if (invalidBeforeSec > 0 && iat > 0 && iat < invalidBeforeSec) {
+                throwAuthError(401, "session_revoked", "Signed out from all devices.");
+              }
+            }),
+            req
+          );
         }
       }
 
-      // Merchant + rider sessions: ensure this device session is still active and bump last_active.
       if (role === "merchant" || role === "rider") {
         const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
         if (deviceId) {
-          const sql = getSql();
-          const rows = await sql`
-            SELECT id
-            FROM user_device_sessions
-            WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
-            LIMIT 1
-          `;
-          if (!rows[0]) {
-            return reply.code(401).send({ error: "session_revoked", message: "Signed out from this device." });
-          }
-          await sql`
-            UPDATE user_device_sessions
-            SET last_active = now()
-            WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
-          `;
+          await withDbSlot(
+            () =>
+              withSqlRetry(async () => {
+                const sql = getSql();
+                const rows = await sql`
+              SELECT id
+              FROM user_device_sessions
+              WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
+              LIMIT 1
+            `;
+                if (!rows[0]) {
+                  throwAuthError(401, "session_revoked", "Signed out from this device.");
+                }
+                await sql`
+              UPDATE user_device_sessions
+              SET last_active = now()
+              WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
+            `;
+              }),
+            req
+          );
         }
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof AuthHttpError) throw err;
       if (!required) return;
-      return reply.code(401).send({ error: "invalid_token" });
+      if (isDbUnavailable(err)) {
+        throwAuthError(
+          503,
+          "database_unavailable",
+          "Database is busy. Please try again in a moment."
+        );
+      }
+      throwAuthError(401, "invalid_token", "Invalid token");
     }
   });
 };
 
 export const auth = fp(authPlugin, { name: "auth" });
-
-

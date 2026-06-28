@@ -104,12 +104,12 @@ export const en = {
           "Subscription balance {{subscriptionNegative}} (max −{{negativeLimit}}). Pay {{totalDue}} to avoid order restrictions after {{incomeFreezeDays}} days without earnings.",
       },
       dues_outstanding: {
-        title: "Subscription fee pending",
+        title: "Subscription Penalty Due",
         subtitle:
           "{{duesOutstanding}} could not be deducted from wallet. Total due {{totalDue}}.",
       },
       dispatch_blocked: {
-        title: "Orders paused — subscription dues pending",
+        title: "Duty Stop Due to Subscription Penalty",
         subtitle:
           "Clear {{totalDue}} subscription dues to resume receiving orders.",
       },
@@ -141,6 +141,9 @@ export const en = {
     bullet3: "• Required once on your home screen",
     allowButton: "Allow & save my address",
     saved: "Address saved successfully",
+    permissionDenied: "Location permission is required. Tap Open Settings to allow access.",
+    gpsDisabled: "Turn on Location (GPS) in your phone settings. We opened it for you — come back and tap Allow again.",
+    saveFailed: "Could not save your address. Please try again.",
   },
 
   // Orders
@@ -279,7 +282,17 @@ export const en = {
       noPhoneTitle: "Phone unavailable",
       noPhoneMessage: "Customer phone is not available for this order.",
       callFailedTitle: "Could not call",
+      sharedLocationTitle: "Customer shared pickup location",
+      openRouteInMaps: "Open map Navigation",
       quickReplies: {
+        onTheWay: "🚗 I'm on the way",
+        reachedPickup: "📍 I've reached the pickup location",
+        answerCallPickup: "📞 Please answer my call",
+        arriveSoon: "⏳ I'll arrive in a few minutes",
+        stuckInTraffic: "🚦 Stuck in traffic, please wait",
+        shareLocation: "📍 Please share your exact location",
+        waitingAtPickup: "👋 I'm waiting at the pickup point",
+        cantFindLocation: "🔍 I can't find your location",
         arrived: "I've arrived at your location.",
         answerCall: "Please answer my call.",
         entrance: "I'm at the entrance/gate.",
@@ -463,6 +476,16 @@ export const en = {
       goToHome: "Go to Home",
       goToNextOrder: "Go to Next Order",
     },
+    tipEarned: {
+      badge: "You've Earned a Tip!",
+      tagline: "Your Service Made Someone Smile!",
+      messageLead: "Good news!",
+      messageMid: "appreciated your service with a",
+      messageSuffix: "tip.",
+      orderId: "Order ID",
+      customerFallback: "Customer",
+      footer: "Keep delivering excellence.",
+    },
     rideSuccess: {
       title: "Ride Completed",
       yay: "Yay! 🎉",
@@ -573,6 +596,7 @@ export const en = {
       photoRequired: "Please add both front and back photos of your Aadhaar",
       continue: "Continue",
       invalidAadhaar: "Please enter a valid 12-digit Aadhaar number",
+      alreadyRegistered: "Aadhar Already Registered , Please try with Diff one .",
       invalidName: "Please enter your full name (minimum 3 characters)",
       dobRequired: "Please select your date of birth",
       riderNotFound: "Rider ID not found. Please try again.",
@@ -758,6 +782,18 @@ export const en = {
     checkLater: "Check back later for new offers",
     promosComingSoon: "Bonus offers & challenges coming soon",
     expiresOn: "Expires on {{date}}",
+    today: "Today",
+    special: "Special",
+    live: "LIVE",
+    earnUpto: "Earn upto {{amount}} extra",
+    incentive: "Incentive",
+    tripsCount: "Trips Count",
+    yourTripsCount: "Your trips count: {{count}}",
+    offerConditions: "OFFER CONDITIONS",
+    mandatoryLogin: "Mandatory Login: Complete all {{count}} slots",
+    gmitraMaxRequired: "Subscribe to GMitra Max to unlock this incentive",
+    activeFor: "Active For",
+    loadFailed: "Could not load offers",
   },
 
   // Profile

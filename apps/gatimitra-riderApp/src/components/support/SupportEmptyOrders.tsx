@@ -1,6 +1,8 @@
 import React from "react";
-import { View, Text, Image, StyleSheet, Platform } from "react-native";
+import { View, Text, StyleSheet, Platform } from "react-native";
 import { useTranslation } from "react-i18next";
+import { AppAssetImage } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
 type Props = {
   variant: "active" | "completed" | "all";
@@ -14,11 +16,7 @@ export function SupportEmptyOrders({ variant }: Props) {
   return (
     <View style={styles.shell}>
       <View style={styles.card}>
-        <Image
-          source={require("@/assets/images/riderlogin.png")}
-          style={styles.illus}
-          resizeMode="contain"
-        />
+        <AppAssetImage assetKey={RX.auth.hero} style={styles.illus} resizeMode="contain" />
         <Text style={styles.title}>
           {isAll
             ? t("profile.supportFlow.noOrdersTitle", "No orders yet!")

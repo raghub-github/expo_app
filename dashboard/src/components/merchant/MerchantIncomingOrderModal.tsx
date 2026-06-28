@@ -626,7 +626,7 @@ export function MerchantIncomingOrderModal() {
     if (secondsLeft > 0) return;
     if (autoCancelFiredForOrderIdRef.current === modalOrder.order_id) return;
     autoCancelFiredForOrderIdRef.current = modalOrder.order_id;
-    void patchStatus('CANCELLED', { rejected_reason: 'Auto Cancelled' }, 'auto');
+    close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, modalOrder, actionLoading]);
 

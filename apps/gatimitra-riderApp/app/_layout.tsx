@@ -45,9 +45,12 @@ import { RiderDispatchKeepAlive } from '@/src/components/RiderDispatchKeepAlive'
 import { RiderDutyLocationPing } from '@/src/components/RiderDutyLocationPing';
 import { isRiderWsEnabled } from '@/src/config/env';
 import { IncomingRideOrderHost } from '@/src/components/orders/IncomingRideOrderHost';
+import { RiderPostDeliveryTipHost } from '@/src/components/orders/RiderPostDeliveryTipHost';
 import { RiderToastHost } from '@/src/components/RiderToastHost';
 
 import { initializeMapbox } from '@/src/services/maps/mapbox';
+import { fetchRiderAppAssets } from '@/src/services/appAssets.service';
+import { useAppAssetsStore } from '@/src/stores/appAssetsStore';
 
 
 
@@ -77,7 +80,9 @@ export {
 
 
 
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {
+  // Expo Go / some Android builds cannot activate keep-awake — non-fatal
+});
 
 
 
@@ -99,7 +104,12 @@ export default function RootLayout() {
 
   const [assetsLoaded, setAssetsLoaded] = useState(false);
 
-
+  useEffect(() => {
+    if (useAppAssetsStore.getState().loaded) return;
+    void fetchRiderAppAssets()
+      .then((res) => useAppAssetsStore.getState().setAssets(res.assets ?? {}))
+      .catch(() => useAppAssetsStore.getState().setAssets({}));
+  }, []);
 
   useEffect(() => {
 
@@ -107,11 +117,7 @@ export default function RootLayout() {
 
       try {
 
-        await Asset.loadAsync([
-          require('../assets/images/rideraap.png'),
-          require('../assets/images/splash-logo.png'),
-          require('../assets/images/logo.png'),
-        ]);
+        await Asset.loadAsync([require('../assets/images/rideraap.png')]);
 
         setAssetsLoaded(true);
 
@@ -418,6 +424,7 @@ function RootLayoutNav() {
           </Stack>
 
           <IncomingRideOrderHost />
+          <RiderPostDeliveryTipHost />
           <RiderToastHost />
 
         </ThemeProvider>

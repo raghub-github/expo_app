@@ -10,19 +10,27 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Ionicons } from "@expo/vector-icons";
-import { validateSelfieFace } from "@/src/lib/selfie-face-validation";
+import {
+  BlinkCaptureTracker,
+  isSelfieFaceDetectorAvailable,
+  probeIndicatesFacePresent,
+  probeSelfieBlink,
+  validateSelfieFace,
+} from "@/src/lib/selfie-face-validation";
 import { colors } from "@/src/theme";
 
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
 const RING_SIZE = 200;
-const AUTO_CAPTURE_COUNTDOWN_SEC = 3;
+const BLINK_PROBE_INTERVAL_MS = 800;
+/** Metro / Expo Go dev sessions only — production release builds keep blink-only capture. */
+const ALLOW_DEV_MANUAL_CAPTURE = __DEV__;
 
 type CaptureStatus =
   | "permission"
   | "starting"
   | "searching"
-  | "countdown"
+  | "waiting_blink"
   | "capturing"
   | "done";
 
@@ -49,16 +57,21 @@ export function SelfieAutoCapture({
   const [permission, requestPermission] = useCameraPermissions();
   const [status, setStatus] = useState<CaptureStatus>("starting");
   const [cameraReady, setCameraReady] = useState(false);
-  const [countdown, setCountdown] = useState<number | null>(null);
+  const [facePresent, setFacePresent] = useState(false);
+  const [blinkPhase, setBlinkPhase] = useState<"align" | "blink">("align");
   const [rejection, setRejection] = useState<string | null>(null);
+  const [detectorUnavailable, setDetectorUnavailable] = useState(false);
   const capturingRef = useRef(false);
-  const countdownStartedRef = useRef(false);
+  const probingRef = useRef(false);
+  const facePresentRef = useRef(false);
+  const blinkTrackerRef = useRef(new BlinkCaptureTracker());
 
-  const captureFinal = useCallback(async () => {
+  const captureFinal = useCallback(async (devManual = false) => {
     if (capturingRef.current || disabled || uri) return;
+    const devBypass = devManual && ALLOW_DEV_MANUAL_CAPTURE;
+    if (!devBypass && !facePresentRef.current) return;
     capturingRef.current = true;
     setStatus("capturing");
-    setCountdown(null);
     try {
       const photo = await cameraRef.current?.takePictureAsync({
         quality: 0.92,
@@ -66,12 +79,22 @@ export function SelfieAutoCapture({
         shutterSound: false,
       });
       if (photo?.uri) {
+        if (devBypass) {
+          setRejection(null);
+          await onCaptured(photo.uri);
+          setStatus("done");
+          return;
+        }
+
         const validation = await validateSelfieFace(photo.uri);
         if (!validation.ok) {
           setRejection(validation.message);
           onRejected?.(validation.message);
           setStatus("searching");
-          countdownStartedRef.current = false;
+          blinkTrackerRef.current.reset();
+          setBlinkPhase("align");
+          setFacePresent(false);
+          facePresentRef.current = false;
           return;
         }
         setRejection(null);
@@ -79,11 +102,17 @@ export function SelfieAutoCapture({
         setStatus("done");
       } else {
         setStatus("searching");
-        countdownStartedRef.current = false;
+        blinkTrackerRef.current.reset();
+        setBlinkPhase("align");
+        setFacePresent(false);
+        facePresentRef.current = false;
       }
     } catch {
       setStatus("searching");
-      countdownStartedRef.current = false;
+      blinkTrackerRef.current.reset();
+      setBlinkPhase("align");
+      setFacePresent(false);
+      facePresentRef.current = false;
     } finally {
       capturingRef.current = false;
     }
@@ -99,43 +128,89 @@ export function SelfieAutoCapture({
       return;
     }
 
+    if (!isSelfieFaceDetectorAvailable()) {
+      setDetectorUnavailable(true);
+    }
+
     setStatus(cameraReady ? "searching" : "starting");
   }, [active, uri, disabled, permission, requestPermission, cameraReady]);
 
-  // Auto countdown capture once camera is live (no native face-detector required).
   useEffect(() => {
     if (!active || uri || disabled || !permission?.granted || !cameraReady) return;
-    if (countdownStartedRef.current) return;
+    if (detectorUnavailable) return;
 
-    countdownStartedRef.current = true;
-    setStatus("countdown");
-    setCountdown(AUTO_CAPTURE_COUNTDOWN_SEC);
+    const interval = setInterval(() => {
+      void (async () => {
+        if (probingRef.current || capturingRef.current || disabled || uri) return;
+        probingRef.current = true;
+        try {
+          const preview = await cameraRef.current?.takePictureAsync({
+            quality: 0.35,
+            skipProcessing: true,
+            shutterSound: false,
+          });
+          if (!preview?.uri) return;
 
-    const tick = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev === null) return null;
-        if (prev <= 1) {
-          clearInterval(tick);
-          void captureFinal();
-          return null;
+          const probe = await probeSelfieBlink(preview.uri);
+          if (probe === "no_detector") {
+            setDetectorUnavailable(true);
+            setFacePresent(false);
+            facePresentRef.current = false;
+            blinkTrackerRef.current.reset();
+            setBlinkPhase("align");
+            setStatus("searching");
+            clearInterval(interval);
+            return;
+          }
+
+          const hasFace = probeIndicatesFacePresent(probe);
+          setFacePresent(hasFace);
+          facePresentRef.current = hasFace;
+
+          if (!hasFace) {
+            blinkTrackerRef.current.reset();
+            setBlinkPhase("align");
+            setStatus("searching");
+            return;
+          }
+
+          const action = blinkTrackerRef.current.consume(probe);
+          const phase = blinkTrackerRef.current.getPhase();
+          setBlinkPhase(phase);
+          setStatus(phase === "blink" ? "waiting_blink" : "searching");
+
+          if (action === "capture") {
+            clearInterval(interval);
+            await captureFinal();
+          }
+        } finally {
+          probingRef.current = false;
         }
-        setStatus("countdown");
-        return prev - 1;
-      });
-    }, 1000);
+      })();
+    }, BLINK_PROBE_INTERVAL_MS);
 
-    return () => {
-      clearInterval(tick);
-    };
-  }, [active, uri, disabled, permission?.granted, cameraReady, captureFinal]);
+    return () => clearInterval(interval);
+  }, [
+    active,
+    uri,
+    disabled,
+    permission?.granted,
+    cameraReady,
+    captureFinal,
+    detectorUnavailable,
+  ]);
 
   useEffect(() => {
     if (uri) return;
-    countdownStartedRef.current = false;
-    setCountdown(null);
+    blinkTrackerRef.current.reset();
+    setBlinkPhase("align");
+    setFacePresent(false);
+    facePresentRef.current = false;
+    setDetectorUnavailable(false);
     setRejection(null);
     if (!active) {
       setCameraReady(false);
+      setStatus("starting");
     }
   }, [uri, active]);
 
@@ -144,13 +219,35 @@ export function SelfieAutoCapture({
       ? "Allow camera access to continue"
       : status === "starting"
         ? "Starting camera…"
-        : status === "countdown" && countdown !== null
-          ? `Hold still — ${countdown}`
-          : status === "searching"
-            ? "Center your face in the circle"
-            : status === "capturing"
-              ? "Capturing…"
-              : "Selfie captured";
+        : detectorUnavailable
+          ? ALLOW_DEV_MANUAL_CAPTURE
+            ? "Dev mode — tap Capture below to test onboarding"
+            : "Face detection needs rider dev build (not Expo Go)"
+          : status === "waiting_blink"
+            ? "Face detected — blink your eyes to capture"
+            : status === "searching"
+              ? facePresent
+                ? "Hold still — get ready to blink"
+                : "Position your face inside the red circle"
+              : status === "capturing"
+                ? "Capturing…"
+                : "Selfie captured";
+
+  const ringBorderStyle = uri
+    ? styles.ringCaptured
+    : detectorUnavailable || !facePresent
+      ? styles.ringNoFace
+      : blinkPhase === "blink"
+        ? styles.ringBlinkReady
+        : styles.ringFaceDetected;
+
+  const ringGuideStyle = uri
+    ? styles.ringGuideCaptured
+    : detectorUnavailable || !facePresent
+      ? styles.ringGuideNoFace
+      : blinkPhase === "blink"
+        ? styles.ringGuideBlink
+        : styles.ringGuideFace;
 
   return (
     <View style={styles.section}>
@@ -163,8 +260,27 @@ export function SelfieAutoCapture({
         </View>
       ) : null}
 
+      {detectorUnavailable && ALLOW_DEV_MANUAL_CAPTURE ? (
+        <View style={styles.detectorBanner}>
+          <Ionicons name="information-circle-outline" size={18} color={colors.warning[700]} />
+          <Text style={styles.detectorBannerText}>
+            Expo Go cannot run live face/blink detection. Use the Capture button below to test the
+            rest of onboarding. Production builds require face + blink before continuing.
+          </Text>
+        </View>
+      ) : detectorUnavailable ? (
+        <View style={styles.detectorBanner}>
+          <Ionicons name="information-circle-outline" size={18} color={colors.warning[700]} />
+          <Text style={styles.detectorBannerText}>
+            Live face + blink capture works in the installed rider app build. Expo Go cannot scan
+            faces — run{" "}
+            <Text style={styles.detectorBannerCode}>npx expo run:android</Text> and open that app.
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.ringWrap}>
-        <View style={[styles.ring, uri ? styles.ringFilled : null]}>
+        <View style={[styles.ring, ringBorderStyle]}>
           {uri ? (
             <Image source={{ uri }} style={styles.preview} resizeMode="cover" />
           ) : permission?.granted ? (
@@ -178,10 +294,10 @@ export function SelfieAutoCapture({
                 onCameraReady={() => setCameraReady(true)}
               />
               <View style={styles.ringOverlay} pointerEvents="none">
-                <View style={styles.ringGuide} />
-                {countdown !== null && countdown > 0 ? (
-                  <View style={styles.countdownBadge}>
-                    <Text style={styles.countdownText}>{countdown}</Text>
+                <View style={[styles.ringGuide, ringGuideStyle]} />
+                {status === "waiting_blink" && facePresent ? (
+                  <View style={styles.blinkBadge}>
+                    <Ionicons name="eye-outline" size={22} color="#ffffff" />
                   </View>
                 ) : null}
               </View>
@@ -201,14 +317,20 @@ export function SelfieAutoCapture({
         </View>
 
         {!uri && permission?.granted ? (
-          <View style={styles.statusPill} pointerEvents="none">
+          <View
+            style={[
+              styles.statusPill,
+              !facePresent && !detectorUnavailable ? styles.statusPillAlert : null,
+            ]}
+            pointerEvents="none"
+          >
             {status === "capturing" || status === "starting" ? (
               <ActivityIndicator size="small" color={ACCENT_DARK} />
             ) : (
               <View
                 style={[
                   styles.statusDot,
-                  status === "countdown" ? styles.statusDotReady : null,
+                  facePresent ? styles.statusDotReady : styles.statusDotAlert,
                 ]}
               />
             )}
@@ -216,17 +338,18 @@ export function SelfieAutoCapture({
           </View>
         ) : null}
 
-        {!uri && permission?.granted && status !== "capturing" ? (
+        {ALLOW_DEV_MANUAL_CAPTURE && !uri && permission?.granted && status !== "capturing" ? (
           <Pressable
-            onPress={() => void captureFinal()}
+            onPress={() => void captureFinal(true)}
             disabled={disabled || !cameraReady}
             style={({ pressed }) => [
-              styles.manualCaptureBtn,
-              pressed && styles.manualCaptureBtnPressed,
-              (disabled || !cameraReady) && styles.manualCaptureBtnDisabled,
+              styles.devCaptureBtn,
+              pressed && styles.devCaptureBtnPressed,
+              (disabled || !cameraReady) && styles.devCaptureBtnDisabled,
             ]}
           >
-            <Text style={styles.manualCaptureText}>Capture now</Text>
+            <Ionicons name="camera-outline" size={18} color="#ffffff" />
+            <Text style={styles.devCaptureBtnText}>Capture</Text>
           </Pressable>
         ) : null}
 
@@ -278,6 +401,27 @@ const styles = StyleSheet.create({
     color: colors.error[700],
     fontWeight: "600",
   },
+  detectorBanner: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: colors.warning[50],
+    borderWidth: 1,
+    borderColor: colors.warning[200],
+  },
+  detectorBannerText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.warning[800],
+  },
+  detectorBannerCode: {
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+    fontWeight: "700",
+  },
   ringWrap: {
     position: "relative",
     alignItems: "center",
@@ -287,17 +431,31 @@ const styles = StyleSheet.create({
     width: RING_SIZE,
     height: RING_SIZE,
     borderRadius: RING_SIZE / 2,
-    borderWidth: 2.5,
-    borderColor: colors.gray[300],
+    borderWidth: 3,
     borderStyle: "dashed",
     overflow: "hidden",
     backgroundColor: colors.gray[100],
     alignItems: "center",
     justifyContent: "center",
   },
-  ringFilled: {
+  ringNoFace: {
+    borderColor: colors.error[500],
     borderStyle: "solid",
+    backgroundColor: "#fff5f5",
+  },
+  ringFaceDetected: {
+    borderColor: ACCENT_DARK,
+    borderStyle: "solid",
+    backgroundColor: "#f0fdf4",
+  },
+  ringBlinkReady: {
     borderColor: ACCENT,
+    borderStyle: "solid",
+    backgroundColor: "#ecfdf3",
+  },
+  ringCaptured: {
+    borderColor: ACCENT,
+    borderStyle: "solid",
     backgroundColor: "#ffffff",
   },
   camera: {
@@ -314,13 +472,25 @@ const styles = StyleSheet.create({
     height: RING_SIZE - 18,
     borderRadius: (RING_SIZE - 18) / 2,
     borderWidth: 2,
+  },
+  ringGuideNoFace: {
+    borderColor: "rgba(239, 68, 68, 0.65)",
+  },
+  ringGuideFace: {
+    borderColor: "rgba(34, 167, 69, 0.55)",
+  },
+  ringGuideBlink: {
+    borderColor: ACCENT,
+    borderWidth: 2.5,
+  },
+  ringGuideCaptured: {
     borderColor: "rgba(57, 211, 83, 0.55)",
   },
-  countdownBadge: {
+  blinkBadge: {
     position: "absolute",
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "rgba(34, 167, 69, 0.92)",
     alignItems: "center",
     justifyContent: "center",
@@ -333,11 +503,6 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 4 },
     }),
-  },
-  countdownText: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: "#ffffff",
   },
   preview: {
     width: "100%",
@@ -374,7 +539,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    maxWidth: 280,
+    maxWidth: 300,
+  },
+  statusPillAlert: {
+    backgroundColor: colors.error[50],
+    borderColor: colors.error[200],
   },
   statusDot: {
     width: 8,
@@ -385,6 +554,9 @@ const styles = StyleSheet.create({
   statusDotReady: {
     backgroundColor: ACCENT,
   },
+  statusDotAlert: {
+    backgroundColor: colors.error[500],
+  },
   statusText: {
     flex: 1,
     fontSize: 12,
@@ -392,24 +564,27 @@ const styles = StyleSheet.create({
     color: colors.gray[700],
     ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
   },
-  manualCaptureBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(57, 211, 83, 0.35)",
-    backgroundColor: "#ffffff",
+  devCaptureBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: ACCENT_DARK,
+    minWidth: 160,
   },
-  manualCaptureBtnPressed: {
-    opacity: 0.85,
+  devCaptureBtnPressed: {
+    opacity: 0.88,
   },
-  manualCaptureBtnDisabled: {
+  devCaptureBtnDisabled: {
     opacity: 0.45,
   },
-  manualCaptureText: {
-    fontSize: 12,
+  devCaptureBtnText: {
+    fontSize: 15,
     fontWeight: "700",
-    color: ACCENT_DARK,
+    color: "#ffffff",
   },
   removeBtn: {
     position: "absolute",

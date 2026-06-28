@@ -1,4 +1,4 @@
-import { getSql } from "../db/client.js";
+import { getSql, withSqlRetry } from "../db/client.js";
 import { autoCancelExpiredRideOrder } from "../modules/rides/ride.placement.service.js";
 import { completeOrderDispatch } from "../lib/order-dispatch.service.js";
 import { RIDE_MAX_SEARCH_EXTENSIONS, RIDE_TIP_BOOST_DECISION_SEC } from "../modules/rides/ride.tip-boost.service.js";
@@ -11,10 +11,11 @@ export async function runRideSearchTimeoutTick(log: {
   info: (o: object, msg?: string) => void;
   error: (o: object, msg?: string) => void;
 }): Promise<void> {
-  const sql = getSql();
-
   try {
-    const rows = (await sql`
+    await withSqlRetry(async () => {
+      const sql = getSql();
+
+      const rows = (await sql`
       SELECT oc.id AS core_id, or2.dispatch_retry_count, or2.awaiting_tip_boost
       FROM orders_core oc
       INNER JOIN orders_ride or2 ON or2.order_id = oc.id
@@ -100,6 +101,7 @@ export async function runRideSearchTimeoutTick(log: {
     if (tipBoostCancelled > 0) {
       log.info({ tipBoostCancelled }, "ride_tip_boost_decision_timeout_tick");
     }
+    });
   } catch (err) {
     log.error({ err }, "ride_search_timeout_tick_failed");
   }

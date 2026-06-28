@@ -1,6 +1,7 @@
 import React from "react";
 import { View, Image, StyleSheet, Platform } from "react-native";
-import { MAPBIKE_IMAGE } from "@/src/lib/map-assets";
+import { useAppAssetSource } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
 type Props = {
   headingDeg?: number;
@@ -8,10 +9,11 @@ type Props = {
 
 /** Bike-only marker for navigation — no "You" pill or circle ring. */
 export function NavigateRideRiderMarker({ headingDeg = 0 }: Props) {
+  const mapBike = useAppAssetSource(RX.map.bike);
   return (
     <View style={styles.wrap} collapsable={false}>
       <View style={[styles.bikeWrap, { transform: [{ rotate: `${headingDeg}deg` }] }]}>
-        <Image source={MAPBIKE_IMAGE} style={styles.bike} resizeMode="contain" />
+        {mapBike ? <Image source={mapBike} style={styles.bike} resizeMode="contain" /> : null}
       </View>
     </View>
   );

@@ -69,7 +69,7 @@ export function recordWeatherRefreshFailure(): void {
 
 export function getWeatherMonitoringSnapshot(extra?: {
   zoneSnapshotCount?: number;
-  apiKeyConfigured?: boolean;
+  provider?: string;
 }) {
   const cacheTotal = state.cacheHits + state.cacheMisses;
   const cacheHitRatio = cacheTotal > 0 ? state.cacheHits / cacheTotal : null;
@@ -78,7 +78,7 @@ export function getWeatherMonitoringSnapshot(extra?: {
 
   return {
     ok: true,
-    apiKeyConfigured: extra?.apiKeyConfigured ?? false,
+    provider: extra?.provider ?? "open-meteo",
     zoneSnapshotCount: extra?.zoneSnapshotCount ?? null,
     metrics: {
       apiCallsTotal: state.apiCallsTotal,

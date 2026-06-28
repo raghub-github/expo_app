@@ -46,7 +46,7 @@ export default function AcceptanceTimeoutSync() {
         timerRef.current = setTimeout(() => setToast(null), 8000);
       }
     } catch {
-      /* ignore — refetch will still run client-side auto-cancel */
+      /* Backend timeout worker owns cancellation; sync is for UX toast only. */
     } finally {
       runningRef.current = false;
     }

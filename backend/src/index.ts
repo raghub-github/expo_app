@@ -9,6 +9,7 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 import { ulid } from "ulid";
 import { loadEnv } from "./config/loadEnv.js";
 import { isTransientDbError } from "./lib/db/is-transient-db-error.js";
+import { isDbConnectionError } from "./db/client.js";
 import { getEnv } from "./config/env.js";
 import { healthRoutes } from "./routes/health.routes.js";
 import { attachmentsRoutes } from "./routes/attachments.routes.js";
@@ -49,6 +50,7 @@ import { pushRoutes } from "./modules/push/push.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
 import { customerSubscriptionModule } from "./modules/subscription/customer-subscription.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
+import { dbSlotRequest } from "./plugins/db-slot-request.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
 import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
@@ -84,6 +86,7 @@ app.setSerializerCompiler(serializerCompiler);
 
 // Register plugins
 await app.register(errorHandler);
+await app.register(dbSlotRequest);
 await app.register(requestLogger);
 await app.register(helmet, { global: true });
 await app.register(cors, {
@@ -308,6 +311,25 @@ await app.register(paymentRoutes, { prefix: "/v1/payment" });
 await app.register(meRoutes, { prefix: "/v1/me" });
 await app.register(meWalletRoutes, { prefix: "/v1/me" });
 await app.register(addressRoutes, { prefix: "/v1/me" });
+const { addressShareMeRoutes, addressSharePublicRoutes } = await import(
+  "./modules/addresses/address-share.routes.js"
+);
+await app.register(addressShareMeRoutes, { prefix: "/v1/me" });
+await app.register(addressSharePublicRoutes, { prefix: "/v1/public" });
+const { renderAddressShareLandingPage } = await import("./modules/addresses/address-share-page.js");
+const { sendAddressShareOgLogo } = await import("./modules/addresses/address-share-og-asset.js");
+app.get("/addr/og-logo.png", async (_req, reply) => sendAddressShareOgLogo(reply));
+app.get<{ Params: { shortCode: string }; Querystring: { id?: string } }>(
+  "/addr/:shortCode",
+  async (req, reply) => {
+    const token = String(req.query.id ?? "").trim();
+    const shortCode = String(req.params.shortCode ?? "").trim();
+    if (!token || !shortCode) return reply.status(400).send("Invalid link");
+    const html = await renderAddressShareLandingPage(shortCode, token);
+    if (!html) return reply.status(410).send("This link has expired or was already used.");
+    return reply.type("text/html; charset=utf-8").send(html);
+  }
+);
 await app.register(locationSearchRoutes, { prefix: "/v1/me" });
 await app.register(supportRoutes, { prefix: "/v1/support" });
 await app.register(customerSupportRoutes, { prefix: "/v1/customer-support" });
@@ -344,6 +366,8 @@ await app.register(rideRoutes, { prefix: "/v1/rides" });
 await app.register(distanceModule, { prefix: "/v1/distance" });
 const { weatherRoutes } = await import("./modules/weather/weather.routes.js");
 await app.register(weatherRoutes, { prefix: "/v1/weather" });
+const { appAssetsRoutes } = await import("./modules/app-assets/app-assets.routes.js");
+await app.register(appAssetsRoutes, { prefix: "/v1/app-assets" });
 // distanceRoutes kept exported for other test harnesses; register is via distanceModule above.
 void distanceRoutes;
 await app.register((await import("./modules/rider-payout/riderPayout.routes.js")).riderPayoutRoutes, { prefix: "/v1/rider-payout" });
@@ -423,10 +447,10 @@ let orderAutoAcceptInterval: ReturnType<typeof setInterval> | null = null;
 let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
 let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
-let weatherRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let etaLiveTickInterval: ReturnType<typeof setInterval> | null = null;
 let subscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let merchantSubscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
+let riderLocationMaintenanceInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -469,10 +493,10 @@ const gracefulShutdown = async (signal: string) => {
   if (rideSearchTimeoutInterval) { clearInterval(rideSearchTimeoutInterval); rideSearchTimeoutInterval = null; }
   if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
   if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
-  if (weatherRefreshInterval) { clearInterval(weatherRefreshInterval); weatherRefreshInterval = null; }
   if (etaLiveTickInterval) { clearInterval(etaLiveTickInterval); etaLiveTickInterval = null; }
   if (subscriptionRenewalInterval) { clearInterval(subscriptionRenewalInterval); subscriptionRenewalInterval = null; }
   if (merchantSubscriptionRenewalInterval) { clearInterval(merchantSubscriptionRenewalInterval); merchantSubscriptionRenewalInterval = null; }
+  if (riderLocationMaintenanceInterval) { clearInterval(riderLocationMaintenanceInterval); riderLocationMaintenanceInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -505,8 +529,10 @@ process.on("uncaughtException", (error) => {
 });
 
 process.on("unhandledRejection", (reason, promise) => {
-  if (isTransientDbError(reason)) {
+  if (isTransientDbError(reason) || isDbConnectionError(reason)) {
     app.log.warn({ reason }, "Transient DB rejection (ignored)");
+    // Do not resetDbPool() here — postgres.js idle cleanup rejects must not
+    // tear down sockets still used by in-flight API requests.
     return;
   }
   app.log.error({ reason, promise }, "Unhandled rejection");
@@ -517,39 +543,103 @@ try {
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
   app.log.info({ port: env.PORT, env: env.NODE_ENV }, "Server started successfully");
 
+  /**
+   * Background ticks — disabled entirely when DISABLE_BACKGROUND_JOBS=true (local dev).
+   * In production, store schedule + order timeouts + dispatch must run without apps open.
+   * Redis locks prevent duplicate runs across replicas.
+   */
   if (env.DISABLE_BACKGROUND_JOBS) {
-    app.log.warn("Background jobs disabled via DISABLE_BACKGROUND_JOBS");
+    app.log.warn(
+      "All background ticks disabled via DISABLE_BACKGROUND_JOBS (reduces local DB pool load)"
+    );
   } else {
-    /**
-     * Background ticks now run under Redis-backed distributed locks so >1
-     * replica can run safely without double-firing. Each lock TTL is set
-     * comfortably > the tick interval to handle short overruns, but short
-     * enough that a crashed worker doesn't hold the lock forever.
-     *
-     * If Redis is unavailable, `withLock` returns null and the tick is
-     * SKIPPED for that interval — we never duplicate, we just lose a beat.
-     */
+  const scheduleIntervalMs = 30_000;
+  const runScheduleTickLocked = () =>
+    withLock("tick:store-schedule", 40_000, () => runStoreScheduleTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "store_schedule", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "store_schedule_tick"));
+  void runScheduleTickLocked();
+  storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
+  app.log.info({ intervalSeconds: 30 }, "store schedule tick started (auto open/close from operating hours)");
 
-    // Store Auto Schedule Engine — every 30 s; lock TTL 40 s.
-    const scheduleIntervalMs = 30_000;
-    const runScheduleTickLocked = () =>
-      withLock("tick:store-schedule", 40_000, () => runStoreScheduleTick(app.log))
-        .then((result) => {
-          incrCounter(
-            "tick_runs_total",
-            "Polling tick outcomes by lock state",
-            1,
-            { tick: "store_schedule", outcome: result === null ? "skipped" : "ran" },
-          );
-        })
-        .catch((err) => app.log.error({ err }, "store_schedule_tick"));
-    void runScheduleTickLocked();
-    storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
+  const orderAcceptanceIntervalMs = 15_000;
+  const runAcceptanceTickLocked = () =>
+    withLock("tick:acceptance-timeout", 25_000, () => runOrderAcceptanceTimeoutTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "acceptance_timeout", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
+  await runAcceptanceTickLocked();
+  orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
+  app.log.info({ intervalSeconds: 15 }, "order acceptance timeout tick started (auto-cancel + server auto-accept)");
 
+  // Order auto-accept tick — every 10 s; lock TTL 20 s.
+  // Added in MRC merge: server-side auto-accept of new orders when the
+  // merchant has enabled auto-accept on store_operations.
+  const orderAutoAcceptIntervalMs = 10_000;
+  const runAutoAcceptTickLocked = () =>
+    withLock("tick:order-auto-accept", 20_000, () => runOrderAutoAcceptTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "order_auto_accept", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "order_auto_accept_tick"));
+  void runAutoAcceptTickLocked();
+  orderAutoAcceptInterval = setInterval(() => { void runAutoAcceptTickLocked(); }, orderAutoAcceptIntervalMs);
+  app.log.info({ intervalMs: orderAutoAcceptIntervalMs }, "order auto-accept tick started");
+
+  const rideSearchTimeoutIntervalMs = 15_000;
+  const runRideSearchTickLocked = () =>
+    withLock("tick:ride-search-timeout", 25_000, () => runRideSearchTimeoutTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "ride_search_timeout", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
+  void runRideSearchTickLocked();
+  rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
+
+  const orderDispatchWaveIntervalMs = 10_000;
+  const runDispatchWaveTickLocked = () =>
+    withLock("tick:order-dispatch-waves", 20_000, () => runOrderDispatchWaveTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "order_dispatch_waves", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "order_dispatch_wave_tick"));
+  void runDispatchWaveTickLocked();
+  orderDispatchWaveInterval = setInterval(() => {
+    void runDispatchWaveTickLocked();
+  }, orderDispatchWaveIntervalMs);
+  app.log.info({ intervalMs: orderDispatchWaveIntervalMs }, "order dispatch wave tick started");
+
+  {
     // Payment reconciler — driven by services/payment-worker via BullMQ
     // when RECONCILER_LEGACY_TICK_ENABLED=false (recommended in production).
-    // The legacy in-process tick stays as a fallback so the existing single-
-    // node deployment keeps working until the worker is provisioned.
     if (env.RECONCILER_LEGACY_TICK_ENABLED) {
       const paymentReconcilerIntervalMs = env.PAYMENT_RECONCILER_INTERVAL_SEC * 1000;
       const paymentLockTtlMs = Math.max(paymentReconcilerIntervalMs * 2, 60_000);
@@ -565,74 +655,6 @@ try {
     } else {
       app.log.info("payment reconciler in-process tick DISABLED — payment-worker is the driver");
     }
-
-    // Order acceptance auto-cancel — every 15 s; lock TTL 25 s.
-    const orderAcceptanceIntervalMs = 15_000;
-    const runAcceptanceTickLocked = () =>
-      withLock("tick:acceptance-timeout", 25_000, () => runOrderAcceptanceTimeoutTick(app.log))
-        .then((result) => {
-          incrCounter(
-            "tick_runs_total",
-            "Polling tick outcomes by lock state",
-            1,
-            { tick: "acceptance_timeout", outcome: result === null ? "skipped" : "ran" },
-          );
-        })
-        .catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
-    await runAcceptanceTickLocked();
-    orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
-
-    // Order auto-accept for stores with auto_accept_orders — every 10 s; lock TTL 20 s.
-    const orderAutoAcceptIntervalMs = 10_000;
-    const runAutoAcceptTickLocked = () =>
-      withLock("tick:order-auto-accept", 20_000, () => runOrderAutoAcceptTick(app.log))
-        .then((result) => {
-          incrCounter(
-            "tick_runs_total",
-            "Polling tick outcomes by lock state",
-            1,
-            { tick: "order_auto_accept", outcome: result === null ? "skipped" : "ran" },
-          );
-        })
-        .catch((err) => app.log.error({ err }, "order_auto_accept_tick"));
-    void runAutoAcceptTickLocked();
-    orderAutoAcceptInterval = setInterval(() => { void runAutoAcceptTickLocked(); }, orderAutoAcceptIntervalMs);
-    app.log.info({ intervalMs: orderAutoAcceptIntervalMs }, "order auto-accept tick started");
-
-    // Ride search auto-cancel — every 15 s; lock TTL 25 s.
-    const rideSearchTimeoutIntervalMs = 15_000;
-    const runRideSearchTickLocked = () =>
-      withLock("tick:ride-search-timeout", 25_000, () => runRideSearchTimeoutTick(app.log))
-        .then((result) => {
-          incrCounter(
-            "tick_runs_total",
-            "Polling tick outcomes by lock state",
-            1,
-            { tick: "ride_search_timeout", outcome: result === null ? "skipped" : "ran" },
-          );
-        })
-        .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
-    void runRideSearchTickLocked();
-    rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
-
-    // Dispatch wave expansion — every 10 s; lock TTL 20 s.
-    const orderDispatchWaveIntervalMs = 10_000;
-    const runDispatchWaveTickLocked = () =>
-      withLock("tick:order-dispatch-waves", 20_000, () => runOrderDispatchWaveTick(app.log))
-        .then((result) => {
-          incrCounter(
-            "tick_runs_total",
-            "Polling tick outcomes by lock state",
-            1,
-            { tick: "order_dispatch_waves", outcome: result === null ? "skipped" : "ran" },
-          );
-        })
-        .catch((err) => app.log.error({ err }, "order_dispatch_wave_tick"));
-    void runDispatchWaveTickLocked();
-    orderDispatchWaveInterval = setInterval(() => {
-      void runDispatchWaveTickLocked();
-    }, orderDispatchWaveIntervalMs);
-    app.log.info({ intervalMs: orderDispatchWaveIntervalMs }, "order dispatch wave tick started");
 
     // Competitor affinity snapshots (city + pincode) — every 24 h; lock TTL 25 h.
     const competitorSnapshotIntervalMs = 24 * 60 * 60 * 1000;
@@ -658,27 +680,6 @@ try {
       { intervalHours: 24 },
       "merchant competitor snapshots tick started (city + locality, all stores)"
     );
-
-    // Weather zone refresh — every 12 min; lock TTL 14 min.
-    const weatherRefreshIntervalMs = 12 * 60 * 1000;
-    const weatherRefreshLockMs = 14 * 60 * 1000;
-    const { runWeatherRefreshTick } = await import("./modules/weather/weather.service.js");
-    const runWeatherTickLocked = () =>
-      withLock("tick:weather-refresh", weatherRefreshLockMs, () => runWeatherRefreshTick(app.log))
-        .then((result) => {
-          incrCounter(
-            "tick_runs_total",
-            "Polling tick outcomes by lock state",
-            1,
-            { tick: "weather_refresh", outcome: result === null ? "skipped" : "ran" }
-          );
-        })
-        .catch((err) => app.log.error({ err }, "weather_refresh_tick"));
-    void runWeatherTickLocked();
-    weatherRefreshInterval = setInterval(() => {
-      void runWeatherTickLocked();
-    }, weatherRefreshIntervalMs);
-    app.log.info({ intervalMinutes: 12 }, "weather zone refresh tick started");
 
     // Live ETA engine — every 60 s; lock TTL 75 s.
     const etaLiveTickIntervalMs = 60_000;
@@ -750,6 +751,32 @@ try {
       void runMerchantSubscriptionRenewalLocked();
     }, merchantSubscriptionRenewalIntervalMs);
     app.log.info({ intervalMinutes: 10 }, "merchant subscription renewal tick started");
+
+    const riderLocationMaintenanceHours = env.RIDER_LOCATION_MAINTENANCE_INTERVAL_HOURS;
+    const riderLocationMaintenanceIntervalMs = riderLocationMaintenanceHours * 60 * 60 * 1000;
+    const riderLocationMaintenanceLockMs = riderLocationMaintenanceIntervalMs + 15 * 60 * 1000;
+    const runRiderLocationMaintenanceLocked = () =>
+      withLock("tick:rider-location-maintenance", riderLocationMaintenanceLockMs, async () => {
+        const { runRiderLocationMaintenanceTick } = await import(
+          "./lib/rider-location-maintenance.js"
+        );
+        return runRiderLocationMaintenanceTick();
+      })
+        .then((result) => {
+          if (result) {
+            app.log.info(result, "rider_location_maintenance_tick");
+          }
+        })
+        .catch((err) => app.log.error({ err }, "rider_location_maintenance_tick"));
+    void runRiderLocationMaintenanceLocked();
+    riderLocationMaintenanceInterval = setInterval(() => {
+      void runRiderLocationMaintenanceLocked();
+    }, riderLocationMaintenanceIntervalMs);
+    app.log.info(
+      { intervalHours: riderLocationMaintenanceHours },
+      "rider location maintenance tick started"
+    );
+  }
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

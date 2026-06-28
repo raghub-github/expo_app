@@ -1,6 +1,7 @@
 "use client";
 import { useAppParams } from "@/hooks/useAppSearchParams";
 
+import { useAppParams } from "@/lib/navigation/use-app-params";
 import { useEffect } from "react";
 
 import { TicketDashboardClient } from "./TicketDashboardClient";

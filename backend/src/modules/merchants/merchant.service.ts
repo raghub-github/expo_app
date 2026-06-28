@@ -6,7 +6,7 @@ import {
   getMenuItemEffectiveInStockForAliases,
 } from "../../lib/menu-item-effective-stock.js";
 import { getEnv } from "../../config/env.js";
-import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
+import { getRoute, haversineDistanceKm, getMatrixDistances } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import type {
   MerchantMenuItemRow,
@@ -45,13 +45,81 @@ function withEtaStamp<T extends { distance_km?: number | null; avg_preparation_t
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
 const SEARCH_LIMIT = 30;
-/** Non-negotiable: never show stores beyond 15 km. */
+/** Non-negotiable upper bound. No store ever shows beyond this from the user. */
 const MAX_RADIUS_KM = 15;
 const ROUGH_RADIUS_KM = 12;
 const FINAL_MAX_ROAD_DISTANCE_KM = 10;
 const MAX_MAPBOX_CANDIDATES = 15;
 const MAPBOX_CONCURRENCY = 5;
-const MAPBOX_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Cell-quantised result cache for nearby-stores queries.
+ *
+ * Why: at 1 lakh stores in production, the bbox + haversine + Mapbox
+ * Matrix pipeline costs ~250-500ms per fresh request. Two customers
+ * standing 50 metres apart should hit the same cache row, not pay for
+ * two pipelines.
+ *
+ * Cell size: 0.005° ≈ 550 m at India latitudes. Small enough that the
+ * answer doesn't materially change inside a cell; large enough that
+ * adjacent customers and short walks hit the same cell.
+ *
+ * TTL: 60s. The store list itself doesn't churn faster than that, but
+ * `is_open` does — 60s caps how stale we get.
+ */
+const RESULT_CELL_DEGREE = 0.005;
+const RESULT_CACHE_TTL_MS = 60 * 1000;
+const RESULT_CACHE_MAX_ENTRIES = 1000;
+const nearbyResultCache = new Map<
+  string,
+  { items: NearbyStoreListingItem[]; expiresAt: number }
+>();
+
+function resultCacheKey(
+  userLat: number,
+  userLng: number,
+  maxRoadKm: number,
+  mapboxLimit: number,
+): string {
+  const cellLat = Math.round(userLat / RESULT_CELL_DEGREE);
+  const cellLng = Math.round(userLng / RESULT_CELL_DEGREE);
+  return `${cellLat}:${cellLng}:r${maxRoadKm}:n${mapboxLimit}`;
+}
+
+function evictResultCacheIfFull(): void {
+  if (nearbyResultCache.size <= RESULT_CACHE_MAX_ENTRIES) return;
+  // Cheap eviction: drop the oldest 10% of keys (Map preserves insertion order).
+  const dropCount = Math.ceil(RESULT_CACHE_MAX_ENTRIES * 0.1);
+  let dropped = 0;
+  for (const key of nearbyResultCache.keys()) {
+    if (dropped >= dropCount) break;
+    nearbyResultCache.delete(key);
+    dropped += 1;
+  }
+}
+
+/**
+ * Per-store effective radius rule.
+ *
+ *   effective = min(globalCap, store.delivery_radius_km)
+ *
+ * NULL / 0 / non-numeric `delivery_radius_km` → only the global cap
+ * applies, matching the previous fallback behaviour. This is the
+ * load-bearing function the user flagged: previously the engine ignored
+ * `delivery_radius_km` entirely and showed stores outside their service
+ * area.
+ *
+ * Exported for unit tests.
+ */
+export function effectiveServiceRadiusKm(
+  globalCapKm: number,
+  storeDeliveryRadiusKm: number | string | null | undefined,
+): number {
+  if (storeDeliveryRadiusKm == null) return globalCapKm;
+  const v = Number(storeDeliveryRadiusKm);
+  if (!Number.isFinite(v) || v <= 0) return globalCapKm;
+  return Math.min(globalCapKm, v);
+}
 
 type NearbyStoreBase = {
   id: number;
@@ -61,6 +129,14 @@ type NearbyStoreBase = {
   full_address: string | null;
   latitude: number | string | null;
   longitude: number | string | null;
+  /**
+   * Per-store delivery service radius in kilometres. Stored on
+   * `merchant_stores.delivery_radius_km`. NULL means "use the platform
+   * default". The nearby engine honours this so a store that opted into
+   * a smaller radius (e.g. 3 km) is hidden when the user is further
+   * away even if the global cap (15 km) would have included it.
+   */
+  delivery_radius_km: number | string | null;
   status: string | null;
   is_active: boolean | null;
   is_available: boolean | null;
@@ -79,37 +155,6 @@ export type NearbyStoreListingItem = {
   duration_min: number | null;
   is_open: boolean;
 };
-
-const mapboxDistanceCache = new Map<
-  string,
-  { distanceKm: number; durationMin: number | null; expiresAt: number }
->();
-
-function mapboxCacheKey(userLat: number, userLng: number, storeId: number): string {
-  return `${userLat.toFixed(5)}_${userLng.toFixed(5)}_${storeId}`;
-}
-
-function readMapboxCache(
-  key: string
-): { distanceKm: number; durationMin: number | null } | null {
-  const entry = mapboxDistanceCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    mapboxDistanceCache.delete(key);
-    return null;
-  }
-  return { distanceKm: entry.distanceKm, durationMin: entry.durationMin };
-}
-
-function writeMapboxCache(
-  key: string,
-  value: { distanceKm: number; durationMin: number | null }
-): void {
-  mapboxDistanceCache.set(key, {
-    ...value,
-    expiresAt: Date.now() + MAPBOX_CACHE_TTL_MS,
-  });
-}
 
 function toNumber(v: number | string | null | undefined): number | null {
   if (v == null) return null;
@@ -138,135 +183,207 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function fetchDrivingDistanceKm(
-  userLat: number,
-  userLng: number,
-  storeLat: number,
-  storeLng: number
-): Promise<{ distanceKm: number; durationMin: number | null }> {
-  const env = getEnv();
-  const route = await getRoute({
-    origin: { lat: userLat, lng: userLng },
-    destination: { lat: storeLat, lng: storeLng },
-    profile: "driving",
-    mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
-    osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
-  });
-  return { distanceKm: route.distanceKm, durationMin: route.etaMinutes };
-}
 
+/**
+ * Find stores deliverable to (userLat, userLng) using:
+ *   1. SQL bounding-box prefilter (uses btree index on lat/lng — scans
+ *      candidates, not the whole table)
+ *   2. Haversine ordering + top-N candidate selection
+ *   3. Per-store `delivery_radius_km` enforcement — a store is only
+ *      returned if the user is within ITS declared service area, not
+ *      just within the caller's global cap
+ *   4. Mapbox Directions Matrix (ONE HTTP call for all candidates) for
+ *      real road-network distance
+ *   5. Cell-quantised LRU result cache for repeat queries from nearby
+ *      users (0.005° ≈ 550 m grid, 60s TTL)
+ *
+ * Why this design vs PostGIS `ST_DWithin`:
+ *   - No DB migration required to fix the user-visible bug today
+ *   - The bbox + btree path is fast enough up to ~1M stores
+ *   - PostGIS upgrade is documented in docs/store-discovery.md and is a
+ *     drop-in replacement for stage 1 when DBA is ready
+ *
+ * Failure modes:
+ *   - Mapbox quota / network failure: per-candidate result is null; we
+ *     fall back to haversine distance for THAT candidate so the user
+ *     doesn't see an empty list. The number of fallbacks is reported
+ *     back via `mapboxFailures` so the caller can log/alert.
+ *   - No candidates in bbox: returns an empty list, no Mapbox call made.
+ */
 export async function listNearbyStoresByRoadDistance(params: {
   lat: number;
   lng: number;
+  /** Hard upper bound from the caller, capped at FINAL_MAX_ROAD_DISTANCE_KM. */
   maxRoadDistanceKm?: number;
+  /** Max stores to send to Mapbox Matrix. Capped at MAX_MAPBOX_CANDIDATES (matrix is 25 coords/req). */
   mapboxLimit?: number;
-}): Promise<{ items: NearbyStoreListingItem[]; mapboxFailures: number }> {
-  if (!validCoord(params.lat, params.lng)) return { items: [], mapboxFailures: 0 };
+  /** Skip the result cache (e.g. for debug endpoints). */
+  bypassCache?: boolean;
+}): Promise<{ items: NearbyStoreListingItem[]; mapboxFailures: number; cacheHit: boolean }> {
+  if (!validCoord(params.lat, params.lng)) {
+    return { items: [], mapboxFailures: 0, cacheHit: false };
+  }
 
-  const supabase = getSupabase();
   const user = { lat: params.lat, lng: params.lng };
-  const maxRoadDistanceKm = Math.min(
+  const globalCap = Math.min(
     FINAL_MAX_ROAD_DISTANCE_KM,
-    Math.max(1, params.maxRoadDistanceKm ?? FINAL_MAX_ROAD_DISTANCE_KM)
+    Math.max(1, params.maxRoadDistanceKm ?? FINAL_MAX_ROAD_DISTANCE_KM),
   );
   const mapboxLimit = Math.min(
     MAX_MAPBOX_CANDIDATES,
-    Math.max(1, params.mapboxLimit ?? MAX_MAPBOX_CANDIDATES)
+    Math.max(1, params.mapboxLimit ?? MAX_MAPBOX_CANDIDATES),
   );
 
+  // Result-cache lookup (cell-quantised). Same cell + same params => same result.
+  const cacheKey = resultCacheKey(user.lat, user.lng, globalCap, mapboxLimit);
+  if (!params.bypassCache) {
+    const cached = nearbyResultCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return { items: cached.items, mapboxFailures: 0, cacheHit: true };
+    }
+    if (cached) nearbyResultCache.delete(cacheKey);
+  }
+
+  // --- Stage 1: SQL bbox prefilter ---
+  // Latitude: 1 degree ≈ 111.32 km. Longitude: 111.32 km × cos(lat).
+  // The bbox is sized to the ROUGH_RADIUS_KM (12 km), so any store
+  // outside it cannot possibly be in service range under MAX_RADIUS_KM.
+  // This converts the previous "SELECT *" full scan into an indexed
+  // range scan on (latitude, longitude).
+  const latDelta = ROUGH_RADIUS_KM / 111.32;
+  const cosLat = Math.max(Math.cos((user.lat * Math.PI) / 180), 0.1); // clamp for poles
+  const lngDelta = ROUGH_RADIUS_KM / (111.32 * cosLat);
+
+  const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
     .select(
-      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, status, is_active, is_available, is_accepting_orders, operational_status, live_status"
+      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_status",
     )
     .eq("status", "ACTIVE")
     .eq("is_active", true)
-    .not("latitude", "is", null)
-    .not("longitude", "is", null);
+    .gte("latitude", user.lat - latDelta)
+    .lte("latitude", user.lat + latDelta)
+    .gte("longitude", user.lng - lngDelta)
+    .lte("longitude", user.lng + lngDelta)
+    .limit(500); // safety cap — bbox should already keep this small
 
   if (error) throw error;
-
   const baseRows = (data ?? []) as NearbyStoreBase[];
+
+  // --- Stage 2: Haversine sort + per-store rough filter ---
+  // We rough-filter by `min(globalCap, store.delivery_radius_km) × 1.5`
+  // — the 1.5× buffer absorbs the worst-case detour ratio between
+  // straight-line and road distance. Anything outside this buffer
+  // cannot possibly satisfy `road_dist ≤ store_radius`, so we skip the
+  // Mapbox call for it.
   const roughCandidates = baseRows
     .map((row) => {
       const lat = toNumber(row.latitude);
       const lng = toNumber(row.longitude);
       if (lat == null || lng == null) return null;
       const roughKm = haversineDistanceKm(user, { lat, lng });
-      return { row, lat, lng, roughKm };
+      const storeRadius = effectiveServiceRadiusKm(globalCap, row.delivery_radius_km);
+      const roughBudget = Math.min(ROUGH_RADIUS_KM, storeRadius * 1.5);
+      if (roughKm > roughBudget) return null;
+      return { row, lat, lng, roughKm, storeRadius };
     })
-    .filter((x): x is { row: NearbyStoreBase; lat: number; lng: number; roughKm: number } => Boolean(x))
-    .filter((x) => x.roughKm <= ROUGH_RADIUS_KM)
+    .filter(
+      (x): x is { row: NearbyStoreBase; lat: number; lng: number; roughKm: number; storeRadius: number } =>
+        Boolean(x),
+    )
     .sort((a, b) => a.roughKm - b.roughKm)
     .slice(0, mapboxLimit);
 
-  if (roughCandidates.length === 0) return { items: [], mapboxFailures: 0 };
-
-  const enriched = await mapWithConcurrency(roughCandidates, MAPBOX_CONCURRENCY, async (candidate) => {
-    const cacheKey = mapboxCacheKey(user.lat, user.lng, candidate.row.id);
-    const cached = readMapboxCache(cacheKey);
-    if (cached) {
-      return {
-        ...candidate,
-        distanceKm: cached.distanceKm,
-        durationMin: cached.durationMin,
-        source: "cache" as const,
-      };
+  if (roughCandidates.length === 0) {
+    if (!params.bypassCache) {
+      evictResultCacheIfFull();
+      nearbyResultCache.set(cacheKey, { items: [], expiresAt: Date.now() + RESULT_CACHE_TTL_MS });
     }
+    return { items: [], mapboxFailures: 0, cacheHit: false };
+  }
 
-    try {
-      const route = await fetchDrivingDistanceKm(
-        user.lat,
-        user.lng,
-        candidate.lat,
-        candidate.lng
-      );
-      writeMapboxCache(cacheKey, route);
+  // --- Stage 3: Mapbox Matrix — single HTTP call for all candidates ---
+  const env = getEnv();
+  const mapboxToken = env.MAPBOX_ACCESS_TOKEN ?? null;
+  let mapboxFailures = 0;
+  let matrixResults: Array<{ distanceKm: number; durationMin: number | null } | null>;
+
+  if (!mapboxToken) {
+    // No token configured (dev / preview) — every candidate falls back
+    // to haversine. We still honour per-store radius.
+    matrixResults = roughCandidates.map(() => null);
+    mapboxFailures = roughCandidates.length;
+  } else {
+    const destinations = roughCandidates.map((c) => ({ lat: c.lat, lng: c.lng }));
+    const matrix = await getMatrixDistances({
+      origin: user,
+      destinations,
+      mapboxToken,
+      profile: "driving",
+    });
+    matrixResults = matrix.map((m) => {
+      if (!m) return null;
       return {
-        ...candidate,
-        distanceKm: route.distanceKm,
-        durationMin: route.durationMin,
-        source: "mapbox" as const,
+        distanceKm: m.distanceMeters / 1000,
+        durationMin: m.durationSeconds != null ? m.durationSeconds / 60 : null,
       };
-    } catch {
-      return {
-        ...candidate,
-        distanceKm: null,
-        durationMin: null,
-        source: "error" as const,
-      };
-    }
-  });
+    });
+    mapboxFailures = matrixResults.filter((r) => r === null).length;
+  }
 
-  const mapboxFailures = enriched.filter((x) => x.source === "error").length;
+  // --- Stage 4: Per-store radius gate + live-status filter + sort ---
+  const items: NearbyStoreListingItem[] = roughCandidates
+    .map((c, i) => {
+      const mb = matrixResults[i];
+      // Mapbox failed for this candidate → fall back to haversine for
+      // it. The store still gets a chance to appear; we just won't have
+      // an accurate road distance. We never silently inflate the cap.
+      const distanceKm = mb?.distanceKm ?? c.roughKm;
+      const durationMin = mb?.durationMin ?? null;
+      // THE CORE RULE: per-store delivery_radius_km gate
+      if (distanceKm > c.storeRadius) return null;
 
-  const items: NearbyStoreListingItem[] = enriched
-    .filter((x) => x.distanceKm != null && x.distanceKm <= maxRoadDistanceKm)
-    .map((x) => {
-      const raw = typeof x.row.live_status === "string" ? x.row.live_status.trim().toUpperCase() : "";
-      const live = raw === "OPEN" || raw === "CLOSED"
-        ? raw
-        : computeLiveStatus({
-            is_active: x.row.is_active,
-            is_available: x.row.is_available,
-            is_accepting_orders: x.row.is_accepting_orders,
-            operational_status: x.row.operational_status,
-          });
+      const raw = typeof c.row.live_status === "string" ? c.row.live_status.trim().toUpperCase() : "";
+      const live: "OPEN" | "CLOSED" =
+        raw === "OPEN" || raw === "CLOSED"
+          ? raw
+          : computeLiveStatus({
+              is_active: c.row.is_active,
+              is_available: c.row.is_available,
+              is_accepting_orders: c.row.is_accepting_orders,
+              operational_status: c.row.operational_status,
+            });
+
       return {
-        id: x.row.store_id,
-        name: x.row.store_display_name ?? x.row.store_name,
-        address: x.row.full_address ?? "",
-        lat: x.lat,
-        lng: x.lng,
-        distance_km: Number((x.distanceKm ?? 0).toFixed(2)),
-        duration_min: x.durationMin,
+        id: c.row.store_id,
+        name: c.row.store_display_name ?? c.row.store_name,
+        address: c.row.full_address ?? "",
+        lat: c.lat,
+        lng: c.lng,
+        distance_km: Number(distanceKm.toFixed(2)),
+        duration_min: durationMin != null ? Number(durationMin.toFixed(1)) : null,
         is_open: live === "OPEN",
       };
     })
+    .filter((x): x is NearbyStoreListingItem => x !== null)
     .filter((x) => x.is_open)
     .sort((a, b) => a.distance_km - b.distance_km);
 
-  return { items, mapboxFailures };
+  if (!params.bypassCache) {
+    evictResultCacheIfFull();
+    nearbyResultCache.set(cacheKey, { items, expiresAt: Date.now() + RESULT_CACHE_TTL_MS });
+  }
+
+  return { items, mapboxFailures, cacheHit: false };
+}
+
+/**
+ * Test helper — wipes the result cache. Exported so the test file can
+ * assert behaviour without timing dependencies.
+ */
+export function __resetNearbyResultCache(): void {
+  nearbyResultCache.clear();
 }
 
 function clampLimit(limit: number): number {
@@ -320,14 +437,16 @@ export async function listStoresNearby(params: {
       error.code === "42703" || message.includes("logo_url") || message.includes("column ms.logo_url");
     if (missingFunction || removedLogoColumn) {
       // Fallback path when DB RPC is missing/outdated (e.g., ms.logo_url removed).
-      const { data: stores, error: storesError } = await supabase
+      let storesQuery = supabase
         .from("merchant_stores")
         .select(
-          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id"
+          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id, is_pure_veg"
         )
         .eq("status", "ACTIVE")
         .not("latitude", "is", null)
         .not("longitude", "is", null);
+      if (veg_mode) storesQuery = storesQuery.eq("is_pure_veg", true);
+      const { data: stores, error: storesError } = await storesQuery;
       if (storesError) throw storesError;
 
       const user = { lat: params.lat, lng: params.lng };
@@ -352,7 +471,30 @@ export async function listStoresNearby(params: {
     }
     throw error;
   }
-  return { items: (data ?? []) as NearbyStoreRow[] };
+  let items = (data ?? []) as NearbyStoreRow[];
+  if (veg_mode) {
+    /**
+     * Enforce veg toggle via merchant_stores.is_pure_veg so UI behavior is stable
+     * even if nearby RPC implementation changes or returns mixed rows.
+     */
+    const internalIds = items
+      .map((r) => Number(r.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (internalIds.length === 0) return { items: [] };
+    const { data: vegRows, error: vegErr } = await supabase
+      .from("merchant_stores")
+      .select("id, is_pure_veg")
+      .in("id", internalIds)
+      .eq("is_pure_veg", true);
+    if (vegErr) throw vegErr;
+    const vegIds = new Set(
+      ((vegRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
+        .filter((r) => r.is_pure_veg === true)
+        .map((r) => Number(r.id))
+    );
+    items = items.filter((r) => vegIds.has(Number(r.id)));
+  }
+  return { items };
 }
 
 /**
@@ -636,7 +778,6 @@ export async function getMenuByStoreId(
       .select("id, category_name, display_order")
       .eq("store_id", store.id)
       .eq("is_active", true)
-      .eq("is_locked_by_plan", false)
       .order("display_order", { ascending: true }),
     trimmedSearch
       ? pg`
@@ -671,7 +812,6 @@ export async function getMenuByStoreId(
             AND COALESCE(c.is_deleted, FALSE) = FALSE
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
-            AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND m.is_active = TRUE
             AND m.approval_status = 'APPROVED'
             AND ${effectiveInStock} = TRUE
@@ -710,7 +850,6 @@ export async function getMenuByStoreId(
             AND COALESCE(c.is_deleted, FALSE) = FALSE
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
-            AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND m.is_active = TRUE
             AND m.approval_status = 'APPROVED'
             AND ${effectiveInStock} = TRUE
@@ -758,6 +897,173 @@ export async function getMenuByStoreId(
   }
 
   return { store, items: itemsWithCategory };
+}
+
+/** Lightweight menu fingerprint — epoch ms of latest menu/store/category change. */
+export async function getMenuVersion(
+  storeId: string
+): Promise<{ menuVersion: number; etag: string } | null> {
+  const store = await getStoreByStoreId(storeId);
+  if (!store) return null;
+
+  const storePk = Number(store.id);
+  if (!Number.isFinite(storePk) || storePk <= 0) return null;
+
+  const pg = getSql();
+  const [row] = await pg`
+    SELECT GREATEST(
+      COALESCE(
+        (SELECT MAX(EXTRACT(EPOCH FROM updated_at) * 1000)::bigint
+         FROM merchant_menu_items
+         WHERE store_id = ${storePk}),
+        0::bigint
+      ),
+      COALESCE(
+        (SELECT MAX(EXTRACT(EPOCH FROM updated_at) * 1000)::bigint
+         FROM merchant_menu_categories
+         WHERE store_id = ${storePk}),
+        0::bigint
+      ),
+      COALESCE(
+        (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint,
+        0::bigint
+      )
+    ) AS menu_version
+    FROM merchant_stores
+    WHERE id = ${storePk}
+    LIMIT 1
+  `;
+
+  const menuVersion = Number(row?.menu_version ?? 0);
+  const etag = `"gm-menu-${storeId}-${menuVersion}"`;
+  return { menuVersion, etag };
+}
+
+export type MenuDeltaRow = MerchantMenuItemRow & { category_name?: string | null };
+
+export type MenuDeltaResult = {
+  menuVersion: number;
+  unchanged?: boolean;
+  requiresFullSync?: boolean;
+  deletedItemIds?: string[];
+  changedRows?: MenuDeltaRow[];
+};
+
+/**
+ * Delta since client menuVersion (epoch ms). Returns changed rows + removals only.
+ * If client version is missing or too stale, signals full sync.
+ */
+export async function getMenuDelta(
+  storeId: string,
+  sinceVersionMs: number
+): Promise<MenuDeltaResult | null> {
+  const versionInfo = await getMenuVersion(storeId);
+  if (!versionInfo) return null;
+
+  const { menuVersion } = versionInfo;
+  if (!Number.isFinite(sinceVersionMs) || sinceVersionMs <= 0) {
+    return { menuVersion, requiresFullSync: true };
+  }
+  if (sinceVersionMs >= menuVersion) {
+    return { menuVersion, unchanged: true };
+  }
+
+  const store = await getStoreByStoreId(storeId);
+  if (!store) return null;
+
+  const storePk = Number(store.id);
+  const pg = getSql();
+  const effectiveInStock = getMenuItemEffectiveInStockExpr(pg);
+  const since = new Date(sinceVersionMs);
+
+  const changedRows = (await pg`
+    SELECT
+      m.id,
+      m.store_id,
+      m.category_id,
+      m.item_id,
+      m.item_name,
+      m.item_description,
+      m.item_image_url,
+      m.food_type,
+      m.spice_level,
+      m.cuisine_type,
+      m.base_price,
+      m.selling_price,
+      m.discount_percentage,
+      m.packaging_charges,
+      m.in_stock,
+      m.is_active,
+      m.is_popular,
+      m.is_recommended,
+      m.preparation_time_minutes,
+      m.has_customizations,
+      m.has_addons,
+      m.has_variants,
+      m.approval_status,
+      COALESCE(m.is_deleted, FALSE) AS is_deleted,
+      ${effectiveInStock} AS effective_in_stock,
+      c.category_name
+    FROM merchant_menu_items m
+    LEFT JOIN merchant_menu_categories c
+      ON c.id = m.category_id
+      AND c.store_id = ${storePk}
+      AND COALESCE(c.is_deleted, FALSE) = FALSE
+    WHERE m.store_id = ${storePk}
+      AND m.updated_at > ${since}
+    ORDER BY m.updated_at ASC
+  `) as unknown as (MenuDeltaRow & {
+    effective_in_stock?: boolean;
+    approval_status?: string | null;
+    is_deleted?: boolean;
+  })[];
+
+  const deletedItemIds: string[] = [];
+  const activeRows: MenuDeltaRow[] = [];
+
+  for (const row of changedRows) {
+    const itemId = String(row.item_id ?? "").trim();
+    if (!itemId) continue;
+
+    const approved = row.approval_status === "APPROVED";
+    const active =
+      row.is_active === true &&
+      row.is_deleted !== true &&
+      approved &&
+      row.effective_in_stock !== false;
+
+    if (!active) {
+      deletedItemIds.push(itemId);
+      continue;
+    }
+    activeRows.push(row);
+  }
+
+  const commission = await resolveStoreCommission(store.id);
+  for (const it of activeRows) {
+    const netRupees = parseFloat(String(it.selling_price ?? ""));
+    if (Number.isFinite(netRupees) && netRupees > 0) {
+      const { customerPaise } = customerPriceFromBase(
+        Math.round(netRupees * 100),
+        commission.percent
+      );
+      it.selling_price = (customerPaise / 100).toFixed(2);
+    }
+    const baseNet = parseFloat(String(it.base_price ?? ""));
+    if (Number.isFinite(baseNet) && baseNet > 0) {
+      const { customerPaise } = customerPriceFromBase(
+        Math.round(baseNet * 100),
+        commission.percent
+      );
+      it.base_price = (customerPaise / 100).toFixed(2);
+    }
+  }
+
+  return {
+    menuVersion,
+    deletedItemIds,
+    changedRows: activeRows,
+  };
 }
 
 export type MenuItemFullConfig = {
@@ -1469,8 +1775,6 @@ export async function getMenuItemFullConfig(
     .eq("store_id", store.id)
     .eq("item_id", itemId)
     .eq("is_active", true)
-    .eq("is_deleted", false)
-    .eq("is_locked_by_plan", false)
     .eq("approval_status", "APPROVED")
     .maybeSingle();
 
@@ -1485,8 +1789,6 @@ export async function getMenuItemFullConfig(
         .eq("store_id", store.id)
         .eq("id", numericId)
         .eq("is_active", true)
-        .eq("is_deleted", false)
-        .eq("is_locked_by_plan", false)
         .eq("approval_status", "APPROVED")
         .maybeSingle();
       if (!byPkError && byPk) itemRow = byPk;
@@ -1641,33 +1943,6 @@ export async function getMenuItemFullConfig(
   };
 }
 
-/** Exclude plan-locked dishes from customer search results. */
-async function filterLockedDishesFromSearch<
-  T extends { store_id: number; item_id: string },
->(dishes: T[]): Promise<T[]> {
-  if (dishes.length === 0) return dishes;
-  const supabase = getSupabase();
-  const storeIds = [...new Set(dishes.map((d) => d.store_id).filter((id) => Number.isFinite(id)))];
-  if (storeIds.length === 0) return dishes;
-
-  const { data: lockedRows, error } = await supabase
-    .from("merchant_menu_items")
-    .select("store_id, item_id")
-    .in("store_id", storeIds)
-    .eq("is_deleted", false)
-    .eq("is_locked_by_plan", true);
-
-  if (error) {
-    console.warn("[search] locked-item filter failed:", error.message);
-    return dishes;
-  }
-
-  const lockedKeys = new Set(
-    (lockedRows ?? []).map((r) => `${r.store_id}:${String(r.item_id ?? "")}`)
-  );
-  return dishes.filter((d) => !lockedKeys.has(`${d.store_id}:${String(d.item_id ?? "")}`));
-}
-
 /**
  * Search menu items and stores. When lat/lng provided, uses scored nearby RPCs (15km, approval_status).
  * Otherwise uses FTS search_menu_items + store fetch (no location filter).
@@ -1678,6 +1953,7 @@ export async function search(params: {
   offset?: number;
   lat?: number;
   lng?: number;
+  veg_mode?: boolean;
 }): Promise<{
   dishes: MerchantMenuItemRow[];
   stores: MerchantStoreRow[];
@@ -1686,6 +1962,7 @@ export async function search(params: {
   const q = (params.q ?? "").trim();
   const limit = clampLimit(params.limit ?? SEARCH_LIMIT);
   const offset = Math.max(0, params.offset ?? 0);
+  const vegMode = params.veg_mode === true;
   const useNearby = validCoord(params.lat ?? 0, params.lng ?? 0);
 
   if (!q) {
@@ -1776,8 +2053,26 @@ export async function search(params: {
       preparation_time_minutes: null,
     }));
 
-    const visibleItems = await filterLockedDishesFromSearch(items);
-    return { dishes: visibleItems, stores };
+    if (!vegMode) return { dishes: items, stores };
+    const storeIds = stores
+      .map((s) => Number(s.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (storeIds.length === 0) return { dishes: [], stores: [] };
+    const { data: pureRows, error: pureErr } = await supabase
+      .from("merchant_stores")
+      .select("id, is_pure_veg")
+      .in("id", storeIds)
+      .eq("is_pure_veg", true);
+    if (pureErr) throw pureErr;
+    const pureStoreIds = new Set(
+      ((pureRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
+        .filter((r) => r.is_pure_veg === true)
+        .map((r) => Number(r.id))
+    );
+    return {
+      stores: stores.filter((s) => pureStoreIds.has(Number(s.id))),
+      dishes: items.filter((d) => pureStoreIds.has(Number(d.store_id))),
+    };
   }
 
   let items: MerchantMenuItemRow[] = [];
@@ -1789,14 +2084,11 @@ export async function search(params: {
 
   if (!rpcError && Array.isArray(rpcData) && rpcData.length >= 0) {
     items = rpcData as MerchantMenuItemRow[];
-    items = await filterLockedDishesFromSearch(items);
   } else {
     const { data: ilikeData, error: ilikeError } = await supabase
       .from("merchant_menu_items")
       .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, in_stock, is_active, is_popular, is_recommended")
       .eq("is_active", true)
-      .eq("is_deleted", false)
-      .eq("is_locked_by_plan", false)
       .eq("in_stock", true)
       .or(`item_name.ilike.%${q}%,item_description.ilike.%${q}%,cuisine_type.ilike.%${q}%`)
       .limit(limit)
@@ -1811,14 +2103,20 @@ export async function search(params: {
     return { dishes: items, stores: [] };
   }
 
-  const { data: storeRows, error: storeError } = await supabase
+  let storesQuery = supabase
     .from("merchant_stores")
     .select("id, store_id, store_name, store_display_name, store_description, banner_url, cuisine_types, city, is_active, is_accepting_orders, status")
     .in("id", storeIds)
     .eq("is_active", true);
+  if (vegMode) storesQuery = storesQuery.eq("is_pure_veg", true);
+  const { data: storeRows, error: storeError } = await storesQuery;
 
   if (storeError) throw storeError;
   const stores = (storeRows ?? []) as MerchantStoreRow[];
-
-  return { dishes: items, stores };
+  if (!vegMode) return { dishes: items, stores };
+  const pureStoreIdSet = new Set(stores.map((s) => Number(s.id)));
+  return {
+    dishes: items.filter((d) => pureStoreIdSet.has(Number(d.store_id))),
+    stores,
+  };
 }

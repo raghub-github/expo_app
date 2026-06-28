@@ -76,6 +76,7 @@ import { riderApi } from "@/src/services/api/riderApi";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildFoodDeliverySuccessParams } from "@/src/lib/food-delivery-success-nav";
 import { buildRideDeliverySuccessParams } from "@/src/lib/ride-delivery-success-nav";
+import { recordOrderTipBaseline } from "@/src/lib/rider-tip-celebration-storage";
 import { isRideFarePaymentPending } from "@/src/lib/ride-payment-wait";
 import { useNavScreenBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { usePartnerChatUnread } from "@/src/hooks/usePartnerChatUnread";
@@ -205,6 +206,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpResetKey, setOtpResetKey] = useState(0);
   const [reachSliderPending, setReachSliderPending] = useState(false);
+  const [rideStartedOptimistic, setRideStartedOptimistic] = useState(false);
   const [startRideSliderKey, setStartRideSliderKey] = useState(0);
   const [pickOrderSheetDismissed, setPickOrderSheetDismissed] = useState(false);
   const [pickOrderDetailOpen, setPickOrderDetailOpen] = useState(false);
@@ -252,6 +254,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     setRiderFoodPickupConfirmed(false);
     prevRiderMarkedPickupRef.current = null;
     setReachSliderPending(false);
+    setRideStartedOptimistic(false);
   }, [orderId]);
 
   useEffect(() => {
@@ -398,7 +401,13 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       : null;
 
   /** Backend scopes rideStarted to the active rider assignment (picked up), not order-level dispatch. */
-  const rideStarted = !!order?.rideStarted;
+  const rideStarted = !!order?.rideStarted || rideStartedOptimistic;
+
+  useEffect(() => {
+    if (order?.rideStarted) {
+      setRideStartedOptimistic(false);
+    }
+  }, [order?.rideStarted]);
   /** Food: rider explicitly marked pickup (OTP/barcode/mark) — not merchant dispatch alone. */
   const riderMarkedFoodPickup =
     isFoodOrder &&
@@ -926,6 +935,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       isFoodOrder && order.merchantName?.trim()
         ? `${order.merchantName.trim()} order`
         : t("orders.partnerChat.rideTripLabel", "Live ride trip");
+    const beforeReachPickup = !isFoodOrder && !atCustomer && !reachSliderDone;
     router.push({
       pathname: "/order-partner-chat/[orderId]",
       params: {
@@ -934,9 +944,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         orderLabel,
         ...(order.customerPhone?.trim() ? { customerPhone: order.customerPhone.trim() } : {}),
         ...(atCustomer ? { atDrop: "1" } : {}),
+        ...(beforeReachPickup ? { atPickup: "1" } : {}),
       },
     });
-  }, [order, isFoodOrder, atCustomer, t]);
+  }, [order, isFoodOrder, atCustomer, reachSliderDone, t]);
 
   const handleReachedPickup = useCallback(() => {
     const gps = riderGps();
@@ -999,6 +1010,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       void tracker.stop();
       void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
       queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+      void recordOrderTipBaseline(
+        deliveredOrder.id,
+        Math.round(Number(deliveredOrder.customerTipAmount) || 0),
+        [deliveredOrder.formattedOrderId?.trim() ?? ""]
+      );
       router.replace({
         pathname: "/food-delivery-success",
         params: buildFoodDeliverySuccessParams(deliveredOrder),
@@ -1013,6 +1029,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       void tracker.stop();
       void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
       queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+      void recordOrderTipBaseline(
+        deliveredOrder.id,
+        Math.round(Number(deliveredOrder.customerTipAmount) || 0),
+        [deliveredOrder.formattedOrderId?.trim() ?? ""]
+      );
       router.replace({
         pathname: "/ride-delivery-success",
         params: { ...buildRideDeliverySuccessParams(deliveredOrder), kind: "ride" },
@@ -1603,6 +1624,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           }
           syncRiderOrderDetailCache(queryClient, orderId, data);
           setOtpSheetOpen(false);
+          setRideStartedOptimistic(true);
+          setCameraFitTrigger((n) => n + 1);
           const gps = riderGps();
           void startRide
             .mutateAsync({ orderId, ...gps })
@@ -1617,6 +1640,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
               setCameraFitTrigger((n) => n + 1);
             })
             .catch((err) => {
+              setRideStartedOptimistic(false);
               setStartRideSliderKey((k) => k + 1);
               Alert.alert(
                 t("orders.activeRide.updateFailedTitle", "Update failed"),

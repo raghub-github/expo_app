@@ -26,11 +26,11 @@ import {
 } from "@/src/services/auth/auth.service";
 import { resetSessionRevokedFlag } from "@/src/services/sessionEvents";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
+import { getRiderLoginGeoFromDevice } from "@/src/lib/getRiderLoginGeoFromDevice";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-
-const riderHero = require("../../assets/images/riderlogin.png");
-const brandLogo = require("../../assets/images/logo.png");
+import { useAppAssetSource } from "@/src/components/AppAssetImage";
+import { RX } from "@/src/lib/appAssetKeys";
 
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
@@ -155,6 +155,8 @@ export default function LoginScreen() {
   const [deviceSessionRetry, setDeviceSessionRetry] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const riderHero = useAppAssetSource(RX.auth.hero);
+  const brandLogo = useAppAssetSource(RX.auth.logo);
 
   const phoneDigits = phoneE164.replace(/\D/g, "");
   const phoneValid = phoneDigits.length >= 10;
@@ -249,6 +251,7 @@ export default function LoginScreen() {
     setError(null);
     try {
       const deviceId = await getOrCreateDeviceId();
+      const loginGeo = await getRiderLoginGeoFromDevice();
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       const otpValue = otp.trim();
 
@@ -258,6 +261,7 @@ export default function LoginScreen() {
           phoneE164: normalizedPhone,
           otp: otpValue,
           deviceId,
+          loginGeo,
         });
       } catch (verifyError) {
         if (isRiderAuthError(verifyError) && verifyError.code === "device_session_unavailable") {
@@ -319,10 +323,12 @@ export default function LoginScreen() {
     setError(null);
     try {
       const deviceId = await getOrCreateDeviceId();
+      const loginGeo = await getRiderLoginGeoFromDevice();
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       const session = await riderAuthService.exchangeRiderFromCurrentSupabaseSession({
         phoneE164: normalizedPhone,
         deviceId,
+        loginGeo,
       });
       resetSessionRevokedFlag();
       await setSession(session);
@@ -495,7 +501,7 @@ export default function LoginScreen() {
             : { flex: 1, minHeight: heroMinHeight },
         ]}
       >
-        <Image source={riderHero} style={styles.heroImage} resizeMode="cover" />
+        {riderHero ? <Image source={riderHero} style={styles.heroImage} resizeMode="cover" /> : null}
         <LinearGradient
           colors={["rgba(0,0,0,0.12)", "rgba(0,0,0,0.5)", "rgba(0,0,0,0.92)"]}
           locations={[0, 0.5, 1]}
@@ -506,11 +512,13 @@ export default function LoginScreen() {
           edges={["top"]}
           style={[styles.heroSafe, keyboardVisible && styles.heroSafeCompact]}
         >
-          <Image
-            source={brandLogo}
-            style={[styles.brandLogo, keyboardVisible && styles.brandLogoCompact]}
-            resizeMode="contain"
-          />
+          {brandLogo ? (
+            <Image
+              source={brandLogo}
+              style={[styles.brandLogo, keyboardVisible && styles.brandLogoCompact]}
+              resizeMode="contain"
+            />
+          ) : null}
 
           <View style={[styles.heroBottom, keyboardVisible && styles.heroBottomCompact]}>
             <Text style={[styles.heroHeadline, keyboardVisible && styles.heroHeadlineCompact]}>

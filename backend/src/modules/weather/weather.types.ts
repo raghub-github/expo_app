@@ -1,4 +1,14 @@
-/** Customer-facing weather severity ladder (mirrors Zomato/Swiggy states). */
+export type WeatherRefreshTrigger =
+  | "zone_enter"
+  | "customer_home"
+  | "rider_online"
+  | "merchant_dashboard"
+  | "order_created"
+  | "eta_calculation"
+  | "manual_refresh"
+  | "ws_connect"
+  | "rain_event";
+
 export type WeatherSeverity =
   | "CLEAR"
   | "LIGHT_RAIN"
@@ -36,6 +46,27 @@ export type ZoneWeatherSnapshot = {
   updatedAt: string;
 };
 
+export type WeatherPanelDetails = {
+  feelsLikeC: number | null;
+  pressureHpa: number | null;
+  visibilityKm: number | null;
+  cloudCoverPct: number | null;
+  windGustKmh: number | null;
+  weatherId: number | null;
+  weatherMain: string | null;
+  weatherDescription: string | null;
+  sunriseAt: string | null;
+  sunsetAt: string | null;
+  rainfallMm1h: number | null;
+  uvIndex: number | null;
+  aqi: number | null;
+  aqiLabel: string | null;
+  rainProbabilityPct?: number | null;
+  windDirectionDeg?: number | null;
+  isDay?: boolean | null;
+  snowfallCm?: number | null;
+};
+
 /** Payload returned to customer app surfaces. */
 export type CustomerWeatherContext = {
   severity: WeatherSeverity;
@@ -61,6 +92,9 @@ export type CustomerWeatherContext = {
   etaImpactLabel: string | null;
   trackingMessage: string | null;
   updatedAt: string | null;
+  /** Grid cell key for WebSocket `zone:{zoneKey}` subscriptions. */
+  zoneKey: string | null;
+  details: WeatherPanelDetails | null;
   /** Future: rider surge / dispatch hooks (infrastructure only — not active yet). */
   futureHooks: {
     surgeEligible: boolean;

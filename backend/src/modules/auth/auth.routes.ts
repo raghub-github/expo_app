@@ -1,3 +1,5 @@
+import { jwtVerify } from "jose";
+import { createSecretKey } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ulid } from "ulid";
@@ -14,12 +16,96 @@ import {
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
+import { createReviewModeService } from "./reviewMode.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
 import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { persistRiderDeviceSession } from "../../lib/rider-app-session.js";
+import { resolveRiderLoginGeoForSession, type RiderLoginGeo } from "../../lib/login-geo.js";
+
+const RiderLoginGeoSchema = z
+  .object({
+    state: z.string().max(128).optional(),
+    district: z.string().max(128).optional(),
+    town: z.string().max(128).optional(),
+    village: z.string().max(128).optional(),
+  })
+  .optional();
+
+async function riderSessionLoginGeo(
+  req: { headers: Record<string, unknown>; ip?: string },
+  clientGeo?: RiderLoginGeo | null,
+) {
+  const ip = riderLoginIp(req);
+  return resolveRiderLoginGeoForSession({
+    ip,
+    headers: req.headers,
+    clientGeo,
+  });
+}
+
+const RiderLoginDeviceMetaSchema = z
+  .object({
+    deviceType: z.string().max(64).optional(),
+    deviceModel: z.string().max(128).optional(),
+    os: z.string().max(32).optional(),
+    osVersion: z.string().max(64).optional(),
+    appVersion: z.string().max(32).optional(),
+  })
+  .optional();
+
+function riderLoginIp(req: { headers: Record<string, unknown>; ip?: string }): string | null {
+  return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.ip ?? null;
+}
+
+function riderLoginLocation(req: { headers: Record<string, unknown> }): string | null {
+  const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+  const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+  return city && country ? `${city}, ${country}` : city ?? country ?? null;
+}
+
+const RIDER_REFRESH_CLOCK_TOLERANCE_SEC = 60 * 60 * 24 * 30; // allow refresh up to 30d after JWT exp
+
+async function verifyRiderJwtForRefresh(token: string): Promise<{
+  sub: string;
+  role: string;
+  phoneE164: string;
+  deviceId: string;
+}> {
+  const env = getEnv();
+  const currentKey = createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8"));
+  const previousKey = env.SUPABASE_JWT_SECRET_PREVIOUS
+    ? createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET_PREVIOUS, "utf-8"))
+    : null;
+  const opts = { clockTolerance: RIDER_REFRESH_CLOCK_TOLERANCE_SEC };
+
+  let payload;
+  try {
+    ({ payload } = await jwtVerify(token, currentKey, opts));
+  } catch (e) {
+    if (!previousKey) throw e;
+    ({ payload } = await jwtVerify(token, previousKey, opts));
+  }
+
+  const role = String((payload as { role?: string }).role ?? "");
+  const sub = String(payload.sub ?? "");
+  const phoneE164 =
+    typeof (payload as { phone?: string }).phone === "string"
+      ? (payload as { phone: string }).phone
+      : "";
+  const deviceId =
+    typeof (payload as { device_id?: string }).device_id === "string"
+      ? (payload as { device_id: string }).device_id
+      : "";
+
+  if (!sub || role !== "rider" || !phoneE164 || !deviceId) {
+    throw Object.assign(new Error("invalid_token"), { statusCode: 401 });
+  }
+
+  return { sub, role, phoneE164, deviceId };
+}
 
 function headersToRecord(headers: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -101,6 +187,7 @@ async function persistMerchantDeviceSessionForMerchant(
  */
 export async function authRoutes(app: FastifyInstance) {
   const env = getEnv();
+  const reviewMode = createReviewModeService(env);
 
   // Dev-only in-memory OTP store. In production, use Redis/DB.
   const otpStore = new Map<
@@ -435,6 +522,31 @@ export async function authRoutes(app: FastifyInstance) {
 
       req.log?.info?.({ phoneE164, phoneTail, requestId }, "[OTP] Requested");
 
+      // Google Play Review Mode — only this single phone is short-circuited,
+      // and only when the env flag is on. Everything else runs the real
+      // SMS path. The OTP is stored in the SAME otpStore with the SAME shape
+      // so /otp/verify sees no difference.
+      if (reviewMode.isReviewLogin(phoneE164)) {
+        const otp = reviewMode.getReviewOtp();
+        otpStore.set(requestId, {
+          phoneE164,
+          otp,
+          expiresAtMs: Date.now() + expiresInSec * 1000,
+          attempts: 0,
+        });
+        reviewMode.logReviewLogin(req.log, {
+          phone: phoneE164,
+          ip: req.ip ?? null,
+          stage: "request",
+          ok: true,
+        });
+        return {
+          requestId,
+          expiresInSec,
+          smsSent: true,
+        };
+      }
+
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
       otpStore.set(requestId, {
@@ -537,11 +649,27 @@ export async function authRoutes(app: FastifyInstance) {
 
       if (entry.otp !== otp) {
         req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid code");
+        if (reviewMode.isReviewLogin(phoneE164)) {
+          reviewMode.logReviewLogin(req.log, {
+            phone: phoneE164,
+            ip: req.ip ?? null,
+            stage: "verify",
+            ok: false,
+          });
+        }
         return reply.code(400).send({ error: "invalid_otp" });
       }
       otpStore.delete(requestId);
 
       req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verified");
+      if (reviewMode.isReviewLogin(phoneE164)) {
+        reviewMode.logReviewLogin(req.log, {
+          phone: phoneE164,
+          ip: req.ip ?? null,
+          stage: "verify",
+          ok: true,
+        });
+      }
 
       const db = getDb();
       const sql = getSql();
@@ -719,6 +847,7 @@ export async function authRoutes(app: FastifyInstance) {
                 fullName: "Pending",
                 primaryMobile: phoneE164,
                 primaryMobileNormalized: normalizedMobile,
+                trustScore: "5",
               })
               .returning({ id: customers.id });
             if (!inserted) throw new Error("Failed to create customer");
@@ -862,12 +991,8 @@ export async function authRoutes(app: FastifyInstance) {
         }
       }
 
-      const ip =
-        (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
-      const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
-      const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
-      const location =
-        city && country ? `${city}, ${country}` : city ?? country ?? null;
+      const ip = riderLoginIp(req);
+      const loginGeo = await riderSessionLoginGeo(req);
 
       try {
         await persistRiderDeviceSession(sql, {
@@ -875,7 +1000,7 @@ export async function authRoutes(app: FastifyInstance) {
           deviceId,
           loginMethod: "phone",
           ip,
-          location,
+          loginGeo,
         });
       } catch (sessErr: unknown) {
         req.log?.error?.({ err: sessErr }, "Rider OTP login: device session persist failed");
@@ -919,6 +1044,8 @@ export async function authRoutes(app: FastifyInstance) {
           accessToken: z.string().min(10),
           phoneE164: z.string().min(10),
           deviceId: z.string().min(1),
+          device: RiderLoginDeviceMetaSchema,
+          loginGeo: RiderLoginGeoSchema,
         }),
         response: {
           200: SessionSchema,
@@ -929,10 +1056,12 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { accessToken, phoneE164, deviceId } = req.body as {
+      const { accessToken, phoneE164, deviceId, device: deviceMeta, loginGeo: clientLoginGeo } = req.body as {
         accessToken: string;
         phoneE164: string;
         deviceId: string;
+        device?: z.infer<typeof RiderLoginDeviceMetaSchema>;
+        loginGeo?: RiderLoginGeo;
       };
 
       const { getSupabase } = await import("../../lib/supabase.js");
@@ -974,11 +1103,8 @@ export async function authRoutes(app: FastifyInstance) {
         userId = `usr_${riderId}`;
       }
 
-      const ip =
-        (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
-      const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
-      const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
-      const location = city && country ? `${city}, ${country}` : city ?? country ?? null;
+      const ip = riderLoginIp(req);
+      const loginGeo = await riderSessionLoginGeo(req, clientLoginGeo);
 
       try {
         await persistRiderDeviceSession(sql, {
@@ -986,7 +1112,8 @@ export async function authRoutes(app: FastifyInstance) {
           deviceId,
           loginMethod: "phone",
           ip,
-          location,
+          loginGeo,
+          device: deviceMeta ?? undefined,
         });
       } catch (sessErr: unknown) {
         req.log?.error?.({ err: sessErr }, "Rider Supabase exchange: device session persist failed");
@@ -1014,6 +1141,99 @@ export async function authRoutes(app: FastifyInstance) {
         role: "rider",
         userId,
         riderId: riderId.toString(),
+      };
+    },
+  );
+
+  /**
+   * Refresh rider session — re-issue JWT when near expiry while device session is still active.
+   * Accepts slightly expired tokens (grace window) so riders stay signed in without re-OTP.
+   */
+  app.post(
+    "/rider/refresh-session",
+    {
+      schema: {
+        body: z.object({
+          deviceId: z.string().min(1),
+        }),
+        response: {
+          200: SessionSchema,
+          401: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const header = req.headers.authorization;
+      const m = header ? /^Bearer\s+(.+)$/.exec(header) : null;
+      const token = m?.[1]?.trim();
+      if (!token) {
+        return reply.code(401).send({ error: "missing_authorization" });
+      }
+
+      const { deviceId: bodyDeviceId } = req.body as { deviceId: string };
+      let claims: Awaited<ReturnType<typeof verifyRiderJwtForRefresh>>;
+      try {
+        claims = await verifyRiderJwtForRefresh(token);
+      } catch {
+        return reply.code(401).send({ error: "invalid_token" });
+      }
+
+      if (claims.deviceId !== bodyDeviceId.trim()) {
+        return reply.code(401).send({ error: "invalid_token", message: "Device mismatch." });
+      }
+
+      const sql = getSql();
+      const rows = await sql`
+        SELECT id
+        FROM user_device_sessions
+        WHERE user_id = ${claims.sub}
+          AND device_id = ${claims.deviceId}
+          AND is_active = TRUE
+        LIMIT 1
+      `;
+      if (!rows[0]) {
+        return reply.code(401).send({
+          error: "session_revoked",
+          message: "Signed out from this device.",
+        });
+      }
+
+      await sql`
+        UPDATE user_device_sessions
+        SET last_active = now()
+        WHERE user_id = ${claims.sub} AND device_id = ${claims.deviceId} AND is_active = TRUE
+      `;
+
+      const env = getEnv();
+      const expiresInSec = 60 * 60 * 24 * 7;
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+      const accessToken = await issueSupabaseCompatibleJwt({
+        jwtSecret: env.SUPABASE_JWT_SECRET,
+        sub: claims.sub,
+        role: "rider",
+        phoneE164: claims.phoneE164,
+        deviceId: claims.deviceId,
+        exp: expiresAt,
+      });
+
+      const db = getDb();
+      const riderPkFromSub = /^usr_(\d+)$/.exec(claims.sub.trim())?.[1];
+      const riderId =
+        riderPkFromSub ??
+        (
+          await db
+            .select({ id: riders.id })
+            .from(riders)
+            .where(eq(riders.mobile, claims.phoneE164))
+            .limit(1)
+        )[0]?.id?.toString();
+
+      return {
+        accessToken,
+        expiresAt,
+        role: "rider" as const,
+        userId: claims.sub,
+        ...(riderId ? { riderId } : {}),
       };
     },
   );
@@ -1092,6 +1312,7 @@ export async function authRoutes(app: FastifyInstance) {
             fullName: "Pending",
             primaryMobile: phoneE164,
             primaryMobileNormalized: normalizedMobile,
+            trustScore: "5",
           })
           .returning({ id: customers.id });
         if (!inserted) throw new Error("Failed to create customer");
@@ -1487,12 +1708,8 @@ export async function authRoutes(app: FastifyInstance) {
           return reply.code(500).send({ error: errorMessage });
         }
 
-        const ip =
-          (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
-        const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
-        const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
-        const location =
-          city && country ? `${city}, ${country}` : city ?? country ?? null;
+        const ip = riderLoginIp(req);
+        const loginGeo = await riderSessionLoginGeo(req);
 
         try {
           await persistRiderDeviceSession(sql, {
@@ -1500,7 +1717,7 @@ export async function authRoutes(app: FastifyInstance) {
             deviceId,
             loginMethod: "phone",
             ip,
-            location,
+            loginGeo,
           });
         } catch (sessErr: unknown) {
           req.log?.error?.({ err: sessErr }, "Rider MSG91 login: device session persist failed");

@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
 import { postJson } from "@/src/services/http";
@@ -36,6 +36,7 @@ export interface UpdateRiderStageRequest {
  */
 export function useSaveDocument() {
   const session = useSessionStore((s) => s.session);
+  const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (data: SaveDocumentRequest): Promise<SaveDocumentResponse> => {
@@ -48,6 +49,9 @@ export function useSaveDocument() {
         data,
         { headers: { authorization: `Bearer ${session.accessToken}` } }
       );
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["rider", String(variables.riderId)] });
     },
   });
 }

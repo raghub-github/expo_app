@@ -118,6 +118,8 @@ const availabilityRiderSchema = z.object({
   heading: z.number().nullable(),
   distanceKm: z.number(),
   vehicleType: z.string(),
+  vehicleTypes: z.array(z.string()).optional(),
+  acType: z.string().nullable().optional(),
 });
 
 export async function rideRoutes(app: FastifyInstance) {
@@ -295,6 +297,7 @@ export async function rideRoutes(app: FastifyInstance) {
               estimatedPickupWaitingCharge: z.number(),
               awaitingTipBoost: z.boolean(),
               dispatchRetryCount: z.number(),
+              dispatchDeclinedCount: z.number(),
               customerTipAmount: z.number(),
               prebookTipAmount: z.number(),
               searchBoostTip1: z.number(),

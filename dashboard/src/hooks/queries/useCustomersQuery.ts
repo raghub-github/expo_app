@@ -1,12 +1,14 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
+import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useQuery } from "@tanstack/react-query";
 
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { CustomerWithStats } from "@/lib/db/operations/customers";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 
 interface CustomersResponse {
   success: boolean;
@@ -54,6 +56,9 @@ export async function fetchCustomers(
   if (params.sortOrder) searchParams.set("sortOrder", params.sortOrder);
 
   const response = await fetch(`/api/customers?${searchParams.toString()}`, { signal });
+  if (response.status === 499) {
+    throw new DOMException("Request aborted", "AbortError");
+  }
   let result: CustomersResponse = { success: false };
   try {
     const text = await response.text();
@@ -94,20 +99,26 @@ export async function fetchCustomers(
 export function useCustomersQuery(params: CustomersQueryParams = {}) {
   const pathname = useAppPathname();
   const auth = useAuthOptional();
+  const { data: permissionsData, isLoading: permissionsLoading } = usePermissionsQuery();
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
+  const permissionsReady = Boolean(auth?.permissions ?? permissionsData);
 
   const { enabled: enabledFromParams = true, ...queryParams } = params;
 
   const isOnCustomersRoute = pathname.startsWith("/dashboard/customers");
-  const isAllowed = Boolean(authReady && sessionUser && permissions);
-  const enabled = Boolean(isOnCustomersRoute && isAllowed && enabledFromParams);
-  return useQuery({
+  const authGateReady = Boolean(authReady && sessionUser && permissionsReady && !permissionsLoading);
+  const enabled = Boolean(isOnCustomersRoute && authGateReady && enabledFromParams);
+  const query = useQuery({
     queryKey: queryKeys.customers.list(queryParams as Record<string, unknown>),
     queryFn: ({ signal }) => fetchCustomers(queryParams, signal),
     enabled,
     ...getCacheConfig(CacheTier.MEDIUM), // Customers list is medium frequency
   });
+
+  return {
+    ...query,
+    authGateReady,
+  };
 }
 

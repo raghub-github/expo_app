@@ -4,7 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { isTimeoutOrAbortError, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { listCustomers, getCustomerByCustomerId } from "@/lib/db/operations/customers";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
@@ -20,15 +21,11 @@ export const runtime = 'nodejs';
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
+    const { user } = auth;
 
     // Check if user is super admin or has CUSTOMER dashboard access (in parallel)
     const [userIsSuperAdmin, hasDashboardAccess] = await Promise.all([
@@ -141,6 +138,26 @@ export async function GET(request: NextRequest) {
       pagination: result.pagination,
     });
   } catch (error) {
+    if (isTimeoutOrAbortError(error)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
+    }
+    if (isNetworkOrTransientError(error)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
+    }
     console.error("[GET /api/customers] Error:", error);
     return NextResponse.json(
       {

@@ -9,7 +9,7 @@ import { z } from "zod";
 import { randomBytes } from "crypto";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
-import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
+import { getStoreByStoreId, getStoreByIdForOrder, getMerchantAboutPayload } from "../merchants/merchant.service.js";
 import { getStoreRatingsForStores } from "../merchants/merchant-store-ratings.js";
 import { auth } from "../../plugins/auth.js";
 import { createPendingOrder, finalizeOrder } from "./order.placement.service.js";
@@ -51,6 +51,8 @@ import {
   buildCustomerOrderTaxInvoicePdfBuffer,
   invoicePdfFilename,
 } from "../../lib/customer-order-tax-invoice-pdf.js";
+import { buildCustomerOrderSummaryReceiptHtml } from "../../lib/customer-order-summary-receipt.js";
+import { loadOrderRefundStatusByCorePks } from "../../lib/order-refund-status.js";
 import {
   loadCustomerPostDeliveryFeedback,
   saveCustomerPostDeliveryFeedback,
@@ -140,7 +142,8 @@ function isMissingDbRelationError(err: unknown, relation: string): boolean {
   const msg = String(err);
   return msg.includes(relation) && /does not exist|42P01/i.test(msg);
 }
-import { getDb, getSql } from "../../db/client.js";
+import { getDb, getSql, withDbSlot } from "../../db/client.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
@@ -299,6 +302,7 @@ const orderSummarySchema = z.object({
   checkoutMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   cancellationReason: z.string().optional().nullable(),
   cancelledByLabel: z.string().optional().nullable(),
+  refundStatus: z.string().optional().nullable(),
   items: z.array(z.object({
     name: z.string(),
     quantity: z.number(),
@@ -407,6 +411,28 @@ function isRiderPlausibleForPickup(
   return Number.isFinite(km) && km <= MAX_RIDER_PICKUP_TRACKING_KM;
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const safeLimit = Math.max(1, Math.min(limit, items.length));
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  async function run(): Promise<void> {
+    while (true) {
+      const current = index++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeLimit }, () => run()));
+  return results;
+}
+
 export async function orderRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
@@ -428,18 +454,15 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer only" });
       }
       const { limit, offset } = req.query as { limit: number; offset: number };
-      const db = getDb();
-      const [customerRow] = await db
-        .select({ id: customers.id })
-        .from(customers)
-        .where(eq(customers.customerId, sub))
-        .limit(1);
-      const customerPk = customerRow?.id ?? null;
+
+      return withDbSlot(async () => {
+      const customerPk = await resolveCustomerPkForRequest(req.auth!, req);
       if (customerPk === null) {
         return reply.status(403).send({ error: "Customer not found" });
       }
+      const db = getDb();
 
-      const allRows = await db
+      const pageRows = await db
         .select({
           id: ordersCore.id,
           orderId: ordersCore.orderId,
@@ -463,19 +486,24 @@ export async function orderRoutes(app: FastifyInstance) {
         })
         .from(ordersCore)
         .where(eq(ordersCore.customerId, customerPk))
-        .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt));
+        .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt))
+        .limit(limit)
+        .offset(offset);
 
       const storeBannerCache = new Map<number, string | null>();
       const storeRatingCache = new Map<number, { avgRating: number; totalReviews: number } | null>();
-      const storeIds = [...new Set(allRows.map((r) => (r.merchantStoreId != null ? Number(r.merchantStoreId) : null)).filter((v): v is number => v != null && Number.isFinite(v) && v > 0))];
+      const storeIds = [...new Set(pageRows.map((r) => (r.merchantStoreId != null ? Number(r.merchantStoreId) : null)).filter((v): v is number => v != null && Number.isFinite(v) && v > 0))];
       const ratingMap = await getStoreRatingsForStores(storeIds);
       for (const sid of storeIds) {
         storeRatingCache.set(sid, ratingMap.get(sid) ?? null);
       }
 
-      const pageRows = allRows.slice(offset, offset + limit);
       const pageOrderPks = pageRows.map((r) => r.id);
       const foodSummaryByCorePk = await loadOrdersFoodSummariesByCoreRows(db, pageRows);
+      const refundStatusByCorePk = await loadOrderRefundStatusByCorePks(
+        getSql(),
+        pageOrderPks
+      );
       const customerOrderRatings =
         pageOrderPks.length > 0
           ? await db
@@ -512,8 +540,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      const summaries = await Promise.all(
-        pageRows.map(async (row) => {
+      const summaries = await mapWithConcurrency(pageRows, 2, async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
           const foodRow =
             row.orderType === "food" ? foodSummaryByCorePk.get(row.id) : undefined;
@@ -678,10 +705,11 @@ export async function orderRoutes(app: FastifyInstance) {
             deliveryRating: resolveDeliveryStarFromRatingRow(customerRating),
             cancellationReason: foodRow?.rejectedReason?.trim() || null,
             cancelledByLabel: foodRow?.cancelledByLabel?.trim() || null,
+            refundStatus: refundStatusByCorePk.get(row.id) ?? null,
           };
-        })
-      );
+        });
       return summaries;
+      }, req);
     }
   );
 
@@ -2141,9 +2169,9 @@ export async function orderRoutes(app: FastifyInstance) {
       if (orderRow.riderId != null) {
         const [live] = await db
           .select({
-            latitude: riderLiveLocations.latitude,
-            longitude: riderLiveLocations.longitude,
-            heading: riderLiveLocations.heading,
+            latitude: riderLiveLocations.lat,
+            longitude: riderLiveLocations.lng,
+            heading: riderLiveLocations.headingDeg,
             updatedAt: riderLiveLocations.updatedAt,
           })
           .from(riderLiveLocations)
@@ -2626,11 +2654,35 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  const rideFarePaymentBodySchema = z.object({
-    razorpayOrderId: z.string().min(1),
-    razorpayPaymentId: z.string().min(1),
-    razorpaySignature: z.string().min(1),
-  });
+  const rideFarePaymentBodySchema = z
+    .object({
+      razorpayOrderId: z.string().min(1).optional(),
+      razorpayPaymentId: z.string().min(1).optional(),
+      razorpaySignature: z.string().min(1).optional(),
+      gatiCashAmount: z.number().positive().optional(),
+      couponCode: z.string().min(1).optional(),
+      platformOfferId: z.coerce.number().int().positive().optional(),
+    })
+    .superRefine((body, ctx) => {
+      const hasWallet = (body.gatiCashAmount ?? 0) > 0;
+      const hasOffer =
+        Boolean(body.couponCode?.trim()) || (body.platformOfferId != null && body.platformOfferId > 0);
+      const hasRz = Boolean(
+        body.razorpayOrderId?.trim() &&
+          body.razorpayPaymentId?.trim() &&
+          body.razorpaySignature?.trim()
+      );
+      const partialRz =
+        Boolean(body.razorpayOrderId?.trim()) ||
+        Boolean(body.razorpayPaymentId?.trim()) ||
+        Boolean(body.razorpaySignature?.trim());
+      if (!hasWallet && !hasRz && !hasOffer) {
+        ctx.addIssue({ code: "custom", message: "payment_required" });
+      }
+      if (partialRz && !hasRz) {
+        ctx.addIssue({ code: "custom", message: "incomplete_razorpay" });
+      }
+    });
 
   app.post<{ Params: { id: string }; Body: z.infer<typeof rideFarePaymentBodySchema> }>(
     "/:id/ride-fare-payment",
@@ -2664,6 +2716,9 @@ export async function orderRoutes(app: FastifyInstance) {
           razorpayOrderId: body.razorpayOrderId,
           razorpayPaymentId: body.razorpayPaymentId,
           razorpaySignature: body.razorpaySignature,
+          gatiCashAmount: body.gatiCashAmount,
+          couponCode: body.couponCode,
+          platformOfferId: body.platformOfferId,
         });
         return result;
       } catch (err) {
@@ -3042,7 +3097,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const placeOfSupply =
         process.env.PLATFORM_INVOICE_PLACE_OF_SUPPLY?.trim() || "Bihar(10)";
 
-      const html = buildCustomerOrderTaxInvoiceHtml({
+      const html = await buildCustomerOrderTaxInvoiceHtml({
         orderId: coreRow.orderId ?? String(coreRow.id),
         formattedOrderId: orderIdDisplay,
         coreOrderId: coreRow.id,
@@ -3192,6 +3247,205 @@ export async function orderRoutes(app: FastifyInstance) {
         .header("Content-Type", "application/pdf")
         .header("Content-Disposition", `attachment; filename="${filename}"`)
         .send(pdfBuffer);
+    }
+  );
+
+  app.get(
+    "/:id/receipt",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            html: z.string(),
+            title: z.string(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      const role = req.auth?.role;
+      if (!sub || role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const orderIdParam = (req.params as { id: string }).id;
+      const db = getDb();
+      const [customerRow] = await db
+        .select({ id: customers.id, fullName: customers.fullName })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk === null) {
+        return reply.status(403).send({ error: "Customer not found" });
+      }
+
+      const [coreRow] = await db
+        .select({
+          id: ordersCore.id,
+          orderId: ordersCore.orderId,
+          formattedOrderId: ordersCore.formattedOrderId,
+          status: ordersCore.status,
+          currentStatus: ordersCore.currentStatus,
+          paymentMethod: ordersCore.paymentMethod,
+          deliveryAddress: ordersCore.deliveryAddress,
+          billingSnapshot: ordersCore.billingSnapshot,
+          checkoutMetadata: ordersCore.checkoutMetadata,
+          createdAt: ordersCore.createdAt,
+          placedAt: ordersCore.placedAt,
+          riderId: ordersCore.riderId,
+          merchantStoreId: ordersCore.merchantStoreId,
+          items: ordersCore.items,
+          orderType: ordersCore.orderType,
+          grandTotal: ordersCore.grandTotal,
+          tipAmount: ordersCore.tipAmount,
+          alternateContactName: ordersCore.alternateContactName,
+          alternateContactPhone: ordersCore.alternateContactPhone,
+          deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+          deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+        })
+        .from(ordersCore)
+        .where(customerOrderRefWhere(customerPk, orderIdParam))
+        .limit(1);
+
+      if (!coreRow) {
+        return reply.status(404).send({ error: "Order not found" });
+      }
+
+      const appStatus = normalizeCustomerOrderStatus(coreRow.currentStatus, coreRow.status);
+      if (!["DELIVERED", "CANCELLED", "PAYMENT_FAILED", "FAILED"].includes(appStatus)) {
+        return reply.status(400).send({
+          error: "RECEIPT_NOT_READY",
+          message: "Order receipt is available after the order is completed or cancelled.",
+        });
+      }
+
+      const [foodRow] = await db
+        .select({
+          customerName: ordersFood.customerName,
+          customerPhone: ordersFood.customerPhone,
+          restaurantName: ordersFood.restaurantName,
+        })
+        .from(ordersFood)
+        .where(ordersFoodMatchForCoreRow(coreRow.id, coreRow.orderId))
+        .limit(1);
+
+      let riderName: string | null = null;
+      if (coreRow.riderId != null) {
+        const [riderRow] = await db
+          .select({ name: riders.name })
+          .from(riders)
+          .where(eq(riders.id, coreRow.riderId))
+          .limit(1);
+        riderName = riderRow?.name?.trim() || null;
+      }
+
+      const deliveryDetails = await resolveOrderDeliveryDetails(db, {
+        orderIdText: coreRow.orderId ?? String(coreRow.id),
+        customerPk,
+        checkoutMetadata: coreRow.checkoutMetadata,
+        deliveryAddress: coreRow.deliveryAddress ?? null,
+        foodCustomerName: foodRow?.customerName ?? null,
+        foodCustomerPhone: foodRow?.customerPhone ?? null,
+        alternateContactName: coreRow.alternateContactName,
+        alternateContactPhone: coreRow.alternateContactPhone,
+        deliveryPrimaryContactName: coreRow.deliveryPrimaryContactName,
+        deliveryPrimaryContactPhone: coreRow.deliveryPrimaryContactPhone,
+      });
+
+      const customerName =
+        deliveryDetails.deliveryContactName?.trim() ||
+        foodRow?.customerName?.trim() ||
+        customerRow?.fullName?.trim() ||
+        "Customer";
+
+      const orderIdDisplay = coreRow.formattedOrderId ?? coreRow.orderId ?? String(coreRow.id);
+      const createdAt = coreRow.placedAt ?? coreRow.createdAt;
+      const orderDateIso =
+        createdAt instanceof Date ? createdAt.toISOString() : new Date(createdAt).toISOString();
+
+      let restaurantName = foodRow?.restaurantName?.trim() || "Restaurant";
+      let restaurantAddress: string | null = null;
+      let restaurantFssai: string | null = null;
+
+      if (coreRow.merchantStoreId != null) {
+        const store = await getStoreByIdForOrder(Number(coreRow.merchantStoreId));
+        if (store) {
+          restaurantName =
+            store.storeDisplayName?.trim() || store.storeName?.trim() || restaurantName;
+          restaurantAddress = store.fullAddress?.trim() || null;
+          if (store.storeId) {
+            const about = await getMerchantAboutPayload(store.storeId);
+            restaurantFssai = about?.fssai_number?.trim() || null;
+          }
+        }
+      }
+
+      const coreItems = await db
+        .select({
+          id: ordersCoreItems.id,
+          menuItemId: ordersCoreItems.menuItemId,
+          itemName: ordersCoreItems.itemName,
+          quantity: ordersCoreItems.quantity,
+          totalPrice: ordersCoreItems.totalPrice,
+          basePrice: ordersCoreItems.basePrice,
+          addonPrice: ordersCoreItems.addonPrice,
+          vegNonveg: ordersCoreItems.vegNonveg,
+          variantName: ordersCoreItems.variantName,
+          itemSnapshot: ordersCoreItems.itemSnapshot,
+        })
+        .from(ordersCoreItems)
+        .where(eq(ordersCoreItems.orderId, coreRow.orderId ?? ""));
+
+      const builtItems = await buildCustomerOrderDetailItems({
+        orderIdText: coreRow.orderId ?? "",
+        coreItems,
+        itemsJsonFallback: coreRow.items,
+      });
+
+      const receiptItems = builtItems.map((item) => {
+        const qty = Math.max(1, Math.round(item.quantity));
+        const total = item.lineTotal ?? item.price * qty;
+        const unit = qty > 0 ? total / qty : item.price;
+        return {
+          name: item.variantName ? `${item.name} (${item.variantName})` : item.name,
+          quantity: qty,
+          unitPrice: unit,
+          totalPrice: total,
+        };
+      });
+
+      const billingSnap = (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null;
+      const fallbackTotal =
+        coreRow.grandTotal != null ? Number(coreRow.grandTotal) : null;
+      const fallbackTip =
+        coreRow.tipAmount != null ? Number(coreRow.tipAmount) : null;
+
+      const html = buildCustomerOrderSummaryReceiptHtml({
+        formattedOrderId: orderIdDisplay,
+        orderDateIso,
+        customerName,
+        deliveryAddress: coreRow.deliveryAddress ?? null,
+        restaurantName,
+        restaurantAddress,
+        restaurantFssai,
+        riderName,
+        paymentMethod: coreRow.paymentMethod ?? null,
+        orderType: coreRow.orderType ?? null,
+        items: receiptItems,
+        billingSnapshot: billingSnap,
+        fallbackTotal: Number.isFinite(fallbackTotal) ? fallbackTotal : null,
+        fallbackTipAmount: Number.isFinite(fallbackTip) ? fallbackTip : null,
+      });
+
+      return reply.send({
+        html,
+        title: `Order Receipt — ${orderIdDisplay}`,
+      });
     }
   );
 

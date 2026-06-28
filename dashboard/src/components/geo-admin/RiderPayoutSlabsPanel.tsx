@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Layers, Loader2 } from "lucide-react";
 import { previewRiderPayoutBreakdown } from "@/lib/geo/riderPayoutPreview";
@@ -11,6 +11,28 @@ import {
   invalidateRiderPayoutSlabsCache,
   riderPayoutSlabsCacheKey,
 } from "@/lib/geo/riderPayoutSlabsCache";
+import {
+  buildSavedFingerprintMap,
+  dropSlabFingerprint,
+  isSlabRowDirty,
+  pickupSlabFingerprint,
+} from "@/lib/pricing/slabDirtyState";
+import {
+  blankDropSlabRow,
+  blankPickupSlabRow,
+  dropSlabFromApi,
+  normalizeDropSlabRow,
+  normalizePickupSlabRow,
+  parseDropSlabForPreview,
+  parseDropSlabForSave,
+  parsePickupSlabForPreview,
+  parsePickupSlabForSave,
+  pickupSlabFromApi,
+  type EditableDropSlabRow,
+  type EditablePickupSlabRow,
+} from "@/lib/pricing/slabEditableRows";
+import { parseDecimalOrZero } from "@/lib/pricing/slabInputUtils";
+import { SlabNumericInput } from "./SlabNumericInput";
 
 type RiderService = "food" | "parcel" | "ride";
 type RiderLeg = "pickup" | "drop";
@@ -23,39 +45,8 @@ const VEHICLE_OPTIONS: { value: VehicleType; label: string }[] = [
   { value: "4_wheeler_ac", label: "4 Wheeler AC" },
 ];
 
-type PickupRow = {
-  id: number;
-  minKm: number;
-  maxKm: number | null;
-  baseFare: number | null;
-  pickupPerKm: number;
-  minCharge: number | null;
-  waitingChargePerMin: number | null;
-  waitingStartAfter: number;
-  priority: number;
-  isActive: boolean;
-};
-
-type DropRow = {
-  id: number;
-  minKm: number;
-  maxKm: number | null;
-  dropPerKm: number;
-  priority: number;
-  isActive: boolean;
-};
-
-function num(v: string): number | null {
-  const t = v.trim();
-  if (!t) return null;
-  const n = Number(t);
-  return Number.isFinite(n) ? n : null;
-}
-
-function numOr(v: string, fallback: number) {
-  const n = num(v);
-  return n == null ? fallback : n;
-}
+type PickupRow = EditablePickupSlabRow;
+type DropRow = EditableDropSlabRow;
 
 const inputCls =
   "w-full min-w-[4rem] rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-mono text-slate-900 focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-400";
@@ -66,29 +57,11 @@ const btnSecondary =
   "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-50";
 
 function mapPickupRows(rows: any[]): PickupRow[] {
-  return rows.map((s) => ({
-    id: Number(s.id),
-    minKm: Number(s.minKm),
-    maxKm: s.maxKm == null ? null : Number(s.maxKm),
-    baseFare: s.baseFare == null ? null : Number(s.baseFare),
-    pickupPerKm: Number(s.pickupPerKm),
-    minCharge: s.minCharge == null ? null : Number(s.minCharge),
-    waitingChargePerMin: s.waitingChargePerMin == null ? null : Number(s.waitingChargePerMin),
-    waitingStartAfter: Number(s.waitingStartAfter ?? 0),
-    priority: Number(s.priority ?? 100),
-    isActive: s.isActive === true,
-  }));
+  return rows.map((s) => pickupSlabFromApi(s));
 }
 
 function mapDropRows(rows: any[]): DropRow[] {
-  return rows.map((s) => ({
-    id: Number(s.id),
-    minKm: Number(s.minKm),
-    maxKm: s.maxKm == null ? null : Number(s.maxKm),
-    dropPerKm: Number(s.dropPerKm),
-    priority: Number(s.priority ?? 100),
-    isActive: s.isActive === true,
-  }));
+  return rows.map((s) => dropSlabFromApi(s));
 }
 
 function inferSurgeKind(name: string): PreviewSurgeDefinition["kind"] {
@@ -126,12 +99,28 @@ export function RiderPayoutSlabsPanel(props: {
   const [leg, setLeg] = useState<RiderLeg>("pickup");
   const [loading, setLoading] = useState(!cachedSlabs);
   const [rowBusyId, setRowBusyId] = useState<number | null>(null);
+  const [rowBusyAction, setRowBusyAction] = useState<"save" | "delete" | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
   const [pickupSlabs, setPickupSlabs] = useState<PickupRow[]>(() =>
     cachedSlabs ? mapPickupRows(cachedSlabs.pickupSlabs) : []
   );
   const [dropSlabs, setDropSlabs] = useState<DropRow[]>(() =>
     cachedSlabs ? mapDropRows(cachedSlabs.dropSlabs) : []
   );
+  const [savedPickupFingerprints, setSavedPickupFingerprints] = useState<Map<number, string>>(() =>
+    cachedSlabs
+      ? buildSavedFingerprintMap(mapPickupRows(cachedSlabs.pickupSlabs), pickupSlabFingerprint)
+      : new Map()
+  );
+  const [savedDropFingerprints, setSavedDropFingerprints] = useState<Map<number, string>>(() =>
+    cachedSlabs
+      ? buildSavedFingerprintMap(mapDropRows(cachedSlabs.dropSlabs), dropSlabFingerprint)
+      : new Map()
+  );
+  const pickupSlabsRef = useRef(pickupSlabs);
+  const dropSlabsRef = useRef(dropSlabs);
+  const savedPickupFingerprintsRef = useRef(savedPickupFingerprints);
+  const savedDropFingerprintsRef = useRef(savedDropFingerprints);
   const [previewPickupKm, setPreviewPickupKm] = useState("3");
   const [previewDropKm, setPreviewDropKm] = useState("5");
   const [previewWaitMin, setPreviewWaitMin] = useState("5");
@@ -143,6 +132,33 @@ export function RiderPayoutSlabsPanel(props: {
     maxTotalSurgeAmount: number | null;
   }>({ definitions: [], timeSlots: [], surgeWaitMaxOnly: false, maxTotalSurgeAmount: null });
   const [previewForceSurgeIds, setPreviewForceSurgeIds] = useState<number[]>([]);
+
+  useLayoutEffect(() => {
+    pickupSlabsRef.current = pickupSlabs;
+  }, [pickupSlabs]);
+
+  useLayoutEffect(() => {
+    dropSlabsRef.current = dropSlabs;
+  }, [dropSlabs]);
+
+  useLayoutEffect(() => {
+    savedPickupFingerprintsRef.current = savedPickupFingerprints;
+  }, [savedPickupFingerprints]);
+
+  useLayoutEffect(() => {
+    savedDropFingerprintsRef.current = savedDropFingerprints;
+  }, [savedDropFingerprints]);
+
+  const rowBusyRef = useRef(rowBusyId);
+  const savingAllRef = useRef(savingAll);
+
+  useLayoutEffect(() => {
+    rowBusyRef.current = rowBusyId;
+  }, [rowBusyId]);
+
+  useLayoutEffect(() => {
+    savingAllRef.current = savingAll;
+  }, [savingAll]);
 
   const clearCalculator = () => {
     setPreviewPickupKm("");
@@ -222,6 +238,12 @@ export function RiderPayoutSlabsPanel(props: {
       });
       setPickupSlabs(mapPickupRows(payload.pickupSlabs));
       setDropSlabs(mapDropRows(payload.dropSlabs));
+      setSavedPickupFingerprints(
+        buildSavedFingerprintMap(mapPickupRows(payload.pickupSlabs), pickupSlabFingerprint)
+      );
+      setSavedDropFingerprints(
+        buildSavedFingerprintMap(mapDropRows(payload.dropSlabs), dropSlabFingerprint)
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load rider slabs");
     } finally {
@@ -241,11 +263,11 @@ export function RiderPayoutSlabsPanel(props: {
   const previewBreakdown = useMemo(() => {
     if (!canPreview) return null;
     return previewRiderPayoutBreakdown({
-      pickupKm: numOr(previewPickupKm, 0),
-      dropKm: numOr(previewDropKm, 0),
-      pickupSlabs: pickupSlabs.filter((s) => s.isActive),
-      dropSlabs: dropSlabs.filter((s) => s.isActive),
-      waitingMinutes: numOr(previewWaitMin, 0),
+      pickupKm: parseDecimalOrZero(previewPickupKm),
+      dropKm: parseDecimalOrZero(previewDropKm),
+      pickupSlabs: pickupSlabs.filter((s) => s.isActive).map((s) => parsePickupSlabForPreview(s)),
+      dropSlabs: dropSlabs.filter((s) => s.isActive).map((s) => parseDropSlabForPreview(s)),
+      waitingMinutes: parseDecimalOrZero(previewWaitMin),
       riderHasGmitraMax: previewMaxRider,
       service: props.service,
       vehicleType: props.service === "ride" ? props.vehicleType : null,
@@ -280,111 +302,164 @@ export function RiderPayoutSlabsPanel(props: {
 
   const addBlank = () => {
     if (leg === "pickup") {
-      setPickupSlabs((prev) => [
-        ...prev,
-        {
-          id: -Date.now(),
-          minKm: prev.length === 0 ? 0 : prev[prev.length - 1]!.maxKm ?? prev[prev.length - 1]!.minKm + 1,
-          maxKm: null,
-          baseFare: prev.length === 0 ? 0 : null,
-          pickupPerKm: 0,
-          minCharge: null,
-          waitingChargePerMin: prev.length === 0 ? 0 : null,
-          waitingStartAfter: 0,
-          priority: 100,
-          isActive: true,
-        },
-      ]);
+      setPickupSlabs((prev) => [...prev, blankPickupSlabRow(prev[prev.length - 1])]);
     } else {
-      setDropSlabs((prev) => [
-        ...prev,
-        {
-          id: -Date.now(),
-          minKm: prev.length === 0 ? 0 : prev[prev.length - 1]!.maxKm ?? prev[prev.length - 1]!.minKm + 1,
-          maxKm: null,
-          dropPerKm: 0,
-          priority: 100,
-          isActive: true,
-        },
-      ]);
+      setDropSlabs((prev) => [...prev, blankDropSlabRow(prev[prev.length - 1])]);
     }
   };
 
-  const savePickup = async (r: PickupRow) => {
-    setRowBusyId(r.id);
+  const persistPickup = async (r: PickupRow, opts?: { quiet?: boolean; skipRefresh?: boolean }) => {
+    const normalized = normalizePickupSlabRow(r);
+    const parsed = parsePickupSlabForSave(normalized);
+    const body = {
+      level: props.level,
+      refId: props.refId,
+      service: props.service,
+      leg: "pickup" as const,
+      vehicleType: props.service === "ride" ? props.vehicleType : null,
+      ...parsed,
+    };
+    const res =
+      normalized.id > 0
+        ? await fetch(`/api/super-admin/geo/rider-payout-slabs/${normalized.id}`, {
+            method: "PATCH",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          })
+        : await fetch(`/api/super-admin/geo/rider-payout-slabs`, {
+            method: "POST",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+    if (!res.ok) throw new Error((await res.json())?.error ?? "Save failed");
+    if (!opts?.quiet) toast.success("Saved");
+    if (!opts?.skipRefresh) await refresh();
+  };
+
+  const persistDrop = async (r: DropRow, opts?: { quiet?: boolean; skipRefresh?: boolean }) => {
+    const normalized = normalizeDropSlabRow(r);
+    const body = {
+      level: props.level,
+      refId: props.refId,
+      service: props.service,
+      leg: "drop" as const,
+      vehicleType: props.service === "ride" ? props.vehicleType : null,
+      ...parseDropSlabForSave(normalized),
+    };
+    const res =
+      normalized.id > 0
+        ? await fetch(`/api/super-admin/geo/rider-payout-slabs/${normalized.id}`, {
+            method: "PATCH",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          })
+        : await fetch(`/api/super-admin/geo/rider-payout-slabs`, {
+            method: "POST",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+    if (!res.ok) throw new Error((await res.json())?.error ?? "Save failed");
+    if (!opts?.quiet) toast.success("Saved");
+    if (!opts?.skipRefresh) await refresh();
+  };
+
+  const savePickupById = async (id: number) => {
+    if (rowBusyRef.current != null || savingAllRef.current) return;
+
+    setRowBusyId(id);
+    setRowBusyAction("save");
+    rowBusyRef.current = id;
+
     try {
-      const body = {
-        level: props.level,
-        refId: props.refId,
-        service: props.service,
-        leg: "pickup" as const,
-        vehicleType: props.service === "ride" ? props.vehicleType : null,
-        minKm: r.minKm,
-        maxKm: r.maxKm,
-        baseFare: r.minKm === 0 ? r.baseFare : null,
-        pickupPerKm: r.pickupPerKm,
-        minCharge: r.minCharge,
-        waitingChargePerMin: r.waitingChargePerMin,
-        waitingStartAfter: r.waitingStartAfter,
-        priority: r.priority,
-        isActive: r.isActive,
-      };
-      const res =
-        r.id > 0
-          ? await fetch(`/api/super-admin/geo/rider-payout-slabs/${r.id}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            })
-          : await fetch(`/api/super-admin/geo/rider-payout-slabs`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-      if (!res.ok) throw new Error((await res.json())?.error ?? "Save failed");
+      const current = pickupSlabsRef.current.find((x) => x.id === id);
+      if (!current) {
+        toast.error("Row not found");
+        return;
+      }
+      if (
+        !isSlabRowDirty(id, pickupSlabFingerprint(current), savedPickupFingerprintsRef.current.get(id))
+      ) {
+        toast.message("No changes to save");
+        return;
+      }
+      await persistPickup(current, { quiet: true, skipRefresh: true });
       toast.success("Saved");
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
     } finally {
+      rowBusyRef.current = null;
       setRowBusyId(null);
+      setRowBusyAction(null);
     }
   };
 
-  const saveDrop = async (r: DropRow) => {
-    setRowBusyId(r.id);
+  const saveDropById = async (id: number) => {
+    if (rowBusyRef.current != null || savingAllRef.current) return;
+
+    setRowBusyId(id);
+    setRowBusyAction("save");
+    rowBusyRef.current = id;
+
     try {
-      const body = {
-        level: props.level,
-        refId: props.refId,
-        service: props.service,
-        leg: "drop" as const,
-        vehicleType: props.service === "ride" ? props.vehicleType : null,
-        minKm: r.minKm,
-        maxKm: r.maxKm,
-        dropPerKm: r.dropPerKm,
-        priority: r.priority,
-        isActive: r.isActive,
-      };
-      const res =
-        r.id > 0
-          ? await fetch(`/api/super-admin/geo/rider-payout-slabs/${r.id}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            })
-          : await fetch(`/api/super-admin/geo/rider-payout-slabs`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-      if (!res.ok) throw new Error((await res.json())?.error ?? "Save failed");
+      const current = dropSlabsRef.current.find((x) => x.id === id);
+      if (!current) {
+        toast.error("Row not found");
+        return;
+      }
+      if (!isSlabRowDirty(id, dropSlabFingerprint(current), savedDropFingerprintsRef.current.get(id))) {
+        toast.message("No changes to save");
+        return;
+      }
+      await persistDrop(current, { quiet: true, skipRefresh: true });
       toast.success("Saved");
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
     } finally {
+      rowBusyRef.current = null;
       setRowBusyId(null);
+      setRowBusyAction(null);
+    }
+  };
+
+  const saveAllRows = async () => {
+    if (rowBusyRef.current != null || savingAllRef.current) return;
+
+    setSavingAll(true);
+    savingAllRef.current = true;
+
+    try {
+      const rows =
+        leg === "pickup"
+          ? pickupSlabsRef.current.filter((r) =>
+              isSlabRowDirty(r.id, pickupSlabFingerprint(r), savedPickupFingerprintsRef.current.get(r.id))
+            )
+          : dropSlabsRef.current.filter((r) =>
+              isSlabRowDirty(r.id, dropSlabFingerprint(r), savedDropFingerprintsRef.current.get(r.id))
+            );
+      if (rows.length === 0) {
+        toast.message("No changes to save");
+        return;
+      }
+      for (const r of rows) {
+        if (leg === "pickup") {
+          await persistPickup(r as PickupRow, { quiet: true, skipRefresh: true });
+        } else {
+          await persistDrop(r as DropRow, { quiet: true, skipRefresh: true });
+        }
+      }
+      toast.success(`Saved ${rows.length} slab${rows.length === 1 ? "" : "s"}`);
+      await refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Save all failed");
+    } finally {
+      savingAllRef.current = false;
+      setSavingAll(false);
     }
   };
 
@@ -395,10 +470,15 @@ export function RiderPayoutSlabsPanel(props: {
       return;
     }
     if (!confirm("Delete this slab?")) return;
+    if (rowBusyId != null || savingAll) return;
     setRowBusyId(id);
+    setRowBusyAction("delete");
     try {
       const qs = new URLSearchParams({ service: props.service, leg: l });
-      const res = await fetch(`/api/super-admin/geo/rider-payout-slabs/${id}?${qs}`, { method: "DELETE" });
+      const res = await fetch(`/api/super-admin/geo/rider-payout-slabs/${id}?${qs}`, {
+        method: "DELETE",
+        cache: "no-store",
+      });
       if (!res.ok) throw new Error((await res.json())?.error ?? "Delete failed");
       toast.success("Deleted");
       await refresh();
@@ -406,8 +486,11 @@ export function RiderPayoutSlabsPanel(props: {
       toast.error(e instanceof Error ? e.message : "Delete failed");
     } finally {
       setRowBusyId(null);
+      setRowBusyAction(null);
     }
   };
+
+  const actionBusy = rowBusyId != null || savingAll;
 
   return (
     <div className="mt-5 space-y-4">
@@ -418,7 +501,7 @@ export function RiderPayoutSlabsPanel(props: {
             <button
               key={l}
               type="button"
-              disabled={loading || rowBusyId != null}
+              disabled={actionBusy}
               onClick={() => setLeg(l)}
               className={
                 "px-4 py-2.5 text-sm font-semibold capitalize transition " +
@@ -429,12 +512,27 @@ export function RiderPayoutSlabsPanel(props: {
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={addBlank} disabled={loading || rowBusyId != null} className={btnPrimary}>
+        <div className="flex w-full flex-wrap justify-end gap-2 sm:ml-auto sm:w-auto">
+          <button type="button" onClick={addBlank} disabled={actionBusy} className={btnPrimary}>
             <Layers className="h-4 w-4 text-teal-700" />
             Add slab
           </button>
-          <button type="button" onClick={() => void refresh(true)} disabled={loading || rowBusyId != null} className={btnSecondary}>
+          <button
+            type="button"
+            onClick={() => void saveAllRows()}
+            disabled={actionBusy || (pickupSlabs.length === 0 && dropSlabs.length === 0)}
+            className="inline-flex items-center gap-2 rounded-lg border border-teal-300 bg-teal-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-700 disabled:opacity-50"
+          >
+            {savingAll ? (
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Saving
+              </span>
+            ) : (
+              "Save all"
+            )}
+          </button>
+          <button type="button" onClick={() => void refresh(true)} disabled={actionBusy || loading} className={btnSecondary}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Refresh
           </button>
@@ -453,29 +551,32 @@ export function RiderPayoutSlabsPanel(props: {
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs font-semibold text-slate-700">
               Pickup km
-              <input
+              <SlabNumericInput
                 className="mt-1 block w-24 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm"
+                kind="decimal"
                 placeholder="0"
                 value={previewPickupKm}
-                onChange={(e) => setPreviewPickupKm(e.target.value)}
+                onChange={setPreviewPickupKm}
               />
             </label>
             <label className="text-xs font-semibold text-slate-700">
               Drop km
-              <input
+              <SlabNumericInput
                 className="mt-1 block w-24 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm"
+                kind="decimal"
                 placeholder="0"
                 value={previewDropKm}
-                onChange={(e) => setPreviewDropKm(e.target.value)}
+                onChange={setPreviewDropKm}
               />
             </label>
             <label className="text-xs font-semibold text-slate-700">
               Wait min
-              <input
+              <SlabNumericInput
                 className="mt-1 block w-24 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm"
+                kind="integer"
                 placeholder="0"
                 value={previewWaitMin}
-                onChange={(e) => setPreviewWaitMin(e.target.value)}
+                onChange={setPreviewWaitMin}
               />
             </label>
             <label className="flex items-center gap-2 pb-1.5 text-xs font-semibold text-slate-700">
@@ -507,6 +608,12 @@ export function RiderPayoutSlabsPanel(props: {
             <div>Pickup: <span className="font-mono font-semibold">₹{previewBreakdown.pickupAmount.toFixed(2)}</span></div>
             <div>Drop: <span className="font-mono font-semibold">₹{previewBreakdown.dropAmount.toFixed(2)}</span></div>
             <div>Waiting: <span className="font-mono font-semibold">₹{previewBreakdown.waitingAmount.toFixed(2)}</span></div>
+            {previewBreakdown.minChargeApplied > 0 ? (
+              <div>
+                Min charge adj.:{" "}
+                <span className="font-mono font-semibold">₹{previewBreakdown.minChargeApplied.toFixed(2)}</span>
+              </div>
+            ) : null}
             <div className="sm:col-span-2 lg:col-span-4">
               Surges:{" "}
               {previewBreakdown.appliedSurges.length === 0 ? (
@@ -586,29 +693,54 @@ export function RiderPayoutSlabsPanel(props: {
                   </td>
                 </tr>
               ) : (
-                pickupSlabs.map((s) => (
-                  <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50/50">
-                    <td className="px-3 py-2.5"><input className={inputCls} value={String(s.minKm)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, minKm: numOr(e.target.value, s.minKm) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} placeholder="∞" value={s.maxKm == null ? "" : String(s.maxKm)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, maxKm: num(e.target.value) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} disabled={s.minKm !== 0} placeholder={s.minKm !== 0 ? "—" : ""} value={s.minKm !== 0 ? "" : s.baseFare == null ? "" : String(s.baseFare)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, baseFare: num(e.target.value) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} value={String(s.pickupPerKm)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, pickupPerKm: numOr(e.target.value, s.pickupPerKm) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} value={s.minCharge == null ? "" : String(s.minCharge)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, minCharge: num(e.target.value) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} value={s.waitingChargePerMin == null ? "" : String(s.waitingChargePerMin)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, waitingChargePerMin: num(e.target.value) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} value={String(s.waitingStartAfter)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, waitingStartAfter: Math.floor(numOr(e.target.value, s.waitingStartAfter)) } : x)))} /></td>
-                    <td className="px-3 py-2.5"><input className={inputCls} value={String(s.priority)} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, priority: Math.floor(numOr(e.target.value, s.priority)) } : x)))} /></td>
+                pickupSlabs.map((s) => {
+                  const dirty = isSlabRowDirty(
+                    s.id,
+                    pickupSlabFingerprint(s),
+                    savedPickupFingerprints.get(s.id)
+                  );
+                  const rowSaving = rowBusyId === s.id && rowBusyAction === "save";
+                  const saveDisabled =
+                    actionBusy || (rowBusyId != null && rowBusyId !== s.id);
+
+                  return (
+                  <tr key={s.id} className={`border-t border-slate-100 hover:bg-slate-50/50 ${dirty ? "bg-amber-50/30" : ""}`}>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" value={s.minKm} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, minKm: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" placeholder="∞" value={s.maxKm} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, maxKm: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" disabled={parseDecimalOrZero(s.minKm) !== 0} placeholder={parseDecimalOrZero(s.minKm) !== 0 ? "—" : ""} value={parseDecimalOrZero(s.minKm) !== 0 ? "" : s.baseFare} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, baseFare: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" value={s.pickupPerKm} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, pickupPerKm: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" value={s.minCharge} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, minCharge: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" value={s.waitingChargePerMin} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, waitingChargePerMin: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="integer" value={s.waitingStartAfter} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, waitingStartAfter: v } : x)))} /></td>
+                    <td className="px-3 py-2.5"><SlabNumericInput className={inputCls} kind="integer" value={s.priority} onChange={(v) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, priority: v } : x)))} /></td>
                     <td className="px-3 py-2.5 text-center"><input type="checkbox" className="h-4 w-4" checked={s.isActive} onChange={(e) => setPickupSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, isActive: e.target.checked } : x)))} /></td>
                     <td className="px-3 py-2.5 text-right">
                       <div className="inline-flex gap-2">
-                        <button type="button" disabled={rowBusyId != null} onClick={() => void savePickup(s)} className="rounded-md border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-900 hover:bg-teal-100 disabled:opacity-50">
-                          {rowBusyId === s.id ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : "Save"}
+                        <button type="button" disabled={saveDisabled} onClick={() => void savePickupById(s.id)} className="inline-flex min-w-[4.5rem] items-center justify-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-900 hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-50">
+                          {rowBusyId === s.id && rowBusyAction === "save" ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              Saving
+                            </span>
+                          ) : (
+                            "Save"
+                          )}
                         </button>
-                        <button type="button" disabled={rowBusyId != null} onClick={() => void deleteSlab(s.id, "pickup")} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50">
-                          Delete
+                        <button type="button" disabled={actionBusy} onClick={() => void deleteSlab(s.id, "pickup")} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50">
+                          {rowBusyId === s.id && rowBusyAction === "delete" ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              Deleting
+                            </span>
+                          ) : (
+                            "Delete"
+                          )}
                         </button>
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -632,25 +764,49 @@ export function RiderPayoutSlabsPanel(props: {
                   </td>
                 </tr>
               ) : (
-                dropSlabs.map((s) => (
-                  <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50/50">
-                    <td className="px-4 py-2.5"><input className={inputCls} value={String(s.minKm)} onChange={(e) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, minKm: numOr(e.target.value, s.minKm) } : x)))} /></td>
-                    <td className="px-4 py-2.5"><input className={inputCls} placeholder="∞" value={s.maxKm == null ? "" : String(s.maxKm)} onChange={(e) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, maxKm: num(e.target.value) } : x)))} /></td>
-                    <td className="px-4 py-2.5"><input className={inputCls} value={String(s.dropPerKm)} onChange={(e) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, dropPerKm: numOr(e.target.value, s.dropPerKm) } : x)))} /></td>
-                    <td className="px-4 py-2.5"><input className={inputCls} value={String(s.priority)} onChange={(e) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, priority: Math.floor(numOr(e.target.value, s.priority)) } : x)))} /></td>
+                dropSlabs.map((s) => {
+                  const dirty = isSlabRowDirty(
+                    s.id,
+                    dropSlabFingerprint(s),
+                    savedDropFingerprints.get(s.id)
+                  );
+                  const saveDisabled =
+                    actionBusy || (rowBusyId != null && rowBusyId !== s.id);
+
+                  return (
+                  <tr key={s.id} className={`border-t border-slate-100 hover:bg-slate-50/50 ${dirty ? "bg-amber-50/30" : ""}`}>
+                    <td className="px-4 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" value={s.minKm} onChange={(v) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, minKm: v } : x)))} /></td>
+                    <td className="px-4 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" placeholder="∞" value={s.maxKm} onChange={(v) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, maxKm: v } : x)))} /></td>
+                    <td className="px-4 py-2.5"><SlabNumericInput className={inputCls} kind="decimal" value={s.dropPerKm} onChange={(v) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, dropPerKm: v } : x)))} /></td>
+                    <td className="px-4 py-2.5"><SlabNumericInput className={inputCls} kind="integer" value={s.priority} onChange={(v) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, priority: v } : x)))} /></td>
                     <td className="px-4 py-2.5 text-center"><input type="checkbox" className="h-4 w-4" checked={s.isActive} onChange={(e) => setDropSlabs((p) => p.map((x) => (x.id === s.id ? { ...x, isActive: e.target.checked } : x)))} /></td>
                     <td className="px-4 py-2.5 text-right">
                       <div className="inline-flex gap-2">
-                        <button type="button" disabled={rowBusyId != null} onClick={() => void saveDrop(s)} className="rounded-md border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-900 hover:bg-teal-100 disabled:opacity-50">
-                          {rowBusyId === s.id ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : "Save"}
+                        <button type="button" disabled={saveDisabled} onClick={() => void saveDropById(s.id)} className="inline-flex min-w-[4.5rem] items-center justify-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-900 hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-50">
+                          {rowBusyId === s.id && rowBusyAction === "save" ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              Saving
+                            </span>
+                          ) : (
+                            "Save"
+                          )}
                         </button>
-                        <button type="button" disabled={rowBusyId != null} onClick={() => void deleteSlab(s.id, "drop")} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50">
-                          Delete
+                        <button type="button" disabled={actionBusy} onClick={() => void deleteSlab(s.id, "drop")} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50">
+                          {rowBusyId === s.id && rowBusyAction === "delete" ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              Deleting
+                            </span>
+                          ) : (
+                            "Delete"
+                          )}
                         </button>
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

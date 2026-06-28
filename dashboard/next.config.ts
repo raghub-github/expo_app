@@ -49,7 +49,7 @@ const nextConfig: NextConfig = {
   // only from `dashboard/` left the standalone bundle without a copy of next
   // itself, producing `Cannot find module 'next'` in the runtime container.
   outputFileTracingRoot: monorepoRoot,
-  transpilePackages: ["@gatimitra/contracts"],
+  transpilePackages: ["@gatimitra/contracts", "@gatimitra/slab-pricing"],
   // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
   devIndicators: false,
   // Image optimization: allow quality 75 (default) and 95 for crisp logos/hero images
@@ -70,6 +70,10 @@ const nextConfig: NextConfig = {
   // Mapbox is loaded from CDN, no webpack config needed
 
   webpack: (config, { dev, isServer }) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "@gatimitra/slab-pricing": path.join(monorepoRoot, "packages/slab-pricing/src/index.ts"),
+    };
     if (dev) {
       // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
       // "rename ... 0.pack.gz_" webpack cache errors. Fully disabling cache (`false`) can

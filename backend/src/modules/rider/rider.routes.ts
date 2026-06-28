@@ -43,8 +43,8 @@ function toDutyIsoTimestamp(value: Date | string | null | undefined): string {
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
 import { deactivateRiderDeviceSessions } from "../../lib/rider-app-session.js";
+import { registerRiderDeviceSessionRoutes } from "./rider-device-session.routes.js";
 import {
-  riderLocationEvents,
   riders,
   riderDocuments,
   riderDocumentFiles,
@@ -59,7 +59,7 @@ import {
   recordRiderDutyLog,
   recordRiderDutyOffIfOnline,
 } from "../../lib/rider-duty-log.service.js";
-import { scoreLocationPing, type LocationPoint } from "./fraud.js";
+import { handleRiderLocationPing } from "../../lib/rider-location-ping.service.js";
 import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 import { attachmentsProxyUrlFromKey } from "../../utils/attachments-proxy-url.js";
 import {
@@ -67,13 +67,16 @@ import {
   deleteReplacedR2Keys,
 } from "../../lib/rider-document-r2-keys.js";
 import { getRiderOnboardingProgress } from "../../lib/rider-onboarding-progress.js";
+import { isDlAlreadyRegistered, normalizeDlNumber } from "../../lib/rider-dl-registration-check.js";
+import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-registration-check.js";
 import { getEnv } from "../../config/env.js";
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
 import { unassignFoodRiderAndRestartDispatch } from "../../lib/food-rider-unassign.service.js";
 import { registerRiderSubscriptionRoutes } from "./rider-subscription.routes.js";
+import { registerRiderIncentiveRoutes } from "./rider-incentive.routes.js";
 import { registerRiderPenaltyPaymentRoutes } from "./rider-penalty-payment.routes.js";
 import { listRiderAppCancellationReasons } from "../../lib/rider-cancellation-reason-catalog.js";
-import { speedMpsToKmh, upsertRiderLiveLocation } from "../../lib/rider-live-location.js";
+import { speedMpsToKmh, upsertRiderCurrentLocation } from "../../lib/rider-current-location.js";
 
 function parseRiderIdFromAuth(sub: string): number | null {
   const match = sub.match(/usr_(\d+)/);
@@ -85,7 +88,9 @@ export async function riderRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
   registerRiderSubscriptionRoutes(app);
+  registerRiderIncentiveRoutes(app);
   registerRiderPenaltyPaymentRoutes(app);
+  registerRiderDeviceSessionRoutes(app, parseRiderIdFromAuth);
 
   app.post(
     "/logout",
@@ -131,7 +136,12 @@ export async function riderRoutes(app: FastifyInstance) {
       });
 
       try {
-        await deactivateRiderDeviceSessions(sql, { userId, deviceId });
+        await deactivateRiderDeviceSessions(sql, {
+          userId,
+          deviceId,
+          revokedBy: "rider_self",
+          revokeReason: body.reasonCode,
+        });
       } catch (sessErr) {
         req.log?.error?.({ err: sessErr, riderId }, "Rider logout: device session deactivate failed");
       }
@@ -154,117 +164,25 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const body = RiderLocationPingSchema.parse(req.body) as RiderLocationPing;
       const deviceId = body.deviceId ?? tokenDeviceId ?? "unknown_device";
-
-      const db = getDb();
-
-      const prevRow = await db
-        .select()
-        .from(riderLocationEvents)
-        .where(and(eq(riderLocationEvents.userId, userId), eq(riderLocationEvents.deviceId, deviceId)))
-        .orderBy(desc(riderLocationEvents.tsMs))
-        .limit(1);
-
-      const prev: LocationPoint | null = prevRow.length
-        ? {
-            tsMs: prevRow[0]!.tsMs,
-            lat: prevRow[0]!.lat,
-            lng: prevRow[0]!.lng,
-            accuracyM: prevRow[0]!.accuracyM ?? null,
-            speedMps: prevRow[0]!.speedMps ?? null,
-            headingDeg: prevRow[0]!.headingDeg ?? null,
-            mocked: prevRow[0]!.mocked ?? null,
-          }
-        : null;
-
-      const curr: LocationPoint = {
-        tsMs: body.tsMs,
-        lat: body.lat,
-        lng: body.lng,
-        accuracyM: body.accuracyM ?? null,
-        speedMps: body.speedMps ?? null,
-        headingDeg: body.headingDeg ?? null,
-        mocked: body.mocked ?? null,
-      };
-
-      const { fraudSignals, fraudScore, meta } = scoreLocationPing({
-        prev,
-        curr,
-        tokenDeviceId,
-        bodyDeviceId: body.deviceId ?? null,
-        gpsEnabled: null,
-      });
-
-      await db.insert(riderLocationEvents).values({
-        id: `rloc_${ulid()}`,
-        userId: userId,
-        deviceId: deviceId,
-        tsMs: body.tsMs,
-        lat: body.lat,
-        lng: body.lng,
-        accuracyM: body.accuracyM ?? null,
-        altitudeM: body.altitudeM ?? null,
-        speedMps: body.speedMps ?? null,
-        headingDeg: body.headingDeg ?? null,
-        mocked: body.mocked ?? false,
-        provider: body.provider ?? "unknown",
-        fraudScore: fraudScore,
-        fraudSignals: fraudSignals,
-        meta,
-      });
-
       const riderId = parseRiderIdFromAuth(userId);
-      if (riderId != null) {
-        await upsertRiderLiveLocation(db, {
-          riderId,
+
+      return handleRiderLocationPing(
+        {
+          userId,
+          deviceId,
+          tokenDeviceId,
+          tsMs: body.tsMs,
           lat: body.lat,
           lng: body.lng,
-          speedKmh: speedMpsToKmh(body.speedMps),
-          heading: body.headingDeg ?? null,
-          accuracyMeters: body.accuracyM ?? null,
-        });
-
-        const [activeRide] = await db
-          .select({ orderId: ordersCore.orderId })
-          .from(ordersCore)
-          .where(
-            and(
-              eq(ordersCore.riderId, riderId),
-              eq(ordersCore.orderType, "person_ride"),
-              inArray(ordersCore.status, [
-                "accepted",
-                "reached_store",
-                "reached_user",
-                "picked_up",
-                "in_transit",
-              ])
-            )
-          )
-          .orderBy(desc(ordersCore.updatedAt))
-          .limit(1);
-
-        const activeOrderId = activeRide?.orderId?.trim();
-        if (activeOrderId) {
-          const now = new Date();
-          await db.insert(orderRiderTracking).values({
-            orderId: activeOrderId,
-            orderSource: "orders_core",
-            riderId,
-            latitude: String(body.lat),
-            longitude: String(body.lng),
-            headingDegrees: body.headingDeg != null ? String(body.headingDeg) : null,
-            speedKmh: body.speedMps != null ? String(speedMpsToKmh(body.speedMps)) : null,
-            accuracyMeters: body.accuracyM != null ? String(body.accuracyM) : null,
-            createdAt: now,
-          });
-        }
-      }
-
-      return {
-        accepted: true,
-        serverTsMs: Date.now(),
-        fraudSignals,
-        fraudScore,
-      };
+          accuracyM: body.accuracyM ?? null,
+          altitudeM: body.altitudeM ?? null,
+          speedMps: body.speedMps ?? null,
+          headingDeg: body.headingDeg ?? null,
+          mocked: body.mocked ?? false,
+          provider: body.provider ?? "unknown",
+        },
+        riderId
+      );
     },
   );
 
@@ -300,14 +218,15 @@ export async function riderRoutes(app: FastifyInstance) {
       const db = getDb();
       const now = new Date();
 
-      await upsertRiderLiveLocation(db, {
+      await upsertRiderCurrentLocation(db, {
+        userId,
         riderId,
         lat: body.lat,
         lng: body.lng,
-        speedKmh: body.speed ?? null,
-        heading: body.heading ?? null,
-        accuracyMeters: body.accuracy ?? null,
-        updatedAt: now,
+        speedMps: body.speed != null ? body.speed / 3.6 : null,
+        headingDeg: body.heading ?? null,
+        accuracyM: body.accuracy ?? null,
+        seenAt: now,
       });
 
       if (body.order_id) {
@@ -900,9 +819,13 @@ export async function riderRoutes(app: FastifyInstance) {
       const food = wallet ? Number(wallet.earningsFood ?? 0) : 0;
       const parcel = wallet ? Number(wallet.earningsParcel ?? 0) : 0;
       const ride = wallet ? Number(wallet.earningsPersonRide ?? 0) : 0;
+      const { getRiderWithdrawableBalance } = await import(
+        "../../lib/rider-withdrawal.service.js"
+      );
+      const withdrawable = await getRiderWithdrawableBalance(riderId);
       return {
         totalBalance: total,
-        withdrawable: Math.max(0, total),
+        withdrawable,
         locked: accountRestrictions.penaltyDue,
         subscriptionDebited,
         thisWeek: periodTotals.thisWeek,
@@ -923,6 +846,80 @@ export async function riderRoutes(app: FastifyInstance) {
           penaltyDutyStopped: accountRestrictions.penaltyDutyStopped,
         },
       };
+    },
+  );
+
+  const RiderWithdrawalSchema = z.object({
+    id: z.number(),
+    amount: z.number(),
+    status: z.string(),
+    bankAccMasked: z.string(),
+    ifsc: z.string(),
+    accountHolderName: z.string(),
+    transactionId: z.string().nullable(),
+    failureReason: z.string().nullable(),
+    createdAt: z.string(),
+    processedAt: z.string().nullable(),
+  });
+
+  app.get(
+    "/withdrawals",
+    {
+      schema: {
+        querystring: z.object({
+          limit: z.coerce.number().int().min(1).max(100).default(20),
+        }),
+        response: {
+          200: z.object({
+            withdrawals: z.array(RiderWithdrawalSchema),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return { withdrawals: [] };
+      }
+      const { listRiderWithdrawals } = await import("../../lib/rider-withdrawal.service.js");
+      const { limit } = req.query as { limit: number };
+      const withdrawals = await listRiderWithdrawals(riderId, limit);
+      return { withdrawals };
+    },
+  );
+
+  app.post(
+    "/withdrawals",
+    {
+      schema: {
+        body: z.object({
+          amount: z.number().positive(),
+        }),
+        response: {
+          200: z.object({
+            withdrawal: RiderWithdrawalSchema,
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { createRiderWithdrawalRequest } = await import(
+        "../../lib/rider-withdrawal.service.js"
+      );
+      try {
+        const body = req.body as { amount: number };
+        const withdrawal = await createRiderWithdrawalRequest(riderId, body.amount);
+        return { withdrawal };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Withdrawal failed";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({ error: message });
+      }
     },
   );
 
@@ -1019,6 +1016,102 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  const RiderLedgerGraphSchema = z.object({
+    totalEarning: z.number(),
+    orderEarning: z.number(),
+    incentive: z.number(),
+    surge: z.number(),
+    waiting: z.number(),
+    orderCount: z.number(),
+    rangeLabel: z.string(),
+    from: z.string(),
+    to: z.string(),
+    dailyBars: z.array(
+      z.object({
+        date: z.string(),
+        day: z.number(),
+        amount: z.number(),
+        orderCount: z.number(),
+      }),
+    ),
+  });
+
+  app.get(
+    "/wallet/ledger/graph",
+    {
+      schema: {
+        querystring: z.object({
+          segment: z
+            .enum([
+              "all",
+              "food",
+              "parcel",
+              "ride",
+              "incentives",
+              "adjustments",
+              "penalties",
+              "withdrawals",
+              "subscriptions",
+            ])
+            .default("all"),
+          from: z.string().min(8),
+          to: z.string().min(8),
+        }),
+        response: { 200: RiderLedgerGraphSchema },
+      },
+    },
+    async (req) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      const empty = {
+        totalEarning: 0,
+        orderEarning: 0,
+        incentive: 0,
+        surge: 0,
+        waiting: 0,
+        orderCount: 0,
+        rangeLabel: "",
+        from: "",
+        to: "",
+        dailyBars: [] as Array<{
+          date: string;
+          day: number;
+          amount: number;
+          orderCount: number;
+        }>,
+      };
+      if (riderId == null) return empty;
+
+      const { segment, from, to } = req.query as {
+        segment:
+          | "all"
+          | "food"
+          | "parcel"
+          | "ride"
+          | "incentives"
+          | "adjustments"
+          | "penalties"
+          | "withdrawals"
+          | "subscriptions";
+        from: string;
+        to: string;
+      };
+
+      const fromDate = new Date(from);
+      const toDate = new Date(to);
+      if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+        return empty;
+      }
+
+      const { getRiderLedgerGraphForApp } = await import("../../lib/rider-wallet-ledger-app.js");
+      return getRiderLedgerGraphForApp({
+        riderId,
+        segment,
+        from: fromDate,
+        to: toDate,
+      });
+    },
+  );
+
   const RiderVehicleDtoSchema = z.object({
     id: z.number().int(),
     vehicleType: z.string(),
@@ -1035,6 +1128,7 @@ export async function riderRoutes(app: FastifyInstance) {
     verified: z.boolean(),
     isCommercial: z.boolean(),
     serviceTypes: z.array(z.string()),
+    vehicleCategory: z.string().nullable(),
     seatingCapacity: z.number().int().nullable(),
     acType: z.string().nullable(),
   });
@@ -1043,6 +1137,19 @@ export async function riderRoutes(app: FastifyInstance) {
     hasVehicle: z.boolean(),
     isComplete: z.boolean(),
     vehicle: RiderVehicleDtoSchema.nullable(),
+    onboardingVehicleChoice: z.string().nullable(),
+    onboardingVehicleCategoryCode: z.string().nullable(),
+    onboardingPrefill: z
+      .object({
+        registrationNumber: z.string().nullable(),
+        vehicleChoice: z.string().nullable(),
+        vehicleCategoryCode: z.string().nullable(),
+        resolvedVehicleType: z.string().nullable(),
+        vehicleTypeLabel: z.string().nullable(),
+        suggestedAcType: z.enum(["AC", "Non-AC"]).nullable(),
+        suggestedIsCommercial: z.boolean().nullable(),
+      })
+      .nullable(),
   });
 
   app.get(
@@ -1082,6 +1189,8 @@ export async function riderRoutes(app: FastifyInstance) {
           isCommercial: z.boolean(),
           seatingCapacity: z.number().int().nullable().optional(),
           acType: z.string().nullable().optional(),
+          vehicleCategoryCode: z.string().nullable().optional(),
+          onboardingVehicleChoice: z.string().nullable().optional(),
         }),
         response: {
           200: RiderVehicleStatusSchema,
@@ -1137,6 +1246,7 @@ export async function riderRoutes(app: FastifyInstance) {
       const { syncRiderDutyWithRestrictions } = await import(
         "../../lib/rider-account-restrictions.js"
       );
+
       const duty = await syncRiderDutyWithRestrictions(riderId);
 
       return {
@@ -1219,6 +1329,12 @@ export async function riderRoutes(app: FastifyInstance) {
           lon: body.lon ?? null,
           metadata: { trigger: "duty_toggle" },
         });
+        if (body.lat != null && body.lon != null) {
+          const { buildZoneKey } = await import("../weather/weather.classify.js");
+          const { leaveZonePresence } = await import("../weather/weather.zones-active.js");
+          const { zoneKey } = buildZoneKey(body.lat, body.lon, "", null);
+          leaveZonePresence(zoneKey, "rider", String(riderId));
+        }
         return {
           isOnDuty: false,
           allowedServiceTypes: [],
@@ -1251,10 +1367,25 @@ export async function riderRoutes(app: FastifyInstance) {
         });
       }
 
-      const vehicleServices = (vehicleStatus.vehicle?.serviceTypes ?? []).filter(
-        (s): s is "food" | "parcel" | "person_ride" =>
-          s === "food" || s === "parcel" || s === "person_ride"
+      const { getRiderActiveVehicleProfile } = await import("../../lib/order-assignment-engine.js");
+      const { filterDispatchServicesForRiderProfile } = await import(
+        "../../lib/rider-dispatch-service-rules.js"
       );
+      const { resolveAssignedDispatchServicesForProfile, filterDispatchServicesByVehicleAssignments } =
+        await import("../../lib/rider-vehicle-type-service-assignments.js");
+      const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
+      const assignmentServices = await resolveAssignedDispatchServicesForProfile(vehicleProfile);
+      const hasVehicleProfile =
+        vehicleProfile.vehicleTypes.some((v) => v.trim().length > 0) ||
+        vehicleProfile.vehicleCategories.some((c) => c.trim().length > 0);
+      const vehicleServices = hasVehicleProfile
+        ? assignmentServices
+        : assignmentServices.length > 0
+          ? assignmentServices
+          : (vehicleStatus.vehicle?.serviceTypes ?? []).filter(
+              (s): s is "food" | "parcel" | "person_ride" =>
+                s === "food" || s === "parcel" || s === "person_ride"
+            );
       const requestedServices = body.serviceTypes.filter((s) => vehicleServices.includes(s));
 
       if (requestedServices.length === 0) {
@@ -1265,17 +1396,16 @@ export async function riderRoutes(app: FastifyInstance) {
         });
       }
 
-      const { getRiderActiveVehicleProfile } = await import("../../lib/order-assignment-engine.js");
-      const { filterDispatchServicesForRiderProfile } = await import(
-        "../../lib/rider-dispatch-service-rules.js"
-      );
-      const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
       const dutyServices = filterDispatchServicesForRiderProfile(
         requestedServices as ("food" | "parcel" | "person_ride")[],
         vehicleProfile
       );
+      const vehicleFiltered = await filterDispatchServicesByVehicleAssignments(dutyServices, {
+        vehicleTypes: vehicleProfile.vehicleTypes,
+        vehicleCategories: vehicleProfile.vehicleCategories,
+      });
 
-      if (dutyServices.length === 0) {
+      if (vehicleFiltered.length === 0) {
         return reply.status(403).send({
           error: "NO_VEHICLE_SERVICES",
           message: "Your vehicle is not enabled for any dispatch services.",
@@ -1289,7 +1419,7 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const allowed: string[] = [];
       const blocked: string[] = [];
-      for (const service of dutyServices) {
+      for (const service of vehicleFiltered) {
         if (isDispatchServiceBlocked(service, restrictionSnapshot)) {
           blocked.push(service);
         } else {
@@ -1302,6 +1432,17 @@ export async function riderRoutes(app: FastifyInstance) {
           error: "ALL_SERVICES_BLOCKED",
           message: "You cannot go online — all requested services are restricted.",
           blockedServiceTypes: blocked,
+        });
+      }
+
+      const { isRiderSubscriptionDispatchBlocked } = await import(
+        "../../lib/rider-subscription-wallet.js"
+      );
+      if (await isRiderSubscriptionDispatchBlocked(riderId)) {
+        return reply.status(403).send({
+          error: "SUBSCRIPTION_DUTY_STOPPED",
+          message:
+            "Duty stopped due to subscription penalty. Clear dues to go online.",
         });
       }
 
@@ -1319,6 +1460,17 @@ export async function riderRoutes(app: FastifyInstance) {
           blockedServices: blocked,
         },
       });
+
+      if (body.lat != null && body.lon != null && Number.isFinite(body.lat) && Number.isFinite(body.lon)) {
+        const { resolveZoneWeather } = await import("../weather/weather.service.js");
+        void resolveZoneWeather({
+          lat: body.lat,
+          lng: body.lon,
+          trigger: "rider_online",
+          actorId: String(riderId),
+          actorType: "rider",
+        }).catch(() => undefined);
+      }
 
       return {
         isOnDuty: true,
@@ -1585,6 +1737,26 @@ export async function riderRoutes(app: FastifyInstance) {
         const riderRows = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
         if (riderRows.length === 0) {
           throw new Error("Rider not found");
+        }
+
+        if (docType === "dl") {
+          const rawDl = metadata?.dlNumber;
+          if (typeof rawDl === "string") {
+            const dl = normalizeDlNumber(rawDl);
+            if (dl && (await isDlAlreadyRegistered(dl, riderId))) {
+              throw new Error("Driving License Already Registered , Please try with Diff one .");
+            }
+          }
+        }
+
+        if (docType === "rc") {
+          const rawRc = metadata?.rcNumber;
+          if (typeof rawRc === "string") {
+            const rc = normalizeRcNumber(rawRc);
+            if (rc && (await isRcAlreadyRegistered(rc, riderId))) {
+              throw new Error("RC Already Registered , Please try with Diff one .");
+            }
+          }
         }
 
         const existing = await db

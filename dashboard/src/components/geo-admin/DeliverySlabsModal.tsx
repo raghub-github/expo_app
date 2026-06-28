@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
 import { toast } from "sonner";
 import { Layers, Loader2, Plus, X } from "lucide-react";
@@ -9,34 +10,48 @@ import { RideCustomerPricingPanel } from "./RideCustomerPricingPanel";
 import { InlineVehicleRideLimitField } from "./InlineVehicleRideLimitField";
 import { StateSurgeManagementSidesheet } from "./StateSurgeManagementSidesheet";
 import { prefetchRiderPayoutSlabs } from "@/lib/geo/riderPayoutSlabsCache";
+import {
+  deliveryRateSlabsCacheKey,
+  fetchDeliveryRateSlabs,
+  getDeliveryRateSlabsCache,
+  invalidateDeliveryRateSlabsCache,
+  invalidateDeliveryRateSlabsForNode,
+  prefetchDeliveryRateSlabs,
+  type DeliveryRateSlabsPayload,
+} from "@/lib/geo/deliveryRateSlabsCache";
+import { calcCustomerPreviewBreakdown } from "@/lib/pricing/slabPricingEngine";
+import {
+  blankCustomerSlabRow,
+  customerSlabFromApi,
+  normalizeCustomerSlabRow,
+  parseCustomerSlabForPreview,
+  parseCustomerSlabForSave,
+  type EditableCustomerSlabRow,
+} from "@/lib/pricing/slabEditableRows";
+import {
+  buildSavedFingerprintMap,
+  customerSlabFingerprint,
+  isSlabRowDirty,
+} from "@/lib/pricing/slabDirtyState";
+import { parseDecimalOrZero } from "@/lib/pricing/slabInputUtils";
+import { applyCustomerSlabSaveResponse } from "@/lib/pricing/slabSaveResponse";
+import { SlabNumericInput } from "./SlabNumericInput";
 
 type ServiceType = "food" | "parcel" | "person_ride";
 type ActorType = "customer" | "rider";
 
-type SlabRow = {
+type SlabRow = EditableCustomerSlabRow;
+
+type DisplaySlabRow = {
   id: number;
   minKm: number;
   maxKm: number | null;
   baseFare: number | null;
   perKmRate: number;
   minCharge: number | null;
-  waitingChargePerMin?: number | null;
-  surgeMultiplier?: number | null;
   priority: number;
   isActive: boolean;
 };
-
-function num(v: string): number | null {
-  const t = v.trim();
-  if (!t) return null;
-  const n = Number(t);
-  return Number.isFinite(n) ? n : null;
-}
-
-function numOr(v: string, fallback: number): number {
-  const n = num(v);
-  return n == null ? fallback : n;
-}
 
 /** Keep modals inside the dashboard main column (right of fixed left sidebar). */
 function useMainAreaLeftInset() {
@@ -79,18 +94,72 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
   const [loading, setLoading] = useState(false);
   const [rowBusyId, setRowBusyId] = useState<number | null>(null);
   const [rowBusyAction, setRowBusyAction] = useState<"save" | "delete" | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
   const [applied, setApplied] = useState<{ level: string; refId: string } | null>(null);
-  const [effectiveSlabs, setEffectiveSlabs] = useState<SlabRow[]>([]);
+  const [effectiveSlabs, setEffectiveSlabs] = useState<DisplaySlabRow[]>([]);
   const [slabs, setSlabs] = useState<SlabRow[]>([]);
+  const [savedFingerprints, setSavedFingerprints] = useState<Map<number, string>>(new Map());
   const [surgeRefreshKey, setSurgeRefreshKey] = useState(0);
   const [surgeSheetOpen, setSurgeSheetOpen] = useState(false);
+  const [previewDistanceKm, setPreviewDistanceKm] = useState("3");
+  const [portalReady, setPortalReady] = useState(false);
   const slabsRef = useRef<SlabRow[]>([]);
+  const savedFingerprintsRef = useRef(savedFingerprints);
   const actorType: ActorType = pricingTab === "rider" ? "rider" : "customer";
   const riderService = serviceType === "person_ride" ? "ride" : serviceType;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     slabsRef.current = slabs;
   }, [slabs]);
+
+  useLayoutEffect(() => {
+    savedFingerprintsRef.current = savedFingerprints;
+  }, [savedFingerprints]);
+
+  const rowBusyRef = useRef(rowBusyId);
+  const savingAllRef = useRef(savingAll);
+
+  useLayoutEffect(() => {
+    rowBusyRef.current = rowBusyId;
+  }, [rowBusyId]);
+
+  useLayoutEffect(() => {
+    savingAllRef.current = savingAll;
+  }, [savingAll]);
+
+  useLayoutEffect(() => {
+    setPortalReady(true);
+  }, []);
+
+  /** Only the X button may close — block Escape and backdrop dismiss. */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (pricingTab === "rider" || serviceType === "person_ride") return;
+    prefetchDeliveryRateSlabs({
+      level,
+      refId: row.id,
+      serviceType,
+      actorType,
+    });
+  }, [actorType, level, pricingTab, row.id, serviceType]);
 
   useEffect(() => {
     if (pricingTab !== "rider") return;
@@ -104,6 +173,11 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
 
   const mapRows = useCallback((rows: any[] | undefined | null): SlabRow[] => {
     if (!Array.isArray(rows)) return [];
+    return rows.map((s) => customerSlabFromApi(s));
+  }, []);
+
+  const mapDisplayRows = useCallback((rows: any[] | undefined | null): DisplaySlabRow[] => {
+    if (!Array.isArray(rows)) return [];
     return rows.map((s) => ({
       id: Number(s.id),
       minKm: Number(s.minKm),
@@ -111,42 +185,55 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
       baseFare: s.baseFare == null ? null : Number(s.baseFare),
       perKmRate: Number(s.perKmRate),
       minCharge: s.minCharge == null ? null : Number(s.minCharge),
-      waitingChargePerMin: s.waitingChargePerMin == null ? null : Number(s.waitingChargePerMin),
-      surgeMultiplier: s.surgeMultiplier == null ? null : Number(s.surgeMultiplier),
       priority: Number(s.priority ?? 100),
       isActive: s.isActive === true,
     }));
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (pricingTab === "rider" || (pricingTab === "customer" && serviceType === "person_ride")) return;
-    setLoading(true);
-    try {
-      const qs = new URLSearchParams({
+  const applyDeliveryPayload = useCallback(
+    (payload: DeliveryRateSlabsPayload) => {
+      setApplied(payload.applied);
+      setEffectiveSlabs(mapDisplayRows(payload.effectiveSlabs));
+      const mapped = mapRows(payload.ownSlabs);
+      setSlabs(mapped);
+      setSavedFingerprints(buildSavedFingerprintMap(mapped, customerSlabFingerprint));
+    },
+    [mapDisplayRows, mapRows]
+  );
+
+  const refresh = useCallback(
+    async (opts?: { force?: boolean; showLoading?: boolean }) => {
+      if (pricingTab === "rider" || (pricingTab === "customer" && serviceType === "person_ride")) return;
+
+      const cacheKey = deliveryRateSlabsCacheKey({
         level,
         refId: row.id,
         serviceType,
         actorType,
       });
-      const [ownRes, ctxRes] = await Promise.all([
-        fetch(`/api/super-admin/geo/delivery-rate-slabs?${qs.toString()}`, { cache: "no-store" }),
-        fetch(`/api/super-admin/geo/delivery-rate-slabs/context?${qs.toString()}`, { cache: "no-store" }),
-      ]);
-      if (!ownRes.ok) throw new Error((await ownRes.json())?.error ?? "Failed to load slabs");
-      if (!ctxRes.ok) throw new Error((await ctxRes.json())?.error ?? "Failed to load effective slabs");
+      const cached = !opts?.force ? getDeliveryRateSlabsCache(cacheKey) : null;
+      if (cached) applyDeliveryPayload(cached);
 
-      const ownJson = (await ownRes.json()) as { slabs: any[] };
-      const ctxJson = (await ctxRes.json()) as { applied: { level: string; refId: string } | null; slabs: any[] };
+      const showLoading = opts?.showLoading ?? !cached;
+      if (showLoading) setLoading(true);
 
-      setApplied(ctxJson.applied ?? null);
-      setEffectiveSlabs(mapRows(ctxJson.slabs));
-      setSlabs(mapRows(ownJson.slabs));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to load slabs");
-    } finally {
-      setLoading(false);
-    }
-  }, [actorType, level, mapRows, pricingTab, row.id, serviceType]);
+      try {
+        const payload = await fetchDeliveryRateSlabs({
+          level,
+          refId: row.id,
+          serviceType,
+          actorType,
+          force: opts?.force,
+        });
+        applyDeliveryPayload(payload);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to load slabs");
+      } finally {
+        if (showLoading) setLoading(false);
+      }
+    },
+    [actorType, applyDeliveryPayload, level, pricingTab, row.id, serviceType]
+  );
 
   useEffect(() => {
     void refresh();
@@ -167,64 +254,55 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
   }, []);
 
   const addBlank = () => {
-    setSlabs((prev) => [
-      ...prev,
-      {
-        id: -Date.now(),
-        minKm: prev.length === 0 ? 0 : prev[prev.length - 1]!.maxKm ?? prev[prev.length - 1]!.minKm + 1,
-        maxKm: null,
-        baseFare: prev.length === 0 ? 0 : null,
-        perKmRate: 0,
-        minCharge: null,
-        waitingChargePerMin: prev.length === 0 ? 0 : null,
-        surgeMultiplier: prev.length === 0 ? 1 : null,
-        priority: 100,
-        isActive: true,
-      },
-    ]);
+    setSlabs((prev) => [...prev, blankCustomerSlabRow(prev[prev.length - 1])]);
   };
 
-  const saveRow = async (r: SlabRow) => {
-    if (rowBusyId != null) return;
+  const saveRow = async (r: SlabRow, opts?: { quiet?: boolean; skipRefresh?: boolean }) => {
+    if (rowBusyId != null && !opts?.quiet) return;
+    if (savingAll && !opts?.quiet) return;
 
-    // Normalize: enforce rider-only + base-fare-only-on-first-slab at the UI boundary.
-    // This prevents "looks saved but disappears after refresh" due to API validation rejection.
-    const normalized: SlabRow = {
-      ...r,
-      baseFare: r.minKm === 0 ? r.baseFare : null,
-      waitingChargePerMin: actorType === "rider" ? r.waitingChargePerMin ?? null : null,
-      surgeMultiplier: actorType === "rider" ? r.surgeMultiplier ?? null : null,
+    const normalized = normalizeCustomerSlabRow(r);
+    const parsed = parseCustomerSlabForSave(normalized);
+    const normalizedPayload = {
+      ...parsed,
+      waitingChargePerMin: actorType === "rider" ? parsed.waitingChargePerMin : null,
+      surgeMultiplier: actorType === "rider" ? parsed.surgeMultiplier : null,
     };
 
-    if (normalized.maxKm != null && normalized.maxKm <= normalized.minKm) {
-      toast.error("maxKm must be > minKm");
-      return;
+    if (normalizedPayload.maxKm != null && normalizedPayload.maxKm <= normalizedPayload.minKm) {
+      throw new Error("maxKm must be > minKm");
     }
-    if ((normalized.baseFare ?? 0) > 0 && normalized.minKm !== 0) {
-      toast.error("Base fare can be set only on the first slab (minKm=0)");
-      return;
+    if ((normalizedPayload.baseFare ?? 0) > 0 && normalizedPayload.minKm !== 0) {
+      throw new Error("Base fare can be set only on the first slab (minKm=0)");
     }
-    setRowBusyId(normalized.id);
-    setRowBusyAction("save");
+
+    if (!opts?.quiet) {
+      setRowBusyId(normalized.id);
+      setRowBusyAction("save");
+    }
+
     try {
+      let savedSlab: Record<string, unknown> | undefined;
       if (normalized.id > 0) {
         const res = await fetch(`/api/super-admin/geo/delivery-rate-slabs/${normalized.id}`, {
           method: "PATCH",
           cache: "no-store",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            minKm: normalized.minKm,
-            maxKm: normalized.maxKm,
-            baseFare: normalized.baseFare,
-            perKmRate: normalized.perKmRate,
-            minCharge: normalized.minCharge,
-            waitingChargePerMin: normalized.waitingChargePerMin,
-            surgeMultiplier: normalized.surgeMultiplier,
-            priority: normalized.priority,
-            isActive: normalized.isActive,
+            minKm: normalizedPayload.minKm,
+            maxKm: normalizedPayload.maxKm,
+            baseFare: normalizedPayload.baseFare,
+            perKmRate: normalizedPayload.perKmRate,
+            minCharge: normalizedPayload.minCharge,
+            waitingChargePerMin: normalizedPayload.waitingChargePerMin,
+            surgeMultiplier: normalizedPayload.surgeMultiplier,
+            priority: normalizedPayload.priority,
+            isActive: normalizedPayload.isActive,
           }),
         });
-        if (!res.ok) throw new Error((await res.json())?.error ?? "Update failed");
+        const json = (await res.json().catch(() => ({}))) as { error?: string; slab?: Record<string, unknown> };
+        if (!res.ok) throw new Error(json.error ?? "Update failed");
+        savedSlab = json.slab;
       } else {
         const res = await fetch(`/api/super-admin/geo/delivery-rate-slabs`, {
           method: "POST",
@@ -235,36 +313,104 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
             refId: row.id,
             serviceType,
             actorType,
-            minKm: normalized.minKm,
-            maxKm: normalized.maxKm,
-            baseFare: normalized.baseFare,
-            perKmRate: normalized.perKmRate,
-            minCharge: normalized.minCharge,
-            waitingChargePerMin: normalized.waitingChargePerMin,
-            surgeMultiplier: normalized.surgeMultiplier,
-            priority: normalized.priority,
-            isActive: normalized.isActive,
+            minKm: normalizedPayload.minKm,
+            maxKm: normalizedPayload.maxKm,
+            baseFare: normalizedPayload.baseFare,
+            perKmRate: normalizedPayload.perKmRate,
+            minCharge: normalizedPayload.minCharge,
+            waitingChargePerMin: normalizedPayload.waitingChargePerMin,
+            surgeMultiplier: normalizedPayload.surgeMultiplier,
+            priority: normalizedPayload.priority,
+            isActive: normalizedPayload.isActive,
           }),
         });
-        if (!res.ok) throw new Error((await res.json())?.error ?? "Insert failed");
+        const json = (await res.json().catch(() => ({}))) as { error?: string; slab?: Record<string, unknown> };
+        if (!res.ok) throw new Error(json.error ?? "Insert failed");
+        savedSlab = json.slab;
       }
+      if (savedSlab) {
+        applyCustomerSlabSaveResponse({
+          previousId: normalized.id,
+          slab: savedSlab,
+          setSlabs,
+          setSavedFingerprints,
+        });
+      }
+      invalidateDeliveryRateSlabsCache(
+        deliveryRateSlabsCacheKey({ level, refId: row.id, serviceType, actorType })
+      );
+      if (!opts?.quiet) toast.success("Saved");
+      if (!opts?.skipRefresh) {
+        void refresh({ force: true, showLoading: false });
+      }
+    } finally {
+      if (!opts?.quiet) {
+        setRowBusyId(null);
+        setRowBusyAction(null);
+      }
+    }
+  };
+
+  const saveRowById = async (id: number) => {
+    if (rowBusyRef.current != null || savingAllRef.current) return;
+
+    setRowBusyId(id);
+    setRowBusyAction("save");
+    rowBusyRef.current = id;
+
+    try {
+      const current = slabsRef.current.find((x) => x.id === id);
+      if (!current) {
+        toast.error("Row not found");
+        return;
+      }
+      if (
+        !isSlabRowDirty(id, customerSlabFingerprint(current), savedFingerprintsRef.current.get(id))
+      ) {
+        toast.message("No changes to save");
+        return;
+      }
+
+      await saveRow(current, { quiet: true, skipRefresh: true });
       toast.success("Saved");
-      await refresh();
+      invalidateDeliveryRateSlabsForNode(level, row.id);
+      void refresh({ force: true, showLoading: false });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
     } finally {
+      rowBusyRef.current = null;
       setRowBusyId(null);
       setRowBusyAction(null);
     }
   };
 
-  const saveRowById = async (id: number) => {
-    const current = slabsRef.current.find((x) => x.id === id);
-    if (!current) {
-      toast.error("Row not found");
-      return;
+  const saveAllRows = async () => {
+    if (rowBusyRef.current != null || savingAllRef.current) return;
+
+    setSavingAll(true);
+    savingAllRef.current = true;
+
+    try {
+      const rows = slabsRef.current.filter((r) =>
+        isSlabRowDirty(r.id, customerSlabFingerprint(r), savedFingerprintsRef.current.get(r.id))
+      );
+      if (rows.length === 0) {
+        toast.message("No changes to save");
+        return;
+      }
+
+      for (const r of rows) {
+        await saveRow(r, { quiet: true, skipRefresh: true });
+      }
+      toast.success(`Saved ${rows.length} slab${rows.length === 1 ? "" : "s"}`);
+      invalidateDeliveryRateSlabsForNode(level, row.id);
+      void refresh({ force: true, showLoading: false });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Save all failed");
+    } finally {
+      savingAllRef.current = false;
+      setSavingAll(false);
     }
-    await saveRow(current);
   };
 
   const deleteRow = async (id: number) => {
@@ -273,14 +419,15 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
       return;
     }
     if (!confirm("Delete this slab?")) return;
-    if (rowBusyId != null) return;
+    if (rowBusyId != null || savingAll) return;
     setRowBusyId(id);
     setRowBusyAction("delete");
     try {
       const res = await fetch(`/api/super-admin/geo/delivery-rate-slabs/${id}`, { method: "DELETE", cache: "no-store" });
       if (!res.ok) throw new Error((await res.json())?.error ?? "Delete failed");
       toast.success("Deleted");
-      await refresh();
+      invalidateDeliveryRateSlabsForNode(level, row.id);
+      void refresh({ force: true, showLoading: false });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -293,15 +440,36 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
     pricingTab === "customer" && serviceType !== "person_ride";
   const mainAreaLeft = useMainAreaLeftInset();
 
-  return (
+  const actionBusy = rowBusyId != null || savingAll;
+
+  const customerPreviewSlabs = useMemo(
+    () => slabs.filter((s) => s.isActive).map((s) => parseCustomerSlabForPreview(s)),
+    [slabs]
+  );
+
+  const customerPreviewBreakdown = useMemo(() => {
+    if (!showCustomerSlabActions || customerPreviewSlabs.length === 0) return null;
+    return calcCustomerPreviewBreakdown({
+      distanceKm: parseDecimalOrZero(previewDistanceKm),
+      slabs: customerPreviewSlabs,
+    });
+  }, [showCustomerSlabActions, customerPreviewSlabs, previewDistanceKm]);
+
+  const modalUi = (
     <>
     <div
       className="fixed inset-y-0 right-0 z-[70] flex items-center justify-center bg-slate-950/50 p-2 sm:p-4 max-lg:left-0"
       style={{ left: mainAreaLeft > 0 ? mainAreaLeft : undefined }}
       role="dialog"
       aria-modal="true"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex max-h-[92vh] w-full max-w-[min(100%,1100px)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+      <div
+        className="flex max-h-[92vh] w-full max-w-[min(100%,1100px)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-6 py-4">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Geo · Delivery slabs</p>
@@ -341,7 +509,7 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                 <div className="mt-1.5 inline-flex overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
                   <button
                     type="button"
-                    disabled={loading || rowBusyId != null}
+                    disabled={actionBusy}
                     onClick={() => setPricingTab("customer")}
                     className={
                       "px-3 py-2 text-sm font-semibold transition " +
@@ -354,7 +522,7 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                   </button>
                   <button
                     type="button"
-                    disabled={loading || rowBusyId != null}
+                    disabled={actionBusy}
                     onClick={() => setPricingTab("rider")}
                     className={
                       "px-3 py-2 text-sm font-semibold transition " +
@@ -394,7 +562,7 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
               ) : null}
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex w-full shrink-0 flex-wrap items-center justify-end gap-2 lg:w-auto">
               {level === "state" && pricingTab === "rider" ? (
                 <button
                   type="button"
@@ -410,7 +578,7 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                   <button
                     type="button"
                     onClick={addBlank}
-                    disabled={loading || rowBusyId != null}
+                    disabled={actionBusy}
                     className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:border-teal-300"
                   >
                     <Layers className="h-4 w-4 text-teal-700" />
@@ -418,8 +586,23 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                   </button>
                   <button
                     type="button"
-                    onClick={() => void refresh()}
-                    disabled={loading || rowBusyId != null}
+                    onClick={() => void saveAllRows()}
+                    disabled={actionBusy || slabs.length === 0}
+                    className="inline-flex min-w-[6.5rem] items-center justify-center gap-2 rounded-lg border border-teal-300 bg-teal-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-700 disabled:opacity-50"
+                  >
+                    {savingAll ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Saving
+                      </>
+                    ) : (
+                      "Save all"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refresh({ force: true, showLoading: true })}
+                    disabled={actionBusy || loading}
                     className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white"
                   >
                     {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -449,6 +632,72 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
             <RideCustomerPricingPanel level={level} refId={row.id} vehicleType={rideVehicleType} />
           ) : (
           <>
+          {showCustomerSlabActions ? (
+            <div className="mt-5 rounded-xl border border-teal-200 bg-gradient-to-r from-teal-50/80 to-emerald-50/50 px-5 py-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-teal-800">Customer price preview</p>
+                  <p className="mt-0.5 text-[11px] text-teal-700/80">
+                    Uses slabs at this node (includes unsaved edits)
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="text-xs font-semibold text-slate-700">
+                    Distance km
+                    <SlabNumericInput
+                      className="mt-1 block w-28 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm"
+                      kind="decimal"
+                      placeholder="0"
+                      value={previewDistanceKm}
+                      onChange={setPreviewDistanceKm}
+                    />
+                  </label>
+                  <div className="min-w-[5.5rem] rounded-lg bg-white px-4 py-2 text-center shadow-sm ring-1 ring-teal-200">
+                    <span className="text-2xl font-bold text-teal-900">
+                      {customerPreviewBreakdown == null
+                        ? "—"
+                        : `₹${customerPreviewBreakdown.finalAmount.toFixed(2)}`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              {customerPreviewBreakdown ? (
+                <div className="mt-3 grid gap-2 rounded-lg border border-teal-100 bg-white/80 px-3 py-2 text-xs text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    Base fare:{" "}
+                    <span className="font-mono font-semibold">
+                      ₹{customerPreviewBreakdown.baseFare.toFixed(2)}
+                    </span>
+                  </div>
+                  <div>
+                    Distance:{" "}
+                    <span className="font-mono font-semibold">
+                      ₹{customerPreviewBreakdown.distanceAmount.toFixed(2)}
+                    </span>
+                  </div>
+                  {customerPreviewBreakdown.minChargeAdjustment > 0 ? (
+                    <div>
+                      Min charge adj.:{" "}
+                      <span className="font-mono font-semibold">
+                        ₹{customerPreviewBreakdown.minChargeAdjustment.toFixed(2)}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div>
+                    Total:{" "}
+                    <span className="font-mono font-semibold">
+                      ₹{customerPreviewBreakdown.finalAmount.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-900">
+                  Add active slabs at this node to preview customer pricing.
+                </p>
+              )}
+            </div>
+          ) : null}
+
           {isInherited && effectiveSlabs.length > 0 ? (
             <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -512,51 +761,62 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                     </td>
                   </tr>
                 ) : (
-                  slabs.map((s) => (
-                    <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50/50">
+                  slabs.map((s) => {
+                    const dirty = isSlabRowDirty(
+                      s.id,
+                      customerSlabFingerprint(s),
+                      savedFingerprints.get(s.id)
+                    );
+                    const rowSaving = rowBusyId === s.id && rowBusyAction === "save";
+                    const rowDeleting = rowBusyId === s.id && rowBusyAction === "delete";
+                    const saveDisabled =
+                      actionBusy || (rowBusyId != null && rowBusyId !== s.id);
+
+                    return (
+                    <tr key={s.id} className={`border-t border-slate-100 hover:bg-slate-50/50 ${dirty ? "bg-amber-50/30" : ""}`}>
                       <td className="px-4 py-2.5">
-                        <input
-                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
-                          value={String(s.minKm)}
-                          onChange={(e) => patchRow(s.id, { minKm: numOr(e.target.value, s.minKm) })}
+                        <SlabNumericInput
+                          kind="decimal"
+                          value={s.minKm}
+                          onChange={(v) => patchRow(s.id, { minKm: v })}
                         />
                       </td>
                       <td className="px-4 py-2.5">
-                        <input
-                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
+                        <SlabNumericInput
+                          kind="decimal"
                           placeholder="∞"
-                          value={s.maxKm == null ? "" : String(s.maxKm)}
-                          onChange={(e) => patchRow(s.id, { maxKm: num(e.target.value) })}
+                          value={s.maxKm}
+                          onChange={(v) => patchRow(s.id, { maxKm: v })}
                         />
                       </td>
                       <td className="px-4 py-2.5">
-                        <input
-                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
-                          disabled={s.minKm !== 0}
-                          placeholder={s.minKm !== 0 ? "—" : ""}
-                          value={s.minKm !== 0 ? "" : s.baseFare == null ? "" : String(s.baseFare)}
-                          onChange={(e) => patchRow(s.id, { baseFare: num(e.target.value) })}
+                        <SlabNumericInput
+                          kind="decimal"
+                          disabled={parseDecimalOrZero(s.minKm) !== 0}
+                          placeholder={parseDecimalOrZero(s.minKm) !== 0 ? "—" : ""}
+                          value={parseDecimalOrZero(s.minKm) !== 0 ? "" : s.baseFare}
+                          onChange={(v) => patchRow(s.id, { baseFare: v })}
                         />
                       </td>
                       <td className="px-4 py-2.5">
-                        <input
-                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
-                          value={String(s.perKmRate)}
-                          onChange={(e) => patchRow(s.id, { perKmRate: numOr(e.target.value, s.perKmRate) })}
+                        <SlabNumericInput
+                          kind="decimal"
+                          value={s.perKmRate}
+                          onChange={(v) => patchRow(s.id, { perKmRate: v })}
                         />
                       </td>
                       <td className="px-4 py-2.5">
-                        <input
-                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
-                          value={s.minCharge == null ? "" : String(s.minCharge)}
-                          onChange={(e) => patchRow(s.id, { minCharge: num(e.target.value) })}
+                        <SlabNumericInput
+                          kind="decimal"
+                          value={s.minCharge}
+                          onChange={(v) => patchRow(s.id, { minCharge: v })}
                         />
                       </td>
                       <td className="px-4 py-2.5">
-                        <input
-                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
-                          value={String(s.priority)}
-                          onChange={(e) => patchRow(s.id, { priority: Math.floor(numOr(e.target.value, s.priority)) })}
+                        <SlabNumericInput
+                          kind="integer"
+                          value={s.priority}
+                          onChange={(v) => patchRow(s.id, { priority: v })}
                         />
                       </td>
                       <td className="px-4 py-2.5 text-center">
@@ -571,26 +831,26 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                         <div className="inline-flex items-center gap-2">
                           <button
                             type="button"
-                            disabled={rowBusyId != null}
+                            disabled={saveDisabled}
                             onClick={() => void saveRowById(s.id)}
-                            className="rounded-md border border-teal-200 bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-900 hover:bg-teal-100 disabled:opacity-50"
+                            className="inline-flex min-w-[4.5rem] items-center justify-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-900 hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            {rowBusyId === s.id && rowBusyAction === "save" ? (
-                              <span className="inline-flex items-center gap-1">
+                            {rowSaving ? (
+                              <>
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 Saving
-                              </span>
+                              </>
                             ) : (
                               "Save"
                             )}
                           </button>
                           <button
                             type="button"
-                            disabled={rowBusyId != null}
+                            disabled={actionBusy}
                             onClick={() => void deleteRow(s.id)}
                             className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50"
                           >
-                            {rowBusyId === s.id && rowBusyAction === "delete" ? (
+                            {rowDeleting ? (
                               <span className="inline-flex items-center gap-1">
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 Deleting
@@ -602,7 +862,8 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                         </div>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -633,5 +894,8 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
     ) : null}
     </>
   );
+
+  if (!portalReady) return null;
+  return createPortal(modalUi, document.body);
 });
 

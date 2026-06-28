@@ -54,6 +54,33 @@ export function ContinueButton({
   );
 }
 
+export function SkipDocumentButton({
+  label,
+  onPress,
+  disabled,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const inactive = Boolean(disabled);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={inactive ? 1 : 0.85}
+      onPress={() => {
+        if (!inactive) onPress();
+      }}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: inactive }}
+      style={[styles.skipBtn, inactive && styles.skipBtnDisabled]}
+    >
+      <Ionicons name="play-skip-forward-outline" size={18} color={colors.gray[700]} />
+      <Text style={styles.skipBtnText}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 export function FieldLabel({ label, required }: { label: string; required?: boolean }) {
   return (
     <Text style={styles.fieldLabel}>
@@ -303,6 +330,26 @@ const styles = StyleSheet.create({
   },
   continueBtnTextDisabled: {
     color: "#7cb889",
+  },
+  skipBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: colors.gray[300],
+    backgroundColor: "#fff",
+  },
+  skipBtnDisabled: {
+    opacity: 0.6,
+  },
+  skipBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: colors.gray[700],
   },
   fieldLabel: {
     fontSize: 13,

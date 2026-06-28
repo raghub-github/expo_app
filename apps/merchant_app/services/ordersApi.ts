@@ -106,6 +106,8 @@ export type ApiFoodOrder = {
   cancelled_by_type?: string | null;
   is_scheduled_order?: boolean;
   scheduled_delivery_summary?: string | null;
+  merchant_response_deadline_at?: string | null;
+  merchant_response_timeout_seconds?: number | null;
 };
 
 export async function fetchFoodOrders(

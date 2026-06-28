@@ -231,10 +231,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
   const soundPlayedForOrderRef = useRef<Set<number>>(new Set());
-  const autoAcceptTimerRef = useRef<number | null>(null);
-  /** Prevents duplicate auto-cancel + toast when the acceptance timer hits zero. */
-  const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
-  const [storeOpsSettings, setStoreOpsSettings] = useState<{ auto_accept_orders: boolean; auto_accept_time_seconds: number; show_floating_orders: boolean } | null>(null);
   const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
   const [maxPrepMinutes, setMaxPrepMinutes] = useState(PREP_TIME_MAX);
   const [storeDisplayName, setStoreDisplayName] = useState('');
@@ -335,22 +331,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       try {
         const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`, { credentials: 'include' });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setStoreOpsSettings(null);
-          return;
-        }
-        setStoreOpsSettings({
-          auto_accept_orders: data.auto_accept_orders === true,
-          auto_accept_time_seconds: typeof data.auto_accept_time_seconds === 'number' ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds))) : 30,
-          show_floating_orders: data.show_floating_orders !== false,
-        });
+        if (!res.ok) return;
         const maxPrep =
           typeof data.max_preparation_time_minutes === 'number' && data.max_preparation_time_minutes >= PREP_TIME_MIN
             ? Math.min(PREP_TIME_MAX, Math.floor(data.max_preparation_time_minutes))
             : PREP_TIME_MAX;
         setMaxPrepMinutes(maxPrep);
       } catch {
-        setStoreOpsSettings(null);
+        /* non-fatal */
       }
     })();
   }, [storeId]);
@@ -682,6 +670,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   const deadlineMs = useMemo(() => {
     if (!modalOrder) return 0;
+    const fromBackend = modalOrder.merchant_response_deadline_at;
+    if (fromBackend) {
+      const t = new Date(fromBackend).getTime();
+      if (Number.isFinite(t)) return t;
+    }
     return new Date(modalOrder.created_at).getTime() + acceptWindowMs;
   }, [modalOrder, acceptWindowMs]);
 
@@ -740,20 +733,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     setItemsSheetOpen(false);
   }, [modalOrder?.order_id]);
 
-  useEffect(() => {
-    if (!modalOrder) {
-      autoCancelFiredForOrderIdRef.current = null;
-      return;
-    }
-    if (actionLoading) return;
-    if (secondsLeft > 0) return;
-    if (autoCancelFiredForOrderIdRef.current === modalOrder.order_id) return;
-    autoCancelFiredForOrderIdRef.current = modalOrder.order_id;
-    // Safety: auto-cancel when acceptance window finishes (once per order).
-    void patchStatus('CANCELLED', { rejected_reason: 'Auto Cancelled' }, 'auto');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft, modalOrder, actionLoading]);
-
   const persistMute = (v: boolean) => {
     setMuted(v);
     try {
@@ -778,10 +757,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const finishModal = (opts?: { userDismissed?: boolean }) => {
     const closedOrderId =
       modalOrderRef.current?.order_id ?? modalOrder?.order_id ?? null;
-    if (autoAcceptTimerRef.current != null) {
-      window.clearTimeout(autoAcceptTimerRef.current);
-      autoAcceptTimerRef.current = null;
-    }
     // Stop any playing chime immediately and prevent further repeats.
     chimeRunIdRef.current += 1;
     try {
@@ -945,35 +920,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       setActionLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (autoAcceptTimerRef.current != null) {
-      window.clearTimeout(autoAcceptTimerRef.current);
-      autoAcceptTimerRef.current = null;
-    }
-    if (!modalOrder || !storeOpsSettings?.auto_accept_orders) return;
-    if (storeOpsSettings.show_floating_orders === false) return;
-    const secs = Math.max(0, Math.min(600, Math.floor(storeOpsSettings.auto_accept_time_seconds || 0)));
-    if (secs <= 0) return;
-    const st = String(modalOrder.order_status || 'CREATED').toUpperCase();
-    if (st !== 'CREATED' && st !== 'NEW') return;
-    autoAcceptTimerRef.current = window.setTimeout(() => {
-      autoAcceptTimerRef.current = null;
-      // Only auto-accept if still the same order and still unaccepted.
-      if (!modalOrder) return;
-      const cur = String(modalOrder.order_status || 'CREATED').toUpperCase();
-      if (cur !== 'CREATED' && cur !== 'NEW') return;
-      if (actionLoading) return;
-      void patchStatus('ACCEPTED', { preparation_time_minutes: prepMinutes }, 'auto');
-    }, secs * 1000);
-    return () => {
-      if (autoAcceptTimerRef.current != null) {
-        window.clearTimeout(autoAcceptTimerRef.current);
-        autoAcceptTimerRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modalOrder?.order_id, storeOpsSettings?.auto_accept_orders, storeOpsSettings?.auto_accept_time_seconds, storeOpsSettings?.show_floating_orders]);
 
   if (typeof document === 'undefined') return null;
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useSyncExternalStore, useCallback, useMemo } from "react";
 
 export type TicketUrlPanel = "conversation" | "activities" | "csat";

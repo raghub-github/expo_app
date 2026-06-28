@@ -53,6 +53,23 @@ function cycleLabel(cycle: string): string {
   }
 }
 
+function toIsoTimestamp(value: unknown): string {
+  if (value == null) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return "";
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value < 1e12 ? value * 1000 : value;
+    const parsed = new Date(ms);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  return "";
+}
+
 function addBillingPeriod(start: Date, cycle: CustomerBillingCycle): Date {
   const end = new Date(start);
   switch (cycle) {
@@ -337,8 +354,8 @@ export async function getActiveCustomerSubscription(customerId: number) {
         planCode: String(row.code ?? ""),
         billingCycle: String(row.billing_cycle ?? ""),
         status: String(row.status ?? "active"),
-        startsAt: row.starts_at instanceof Date ? row.starts_at.toISOString() : String(row.starts_at ?? ""),
-        expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : String(row.expires_at ?? ""),
+        startsAt: toIsoTimestamp(row.starts_at),
+        expiresAt: toIsoTimestamp(row.expires_at),
         amountPaid: row.amount_paid != null ? Number(row.amount_paid) : null,
       },
       plan: {

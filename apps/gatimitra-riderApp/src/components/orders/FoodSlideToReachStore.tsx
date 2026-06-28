@@ -16,7 +16,6 @@ import Animated, {
   withSequence,
   withTiming,
   Easing,
-  runOnJS,
 } from "react-native-reanimated";
 import { colors } from "@/src/theme";
 
@@ -24,6 +23,9 @@ const TRACK_H = 54;
 const THUMB = 46;
 const PAD = 4;
 const SLIDE_GREEN = "#34A853";
+/** Light swipe should complete — ratio of track width, with a small absolute floor. */
+const SLIDE_COMPLETE_RATIO = 0.15;
+const SLIDE_COMPLETE_MIN_PX = 22;
 
 type Props = {
   label: string;
@@ -63,6 +65,23 @@ export function FoodSlideToReachStore({
 
   const maxDrag = () => Math.max(0, trackWidthRef.current - THUMB - PAD * 2);
 
+  const slideThreshold = (max: number) =>
+    max > 0 ? Math.max(SLIDE_COMPLETE_MIN_PX, max * SLIDE_COMPLETE_RATIO) : SLIDE_COMPLETE_MIN_PX;
+
+  const tryCompleteSlide = (dx: number) => {
+    const max = maxDrag();
+    if (dx < slideThreshold(max)) return false;
+    if (max > 0) {
+      translateX.value = withSpring(max, { damping: 20, stiffness: 240 });
+    }
+    isDragging.value = false;
+    if (!firedRef.current) {
+      firedRef.current = true;
+      onComplete();
+    }
+    return true;
+  };
+
   useEffect(() => {
     if (actionDisabled || completed) return;
     chevronPulse.value = withRepeat(
@@ -93,24 +112,18 @@ export function FoodSlideToReachStore({
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => !actionDisabled && !completed,
-        onMoveShouldSetPanResponder: () => !actionDisabled && !completed,
+        onMoveShouldSetPanResponder: (_, g) =>
+          !actionDisabled && !completed && Math.abs(g.dx) > 4,
         onPanResponderGrant: () => {
           isDragging.value = true;
         },
         onPanResponderMove: (_, g) => {
           const max = maxDrag();
           translateX.value = Math.max(0, Math.min(g.dx, max));
+          tryCompleteSlide(g.dx);
         },
-        onPanResponderRelease: () => {
-          const max = maxDrag();
-          if (max > 0 && translateX.value >= max * 0.72) {
-            translateX.value = withSpring(max, { damping: 20, stiffness: 240 });
-            isDragging.value = false;
-            if (!firedRef.current) {
-              firedRef.current = true;
-              runOnJS(onComplete)();
-            }
-          } else {
+        onPanResponderRelease: (_, g) => {
+          if (!tryCompleteSlide(g.dx)) {
             resetThumb();
           }
         },
@@ -171,13 +184,14 @@ export function FoodSlideToReachStore({
         onLayout={(e) => {
           trackWidthRef.current = e.nativeEvent.layout.width;
         }}
+        {...(actionDisabled ? {} : pan.panHandlers)}
       >
         <View
-          {...(actionDisabled ? {} : pan.panHandlers)}
           style={[
             styles.thumbZone,
             flushBottom && safeAreaBottom > 0 ? { bottom: safeAreaBottom } : null,
           ]}
+          pointerEvents="none"
         >
           <Animated.View style={[styles.thumb, thumbStyle]}>
             {loading ? (
@@ -280,6 +294,7 @@ const styles = StyleSheet.create({
     width: THUMB + PAD * 2 + 20,
     justifyContent: "center",
     zIndex: 2,
+    pointerEvents: "none",
   },
   thumb: {
     marginLeft: PAD,

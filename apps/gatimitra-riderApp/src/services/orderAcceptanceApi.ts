@@ -1,7 +1,7 @@
 import { getRiderAppConfig } from "@/src/config/env";
 import { normalizeAlertSoundSlots, resolveAlertSoundUrl } from "@/src/lib/resolveAlertSoundUrl";
 import { HttpError } from "@/src/services/http";
-import { notifySessionRevoked } from "@/src/services/sessionEvents";
+import { notifyForceLogoutIfNeeded } from "@/src/services/rider-auth-errors";
 import { useSessionStore } from "@/src/stores/sessionStore";
 
 export type RiderOrderAcceptanceSettings = {
@@ -43,10 +43,7 @@ export async function fetchRiderOrderAcceptanceSettings(): Promise<RiderOrderAcc
     data = {};
   }
   if (res.status === 401) {
-    const err = data.error?.trim();
-    notifySessionRevoked({
-      reason: err === "invalid_token" ? "invalid_token" : "revoked",
-    });
+    notifyForceLogoutIfNeeded(res.status, raw);
     throw new HttpError(data.error || "Session expired. Please sign in again.", 401, raw);
   }
   if (!res.ok || !data.settings) {

@@ -116,6 +116,43 @@ async function findEffectiveNode(
   return null;
 }
 
+export async function getRiderPickupSlabById(
+  service: RiderPayoutServiceType,
+  id: number
+): Promise<RiderPickupSlabRow | null> {
+  const sql = getSql();
+  const table = tableFor(service, "pickup");
+  const rows = await sql.unsafe(
+    `SELECT * FROM ${table} WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+    [id]
+  );
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? mapPickup(row) : null;
+}
+
+export async function getRiderDropSlabById(
+  service: RiderPayoutServiceType,
+  id: number
+): Promise<RiderDropSlabRow | null> {
+  const sql = getSql();
+  const table = tableFor(service, "drop");
+  const rows = await sql.unsafe(
+    `SELECT * FROM ${table} WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+    [id]
+  );
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? mapDrop(row) : null;
+}
+
+export async function getRideCustomerPricingById(id: number): Promise<RideCustomerPricingRow | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT * FROM ride_customer_pricing WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+  `;
+  const row = (Array.isArray(rows) ? rows[0] : null) as Record<string, unknown> | undefined;
+  return row ? mapRideCustomer(row) : null;
+}
+
 export async function listRiderPickupSlabs(args: {
   level: GeoHierarchyLevel;
   refId: string;
@@ -308,7 +345,7 @@ export async function insertRiderDropSlab(args: {
 export async function updateRiderPickupSlab(
   service: RiderPayoutServiceType,
   id: number,
-  patch: Partial<{
+  patch: {
     minKm: number;
     maxKm: number | null;
     baseFare: number | null;
@@ -318,35 +355,35 @@ export async function updateRiderPickupSlab(
     waitingStartAfter: number;
     priority: number;
     isActive: boolean;
-  }>
+  }
 ): Promise<RiderPickupSlabRow | null> {
   const sql = getSql();
   const table = tableFor(service, "pickup");
   const rows = await sql.unsafe(
     `UPDATE ${table} SET
-      min_km = COALESCE($2, min_km),
-      max_km = COALESCE($3, max_km),
-      base_fare = COALESCE($4, base_fare),
-      pickup_per_km = COALESCE($5, pickup_per_km),
-      min_charge = COALESCE($6, min_charge),
-      waiting_charge_per_min = COALESCE($7, waiting_charge_per_min),
-      waiting_start_after = COALESCE($8, waiting_start_after),
-      priority = COALESCE($9, priority),
-      is_active = COALESCE($10, is_active),
+      min_km = $2,
+      max_km = $3,
+      base_fare = $4,
+      pickup_per_km = $5,
+      min_charge = $6,
+      waiting_charge_per_min = $7,
+      waiting_start_after = $8,
+      priority = $9,
+      is_active = $10,
       updated_at = now()
     WHERE id = $1 AND deleted_at IS NULL
     RETURNING *`,
     [
       id,
-      patch.minKm ?? null,
-      patch.maxKm ?? null,
-      patch.baseFare ?? null,
-      patch.pickupPerKm ?? null,
-      patch.minCharge ?? null,
-      patch.waitingChargePerMin ?? null,
-      patch.waitingStartAfter ?? null,
-      patch.priority ?? null,
-      patch.isActive ?? null,
+      patch.minKm,
+      patch.maxKm,
+      patch.baseFare,
+      patch.pickupPerKm,
+      patch.minCharge,
+      patch.waitingChargePerMin,
+      patch.waitingStartAfter,
+      patch.priority,
+      patch.isActive,
     ]
   );
   const row = (rows as Record<string, unknown>[])[0];
@@ -356,34 +393,27 @@ export async function updateRiderPickupSlab(
 export async function updateRiderDropSlab(
   service: RiderPayoutServiceType,
   id: number,
-  patch: Partial<{
+  patch: {
     minKm: number;
     maxKm: number | null;
     dropPerKm: number;
     priority: number;
     isActive: boolean;
-  }>
+  }
 ): Promise<RiderDropSlabRow | null> {
   const sql = getSql();
   const table = tableFor(service, "drop");
   const rows = await sql.unsafe(
     `UPDATE ${table} SET
-      min_km = COALESCE($2, min_km),
-      max_km = COALESCE($3, max_km),
-      drop_per_km = COALESCE($4, drop_per_km),
-      priority = COALESCE($5, priority),
-      is_active = COALESCE($6, is_active),
+      min_km = $2,
+      max_km = $3,
+      drop_per_km = $4,
+      priority = $5,
+      is_active = $6,
       updated_at = now()
     WHERE id = $1 AND deleted_at IS NULL
     RETURNING *`,
-    [
-      id,
-      patch.minKm ?? null,
-      patch.maxKm ?? null,
-      patch.dropPerKm ?? null,
-      patch.priority ?? null,
-      patch.isActive ?? null,
-    ]
+    [id, patch.minKm, patch.maxKm, patch.dropPerKm, patch.priority, patch.isActive]
   );
   const row = (rows as Record<string, unknown>[])[0];
   return row ? mapDrop(row) : null;
@@ -491,7 +521,7 @@ export async function insertRideCustomerPricing(args: {
 
 export async function updateRideCustomerPricing(
   id: number,
-  patch: Partial<{
+  patch: {
     minKm: number;
     maxKm: number | null;
     baseFare: number | null;
@@ -499,18 +529,18 @@ export async function updateRideCustomerPricing(
     minCharge: number | null;
     priority: number;
     isActive: boolean;
-  }>
+  }
 ): Promise<RideCustomerPricingRow | null> {
   const sql = getSql();
   const rows = await sql`
     UPDATE ride_customer_pricing SET
-      min_km = COALESCE(${patch.minKm ?? null}, min_km),
-      max_km = ${patch.maxKm === undefined ? sql`max_km` : patch.maxKm},
-      base_fare = ${patch.baseFare === undefined ? sql`base_fare` : patch.baseFare},
-      per_km_rate = COALESCE(${patch.perKmRate ?? null}, per_km_rate),
-      min_charge = ${patch.minCharge === undefined ? sql`min_charge` : patch.minCharge},
-      priority = COALESCE(${patch.priority ?? null}, priority),
-      is_active = COALESCE(${patch.isActive ?? null}, is_active),
+      min_km = ${patch.minKm},
+      max_km = ${patch.maxKm},
+      base_fare = ${patch.baseFare},
+      per_km_rate = ${patch.perKmRate},
+      min_charge = ${patch.minCharge},
+      priority = ${patch.priority},
+      is_active = ${patch.isActive},
       updated_at = now()
     WHERE id = ${id} AND deleted_at IS NULL
     RETURNING *

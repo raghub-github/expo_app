@@ -214,6 +214,7 @@ interface OrderDetail {
   deliveryInitiator?: string | null;
   customerTrustTierLabel?: string | null;
   customerUserType?: string | null;
+  customerFraudReasons?: string[];
   riderInstructionsList?: string[];
   merchantInstructionsList?: string[];
   cancellationInfo?: OrderCancellationInfo | null;
@@ -438,6 +439,9 @@ function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
         : row.customerTrustTierLabel != null
           ? String(row.customerTrustTierLabel)
           : null,
+    customerFraudReasons: Array.isArray(row.customerFraudReasons)
+      ? (row.customerFraudReasons as string[])
+      : [],
     riderInstructionsList: Array.isArray(row.riderInstructionsList)
       ? (row.riderInstructionsList as string[])
       : [],
@@ -1678,6 +1682,7 @@ export default function OrderDetailClient({
             <CustomerDetails
               order={{
                 userId: order.customerExternalId ?? order.customerId ?? order.id,
+                customerDbId: order.customerId,
                 customerLatLon:
                   order.dropLat != null && order.dropLon != null
                     ? `${order.dropLat}, ${order.dropLon}`
@@ -1693,6 +1698,7 @@ export default function OrderDetailClient({
                 dropAddressNormalized: order.dropAddressNormalized,
                 dropAddressGeocoded: order.dropAddressGeocoded,
                 userType: order.customerUserType ?? order.customerTrustTierLabel ?? null,
+                fraudReasons: order.customerFraudReasons ?? [],
                 locationMismatch: isLocationMismatch,
                 accountStatus: order.customerAccountStatus,
                 riskFlag: order.customerRiskFlag,

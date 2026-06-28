@@ -1,0 +1,25 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Next.js Build",
+			"type": "shell",
+			"command": "npm run build"
+		},
+		{
+			"label": "Next.js Build",
+			"type": "shell",
+			"command": "npm run build"
+		},
+		{
+			"label": "Next.js Build",
+			"type": "shell",
+			"command": "npm run build"
+		},
+		{
+			"label": "Next.js Build",
+			"type": "shell",
+			"command": "npm run build"
+		}
+	]
+}

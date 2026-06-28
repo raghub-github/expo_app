@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
+import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { Bell, ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
 import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
@@ -285,6 +286,18 @@ function assignedRidersFromReconRecords(
   return out;
 }
 
+function assignedRidersFromSidebarRecons(items: SidebarRecon[]): AssignedRiderOption[] {
+  return assignedRidersFromReconRecords(
+    items.map((r) => ({
+      id: Number(r.id) || 0,
+      riderId: null,
+      providerName: r.providerName ?? null,
+      riderName: r.riderName ?? null,
+      riderMobile: r.riderMobile ?? null,
+    }))
+  );
+}
+
 function assignedRidersFromActivityLog(
   logs: Array<{
     riderId: number | null;
@@ -525,6 +538,17 @@ function ReconRiderBlock({
   );
 }
 
+function shouldSkipEmbeddedActivityFetch(
+  activityRefreshKey: number,
+  initialData: unknown[] | null | undefined
+): boolean {
+  return activityRefreshKey === 0 && initialData != null;
+}
+
+function isBenignSidebarFetchError(error: unknown): boolean {
+  return isNetworkOrTransientError(error);
+}
+
 function formatReconDisplayTime(isoOrDate: string | Date): string {
   const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
   if (Number.isNaN(d.getTime())) return "—";
@@ -761,122 +785,217 @@ export default function OrderRightSidebar({
     return () => clearTimeout(t);
   }, [reconError]);
 
-  const loadRemarks = async (options?: { force?: boolean }) => {
-    if (!authReady) return;
-    if (!options?.force && activityRefreshKey === 0 && initialRemarks != null) {
-      return;
-    }
-
-    const fetchRemarks = async () =>
-      fetch(`/api/orders/${order.id}/remarks`, { credentials: "include", cache: "no-store" });
-
-    try {
-      setIsLoadingRemarks(true);
-      let res = await fetchRemarks();
-      if (res.status === 401) {
-        const synced = await syncServerSessionCookies();
-        if (synced) {
-          res = await fetchRemarks();
-        }
-      }
-      if (!res.ok) {
-        if (res.status !== 401 || remarks.length === 0) {
-          // eslint-disable-next-line no-console
-          console.error("Failed to load remarks", await res.text());
-        }
+  const loadRemarks = useCallback(
+    async (options?: { force?: boolean; signal?: AbortSignal }) => {
+      if (!authReady) return;
+      if (
+        !options?.force &&
+        shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialRemarks)
+      ) {
         return;
       }
-      const json = await res.json();
-      const items =
-        (json?.data as Parameters<typeof mapRemarksFromApi>[0] | null) ?? [];
+      if (options?.signal?.aborted) return;
 
-      const mapped = mapRemarksFromApi(items, userEmail);
-
-      setRemarks(mapped);
-
-      // Prefetch edit history for all edited remarks so "See history" shows instant (no loading).
-      const editedRemarks = mapped.filter((r) => r.editedTimeLabel);
-      editedRemarks.forEach((r) => {
-        const numericId = Number(r.id);
-        if (!Number.isFinite(numericId)) return;
-        fetch(`/api/orders/${order.id}/remarks/${numericId}`, {
+      const fetchRemarks = async () =>
+        fetch(`/api/orders/${order.id}/remarks`, {
           credentials: "include",
           cache: "no-store",
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((json) => {
-            if (!json?.data) return;
-            const items = (json.data as Array<{
-              id: number;
-              editedAt: string;
-              editedByActorType: string;
-              editedByActorName: string | null;
-              oldRemark: string;
-              newRemark: string;
-              oldRemarkCategory: string | null;
-              newRemarkCategory: string | null;
-            }>) ?? [];
-            const historyMapped: RemarkEditHistoryEntry[] = items.map((h) => {
-              const editedAt = new Date(h.editedAt);
-              return {
-                id: h.id,
-                editedAt: editedAt.toISOString(),
-                editedTimeLabel: editedAt.toLocaleString("en-IN", {
-                  day: "2-digit",
-                  month: "2-digit",
-                  year: "2-digit",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: true,
-                }),
-                editedByActorType: h.editedByActorType,
-                editedByActorName: h.editedByActorName,
-                oldRemark: h.oldRemark,
-                newRemark: h.newRemark,
-                oldRemarkCategory: h.oldRemarkCategory,
-                newRemarkCategory: h.newRemarkCategory,
-              };
-            });
-            setRemarkHistory((prev) => ({ ...prev, [r.id]: historyMapped }));
-          })
-          .catch(() => {});
-      });
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error("Error loading remarks", error);
-    } finally {
-      setIsLoadingRemarks(false);
-    }
-  };
+          signal: options?.signal,
+        });
 
-  const loadNotifications = async () => {
-    try {
-      setIsLoadingNotifications(true);
-      const res = await fetch(`/api/orders/${order.id}/notifications`, {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        console.error("Failed to load notifications", await res.text());
+      try {
+        setIsLoadingRemarks(true);
+        let res = await fetchRemarks();
+        if (options?.signal?.aborted) return;
+        if (res.status === 401) {
+          const synced = await syncServerSessionCookies();
+          if (synced && !options?.signal?.aborted) {
+            res = await fetchRemarks();
+          }
+        }
+        if (!res.ok) {
+          if (res.status !== 401 || remarks.length === 0) {
+            // eslint-disable-next-line no-console
+            console.error("Failed to load remarks", await res.text());
+          }
+          return;
+        }
+        const json = await res.json();
+        if (options?.signal?.aborted) return;
+        const items =
+          (json?.data as Parameters<typeof mapRemarksFromApi>[0] | null) ?? [];
+
+        const mapped = mapRemarksFromApi(items, userEmail);
+
+        setRemarks(mapped);
+
+        // Prefetch edit history for all edited remarks so "See history" shows instant (no loading).
+        const editedRemarks = mapped.filter((r) => r.editedTimeLabel);
+        editedRemarks.forEach((r) => {
+          const numericId = Number(r.id);
+          if (!Number.isFinite(numericId)) return;
+          fetch(`/api/orders/${order.id}/remarks/${numericId}`, {
+            credentials: "include",
+            cache: "no-store",
+            signal: options?.signal,
+          })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((json) => {
+              if (!json?.data) return;
+              const items = (json.data as Array<{
+                id: number;
+                editedAt: string;
+                editedByActorType: string;
+                editedByActorName: string | null;
+                oldRemark: string;
+                newRemark: string;
+                oldRemarkCategory: string | null;
+                newRemarkCategory: string | null;
+              }>) ?? [];
+              const historyMapped: RemarkEditHistoryEntry[] = items.map((h) => {
+                const editedAt = new Date(h.editedAt);
+                return {
+                  id: h.id,
+                  editedAt: editedAt.toISOString(),
+                  editedTimeLabel: editedAt.toLocaleString("en-IN", {
+                    day: "2-digit",
+                    month: "2-digit",
+                    year: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: true,
+                  }),
+                  editedByActorType: h.editedByActorType,
+                  editedByActorName: h.editedByActorName,
+                  oldRemark: h.oldRemark,
+                  newRemark: h.newRemark,
+                  oldRemarkCategory: h.oldRemarkCategory,
+                  newRemarkCategory: h.newRemarkCategory,
+                };
+              });
+              setRemarkHistory((prev) => ({ ...prev, [r.id]: historyMapped }));
+            })
+            .catch(() => {});
+        });
+      } catch (error) {
+        if (options?.signal?.aborted || isBenignSidebarFetchError(error)) return;
+        // eslint-disable-next-line no-console
+        console.error("Error loading remarks", error);
+      } finally {
+        if (!options?.signal?.aborted) {
+          setIsLoadingRemarks(false);
+        }
+      }
+    },
+    [activityRefreshKey, authReady, initialRemarks, order.id, remarks.length, userEmail]
+  );
+
+  const loadNotifications = useCallback(
+    async (signal?: AbortSignal) => {
+      if (shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialNotifications)) {
         return;
       }
-      const json = await res.json();
-      const items =
-        (json?.data as Parameters<typeof mapNotificationsFromApi>[0] | null) ?? [];
+      if (signal?.aborted) return;
 
-      setNotifications(mapNotificationsFromApi(items));
-    } catch (error) {
-      console.error("Error loading notifications", error);
-    } finally {
-      setIsLoadingNotifications(false);
-    }
-  };
+      try {
+        setIsLoadingNotifications(true);
+        const res = await fetch(`/api/orders/${order.id}/notifications`, {
+          credentials: "include",
+          signal,
+        });
+        if (signal?.aborted) return;
+        if (!res.ok) {
+          console.error("Failed to load notifications", await res.text());
+          return;
+        }
+        const json = await res.json();
+        if (signal?.aborted) return;
+        const items =
+          (json?.data as Parameters<typeof mapNotificationsFromApi>[0] | null) ?? [];
+
+        setNotifications(mapNotificationsFromApi(items));
+      } catch (error) {
+        if (signal?.aborted || isBenignSidebarFetchError(error)) return;
+        console.error("Error loading notifications", error);
+      } finally {
+        if (!signal?.aborted) {
+          setIsLoadingNotifications(false);
+        }
+      }
+    },
+    [activityRefreshKey, initialNotifications, order.id]
+  );
+
+  const loadRecons = useCallback(
+    async (signal?: AbortSignal) => {
+      if (shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialRecons)) {
+        return;
+      }
+      if (signal?.aborted) return;
+
+      try {
+        setIsLoadingRecons(true);
+        const res = await fetch(`/api/orders/${order.id}/recons`, {
+          credentials: "include",
+          signal,
+        });
+        if (signal?.aborted) return;
+        if (!res.ok) {
+          // eslint-disable-next-line no-console
+          console.error("Failed to load recons", await res.text());
+          return;
+        }
+        const json = await res.json();
+        if (signal?.aborted) return;
+        const items = (json?.data as Parameters<typeof mapReconsFromApi>[0] | null) ?? [];
+
+        const mapped = mapReconsFromApi(items);
+
+        setRecons(mapped);
+
+        setAssignedRiders((prev) =>
+          mergeAssignedRiderOptions([
+            assignedRidersFromReconRecords(items),
+            assignedRidersFromOrder(order),
+            prev,
+          ])
+        );
+      } catch (error) {
+        if (signal?.aborted || isBenignSidebarFetchError(error)) return;
+        // eslint-disable-next-line no-console
+        console.error("Error loading recons", error);
+      } finally {
+        if (!signal?.aborted) {
+          setIsLoadingRecons(false);
+        }
+      }
+    },
+    [activityRefreshKey, initialRecons, order]
+  );
 
   useEffect(() => {
-    if (!authReady) return;
+    if (!authReady || order.id == null || !Number.isFinite(order.id)) return;
 
-    void loadRemarks();
-    void loadNotifications();
+    const controller = new AbortController();
+
+    void loadRemarks({ signal: controller.signal });
+    void loadNotifications(controller.signal);
+    void loadRecons(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [authReady, order.id, activityRefreshKey, loadRemarks, loadNotifications, loadRecons]);
+
+  useEffect(() => {
+    if (!authReady || order.id == null || !Number.isFinite(order.id)) return;
+
     setAssignedRiders(assignedRidersFromOrder(order));
+    if (initialRecons?.length) {
+      setAssignedRiders((prev) =>
+        mergeAssignedRiderOptions([assignedRidersFromSidebarRecons(initialRecons), prev])
+      );
+    }
 
     const mergeAssignedRiders = (lists: AssignedRiderOption[][]) => {
       setAssignedRiders((prev) =>
@@ -884,11 +1003,15 @@ export default function OrderRightSidebar({
       );
     };
 
+    const controller = new AbortController();
+
     const loadAssignments = async () => {
       try {
         const res = await fetch(`/api/orders/${order.id}/rider-assignments`, {
           credentials: "include",
+          signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         if (!res.ok) return;
         const json = await res.json();
         const items =
@@ -901,7 +1024,8 @@ export default function OrderRightSidebar({
           }> | null) ?? [];
 
         mergeAssignedRiders([assignedRidersFromAssignments(items)]);
-      } catch {
+      } catch (error) {
+        if (controller.signal.aborted || isBenignSidebarFetchError(error)) return;
         // keep order-seeded riders
       }
     };
@@ -909,8 +1033,10 @@ export default function OrderRightSidebar({
     const loadActivityLogRiders = async () => {
       try {
         const payload = await fetchRiderActivityLogCached(order.id);
+        if (controller.signal.aborted) return;
         mergeAssignedRiders([assignedRidersFromActivityLog(payload.logs)]);
-      } catch {
+      } catch (error) {
+        if (controller.signal.aborted || isBenignSidebarFetchError(error)) return;
         // non-fatal
       }
     };
@@ -918,32 +1044,9 @@ export default function OrderRightSidebar({
     void loadAssignments();
     void loadActivityLogRiders();
 
-    const loadRecons = async () => {
-      try {
-        setIsLoadingRecons(true);
-        const res = await fetch(`/api/orders/${order.id}/recons`, { credentials: "include" });
-        if (!res.ok) {
-          // eslint-disable-next-line no-console
-          console.error("Failed to load recons", await res.text());
-          return;
-        }
-        const json = await res.json();
-        const items = (json?.data as Parameters<typeof mapReconsFromApi>[0] | null) ?? [];
-
-        const mapped = mapReconsFromApi(items);
-
-        setRecons(mapped);
-
-        mergeAssignedRiders([assignedRidersFromReconRecords(items)]);
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error("Error loading recons", error);
-      } finally {
-        setIsLoadingRecons(false);
-      }
+    return () => {
+      controller.abort();
     };
-
-    void loadRecons();
   }, [
     authReady,
     order.id,
@@ -951,8 +1054,7 @@ export default function OrderRightSidebar({
     order.riderName,
     order.riderMobile,
     order.orderSource,
-    activityRefreshKey,
-    initialRemarks,
+    initialRecons,
   ]);
 
   const addRemark = async () => {
