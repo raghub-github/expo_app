@@ -70,10 +70,13 @@ const nextConfig: NextConfig = {
   // Mapbox is loaded from CDN, no webpack config needed
 
   webpack: (config, { dev, isServer }) => {
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      "@gatimitra/slab-pricing": path.join(monorepoRoot, "packages/slab-pricing/src/index.ts"),
-    };
+    // Note: previously aliased @gatimitra/slab-pricing to its src/index.ts.
+    // After the package was given a real `tsc` build emitting dist/, the
+    // alias broke webpack — it pointed at a .ts file whose own internal
+    // imports use the .js extension (required for Node ESM), which the
+    // alias couldn't follow. Drop the alias and let Next resolve via
+    // package.json `main: ./dist/index.js`. The Dockerfile builds
+    // slab-pricing before dashboard, so dist/ is present at build time.
     if (dev) {
       // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
       // "rename ... 0.pack.gz_" webpack cache errors. Fully disabling cache (`false`) can
