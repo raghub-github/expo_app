@@ -100,6 +100,7 @@ async function upsertCustomer(): Promise<{ id: number; customerId: string }> {
   const inserted = await sql<{ id: number; customer_id: string }[]>`
     INSERT INTO customers (
       customer_id,
+      customer_uuid,
       full_name,
       email,
       primary_mobile,
@@ -113,6 +114,7 @@ async function upsertCustomer(): Promise<{ id: number; customerId: string }> {
       created_via
     ) VALUES (
       ${newCustomerId},
+      gen_random_uuid(),
       ${NAME},
       ${EMAIL},
       ${PHONE_E164},
