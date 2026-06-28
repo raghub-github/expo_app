@@ -610,6 +610,7 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
           404: z.object({ error: z.string(), message: z.string() }).optional(),
           429: z.object({ error: z.string() }),
           500: z.object({ error: z.string(), message: z.string().optional() }).optional(),
@@ -836,7 +837,25 @@ export async function authRoutes(app: FastifyInstance) {
 
           let customerUserId: string;
           if (existing.length > 0) {
-            customerUserId = existing[0]!.customerId;
+            // Closed/deactivated accounts cannot be revived by logging back in.
+            // Deletion is request → review → deactivate, and it is permanent.
+            const existingCustomer = existing[0]!;
+            const isClosed =
+              existingCustomer.deletedAt != null ||
+              existingCustomer.accountStatus === "DEACTIVATED" ||
+              existingCustomer.accountStatus === "BLOCKED";
+            if (isClosed) {
+              req.log?.warn?.(
+                { customerId: existingCustomer.customerId, accountStatus: existingCustomer.accountStatus },
+                "[auth] login refused — customer account closed/deactivated",
+              );
+              return reply.code(403).send({
+                error: "account_closed",
+                message:
+                  "This account has been closed and cannot be reopened. If you think this is a mistake, contact grievance@gatimitra.com.",
+              });
+            }
+            customerUserId = existingCustomer.customerId;
           } else {
             const normalizedMobile = phoneE164.replace(/\D/g, "");
             const placeholderId = `GM_PENDING_${normalizedMobile}`;
