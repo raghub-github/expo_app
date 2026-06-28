@@ -1,7 +1,7 @@
 "use client";
 
+import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { Suspense, useEffect } from "react";
-import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
