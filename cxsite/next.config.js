@@ -52,6 +52,18 @@ const nextConfig = {
       { protocol: 'https', hostname: 'dummyimage.com', pathname: '/**' },
     ],
   },
+  async redirects() {
+    return [
+      // Single canonical account-deletion page: /account-deletion. Every other
+      // URL that has ever been cited (Privacy Policy, Google Play data-safety
+      // listing, the old web form, stale ".md" links) folds into it.
+      { source: '/delete-account-request', destination: '/account-deletion', permanent: true },
+      { source: '/account/delete', destination: '/account-deletion', permanent: true },
+      { source: '/account-delete', destination: '/account-deletion', permanent: true },
+      { source: '/data-deletion-policy.md', destination: '/account-deletion', permanent: true },
+      { source: '/data-deletion-policy', destination: '/account-deletion', permanent: true },
+    ]
+  },
   async headers() {
     return [
       {
