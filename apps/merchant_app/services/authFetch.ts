@@ -1,4 +1,5 @@
 import { notifySessionRevoked } from "@/services/sessionEvents";
+import { refreshMerchantSessionIfNeeded } from "@/services/merchantSessionRefresh";
 
 export async function authFetch(
   url: string,
@@ -21,7 +22,6 @@ export async function authFetch(
     typeof normalizedBody !== "boolean"
   ) {
     try {
-      // Ensure we never pass Date objects to RN fetch internals.
       normalizedBody = JSON.stringify(normalizedBody, (_k, v) => {
         const isDateObject = v != null && Object.prototype.toString.call(v) === "[object Date]";
         return isDateObject ? new Date(v as any).toISOString() : v;
@@ -33,54 +33,70 @@ export async function authFetch(
 
   const shouldSetJsonContentType =
     normalizedBody != null &&
-    // If caller passes FormData, let fetch set the correct multipart boundary.
     !(typeof FormData !== "undefined" && normalizedBody instanceof FormData);
 
-  let res: Response;
-  try {
-    // Build final request object explicitly (avoids any spread surprises).
+  const buildRequest = (bearer: string): RequestInit => {
+    let body = normalizedBody;
     const finalBodyType =
-      normalizedBody == null ? "null" : Object.prototype.toString.call(normalizedBody);
+      body == null ? "null" : Object.prototype.toString.call(body);
     if (finalBodyType === "[object Date]") {
-      normalizedBody = new Date(normalizedBody as any).toISOString();
+      body = new Date(body as any).toISOString();
     }
-
-    const finalOpts: RequestInit = {
+    return {
       ...opts,
-      body: normalizedBody,
+      body,
       headers: {
         ...(shouldSetJsonContentType ? { "Content-Type": "application/json" } : {}),
-        Authorization: `Bearer ${token}`,
-        /** Lets backend set unified_tickets.buyer_np_name for GatiMitra merchant tickets (IGM / NP flows). */
+        Authorization: `Bearer ${bearer}`,
         "X-Merchant-App-Slug": "gatimitra",
         ...(opts.headers || {}),
       },
     };
+  };
 
-    res = await fetch(url, finalOpts);
-  } catch (e) {
-    const detail =
-      e instanceof Error && e.message.trim()
-        ? e.message.trim()
-        : e instanceof TypeError
-          ? "Request could not be completed (network, DNS, or invalid URL)."
-          : String(e);
-    throw new Error(`Network request failed: ${detail}`);
+  let activeToken = token;
+
+  const runFetch = async (): Promise<Response> => {
+    try {
+      return await fetch(url, buildRequest(activeToken));
+    } catch (e) {
+      const detail =
+        e instanceof Error && e.message.trim()
+          ? e.message.trim()
+          : e instanceof TypeError
+            ? "Request could not be completed (network, DNS, or invalid URL)."
+            : String(e);
+      throw new Error(`Network request failed: ${detail}`);
+    }
+  };
+
+  let res = await runFetch();
+
+  if (res.status === 401) {
+    const errText = await res.clone().text().catch(() => "");
+    let code = "";
+    try {
+      const data = JSON.parse(errText) as { error?: string };
+      code = typeof data?.error === "string" ? data.error : "";
+    } catch {
+      /* ignore */
+    }
+
+    if (code === "invalid_token") {
+      const refreshed = await refreshMerchantSessionIfNeeded({ force: true });
+      if (refreshed && refreshed !== activeToken) {
+        activeToken = refreshed;
+        res = await runFetch();
+      }
+    }
   }
 
   if (res.status === 401) {
     try {
       const cloned = res.clone();
-      const data = (await cloned.json()) as any;
+      const data = (await cloned.json()) as { error?: string; message?: string };
       const code = typeof data?.error === "string" ? data.error : undefined;
       const msg = typeof data?.message === "string" ? data.message : "";
-      /**
-       * Only force “session ended” when auth plugin explicitly revoked this/all devices.
-       * Other 401 bodies may reuse `session_revoked` (e.g. wrong app routes) — those must not auto sign-out.
-       */
-      if (code === "invalid_token") {
-        notifySessionRevoked({ reason: "invalid_token" });
-      }
       if (code === "session_revoked") {
         const isForcedDeviceLogout =
           msg.includes("Signed out from all devices") ||
@@ -96,4 +112,3 @@ export async function authFetch(
 
   return res;
 }
-

@@ -99,7 +99,7 @@ async function cleanup() {
 
   console.log(`\n\n🎉 Cleanup complete! Marked ${cleanedCount} progress rows as COMPLETED`);
   console.log('\n📝 Next steps:');
-  console.log('   1. Refresh your browser at http://localhost:3000/auth/post-login');
+  console.log('   1. Refresh your browser at http://localhost:3002/auth/post-login');
   console.log('   2. The "Incomplete onboarding draft" banner should be gone');
   console.log('   3. If it still appears, check the console logs above for issues\n');
 }

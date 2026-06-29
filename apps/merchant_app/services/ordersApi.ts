@@ -104,6 +104,7 @@ export type ApiFoodOrder = {
   accepted_by_label: string | null;
   cancelled_by_label: string | null;
   cancelled_by_type?: string | null;
+  cancellation_compensation?: import("@/lib/merchantCancellationCompensation").MerchantCancellationCompensationDisplay | null;
   is_scheduled_order?: boolean;
   scheduled_delivery_summary?: string | null;
   merchant_response_deadline_at?: string | null;

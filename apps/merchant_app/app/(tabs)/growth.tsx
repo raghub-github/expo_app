@@ -2,14 +2,13 @@
  * Flow hub — Growth: My Activity (KPIs + bar charts) and Business (insights + sparklines).
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
   Modal,
   Platform,
@@ -31,17 +30,28 @@ import { useStoreStatus } from "@/context/StoreStatusContext";
 import {
   fetchGrowthSummary,
   fetchGrowthBusinessInsights,
+  fetchGrowthQuickInsights,
+  fetchGrowthKitchenInsights,
   type GrowthBucket,
   type GrowthPeriod,
   type GrowthSummary,
   type GrowthBusinessInsights,
+  type GrowthQuickInsights,
+  type GrowthKitchenInsights,
 } from "@/services/growthApi";
 import { fetchLivePreviewInsights, type LivePreviewInsights } from "@/services/livePreviewApi";
 import { MerchantMarketInsightsPanel } from "@/components/growth/MerchantMarketInsightsPanel";
+import { GrowthQuickPanel } from "@/components/growth/GrowthQuickPanel";
+import { GrowthKitchenPanel } from "@/components/growth/GrowthKitchenPanel";
+import { GrowthFunnelPanel } from "@/components/growth/GrowthFunnelPanel";
+import { GrowthPanelLoader } from "@/components/growth/GrowthPanelLoader";
 
 const FILTER_CHIPS = ["My Activity", "Business", "Quick", "Funnel", "Kitchen"] as const;
+const ACTIVITY_CHIP = "My Activity";
 const BUSINESS_CHIP = "Business";
+const QUICK_CHIP = "Quick";
 const FUNNEL_CHIP = "Funnel";
+const KITCHEN_CHIP = "Kitchen";
 
 const CHART_INNER_HEIGHT = 104;
 const SPARK_W = 118;
@@ -255,6 +265,8 @@ export default function GrowthScreen() {
   const [error, setError] = useState<string | null>(null);
   const [activityData, setActivityData] = useState<GrowthSummary | null>(null);
   const [businessData, setBusinessData] = useState<GrowthBusinessInsights | null>(null);
+  const [quickData, setQuickData] = useState<GrowthQuickInsights | null>(null);
+  const [kitchenData, setKitchenData] = useState<GrowthKitchenInsights | null>(null);
   const [livePreviewData, setLivePreviewData] = useState<LivePreviewInsights | null>(null);
   const [bizUpdatedAt, setBizUpdatedAt] = useState<number | null>(null);
 
@@ -263,47 +275,144 @@ export default function GrowthScreen() {
       if (!storeId || !token) {
         setActivityData(null);
         setBusinessData(null);
+        setQuickData(null);
+        setKitchenData(null);
         setLivePreviewData(null);
         setError(null);
         setLoading(false);
+        setRefreshing(false);
         return;
       }
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
+
+      const hasCachedData = (() => {
+        if (activeChip === BUSINESS_CHIP) return businessData?.period === period;
+        if (activeChip === QUICK_CHIP) return quickData?.period === period;
+        if (activeChip === FUNNEL_CHIP) return String(livePreviewData?.period ?? "") === period;
+        if (activeChip === KITCHEN_CHIP) return kitchenData?.period === period;
+        return activityData?.period === period;
+      })();
+
+      if (isRefresh) {
+        setRefreshing(true);
+      } else if (!hasCachedData) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
       setError(null);
       try {
         if (activeChip === BUSINESS_CHIP) {
           const res = await fetchGrowthBusinessInsights(storeId, token, period);
           setBusinessData(res);
-          setLivePreviewData(null);
           setBizUpdatedAt(Date.now());
+        } else if (activeChip === QUICK_CHIP) {
+          const res = await fetchGrowthQuickInsights(storeId, token, period);
+          setQuickData(res);
         } else if (activeChip === FUNNEL_CHIP) {
           const res = await fetchLivePreviewInsights(storeId, token, period);
           setLivePreviewData(res);
-          setBusinessData(null);
+        } else if (activeChip === KITCHEN_CHIP) {
+          const res = await fetchGrowthKitchenInsights(storeId, token, period);
+          setKitchenData(res);
         } else {
           const res = await fetchGrowthSummary(storeId, token, period);
           setActivityData(res);
-          setLivePreviewData(null);
         }
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load");
-        if (activeChip === BUSINESS_CHIP) setBusinessData(null);
-        else if (activeChip === FUNNEL_CHIP) setLivePreviewData(null);
-        else setActivityData(null);
+        if (!hasCachedData) {
+          if (activeChip === BUSINESS_CHIP) setBusinessData(null);
+          else if (activeChip === QUICK_CHIP) setQuickData(null);
+          else if (activeChip === FUNNEL_CHIP) setLivePreviewData(null);
+          else if (activeChip === KITCHEN_CHIP) setKitchenData(null);
+          else setActivityData(null);
+        }
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [storeId, token, period, activeChip]
+    [
+      storeId,
+      token,
+      period,
+      activeChip,
+      activityData?.period,
+      businessData?.period,
+      quickData?.period,
+      kitchenData?.period,
+      livePreviewData?.period,
+    ]
   );
+
+  // Always refresh the currently active tab whenever chip/period changes.
+  useEffect(() => {
+    void load(false);
+  }, [load]);
+
+  // Also refresh when user revisits this screen.
+  useFocusEffect(
+    useCallback(() => {
+      void load(true);
+    }, [load])
+  );
+
+  const prefetchMissingTabs = useCallback(async () => {
+    if (!storeId || !token) return;
+    const tasks: Promise<void>[] = [];
+    if (activityData?.period !== period) {
+      tasks.push(
+        fetchGrowthSummary(storeId, token, period)
+          .then(setActivityData)
+          .catch(() => {})
+      );
+    }
+    if (businessData?.period !== period) {
+      tasks.push(
+        fetchGrowthBusinessInsights(storeId, token, period)
+          .then((res) => {
+            setBusinessData(res);
+            setBizUpdatedAt(Date.now());
+          })
+          .catch(() => {})
+      );
+    }
+    if (quickData?.period !== period) {
+      tasks.push(
+        fetchGrowthQuickInsights(storeId, token, period).then(setQuickData).catch(() => {})
+      );
+    }
+    if (String(livePreviewData?.period ?? "") !== period) {
+      tasks.push(
+        fetchLivePreviewInsights(storeId, token, period).then(setLivePreviewData).catch(() => {})
+      );
+    }
+    if (kitchenData?.period !== period) {
+      tasks.push(
+        fetchGrowthKitchenInsights(storeId, token, period).then(setKitchenData).catch(() => {})
+      );
+    }
+    await Promise.all(tasks);
+  }, [
+    storeId,
+    token,
+    period,
+    activityData?.period,
+    businessData?.period,
+    quickData?.period,
+    kitchenData?.period,
+    livePreviewData?.period,
+  ]);
+
+  useEffect(() => {
+    void prefetchMissingTabs();
+  }, [prefetchMissingTabs]);
 
   useFocusEffect(
     useCallback(() => {
-      void load(false);
-    }, [load])
+      void prefetchMissingTabs();
+    }, [prefetchMissingTabs])
   );
 
   const timelyBuckets = activityData?.buckets?.length ? activityData.buckets : [];
@@ -311,33 +420,22 @@ export default function GrowthScreen() {
 
   const periodLabel = PERIOD_OPTIONS.find((o) => o.id === period)?.label ?? "Today";
   const isBusiness = activeChip === BUSINESS_CHIP;
+  const isQuick = activeChip === QUICK_CHIP;
   const isFunnel = activeChip === FUNNEL_CHIP;
+  const isKitchen = activeChip === KITCHEN_CHIP;
+  const isActivity = activeChip === ACTIVITY_CHIP;
 
-  function liveMetricRow(label: string, display: string, pct: number | null) {
-    return (
-      <View key={label} style={[styles.bizMetricRow, styles.bizRowDivider]}>
-        <View style={styles.bizMetricLeft}>
-          <Text style={styles.bizMetricLabel}>{label}</Text>
-          <View style={styles.bizMetricValueRow}>
-            <Text style={styles.bizMetricValue}>{display}</Text>
-            {pct != null ? (
-              <Text
-                style={[
-                  styles.bizTrend,
-                  pct > 0 && styles.bizTrendUp,
-                  pct < 0 && styles.bizTrendDown,
-                  pct === 0 && styles.bizTrendNeutral,
-                ]}
-              >
-                {pct > 0 ? "+" : ""}
-                {pct}%
-              </Text>
-            ) : null}
-          </View>
-        </View>
-      </View>
-    );
-  }
+  const activityReady = activityData?.period === period;
+  const businessReady = businessData?.period === period;
+  const quickReady = quickData?.period === period;
+  const funnelReady = String(livePreviewData?.period ?? "") === period;
+  const kitchenReady = kitchenData?.period === period;
+
+  const activityPanelLoading = isActivity && !activityReady && (loading || refreshing);
+  const businessPanelLoading = isBusiness && !businessReady && (loading || refreshing);
+  const quickPanelLoading = isQuick && !quickReady && (loading || refreshing);
+  const funnelPanelLoading = isFunnel && !funnelReady && (loading || refreshing);
+  const kitchenPanelLoading = isKitchen && !kitchenReady && (loading || refreshing);
 
   const bizSeries = useMemo(() => {
     if (!businessData?.buckets?.length) {
@@ -388,33 +486,37 @@ export default function GrowthScreen() {
   }
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={[styles.content, { paddingBottom: scrollBottom }]}
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor={GatiMitraMerchant.primary} />
-      }
-    >
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-        {FILTER_CHIPS.map((label) => {
-          const active = label === activeChip;
-          return (
-            <Pressable
-              key={label}
-              onPress={() => setActiveChip(label)}
-              style={({ pressed }) => [
-                styles.chip,
-                active ? styles.chipActive : styles.chipInactive,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={[styles.chipLabel, active ? styles.chipLabelActive : styles.chipLabelInactive]}>{label}</Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+    <View style={styles.screen}>
+      <View style={styles.fixedHeader}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
+          {FILTER_CHIPS.map((label) => {
+            const active = label === activeChip;
+            return (
+              <Pressable
+                key={label}
+                onPress={() => setActiveChip(label)}
+                style={({ pressed }) => [
+                  styles.chip,
+                  active ? styles.chipActive : styles.chipInactive,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={[styles.chipLabel, active ? styles.chipLabelActive : styles.chipLabelInactive]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
 
+      <ScrollView
+        style={styles.scrollBody}
+        contentContainerStyle={[styles.content, { paddingBottom: scrollBottom }]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor={GatiMitraMerchant.primary} />
+        }
+      >
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {isBusiness ? (
         <>
           <Text style={styles.bizPageTitle}>Business insights</Text>
@@ -448,10 +550,8 @@ export default function GrowthScreen() {
           </View>
 
           <View style={[styles.card, styles.bizCard]}>
-            {loading && !businessData ? (
-              <View style={styles.loadingBlock}>
-                <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-              </View>
+            {businessPanelLoading ? (
+              <GrowthPanelLoader />
             ) : (
               <>
                 <View style={styles.bizCardHeader}>
@@ -473,7 +573,7 @@ export default function GrowthScreen() {
 
                 {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-                {businessData ? (
+                {businessReady && businessData ? (
                   <>
                     <View style={[styles.bizMetricRow, styles.bizRowDivider]}>
                       <View style={styles.bizMetricLeft}>
@@ -588,49 +688,32 @@ export default function GrowthScreen() {
 
           <MerchantMarketInsightsPanel storeId={storeId} />
         </>
+      ) : isQuick ? (
+        <GrowthQuickPanel
+          data={quickReady ? quickData : null}
+          loading={quickPanelLoading}
+          periodLabel={periodLabel}
+          isOnline={isOnline}
+          onOpenPeriod={() => setPeriodMenuOpen(true)}
+        />
       ) : isFunnel ? (
-        <>
-          <Text style={styles.bizPageTitle}>Live preview</Text>
-          <View style={[styles.card, styles.bizCard]}>
-            {loading && !livePreviewData ? (
-              <View style={styles.loadingBlock}>
-                <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-              </View>
-            ) : livePreviewData ? (
-              <>
-                <Text style={styles.bizCardSub}>{livePreviewData.compare_header}</Text>
-                <Text style={[styles.bizCardTitle, { marginTop: 8 }]}>Sales overview</Text>
-                {liveMetricRow("Sales", livePreviewData.sales.sales.display, livePreviewData.sales.sales.pct_change)}
-                {liveMetricRow("Delivered orders", livePreviewData.sales.delivered_orders.display, livePreviewData.sales.delivered_orders.pct_change)}
-                {liveMetricRow("AOV", livePreviewData.sales.aov.display, livePreviewData.sales.aov.pct_change)}
-                <Text style={[styles.bizCardTitle, { marginTop: 12 }]}>Customer experience</Text>
-                {liveMetricRow("Ratings", livePreviewData.ratings.display, livePreviewData.ratings.pct_change)}
-                {liveMetricRow("Rejected orders", livePreviewData.bad_orders.rejected.display, livePreviewData.bad_orders.rejected.pct_change)}
-                {liveMetricRow("Delayed orders", livePreviewData.bad_orders.delayed.display, livePreviewData.bad_orders.delayed.pct_change)}
-                {liveMetricRow("Poor rated", livePreviewData.bad_orders.poor_rated.display, livePreviewData.bad_orders.poor_rated.pct_change)}
-                {liveMetricRow("Complaints", livePreviewData.complaints.display, livePreviewData.complaints.pct_change)}
-                {liveMetricRow("Lost sales", livePreviewData.lost_sales.display, livePreviewData.lost_sales.pct_change)}
-                {liveMetricRow("Online %", livePreviewData.online_pct.display, livePreviewData.online_pct.pct_change)}
-                <Text style={[styles.bizCardTitle, { marginTop: 12 }]}>Customer funnel</Text>
-                {liveMetricRow("Orders placed", livePreviewData.funnel.impressions.display, livePreviewData.funnel.impressions.pct_change)}
-                {liveMetricRow("Accepted rate", livePreviewData.funnel.impressions_to_menu.display, livePreviewData.funnel.impressions_to_menu.pct_change)}
-                {liveMetricRow("Prep rate", livePreviewData.funnel.menu_to_cart.display, livePreviewData.funnel.menu_to_cart.pct_change)}
-                {liveMetricRow("Delivery rate", livePreviewData.funnel.cart_to_order.display, livePreviewData.funnel.cart_to_order.pct_change)}
-                {liveMetricRow("New users", livePreviewData.user_segments.new_users.display, livePreviewData.user_segments.new_users.pct_change)}
-                {liveMetricRow("Repeat users", livePreviewData.user_segments.repeat_users.display, livePreviewData.user_segments.repeat_users.pct_change)}
-                {liveMetricRow("Lapsed users", livePreviewData.user_segments.lapsed_users.display, livePreviewData.user_segments.lapsed_users.pct_change)}
-              </>
-            ) : (
-              <Text style={styles.emptyText}>No data</Text>
-            )}
-          </View>
-        </>
-      ) : (
+        <GrowthFunnelPanel
+          data={funnelReady ? livePreviewData : null}
+          loading={funnelPanelLoading}
+          periodLabel={periodLabel}
+          onOpenPeriod={() => setPeriodMenuOpen(true)}
+        />
+      ) : isKitchen ? (
+        <GrowthKitchenPanel
+          data={kitchenReady ? kitchenData : null}
+          loading={kitchenPanelLoading}
+          periodLabel={periodLabel}
+          onOpenPeriod={() => setPeriodMenuOpen(true)}
+        />
+      ) : isActivity ? (
         <View style={styles.card}>
-          {loading && !activityData ? (
-            <View style={styles.loadingBlock}>
-              <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-            </View>
+          {activityPanelLoading ? (
+            <GrowthPanelLoader />
           ) : (
             <>
               <View style={styles.kpiRow}>
@@ -638,12 +721,14 @@ export default function GrowthScreen() {
                   <View style={styles.kpiCell}>
                     <Text style={styles.kpiLabel}>Total sales</Text>
                     <Text style={styles.kpiValue}>
-                      {activityData != null ? formatCompactINR(activityData.total_sales) : "—"}
+                      {activityReady && activityData != null ? formatCompactINR(activityData.total_sales) : "—"}
                     </Text>
                   </View>
                   <View style={styles.kpiCell}>
                     <Text style={styles.kpiLabel}>Total orders</Text>
-                    <Text style={styles.kpiValue}>{activityData != null ? String(activityData.total_orders) : "—"}</Text>
+                    <Text style={styles.kpiValue}>
+                      {activityReady && activityData != null ? String(activityData.total_orders) : "—"}
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.kpiRightCol}>
@@ -667,18 +752,16 @@ export default function GrowthScreen() {
                 </View>
               </View>
 
-              {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-              <GrowthBarChart buckets={timelyBuckets} caption="Order trends for the selected range." />
+              <GrowthBarChart buckets={activityReady ? timelyBuckets : []} caption="Order trends for the selected range." />
               <View style={styles.chartDivider} />
               <GrowthBarChart
-                buckets={weeklyBuckets}
+                buckets={activityReady ? weeklyBuckets : []}
                 caption="Visualizes order activity across the selected timeframe."
               />
             </>
           )}
         </View>
-      )}
+      ) : null}
 
       <Modal visible={periodMenuOpen} transparent animationType="fade" onRequestClose={() => setPeriodMenuOpen(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setPeriodMenuOpen(false)}>
@@ -702,7 +785,8 @@ export default function GrowthScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -713,8 +797,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
-  content: {
+  fixedHeader: {
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
     paddingTop: 12,
+    paddingHorizontal: H_PADDING,
+    zIndex: 10,
+  },
+  scrollBody: {
+    flex: 1,
+  },
+  content: {
     paddingHorizontal: H_PADDING,
   },
   centered: {
@@ -729,15 +821,11 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
     textAlign: "center",
   },
-  loadingBlock: {
-    paddingVertical: 32,
-    alignItems: "center",
-  },
   chipsRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingBottom: 14,
+    paddingBottom: 12,
     paddingRight: 8,
   },
   chip: {

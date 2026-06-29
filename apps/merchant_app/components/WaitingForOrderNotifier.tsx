@@ -39,9 +39,9 @@ async function maybePresentBackgroundNotice(): Promise<void> {
     const Notifications = await import("expo-notifications");
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: WAITING_FOR_ORDER_TITLE,
-        body: "You are online. No active orders in the queue.",
-        data: { screen: "notifications" },
+        title: "🟢 Your restaurant is online",
+        body: "Waiting for orders",
+        data: { type: "store_online", screen: "notifications" },
       },
       trigger: null,
     });

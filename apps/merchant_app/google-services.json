@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "29629664058",
+    "project_id": "gatimitra-od-c5bad",
+    "storage_bucket": "gatimitra-od-c5bad.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:29629664058:android:15d0928c19b6cc0fd39e03",
+        "android_client_info": {
+          "package_name": "com.gatimitra.partner"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDP6lSEkCyPUzBM4ljEXBqmziCfpXCx8Kg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -3,7 +3,7 @@
  * Used by next.config.js rewrites and src/lib/backend-api-url.ts (keep in sync).
  *
  * Dev layout:
- * - Partnersite:     http://127.0.0.1:3000  (`npm run dev` in partnersite/)
+ * - Partnersite:     http://127.0.0.1:3002  (`npm run dev` in partnersite/)
  * - Dashboard:       http://127.0.0.1:3001  (separate app)
  * - Fastify backend: http://127.0.0.1:3000  (`npm run dev` in backend/)
  */
@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DEV_BACKEND_FALLBACK = 'http://127.0.0.1:3000';
-const PARTNERSITE_DEV_PORT = '3000';
+const PARTNERSITE_DEV_PORT = '3002';
 
 const LEGACY_DEV_BACKEND_URLS = new Set([
   'http://127.0.0.1:4000',

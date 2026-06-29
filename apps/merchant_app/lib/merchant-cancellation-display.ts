@@ -32,15 +32,38 @@ export function cancellationReasonsAreDuplicate(
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+/** Customer app stores "Cancelled by me"; merchant UI shows who cancelled from the store's view. */
+export const CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL = "Cancelled by customer";
+
+export function merchantFacingCancelledByLabel(
+  label: string | null | undefined,
+  cancelledByType?: string | null,
+): string {
+  const trimmed = (label ?? "").trim();
+  const type = (cancelledByType ?? "").trim().toLowerCase();
+
+  if (/^cancelled by me$/i.test(trimmed)) {
+    return CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL;
+  }
+  if (/^cancelled by customer$/i.test(trimmed)) {
+    return CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL;
+  }
+  if (type === "customer" && (!trimmed || /^cancelled by (me|customer)$/i.test(trimmed))) {
+    return CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL;
+  }
+  return trimmed;
+}
+
 export function merchantCancellationDisplay(args: {
   rejected_reason?: string | null;
   cancelled_by_label?: string | null;
+  cancelled_by_type?: string | null;
 }): {
   headline: string | null;
   detail: string | null;
 } {
   const reason = (args.rejected_reason ?? "").trim();
-  const label = (args.cancelled_by_label ?? "").trim();
+  const label = merchantFacingCancelledByLabel(args.cancelled_by_label, args.cancelled_by_type);
   if (!reason && !label) return { headline: null, detail: null };
   if (cancellationReasonsAreDuplicate(reason, label)) {
     return { headline: reason || label, detail: null };

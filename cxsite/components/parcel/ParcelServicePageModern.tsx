@@ -8,6 +8,7 @@ import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
 import { supabase } from '@/lib/supabase'
@@ -138,7 +139,7 @@ export default function ParcelServicePageModern() {
         <header className="sticky top-0 z-50 border-b border-white/10 bg-[#070b1d]/90 backdrop-blur-xl">
           <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
             <Link href="/" className="flex items-center gap-3">
-              <img src="/img/logo.png" alt="GatiMitra" className="h-11 w-11 sm:h-12 sm:w-12" />
+              <GatiMitraLogo variant="icon" alt="GatiMitra" className="h-11 w-11 sm:h-12 sm:w-12" />
               <span className="text-xl font-black sm:text-2xl">
                 <span className="text-[#16c2a5]">Gati</span>
                 <span className="text-[#ff6b35]">Mitra</span>

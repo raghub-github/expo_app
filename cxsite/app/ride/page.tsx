@@ -1,7 +1,8 @@
 import PersonServicePage from '@/components/person/PersonServicePage'
+import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata = {
-  title: 'Ride | GatiMitra',
+  title: pageTitleSegment('Ride'),
   description: 'Book a ride with GatiMitra - Safe, reliable, and affordable rides',
 }
 

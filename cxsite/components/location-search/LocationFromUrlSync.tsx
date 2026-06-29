@@ -110,7 +110,7 @@ function LocationFromUrlSyncInner({
           !sameCoords(loc.lon, lon) ||
           loc.locationCommittedByUser !== true
         ) {
-          setLocation(displayName, lat, lon, { userInitiated: true })
+          setLocation(displayName, lat, lon, { userInitiated: true, source: 'selected' })
         }
         return
       }
@@ -123,7 +123,7 @@ function LocationFromUrlSyncInner({
 
     if (sameDisplay && loc.lat != null && loc.lon != null) {
       if (loc.locationCommittedByUser !== true) {
-        setLocation(displayName, loc.lat, loc.lon, { userInitiated: true })
+        setLocation(displayName, loc.lat, loc.lon, { userInitiated: true, source: 'selected' })
       }
       return
     }
@@ -134,7 +134,7 @@ function LocationFromUrlSyncInner({
       loc.lon != null ||
       loc.locationCommittedByUser !== true
     ) {
-      setLocation(displayName, null, null, { userInitiated: true })
+      setLocation(displayName, null, null, { userInitiated: true, source: 'selected' })
     }
 
     const controller = new AbortController()
@@ -150,7 +150,7 @@ function LocationFromUrlSyncInner({
             !sameCoords(latest.lon, coords.lon) ||
             latest.locationCommittedByUser !== true
           ) {
-            setLocation(displayName, coords.lat, coords.lon, { userInitiated: true })
+            setLocation(displayName, coords.lat, coords.lon, { userInitiated: true, source: 'selected' })
           }
         }
       } catch {

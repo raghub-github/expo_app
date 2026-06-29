@@ -33,6 +33,7 @@
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.12",
     "expo-crypto": "~14.0.2",
+    "expo-dev-client": "~6.0.20",
     "expo-device": "~8.0.10",
     "expo-file-system": "~19.0.21",
     "expo-floating-bubble": "^1.0.0",

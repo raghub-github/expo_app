@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import { useAppSelector, useAppDispatch } from '@/lib/hooks'
 import AuthModal from '@/components/auth/AuthModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService, logout } from '@/lib/slices/authSlice'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
@@ -240,7 +241,7 @@ export default function PersonPage() {
           <div className="flex justify-between items-center py-3">
             {/* Logo */}
             <Link href="/" className="flex items-center gap-2 group">
-              <img src="/img/logo.png" alt="GatiMitra Logo" className="h-8 w-8 object-contain group-hover:scale-110 transition-transform" />
+              <GatiMitraLogo variant="icon" alt="GatiMitra" className="h-8 w-8 object-contain group-hover:scale-110 transition-transform" />
               <div className="flex flex-col">
                 <div className="flex items-center">
                   <span className="text-sm md:text-lg font-black text-[#00B4D8]">Gati</span>

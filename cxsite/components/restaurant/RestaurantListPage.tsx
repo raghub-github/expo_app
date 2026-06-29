@@ -4,7 +4,7 @@ import React, { useState, useMemo } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
-import OrderHeader from '@/components/order/OrderHeader'
+import { formatMerchantDeliveryTime } from '@/lib/merchantDeliveryTime'
 import GatiMitraSpinner from '@/components/common/GatiMitraSpinner'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import { getRestaurantGeoQueryString } from '@/lib/buildRestaurantGeoQuery'
@@ -310,7 +310,7 @@ const RestaurantListPage = () => {
     )
   }, [urlLat, urlLon])
   const restaurantGeoQs = useMemo(
-    () => getRestaurantGeoQueryString(locationState, locationCommitted),
+    () => getRestaurantGeoQueryString(locationState),
     [locationState, locationCommitted]
   )
   const effectiveGeoQs = useMemo(() => {
@@ -390,7 +390,8 @@ const RestaurantListPage = () => {
               cuisines: r.cuisine_type ? (typeof r.cuisine_type === 'string' ? r.cuisine_type.split(',').map((c: string) => c.trim()) : []) : [],
               rating: r.avg_rating != null ? Number(r.avg_rating) : 0,
               reviews: r.total_reviews ?? '',
-              deliveryTime: r.delivery_time_minutes != null ? Number(r.delivery_time_minutes) : 0,
+              deliveryTime: r.eta_min_minutes != null ? Number(r.eta_min_minutes) : (r.delivery_time_minutes != null ? Number(r.delivery_time_minutes) : 0),
+              deliveryTimeLabel: formatMerchantDeliveryTime(r),
               deliveryFee: r.delivery_fee ?? '',
               minOrderAmount: r.min_order_amount != null ? Number(r.min_order_amount) : undefined,
               image: r.store_img ?? r.image_url ?? '',

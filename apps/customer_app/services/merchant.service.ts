@@ -616,16 +616,33 @@ export const merchantService = {
     }
   },
 
-  /** Single source of truth for store OPEN/CLOSED. Use when status not in store (e.g. cart/checkout). */
-  async getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLOSED" | null> {
+  /** Single source of truth for store OPEN/CLOSED + schedule hints. */
+  async getStoreLiveStatusSnapshot(storeId: string): Promise<{
+    liveStatus: "OPEN" | "CLOSED";
+    nextOpenAt: string | null;
+    nextCloseAt: string | null;
+  } | null> {
     try {
-      const { data } = await api.get<{ liveStatus: "OPEN" | "CLOSED" }>(
-        `${MERCHANTS_PREFIX}/${storeId}/live-status`
-      );
-      return data?.liveStatus ?? null;
+      const { data } = await api.get<{
+        liveStatus: "OPEN" | "CLOSED";
+        nextOpenAt?: string | null;
+        nextCloseAt?: string | null;
+      }>(`${MERCHANTS_PREFIX}/${storeId}/live-status`);
+      if (!data?.liveStatus) return null;
+      return {
+        liveStatus: data.liveStatus,
+        nextOpenAt: data.nextOpenAt ?? null,
+        nextCloseAt: data.nextCloseAt ?? null,
+      };
     } catch {
       return null;
     }
+  },
+
+  /** Single source of truth for store OPEN/CLOSED. Use when status not in store (e.g. cart/checkout). */
+  async getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLOSED" | null> {
+    const snapshot = await this.getStoreLiveStatusSnapshot(storeId);
+    return snapshot?.liveStatus ?? null;
   },
 
   /** Report an issue with the restaurant (auth required). */

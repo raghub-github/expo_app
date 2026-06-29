@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -11,13 +12,21 @@ import {
 } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
+import { useGeoServiceAvailability } from '@/lib/hooks/useGeoServiceAvailability'
+import {
+  firstEnabledLandingArcIndex,
+  isLandingArcItemEnabled,
+  type GeoEnabledServices,
+} from '@/lib/landingServiceAvailability'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
+import AppAssetImage from '@/components/common/AppAssetImage'
+import { CX } from '@/lib/appAssetKeys'
 import type { ServiceCategory } from '@/lib/slices/authSlice'
 
 export type LandingArcItem = {
   title: string
-  /** Same asset for arc chip and large center circle */
-  image: string
+  /** CMS asset key — same as customer app home service cards */
+  assetKey: string
   href: string
   service?: ServiceCategory
 }
@@ -25,35 +34,35 @@ export type LandingArcItem = {
 export const LANDING_HERO_ARC_ITEMS: LandingArcItem[] = [
   {
     title: 'Food',
-    image: '/img/food.png',
+    assetKey: CX.home.serviceFood,
     href: '/order',
     service: 'food',
   },
   {
     title: 'Ride',
-    image: '/img/ridecard.png',
+    assetKey: CX.home.serviceRide,
     href: '/ride',
     service: 'person',
   },
   {
     title: 'Parcel',
-    image: '/img/parcelcard.png',
+    assetKey: CX.home.serviceParcel,
     href: '/courier#parcel-form',
     service: 'parcel',
   },
   {
     title: 'Shop',
-    image: '/img/ecomer.png',
+    assetKey: CX.home.serviceEcommerce,
     href: '/ecommerce',
   },
   {
     title: 'Deals',
-    image: '/img/voucher.png',
+    assetKey: CX.home.serviceVoucher,
     href: '#',
   },
   {
     title: 'Near me',
-    image: '/img/loc.png',
+    assetKey: CX.home.serviceLocation,
     href: '/india/All/Stores?view=near',
   },
 ]
@@ -130,6 +139,23 @@ type Ctx = {
   selectedIndex: number
   setSelectedIndex: (i: number) => void
   explore: () => void
+  isItemEnabled: (index: number) => boolean
+  isSelectedEnabled: boolean
+  enabledServices: GeoEnabledServices
+  geoResolved: boolean
+}
+
+function comingSoonMessageForItem(item: LandingArcItem): string {
+  if (item.title === 'Deals') {
+    return "We're working on exciting deals & vouchers. This feature will be live very soon on GatiMitra."
+  }
+  if (item.title === 'Shop') {
+    return 'E-Commerce is coming soon on GatiMitra. Stay tuned for curated shopping.'
+  }
+  if (item.title === 'Near me') {
+    return 'Explore Nearby is coming soon. Use Around You in the menu to discover brands near you.'
+  }
+  return `${item.title} is not available in your area yet. We're expanding coverage — check back soon!`
 }
 
 const LandingHeroArcContext = createContext<Ctx | null>(null)
@@ -152,11 +178,24 @@ function persistLandingHeroArcIndex(index: number) {
 export function LandingHeroArcProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const { user, isAuthenticated, currentService } = useAppSelector((s) => s.auth)
+  const { enabledServices, resolved: geoResolved } = useGeoServiceAvailability()
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [showVoucherPopup, setShowVoucherPopup] = useState(false)
+  const [showComingSoon, setShowComingSoon] = useState(false)
+  const [comingSoonText, setComingSoonText] = useState('')
   const [showSwitchModal, setShowSwitchModal] = useState(false)
   const [targetService, setTargetService] = useState<ServiceCategory>('food')
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null)
+
+  const isItemEnabled = useCallback(
+    (index: number) => {
+      const item = LANDING_HERO_ARC_ITEMS[index]
+      if (!item) return false
+      return isLandingArcItemEnabled(item, enabledServices)
+    },
+    [enabledServices]
+  )
+
+  const isSelectedEnabled = isItemEnabled(selectedIndex)
 
   const pathToService: Record<string, ServiceCategory> = {
     '/order': 'food',
@@ -166,12 +205,26 @@ export function LandingHeroArcProvider({ children }: { children: React.ReactNode
 
   const pathKey = (path: string) => path.split('#')[0] || path
 
-  const setSelectedIndexPersist = useCallback((index: number) => {
-    const max = LANDING_HERO_ARC_ITEMS.length - 1
-    const i = Math.min(Math.max(0, Math.floor(index)), max)
-    setSelectedIndex(i)
-    persistLandingHeroArcIndex(i)
-  }, [])
+  const setSelectedIndexPersist = useCallback(
+    (index: number) => {
+      const max = LANDING_HERO_ARC_ITEMS.length - 1
+      const i = Math.min(Math.max(0, Math.floor(index)), max)
+      if (!isLandingArcItemEnabled(LANDING_HERO_ARC_ITEMS[i], enabledServices)) return
+      setSelectedIndex(i)
+      persistLandingHeroArcIndex(i)
+    },
+    [enabledServices]
+  )
+
+  useEffect(() => {
+    if (!geoResolved) return
+    const item = LANDING_HERO_ARC_ITEMS[selectedIndex]
+    if (item && isLandingArcItemEnabled(item, enabledServices)) return
+    const next = firstEnabledLandingArcIndex(LANDING_HERO_ARC_ITEMS, enabledServices)
+    if (next === selectedIndex) return
+    setSelectedIndex(next)
+    persistLandingHeroArcIndex(next)
+  }, [geoResolved, enabledServices, selectedIndex])
 
   useLayoutEffect(() => {
     try {
@@ -222,45 +275,60 @@ export function LandingHeroArcProvider({ children }: { children: React.ReactNode
     const item = LANDING_HERO_ARC_ITEMS[selectedIndex]
     if (!item) return
     persistLandingHeroArcIndex(selectedIndex)
-    if (item.title === 'Deals') {
-      setShowVoucherPopup(true)
+
+    if (!isLandingArcItemEnabled(item, enabledServices)) {
+      setComingSoonText(comingSoonMessageForItem(item))
+      setShowComingSoon(true)
       return
     }
+
     if (item.href === '#') return
     if (item.service) {
       handleServiceNavigation(item.href, item.service)
       return
     }
     router.push(item.href)
-  }, [handleServiceNavigation, router, selectedIndex])
+  }, [enabledServices, handleServiceNavigation, router, selectedIndex])
 
   const value = useMemo(
-    () => ({ selectedIndex, setSelectedIndex: setSelectedIndexPersist, explore }),
-    [explore, selectedIndex, setSelectedIndexPersist]
+    () => ({
+      selectedIndex,
+      setSelectedIndex: setSelectedIndexPersist,
+      explore,
+      isItemEnabled,
+      isSelectedEnabled,
+      enabledServices,
+      geoResolved,
+    }),
+    [
+      explore,
+      geoResolved,
+      enabledServices,
+      isItemEnabled,
+      isSelectedEnabled,
+      selectedIndex,
+      setSelectedIndexPersist,
+    ]
   )
 
   return (
     <LandingHeroArcContext.Provider value={value}>
       {children}
-      {showVoucherPopup && (
+      {showComingSoon && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="animate-popupScale relative max-w-[420px] rounded-[22px] bg-white p-10 text-center shadow-[0_30px_80px_rgba(0,0,0,0.4)]">
             <button
               type="button"
-              onClick={() => setShowVoucherPopup(false)}
+              onClick={() => setShowComingSoon(false)}
               className="absolute right-[22px] top-[18px] cursor-pointer text-2xl text-gray-400 hover:text-gray-600"
             >
               ×
             </button>
             <h2 className="mb-3 text-2xl text-purple">Coming Soon 🚀</h2>
-            <p className="text-[15px] leading-relaxed text-gray-600">
-              We&apos;re working on exciting deals & vouchers.
-              <br />
-              This feature will be live very soon on GatiMitra.
-            </p>
+            <p className="text-[15px] leading-relaxed text-gray-600">{comingSoonText}</p>
             <button
               type="button"
-              onClick={() => setShowVoucherPopup(false)}
+              onClick={() => setShowComingSoon(false)}
               className="mt-5 cursor-pointer rounded-[30px] border-none bg-gradient-to-br from-pink to-purple px-7 py-3 font-semibold text-white hover:shadow-lg"
             >
               Got it
@@ -294,25 +362,73 @@ function arcPositions(count: number, radiusPx: number, startDeg: number, endDeg:
   })
 }
 
+function arcAngles(count: number, startDeg: number, endDeg: number) {
+  const start = (startDeg * Math.PI) / 180
+  const end = (endDeg * Math.PI) / 180
+  return Array.from({ length: count }, (_, i) => {
+    const t = count === 1 ? 0.5 : i / (count - 1)
+    return start + (end - start) * t
+  })
+}
+
+function arcSegmentPath(r: number, startRad: number, endRad: number) {
+  const x1 = r * Math.cos(startRad)
+  const y1 = r * Math.sin(startRad)
+  const x2 = r * Math.cos(endRad)
+  const y2 = r * Math.sin(endRad)
+  const largeArc = endRad - startRad > Math.PI ? 1 : 0
+  return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`
+}
+
+/** Arc segments with gaps at each icon — line stops at circle edge, resumes on the other side */
+function arcPathsWithIconGaps(
+  count: number,
+  radiusPx: number,
+  startDeg: number,
+  endDeg: number,
+  iconRadiusPx: number
+) {
+  const start = (startDeg * Math.PI) / 180
+  const end = (endDeg * Math.PI) / 180
+  const gapRad = Math.atan(iconRadiusPx / radiusPx) + 0.035
+  const angles = arcAngles(count, startDeg, endDeg)
+  const paths: string[] = []
+  const minSpan = 0.03
+
+  if (angles[0] - gapRad > start + minSpan) {
+    paths.push(arcSegmentPath(radiusPx, start, angles[0] - gapRad))
+  }
+
+  for (let i = 0; i < count - 1; i++) {
+    const segStart = angles[i] + gapRad
+    const segEnd = angles[i + 1] - gapRad
+    if (segEnd > segStart + minSpan) {
+      paths.push(arcSegmentPath(radiusPx, segStart, segEnd))
+    }
+  }
+
+  if (end > angles[count - 1] + gapRad + minSpan) {
+    paths.push(arcSegmentPath(radiusPx, angles[count - 1] + gapRad, end))
+  }
+
+  return paths
+}
+
 /** Light hero column: centered plate, arc + quick chips, leaves (no full green panel / no social row) */
-/** Original viewport curve — matches the tighter, attractive arc in the reference design */
+/** Original viewport curve — chips sit on the left rim of the hero disc */
 function radiusFromViewportWidth(vw: number): number {
   if (vw >= 1024) {
     return Math.min(248, Math.max(168, Math.round(vw * 0.11)))
   }
-  return Math.min(200, Math.max(140, Math.round(vw * 0.36)))
+  return Math.min(198, Math.max(128, Math.round(vw * 0.31)))
 }
 
-/**
- * SSR + first client frame must match to avoid a visible jump before hydration.
- * 1024px is the lg breakpoint where the desktop radius formula applies (minimum 168).
- */
 function initialArcRadiusForSSR(): number {
   return radiusFromViewportWidth(1024)
 }
 
 export function LandingHeroGreenContent() {
-  const { selectedIndex, setSelectedIndex } = useLandingHeroArc()
+  const { selectedIndex, setSelectedIndex, isItemEnabled } = useLandingHeroArc()
   const containerRef = useRef<HTMLDivElement>(null)
   const [radius, setRadius] = useState(initialArcRadiusForSSR)
   const item = LANDING_HERO_ARC_ITEMS[selectedIndex] ?? LANDING_HERO_ARC_ITEMS[0]
@@ -346,24 +462,26 @@ export function LandingHeroGreenContent() {
     [radius]
   )
 
-  const svgArc = useMemo(() => {
-    const r = radius
-    const a1 = (startDeg * Math.PI) / 180
-    const a2 = (endDeg * Math.PI) / 180
-    const x1 = r * Math.cos(a1)
-    const y1 = r * Math.sin(a1)
-    const x2 = r * Math.cos(a2)
-    const y2 = r * Math.sin(a2)
-    return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`
-  }, [radius])
+  const arcIconRadius = 28
+  const svgArcSegments = useMemo(
+    () =>
+      arcPathsWithIconGaps(
+        LANDING_HERO_ARC_ITEMS.length,
+        radius,
+        startDeg,
+        endDeg,
+        arcIconRadius
+      ),
+    [radius]
+  )
 
   return (
-    <div className="relative z-[2] flex min-h-[min(380px,64vh)] w-full max-w-full items-center justify-center overflow-visible px-0 py-6 sm:py-8 lg:min-h-[min(520px,76vh)] lg:py-10">
+    <div className="relative z-[2] flex min-h-[min(320px,50vh)] w-full max-w-full items-center justify-center overflow-visible px-0 py-4 sm:py-6 lg:min-h-[min(400px,58vh)] lg:py-8">
       <div
         ref={containerRef}
-        className="relative flex aspect-square w-[min(88vw,420px)] max-w-full items-center justify-center sm:w-[min(82vw,460px)] lg:w-[min(36vw,400px)]"
+        className="landing-hero-arc-root relative flex aspect-square w-[min(88vw,420px)] max-w-full items-center justify-center sm:w-[min(82vw,460px)] lg:w-[min(36vw,400px)]"
       >
-        {/* Arc + quick cards — circle center = plate center */}
+        {/* Arc + quick cards — above main disc (z-5), centered on plate */}
         <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center overflow-visible">
           <div
             className="pointer-events-auto relative h-0 w-0"
@@ -381,39 +499,53 @@ export function LandingHeroGreenContent() {
               }}
               aria-hidden
             >
-              <path
-                d={svgArc}
-                fill="none"
-                stroke="#ffffff"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
+              {svgArcSegments.map((segment, idx) => (
+                <path
+                  key={`arc-seg-${idx}`}
+                  d={segment}
+                  fill="none"
+                  stroke="#d4d4dc"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              ))}
             </svg>
 
             {LANDING_HERO_ARC_ITEMS.map((arcItem, i) => {
               const { x, y } = positions[i]
               const active = i === selectedIndex
+              const enabled = isItemEnabled(i)
               return (
                 <button
                   key={arcItem.title}
                   type="button"
-                  onClick={() => setSelectedIndex(i)}
-                  title={arcItem.title}
-                  className={`absolute flex h-[46px] w-[46px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_6px_20px_rgba(0,0,0,0.12)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C] sm:h-[52px] sm:w-[52px] md:h-[56px] md:w-[56px] ${
-                    active
-                      ? 'ring-[3px] ring-[#c4a574] ring-offset-[3px] ring-offset-[#f2f2f2] scale-105 shadow-[0_8px_24px_rgba(0,0,0,0.16)]'
-                      : 'ring-1 ring-[#dcdce2] hover:scale-105 hover:shadow-lg'
+                  onClick={() => enabled && setSelectedIndex(i)}
+                  title={enabled ? arcItem.title : `${arcItem.title} — Coming soon`}
+                  disabled={!enabled}
+                  className={`landing-hero-arc-chip absolute z-10 flex h-[46px] w-[46px] -translate-x-1/2 -translate-y-1/2 items-center justify-center overflow-hidden rounded-full bg-white shadow-[0_6px_20px_rgba(0,0,0,0.12)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C] sm:h-[52px] sm:w-[52px] md:h-[56px] md:w-[56px] ${
+                    !enabled
+                      ? 'cursor-not-allowed opacity-[0.42] ring-1 ring-[#e8e8ec]'
+                      : active
+                        ? 'ring-[3px] ring-[#c4a574] ring-offset-[3px] ring-offset-[#f2f2f2] shadow-[0_8px_24px_rgba(0,0,0,0.16)]'
+                        : 'ring-1 ring-[#dcdce2] hover:shadow-lg'
                   }`}
                   style={{ left: x, top: y }}
                 >
-                  <img
-                    src={arcItem.image}
+                  <AppAssetImage
+                    assetKey={arcItem.assetKey}
                     alt=""
                     width={40}
                     height={40}
                     decoding="async"
-                    className="h-[28px] w-[28px] object-contain sm:h-[32px] sm:w-[32px] md:h-[34px] md:w-[34px]"
+                    className="pointer-events-none h-[28px] w-[28px] shrink-0 object-contain sm:h-[32px] sm:w-[32px] md:h-[34px] md:w-[34px]"
                   />
+                  {!enabled ? (
+                    <span className="pointer-events-none absolute inset-0 flex items-end justify-center pb-0.5">
+                      <span className="rounded bg-neutral-800/75 px-1 py-px text-[7px] font-bold uppercase tracking-wide text-white sm:text-[8px]">
+                        Soon
+                      </span>
+                    </span>
+                  ) : null}
                   <span className="sr-only">{arcItem.title}</span>
                 </button>
               )
@@ -421,17 +553,20 @@ export function LandingHeroGreenContent() {
           </div>
         </div>
 
-        {/* Main circle — animate on service switch */}
-        <div key={`hero-image-wrap-${selectedIndex}`} className="hero-image-swap-in relative z-[3] flex items-center justify-center">
-          <img
+        {/* Main circle — below arc in z-order */}
+        <div
+          key={`hero-image-wrap-${selectedIndex}`}
+          className="hero-image-swap-in relative z-[3] flex items-center justify-center"
+        >
+          <AppAssetImage
             key={`hero-image-${selectedIndex}`}
-            src={item.image}
+            assetKey={item.assetKey}
             alt={item.title}
             width={512}
             height={512}
             decoding="async"
             fetchPriority="high"
-            className="aspect-square w-[min(62vw,260px)] rounded-full border-[6px] border-white bg-white object-contain p-3 shadow-[0_24px_50px_rgba(0,0,0,0.14)] sm:w-[min(58vw,300px)] lg:w-[min(28vw,320px)]"
+            className="block aspect-square w-[min(62vw,260px)] rounded-full border-[6px] border-white bg-white object-contain p-3 shadow-[0_24px_50px_rgba(0,0,0,0.14)] sm:w-[min(58vw,300px)] lg:w-[min(28vw,320px)]"
           />
         </div>
 
@@ -499,15 +634,17 @@ export function LandingHeroExploreButton({
 }: {
   className?: string
 }) {
-  const { explore, selectedIndex } = useLandingHeroArc()
+  const { explore, selectedIndex, isSelectedEnabled } = useLandingHeroArc()
   return (
     <button
       key={`hero-explore-${selectedIndex}`}
       type="button"
       onClick={explore}
-      className={`hero-stagger-button cta-clickable-pulse mt-6 bg-[#109D4C] text-white font-bold text-[14px] sm:mt-7 sm:text-[15px] tracking-[0.08em] px-9 sm:px-11 py-3.5 rounded-[10px] shadow-[0_10px_28px_rgba(16,157,76,0.4)] hover:brightness-[1.05] transition-all uppercase ${className}`}
+      className={`hero-stagger-button cta-clickable-pulse mt-6 inline-flex min-w-[168px] max-w-[248px] self-start justify-center bg-[#109D4C] text-white font-bold text-[13px] sm:mt-7 sm:text-[14px] tracking-[0.08em] px-8 sm:px-9 py-2.5 rounded-[10px] shadow-[0_10px_28px_rgba(16,157,76,0.4)] hover:brightness-[1.05] transition-all uppercase ${
+        !isSelectedEnabled ? 'opacity-90' : ''
+      } ${className}`}
     >
-      Explore More
+      {isSelectedEnabled ? 'Explore More' : 'Coming Soon'}
     </button>
   )
 }

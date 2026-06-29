@@ -6,6 +6,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveOrderCancellationRefund } from "@/lib/order-cancellation-refund";
 import { applyMerchantOrderCancellationLedger } from "@/lib/orders/apply-merchant-cancellation-debit";
+import { resolveAutoMerchantCancellationDebit } from "@/lib/orders/resolve-merchant-cancellation-ledger";
 
 export type OrderCancellationActorType =
   | "store"
@@ -220,15 +221,29 @@ export async function recordOrderCancellation(
 
 async function syncMerchantCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
   try {
-    const merchantDebit =
+    const explicitDebit =
       typeof input.metadata?.merchantDebit === "string"
         ? input.metadata.merchantDebit
-        : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit === "string"
+        : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit ===
+            "string"
           ? (input.metadata as { merchant_debit: string }).merchant_debit
           : null;
+
+    const auto = await resolveAutoMerchantCancellationDebit(input.orderCorePk, explicitDebit);
+    const merchantDebit = auto.merchantDebit ?? explicitDebit;
+    const partialAmount =
+      auto.partialAmount ??
+      (typeof input.metadata?.partialAmount === "number"
+        ? input.metadata.partialAmount
+        : typeof (input.metadata as { partial_amount?: number } | undefined)?.partial_amount ===
+            "number"
+          ? (input.metadata as { partial_amount: number }).partial_amount
+          : null);
+
     await applyMerchantOrderCancellationLedger({
       orderCoreId: input.orderCorePk,
       merchantDebit,
+      partialAmount,
       actorSystemUserId: input.cancelledById ?? null,
       source: "merchant_portal_cancel",
     });

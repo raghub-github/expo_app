@@ -249,7 +249,21 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
         }
       : null,
     billingSnapshot: o.billing_snapshot ?? null,
-    totalCtm: o.pricing?.total ?? o.food_items_total_value ?? o.grand_total ?? null,
+    totalCtm: resolveMerchantOrderTotal({
+      pricing: o.pricing
+        ? {
+            subtotal: Number(o.pricing.subtotal) || 0,
+            packaging: Number(o.pricing.packaging) || 0,
+            taxes: Number(o.pricing.taxes) || 0,
+            discount: Number(o.pricing.discount) || 0,
+            total: Number(o.pricing.total) || 0,
+          }
+        : null,
+      grand_total: o.grand_total,
+      food_items_total_value: o.food_items_total_value ?? null,
+      items: o.items,
+      billingSnapshot: o.billing_snapshot ?? null,
+    }),
     status: apiStatusToStage(o.order_status),
     pipelineStatus: String(o.order_status || "CREATED").toUpperCase(),
     deliveryType,

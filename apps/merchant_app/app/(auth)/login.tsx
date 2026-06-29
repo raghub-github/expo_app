@@ -348,10 +348,10 @@ export default function LoginScreen() {
         deviceId,
       });
       const partner = partnerDataFromExchange(session.partner);
-      await setTokenAndPartner(session.accessToken, partner, session.userId);
+      await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
       setDeviceSessionMode(false);
       setLastExchange(null);
-      router.replace("/(auth)/partner-home");
+      router.replace("/");
     } catch (e: unknown) {
       if (isMerchantAuthError(e) && e.code === "device_session_unavailable") {
         setDeviceSessionMode(true);
@@ -382,9 +382,9 @@ export default function LoginScreen() {
           deviceId,
         });
         const partner = partnerDataFromExchange(session.partner);
-        await setTokenAndPartner(session.accessToken, partner, session.userId);
+        await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
         setLastExchange(null);
-        router.replace("/(auth)/partner-home");
+        router.replace("/");
       }
     } catch (e: unknown) {
       if (isMerchantAuthError(e) && e.code === "device_session_unavailable") {

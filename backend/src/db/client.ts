@@ -31,7 +31,7 @@ export function getDb() {
   const connectTimeoutSec = env.DATABASE_CONNECT_TIMEOUT_SEC ?? 30;
   const poolMax =
     env.DATABASE_POOL_MAX ??
-    (env.NODE_ENV === "production" ? 30 : 6);
+    (env.NODE_ENV === "production" ? 30 : 20);
 
   const sql = postgres(env.DATABASE_URL, {
     max: poolMax,

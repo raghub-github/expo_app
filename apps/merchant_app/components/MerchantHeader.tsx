@@ -113,6 +113,12 @@ function resolveProfileSubPage(pathname: string | undefined): string | null {
   return null;
 }
 
+function resolveEarningsSubPage(pathname: string | undefined): string | null {
+  if (!pathname) return null;
+  if (pathname.includes("/earnings/payout")) return "Payout details";
+  return null;
+}
+
 function MainHeader({
   compact,
   pickerVisible,
@@ -142,6 +148,9 @@ function MainHeader({
   const tab = segments[segments.length - 1] ?? "index";
   const isProfileSection = segments.includes("profile");
   const profileSubPageTitle = isProfileSection ? resolveProfileSubPage(pathname) : null;
+  const isEarningsSection = segments.includes("earnings");
+  const earningsSubPageTitle = isEarningsSection ? resolveEarningsSubPage(pathname) : null;
+  const subPageTitle = profileSubPageTitle ?? earningsSubPageTitle;
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = partner?.childStores ?? [];
   const hasMultipleChildStores = stores.length > 1;
@@ -157,7 +166,7 @@ function MainHeader({
     <View style={[styles.mainHeader, compact && styles.mainHeaderCompact]}>
       <View style={styles.mainHeaderInner}>
         <View style={styles.leftSection}>
-          {profileSubPageTitle ? (
+          {subPageTitle ? (
             <Pressable
               onPress={() => router.back()}
               style={({ pressed }) => [styles.headerBackBtn, pressed && styles.pressed]}
@@ -176,8 +185,8 @@ function MainHeader({
             />
           )}
           <Pressable
-            disabled={profileSubPageTitle ? false : stores.length === 0 || !hasMultipleChildStores}
-            onPress={() => (profileSubPageTitle ? router.back() : setPickerVisible(true))}
+            disabled={subPageTitle ? false : stores.length === 0 || !hasMultipleChildStores}
+            onPress={() => (subPageTitle ? router.back() : setPickerVisible(true))}
             style={({ pressed }) => [
               styles.greetingBlock,
               pressed && styles.pressed,
@@ -186,13 +195,13 @@ function MainHeader({
           >
             <View style={styles.greetingRow}>
               <Text style={styles.greeting} numberOfLines={1} ellipsizeMode="clip">
-                {profileSubPageTitle ??
+                {subPageTitle ??
                   truncateStoreNameForHeader(
                     selectedStore?.store_name ?? "Select a store",
                     HEADER_STORE_NAME_MAX_CHARS
                   )}
               </Text>
-              {!profileSubPageTitle && hasMultipleChildStores && (
+              {!subPageTitle && hasMultipleChildStores && (
                 <Ionicons
                   name={pickerVisible ? "chevron-up" : "chevron-down"}
                   size={16}
@@ -239,7 +248,7 @@ function MainHeader({
                 color={GatiMitraMerchant.textPrimary}
               />
             </Pressable>
-          ) : !isProfileSection ? (
+          ) : !isProfileSection && !isEarningsSection ? (
             <View style={styles.bellWrap}>
               <Pressable
                 onPress={() => router.push("/notifications")}

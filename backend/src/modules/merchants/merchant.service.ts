@@ -18,6 +18,12 @@ import type {
   MenuItemAddonRow,
 } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
+import {
+  computeSurfaceLiveStatus,
+  customerOperationalFromStoreRow,
+} from "../../lib/store-surface-online.js";
+import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
+import { buildPartnerStoreStatusSnapshot } from "../merchant-partner/partner-store-status-snapshot.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import { customerPriceFromBase } from "../commission/pricing.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
@@ -333,6 +339,11 @@ export async function listNearbyStoresByRoadDistance(params: {
   }
 
   // --- Stage 4: Per-store radius gate + live-status filter + sort ---
+  const candidateInternalIds = roughCandidates
+    .map((c) => Number(c.row.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const scheduleByStore = await getScheduleTimesForStores(candidateInternalIds);
+
   const items: NearbyStoreListingItem[] = roughCandidates
     .map((c, i) => {
       const mb = matrixResults[i];
@@ -344,16 +355,18 @@ export async function listNearbyStoresByRoadDistance(params: {
       // THE CORE RULE: per-store delivery_radius_km gate
       if (distanceKm > c.storeRadius) return null;
 
-      const raw = typeof c.row.live_status === "string" ? c.row.live_status.trim().toUpperCase() : "";
-      const live: "OPEN" | "CLOSED" =
-        raw === "OPEN" || raw === "CLOSED"
-          ? raw
-          : computeLiveStatus({
-              is_active: c.row.is_active,
-              is_available: c.row.is_available,
-              is_accepting_orders: c.row.is_accepting_orders,
-              operational_status: c.row.operational_status,
-            });
+      const storeInternalId = Number(c.row.id);
+      const sched =
+        Number.isFinite(storeInternalId) && storeInternalId > 0
+          ? scheduleByStore.get(storeInternalId)
+          : undefined;
+      const operational = customerOperationalFromStoreRow({
+        is_active: c.row.is_active,
+        is_available: c.row.is_available,
+        is_accepting_orders: c.row.is_accepting_orders,
+        operational_status: c.row.operational_status,
+      });
+      const live = computeSurfaceLiveStatus(operational, sched?.withinOperatingHours ?? false);
 
       return {
         id: c.row.store_id,
@@ -734,21 +747,44 @@ export async function getStoreByIdForOrder(
 }
 
 /**
- * Single source of truth for store operational status. Used by all UIs (list, detail, cart, checkout, group order).
- * Returns OPEN only when is_active, is_available, is_accepting_orders true and operational_status = 'OPEN'.
+ * Customer-facing surface status: operational gate + within operating hours.
+ * Runs schedule tick so menu/detail match merchant app and partner portal.
  */
-export async function getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLOSED" | null> {
+export async function getStoreSurfaceLiveStatus(
+  storeId: string,
+  log?: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
+): Promise<{
+  liveStatus: "OPEN" | "CLOSED";
+  withinOperatingHours: boolean;
+  nextOpenAt: string | null;
+  nextCloseAt: string | null;
+} | null> {
   const store = await getStoreByStoreId(storeId);
   if (!store) return null;
-  const { computeLiveStatus } = await import("./merchant.types.js");
-  const raw = (store as { live_status?: string | null }).live_status;
-  if (raw === "OPEN" || raw === "CLOSED") return raw;
-  return computeLiveStatus({
-    is_active: store.is_active,
-    is_available: store.is_available,
-    is_accepting_orders: store.is_accepting_orders,
-    operational_status: store.operational_status,
-  });
+  const internalId = Number(store.id);
+  if (!Number.isFinite(internalId) || internalId < 1) return null;
+
+  const noopLog = log ?? { info: () => {}, error: () => {} };
+  const snapshot = await buildPartnerStoreStatusSnapshot(internalId, noopLog);
+  if (!snapshot) return null;
+
+  const sched = (await getScheduleTimesForStores([internalId])).get(internalId);
+  return {
+    liveStatus: snapshot.surface_online ? "OPEN" : "CLOSED",
+    withinOperatingHours: snapshot.within_operating_hours,
+    nextOpenAt: sched?.nextOpenAt ?? null,
+    nextCloseAt: sched?.nextCloseAt ?? null,
+  };
+}
+
+/**
+ * Single source of truth for store operational status. Used by all UIs (list, detail, cart, checkout, group order).
+ * Returns OPEN only when is_active, is_available, is_accepting_orders true, operational_status = 'OPEN',
+ * and current time is within configured operating hours.
+ */
+export async function getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLOSED" | null> {
+  const surface = await getStoreSurfaceLiveStatus(storeId);
+  return surface?.liveStatus ?? null;
 }
 
 /**

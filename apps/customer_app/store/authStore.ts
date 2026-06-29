@@ -9,6 +9,7 @@ import { authService } from "@/services/auth.service";
 import { getItem, setItem, removeItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
 import { clearCachedProfile } from "@/lib/profileCache";
+import { clearWalletBalanceCache } from "@/lib/walletBalanceCache";
 
 type AuthState = {
   hydrated: boolean;
@@ -27,6 +28,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!s) {
       await authService.clearSession();
       await clearCachedProfile();
+      await clearWalletBalanceCache();
       set({ session: null });
       return;
     }
@@ -48,6 +50,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     await authService.clearSession();
     await clearCachedProfile();
+    await clearWalletBalanceCache();
     set({ session: null });
   },
 
@@ -59,6 +62,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     await authService.clearSession();
     await clearCachedProfile();
+    await clearWalletBalanceCache();
     set({ session: null });
   },
 }));

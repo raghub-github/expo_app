@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAppSelector, useAppDispatch } from '@/lib/hooks'
 import { setCurrentService } from '@/lib/slices/authSlice'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 
 // ============================================================================
 // COMPONENT: Map Section (Left Column - Map Only)
@@ -557,7 +558,7 @@ export default function RideSelectPage() {
         <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <Link href="/ride" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-              <img src="/img/logo.png" alt="GatiMitra Logo" className="w-12 h-12 sm:w-14 sm:h-14 rounded-full" />
+              <GatiMitraLogo variant="icon" alt="GatiMitra" className="w-12 h-12 sm:w-14 sm:h-14 rounded-full" />
               <div className="flex items-center">
                 <span className="text-2xl sm:text-3xl font-black text-[#16c2a5]">Gati</span>
                 <span className="text-2xl sm:text-3xl font-black text-[#ff6b35]">Mitra</span>

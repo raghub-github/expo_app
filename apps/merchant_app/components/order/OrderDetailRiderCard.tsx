@@ -2,6 +2,8 @@ import { View, Text, StyleSheet, Pressable, Linking } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import type { FoodOrderRiderLogEntry } from "@/services/ordersApi";
+import type { OrderStage } from "@/hooks/useOrders";
+import { pendingRiderStatusLabel } from "@/lib/orderAssignedRider";
 import { RiderSelfieAvatar } from "@/components/order/RiderSelfieAvatar";
 import { RiderSelfieViewerModal } from "@/components/order/RiderSelfieViewerModal";
 import { GatiMitraMerchant, CARD_RADIUS, CARD_PADDING, FONT_SECONDARY } from "@/constants/theme";
@@ -10,11 +12,16 @@ type Props = {
   rider: FoodOrderRiderLogEntry | null;
   deliveryType: string;
   riderReachedAt?: string | null;
+  orderStage?: OrderStage;
 };
 
-function riderStatusLabel(rider: FoodOrderRiderLogEntry | null, reachedAt?: string | null): string {
+function riderStatusLabel(
+  rider: FoodOrderRiderLogEntry | null,
+  reachedAt?: string | null,
+  orderStage?: OrderStage,
+): string {
   if (!rider) {
-    return "Assigning delivery partner…";
+    return pendingRiderStatusLabel(orderStage ?? "created");
   }
   if (rider.delivered_at) return "Delivered by rider";
   if (rider.picked_up_at) return "Out for delivery";
@@ -24,12 +31,12 @@ function riderStatusLabel(rider: FoodOrderRiderLogEntry | null, reachedAt?: stri
   return "Delivery partner";
 }
 
-export function OrderDetailRiderCard({ rider, deliveryType, riderReachedAt }: Props) {
+export function OrderDetailRiderCard({ rider, deliveryType, riderReachedAt, orderStage }: Props) {
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const isGatiMitra = String(deliveryType).toUpperCase() === "GATIMITRA_RIDER";
   if (!isGatiMitra) return null;
 
-  const status = riderStatusLabel(rider, riderReachedAt);
+  const status = riderStatusLabel(rider, riderReachedAt, orderStage);
   const name = (rider?.rider_name ?? "").trim() || "Delivery partner";
   const mobile = (rider?.rider_mobile ?? "").trim();
 

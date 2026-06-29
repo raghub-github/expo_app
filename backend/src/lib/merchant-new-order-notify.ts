@@ -2,15 +2,13 @@
  * Push + in-app notification when a new CREATED food order lands for a merchant store.
  */
 import type { Sql } from "postgres";
+import { getMerchantStorePushTokens, insertMerchantStoreNotification } from "./merchant-push-notify.js";
 import { resolveMerchantVisibleOrderTotal } from "./merchant-visible-pricing.js";
 
-type PushPayload = {
-  title: string;
-  body: string;
-  data?: Record<string, unknown>;
-};
-
-async function sendExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
+async function sendExpoPush(
+  tokens: string[],
+  payload: { title: string; body: string; data?: Record<string, unknown> }
+): Promise<void> {
   if (!tokens.length) return;
   const messages = tokens.map((to) => ({
     to,
@@ -87,26 +85,16 @@ export async function notifyMerchantStoreNewOrder(
       ? `${displayId} · ₹${formatExactMerchantInr(total)} — tap to accept`
       : `${displayId} — tap to accept`;
 
-  await sql`
-    INSERT INTO merchant_store_notifications (store_id, type, title, body, read, order_id, action_url)
-    VALUES (
-      ${merchantStoreId},
-      'order',
-      ${title},
-      ${body},
-      FALSE,
-      ${foodId ? Number(foodId) : null},
-      ${foodId ? `/order/${foodId}` : "/(tabs)/"}
-    )
-  `;
+  await insertMerchantStoreNotification(sql, {
+    storeId: merchantStoreId,
+    type: "order",
+    title,
+    body,
+    orderId: foodId ? Number(foodId) : null,
+    actionUrl: foodId ? `/order/${foodId}` : "/(tabs)/",
+  });
 
-  const tokenRows = await sql`
-    SELECT token FROM merchant_store_push_tokens WHERE store_id = ${merchantStoreId}
-  `;
-  const tokens = (tokenRows as unknown as Array<{ token: string }>)
-    .map((t) => t.token)
-    .filter(Boolean);
-
+  const tokens = await getMerchantStorePushTokens(sql, merchantStoreId);
   await sendExpoPush(tokens, {
     title,
     body,

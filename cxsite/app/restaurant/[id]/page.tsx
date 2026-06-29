@@ -1,7 +1,8 @@
 import RestaurantPage from '@/components/restaurant/RestaurantPage'
+import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata = {
-  title: 'Restaurant Details | GatiMitra Food',
+  title: pageTitleSegment('Restaurant Details'),
   description: 'View restaurant details, menu, ratings and order online',
 }
 

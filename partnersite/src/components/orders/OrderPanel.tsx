@@ -166,6 +166,10 @@ export type OrderPanelProps = {
   nowMs?: number;
   /** Live pipeline vs completed order history (badge label). */
   panelMode?: 'live' | 'history';
+  /** Multi-column dashboard vs single-column stack (merchant app style). */
+  panelLayout?: 'columns' | 'stack';
+  /** Hide the large order id row in stack layout (e.g. when the parent sheet header shows it). */
+  hideHeaderOrderId?: boolean;
 };
 
 export function OrderPanel({
@@ -193,6 +197,8 @@ export function OrderPanel({
   className,
   nowMs,
   panelMode = 'live',
+  panelLayout = 'columns',
+  hideHeaderOrderId = false,
 }: OrderPanelProps) {
   const items = order.items ?? [];
   const previewItems = items.slice(0, ITEMS_PREVIEW_MAX);
@@ -270,6 +276,196 @@ export function OrderPanel({
   const showStoreWait =
     riderCardVariant === 'arrived' &&
     (storeWait.live || (storeWait.finalizedSeconds != null && storeWait.finalizedSeconds > 0));
+
+  if (panelLayout === 'stack') {
+    return (
+      <div className={`relative flex flex-col bg-white ${className ?? ''}`}>
+        <div className="flex flex-col gap-4 p-4 sm:p-5">
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={`inline-flex w-fit items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide ${
+                panelMode === 'history'
+                  ? 'bg-slate-100 text-slate-700'
+                  : 'bg-violet-100 text-violet-800'
+              }`}
+            >
+              {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onOpenTimeline}
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                <Clock size={13} />
+                Timeline
+              </button>
+              <button
+                type="button"
+                onClick={onPrintBill}
+                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+              >
+                <Printer size={13} />
+                Print bill
+              </button>
+            </div>
+          </div>
+
+          <div>
+            {!hideHeaderOrderId
+              ? formattedOrderId ?? (
+                  <p className="text-2xl font-bold text-gray-900 tracking-tight">
+                    {order.formatted_order_id || order.order_id}
+                  </p>
+                )
+              : null}
+          </div>
+
+          {order.customer_name ? (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={onOpenCustomer}
+                  className="inline-flex items-center gap-0.5 text-sm font-semibold text-blue-600 hover:text-blue-800 min-w-0"
+                >
+                  <span className="truncate">{order.customer_name}</span>
+                  <ChevronRight size={14} className="shrink-0" />
+                </button>
+                {order.customer_phone ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowPhone((v) => !v)}
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800 shrink-0"
+                  >
+                    <Phone size={14} />
+                    {showPhone ? order.customer_phone : 'Call'}
+                  </button>
+                ) : null}
+              </div>
+              {storeOrdinalLabel ? (
+                <p className="text-xs text-gray-500">{storeOrdinalLabel}</p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {addressText ? (
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {addressText}
+              {dropProximity ? <span className="text-gray-500"> {dropProximity}</span> : null}
+            </p>
+          ) : dropProximity ? (
+            <p className="text-xs text-gray-600 leading-relaxed">{dropProximity}</p>
+          ) : null}
+
+          <OrderCancellationBanner order={order} />
+          <OrderOtpSection
+            status={status}
+            otps={displayOtps}
+            pickupVerified={pickupVerified}
+            rtoVerified={rtoVerified}
+            compact
+            merchantInstructions={merchantInstructions}
+          />
+
+          <div className="flex items-center justify-between text-xs text-gray-600 gap-2 border-t border-dashed border-gray-200 pt-3">
+            <PlacedTimeToggle createdAt={order.created_at} />
+          </div>
+
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500 mb-2">
+              Order items ({totalItemCount})
+            </p>
+            <MerchantOrderItemsList
+              items={items}
+              totalItemCount={totalItemCount}
+              totalLineCount={items.length}
+              showUtensilsBanner={false}
+              onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
+            />
+          </div>
+
+          <MerchantOrderBillSummary
+            items={items}
+            pricing={pricing}
+            onTotalClick={onOpenBill}
+          />
+
+          {showPendingRiderAssign ? (
+            <RiderAssignPendingCard
+              nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}
+              assignSoonMessage={
+                nearbyRiderSummary?.assignSoonMessage ??
+                'Looking for nearby riders — we will assign one soon'
+              }
+              radiusKm={nearbyRiderSummary?.radiusKm}
+            />
+          ) : showRiderCard ? (
+            <RiderDeliveryPartnerCard
+              riderName={riderName ?? 'Delivery partner'}
+              riderPhone={riderMobile}
+              riderSelfieUrl={riderPhoto}
+              variant={riderCardVariant}
+              arrivalSubtitle={riderEnRouteToMerchantFlag ? riderArrivalSubtitle : undefined}
+              pickupOtp={riderReachedMerchant ? displayOtps.pickup : undefined}
+              rtoDisplay={riderReachedMerchant ? (rtoDisplay ?? undefined) : undefined}
+              legacyOtp={
+                riderReachedMerchant && !displayOtps.pickup && !displayOtps.rto ? otpCode : undefined
+              }
+              legacyOtpType={otpType}
+              deliveryLabel={isPickedUp ? deliveryLabel ?? undefined : undefined}
+              onTrackRider={terminalStatus ? undefined : onTrackRider}
+              onOpenRiderPhoto={onOpenRiderPhoto}
+              onUniformFeedback={isPickedUp ? onUniformFeedback : undefined}
+              uniformFeedback={uniformFeedback}
+              storeWaitAnchorAt={showStoreWait ? storeWait.anchorAt : undefined}
+              storeWaitLive={showStoreWait ? storeWait.live : undefined}
+              storeWaitFinalizedSeconds={
+                showStoreWait && !storeWait.live ? storeWait.finalizedSeconds : undefined
+              }
+            />
+          ) : null}
+
+          <div className="flex flex-col gap-2.5 pt-1">
+            {showPastRidersButton && onViewPastRiders ? (
+              <button
+                type="button"
+                onClick={onViewPastRiders}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+              >
+                View past riders
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() =>
+                onOrderHelp
+                  ? onOrderHelp()
+                  : openMxNeedHelp({
+                      formattedOrderId: order.formatted_order_id ?? undefined,
+                      coreOrderId: order.order_id,
+                    })
+              }
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+            >
+              <HelpCircle size={16} />
+              Order help
+            </button>
+          </div>
+
+          {primaryAction ? (
+            <div className="shrink-0 w-full [&_button]:min-h-[44px]">{primaryAction}</div>
+          ) : null}
+        </div>
+
+        <OrderItemDetailModal
+          open={selectedItem != null}
+          onClose={() => setSelectedItem(null)}
+          item={selectedItem}
+        />
+      </div>
+    );
+  }
 
   return (
     <div

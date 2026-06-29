@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import BrandNotFound404 from '@/components/brand/BrandNotFound404'
 import { useLocationContext } from '@/components/providers/LocationProvider'
@@ -267,9 +267,9 @@ export function StoreBrandCard({
 export default function BrandSections() {
   const router = useRouter()
   const { location, hydrated } = useLocationContext()
-  /** `null` until localStorage is read — avoids one unfiltered fetch before committed location is restored. */
+  /** Geo query once location is hydrated; empty string = fetch all brands (fast initial paint). */
   const brandsGeoQs = useMemo(() => {
-    if (!hydrated) return null as string | null
+    if (!hydrated) return ''
     return getBrandsGeoQueryString(location)
   }, [hydrated, location])
   const [show404, setShow404] = useState(false)
@@ -281,6 +281,8 @@ export default function BrandSections() {
   const [sectionPage, setSectionPage] = useState<Record<string, number>>({})
   /** Cards per page (2 rows) – responsive. */
   const [cardsPerPage, setCardsPerPage] = useState(12)
+  /** Only show section spinners on the first load; geo refetch after hydration stays silent. */
+  const showBrandLoadingRef = useRef(true)
   useEffect(() => {
     const update = () => setCardsPerPage(getCardsPerPage())
     update()
@@ -289,12 +291,11 @@ export default function BrandSections() {
   }, [])
 
   const fetchBrands = useCallback((showLoading = false) => {
-    if (brandsGeoQs === null) return
     if (showLoading) {
       setLoading(true)
       setError(null)
     }
-    const q = brandsGeoQs ? `?${brandsGeoQs}` : ''
+    const q = brandsGeoQs ? `?${brandsGeoQs}&limit=100` : '?limit=100'
     fetch(`/api/brands${q}`, { cache: 'no-store' })
       .then((res) => {
         if (!res.ok) return res.json().then((body: { error?: string; details?: string }) => { throw new Error(body?.error || body?.details || 'Failed to load brands') })
@@ -312,8 +313,8 @@ export default function BrandSections() {
   }, [brandsGeoQs])
 
   useEffect(() => {
-    if (brandsGeoQs === null) return
-    fetchBrands(true)
+    fetchBrands(showBrandLoadingRef.current)
+    showBrandLoadingRef.current = false
   }, [fetchBrands, brandsGeoQs])
 
   useEffect(() => {

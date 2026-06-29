@@ -25,6 +25,8 @@ import NotificationSetup from "../components/NotificationSetup";
 import { fetchMerchantAppAssets } from "@/services/appAssets.service";
 import { isAppAssetsLoaded, setAppAssets } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
+import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
+import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -65,6 +67,8 @@ export default function RootLayout() {
                             <IncomingOrderSheetProvider>
                               <NotificationSetup />
                               <OrderAlertPushHandler />
+                              <WaitingForOrderNotifier />
+                              <StoreOnlineStatusNotifier />
                               <FloatingOrdersManager />
                               <FloatingLiveSupportTicket />
                               <IncomingOrderModal />

@@ -82,7 +82,7 @@ export async function deleteStoreNotification(
 }
 
 /** In-app title for idle pipeline reminder — must match backend `WAITING_FOR_ORDER_TITLE`. */
-export const WAITING_FOR_ORDER_TITLE = "Waiting for Order";
+export const WAITING_FOR_ORDER_TITLE = "🟢 Your restaurant is online";
 
 export async function ensureWaitingForOrderNotification(
   storeId: number,

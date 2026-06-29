@@ -4,6 +4,7 @@ import { executeOrderCancellationFinancials, lookupOrderContext } from "../lib/f
 import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.js";
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
+import { applyMerchantOrderCancellationLedger } from "../lib/apply-merchant-cancellation-ledger.js";
 
 const AUTO_CANCEL_REASON = "Auto Cancelled";
 
@@ -208,57 +209,78 @@ async function fetchAutoAcceptTargets(
   `) as AutoAcceptTarget[];
 }
 
+async function finalizeCancelledRow(
+  sql: Sql,
+  row: CancelledRow,
+  log: TimeoutLog
+): Promise<void> {
+  const coreId = Number(row?.core_id);
+  const foodId = Number(row?.food_id);
+  const storeId = Number(row?.merchant_store_id);
+  if (!Number.isFinite(coreId) || coreId <= 0) return;
+  try {
+    await recordCancellationTimeline(sql, {
+      orderCorePk: coreId,
+      previousStatus: "Pymt Assign RX",
+      rejectedReason: AUTO_CANCEL_REASON,
+      actorType: "system",
+      cancelMode: "auto",
+      statusMessage: AUTO_CANCEL_REASON,
+    });
+    const orderCtx = await lookupOrderContext(coreId, sql);
+    const engineResult = await executeOrderCancellationFinancials(
+      {
+        orderCoreId: coreId,
+        ordersFoodId: foodId,
+        coreOrderId: orderCtx.coreOrderId,
+        merchantStoreId: storeId,
+        previousStatus: "CREATED",
+        cancelledByType: "system",
+        orderGross: Number(row.grand_total ?? orderCtx.grandTotal),
+        serviceType: orderCtx.serviceType,
+      },
+      sql
+    );
+    const refund = refundFieldsFromEngineResult(engineResult.raw);
+    await recordOrderCancellation(sql, {
+      orderCorePk: coreId,
+      cancelledBy: "SYSTEM",
+      displayReason: AUTO_CANCEL_REASON,
+      cancelledByType: "system",
+      cancelledByLabel: AUTO_CANCEL_REASON,
+      actionSource: "system",
+      cancelMode: "auto",
+      previousStatus: "CREATED",
+      grandTotal: row.grand_total,
+      refundStatus: refund.refundStatus,
+      refundAmount: refund.refundAmount,
+      metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
+    });
+    try {
+      await applyMerchantOrderCancellationLedger(
+        {
+          orderCoreId: coreId,
+          source: "system_auto_cancel",
+        },
+        sql
+      );
+    } catch (ledgerErr) {
+      log.error({ err: ledgerErr, coreId }, "order_acceptance_timeout_ledger_failed");
+    }
+  } catch (tlErr) {
+    log.error({ err: tlErr, coreId }, "order_acceptance_timeout_timeline_failed");
+  }
+}
+
 async function finalizeCancelledRows(
   sql: Sql,
   cancelledRows: CancelledRow[],
   log: TimeoutLog
 ): Promise<void> {
-  for (const row of cancelledRows) {
-    const coreId = Number(row?.core_id);
-    const foodId = Number(row?.food_id);
-    const storeId = Number(row?.merchant_store_id);
-    if (!Number.isFinite(coreId) || coreId <= 0) continue;
-    try {
-      await recordCancellationTimeline(sql, {
-        orderCorePk: coreId,
-        previousStatus: "Pymt Assign RX",
-        rejectedReason: AUTO_CANCEL_REASON,
-        actorType: "system",
-        cancelMode: "auto",
-        statusMessage: AUTO_CANCEL_REASON,
-      });
-      const orderCtx = await lookupOrderContext(coreId, sql);
-      const engineResult = await executeOrderCancellationFinancials(
-        {
-          orderCoreId: coreId,
-          ordersFoodId: foodId,
-          coreOrderId: orderCtx.coreOrderId,
-          merchantStoreId: storeId,
-          previousStatus: "CREATED",
-          cancelledByType: "system",
-          orderGross: Number(row.grand_total ?? orderCtx.grandTotal),
-          serviceType: orderCtx.serviceType,
-        },
-        sql
-      );
-      const refund = refundFieldsFromEngineResult(engineResult.raw);
-      await recordOrderCancellation(sql, {
-        orderCorePk: coreId,
-        cancelledBy: "SYSTEM",
-        displayReason: AUTO_CANCEL_REASON,
-        cancelledByType: "system",
-        cancelledByLabel: AUTO_CANCEL_REASON,
-        actionSource: "system",
-        cancelMode: "auto",
-        previousStatus: "CREATED",
-        grandTotal: row.grand_total,
-        refundStatus: refund.refundStatus,
-        refundAmount: refund.refundAmount,
-        metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
-      });
-    } catch (tlErr) {
-      log.error({ err: tlErr, coreId }, "order_acceptance_timeout_timeline_failed");
-    }
+  const chunkSize = 4;
+  for (let i = 0; i < cancelledRows.length; i += chunkSize) {
+    const chunk = cancelledRows.slice(i, i + chunkSize);
+    await Promise.all(chunk.map((row) => finalizeCancelledRow(sql, row, log)));
   }
 }
 

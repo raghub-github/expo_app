@@ -1,10 +1,11 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useSearchParams } from 'next/navigation'
 import { useState } from 'react'
 import { useCart } from '@/lib/hooks/useCart'
 import { useOrderServiceArea } from '@/lib/hooks/useOrderServiceArea'
+import { useLocationContext } from '@/components/providers/LocationProvider'
+import { getRestaurantGeoQueryString } from '@/lib/buildRestaurantGeoQuery'
 import CategoriesSection from './CategoriesSection'
 import RestaurantDetailPage from './RestaurantDetailPage'
 import Footer from '@/components/layout/Footer'
@@ -20,7 +21,8 @@ export interface CartItem {
 
 export default function OrderPage() {
   const router = useRouter()
-  const searchParams = useSearchParams()
+  const { location } = useLocationContext()
+  const locationCommitted = location.locationCommittedByUser === true
   const { items, total, addToCart, removeFromCart, updateItemQuantity, restaurantName } = useCart()
 
   const [selectedRestaurantId, setSelectedRestaurantId] = useState<number | null>(null)
@@ -67,14 +69,21 @@ export default function OrderPage() {
     <>
       <CategoriesSection
         onViewRestaurants={() => {
+          if (!locationCommitted) {
+            router.push('/restaurants')
+            return
+          }
           const carry = new URLSearchParams()
-          const location = searchParams.get('location')
-          const lat = searchParams.get('lat')
-          const lon = searchParams.get('lon')
-          if (location) carry.set('location', location)
-          if (lat && lon) {
-            carry.set('lat', lat)
-            carry.set('lon', lon)
+          if (location.displayName) carry.set('location', location.displayName)
+          if (location.lat != null && location.lon != null) {
+            carry.set('lat', String(location.lat))
+            carry.set('lon', String(location.lon))
+          }
+          const geoQs = getRestaurantGeoQueryString(location)
+          if (geoQs) {
+            for (const [key, value] of new URLSearchParams(geoQs)) {
+              carry.set(key, value)
+            }
           }
           const qs = carry.toString()
           router.push(qs ? `/restaurants?${qs}` : '/restaurants')

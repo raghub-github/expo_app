@@ -27,8 +27,11 @@ function RestaurantSkeleton() {
 }
 
 import { useState, useEffect, useRef, useLayoutEffect, useMemo, Fragment } from 'react'
+import { Smartphone, X } from 'lucide-react'
 import { createClient } from '@supabase/supabase-js'
-import Image from 'next/image'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import ProtectedImage from '@/components/common/ProtectedImage'
+import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 import { useRouter } from 'next/navigation'
 import { getRestaurantBreadcrumbMiddle } from '@/lib/restaurantDetailLink'
 import { useCart } from '@/lib/hooks/useCart'
@@ -152,6 +155,7 @@ function RestaurantPage({
   const [, setOffers] = useState<any[]>([])
   const [loadingRestaurant, setLoadingRestaurant] = useState(true)
   const [loadingMenu, setLoadingMenu] = useState(true)
+  const [menuLoadError, setMenuLoadError] = useState<string | null>(null)
   const [loadingOffers, setLoadingOffers] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const { items, addToCart, decreaseItem, getCartQuantity, isFromDifferentRestaurant, restaurantName: currentCartRestaurantName, clearCartItems } = useCart()
@@ -164,7 +168,10 @@ function RestaurantPage({
   const [searchQuery, setSearchQuery] = useState('')
   const [localVegOnly, setLocalVegOnly] = useState(false)
   const [isTabsSticky, setIsTabsSticky] = useState(false)
+  const isTabsStickyRef = useRef(false)
+  const [showSkeleton, setShowSkeleton] = useState(true)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
+  const [floatingDownloadExpanded, setFloatingDownloadExpanded] = useState(true)
   const [downloadContextItem, setDownloadContextItem] = useState<string | null>(null)
   const [downloadMode, setDownloadMode] = useState<'phone' | 'email'>('phone')
   const [downloadValue, setDownloadValue] = useState('')
@@ -177,8 +184,16 @@ function RestaurantPage({
   // Refs for scrolling and animations
   const tabsRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
+  const compactHeaderRef = useRef<HTMLDivElement>(null)
   const cartButtonRef = useRef<HTMLButtonElement>(null)
   const menuSectionRef = useRef<HTMLDivElement>(null)
+  const menuStickySentinelRef = useRef<HTMLDivElement>(null)
+  const menuPinnedShellRef = useRef<HTMLDivElement>(null)
+  const menuScrollContainerRef = useRef<HTMLDivElement>(null)
+  const menuSelectionsHeaderRef = useRef<HTMLDivElement>(null)
+  const sidebarNavRef = useRef<HTMLElement>(null)
+  const isMenuPanelPinnedRef = useRef(false)
+  const [isMenuPanelPinned, setIsMenuPanelPinned] = useState(false)
   const photosSectionRef = useRef<HTMLDivElement>(null)
   const reviewsSectionRef = useRef<HTMLDivElement>(null)
   const infoSectionRef = useRef<HTMLDivElement>(null)
@@ -189,14 +204,44 @@ function RestaurantPage({
 
   const TAB_KEYS = ['menu', 'photos', 'reviews', 'info'] as const
 
-  // Fetch data: restaurant from API; menu from API (merchant_menu_items) then fallback to menu_items
+  const readMenuStickyTopPx = () => {
+    const compact = compactHeaderRef.current
+    if (!compact) return 16
+    const rect = compact.getBoundingClientRect()
+    if (rect.bottom > 8) {
+      return Math.ceil(rect.bottom) + 12
+    }
+    if (isTabsStickyRef.current && compact.offsetHeight > 0) {
+      return compact.offsetHeight + 12
+    }
+    return 16
+  }
+
+  const syncMenuStickyTopVar = () => {
+    document.documentElement.style.setProperty(
+      '--gm-restaurant-sticky-top',
+      `${readMenuStickyTopPx()}px`
+    )
+  }
+
+  // Fetch data: restaurant from API; menu loads in parallel (page renders before menu finishes).
   useEffect(() => {
     setError(null);
+    setMenuLoadError(null);
     setLoadingRestaurant(true);
     setLoadingMenu(true);
     setLoadingOffers(true);
 
-    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`)
+    const restaurantAc = new AbortController();
+    const menuAc = new AbortController();
+    let menuTimedOut = false;
+    const MENU_FETCH_TIMEOUT_MS = 20_000;
+    const menuTimeoutId = window.setTimeout(() => {
+      menuTimedOut = true;
+      menuAc.abort();
+    }, MENU_FETCH_TIMEOUT_MS);
+
+    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, { signal: restaurantAc.signal })
       .then((res) => {
         if (!res.ok) throw new Error(res.status === 404 ? 'Not found' : 'Failed to fetch');
         return res.json();
@@ -205,13 +250,14 @@ function RestaurantPage({
         setRestaurant(data);
         setLoadingRestaurant(false);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         setError('Restaurant not found');
         setLoadingRestaurant(false);
       });
 
     // Menu: fetch from merchant_menu_items for this store only (by store_id or id)
-    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/menu`)
+    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/menu`, { signal: menuAc.signal })
       .then((res) => res.json().then((data: { items?: Array<{ id: string; item_name: string; description?: string | null; image_url?: string | null; category?: string | null; category_item?: string; price: number; offer_price?: number | null; in_stock?: boolean }> }) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         const apiItems = (ok && data?.items) ? data.items : [];
@@ -223,29 +269,54 @@ function RestaurantPage({
           category_item: (it.category_item ?? 'VEG').toUpperCase().startsWith('NON') ? 'NON_VEG' : 'VEG',
           price: Number(it.price) || 0,
           offer_price: it.offer_price != null ? it.offer_price : null,
-          image_url: it.image_url ?? null,
+          image_url: toAbsoluteImageUrl(it.image_url ?? null) ?? it.image_url ?? null,
           in_stock: it.in_stock !== false,
           description: it.description ?? undefined,
           is_active: true,
         }));
         setMenuItems(normalized);
+        setMenuLoadError(null);
         setLoadingMenu(false);
       })
-      .catch(() => {
-        setMenuItems([]);
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          if (menuTimedOut) {
+            setMenuLoadError('Menu is taking longer than usual. Pull to refresh or tap retry.');
+          }
+          setMenuItems([]);
+        } else {
+          setMenuLoadError('Could not load menu. Please try again.');
+          setMenuItems([]);
+        }
         setLoadingMenu(false);
+      })
+      .finally(() => {
+        window.clearTimeout(menuTimeoutId);
       });
 
     const now = new Date().toISOString();
-    supabase
-      .from('offers')
-      .select('*')
-      .eq('restaurant_id', restaurantId)
-      .gt('valid_till', now)
+    void Promise.resolve(
+      supabase
+        .from('offers')
+        .select('*')
+        .eq('restaurant_id', restaurantId)
+        .gt('valid_till', now)
+    )
       .then(({ data, error: offersError }) => {
         if (!offersError) setOffers(data || []);
+      })
+      .catch(() => {
+        setOffers([]);
+      })
+      .finally(() => {
         setLoadingOffers(false);
       });
+
+    return () => {
+      restaurantAc.abort();
+      menuAc.abort();
+      window.clearTimeout(menuTimeoutId);
+    };
   }, [restaurantId]);
 
   // Sidebar: All + unique category names + VEG/NON_VEG
@@ -255,8 +326,11 @@ function RestaurantPage({
   const filteredMenuItems = menuItems.filter(item => {
     const categoryMatch = selectedCategory === 'All' || item.category_item === selectedCategory || item.category === selectedCategory;
     const vegMatch = !localVegOnly || (String(item.category_item || item.category || '').toUpperCase() === 'VEG');
-    const searchMatch = (item.item_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (item.description && item.description.toLowerCase().includes(searchQuery.toLowerCase())));
+    const q = searchQuery.trim().toLowerCase();
+    const searchMatch =
+      !q ||
+      item.item_name?.toLowerCase().includes(q) ||
+      Boolean(item.description && item.description.toLowerCase().includes(q));
     return categoryMatch && vegMatch && searchMatch;
   });
 
@@ -264,15 +338,162 @@ function RestaurantPage({
   // You can define popularItems logic if you have a flag, else leave empty
   const popularItems: MenuItem[] = [];
 
-  // Sticky header shadow once content scrolls under the bar (Zomato-style)
   useEffect(() => {
-    const handleScroll = () => {
-      setIsTabsSticky(window.scrollY > 8)
+    setShowSkeleton(true)
+  }, [restaurantId])
+
+  // Show restaurant shell as soon as store details load; menu section has its own loader.
+  useEffect(() => {
+    if (!loadingRestaurant) {
+      const timeout = setTimeout(() => setShowSkeleton(false), 150)
+      return () => clearTimeout(timeout)
     }
-    handleScroll()
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    return () => window.removeEventListener('scroll', handleScroll)
-  }, [])
+  }, [loadingRestaurant])
+
+  // Compact header visibility + sticky offset (sidebar / menu header sit below it)
+  useLayoutEffect(() => {
+    const syncStickyTop = () => {
+      syncMenuStickyTopVar()
+    }
+
+    const onScroll = () => {
+      const sticky = window.scrollY > 8
+      if (isTabsStickyRef.current !== sticky) {
+        isTabsStickyRef.current = sticky
+        setIsTabsSticky(sticky)
+      }
+      syncStickyTop()
+    }
+
+    onScroll()
+    window.addEventListener('resize', syncStickyTop)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    const compact = compactHeaderRef.current
+    const ro = typeof ResizeObserver !== 'undefined' && compact
+      ? new ResizeObserver(() => syncStickyTop())
+      : null
+    if (compact && ro) ro.observe(compact)
+    const t = window.setTimeout(syncStickyTop, 320)
+    return () => {
+      window.removeEventListener('resize', syncStickyTop)
+      window.removeEventListener('scroll', onScroll)
+      ro?.disconnect()
+      window.clearTimeout(t)
+    }
+  }, [showSkeleton])
+
+  useLayoutEffect(() => {
+    syncMenuStickyTopVar()
+  }, [isTabsSticky, activeTab, showSkeleton, searchQuery])
+
+  useLayoutEffect(() => {
+    const el = menuSelectionsHeaderRef.current
+    const sync = () => {
+      const h = el?.offsetHeight ?? 120
+      document.documentElement.style.setProperty('--gm-menu-selections-h', `${h}px`)
+    }
+    sync()
+    const ro = typeof ResizeObserver !== 'undefined' && el ? new ResizeObserver(sync) : null
+    if (el && ro) ro.observe(el)
+    return () => ro?.disconnect()
+  }, [isMenuPanelPinned, filteredMenuItems.length, searchQuery, activeTab, showSkeleton])
+
+  // Internal menu scroll only after sidebar + Selections header have pinned (lg+)
+  useEffect(() => {
+    if (activeTab !== 'menu' || showSkeleton) {
+      isMenuPanelPinnedRef.current = false
+      setIsMenuPanelPinned(false)
+      return
+    }
+
+    const getStickyTopPx = () => {
+      syncMenuStickyTopVar()
+      return readMenuStickyTopPx()
+    }
+
+    const PIN_HYSTERESIS_PX = 20
+
+    const checkPin = () => {
+      if (window.innerWidth < 1024) {
+        if (isMenuPanelPinnedRef.current) {
+          isMenuPanelPinnedRef.current = false
+          setIsMenuPanelPinned(false)
+        }
+        return
+      }
+
+      const sentinel = menuStickySentinelRef.current
+      if (!sentinel) return
+
+      const topPx = getStickyTopPx()
+      const sentinelTop = sentinel.getBoundingClientRect().top
+      const pinned = isMenuPanelPinnedRef.current
+
+      if (!pinned && sentinelTop <= topPx) {
+        isMenuPanelPinnedRef.current = true
+        setIsMenuPanelPinned(true)
+        requestAnimationFrame(() => {
+          syncMenuStickyTopVar()
+          const s = menuStickySentinelRef.current
+          if (!s) return
+          const liveTop = readMenuStickyTopPx()
+          const drift = s.getBoundingClientRect().top - liveTop
+          if (Math.abs(drift) > 1) {
+            window.scrollBy({ top: drift, behavior: 'auto' })
+          }
+        })
+      } else if (pinned && sentinelTop > topPx + PIN_HYSTERESIS_PX) {
+        isMenuPanelPinnedRef.current = false
+        setIsMenuPanelPinned(false)
+      }
+    }
+
+    checkPin()
+    window.addEventListener('scroll', checkPin, { passive: true })
+    window.addEventListener('resize', checkPin)
+    return () => {
+      window.removeEventListener('scroll', checkPin)
+      window.removeEventListener('resize', checkPin)
+    }
+  }, [activeTab, showSkeleton, isTabsSticky])
+
+  // Scroll chaining: at list edges, return scroll to the page (hero/gallery) instead of trapping
+  useEffect(() => {
+    if (!isMenuPanelPinned || activeTab !== 'menu' || showSkeleton) return
+
+    const attachScrollChain = (el: HTMLElement | null) => {
+      if (!el) return () => {}
+
+      const onWheel = (e: WheelEvent) => {
+        if (window.innerWidth < 1024) return
+
+        const { scrollTop, scrollHeight, clientHeight } = el
+        if (scrollHeight <= clientHeight + 2) return
+
+        const atTop = scrollTop <= 1
+        const atBottom = scrollTop + clientHeight >= scrollHeight - 1
+        const dy = e.deltaY
+
+        if (atTop && dy < 0) {
+          e.preventDefault()
+          window.scrollBy({ top: dy, behavior: 'auto' })
+        } else if (atBottom && dy > 0) {
+          e.preventDefault()
+          window.scrollBy({ top: -dy, behavior: 'auto' })
+        }
+      }
+
+      el.addEventListener('wheel', onWheel, { passive: false })
+      return () => el.removeEventListener('wheel', onWheel)
+    }
+
+    const cleanList = attachScrollChain(menuScrollContainerRef.current)
+    const cleanNav = attachScrollChain(sidebarNavRef.current)
+    return () => {
+      cleanList()
+      cleanNav()
+    }
+  }, [isMenuPanelPinned, activeTab, showSkeleton, filteredMenuItems.length])
 
   // State to handle customization modal
   const [customOpen, setCustomOpen] = useState(false)
@@ -296,7 +517,7 @@ function RestaurantPage({
         itemElement,
         cartButtonRef.current,
         itemData.name,
-        menuItem.image_url || (menuItem as any).image,
+        toAbsoluteImageUrl(menuItem.image_url || (menuItem as any).image) ?? '',
         addFlyingAnimation
       )
     }
@@ -343,7 +564,7 @@ function RestaurantPage({
       quantity: 1,
       restaurantId: restaurant.id,
       restaurantName: restaurant.name,
-      image: menuItem.image_url || (menuItem as any).image,
+      image: toAbsoluteImageUrl(menuItem.image_url || (menuItem as any).image) ?? undefined,
     }
 
     // Check if adding from different restaurant
@@ -371,7 +592,7 @@ function RestaurantPage({
       addons,
       restaurantId: restaurant.id,
       restaurantName: restaurant.name,
-      image: customItem.image_url || (customItem as any).image,
+      image: toAbsoluteImageUrl(customItem.image_url || (customItem as any).image) ?? undefined,
     }
 
     // Check if adding from different restaurant
@@ -391,7 +612,7 @@ function RestaurantPage({
         lastClickedElement.current,
         cartButtonRef.current,
         customItem.item_name,
-        customItem.image_url || (customItem as any).image,
+        toAbsoluteImageUrl(customItem.image_url || (customItem as any).image) ?? '',
         addFlyingAnimation
       )
     }
@@ -417,19 +638,6 @@ function RestaurantPage({
       ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }
-
-  // Show skeleton loader first, then fade to content
-  const [showSkeleton, setShowSkeleton] = useState(true);
-  useEffect(() => {
-    setShowSkeleton(true);
-  }, [restaurantId]);
-  useEffect(() => {
-    if (!loadingRestaurant && !loadingMenu && !loadingOffers) {
-      // Fade out skeleton after data loads
-      const timeout = setTimeout(() => setShowSkeleton(false), 200);
-      return () => clearTimeout(timeout);
-    }
-  }, [loadingRestaurant, loadingMenu, loadingOffers]);
 
   useLayoutEffect(() => {
     const i = TAB_KEYS.indexOf(activeTab)
@@ -466,29 +674,31 @@ function RestaurantPage({
   }, [activeTab])
 
   const heroGalleryImages = useMemo(() => {
-    const urls: string[] = []
-    const add = (u?: string | null) => {
-      if (typeof u === 'string' && u.trim() !== '' && !urls.includes(u)) urls.push(u.trim())
-    }
+    const fallback = '/img/fav.png'
     if (!restaurant) {
-      const ph = '/img/placeholder.png'
-      return [ph, ph, ph, ph]
+      return [fallback, fallback, fallback, fallback]
     }
-    const b = restaurant.banner_url
-    add(typeof b === 'string' ? b : null)
-    add(restaurant.store_img ?? null)
-    if (Array.isArray(restaurant.gallery_images)) {
-      restaurant.gallery_images.forEach((g) => add(g))
-    }
-    for (const m of menuItems) {
-      add(m.image_url ?? null)
-    }
-    const ph = '/img/placeholder.png'
-    while (urls.length < 4) urls.push(ph)
-    return urls.slice(0, 8)
-  }, [restaurant, menuItems])
+    const banner =
+      typeof restaurant.banner_url === 'string' && restaurant.banner_url.trim() !== ''
+        ? restaurant.banner_url.trim()
+        : typeof restaurant.store_img === 'string' && restaurant.store_img.trim() !== ''
+          ? restaurant.store_img.trim()
+          : null
+    const gallery = Array.isArray(restaurant.gallery_images)
+      ? restaurant.gallery_images
+          .filter((g): g is string => typeof g === 'string' && g.trim() !== '')
+          .map((g) => g.trim())
+      : []
+    const withoutBanner = banner ? gallery.filter((g) => g !== banner) : gallery
+    const img0 = banner ?? withoutBanner[0] ?? fallback
+    const sideTiles = banner ? withoutBanner : withoutBanner.slice(1)
+    const img1 = sideTiles[0] ?? img0
+    const img2 = sideTiles[1] ?? img0
+    const img3 = sideTiles[2] ?? img0
+    return [img0, img1, img2, img3]
+  }, [restaurant])
 
-  /** Photos tab: store gallery + banner + store image + unique menu item images (order preserved, deduped) */
+  /** Photos tab: banner + store gallery only (no menu item images) */
   const photosTabImageUrls = useMemo(() => {
     if (!restaurant) return [] as string[]
     const urls: string[] = []
@@ -503,11 +713,8 @@ function RestaurantPage({
     }
     add(typeof restaurant.banner_url === 'string' ? restaurant.banner_url : null)
     add(restaurant.store_img ?? null)
-    for (const m of menuItems) {
-      add(m.image_url ?? null)
-    }
     return urls
-  }, [restaurant, menuItems])
+  }, [restaurant])
 
   /** First row: wide banner + 3 gallery thumbs; rest: dense grid (banner deduped from rest) */
   const galleryLayout = useMemo(() => {
@@ -620,7 +827,7 @@ function RestaurantPage({
   const crumbMiddle = getRestaurantBreadcrumbMiddle(entryFrom)
   const isOpenNow = String(restaurant.operational_status ?? '').toUpperCase() === 'OPEN'
 
-  const img0 = heroGalleryImages[0] ?? '/img/placeholder.png'
+  const img0 = heroGalleryImages[0] ?? '/img/fav.png'
   const img1 = heroGalleryImages[1] ?? img0
   const img2 = heroGalleryImages[2] ?? img0
   const img3 = heroGalleryImages[3] ?? img0
@@ -653,38 +860,70 @@ function RestaurantPage({
         </div>
       )}
 
-      {/* Compact sticky header: keep only breadcrumb + back/title visible on scroll */}
+      {/* Compact sticky header: title, breadcrumb, menu search, back (vertically centered) */}
       <div
+        ref={compactHeaderRef}
         className={`fixed top-0 left-0 right-0 z-[70] bg-white/95 backdrop-blur-md border-b border-neutral-200/90 transition-all duration-300 ${
           isTabsSticky
             ? 'translate-y-0 opacity-100 shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12)]'
             : '-translate-y-full opacity-0 pointer-events-none'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs sm:text-sm font-semibold text-text truncate min-w-0">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <p className="text-xs sm:text-sm font-semibold text-text truncate shrink-0 max-w-[min(34%,11rem)] sm:max-w-[13rem] lg:max-w-[15rem]">
               {restaurant.restaurant_name}
             </p>
+            {activeTab === 'menu' && (
+              <div className="flex-1 min-w-0 px-0.5 sm:px-1">
+                <div className="relative flex items-center rounded-lg bg-white border border-neutral-200/90 shadow-sm mx-auto max-w-md">
+                  <i className="fas fa-search text-text-light/50 pl-2.5 text-xs shrink-0" aria-hidden />
+                  <input
+                    type="search"
+                    placeholder="Search dishes by name…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full min-w-0 bg-transparent py-1.5 pl-2 pr-8 text-xs placeholder:text-text-light/45 focus:outline-none"
+                    aria-label="Search menu items"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2 text-text-light/50 hover:text-purple transition-colors p-0.5"
+                      aria-label="Clear search"
+                    >
+                      <i className="fas fa-times text-xs" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {activeTab !== 'menu' && <div className="flex-1 min-w-0" aria-hidden />}
             <button
               type="button"
               onClick={() => router.back()}
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-neutral-300/90 bg-white text-[11px] font-semibold text-text hover:border-purple/40 hover:text-purple hover:bg-purple-light/30 transition-colors shrink-0"
+              className="inline-flex shrink-0 items-center gap-1.5 h-8 px-3 rounded-full border border-neutral-300/90 bg-white text-[11px] font-semibold text-text hover:border-purple/40 hover:text-purple hover:bg-purple-light/30 transition-colors"
             >
               <i className="fas fa-arrow-left text-[10px]" />
               Back
             </button>
           </div>
-          <nav className="mt-1 text-[10px] sm:text-[11px] text-text-light flex flex-wrap items-center gap-1 min-w-0" aria-label="Breadcrumb">
-              <a href="/order" className="hover:text-purple transition-colors">
-                Home
-              </a>
-              <span className="text-border/80">/</span>
-              <a href={crumbMiddle.href} className="hover:text-purple transition-colors">
-                {crumbMiddle.label}
-              </a>
-              <span className="text-border/80">/</span>
-              <span className="text-text font-medium truncate max-w-[min(100%,240px)]">{restaurant.restaurant_name}</span>
+          <nav
+            className="mt-1 text-[10px] sm:text-[11px] text-text-light flex flex-wrap items-center gap-1 min-w-0"
+            aria-label="Breadcrumb"
+          >
+            <a href="/order" className="hover:text-purple transition-colors">
+              Home
+            </a>
+            <span className="text-border/80">/</span>
+            <a href={crumbMiddle.href} className="hover:text-purple transition-colors">
+              {crumbMiddle.label}
+            </a>
+            <span className="text-border/80">/</span>
+            <span className="text-text font-medium truncate max-w-[min(100%,200px)]">
+              {restaurant.restaurant_name}
+            </span>
           </nav>
         </div>
       </div>
@@ -692,30 +931,36 @@ function RestaurantPage({
       {/* Main header scrolls normally */}
       <div className="bg-white border-b border-neutral-200/90">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-2 pb-2 sm:pt-2.5 sm:pb-2">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-0">
-            <nav className="text-[11px] sm:text-xs text-text-light flex flex-wrap items-center gap-1" aria-label="Breadcrumb">
-              <a href="/order" className="hover:text-purple transition-colors">
-                Home
-              </a>
+          <div className="flex sm:hidden items-center justify-between gap-2 mb-2">
+            <nav className="text-[11px] text-text-light flex flex-wrap items-center gap-1 min-w-0" aria-label="Breadcrumb">
+              <a href="/order" className="hover:text-purple transition-colors">Home</a>
               <span className="text-border/80">/</span>
-              <a href={crumbMiddle.href} className="hover:text-purple transition-colors">
-                {crumbMiddle.label}
-              </a>
-              <span className="text-border/80">/</span>
-              <span className="text-text font-medium truncate max-w-[min(100%,200px)]">{restaurant.restaurant_name}</span>
+              <a href={crumbMiddle.href} className="hover:text-purple transition-colors">{crumbMiddle.label}</a>
             </nav>
             <button
               type="button"
               onClick={() => router.back()}
-              className="flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-text-light hover:text-purple transition-colors"
+              className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-text-light hover:text-purple transition-colors"
             >
               <i className="fas fa-arrow-left text-[10px]" />
               Back
             </button>
           </div>
 
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3 mb-2">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4 mb-2">
             <div className="min-w-0 flex-1">
+              <nav className="hidden sm:flex text-[11px] sm:text-xs text-text-light flex-wrap items-center gap-1" aria-label="Breadcrumb">
+                <a href="/order" className="hover:text-purple transition-colors">
+                  Home
+                </a>
+                <span className="text-border/80">/</span>
+                <a href={crumbMiddle.href} className="hover:text-purple transition-colors">
+                  {crumbMiddle.label}
+                </a>
+                <span className="text-border/80">/</span>
+                <span className="text-text font-medium truncate max-w-[min(100%,200px)]">{restaurant.restaurant_name}</span>
+              </nav>
+
               <h1 className="text-2xl sm:text-3xl lg:text-4xl xl:text-[2.5rem] font-bold text-text tracking-tight leading-[1.12] mt-3 sm:mt-4 mb-2 sm:mb-2.5">
                 {restaurant.restaurant_name}
               </h1>
@@ -749,9 +994,17 @@ function RestaurantPage({
               ) : null}
             </div>
 
-            <div className="flex gap-2 shrink-0 sm:pl-2">
+            <div className="hidden sm:flex flex-col items-end gap-3 shrink-0 sm:pt-0.5">
+              <button
+                type="button"
+                onClick={() => router.back()}
+                className="flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-text-light hover:text-purple transition-colors"
+              >
+                <i className="fas fa-arrow-left text-[10px]" />
+                Back
+              </button>
               {restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
-                <div className="rounded-md bg-mint text-white px-2.5 py-1.5 min-w-[5.25rem] sm:min-w-[5.75rem] text-center shadow-sm self-start">
+                <div className="rounded-md bg-mint text-white px-2.5 py-1.5 min-w-[5.25rem] sm:min-w-[5.75rem] text-center shadow-sm">
                   <div className="text-base sm:text-lg font-bold leading-none tabular-nums">{Number(restaurant.avg_rating).toFixed(1)}★</div>
                   <div className="text-[9px] font-medium opacity-95 mt-0.5 leading-tight">Store rating</div>
                   <div className="text-[9px] opacity-90 leading-tight">
@@ -759,12 +1012,29 @@ function RestaurantPage({
                   </div>
                 </div>
               ) : (
-                <div className="rounded-md border border-border bg-bg px-2.5 py-2 text-center self-start max-w-[9rem]">
+                <div className="rounded-md border border-border bg-bg px-2.5 py-2 text-center max-w-[9rem]">
                   <p className="text-[11px] sm:text-xs font-semibold text-text leading-tight">New on GatiMitra</p>
                   <p className="text-[10px] text-text-light mt-0.5 leading-tight">Ratings after first orders</p>
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="sm:hidden flex justify-end mb-2">
+            {restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
+              <div className="rounded-md bg-mint text-white px-2.5 py-1.5 min-w-[5.25rem] text-center shadow-sm">
+                <div className="text-base font-bold leading-none tabular-nums">{Number(restaurant.avg_rating).toFixed(1)}★</div>
+                <div className="text-[9px] font-medium opacity-95 mt-0.5 leading-tight">Store rating</div>
+                <div className="text-[9px] opacity-90 leading-tight">
+                  {formatReviewCount(Number(restaurant.total_reviews ?? 0))} ratings
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-border bg-bg px-2.5 py-2 text-center max-w-[9rem]">
+                <p className="text-[11px] font-semibold text-text leading-tight">New on GatiMitra</p>
+                <p className="text-[10px] text-text-light mt-0.5 leading-tight">Ratings after first orders</p>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] sm:text-xs text-text-light mb-2">
@@ -908,7 +1178,7 @@ function RestaurantPage({
                   <i className="fas fa-search text-text-light/50 pl-2.5 text-xs" />
                   <input
                     type="search"
-                    placeholder="Search menu…"
+                    placeholder="Search dishes by name…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full bg-transparent py-2 pl-2 pr-8 text-xs placeholder:text-text-light/45 focus:outline-none"
@@ -936,22 +1206,20 @@ function RestaurantPage({
           <div className="rounded-xl sm:rounded-2xl overflow-hidden border border-neutral-200 bg-neutral-100 shadow-sm">
             <div className="md:hidden flex flex-col gap-0">
               <div className="relative aspect-[16/11] max-h-[220px] w-full bg-neutral-200">
-                <Image
+                <ProtectedImage
                   src={img0}
                   alt={restaurant.restaurant_name}
                   fill
-                  className="object-cover"
-                  sizes="100vw"
                   priority
-                  unoptimized={img0.includes('dummyimage.com')}
+                  imgClassName="object-cover"
                 />
               </div>
               <div className="grid grid-cols-2 gap-0 border-t border-white/90">
                 <div className="relative aspect-[4/3] border-r border-white/90 bg-neutral-200">
-                  <Image src={img1} alt="" fill className="object-cover" sizes="50vw" unoptimized={img1.includes('dummyimage.com')} />
+                  <ProtectedImage src={img1} alt="" fill imgClassName="object-cover" />
                 </div>
                 <div className="relative aspect-[4/3] bg-neutral-200">
-                  <Image src={img2} alt="" fill className="object-cover" sizes="50vw" unoptimized={img2.includes('dummyimage.com')} />
+                  <ProtectedImage src={img2} alt="" fill imgClassName="object-cover" />
                 </div>
               </div>
               <button
@@ -959,13 +1227,11 @@ function RestaurantPage({
                 onClick={goToGallery}
                 className="relative aspect-[16/9] w-full border-t border-white/90 bg-neutral-900 group text-left"
               >
-                <Image
+                <ProtectedImage
                   src={img3}
                   alt=""
                   fill
-                  className="object-cover opacity-90 group-hover:opacity-100 transition-opacity duration-300"
-                  sizes="100vw"
-                  unoptimized={img3.includes('dummyimage.com')}
+                  imgClassName="object-cover opacity-90 group-hover:opacity-100 transition-opacity duration-300"
                 />
                 <div className="absolute inset-0 bg-black/45 flex items-center justify-center pointer-events-none">
                   <span className="text-white text-sm font-semibold tracking-wide">View gallery</span>
@@ -981,34 +1247,30 @@ function RestaurantPage({
               }}
             >
               <div className="relative row-span-2 col-start-1 row-start-1 bg-neutral-200 min-h-0">
-                <Image
+                <ProtectedImage
                   src={img0}
                   alt={restaurant.restaurant_name}
                   fill
-                  className="object-cover"
-                  sizes="50vw"
                   priority
-                  unoptimized={img0.includes('dummyimage.com')}
+                  imgClassName="object-cover"
                 />
               </div>
               <div className="relative col-start-2 row-start-1 border-l border-white/80 bg-neutral-200 min-h-0">
-                <Image src={img1} alt="" fill className="object-cover" sizes="25vw" unoptimized={img1.includes('dummyimage.com')} />
+                <ProtectedImage src={img1} alt="" fill priority imgClassName="object-cover" />
               </div>
               <div className="relative col-start-2 row-start-2 border-l border-t border-white/80 bg-neutral-200 min-h-0">
-                <Image src={img2} alt="" fill className="object-cover" sizes="25vw" unoptimized={img2.includes('dummyimage.com')} />
+                <ProtectedImage src={img2} alt="" fill priority imgClassName="object-cover" />
               </div>
               <button
                 type="button"
                 onClick={goToGallery}
                 className="relative row-span-2 col-start-3 row-start-1 border-l border-white/80 bg-neutral-900 group text-left min-h-0 overflow-hidden"
               >
-                <Image
+                <ProtectedImage
                   src={img3}
                   alt=""
                   fill
-                  className="object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                  sizes="25vw"
-                  unoptimized={img3.includes('dummyimage.com')}
+                  imgClassName="object-cover opacity-90 group-hover:opacity-100 transition-opacity duration-500"
                 />
                 <div className="absolute inset-0 bg-black/45 flex items-center justify-center pointer-events-none">
                   <span className="text-white text-sm sm:text-base font-semibold tracking-wide drop-shadow-md">View gallery</span>
@@ -1067,13 +1329,30 @@ function RestaurantPage({
 
       {/* —— Main: asymmetric columns —— */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-24 md:pb-16 pt-2">
+        {activeTab === 'menu' && (
+          <div ref={menuStickySentinelRef} className="h-px w-full pointer-events-none" aria-hidden />
+        )}
         <div
-          className={`min-w-0 flex flex-col ${activeTab === 'menu' ? 'lg:flex-row gap-8 lg:gap-10' : 'gap-4'}`}
+          ref={menuPinnedShellRef}
+          className={`min-w-0 flex flex-col ${
+            activeTab === 'menu' ? 'lg:flex-row lg:gap-10' : 'gap-4'
+          } ${
+            isMenuPanelPinned
+              ? 'lg:sticky lg:top-[var(--gm-restaurant-sticky-top,4rem)] lg:z-[55] lg:items-start'
+              : 'lg:items-start'
+          }`}
         >
           {activeTab === 'menu' && (
-            <aside ref={sidebarRef} className="lg:w-56 shrink-0 lg:sticky lg:top-32 self-start space-y-6 lg:pt-1">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-4">Diet</p>
+            <aside
+              ref={sidebarRef}
+              className={`lg:w-56 shrink-0 flex flex-col lg:space-y-4 space-y-6 ${
+                isMenuPanelPinned
+                  ? 'lg:max-h-[calc(100vh-var(--gm-restaurant-sticky-top,4rem))] lg:min-h-0 lg:overflow-hidden'
+                  : ''
+              }`}
+            >
+              <div className="shrink-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2">Diet</p>
                 <button
                   type="button"
                   onClick={() => setLocalVegOnly(!localVegOnly)}
@@ -1098,9 +1377,14 @@ function RestaurantPage({
                   </span>
                 </button>
               </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-4">Browse</p>
-                <nav className="flex flex-row lg:flex-col gap-1 overflow-x-auto no-scrollbar pb-1 lg:pb-0 -mx-1 px-1 lg:mx-0 lg:px-0">
+              <div className={`flex flex-col ${isMenuPanelPinned ? 'min-h-0 flex-1 lg:overflow-hidden' : ''}`}>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2 shrink-0">Browse</p>
+                <nav
+                  ref={sidebarNavRef}
+                  className={`flex flex-row lg:flex-col gap-1 overflow-x-auto pb-1 lg:pb-2 -mx-1 px-1 lg:mx-0 lg:px-0 no-scrollbar lg:overflow-x-hidden ${
+                    isMenuPanelPinned ? 'lg:overflow-y-auto lg:flex-1 lg:min-h-0 lg:pr-1' : ''
+                  }`}
+                >
                   {categories.map((cat) => (
                     <button
                       key={cat}
@@ -1145,6 +1429,17 @@ function RestaurantPage({
                           <span className="ml-2 font-medium">Loading menu…</span>
                         </span>
                       </div>
+                    ) : menuLoadError ? (
+                      <div className="py-20 text-center px-4">
+                        <p className="text-text-light text-sm max-w-sm mx-auto mb-4">{menuLoadError}</p>
+                        <button
+                          type="button"
+                          onClick={() => window.location.reload()}
+                          className="rounded-full bg-mint px-5 py-2 text-sm font-semibold text-white hover:opacity-90"
+                        >
+                          Retry
+                        </button>
+                      </div>
                     ) : menuItems.length === 0 ? (
                       <div className="py-20 text-center">
                         <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-mint mb-3">Menu</p>
@@ -1180,11 +1475,12 @@ function RestaurantPage({
                               </div>
                               {item.image && (
                                 <div className="relative h-40 w-full overflow-hidden">
-                                  <Image
+                                  <ProtectedImage
                                     src={item.image}
                                     alt={item.name}
                                     fill
-                                    className="object-cover group-hover:scale-110 transition-transform duration-500"
+                                    objectFit="cover"
+                                    imgClassName="group-hover:scale-110 transition-transform duration-500"
                                   />
                                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent"></div>
                                   <div className="absolute top-4 right-4">
@@ -1237,37 +1533,63 @@ function RestaurantPage({
                       </div>
                     )}
 
-                    {/* All Menu Items - Enhanced */}
-                    <div className="max-w-4xl">
-                      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-10 border-b border-border/30 pb-6">
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-purple/80 mb-2">Selections</p>
-                          <h2 className="text-3xl sm:text-4xl font-semibold text-text tracking-tight">
-                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple via-mint to-pink">Menu</span>
-                            <span className="text-text-light font-normal text-lg sm:text-xl ml-2 tabular-nums">
-                              {filteredMenuItems.length} dishes
-                            </span>
-                          </h2>
+                    {/* Selections chrome (fixed) + dish list scroll when pinned */}
+                    <div className="w-full">
+                      <div
+                        ref={menuSelectionsHeaderRef}
+                        className="shrink-0 border-b border-border/30 bg-bg pb-4 pt-1"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-purple/80 mb-2">Selections</p>
+                            <h2 className="text-3xl sm:text-4xl font-semibold text-text tracking-tight leading-tight">
+                              <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple via-mint to-pink">Menu</span>
+                              <span className="text-text-light font-normal text-lg sm:text-xl ml-2 tabular-nums">
+                                {filteredMenuItems.length} dishes
+                              </span>
+                            </h2>
+                          </div>
+                          <p className="text-sm text-text-light shrink-0">
+                            {searchQuery.trim() ? (
+                              <>
+                                Showing{' '}
+                                <span className="text-text font-medium">
+                                  {filteredMenuItems.length} match{filteredMenuItems.length === 1 ? '' : 'es'} for &ldquo;{searchQuery.trim()}&rdquo;
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                Showing <span className="text-text font-medium">{selectedCategory}</span>
+                              </>
+                            )}
+                          </p>
                         </div>
-                        <p className="text-sm text-text-light">
-                          Showing <span className="text-text font-medium">{selectedCategory}</span>
-                        </p>
                       </div>
 
-                      {filteredMenuItems.length > 0 ? (
-                        <ul className="divide-y divide-border/25">
+                      <div
+                        ref={menuScrollContainerRef}
+                        className={
+                          isMenuPanelPinned
+                            ? 'lg:overflow-y-auto lg:overscroll-contain lg:pr-1 [scrollbar-gutter:stable] lg:max-h-[calc(100vh-var(--gm-restaurant-sticky-top,4rem)-var(--gm-menu-selections-h,7.5rem)-0.5rem)]'
+                            : ''
+                        }
+                      >
+                        {filteredMenuItems.length > 0 ? (
+                          <ul className="divide-y divide-border/25">
                           {filteredMenuItems.map((item) => (
-                            <li key={item.id} className="group relative py-7 first:pt-0">
+                            <li key={item.id} className="group relative py-7">
                               <div className="absolute left-0 top-1/2 -translate-y-1/2 w-px h-0 group-hover:h-3/5 bg-gradient-to-b from-transparent via-mint to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 rounded-full" aria-hidden />
                               <div className="flex gap-5 sm:gap-8 pl-0 sm:pl-2">
                                 {item.image_url ? (
-                                  <div className="relative w-[88px] h-[88px] sm:w-[104px] sm:h-[104px] shrink-0 rounded-2xl overflow-hidden ring-1 ring-border/40 shadow-[0_12px_40px_-20px_rgba(75,42,212,0.35)] group-hover:ring-mint/50 group-hover:shadow-[0_16px_48px_-16px_rgba(22,194,165,0.25)] transition-all duration-500">
-                                    <Image
+                                  <div className="shrink-0 rounded-2xl overflow-hidden ring-1 ring-border/40 shadow-[0_12px_40px_-20px_rgba(75,42,212,0.35)] group-hover:ring-mint/50 group-hover:shadow-[0_16px_48px_-16px_rgba(22,194,165,0.25)] transition-all duration-500">
+                                    <ProtectedImage
                                       src={item.image_url}
                                       alt={item.item_name || 'Menu item'}
-                                      fill
-                                      className="object-cover scale-100 group-hover:scale-110 transition-transform duration-700 ease-out"
-                                      unoptimized={item.image_url.includes('dummyimage.com')}
+                                      width={104}
+                                      height={104}
+                                      fixedSize
+                                      objectFit="cover"
+                                      imgClassName="rounded-2xl"
                                     />
                                   </div>
                                 ) : (
@@ -1341,6 +1663,7 @@ function RestaurantPage({
                           </button>
                         </div>
                       )}
+                      </div>
                     </div>
                       </>
                     )}
@@ -1364,18 +1687,14 @@ function RestaurantPage({
                             {/* Row 1: one grid → equal gaps; banner wider via fr; bordered boxes */}
                             <div className="grid w-full max-w-full grid-cols-3 gap-3 sm:grid-cols-[minmax(0,1.28fr)_repeat(3,minmax(0,1fr))] sm:gap-3 md:gap-3.5">
                               <div className="col-span-3 flex min-h-[120px] min-w-0 items-center justify-center overflow-hidden rounded-xl border border-border/50 bg-white/75 p-2 shadow-sm dark:border-border/45 dark:bg-white/[0.06] sm:col-span-1 sm:min-h-[148px] md:min-h-[160px]">
-                                <Image
+                                <ProtectedImage
                                   src={galleryLayout.banner}
                                   alt={`${restaurant.restaurant_name} banner`}
-                                  width={960}
-                                  height={360}
-                                  className="h-auto max-h-[min(42vw,220px)] w-full max-w-full object-contain object-left transition-[filter] duration-500 hover:brightness-[1.05] sm:max-h-[min(18vw,200px)] md:max-h-[min(16vw,210px)]"
-                                  sizes="(max-width:640px) 96vw, 28vw"
-                                  unoptimized={
-                                    galleryLayout.banner.includes('dummyimage.com') ||
-                                    galleryLayout.banner.includes('/api/attachments/') ||
-                                    galleryLayout.banner.includes('localhost')
-                                  }
+                                  width={320}
+                                  height={160}
+                                  fixedSize
+                                  objectFit="contain"
+                                  imgClassName="max-h-[160px] max-w-full w-auto h-auto object-contain"
                                 />
                               </div>
                               {galleryLayout.firstRowExtras.map((img, idx) => (
@@ -1383,18 +1702,14 @@ function RestaurantPage({
                                   key={`row1-${img}-${idx}`}
                                   className="group flex aspect-square min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-xl border border-border/50 bg-white/75 p-2 shadow-sm dark:border-border/45 dark:bg-white/[0.06]"
                                 >
-                                  <Image
+                                  <ProtectedImage
                                     src={img}
                                     alt={`${restaurant.restaurant_name} photo ${idx + 1}`}
-                                    width={320}
-                                    height={320}
-                                    className="max-h-full max-w-full h-auto w-auto object-contain object-center transition-[filter] duration-500 group-hover:brightness-[1.05]"
-                                    sizes="(max-width:640px) 28vw, 14vw"
-                                    unoptimized={
-                                      img.includes('dummyimage.com') ||
-                                      img.includes('/api/attachments/') ||
-                                      img.includes('localhost')
-                                    }
+                                    width={140}
+                                    height={140}
+                                    fixedSize
+                                    objectFit="contain"
+                                    imgClassName="max-h-[140px] max-w-[140px] object-contain"
                                   />
                                 </div>
                               ))}
@@ -1405,18 +1720,14 @@ function RestaurantPage({
                                   key={`grid-${img}-${idx}`}
                                   className="group flex min-h-0 aspect-square items-center justify-center overflow-hidden rounded-xl border border-border/50 bg-white/75 p-2 shadow-sm dark:border-border/45 dark:bg-white/[0.06]"
                                 >
-                                  <Image
+                                  <ProtectedImage
                                     src={img}
                                     alt={`${restaurant.restaurant_name} photo ${idx + 1}`}
-                                    width={320}
-                                    height={320}
-                                    className="max-h-full max-w-full h-auto w-auto object-contain object-center transition-[filter] duration-500 group-hover:brightness-[1.05]"
-                                    sizes="(max-width:640px) 45vw, (max-width:1024px) 22vw, 15vw"
-                                    unoptimized={
-                                      img.includes('dummyimage.com') ||
-                                      img.includes('/api/attachments/') ||
-                                      img.includes('localhost')
-                                    }
+                                    width={120}
+                                    height={120}
+                                    fixedSize
+                                    objectFit="contain"
+                                    imgClassName="max-h-[120px] max-w-[120px] object-contain"
                                   />
                                 </div>
                               ))}
@@ -1429,18 +1740,14 @@ function RestaurantPage({
                                 key={`${img}-${idx}`}
                                 className="group flex min-h-0 aspect-square items-center justify-center overflow-hidden rounded-xl border border-border/50 bg-white/75 p-2 shadow-sm dark:border-border/45 dark:bg-white/[0.06]"
                               >
-                                <Image
+                                <ProtectedImage
                                   src={img}
                                   alt={`${restaurant.restaurant_name} photo ${idx + 1}`}
-                                  width={320}
-                                  height={320}
-                                  className="max-h-full max-w-full h-auto w-auto object-contain object-center transition-[filter] duration-500 group-hover:brightness-[1.05]"
-                                  sizes="(max-width:640px) 45vw, (max-width:1024px) 22vw, 15vw"
-                                  unoptimized={
-                                    img.includes('dummyimage.com') ||
-                                    img.includes('/api/attachments/') ||
-                                    img.includes('localhost')
-                                  }
+                                  width={120}
+                                  height={120}
+                                  fixedSize
+                                  objectFit="contain"
+                                  imgClassName="max-h-[120px] max-w-[120px] object-contain"
                                 />
                               </div>
                             ))}
@@ -1641,36 +1948,54 @@ function RestaurantPage({
 
       {/* Fixed download module (Browse menu position) - menu tab only */}
       <div className={`${activeTab === 'menu' ? 'hidden md:block' : 'hidden'} fixed bottom-6 right-6 z-40`}>
-        <div className="w-[304px] rounded-2xl overflow-hidden border border-neutral-900/10 bg-[#171a20] text-white shadow-[0_26px_52px_-22px_rgba(0,0,0,0.6)]">
-          <div className="grid grid-cols-[1.8fr_0.82fr] min-h-[132px]">
-            <div className="p-5 flex flex-col justify-between">
-              <p className="text-[14px] leading-[1.15] font-semibold tracking-tight">
-                For a better experience, please order through our mobile app
-              </p>
-              <button
-                type="button"
-                onClick={() => handleOpenAppDownloadPopup()}
-                className="mt-3 inline-flex w-fit items-center justify-center rounded-lg bg-white text-neutral-900 text-sm font-semibold px-4 py-2 hover:bg-neutral-100 transition-colors"
-              >
-                Download the App
-              </button>
-            </div>
-            <div className="relative bg-gradient-to-b from-mint to-[#27d8b9] flex items-end justify-center">
-              <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-black/70" />
-              <div className="w-[78%] h-[90%] rounded-t-[16px] border-2 border-black/70 bg-[#2ee7c6] flex items-center justify-center overflow-hidden">
-                <div className="inline-flex rounded-md bg-black shadow-[0_4px_14px_-6px_rgba(0,0,0,0.55)]">
-                  <Image
-                    src="/img/logoo.png"
-                    alt="GatiMitra"
-                    width={132}
-                    height={56}
-                    className="w-[84px] h-auto object-contain drop-shadow-[0_2px_5px_rgba(0,0,0,0.65)]"
-                  />
+        {floatingDownloadExpanded ? (
+          <div className="relative w-[304px] rounded-2xl overflow-hidden border border-neutral-900/10 bg-[#171a20] text-white shadow-[0_26px_52px_-22px_rgba(0,0,0,0.6)]">
+            <button
+              type="button"
+              onClick={() => setFloatingDownloadExpanded(false)}
+              aria-label="Hide app download card"
+              className="absolute top-2.5 left-2.5 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-white/80 hover:bg-white/20 hover:text-white transition-colors"
+            >
+              <X className="h-4 w-4" strokeWidth={2.5} />
+            </button>
+            <div className="grid grid-cols-[1.8fr_0.82fr] min-h-[132px]">
+              <div className="p-5 flex flex-col justify-between">
+                <p className="text-[14px] leading-[1.15] font-semibold tracking-tight pl-8 pt-0.5">
+                  For a better experience, please order through our mobile app
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleOpenAppDownloadPopup()}
+                  className="mt-3 inline-flex w-fit items-center justify-center rounded-lg bg-white text-neutral-900 text-sm font-semibold px-4 py-2 hover:bg-neutral-100 transition-colors"
+                >
+                  Download the App
+                </button>
+              </div>
+              <div className="relative bg-gradient-to-b from-mint to-[#27d8b9] flex items-end justify-center">
+                <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-black/70" />
+                <div className="w-[78%] h-[90%] rounded-t-[16px] border-2 border-black/70 bg-[#2ee7c6] flex items-center justify-center overflow-hidden">
+                  <div className="inline-flex rounded-md bg-black shadow-[0_4px_14px_-6px_rgba(0,0,0,0.55)]">
+                    <GatiMitraLogo
+                      alt="GatiMitra"
+                      width={132}
+                      height={56}
+                      className="w-[84px] h-auto object-contain drop-shadow-[0_2px_5px_rgba(0,0,0,0.65)]"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setFloatingDownloadExpanded(true)}
+            aria-label="Show app download card"
+            className="flex h-14 w-14 items-center justify-center rounded-full border border-neutral-900/10 bg-[#171a20] text-white shadow-[0_16px_40px_-12px_rgba(0,0,0,0.55)] hover:bg-[#22262e] hover:scale-105 active:scale-95 transition-all"
+          >
+            <Smartphone className="h-6 w-6" strokeWidth={2} />
+          </button>
+        )}
       </div>
 
       {showAppDownloadModal && (
@@ -1690,7 +2015,12 @@ function RestaurantPage({
                 <div className="relative h-[360px] w-[190px] rounded-[32px] border border-neutral-200 bg-white shadow-[0_16px_45px_-18px_rgba(0,0,0,0.45)]">
                   <div className="absolute top-2 left-1/2 -translate-x-1/2 w-16 h-1.5 rounded-full bg-neutral-300" />
                   <div className="absolute inset-3 rounded-[24px] bg-gradient-to-b from-mint to-[#22d0b5] flex items-center justify-center p-3">
-                    <Image src="/img/logoo.png" alt="GatiMitra logo" width={130} height={56} className="w-full h-auto object-contain drop-shadow-[0_3px_8px_rgba(0,0,0,0.35)]" />
+                    <GatiMitraLogo
+                      alt="GatiMitra logo"
+                      width={130}
+                      height={56}
+                      className="w-full h-auto object-contain drop-shadow-[0_3px_8px_rgba(0,0,0,0.35)]"
+                    />
                   </div>
                 </div>
               </div>
@@ -1781,7 +2111,7 @@ function RestaurantPage({
       <CustomizeModal
         open={customOpen}
         onClose={() => setCustomOpen(false)}
-        item={customItem ? { id: customItem.id, name: customItem.item_name, basePrice: customItem.price, sizes: customItem.sizes, addons: customItem.addons, image: customItem.image_url } : undefined}
+        item={customItem ? { id: customItem.id, name: customItem.item_name, basePrice: customItem.price, sizes: customItem.sizes, addons: customItem.addons, image: toAbsoluteImageUrl(customItem.image_url) ?? undefined } : undefined}
         onConfirm={handleConfirmCustomization}
       />
       <style jsx global>{`

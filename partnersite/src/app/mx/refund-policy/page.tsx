@@ -24,10 +24,10 @@ function RefundPolicyPageContent() {
 
   return (
     <MXLayoutWhite
-      restaurantName="Refund Policy"
+      restaurantName="Refund & Cancellation Policy"
       restaurantId={storeId || DEMO_RESTAURANT_ID}
     >
-      <PartnerPageHeader title="Refund Policy" subtitle="Eligibility and settlement terms" />
+      <PartnerPageHeader title="Refund & Cancellation Policy" subtitle="Payments, refunds, and order cancellation terms" />
       <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-orange-50/30">
         {/* In-layout header: Back + title — no full-page wrapper so sidebar stays */}
         <div className="sticky top-0 z-[100] bg-white shadow-sm mx-shell-header !px-0">
@@ -56,8 +56,8 @@ function RefundPolicyPageContent() {
 
 function RefundPolicyFallback() {
   return (
-    <MXLayoutWhite restaurantName="Refund Policy" restaurantId={DEMO_RESTAURANT_ID}>
-      <PartnerPageHeader title="Refund Policy" subtitle="Eligibility and settlement terms" />
+    <MXLayoutWhite restaurantName="Refund & Cancellation Policy" restaurantId={DEMO_RESTAURANT_ID}>
+      <PartnerPageHeader title="Refund & Cancellation Policy" subtitle="Payments, refunds, and order cancellation terms" />
       <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-orange-50/30">
         <div className="sticky top-0 z-[100] bg-white shadow-sm mx-shell-header !px-0">
           <div className="max-w-4xl mx-auto px-4 sm:px-6 w-full">

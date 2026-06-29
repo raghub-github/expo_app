@@ -1,8 +1,11 @@
 'use client'
 
+import AppAssetImage from '@/components/common/AppAssetImage'
+import { CX } from '@/lib/appAssetKeys'
+
 /**
  * Shown when the user has set a location but no restaurants are within the service radius.
- * Headline + body above the art; image height capped so the CTA stays on-screen.
+ * Illustration from CMS (same pipeline as customer app home assets).
  */
 type Props = {
   onTryDifferentLocation?: () => void
@@ -25,12 +28,12 @@ export default function OrderNoServiceArea({ onTryDifferentLocation }: Props) {
             </p>
           </div>
           <div className="flex w-full max-h-[min(52vh,calc(100svh-20rem))] items-center justify-center overflow-hidden sm:max-h-[min(56vh,calc(100svh-16rem))] md:max-h-[min(58vh,calc(100svh-14rem))]">
-            <img
-              src="/img/nots.png"
+            <AppAssetImage
+              assetKey={CX.home.brandBanner}
               alt=""
               className="mx-auto h-auto max-h-full w-full max-w-[min(100%,680px)] object-contain object-center drop-shadow-[0_8px_30px_rgba(0,0,0,0.08)]"
-              loading="eager"
               decoding="async"
+              fetchPriority="high"
             />
           </div>
           {onTryDifferentLocation ? (

@@ -25,7 +25,7 @@ export default function Search({
   const [loading, setLoading] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const { location } = useLocationContext()
-  const searchGeoQs = getRestaurantGeoQueryString(location, location.locationCommittedByUser === true)
+  const searchGeoQs = getRestaurantGeoQueryString(location)
 
   // Debounce search query
   useEffect(() => {

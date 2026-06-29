@@ -136,7 +136,12 @@ export default function AboutPage() {
           <h1 className="mb-5 bg-gradient-to-r from-[#109D4C] via-[#16c2a5] to-[#4b2ad4] bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl md:text-6xl">
             About GatiMitra
           </h1>
-          <p className="mb-6 text-xl font-semibold text-neutral-900 sm:text-2xl">Moving India forward</p>
+          <p className="mb-2 text-sm font-semibold text-[#109D4C] sm:text-base">
+            Made for your Moments
+          </p>
+          <p className="mb-6 text-xl font-semibold text-neutral-900 sm:text-2xl">
+            India&apos;s #1 super App.
+          </p>
           <div
             className="mx-auto mb-10 h-1 w-24 rounded-full bg-gradient-to-r from-[#109D4C] to-[#4b2ad4]"
             aria-hidden

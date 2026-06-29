@@ -1,5 +1,7 @@
 'use client'
 
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+
 type GatiMitraSpinnerProps = {
   /** Short line under the logo (optional) */
   message?: string
@@ -19,7 +21,7 @@ export default function GatiMitraSpinner({ message = 'Checking restaurants near 
           style={{ animationDirection: 'reverse', animationDuration: '1.2s' }}
         />
         <div className="absolute inset-0 flex items-center justify-center">
-          <img src="/img/logo.png" alt="" className="h-11 w-auto max-w-[56px] object-contain sm:h-12 sm:max-w-[64px]" aria-hidden />
+          <GatiMitraLogo variant="icon" alt="" className="h-11 w-auto max-w-[56px] object-contain sm:h-12 sm:max-w-[64px]" />
         </div>
       </div>
       {message ? (

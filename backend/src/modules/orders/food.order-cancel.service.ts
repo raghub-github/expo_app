@@ -14,6 +14,7 @@ import {
 } from "../../lib/financial-rule-executor.js";
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
+import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
 import { completeOrderDispatch } from "../../lib/order-dispatch.service.js";
 
 export const CUSTOMER_FOOD_CANCELLED_BY_LABEL = "Cancelled by me";
@@ -150,6 +151,7 @@ export async function cancelFoodOrderForCustomer(
       cancelled_at = ${now.toISOString()}::timestamptz,
       rejected_reason = ${displayReason},
       cancelled_by_label = ${CUSTOMER_FOOD_CANCELLED_BY_LABEL},
+      cancelled_by_type = 'customer',
       rider_id = NULL,
       updated_at = ${now.toISOString()}::timestamptz
     WHERE id = ${row.ordersFoodId}
@@ -221,6 +223,18 @@ export async function cancelFoodOrderForCustomer(
       cancel_mode: "manual",
     },
   });
+
+  try {
+    await applyMerchantOrderCancellationLedger(
+      {
+        orderCoreId: row.coreId,
+        source: "customer_cancel",
+      },
+      sql
+    );
+  } catch (ledgerErr) {
+    console.warn("[cancelFoodOrderForCustomer] cancellation ledger failed:", ledgerErr);
+  }
 
   if (!engineResult.applied) {
     try {

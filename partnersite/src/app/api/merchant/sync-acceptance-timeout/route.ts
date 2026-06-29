@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 /**
  * POST /api/merchant/sync-acceptance-timeout?store_id=GMMC1001
  * Cancels unaccepted orders past the acceptance window (runs on portal open).
+ * Partnersite validates merchant session, then calls Fastify internal sync on the backend.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -17,29 +18,52 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
 
-    const backendRes = await fetchBackend(
-      `/v1/merchant-partner/stores/${gate.storeIdNum}/sync-acceptance-timeout`,
-      {
-        method: 'POST',
-        headers: {
-          cookie: req.headers.get('cookie') ?? '',
-        },
-        timeoutMs: 12_000,
-      }
-    );
-
-    if (backendRes?.ok) {
-      const body = (await backendRes.json().catch(() => ({}))) as { cancelled?: number };
-      const cancelled = typeof body.cancelled === 'number' ? body.cancelled : 0;
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET?.trim();
+    if (!secret) {
       return NextResponse.json(
-        { cancelled, store_id: String(storeId).trim() },
-        { headers: { 'Cache-Control': 'private, no-store, max-age=0' } }
+        { error: 'backend_not_configured', cancelled: 0, store_id: String(storeId).trim() },
+        { status: 503 },
       );
     }
 
+    const backendRes = await fetchBackend(
+      `/v1/internal/stores/${gate.storeIdNum}/sync-acceptance-timeout`,
+      {
+        method: 'POST',
+        headers: { 'X-Internal-Secret': secret },
+        timeoutMs: 30_000,
+      },
+    );
+
+    if (!backendRes) {
+      return NextResponse.json(
+        { error: 'backend_unreachable', cancelled: 0, store_id: String(storeId).trim() },
+        { status: 503 },
+      );
+    }
+
+    const body = (await backendRes.json().catch(() => ({}))) as {
+      cancelled?: number;
+      error?: string;
+    };
+    const cancelled = typeof body.cancelled === 'number' ? body.cancelled : 0;
+
+    if (backendRes.ok) {
+      return NextResponse.json(
+        { cancelled, store_id: String(storeId).trim() },
+        { headers: { 'Cache-Control': 'private, no-store, max-age=0' } },
+      );
+    }
+
+    const status =
+      backendRes.status >= 400 && backendRes.status < 600 ? backendRes.status : 502;
     return NextResponse.json(
-      { error: 'backend_unavailable', cancelled: 0, store_id: String(storeId).trim() },
-      { status: 503 }
+      {
+        error: body.error ?? 'sync_failed',
+        cancelled: 0,
+        store_id: String(storeId).trim(),
+      },
+      { status },
     );
   } catch (e) {
     console.error('[sync-acceptance-timeout]', e);

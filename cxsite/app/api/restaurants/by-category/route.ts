@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 import {
   DEFAULT_SERVICE_RADIUS_KM,
   filterStoreRowsByUserGeo,
@@ -63,7 +64,7 @@ function mapStoreToRestaurant(row: {
   longitude?: number | null
   distance_km?: number | null
 }) {
-  const img = row.banner_url ?? null
+  const img = toAbsoluteImageUrl(row.banner_url ?? null)
   const name = row.store_display_name || row.store_name
   const cuisineType = Array.isArray(row.cuisine_types) && row.cuisine_types.length > 0
     ? row.cuisine_types.join(', ')

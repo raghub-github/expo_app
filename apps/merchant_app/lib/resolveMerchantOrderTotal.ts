@@ -69,16 +69,16 @@ function billFromItems(order: MerchantOrderTotalInput) {
   });
 }
 
-/** Same merchant-visible total as partnersite — compute from line items when available. */
+/** Same merchant-visible total as partnersite — frozen CTM before live item recompute. */
 export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): number {
-  const fromItems = billFromItems(order);
-  if (fromItems && fromItems.total > 0) return fromItems.total;
-
   const fromPricing = Number(order.pricing?.total);
   if (Number.isFinite(fromPricing) && fromPricing > 0) return menuRupee(fromPricing);
 
   const fromFood = Number(order.food_items_total_value);
   if (Number.isFinite(fromFood) && fromFood > 0) return menuRupee(fromFood);
+
+  const fromItems = billFromItems(order);
+  if (fromItems && fromItems.total > 0) return fromItems.total;
 
   const fromMapped = Number(order.total);
   if (Number.isFinite(fromMapped) && fromMapped > 0) return menuRupee(fromMapped);

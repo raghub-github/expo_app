@@ -71,17 +71,48 @@ export async function getActiveOrdersCount(
   storeId: number,
   token: string
 ): Promise<number> {
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/active-orders-count`,
-    token
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || res.statusText || "Failed to load active orders count");
+  return fetchActiveOrdersCountDeduped(storeId, token);
+}
+
+const ACTIVE_COUNT_CACHE_MS = 4_000;
+const activeCountInflight = new Map<
+  number,
+  { at: number; promise: Promise<number> }
+>();
+
+async function fetchActiveOrdersCountDeduped(
+  storeId: number,
+  token: string
+): Promise<number> {
+  const now = Date.now();
+  const cached = activeCountInflight.get(storeId);
+  if (cached && now - cached.at < ACTIVE_COUNT_CACHE_MS) {
+    return cached.promise;
   }
-  const data = (await res.json()) as { active_orders?: number };
-  const n = Number(data.active_orders ?? 0);
-  return Number.isFinite(n) && n >= 0 ? n : 0;
+
+  const promise = (async () => {
+    const res = await authFetch(
+      `${getBase()}/v1/merchant-partner/stores/${storeId}/active-orders-count`,
+      token
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).error || res.statusText || "Failed to load active orders count");
+    }
+    const data = (await res.json()) as { active_orders?: number };
+    const n = Number(data.active_orders ?? 0);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  })();
+
+  activeCountInflight.set(storeId, { at: now, promise });
+  try {
+    return await promise;
+  } finally {
+    const entry = activeCountInflight.get(storeId);
+    if (entry?.promise === promise) {
+      activeCountInflight.set(storeId, { at: Date.now(), promise });
+    }
+  }
 }
 
 export type CommunicationSettings = {

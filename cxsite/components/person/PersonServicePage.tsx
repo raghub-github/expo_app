@@ -10,6 +10,7 @@ import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
 import { useLocationContext } from '@/components/providers/LocationProvider'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
 
@@ -262,7 +263,7 @@ export default function PersonServicePage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <Link href="/" className="flex items-center gap-3">
-              <img src="/img/logo.png" alt="GatiMitra Logo" className="w-12 h-12 sm:w-14 sm:h-14" />
+              <GatiMitraLogo variant="icon" alt="GatiMitra" className="w-12 h-12 sm:w-14 sm:h-14" />
               <div className="flex items-center">
                 <span className="text-2xl sm:text-3xl font-black text-[#16c2a5]">Gati</span>
                 <span className="text-2xl sm:text-3xl font-black text-[#ff6b35]">Mitra</span>

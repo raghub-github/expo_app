@@ -7,7 +7,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { getConfig } from "@/config/env";
 import { STORAGE_KEYS, API_TIMEOUT_MS } from "@/constants";
 import { getItem } from "@/utils/storage";
-import { enterStartupApiGate, leaveStartupApiGate } from "@/lib/startup-api-gate";
+import { enterStartupApiGate, leaveStartupApiGate, shouldBypassStartupGate } from "@/lib/startup-api-gate";
 import { isNetworkError } from "@/utils/networkError";
 
 const MAX_RETRIES = 3;
@@ -56,8 +56,10 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
-    await enterStartupApiGate();
-    cfg.__startupGate = true;
+    if (!shouldBypassStartupGate(config.url)) {
+      await enterStartupApiGate(config.url);
+      cfg.__startupGate = true;
+    }
     return config;
   },
   (err) => Promise.reject(err)
@@ -67,12 +69,12 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (res) => {
     const cfg = res.config as RetryConfig;
-    if (cfg.__startupGate) leaveStartupApiGate();
+    if (cfg.__startupGate) leaveStartupApiGate(cfg.url);
     return res;
   },
   async (err: AxiosError<{ message?: string; error?: string }>) => {
     const config = err.config as RetryConfig | undefined;
-    if (config?.__startupGate) leaveStartupApiGate();
+    if (config?.__startupGate) leaveStartupApiGate(config.url);
     const isCanceled =
       err.code === "ERR_CANCELED" ||
       err.name === "CanceledError" ||

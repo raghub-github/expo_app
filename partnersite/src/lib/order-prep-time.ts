@@ -205,6 +205,35 @@ export function resolvePreparedLateMinutes(order: PreparedLateOrder): number | n
   return computed > 0 ? computed : null;
 }
 
+export function computePreparedEarlyMinutes(
+  preparedAtIso: string,
+  prepReadyByAtIso: string | null | undefined,
+): number {
+  if (!prepReadyByAtIso) return 0;
+  const earlyMs = new Date(prepReadyByAtIso).getTime() - new Date(preparedAtIso).getTime();
+  if (earlyMs <= 0) return 0;
+  return Math.max(1, Math.ceil(earlyMs / 60_000));
+}
+
+function prepTimingMinuteLabel(minutes: number): string {
+  const mins = Math.max(1, Math.round(minutes));
+  return `${mins} min${mins === 1 ? '' : 's'}`;
+}
+
+export function formatOrderPrepTimingFootnote(order: PreparedLateOrder): string | null {
+  const lateMins = resolvePreparedLateMinutes(order);
+  if (lateMins != null && lateMins > 0) {
+    return `Food preparation delayed by ${prepTimingMinuteLabel(lateMins)}`;
+  }
+  if (order.prepared_at && order.prep_ready_by_at) {
+    const earlyMins = computePreparedEarlyMinutes(order.prepared_at, order.prep_ready_by_at);
+    if (earlyMins > 0) {
+      return `Food preparation earlier by ${prepTimingMinuteLabel(earlyMins)}`;
+    }
+  }
+  return null;
+}
+
 export const PREP_DELAY_OPTIONS = [5, 10, 15] as const;
 
 export function extendPrepReadyByAtIso(

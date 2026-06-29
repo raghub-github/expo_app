@@ -1,10 +1,9 @@
 import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { walletService } from "@/services/wallet.service";
 import { useAuthStore } from "@/store/authStore";
+import { useWalletBalance } from "@/hooks/useWalletBalance";
 
 const TITLE_DARK = "#1F2937";
 const ICON_CIRCLE_BG = "#F3F4F6";
@@ -32,17 +31,11 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  const balanceQ = useQuery({
-    queryKey: ["wallet", "balance"],
-    queryFn: () => walletService.getBalance(),
-    enabled: hydrated && !!session,
-    staleTime: 60_000,
-    retry: false,
-  });
+  const balanceQ = useWalletBalance();
 
   const balance = balanceQ.data?.available_balance ?? balanceQ.data?.balance ?? 0;
   const displayAmount = formatPillBalance(balance);
-  const loading = balanceQ.isLoading && !!session;
+  const loading = hydrated && !!session && balanceQ.isPending && balanceQ.data == null;
 
   if (variant === "gridFirst") {
     return (

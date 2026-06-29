@@ -193,15 +193,16 @@ export async function recordOrderCancellation(
 
 async function syncMerchantCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
   try {
-    const merchantDebit =
+    const explicitDebit =
       typeof input.metadata?.merchantDebit === 'string'
         ? input.metadata.merchantDebit
         : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit === 'string'
           ? (input.metadata as { merchant_debit: string }).merchant_debit
           : null;
+
     await applyMerchantOrderCancellationLedger({
       orderCoreId: input.orderCorePk,
-      merchantDebit,
+      merchantDebit: explicitDebit,
       actorSystemUserId: input.cancelledById ?? null,
       source: 'partner_cancel',
     });

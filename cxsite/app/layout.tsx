@@ -1,11 +1,16 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Inter, Montserrat } from "next/font/google";
 import "./globals.css";
 import ReduxProvider from "@/components/providers/ReduxProvider";
 import { CartAnimationProvider } from "@/components/cart/CartAnimation";
 import { LocationProvider } from "@/components/providers/LocationProvider";
 import AuthLocationSync from "@/components/providers/AuthLocationSync";
+import OrderLocationFromUrlSync from "@/components/location-search/OrderLocationFromUrlSync";
 import OrganizationJsonLd from "@/components/legal/OrganizationJsonLd";
+import { AppAssetsProvider } from "@/components/providers/AppAssetsProvider";
+import ImageProtection from "@/components/common/ImageProtection";
+import { GATIMITRA_SUBTAGLINE, GATIMITRA_TAGLINE } from "@/lib/brandTagline";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -24,8 +29,8 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   metadataBase: new URL("https://gatimitra.com"),
   title: {
-    default: "GatiMitra | Moving India Forward",
-    template: "%s | GatiMitra",
+    default: `GatiMitra | ${GATIMITRA_TAGLINE}`,
+    template: "GatiMitra | %s",
   },
   description: "India's Lowest Commission Delivery Platform - Food • Parcel • Person Delivery",
   applicationName: "GatiMitra",
@@ -47,8 +52,8 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "GatiMitra",
-    title: "GatiMitra | Moving India Forward",
-    description: "India's Lowest Commission Delivery Platform",
+    title: `GatiMitra | ${GATIMITRA_TAGLINE}`,
+    description: GATIMITRA_SUBTAGLINE,
     url: "https://gatimitra.com",
     images: [{ url: "/img/logoo.png", width: 512, height: 512, alt: "GatiMitra" }],
   },
@@ -78,13 +83,19 @@ export default function RootLayout({
         <OrganizationJsonLd />
       </head>
       <body>
+        <ImageProtection />
         <ReduxProvider>
-          <LocationProvider>
-            <AuthLocationSync />
-            <CartAnimationProvider>
-              {children}
-            </CartAnimationProvider>
-          </LocationProvider>
+          <AppAssetsProvider>
+            <LocationProvider>
+              <Suspense fallback={null}>
+                <AuthLocationSync />
+                <OrderLocationFromUrlSync />
+              </Suspense>
+              <CartAnimationProvider>
+                {children}
+              </CartAnimationProvider>
+            </LocationProvider>
+          </AppAssetsProvider>
         </ReduxProvider>
       </body>
     </html>

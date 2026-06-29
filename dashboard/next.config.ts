@@ -72,7 +72,7 @@ const nextConfig: NextConfig = {
   webpack: (config, { dev, isServer }) => {
     config.resolve.alias = {
       ...config.resolve.alias,
-      "@gatimitra/slab-pricing": path.join(monorepoRoot, "packages/slab-pricing/src/index.ts"),
+      "@gatimitra/slab-pricing": path.join(monorepoRoot, "packages/slab-pricing/dist/index.js"),
     };
     if (dev) {
       // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and

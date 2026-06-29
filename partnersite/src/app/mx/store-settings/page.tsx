@@ -2926,7 +2926,7 @@ function StoreSettingsContent() {
                       onClick={openRefundPolicySheet}
                       className="text-sm text-indigo-600 hover:text-indigo-700 font-medium underline underline-offset-2"
                     >
-                      View refund policy
+                      View refund &amp; cancellation policy
                     </button>
                   </div>
                   {loadingPlans && plans.length === 0 ? (
@@ -5244,7 +5244,7 @@ function StoreSettingsContent() {
                   <div className="min-w-0">
                     <p className="text-[11px] uppercase tracking-[0.18em] text-orange-600 font-semibold">Policy</p>
                     <h2 id="refund-policy-sheet-title" className="text-base sm:text-lg font-bold text-gray-900 leading-tight">
-                      Refund Policy
+                      Refund &amp; Cancellation Policy
                     </h2>
                   </div>
                   <button

@@ -3,7 +3,7 @@
  * User position vs store position; each store may cap range via delivery_radius_km.
  */
 
-export const DEFAULT_SERVICE_RADIUS_KM = 10
+export const DEFAULT_SERVICE_RADIUS_KM = 15
 
 export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371

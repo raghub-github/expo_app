@@ -4,6 +4,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { ApiFoodOrder } from "@/services/ordersApi";
 import type { OrderStage } from "@/hooks/useOrders";
+import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
   formatOrderCardCustomerLabel,
   formatOrderDateTime,
@@ -47,6 +49,8 @@ export function OrderDetailCustomerCard({
   statusStyle,
   prepBanner,
 }: Props) {
+  const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
   const customerLabel = formatOrderCardCustomerLabel(
     order.customer_name,
     order.customer_store_order_ordinal
@@ -144,6 +148,13 @@ export function OrderDetailCustomerCard({
               cancelledByType={order.cancelled_by_type}
               cancelledAt={order.cancelled_at}
               orderStatus={order.order_status}
+              cancellationCompensation={order.cancellation_compensation}
+              storeId={selectedStore?.id}
+              authToken={token}
+              variant="detail"
+              preparedAt={order.prepared_at}
+              prepReadyByAt={order.prep_ready_by_at}
+              preparedLateMinutes={order.prepared_late_minutes}
             />
           </View>
         ) : null}

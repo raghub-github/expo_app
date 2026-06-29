@@ -1,8 +1,10 @@
-"use client";
-
+/**
+ * Merchant push notification bootstrap — permissions, channels, token registration.
+ */
 import { useEffect, useRef } from "react";
-import { AppState, Platform, type AppStateStatus } from "react-native";
+import { Alert, AppState, Platform, type AppStateStatus } from "react-native";
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 import {
   ensureAndroidChannel,
   getFreshExpoPushToken,
@@ -26,15 +28,38 @@ function deviceType(): "ios" | "android" | "web" | "unknown" {
   return "unknown";
 }
 
-/**
- * Foreground/background push, tap handling, store-level token (closures) + unified role token (broadcasts).
- * Push token is always read fresh from Expo — never from storage/cache.
- */
+function isExpoGo(): boolean {
+  return Constants.appOwnership === "expo";
+}
+
+function resolveEasProjectId(): string | undefined {
+  const extra = Constants.expoConfig?.extra as Record<string, unknown> | undefined;
+  const eas = extra?.eas as Record<string, unknown> | undefined;
+  return typeof eas?.projectId === "string" && eas.projectId.trim() ? eas.projectId.trim() : undefined;
+}
+
 function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
   const t = String(data.type ?? data.event ?? "").toLowerCase();
   return t === "merchant_new_order" || t === "new_order" || data.screen === "new_order";
 }
 
+async function ensurePushChannels(): Promise<void> {
+  await ensureAndroidChannel({
+    channelId: "merchant_default",
+    name: "Store & Orders",
+    lightColor: "#3EB489",
+  });
+  await ensureAndroidChannel({
+    channelId: "merchant_online",
+    name: "Store online status",
+    lightColor: "#3EB489",
+  });
+}
+
+/**
+ * Foreground/background push, tap handling, store-level token + unified role token.
+ * Requires a dev/production build (not Expo Go) + FCM via google-services.json + EAS credentials.
+ */
 export default function NotificationSetup() {
   const router = useRouter();
   const { token: authToken } = useAuth();
@@ -44,21 +69,44 @@ export default function NotificationSetup() {
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const ordersRef = useRef(orders);
   ordersRef.current = orders;
-  const responseSubscriptionRef = useRef<{ remove?: () => void } | null>(null);
   const lastUnifiedTokenRef = useRef<string | null>(null);
+  const warnedMissingProjectRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
 
     const run = async () => {
+      if (isExpoGo()) {
+        if (!warnedMissingProjectRef.current) {
+          warnedMissingProjectRef.current = true;
+          console.warn("[push] Expo Go does not support remote push — use a dev/production build.");
+        }
+        return;
+      }
+
+      if (!resolveEasProjectId() && !warnedMissingProjectRef.current) {
+        warnedMissingProjectRef.current = true;
+        console.warn("[push] EAS projectId missing — set EAS_PROJECT_ID in .env for push tokens.");
+      }
+
       await setNotificationHandlerDefaults();
-      await ensureAndroidChannel({
-        channelId: "merchant_default",
-        name: "Store & Orders",
-        lightColor: "#3EB489",
-      });
+      await ensurePushChannels();
+
       const token = await getFreshExpoPushToken();
-      if (!mounted || !token || !authToken) return;
+      if (!mounted) return;
+
+      if (!token) {
+        if (authToken && Platform.OS === "android") {
+          Alert.alert(
+            "Notifications disabled",
+            "Allow notifications so you receive new orders, ratings, and rider pickup alerts."
+          );
+        }
+        return;
+      }
+
+      if (!authToken) return;
+
       if (selectedStore?.id) {
         try {
           await registerStorePushToken(selectedStore.id, token, authToken, Platform.OS);
@@ -66,6 +114,7 @@ export default function NotificationSetup() {
           // best-effort store token
         }
       }
+
       if (lastUnifiedTokenRef.current === token) return;
       const { apiBaseUrl } = getConfig();
       const res = await registerExpoPushTokenOnBackend(apiBaseUrl, authToken, {
@@ -123,6 +172,10 @@ export default function NotificationSetup() {
         router.push(data.url as never);
         return;
       }
+      if (data?.screen === "reviews" || String(data.type ?? "") === "merchant_rating") {
+        router.push("/(tabs)/reviews" as never);
+        return;
+      }
       if (data?.screen === "notifications") {
         router.push("/notifications" as never);
         return;
@@ -133,11 +186,7 @@ export default function NotificationSetup() {
       }
       navigateFromPushData({ push: (href) => router.push(href as never) }, data);
     });
-    responseSubscriptionRef.current = sub;
-    return () => {
-      sub.remove();
-      responseSubscriptionRef.current = null;
-    };
+    return () => sub.remove();
   }, [router, storeId, authToken, openIncomingOrderSheet]);
 
   return null;

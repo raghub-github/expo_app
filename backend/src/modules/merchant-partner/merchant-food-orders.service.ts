@@ -38,6 +38,10 @@ import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { fetchFoodRiderAcceptFlow } from "../../lib/food-rider-accept-flow.js";
 import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
 import { resolveMerchantCancellationFields } from "../../lib/merchant-cancellation-fields.js";
+import {
+  resolveOrderCancellationCompensationDisplay,
+  type MerchantCancellationCompensationDisplay,
+} from "../../lib/merchant-cancellation-compensation-display.js";
 import { recordRiderAssignmentDeliveredIfActive } from "../../lib/order-rider-assignment-history.js";
 import {
   resolveReachedMerchantAt,
@@ -122,6 +126,8 @@ export type MerchantFoodOrderDto = {
   accepted_by_label: string | null;
   cancelled_by_label: string | null;
   cancelled_by_type: string | null;
+  /** Zomato-style compensation message from penalty engine (cancelled orders). */
+  cancellation_compensation: MerchantCancellationCompensationDisplay | null;
   customer_email: string | null;
   drop_address: string | null;
   distance_km: number | null;
@@ -1074,6 +1080,7 @@ async function buildOrderDto(
       Number.isFinite(Number(food.merchant_acceptance_window_seconds))
         ? Math.max(0, Math.floor(Number(food.merchant_acceptance_window_seconds)))
         : null,
+    cancellation_compensation: null,
   };
 }
 
@@ -1622,33 +1629,63 @@ export async function loadMerchantFoodOrders(
       const food = matchFoodToCore(core, byCorePk, byTextId);
       const dto = await buildOrderDto(core, food, buildOpts);
       const catalog = cancelCatalogByCore.get(core.id);
-      if (!catalog || dto.order_status !== "CANCELLED") return dto;
+      const isCancelledOrder =
+        dto.order_status === "CANCELLED" || dto.order_status === "REJECTED";
+      if (!isCancelledOrder) return dto;
+
       const meta =
-        catalog.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
+        catalog?.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
           ? (catalog.metadata as Record<string, unknown>)
           : null;
       const resolved = resolveMerchantCancellationFields({
-        rejected_reason: catalog.food_rejected_reason ?? dto.rejected_reason,
-        cancelled_by_label: catalog.food_cancelled_by_label ?? dto.cancelled_by_label,
-        cancelled_by_type: catalog.cancelled_by_type,
-        cancellation_details: catalog.cancellation_details,
+        rejected_reason: catalog?.food_rejected_reason ?? dto.rejected_reason,
+        cancelled_by_label: catalog?.food_cancelled_by_label ?? dto.cancelled_by_label,
+        cancelled_by_type: catalog?.cancelled_by_type ?? dto.cancelled_by_type,
+        cancellation_details: catalog?.cancellation_details,
         catalog_attribute:
-          catalog.attribute ??
+          catalog?.attribute ??
           (meta && typeof meta.attribute === "string" ? meta.attribute : null),
         catalog_rejection:
-          catalog.rejection_label ??
+          catalog?.rejection_label ??
           (meta && typeof meta.rejection === "string" ? meta.rejection : null),
-        reason_text: catalog.reason_text,
-        refund_reason: catalog.refund_reason,
-        ocr_display_reason: catalog.display_reason,
-        ocr_cancelled_by_label: catalog.ocr_cancelled_by_label,
-        ocr_cancelled_by_type: catalog.ocr_cancelled_by_type,
+        reason_text: catalog?.reason_text,
+        refund_reason: catalog?.refund_reason,
+        ocr_display_reason: catalog?.display_reason,
+        ocr_cancelled_by_label: catalog?.ocr_cancelled_by_label,
+        ocr_cancelled_by_type: catalog?.ocr_cancelled_by_type,
       });
+
+      const netOrderValue =
+        num(dto.pricing?.total) > 0
+          ? num(dto.pricing.total)
+          : num(dto.food_items_total_value) > 0
+            ? num(dto.food_items_total_value)
+            : num(dto.grand_total);
+
+      let cancellation_compensation: MerchantCancellationCompensationDisplay | null = null;
+      try {
+        cancellation_compensation = await resolveOrderCancellationCompensationDisplay(sql, {
+          orderCoreId: core.id,
+          merchantStoreId: storeId,
+          cancelledByType: resolved.cancelled_by_type,
+          cancelledByLabel: resolved.cancelled_by_label,
+          rejectedReason: resolved.rejected_reason,
+          orderCreatedAt: dto.created_at,
+          cancelledAt: dto.cancelled_at,
+          preparedAt: dto.prepared_at,
+          riderPickedUpAt: dto.rider_picked_up_at,
+          netOrderValue,
+        });
+      } catch {
+        /* optional engine */
+      }
+
       return {
         ...dto,
         rejected_reason: resolved.rejected_reason,
         cancelled_by_label: resolved.cancelled_by_label,
         cancelled_by_type: resolved.cancelled_by_type,
+        cancellation_compensation,
       };
     })
   );

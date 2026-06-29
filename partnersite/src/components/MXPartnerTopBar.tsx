@@ -1569,7 +1569,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     await refetchAllStoreOps();
   }, [refetchAllStoreOps]);
 
-  const leftW = sidebarCollapsed ? 'md:w-14' : 'md:w-52';
+  const leftW = sidebarCollapsed ? 'md:w-14 md:min-w-[13rem]' : 'md:w-52';
   const resolvedOpsRow = resolvedStoreId ? storeOpsById[resolvedStoreId] : undefined;
   const onlineLabel =
     storeOpen === null
@@ -1613,7 +1613,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       profile: 'Profile',
       'audit-logs': 'Audit & Activity',
       customizations: 'Customizations',
-      'refund-policy': 'Refund Policy',
+      'refund-policy': 'Refund & Cancellation Policy',
       'user-insights': 'User Insights',
       'support-inbox': 'Support Inbox',
     };

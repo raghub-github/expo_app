@@ -1,6 +1,7 @@
 'use client'
 
 import { normalizeLatLonForStorage, reverseGeocodeSearchParams } from '@/lib/normalizeLatLon'
+import { useLocationContext } from '@/components/providers/LocationProvider'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { MapPin, Loader2 } from 'lucide-react'
@@ -42,6 +43,7 @@ export default function LocationPopup({
   anchorRef,
   popupClassName = '',
 }: LocationPopupProps) {
+  const { markAutoDetectInFlight, setShowPermissionModal } = useLocationContext()
   const [autoDetectLoading, setAutoDetectLoading] = useState(false)
   const [popularList, setPopularList] = useState<LocationItem[]>([])
   const [popularLoading, setPopularLoading] = useState(true)
@@ -89,11 +91,14 @@ export default function LocationPopup({
   }, [debouncedQuery])
 
   const handleAutoDetect = useCallback(() => {
-    setAutoDetectLoading(true)
-    if (!navigator.geolocation) {
-      setAutoDetectLoading(false)
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      onPermissionDenied?.()
       return
     }
+
+    markAutoDetectInFlight(true)
+    setAutoDetectLoading(true)
+
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         try {
@@ -112,13 +117,16 @@ export default function LocationPopup({
             longitude: lon,
           }
           onSelectLocation(displayName, item)
+          setShowPermissionModal(false)
           onClose()
         } finally {
           setAutoDetectLoading(false)
+          markAutoDetectInFlight(false)
         }
       },
       (error) => {
         setAutoDetectLoading(false)
+        markAutoDetectInFlight(false)
         if (error.code === 1) {
           onPermissionDenied?.()
           onClose()
@@ -126,7 +134,7 @@ export default function LocationPopup({
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     )
-  }, [onSelectLocation, onClose, onPermissionDenied])
+  }, [onSelectLocation, onClose, onPermissionDenied, markAutoDetectInFlight])
 
   const handleSelect = useCallback(
     (item: LocationItem) => {

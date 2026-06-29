@@ -302,6 +302,54 @@ app.post<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/schedule
   }
 });
 
+// Internal: flush expired unaccepted orders for one store (partner portal open).
+app.post<{ Params: { storeId: string } }>(
+  "/v1/internal/stores/:storeId/sync-acceptance-timeout",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const storeId = Number((req.params as { storeId: string }).storeId);
+    if (!Number.isInteger(storeId) || storeId < 1) {
+      return reply.code(400).send({ error: "invalid_store_id" });
+    }
+    try {
+      const { syncOrderAcceptanceTimeoutForStore } = await import(
+        "./services/order-acceptance-timeout.js"
+      );
+      const { cancelled, auto_accepted } = await syncOrderAcceptanceTimeoutForStore(storeId, req.log);
+      return reply.send({ cancelled, auto_accepted, store_id: storeId });
+    } catch (e) {
+      req.log.error({ err: e, storeId }, "sync_acceptance_timeout_failed");
+      return reply.code(500).send({ error: "sync_failed", cancelled: 0 });
+    }
+  }
+);
+
+// Internal: authoritative partner/merchant surface status (schedule tick + postgres read).
+app.get<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/partner-status", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  try {
+    const { buildPartnerStoreStatusSnapshot } = await import(
+      "./modules/merchant-partner/partner-store-status-snapshot.js"
+    );
+    const snapshot = await buildPartnerStoreStatusSnapshot(storeId, req.log);
+    if (!snapshot) return reply.code(404).send({ error: "store_not_found" });
+    return reply.send(snapshot);
+  } catch (e) {
+    req.log.error({ err: e, storeId }, "partner_status_snapshot_failed");
+    return reply.code(500).send({ error: "partner_status_snapshot_failed" });
+  }
+});
+
 await app.register(authRoutes, { prefix: "/v1/auth" });
 await app.register(riderRoutes, { prefix: "/v1/rider" });
 await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });

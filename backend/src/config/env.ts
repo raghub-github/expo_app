@@ -20,10 +20,15 @@ const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().positive().max(120)
   ).optional(),
-  /** Postgres.js pool size. Keep low in dev — Supabase transaction pooler is easy to exhaust. */
+  /** Postgres.js pool size. Keep moderate in dev — Supabase pooler is easy to exhaust. */
   DATABASE_POOL_MAX: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().positive().max(50)
+  ).optional(),
+  /** Max ms to wait for a DB concurrency slot before 503 (dev bursts / mobile parallel loads). */
+  DATABASE_SLOT_ACQUIRE_TIMEOUT_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(120_000)
   ).optional(),
 
   // Supabase
