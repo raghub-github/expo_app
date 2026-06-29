@@ -1196,6 +1196,9 @@ async function runStoreScheduleTickOnce(
           OR msa.next_schedule_transition_at <= ${dueCutoff}::timestamptz
           OR (msa.manual_close_until IS NOT NULL AND msa.manual_close_until <= ${dueCutoff}::timestamptz)
           OR (msa.schedule_end_prompt_expires_at IS NOT NULL AND msa.schedule_end_prompt_expires_at <= ${dueCutoff}::timestamptz)
+          -- Backfill rows that don't yet have a live-status row written.
+          -- This handles brand-new columns (migration 0381) and new stores.
+          OR ms.live_status_updated_at IS NULL
         )
       ORDER BY msa.next_schedule_transition_at ASC NULLS FIRST
       LIMIT 500
