@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets, fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";

@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";

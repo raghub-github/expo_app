@@ -32,6 +32,7 @@ COPY partnersite/package.json ./partnersite/package.json
 #   "main": "./dist/index.js"
 # so it must be present + built before partnersite's Next build runs.
 COPY packages/financial-rules/package.json ./packages/financial-rules/package.json
+COPY packages/store-status/package.json ./packages/store-status/package.json
 COPY packages/shared-config/package.json ./packages/shared-config/package.json
 RUN npm ci --no-audit --no-fund --ignore-scripts
 
@@ -51,6 +52,7 @@ COPY --from=deps /repo /repo
 # apps, and their build artefacts into context.
 COPY partnersite              ./partnersite
 COPY packages/financial-rules ./packages/financial-rules
+COPY packages/store-status    ./packages/store-status
 COPY packages/shared-config   ./packages/shared-config
 
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -82,6 +84,7 @@ ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTE
 # Order matters — shared packages first, then the consuming app.
 RUN npm run build \
       --workspace=@gatimitra/financial-rules \
+      --workspace=@gatimitra/store-status \
       --workspace=gmmportal
 
 # ────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 "use client";
 
-
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { StoreVerificationInner } from "./StoreVerificationInner";
 
 export function StoreVerificationInnerWrapper({

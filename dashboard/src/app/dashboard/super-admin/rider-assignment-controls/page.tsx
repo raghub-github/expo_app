@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import {
   Car,
   CheckCircle2,

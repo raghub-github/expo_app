@@ -1,6 +1,6 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { Settings } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -45,3 +45,4 @@ export function TicketsHubGearButton() {
     </button>
   );
 }
+

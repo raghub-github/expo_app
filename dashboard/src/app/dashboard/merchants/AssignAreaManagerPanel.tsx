@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useEffect, useMemo, useState, useRef } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { X, Search, Users, Loader2 } from "lucide-react";
 import { usePermission } from "@/hooks/usePermission";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";

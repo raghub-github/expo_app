@@ -32,7 +32,7 @@ import {
 import {
   PLATFORM_DEFAULT_PREP_MINUTES,
   resolveAcceptPrepCommitment,
-  resolveStoreDefaultPrepMinutes,
+  resolveStorePrepWithBuffer,
   computePreparedLateMinutes,
 } from '@/lib/order-prep-time';
 import { triggerOrderEtaRecalcAfterAccept } from '@/lib/trigger-order-eta-recalc';
@@ -176,13 +176,21 @@ export async function PATCH(
       updates.accepted_at = now;
       if (actionLabels.accepted_by_label) updates.accepted_by_label = actionLabels.accepted_by_label;
 
-      const { data: storeRow } = await db
-        .from('merchant_stores')
-        .select('avg_preparation_time_minutes')
-        .eq('id', storeInternalId)
-        .maybeSingle();
-      const storeDefault = resolveStoreDefaultPrepMinutes(
-        storeRow?.avg_preparation_time_minutes ?? PLATFORM_DEFAULT_PREP_MINUTES
+      const [{ data: storeRow }, { data: settingsRow }] = await Promise.all([
+        db
+          .from('merchant_stores')
+          .select('avg_preparation_time_minutes')
+          .eq('id', storeInternalId)
+          .maybeSingle(),
+        db
+          .from('merchant_store_settings')
+          .select('preparation_buffer_minutes')
+          .eq('store_id', storeInternalId)
+          .maybeSingle(),
+      ]);
+      const storeDefault = resolveStorePrepWithBuffer(
+        storeRow?.avg_preparation_time_minutes ?? PLATFORM_DEFAULT_PREP_MINUTES,
+        settingsRow?.preparation_buffer_minutes ?? 0
       );
       const prep = resolveAcceptPrepCommitment({
         acceptedAtIso: now,

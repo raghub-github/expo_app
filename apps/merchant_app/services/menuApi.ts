@@ -60,6 +60,8 @@ export type MenuItemRow = {
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
   has_pending_change_request?: boolean;
   pending_change_request_type?: "CREATE" | "UPDATE" | "DELETE" | null;
+  is_locked_by_plan?: boolean;
+  locked_reason?: string | null;
 };
 
 export type ListCategoriesResponse = { categories: MenuCategory[] };

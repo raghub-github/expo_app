@@ -40,6 +40,7 @@ import { etaRoutes } from "./modules/eta/eta.routes.js";
 import { billingDebugRoutes } from "./modules/billing/billing.debug.routes.js";
 import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
+import { runOrderAutoAcceptTick } from "./services/order-auto-accept.js";
 import { runRideSearchTimeoutTick } from "./services/ride-search-timeout.js";
 import { runOrderDispatchWaveTick } from "./lib/order-dispatch-tick.js";
 import { withLock, closeRedis } from "@gatimitra/redis";
@@ -490,6 +491,7 @@ app.addHook("onResponse", async (req, reply) => {
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;
 let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+let orderAutoAcceptInterval: ReturnType<typeof setInterval> | null = null;
 let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
 let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
@@ -535,6 +537,7 @@ const gracefulShutdown = async (signal: string) => {
   if (storeScheduleInterval) { clearInterval(storeScheduleInterval); storeScheduleInterval = null; }
   if (pendingPaymentReconcilerInterval) { clearInterval(pendingPaymentReconcilerInterval); pendingPaymentReconcilerInterval = null; }
   if (orderAcceptanceTimeoutInterval) { clearInterval(orderAcceptanceTimeoutInterval); orderAcceptanceTimeoutInterval = null; }
+  if (orderAutoAcceptInterval) { clearInterval(orderAutoAcceptInterval); orderAutoAcceptInterval = null; }
   if (rideSearchTimeoutInterval) { clearInterval(rideSearchTimeoutInterval); rideSearchTimeoutInterval = null; }
   if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
   if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
@@ -629,6 +632,25 @@ try {
   await runAcceptanceTickLocked();
   orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
   app.log.info({ intervalSeconds: 15 }, "order acceptance timeout tick started (auto-cancel + server auto-accept)");
+
+  // Order auto-accept tick — every 10 s; lock TTL 20 s.
+  // Added in MRC merge: server-side auto-accept of new orders when the
+  // merchant has enabled auto-accept on store_operations.
+  const orderAutoAcceptIntervalMs = 10_000;
+  const runAutoAcceptTickLocked = () =>
+    withLock("tick:order-auto-accept", 20_000, () => runOrderAutoAcceptTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "order_auto_accept", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "order_auto_accept_tick"));
+  void runAutoAcceptTickLocked();
+  orderAutoAcceptInterval = setInterval(() => { void runAutoAcceptTickLocked(); }, orderAutoAcceptIntervalMs);
+  app.log.info({ intervalMs: orderAutoAcceptIntervalMs }, "order auto-accept tick started");
 
   const rideSearchTimeoutIntervalMs = 15_000;
   const runRideSearchTickLocked = () =>

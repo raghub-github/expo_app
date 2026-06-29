@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { normalizeR2ObjectKey } from "@/lib/r2";
+import { isPublicR2CdnBase, normalizeR2ObjectKey } from "@/lib/r2";
 
 function getR2Client(): S3Client {
   const endpoint = process.env.R2_ENDPOINT || "";
@@ -480,6 +480,20 @@ export async function GET(request: NextRequest) {
     }
     key = normalizeR2ObjectKey(key);
 
+    const publicBase = process.env.R2_PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+    const usePublicRedirect =
+      process.env.R2_PROXY_USE_PUBLIC_REDIRECT === "true" ||
+      process.env.R2_PROXY_USE_PUBLIC_REDIRECT === "1";
+    if (
+      usePublicRedirect &&
+      publicBase &&
+      isPublicR2CdnBase(publicBase) &&
+      !request.headers.get("range")
+    ) {
+      const publicPath = key.split("/").map(encodeURIComponent).join("/");
+      return NextResponse.redirect(`${publicBase}/${publicPath}`, 307);
+    }
+
     const bucket = process.env.R2_BUCKET_NAME;
     if (
       !bucket ||
@@ -510,8 +524,13 @@ export async function GET(request: NextRequest) {
         const contentType = response.ContentType ?? "application/octet-stream";
         const headers = new Headers();
         headers.set("Content-Type", contentType);
-        headers.set("Cache-Control", "private, max-age=3600");
+        headers.set("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
         headers.set("Accept-Ranges", "bytes");
+        const lowerType = contentType.toLowerCase();
+        if (lowerType.includes("pdf") || lowerType.startsWith("image/")) {
+          headers.set("Content-Disposition", "inline");
+        }
+        headers.set("X-Frame-Options", "SAMEORIGIN");
         if (response.ContentLength != null) {
           headers.set("Content-Length", String(response.ContentLength));
         }
@@ -554,8 +573,13 @@ export async function GET(request: NextRequest) {
               response.ContentType ?? "application/octet-stream";
             const headers = new Headers();
             headers.set("Content-Type", contentType);
-            headers.set("Cache-Control", "private, max-age=3600");
+            headers.set("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
             headers.set("Accept-Ranges", "bytes");
+            const lowerType = contentType.toLowerCase();
+            if (lowerType.includes("pdf") || lowerType.startsWith("image/")) {
+              headers.set("Content-Disposition", "inline");
+            }
+            headers.set("X-Frame-Options", "SAMEORIGIN");
             if (response.ContentLength != null) {
               headers.set("Content-Length", String(response.ContentLength));
             }

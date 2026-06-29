@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useCallback, useMemo, useEffect, Suspense } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { Search, Loader2 } from "lucide-react";
 import { getCurrentDashboard } from "@/lib/navigation/dashboard-routes";

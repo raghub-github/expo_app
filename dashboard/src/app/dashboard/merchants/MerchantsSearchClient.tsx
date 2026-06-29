@@ -1,7 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil } from "lucide-react";
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";

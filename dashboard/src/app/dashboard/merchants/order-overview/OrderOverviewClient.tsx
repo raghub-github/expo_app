@@ -1,7 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect } from "react";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { Store, Loader2 } from "lucide-react";
 

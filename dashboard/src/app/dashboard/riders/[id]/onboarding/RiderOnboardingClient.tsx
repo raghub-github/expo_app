@@ -1,6 +1,6 @@
 "use client";
+import { useAppParams } from "@/hooks/useAppSearchParams";
 
-import { useAppParams } from "@/lib/navigation/use-app-params";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
@@ -1360,3 +1360,4 @@ function VehicleInfoItem({ label, value, highlight }: { label: string; value: st
     </div>
   );
 }
+

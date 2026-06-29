@@ -1,15 +1,13 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { AlertCircle } from "lucide-react";
 import { isStructuredCustomerSearch } from "@/lib/customers/search-kind";
-import { buildCustomerDetailHref } from "@/lib/navigation/customer-dashboard-from-order";
 
 /**
  * Global customer search: matches customer_id, mobile, name, email (API).
@@ -49,7 +47,7 @@ export function CustomersGlobalSearchView() {
   const trimmed = search.trim();
   const shouldFetch = trimmed.length > 0;
 
-  const { data, isLoading, error, isError, authGateReady } = useCustomersQuery({
+  const { data, isLoading, error, isError } = useCustomersQuery({
     page,
     limit: 20,
     search: trimmed || undefined,
@@ -81,30 +79,19 @@ export function CustomersGlobalSearchView() {
     if (customersSorted.length === 0) return;
     const q = encodeURIComponent(trimmed);
     if (customersSorted.length === 1) {
-      router.replace(
-        buildCustomerDetailHref(customersSorted[0].id, {
-          search: trimmed,
-          fromOrderSource: searchParams,
-        })
-      );
+      router.replace(`/dashboard/customers/${customersSorted[0].id}?search=${q}`);
       return;
     }
     if (customersSorted.length > 1 && structured) {
-      router.replace(
-        buildCustomerDetailHref(customersSorted[0].id, {
-          search: trimmed,
-          fromOrderSource: searchParams,
-        })
-      );
+      router.replace(`/dashboard/customers/${customersSorted[0].id}?search=${q}`);
     }
-  }, [isLoading, isError, shouldFetch, customersSorted, router, structured, trimmed, searchParams]);
+  }, [isLoading, isError, shouldFetch, customersSorted, router, structured, trimmed]);
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
 
-  const showInitialLoading =
-    shouldFetch && (!authGateReady || (isLoading && customersSorted.length === 0));
+  const showInitialLoading = shouldFetch && !isError && isLoading && customersSorted.length === 0;
 
   if (permissionsLoading) {
     return (
@@ -158,7 +145,7 @@ export function CustomersGlobalSearchView() {
             </div>
           )}
 
-          {trimmed && authGateReady && !isLoading && !isError && customersSorted.length === 0 && (
+          {trimmed && !isLoading && !isError && customersSorted.length === 0 && (
             <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 p-4">
               <div className="flex items-start space-x-3">
                 <AlertCircle className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />

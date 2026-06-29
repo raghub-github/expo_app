@@ -19,6 +19,7 @@ import {
 } from "../../lib/merchant-order-food-action-labels.js";
 import { recordAcceptanceTimeline } from "../../lib/order-acceptance-timeline.js";
 import { recordCancellationTimeline } from "../../lib/order-cancellation-timeline.js";
+import { resolveStorePrepWithBuffer } from "../../lib/order-prep-time.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
 import {
   executeOrderCancellationFinancials,
@@ -1793,15 +1794,25 @@ export async function patchMerchantFoodOrderStatus(
   });
 
   if (status === "ACCEPTED") {
-    const storeRows = await sql<{ avg_preparation_time_minutes: number | null }[]>`
-      SELECT avg_preparation_time_minutes FROM merchant_stores WHERE id = ${storeId} LIMIT 1
+    const storeRows = await sql<{
+      avg_preparation_time_minutes: number | null;
+      preparation_buffer_minutes: number | null;
+    }[]>`
+      SELECT ms.avg_preparation_time_minutes, COALESCE(ss.preparation_buffer_minutes, 0) AS preparation_buffer_minutes
+      FROM merchant_stores ms
+      LEFT JOIN merchant_store_settings ss ON ss.store_id = ms.id
+      WHERE ms.id = ${storeId}
+      LIMIT 1
     `;
-    const { resolveAcceptPrepCommitment, resolveStoreDefaultPrepMinutes } = await import(
-      "../../lib/order-prep-time.js"
+    const { resolveAcceptPrepCommitment } = await import("../../lib/order-prep-time.js");
+    const storeRow = storeRows[0];
+    const storeDefaultWithBuffer = resolveStorePrepWithBuffer(
+      storeRow?.avg_preparation_time_minutes,
+      storeRow?.preparation_buffer_minutes
     );
     const prep = resolveAcceptPrepCommitment({
       acceptedAtIso: now,
-      storeDefaultMinutes: resolveStoreDefaultPrepMinutes(storeRows[0]?.avg_preparation_time_minutes),
+      storeDefaultMinutes: storeDefaultWithBuffer,
       bodyPrepMinutes: opts?.preparationTimeMinutes,
     });
 

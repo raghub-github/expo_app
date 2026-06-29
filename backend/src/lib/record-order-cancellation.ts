@@ -242,7 +242,7 @@ export async function recordOrderCancellation(
           cancellation_details = COALESCE(cancellation_details, '{}'::jsonb)
             || ${detailsJson}::jsonb,
           cancelled_at = COALESCE(cancelled_at, NOW()),
-          cancelled_by = COALESCE(cancelled_by, ${input.cancelledBy}),
+          cancelled_by = ${input.cancelledBy},
           updated_at = NOW()
         WHERE id = ${input.orderCorePk}
       `;

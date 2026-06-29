@@ -1,7 +1,6 @@
 "use client";
 
-
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { normalizeQueueSupervisorSection } from "@/lib/tickets/queue-supervisor-sections";
 import { QueueSupervisorUpdatedAgentsClient } from "@/components/tickets/queue/QueueSupervisorUpdatedAgentsClient";
 import { QueueSupervisorAgentTicketsClient } from "@/components/tickets/queue/QueueSupervisorAgentTicketsClient";

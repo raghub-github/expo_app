@@ -67,6 +67,7 @@ import {
 } from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { emitPartnerStoreOperationsRefresh } from '@/lib/partnerStoreOperationsRefresh';
+import { STORE_SETTINGS_TAB_LABELS } from '@/lib/store-settings-tabs';
 import {
   migrateDeviceOrderAlertsFromServer,
   syncFoodOrdersUiNotifyFromDevice,
@@ -1617,19 +1618,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       'user-insights': 'User Insights',
       'support-inbox': 'Support Inbox',
     };
-    const storeSettingsTabLabelMap: Record<string, string> = {
-      plans: 'Plans & Subscription',
-      premium: 'Premium Plans',
-      timings: 'Outlet Timings',
-      operations: 'Store Operations',
-      'menu-capacity': 'Menu & Capacity',
-      delivery: 'Delivery & Riders',
-      address: 'Store Address',
-      pos: 'POS Integration',
-      notifications: 'Notifications',
-      audit: 'Audit & Activity',
-      gatimitra: 'Store on GatiMitra',
-    };
     const sectionLabel =
       sectionLabelMap[appRoute] ||
       (appRoute
@@ -1640,7 +1628,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         : '');
     const pageLabel =
       appRoute === 'store-settings' && storeSettingsTab
-        ? storeSettingsTabLabelMap[storeSettingsTab] || 'Store Settings'
+        ? STORE_SETTINGS_TAB_LABELS[storeSettingsTab] || 'Store Settings'
         : resolvedHeaderTitle || headerTitle || sectionLabel;
     const rootCrumb = { label: 'Partner', href: '/partners/dashboard' };
     const sectionHref = parts.length >= 2 ? `/${parts.slice(0, 2).join('/')}` : '/partners/dashboard';

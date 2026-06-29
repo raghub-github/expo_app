@@ -1,6 +1,6 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import {
   createContext,
   useCallback,
@@ -79,3 +79,4 @@ export function CurrentRouteProvider({ children }: { children: React.ReactNode }
 export function useCurrentRoute() {
   return useContext(CurrentRouteContext);
 }
+

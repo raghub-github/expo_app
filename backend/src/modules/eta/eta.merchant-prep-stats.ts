@@ -75,19 +75,24 @@ export async function resolveBlendedStorePrepMinutes(storeId: number): Promise<n
   const sql = getSql();
   try {
     const rows = await sql<
-      Array<{ configured: number | null; actual: number | null }>
+      Array<{ configured: number | null; actual: number | null; buffer: number | null }>
     >`
-      SELECT avg_preparation_time_minutes AS configured,
-             avg_prep_time_actual_minutes AS actual
-      FROM merchant_stores
-      WHERE id = ${storeId}
+      SELECT ms.avg_preparation_time_minutes AS configured,
+             ms.avg_prep_time_actual_minutes AS actual,
+             COALESCE(mss.preparation_buffer_minutes, 0)::int AS buffer
+      FROM merchant_stores ms
+      LEFT JOIN merchant_store_settings mss ON mss.store_id = ms.id
+      WHERE ms.id = ${storeId}
       LIMIT 1
     `;
     const r = rows[0];
     const configured = r?.configured != null ? Number(r.configured) : 18;
     const actual = r?.actual != null ? Number(r.actual) : null;
-    if (configured > 0) return blendStorePrepMinutes(configured, actual);
-    if (actual != null && actual > 0) return Math.round(actual);
+    const buffer = Math.max(0, Math.min(120, Math.floor(Number(r?.buffer ?? 0) || 0)));
+    let blended = 18;
+    if (configured > 0) blended = blendStorePrepMinutes(configured, actual);
+    else if (actual != null && actual > 0) blended = Math.round(actual);
+    return buffer > 0 ? Math.min(180, blended + buffer) : blended;
   } catch (e) {
     console.warn("[eta] resolveBlendedStorePrepMinutes failed", {
       storeId,

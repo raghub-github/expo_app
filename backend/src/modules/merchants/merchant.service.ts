@@ -2,6 +2,10 @@ import { getSupabase } from "../../lib/supabase.js";
 import { getDb, getSql } from "../../db/client.js";
 import { sql } from "drizzle-orm";
 import {
+  formatStoreStatusLabel,
+  type LiveSchedulePhase,
+} from "@gatimitra/store-status";
+import {
   getMenuItemEffectiveInStockExpr,
   getMenuItemEffectiveInStockForAliases,
 } from "../../lib/menu-item-effective-stock.js";
@@ -149,6 +153,13 @@ type NearbyStoreBase = {
   is_accepting_orders: boolean | null;
   operational_status: string | null;
   live_status?: string | null;
+  // Live schedule columns written by store-schedule-engine tick
+  // (migration 0381). See @gatimitra/store-status for the contract.
+  live_schedule_phase?: string | null;
+  next_open_at?: string | null;
+  next_close_at?: string | null;
+  manual_override_active?: boolean | null;
+  live_status_updated_at?: string | null;
 };
 
 export type NearbyStoreListingItem = {
@@ -160,6 +171,16 @@ export type NearbyStoreListingItem = {
   distance_km: number;
   duration_min: number | null;
   is_open: boolean;
+  // Live schedule fields written by store-schedule-engine tick
+  // (migration 0381). Customer app uses formatStoreStatusLabel from
+  // @gatimitra/store-status to render a label that matches the
+  // partnersite + merchant app exactly.
+  live_schedule_phase: string | null;
+  live_next_open_at: string | null;
+  live_next_close_at: string | null;
+  live_manual_override_active: boolean;
+  live_label: string;
+  live_label_chip: "OPEN" | "CLOSED" | "BREAK" | "UNKNOWN";
 };
 
 function toNumber(v: number | string | null | undefined): number | null {
@@ -264,7 +285,12 @@ export async function listNearbyStoresByRoadDistance(params: {
   const { data, error } = await supabase
     .from("merchant_stores")
     .select(
-      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_status",
+      // Trailing columns are written by the backend store-schedule-engine
+      // tick (migration 0381). Customer mobile app uses formatStoreStatusLabel
+      // from @gatimitra/store-status to render the same label the merchant
+      // app + partnersite render.
+      // No `timezone` column on merchant_stores — engine assumes Asia/Kolkata.
+      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_status, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at",
     )
     .eq("status", "ACTIVE")
     .eq("is_active", true)
@@ -368,7 +394,18 @@ export async function listNearbyStoresByRoadDistance(params: {
       });
       const live = computeSurfaceLiveStatus(operational, sched?.withinOperatingHours ?? false);
 
-      return {
+      const isOpen = live === "OPEN";
+      const livePhase = (c.row.live_schedule_phase ?? null) as LiveSchedulePhase | null;
+      const liveLabel = formatStoreStatusLabel({
+        phase: livePhase,
+        nextOpenAt: c.row.next_open_at ?? null,
+        nextCloseAt: c.row.next_close_at ?? null,
+        manualOverrideActive: c.row.manual_override_active === true,
+        isOpenNow: isOpen,
+        // merchant_stores has no timezone column; rely on default IST.
+      });
+
+      const item: NearbyStoreListingItem = {
         id: c.row.store_id,
         name: c.row.store_display_name ?? c.row.store_name,
         address: c.row.full_address ?? "",
@@ -376,8 +413,15 @@ export async function listNearbyStoresByRoadDistance(params: {
         lng: c.lng,
         distance_km: Number(distanceKm.toFixed(2)),
         duration_min: durationMin != null ? Number(durationMin.toFixed(1)) : null,
-        is_open: live === "OPEN",
+        is_open: isOpen,
+        live_schedule_phase: livePhase,
+        live_next_open_at: c.row.next_open_at ?? null,
+        live_next_close_at: c.row.next_close_at ?? null,
+        live_manual_override_active: c.row.manual_override_active === true,
+        live_label: liveLabel.primary,
+        live_label_chip: liveLabel.chip,
       };
+      return item;
     })
     .filter((x): x is NearbyStoreListingItem => x !== null)
     .filter((x) => x.is_open)

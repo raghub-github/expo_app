@@ -42,25 +42,44 @@ export function MerchantWeatherBanner({ storeId }: { storeId: string | null | un
 
   const isSevere = weather.severity === 'EXTREME_WEATHER' || weather.severity === 'HEAVY_RAIN';
 
+  const marqueeParts = [
+    weather.bannerTitle,
+    weather.bannerSubtitle,
+    weather.zoneName,
+  ].filter(Boolean);
+  const marqueeText = marqueeParts.join(' — ');
+
   return (
     <div
-      className={`mx-3 sm:mx-5 lg:mx-8 mt-2 mb-1 rounded-xl border px-3 py-2.5 flex items-start gap-2.5 ${
+      className={`mx-3 sm:mx-5 lg:mx-8 mt-2 mb-1 rounded-lg border px-2.5 py-1 flex items-center gap-2 overflow-hidden ${
         isSevere
           ? 'border-amber-300 bg-amber-50 text-amber-950'
           : 'border-sky-200 bg-sky-50 text-sky-950'
       }`}
       role="status"
+      aria-live="polite"
     >
-      <CloudRain className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
-      <div className="min-w-0">
-        <p className="text-sm font-semibold leading-snug">{weather.bannerTitle}</p>
-        {weather.bannerSubtitle ? (
-          <p className="text-xs mt-0.5 opacity-90 leading-relaxed">{weather.bannerSubtitle}</p>
-        ) : null}
-        {weather.zoneName ? (
-          <p className="text-[11px] mt-1 opacity-70">{weather.zoneName}</p>
-        ) : null}
+      <CloudRain className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="flex w-max animate-store-closed-marquee">
+          {[0, 1].map((copy) => (
+            <span
+              key={copy}
+              className="shrink-0 px-4 text-xs font-medium whitespace-nowrap"
+              aria-hidden={copy === 1}
+            >
+              <span className="font-semibold">{weather.bannerTitle}</span>
+              {weather.bannerSubtitle ? (
+                <span className="font-normal opacity-90"> — {weather.bannerSubtitle}</span>
+              ) : null}
+              {weather.zoneName ? (
+                <span className="font-normal opacity-70"> — {weather.zoneName}</span>
+              ) : null}
+            </span>
+          ))}
+        </div>
       </div>
+      <span className="sr-only">{marqueeText}</span>
     </div>
   );
 }

@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import Link from "next/link";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { Store, ArrowRight } from "lucide-react";
 
 /**

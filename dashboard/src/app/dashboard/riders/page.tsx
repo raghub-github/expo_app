@@ -1,8 +1,8 @@
 "use client";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
@@ -15,7 +15,6 @@ import { useRiderSummaryQuery, fetchRiderSummary } from '@/hooks/queries/useRide
 import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
-import { getOnboardingVehicleDisplayName, resolveAcTypeDisplay } from '@/lib/rider-onboarding-vehicle-display';
 import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
 import { formatRiderOrderStatusDisplayLabel, resolveRiderDashboardOrderStatusKey, resolveRiderDashboardOrderStatusLabel, type RiderDashboardOrderStatusInput } from '@/lib/riders/rider-order-status-display';
 import {
@@ -34,14 +33,6 @@ const RiderLogoutHistorySideSheet = dynamic(
   () =>
     import('@/components/riders/RiderLogoutHistorySideSheet').then(
       (m) => m.RiderLogoutHistorySideSheet,
-    ),
-  { ssr: false },
-);
-
-const RiderDeviceSessionsSideSheet = dynamic(
-  () =>
-    import('@/components/riders/RiderDeviceSessionsSideSheet').then(
-      (m) => m.RiderDeviceSessionsSideSheet,
     ),
   { ssr: false },
 );
@@ -159,7 +150,6 @@ export default function RidersPage() {
   const [bankVerifyLoading, setBankVerifyLoading] = useState(false);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [logoutHistoryOpen, setLogoutHistoryOpen] = useState(false);
-  const [deviceSessionsOpen, setDeviceSessionsOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
   const [ordersPageSize, setOrdersPageSize] = useState(10);
   const [ticketsPage, setTicketsPage] = useState(1);
@@ -1070,12 +1060,37 @@ export default function RidersPage() {
                     }
                   />
                   <InfoInline
+                    label="Blocked"
+                    value={
+                      (() => {
+                        const byService = displaySummary?.blacklistStatusByService;
+                        const negWallet = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
+                        const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;
+                        const banned: string[] = [];
+                        if (globalWalletBlock) return <span className="font-medium text-red-600">All services (wallet ≤ -200)</span>;
+                        if (byService) {
+                          const all = byService.all as { isBanned?: boolean; partiallyAllowedServices?: string[] } | null;
+                          const allFullyBanned = all?.isBanned === true && !(all?.partiallyAllowedServices?.length);
+                          if (allFullyBanned) return <span className="font-medium text-red-600">All services (blacklist)</span>;
+                          if (byService.food?.isBanned) banned.push("Food (blacklist)");
+                          if (byService.parcel?.isBanned) banned.push("Parcel (blacklist)");
+                          if (byService.person_ride?.isBanned) banned.push("Person ride (blacklist)");
+                        }
+                        negWallet.forEach((b: { serviceType: string }) => {
+                          const label = b.serviceType === "person_ride" ? "Person ride" : b.serviceType ? b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1) : "";
+                          if (label && !banned.some((x) => x.startsWith(label))) banned.push(`${label} (negative wallet)`);
+                        });
+                        if (banned.length === 0) return "—";
+                        return <span className="text-amber-700">{banned.join(", ")}</span>;
+                      })()
+                    }
+                  />
+                  <InfoInline
                     label="App session"
                     value={
                       <RiderLogoutSessionInline
-                        session={displaySummary?.logoutSession}
+                        session={riderSummary?.logoutSession}
                         onOpenHistory={() => setLogoutHistoryOpen(true)}
-                        onOpenDevices={() => setDeviceSessionsOpen(true)}
                       />
                     }
                   />
@@ -1087,7 +1102,9 @@ export default function RidersPage() {
                         onClick={() => setVehicleOpen((o) => !o)}
                         className="flex items-center gap-1 text-sm font-semibold text-gray-900 hover:text-gray-700 cursor-pointer"
                       >
-                        {getOnboardingVehicleDisplayName(riderSummary)}
+                        {riderSummary?.vehicle?.vehicleType
+                          ? String(riderSummary.vehicle.vehicleType).charAt(0).toUpperCase() + String(riderSummary.vehicle.vehicleType).slice(1).toLowerCase()
+                          : riderSummary?.rider?.vehicleChoice || "—"}
                         {vehicleOpen ? <ChevronUp className="h-3 w-3 text-gray-500" /> : <ChevronDown className="h-3 w-3 text-gray-500" />}
                       </button>
                       {riderSummary?.vehicle && !riderSummary.vehicle.verified ? (
@@ -1140,32 +1157,6 @@ export default function RidersPage() {
                       <span className="text-sm font-semibold text-gray-500">Not added</span>
                     )}
                   </div>
-                  <InfoInline
-                    label="Blocked"
-                    value={
-                      (() => {
-                        const byService = displaySummary?.blacklistStatusByService;
-                        const negWallet = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
-                        const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;
-                        const banned: string[] = [];
-                        if (globalWalletBlock) return <span className="font-medium text-red-600">All services (wallet ≤ -200)</span>;
-                        if (byService) {
-                          const all = byService.all as { isBanned?: boolean; partiallyAllowedServices?: string[] } | null;
-                          const allFullyBanned = all?.isBanned === true && !(all?.partiallyAllowedServices?.length);
-                          if (allFullyBanned) return <span className="font-medium text-red-600">All services (blacklist)</span>;
-                          if (byService.food?.isBanned) banned.push("Food (blacklist)");
-                          if (byService.parcel?.isBanned) banned.push("Parcel (blacklist)");
-                          if (byService.person_ride?.isBanned) banned.push("Person ride (blacklist)");
-                        }
-                        negWallet.forEach((b: { serviceType: string }) => {
-                          const label = b.serviceType === "person_ride" ? "Person ride" : b.serviceType ? b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1) : "";
-                          if (label && !banned.some((x) => x.startsWith(label))) banned.push(`${label} (negative wallet)`);
-                        });
-                        if (banned.length === 0) return "—";
-                        return <span className="text-amber-700">{banned.join(", ")}</span>;
-                      })()
-                    }
-                  />
                 </div>
 
                 {/* Vehicle details: inline line(s) in dropdown when expanded */}
@@ -1174,28 +1165,10 @@ export default function RidersPage() {
                     {riderSummary?.vehicle ? (
                       <div className="flex flex-wrap items-baseline gap-x-1 gap-y-1">
                         <span className="text-gray-500 shrink-0">Type:</span>
-                        <span className="font-medium text-gray-900 shrink-0">
-                          {getOnboardingVehicleDisplayName(riderSummary)}
-                        </span>
+                        <span className="font-medium text-gray-900 shrink-0">{String(riderSummary.vehicle.vehicleType ?? "—").replace(/_/g, " ")}</span>
                         <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
                         <span className="text-gray-500 shrink-0">Fuel:</span>
                         <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.fuelType || "—"}</span>
-                        {(() => {
-                          const acLabel = resolveAcTypeDisplay({
-                            acType: riderSummary.vehicle.acType,
-                            onboardingVehicleCode:
-                              riderSummary.vehicle.onboardingVehicleCode ??
-                              riderSummary.rider?.vehicleChoice,
-                          });
-                          if (!acLabel) return null;
-                          return (
-                            <>
-                              <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
-                              <span className="text-gray-500 shrink-0">AC:</span>
-                              <span className="font-medium text-gray-900 shrink-0">{acLabel}</span>
-                            </>
-                          );
-                        })()}
                         <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
                         <span className="text-gray-500 shrink-0">Make:</span>
                         <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.make || "—"}</span>
@@ -2649,19 +2622,6 @@ export default function RidersPage() {
                     riderName={rider.name}
                     open
                     onClose={() => setLogoutHistoryOpen(false)}
-                  />
-                ) : null}
-
-                {deviceSessionsOpen ? (
-                  <RiderDeviceSessionsSideSheet
-                    riderId={rider.id}
-                    riderName={rider.name}
-                    open
-                    onClose={() => setDeviceSessionsOpen(false)}
-                    onRevoked={() => {
-                      if (riderId) invalidateRiderSummary(queryClient, riderId);
-                      refetchRiderSummary();
-                    }}
                   />
                 ) : null}
 

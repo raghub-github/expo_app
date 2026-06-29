@@ -1,11 +1,10 @@
 'use client';
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Bell, ChevronUp } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 import { useStoreContext } from '@/app/dashboard/merchants/stores/[id]/StoreContext';
 import { subscribeMenuItemFormModalOpen } from '@/lib/merchant-menu-form-modal-bus';

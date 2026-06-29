@@ -1,9 +1,8 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { Search, X, Settings, Ticket, User } from "lucide-react";
 

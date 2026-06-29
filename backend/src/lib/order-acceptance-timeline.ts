@@ -1,6 +1,7 @@
 import type { Sql } from "postgres";
 import {
   buildAcceptedByLabel,
+  buildAcceptanceTimelineStatus,
   type MerchantOrderActionMode,
   type MerchantOrderActionSource,
 } from "./merchant-order-food-action-labels.js";
@@ -26,6 +27,7 @@ export async function recordAcceptanceTimeline(
 ): Promise<void> {
   const actionSource = input.actionSource ?? "website";
   const acceptMode = input.acceptMode ?? "manual";
+  const timelineStatus = buildAcceptanceTimelineStatus(acceptMode);
   const label =
     input.acceptedByLabel?.trim() ||
     buildAcceptedByLabel(actionSource, acceptMode);
@@ -57,7 +59,7 @@ export async function recordAcceptanceTimeline(
     )
     SELECT
       ${input.orderCorePk},
-      'Accepted',
+      ${timelineStatus},
       COALESCE(
         (
           SELECT ot.status
@@ -77,7 +79,7 @@ export async function recordAcceptanceTimeline(
       SELECT 1
       FROM order_timelines ot
       WHERE ot.order_id = ${input.orderCorePk}
-        AND ot.status = 'Accepted'
+        AND ot.status IN ('Accepted', 'Auto Accepted')
     )
   `;
 

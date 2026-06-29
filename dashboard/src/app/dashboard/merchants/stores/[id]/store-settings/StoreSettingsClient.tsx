@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useEffect, useState, useCallback, useMemo } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import {
   Power,
   Package,

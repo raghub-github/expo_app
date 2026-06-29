@@ -29,9 +29,22 @@ export type VerifyOtpPayload = {
 /** Set after successful `POST /v1/auth/otp/request`; cleared on verify or new send. */
 let _lastBackendOtpRequestId: string | null = null;
 
-function shouldSendPhoneOtpViaBackend(): boolean {
+/** Trailing-10-digit match, tolerant of +/spaces — mirrors backend reviewMode. */
+function isReviewPhone(phoneE164: string): boolean {
+  const { reviewPhone } = getConfig();
+  if (!reviewPhone) return false;
+  const a = phoneE164.replace(/\D/g, "").slice(-10);
+  const b = reviewPhone.replace(/\D/g, "").slice(-10);
+  return a.length === 10 && a === b;
+}
+
+function shouldSendPhoneOtpViaBackend(phoneE164: string): boolean {
   const { phoneOtpUseBackendOnly } = getConfig();
   if (phoneOtpUseBackendOnly) return true;
+  // The Google Play review phone must use the backend OTP path so the
+  // server-side review-mode short-circuit (fixed OTP) applies. Supabase would
+  // otherwise try to send a real SMS and reject the fixed code as invalid.
+  if (isReviewPhone(phoneE164)) return true;
   return getSupabaseAuth() == null;
 }
 
@@ -53,7 +66,7 @@ export const authService = {
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
     _lastBackendOtpRequestId = null;
-    const viaBackend = shouldSendPhoneOtpViaBackend();
+    const viaBackend = shouldSendPhoneOtpViaBackend(payload.phoneE164);
     const phoneTail = payload.phoneE164.replace(/\D/g, "").slice(-4);
 
     if (__DEV__) {

@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { StoreQueryHydrator } from "./StoreQueryHydrator";
 import { StoreProvider, type StoreContextStore } from "./StoreContext";
@@ -40,7 +39,9 @@ function StoreLayoutFallback({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = useAppPathname();
   const { store, isLoading } = useStore(storeId);
+  const isOrdersPage = pathname.includes("/orders");
 
   if (isLoading && !store) {
     return (
@@ -74,7 +75,17 @@ function StoreLayoutFallback({
         <MerchantIncomingOrderModal />
         <MerchantAcceptanceTimeoutSync />
         <MerchantPendingNewOrdersBar />
-        <div className="flex min-h-0 flex-1 flex-col w-full">
+        <div
+          className="flex min-h-0 flex-1 flex-col w-full overflow-hidden"
+          style={
+            isOrdersPage
+              ? undefined
+              : {
+                  paddingBottom:
+                    "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+                }
+          }
+        >
           {children}
         </div>
       </div>
@@ -118,6 +129,8 @@ export function StoreLayoutShell({
     const qs = next.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname);
   };
+
+  const isOrdersPage = pathname.includes("/orders");
 
   if (!store) {
     return (
@@ -201,7 +214,17 @@ export function StoreLayoutShell({
         <MerchantAcceptanceTimeoutSync />
         <MerchantPendingNewOrdersBar />
         {/* Main content — store name, address, and store ID are shown in the right sidebar Store Information Card */}
-        <div className="flex min-h-0 flex-1 flex-col w-full">
+        <div
+          className="flex min-h-0 flex-1 flex-col w-full overflow-hidden"
+          style={
+            isOrdersPage
+              ? undefined
+              : {
+                  paddingBottom:
+                    "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+                }
+          }
+        >
           {children}
         </div>
       </div>

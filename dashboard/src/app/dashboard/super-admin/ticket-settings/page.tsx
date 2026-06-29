@@ -1,12 +1,11 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { FolderGit2, Tag, Plus, Pencil, Trash2, X, List, ListTree, BookMarked, Gauge } from "lucide-react";
 import { TicketHelpTopicsPanel } from "@/components/tickets/admin/TicketHelpTopicsPanel";
 import { TicketPrioritiesPanel } from "@/components/tickets/admin/TicketPrioritiesPanel";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import {
   useListTicketGroupsAdminQuery,

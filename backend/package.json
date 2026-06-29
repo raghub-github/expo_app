@@ -36,6 +36,7 @@
     "@gatimitra/event-contracts": "*",
     "@gatimitra/financial-rules": "*",
     "@gatimitra/slab-pricing": "*",
+    "@gatimitra/store-status": "*",
     "@gatimitra/logger": "*",
     "@gatimitra/queue": "*",
     "@gatimitra/redis": "*",

@@ -1,6 +1,6 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
@@ -279,3 +279,4 @@ export function useTickets(
 
   return query;
 }
+

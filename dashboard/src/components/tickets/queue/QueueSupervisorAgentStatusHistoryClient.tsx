@@ -1,9 +1,8 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Briefcase, CalendarOff, ChevronRight, Clock, LogOut, Timer, X, Zap } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";

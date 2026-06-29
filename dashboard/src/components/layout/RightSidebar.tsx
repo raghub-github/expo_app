@@ -1,10 +1,9 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useMemo, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 import {
   Zap,

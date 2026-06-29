@@ -17,6 +17,7 @@
  * Styling matches the existing cxsite mint→purple→pink palette.
  */
 import React from "react";
+import { resolveLegalHref } from "@/lib/legal/registry";
 
 type Props = {
   source: string;
@@ -71,9 +72,11 @@ function renderInline(raw: string): React.ReactNode[] {
         const closeParen = raw.indexOf(")", closeBracket + 2);
         if (closeParen > closeBracket + 1) {
           const text = raw.slice(i + 1, closeBracket);
-          const href = raw.slice(closeBracket + 2, closeParen);
+          const rawHref = raw.slice(closeBracket + 2, closeParen);
+          const href = resolveLegalHref(rawHref);
           flush();
-          const isExternal = /^https?:\/\//i.test(href);
+          // After rewriting, .md cross-links become internal site routes.
+          const isExternal = /^https?:\/\//i.test(href) || href.startsWith("mailto:");
           out.push(
             <a
               key={key++}

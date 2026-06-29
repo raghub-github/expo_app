@@ -1,9 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
+import { normalizeMerchantStoreMediaUrl } from '@/lib/r2';
 import { client as sql } from '@/lib/drizzle';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function normalizeStoreRecordRow(row: Record<string, unknown>): Record<string, unknown> {
+  const bannerUrl =
+    normalizeMerchantStoreMediaUrl(row.banner_url as string | null | undefined) ??
+    row.banner_url;
+  const galleryImages = Array.isArray(row.gallery_images)
+    ? row.gallery_images
+        .map((u) => normalizeMerchantStoreMediaUrl(String(u)) ?? String(u).trim())
+        .filter((u): u is string => typeof u === 'string' && u.length > 0)
+    : row.gallery_images;
+  return {
+    ...row,
+    banner_url: bannerUrl ?? row.banner_url,
+    gallery_images: galleryImages ?? row.gallery_images,
+  };
+}
 
 /** GET /api/merchant/store-record?storeId=GMMC1015 — direct Postgres (avoids PostgREST PGRST002). */
 export async function GET(req: NextRequest) {
@@ -42,7 +59,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    return NextResponse.json(row);
+    return NextResponse.json(normalizeStoreRecordRow(row as Record<string, unknown>));
   } catch (e) {
     console.error('[store-record]', e);
     return NextResponse.json({ error: 'Store lookup failed' }, { status: 500 });

@@ -1,9 +1,9 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import dynamic from "next/dynamic";
 import React, { useEffect, useState, useRef } from "react";
 import { flushSync } from "react-dom";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";

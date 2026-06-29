@@ -82,9 +82,33 @@ export const LEGAL_DOCS: LegalDoc[] = [
     file: "data-deletion-policy.md",
     title: "Account Deletion Policy",
     description:
-      "How to delete your GatiMitra account, what data is removed immediately, what is retained for legal compliance and how to request a copy of your data.",
+      "How to close your GatiMitra account: raise a request in the app, how it is reviewed, what is deactivated, what we must legally retain (documents, mobile number, invoices) and why a closed account cannot be revived.",
     category: "user-rights",
     inFooter: true,
+  },
+  {
+    slug: "refund-cancellation-policy",
+    file: "refund-cancellation-policy.md",
+    title: "Refund & Cancellation Policy",
+    description:
+      "Combined refund and cancellation rules across GatiMitra food orders, rides, parcels, wallet recharges and membership — when you can cancel, fees and refund timelines.",
+    category: "money",
+  },
+  {
+    slug: "permissions-rationale",
+    file: "permissions-rationale.md",
+    title: "App Permissions — What We Use & Why",
+    description:
+      "Every Android and iOS permission the GatiMitra app requests — location, camera, notifications, contacts — what each is used for and how to control it.",
+    category: "user-rights",
+  },
+  {
+    slug: "dpdpa-compliance-notice",
+    file: "dpdpa-compliance-notice.md",
+    title: "DPDPA Compliance Notice",
+    description:
+      "GatiMitra's Digital Personal Data Protection Act 2023 compliance notice and Data Protection Officer contact — lawful processing, your rights and grievance escalation.",
+    category: "user-rights",
   },
   {
     slug: "cookies",
@@ -253,9 +277,42 @@ export const LEGAL_DOCS: LegalDoc[] = [
 ];
 
 const BY_SLUG = new Map(LEGAL_DOCS.map((d) => [d.slug, d]));
+const SLUG_BY_FILE = new Map(LEGAL_DOCS.map((d) => [d.file, d.slug]));
 
 export function getLegalDoc(slug: string): LegalDoc | null {
   return BY_SLUG.get(slug) ?? null;
+}
+
+/**
+ * Rewrite a link href found inside a policy markdown body to its real cxsite
+ * route. The shared markdown (also rendered inside the customer app) uses
+ * relative `./<file>.md` cross-links and a couple of legacy absolute URLs that
+ * don't exist as web routes. On gatimitra.com those must resolve to the
+ * registered slug, e.g. `./data-deletion-policy.md` -> `/account-deletion`.
+ *
+ * Anything we don't recognise is returned unchanged.
+ */
+export function resolveLegalHref(href: string): string {
+  const raw = href.trim();
+
+  // Every legacy account-deletion entry point folds into the single page
+  // /account-deletion (the form and the old data-deletion-policy.md URL are gone).
+  if (
+    /^(https?:\/\/[^/]*gatimitra\.com)?\/(account\/delete|account-delete|delete-account-request|data-deletion-policy(\.md)?)\/?$/i.test(
+      raw,
+    )
+  ) {
+    return "/account-deletion";
+  }
+
+  // Relative markdown cross-links: ./file.md , file.md , /file.md (+ optional #anchor)
+  const mdMatch = raw.match(/^\.?\/?([a-z0-9-]+)\.md(#[a-zA-Z0-9-]+)?$/);
+  if (mdMatch) {
+    const slug = SLUG_BY_FILE.get(`${mdMatch[1]}.md`);
+    if (slug) return `/${slug}${mdMatch[2] ?? ""}`;
+  }
+
+  return raw;
 }
 
 export function getLegalDocsByCategory(category: LegalDocCategory): LegalDoc[] {

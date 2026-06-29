@@ -3,8 +3,8 @@
  * Ensures filters persist on refresh and navigation
  */
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 
 export interface FilterConfig<T extends string> {

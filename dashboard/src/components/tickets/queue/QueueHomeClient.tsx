@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useEffect, useTransition } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { TicketDashboardClient } from "@/components/tickets/TicketDashboardClient";

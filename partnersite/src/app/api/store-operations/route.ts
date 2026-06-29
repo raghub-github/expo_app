@@ -11,6 +11,10 @@ import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import {
+  formatStoreStatusLabel,
+  type LiveSchedulePhase,
+} from '@gatimitra/store-status';
+import {
   getNextOpenDayStartIso,
   getNextOpenIso,
   getNextOpenIsoAfterIstCalendarDay,
@@ -233,7 +237,13 @@ export async function GET(req: NextRequest) {
       db
         .from('merchant_stores')
         .select(
-          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, timezone'
+          // Tail of the SELECT contains the 5 columns written by the
+          // backend store-schedule-engine tick (migration 0381). The
+          // client uses formatStoreStatusLabel() from
+          // @gatimitra/store-status to render a consistent label without
+          // re-running the schedule math here.
+          // No timezone column on merchant_stores; engine assumes Asia/Kolkata.
+          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at'
         )
         .eq('id', storeInternalId)
         .single(),
@@ -421,10 +431,36 @@ export async function GET(req: NextRequest) {
     const surfaceOnline =
       authoritative?.surface_online ?? (displayOperational === 'OPEN' && withinHours);
 
+    const liveStoreRow = store as {
+      live_schedule_phase?: string | null;
+      next_open_at?: string | null;
+      next_close_at?: string | null;
+      manual_override_active?: boolean | null;
+      live_status_updated_at?: string | null;
+    } | null;
+    const livePhase = (liveStoreRow?.live_schedule_phase ?? null) as LiveSchedulePhase | null;
+    const liveLabel = formatStoreStatusLabel({
+      phase: livePhase,
+      nextOpenAt: liveStoreRow?.next_open_at ?? null,
+      nextCloseAt: liveStoreRow?.next_close_at ?? null,
+      manualOverrideActive: liveStoreRow?.manual_override_active === true,
+      isOpenNow: surfaceOnline,
+      timezone: storeTz,
+    });
+
     const responseBody: Record<string, unknown> = {
       operational_status: displayOperational,
       surface_online: surfaceOnline,
       is_open: surfaceOnline,
+      live_schedule_phase: livePhase,
+      live_next_open_at: liveStoreRow?.next_open_at ?? null,
+      live_next_close_at: liveStoreRow?.next_close_at ?? null,
+      live_manual_override_active: liveStoreRow?.manual_override_active === true,
+      live_status_updated_at: liveStoreRow?.live_status_updated_at ?? null,
+      live_label: liveLabel.primary,
+      live_label_chip: liveLabel.chip,
+      live_label_secondary: liveLabel.secondary ?? null,
+      live_label_countdown: liveLabel.countdown ?? null,
       license_blocked: licenseStatus.blocked,
       license_can_manual_open: licenseStatus.can_manual_open,
       license_expired_documents: licenseStatus.expired,

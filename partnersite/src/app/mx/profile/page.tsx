@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
+import React, { useEffect, useLayoutEffect, useState, useRef, useMemo, useCallback } from "react";
 import { MXLayoutWhite } from "@/components/MXLayoutWhite";
 import { PartnerPageHeader } from "@/context/PartnerShellHeaderContext";
 import { R2Image } from "@/components/R2Image";
@@ -19,7 +19,8 @@ import {
   PROFILE_LEGAL_DOC_CONFIG,
   type MerchantDocumentPrefix,
 } from "@/lib/merchantLicenseExpiry";
-import { fetchStoreDocuments } from "@/lib/database";
+import { fetchStoreDocumentsViaApi } from "@/lib/merchant-profile-cache";
+import { partnerDocumentPreviewHref } from "@/lib/partnerDocumentPreview";
 
 const GALLERY_SLOT_COUNT = 5;
 
@@ -85,8 +86,17 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { PageSkeletonProfile } from "@/components/PageSkeleton";
+import { readPartnerSelectedStoreId, PARTNER_SELECTED_STORE_CHANGED } from "@/lib/partner-selected-store";
+import {
+  normalizeProfileStore,
+  readCachedMerchantProfile,
+  writeCachedMerchantProfile,
+} from "@/lib/merchant-profile-cache";
 
-export const dynamic = "force-dynamic";
+function readProfileCacheForStore(storeId: string | null) {
+  if (!storeId) return null;
+  return readCachedMerchantProfile(storeId);
+}
 
 class ProfileErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) {
@@ -227,6 +237,7 @@ function OperatingDaysCard({ hours, className = "" }: { hours: any[]; className?
 }
 
 export default function ProfilePage() {
+  const [hydrated, setHydrated] = useState(false);
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [editData, setEditData] = useState<MerchantStore | null>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
@@ -277,19 +288,69 @@ export default function ProfilePage() {
     agreement_effective_to: string | null;
   } | null>(null);
   const [agreementLoading, setAgreementLoading] = useState(false);
+  const agreementContractHref = useMemo(
+    () =>
+      agreement?.contract_pdf_url
+        ? partnerDocumentPreviewHref(agreement.contract_pdf_url)
+        : null,
+    [agreement?.contract_pdf_url]
+  );
   const bannerInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const gallerySlotInputRef = useRef<HTMLInputElement>(null);
   const gallerySlotIndexRef = useRef<number | null>(null);
 
+  /** Hydrate from session cache before paint — avoids SSR/client hydration mismatch. */
+  useLayoutEffect(() => {
+    const id = readPartnerSelectedStoreId();
+    setStoreId(id);
+    if (id) {
+      const cached = readCachedMerchantProfile(id);
+      if (cached) {
+        setStore(cached.store);
+        setEditData(cached.store);
+        setOperatingHours(cached.operatingHours);
+        setStoreDocuments(cached.storeDocuments);
+        setBankAccounts(cached.bankAccounts);
+        setLoading(false);
+      }
+    }
+    setHydrated(true);
+  }, []);
+
   /* ===== GET STORE ID ===== */
   useEffect(() => {
-    const id = localStorage.getItem("selectedStoreId") || localStorage.getItem("selectedRestaurantId");
-    if (!id) {
-      toast.error("Store ID not found");
-      return;
-    }
-    setStoreId(id);
+    const syncStoreId = () => {
+      const id = readPartnerSelectedStoreId();
+      if (!id) {
+        toast.error("Store ID not found");
+        return;
+      }
+      setStoreId((prev) => {
+        if (prev === id) return prev;
+        const cached = readCachedMerchantProfile(id);
+        if (cached) {
+          setStore(cached.store);
+          setEditData(cached.store);
+          setOperatingHours(cached.operatingHours);
+          setStoreDocuments(cached.storeDocuments);
+          setBankAccounts(cached.bankAccounts);
+          setAgreement(null);
+          setLoading(false);
+        } else {
+          setLoading(true);
+          setStore(null);
+          setEditData(null);
+          setStoreDocuments(null);
+          setAgreement(null);
+          setBankAccounts([]);
+        }
+        return id;
+      });
+    };
+    syncStoreId();
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, syncStoreId);
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, syncStoreId);
   }, []);
 
   // Load cuisines configured for this store (distinct list from merchant_store_cuisines)
@@ -475,6 +536,7 @@ export default function ProfilePage() {
       return;
     }
     setAgreementLoading(true);
+    setAgreement(null);
     fetch(`/api/merchant/agreement?storeId=${encodeURIComponent(storeId)}`)
       .then((res) => res.json())
       .then((data) => {
@@ -499,10 +561,13 @@ export default function ProfilePage() {
   /* ===== FETCH DATA ===== */
   useEffect(() => {
     if (!storeId) return;
-    setLoading(true);
+    const hadCache = Boolean(readCachedMerchantProfile(storeId));
+    if (!hadCache) setLoading(true);
+    let cancelled = false;
     (async () => {
       try {
         const storeData = await fetchStoreById(storeId);
+        if (cancelled) return;
         const internalId = storeData?.id;
         storeInternalIdRef.current = internalId ?? null;
 
@@ -511,59 +576,63 @@ export default function ProfilePage() {
             ? import("@/lib/database").then((m) => m.fetchStoreOperatingHoursViaApi(internalId))
             : Promise.resolve([]),
           (async () => {
-            if (!internalId) {
+            if (!storeId) {
               return { docs: null as any, banks: [] as any[] };
             }
             const mod = await import("@/lib/database");
             try {
-              const [docs, banks] = await Promise.all([
-                mod.fetchStoreDocuments(internalId).catch((err) => {
+              const [docsResult, banksResult] = await Promise.all([
+                fetchStoreDocumentsViaApi(storeId).catch((err) => {
                   console.error('Error fetching documents:', err);
                   return null;
                 }),
-                mod.fetchStoreBankAccounts(internalId).catch((err) => {
-                  console.error('Error fetching bank accounts:', err);
-                  return [];
-                }),
+                internalId
+                  ? mod.fetchStoreBankAccounts(internalId).catch((err) => {
+                      console.error('Error fetching bank accounts:', err);
+                      return [];
+                    })
+                  : Promise.resolve([]),
               ]);
-              return { docs, banks };
+              return { docs: docsResult, banks: banksResult };
             } catch {
               return { docs: null, banks: [] };
             }
           })(),
         ]);
 
-        const store = storeData as MerchantStore | null;
-        if (store) {
-          const bannerUrl = normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url;
-          const galleryImages = Array.isArray(store.gallery_images)
-            ? store.gallery_images
-                .map((u) => normalizeMerchantStoreMediaUrl(u) ?? u)
-                .filter((u): u is string => typeof u === "string" && u.trim().length > 0)
-            : null;
-          const updatedStore = {
-            ...store,
-            banner_url: bannerUrl || store.banner_url,
-            gallery_images: (galleryImages ?? store.gallery_images) as any,
-          };
-          setStore(updatedStore);
-          setEditData(updatedStore);
+        if (cancelled) return;
+
+        const normalizedStore = storeData ? normalizeProfileStore(storeData as MerchantStore) : null;
+        if (normalizedStore) {
+          setStore(normalizedStore);
+          setEditData(normalizedStore);
         }
-        if (Array.isArray(hoursData)) {
-          setOperatingHours(hoursData);
-        }
-        if (docs) {
-          setStoreDocuments(docs);
-        }
+        const hours = Array.isArray(hoursData) ? hoursData : [];
+        setOperatingHours(hours);
+        if (docs) setStoreDocuments(docs);
         const bankAccountsArray = Array.isArray(banks) ? banks : [];
         setBankAccounts(bankAccountsArray);
+
+        if (normalizedStore) {
+          writeCachedMerchantProfile(storeId, {
+            store: normalizedStore,
+            operatingHours: hours,
+            storeDocuments: docs ?? null,
+            bankAccounts: bankAccountsArray,
+          });
+        }
       } catch (error) {
-        console.error('Error loading profile:', error);
-        toast.error("Failed to load profile");
+        if (!cancelled) {
+          console.error('Error loading profile:', error);
+          if (!hadCache) toast.error("Failed to load profile");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [storeId]);
 
   /* ===== BANK VERIFICATION STATUS ===== */
@@ -1014,7 +1083,7 @@ export default function ProfilePage() {
     setEditingField(null);
   };
 
-  if (loading) {
+  if (!hydrated || (loading && !store)) {
     return (
       <MXLayoutWhite restaurantName={editData?.store_name || ''} restaurantId={storeId || ''}>
         <PageSkeletonProfile />
@@ -1610,31 +1679,11 @@ export default function ProfilePage() {
                                   <span className="text-gray-600">Accepted on</span>
                                   <span className="text-gray-900">{agreement.accepted_at ? new Date(agreement.accepted_at).toLocaleDateString('en-IN', { dateStyle: 'medium' }) : '—'}</span>
                                 </div>
-                                {(agreement.commission_first_month_pct != null || agreement.commission_from_second_month_pct != null) && (
-                                  <div className="mt-2 pt-2 border-t border-gray-100">
-                                    <span className="text-gray-600">Commission (as per contract): </span>
-                                    <span className="text-gray-900">
-                                      First month {agreement.commission_first_month_pct ?? 0}%, from second month {agreement.commission_from_second_month_pct ?? 15}% + GST
-                                    </span>
-                                  </div>
-                                )}
-                                {agreement.agreement_effective_from && (
-                                  <div className="flex justify-between gap-2 mt-1">
-                                    <span className="text-gray-600">Effective from</span>
-                                    <span className="text-gray-900">{new Date(agreement.agreement_effective_from).toLocaleDateString('en-IN', { dateStyle: 'medium' })}</span>
-                                  </div>
-                                )}
-                                {agreement.agreement_effective_to && (
-                                  <div className="flex justify-between gap-2 mt-1">
-                                    <span className="text-gray-600">Expiry</span>
-                                    <span className="text-gray-900">{new Date(agreement.agreement_effective_to).toLocaleDateString('en-IN', { dateStyle: 'medium' })}</span>
-                                  </div>
-                                )}
                               </div>
-                              {agreement.contract_pdf_url ? (
+                              {agreementContractHref ? (
                                 <div className="flex flex-wrap gap-2">
                                   <a
-                                    href={agreement.contract_pdf_url}
+                                    href={agreementContractHref}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700"
@@ -1643,7 +1692,7 @@ export default function ProfilePage() {
                                     View contract
                                   </a>
                                   <a
-                                    href={agreement.contract_pdf_url}
+                                    href={agreementContractHref}
                                     download="partner-agreement-signed.pdf"
                                     target="_blank"
                                     rel="noopener noreferrer"
@@ -1653,9 +1702,9 @@ export default function ProfilePage() {
                                     Download
                                   </a>
                                 </div>
-                              ) : (
+                              ) : agreement.contract_pdf_url ? (
                                 <p className="text-xs text-amber-600">PDF not available. Contact support if you need a copy.</p>
-                              )}
+                              ) : null}
                             </div>
                           ) : (
                             <p className="text-xs text-gray-500">No agreement record found for this store.</p>
@@ -1989,6 +2038,7 @@ export default function ProfilePage() {
                             src={store.banner_url}
                             alt="Store Banner"
                             className="mt-2 rounded-lg w-full h-48 object-cover"
+                            lazy={false}
                           />
                         ) : (
                           <div className="mt-2 h-48 bg-gray-100 rounded-lg flex items-center justify-center">
@@ -2073,6 +2123,7 @@ export default function ProfilePage() {
                                       src={img}
                                       alt={`Gallery ${index + 1}`}
                                       className="w-full h-full object-cover"
+                                      lazy={false}
                                     />
                                     <button
                                       type="button"
@@ -2142,9 +2193,8 @@ export default function ProfilePage() {
             setLicenseUploadPrefix(null);
           }}
           onUploaded={async () => {
-            const id = storeInternalIdRef.current;
-            if (id) {
-              const docs = await fetchStoreDocuments(id);
+            if (storeId) {
+              const docs = await fetchStoreDocumentsViaApi(storeId);
               setStoreDocuments(docs);
             }
           }}

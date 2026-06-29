@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import crypto from 'crypto'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
+import { enforcePlanLimitsForStoreNumericId } from '@/lib/plan-enforce'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -256,6 +257,8 @@ export async function POST(req: NextRequest) {
       billing_period_end: newExpiry.toISOString(),
       notes: creditToApply > 0 ? `Upgrade: ₹${creditToApply} credit applied from previous plan` : 'Plan upgrade',
     });
+
+    await enforcePlanLimitsForStoreNumericId(store.id);
 
     return NextResponse.json({
       success: true,
