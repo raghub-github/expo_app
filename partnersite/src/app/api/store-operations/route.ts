@@ -240,7 +240,8 @@ export async function GET(req: NextRequest) {
           // client uses formatStoreStatusLabel() from
           // @gatimitra/store-status to render a consistent label without
           // re-running the schedule math here.
-          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, timezone, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at'
+          // No timezone column on merchant_stores; engine assumes Asia/Kolkata.
+          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at'
         )
         .eq('id', storeInternalId)
         .single(),

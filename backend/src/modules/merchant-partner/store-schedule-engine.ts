@@ -1434,14 +1434,15 @@ async function syncLiveScheduleColumnsForStore(
 ): Promise<void> {
   // Re-read the row so we observe the flags the main tick just wrote.
   // The cost is one extra SELECT per store per 30s — negligible.
+  // NOTE: merchant_stores has no `timezone` column. The engine assumes
+  // STORE_TIMEZONE_DEFAULT (Asia/Kolkata) like every other helper here.
   const rows = (await sql`
     SELECT
       id,
       operational_status,
       is_accepting_orders,
       is_available,
-      is_active,
-      timezone
+      is_active
     FROM merchant_stores
     WHERE id = ${storeId}
     LIMIT 1
@@ -1450,12 +1451,11 @@ async function syncLiveScheduleColumnsForStore(
     is_accepting_orders?: boolean | null;
     is_available?: boolean | null;
     is_active?: boolean | null;
-    timezone?: string | null;
   }>;
   const row = rows[0];
   if (!row) return;
 
-  const tz = normalizeTz(row.timezone);
+  const tz = STORE_TIMEZONE_DEFAULT;
   const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(tz);
 
   // Phase derivation. Keep this in lock-step with the union in

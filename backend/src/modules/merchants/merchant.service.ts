@@ -154,7 +154,6 @@ type NearbyStoreBase = {
   next_close_at?: string | null;
   manual_override_active?: boolean | null;
   live_status_updated_at?: string | null;
-  timezone?: string | null;
 };
 
 export type NearbyStoreListingItem = {
@@ -284,7 +283,8 @@ export async function listNearbyStoresByRoadDistance(params: {
       // tick (migration 0381). Customer mobile app uses formatStoreStatusLabel
       // from @gatimitra/store-status to render the same label the merchant
       // app + partnersite render.
-      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_status, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at, timezone",
+      // No `timezone` column on merchant_stores — engine assumes Asia/Kolkata.
+      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_status, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at",
     )
     .eq("status", "ACTIVE")
     .eq("is_active", true)
@@ -389,7 +389,7 @@ export async function listNearbyStoresByRoadDistance(params: {
         nextCloseAt: c.row.next_close_at ?? null,
         manualOverrideActive: c.row.manual_override_active === true,
         isOpenNow: isOpen,
-        timezone: c.row.timezone ?? undefined,
+        // merchant_stores has no timezone column; rely on default IST.
       });
 
       const item: NearbyStoreListingItem = {
