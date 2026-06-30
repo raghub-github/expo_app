@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -47,7 +48,7 @@ export async function GET() {
       if (!name || seen.has(name)) continue
       seen.set(name, {
         name,
-        img: r.category_image_url || null,
+        img: toAbsoluteImageUrl(r.category_image_url) ?? null,
       })
     }
 

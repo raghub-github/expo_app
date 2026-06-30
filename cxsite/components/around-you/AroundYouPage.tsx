@@ -270,7 +270,7 @@ export default function AroundYouPage() {
     if (isPanIndiaLocationDisplay(locationState.displayName)) return ''
     if (locationState.locationCommittedByUser !== true) return ''
     if (locationState.lat == null || locationState.lon == null) return ''
-    return getRestaurantGeoQueryString(locationState, true)
+    return getRestaurantGeoQueryString(locationState)
   }, [locationState])
 
   const hasGeo = Boolean(restaurantGeoQs)

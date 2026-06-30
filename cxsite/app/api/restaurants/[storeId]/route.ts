@@ -1,12 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getSupabaseServiceRole } from '@/lib/supabaseServiceRole'
+import { resolveImageUrlList, toAbsoluteImageUrl } from '@/lib/mediaUrl'
+
+function mergeGallerySources(row: Record<string, unknown>): string[] {
+  const raw: unknown[] = []
+  if (Array.isArray(row.gallery_images)) raw.push(...row.gallery_images)
+  if (Array.isArray(row.ads_images)) raw.push(...row.ads_images)
+  return resolveImageUrlList(raw.length > 0 ? raw : null)
+}
+
+function pickBannerUrl(row: Record<string, unknown>): string | null {
+  const candidates = [
+    row.banner_url,
+    row.store_banner_url,
+    row.store_img,
+    row.logo_url,
+  ]
+  for (const c of candidates) {
+    const resolved = toAbsoluteImageUrl(typeof c === 'string' ? c : null)
+    if (resolved) return resolved
+  }
+  return null
+}
 
 /** Map merchant_stores row to the shape expected by RestaurantPage. Exact DB values only, no defaults for status. */
 function mapStoreToRestaurant(row: Record<string, unknown>) {
   const storeName = (row.store_display_name ?? row.store_name ?? '') as string
   const cuisineTypes = (row.cuisine_types as string[] | null) ?? []
   const cuisineType = cuisineTypes.length > 0 ? cuisineTypes.join(', ') : ''
+  const bannerUrl = pickBannerUrl(row)
   return {
     id: row.id,
     store_id: row.store_id,
@@ -20,9 +43,9 @@ function mapStoreToRestaurant(row: Record<string, unknown>) {
     state: row.state,
     postal_code: row.postal_code,
     country: row.country,
-    image_url: row.banner_url,
-    banner_url: row.banner_url,
-    store_img: row.store_img ?? null,
+    image_url: bannerUrl,
+    banner_url: bannerUrl,
+    store_img: toAbsoluteImageUrl((row.store_img as string | null) ?? (row.logo_url as string | null) ?? null),
     cuisine_type: cuisineType,
     cuisine_types: cuisineTypes,
     is_veg: row.is_pure_veg ?? false,
@@ -40,7 +63,7 @@ function mapStoreToRestaurant(row: Record<string, unknown>) {
     store_description: row.store_description,
     store_email: row.store_email,
     store_phones: row.store_phones ?? null,
-    gallery_images: row.gallery_images ?? null,
+    gallery_images: mergeGallerySources(row),
     latitude: row.latitude ?? null,
     longitude: row.longitude ?? null,
     /** Exact value from merchant_stores.operational_status – OPEN, CLOSED, TEMPORARILY_CLOSED, or null. No frontend default. */
@@ -149,6 +172,51 @@ function buildSyntheticOperatingHoursFromDaily(
   return dayLabels.map((day) => ({ day, open: true, slots: [...slots] }))
 }
 
+/** Fallback when merchant_stores.gallery_images / banner_url columns are empty — read R2 media registry. */
+async function enrichMediaFromRegistry(
+  storeClient: ReturnType<typeof getSupabaseServiceRole> | typeof supabase,
+  storeIdNum: number,
+  payload: ReturnType<typeof mapStoreToRestaurant>
+) {
+  const hasBanner = Boolean(payload.banner_url)
+  const hasGallery = Array.isArray(payload.gallery_images) && payload.gallery_images.length > 0
+  if (hasBanner && hasGallery) return payload
+
+  const { data: mediaRows, error } = await storeClient
+    .from('merchant_store_media_files')
+    .select('media_scope, r2_key, public_url, menu_url')
+    .eq('store_id', storeIdNum)
+    .eq('is_active', true)
+    .is('deleted_at', null)
+    .in('media_scope', ['BANNER', 'GALLERY'])
+    .order('created_at', { ascending: true })
+
+  if (error || !mediaRows?.length) return payload
+
+  const galleryUrls: string[] = [...(payload.gallery_images ?? [])]
+  let bannerUrl = payload.banner_url ?? null
+
+  for (const row of mediaRows as Array<Record<string, unknown>>) {
+    const scope = String(row.media_scope ?? '').toUpperCase()
+    const raw =
+      (typeof row.public_url === 'string' && row.public_url) ||
+      (typeof row.menu_url === 'string' && row.menu_url) ||
+      (typeof row.r2_key === 'string' && row.r2_key) ||
+      null
+    const resolved = toAbsoluteImageUrl(raw)
+    if (!resolved) continue
+    if (scope === 'BANNER' && !bannerUrl) bannerUrl = resolved
+    if (scope === 'GALLERY' && !galleryUrls.includes(resolved)) galleryUrls.push(resolved)
+  }
+
+  return {
+    ...payload,
+    banner_url: bannerUrl,
+    image_url: bannerUrl,
+    gallery_images: galleryUrls.length > 0 ? galleryUrls : payload.gallery_images,
+  }
+}
+
 // GET /api/restaurants/[storeId] — single store from merchant_stores + operating hours (for detail page)
 export async function GET(
   _request: NextRequest,
@@ -194,7 +262,11 @@ export async function GET(
 
     if (hoursErr) log('Supabase merchant_store_operating_hours error:', hoursErr.message)
 
-    const payload = mapStoreToRestaurant(data)
+    const payload = await enrichMediaFromRegistry(
+      storeClient,
+      storeIdNum,
+      mapStoreToRestaurant(data)
+    )
     if (hoursRow) {
       ;(payload as Record<string, unknown>).operating_hours = buildOperatingHoursSlots(
         hoursRow as Record<string, unknown>

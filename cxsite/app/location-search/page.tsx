@@ -3,13 +3,15 @@ import Link from 'next/link'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
 import LocationSearchBar from '@/components/location-search/LocationSearchBar'
+import { fullPageTitle, pageTitleSegment } from '@/lib/pageTitle'
+import { GATIMITRA_TAGLINE } from '@/lib/brandTagline'
 
 export const metadata: Metadata = {
-  title: 'Find Service Near You | GatiMitra',
+  title: pageTitleSegment('Find Service Near You'),
   description:
-    'Set your location and discover food delivery, parcel delivery, and ride services near you. GatiMitra – Moving India Forward.',
+    `Set your location and discover food delivery, parcel delivery, and ride services near you. GatiMitra – ${GATIMITRA_TAGLINE}.`,
   openGraph: {
-    title: 'Find Service Near You | GatiMitra',
+    title: fullPageTitle('Find Service Near You'),
     description:
       'Set your location and discover food delivery, parcel delivery, and ride services near you.',
   },

@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
-import { fetchBackend } from '@/lib/fetch-backend';
+import { syncExpiredOrderAcceptanceForStore } from '@/lib/order-acceptance-timeout-sync';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder-service-role-key';
+
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
 
 /**
  * POST /api/merchant/sync-acceptance-timeout?store_id=GMMC1001
@@ -17,29 +25,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
 
-    const backendRes = await fetchBackend(
-      `/v1/merchant-partner/stores/${gate.storeIdNum}/sync-acceptance-timeout`,
-      {
-        method: 'POST',
-        headers: {
-          cookie: req.headers.get('cookie') ?? '',
-        },
-        timeoutMs: 12_000,
-      }
-    );
-
-    if (backendRes?.ok) {
-      const body = (await backendRes.json().catch(() => ({}))) as { cancelled?: number };
-      const cancelled = typeof body.cancelled === 'number' ? body.cancelled : 0;
-      return NextResponse.json(
-        { cancelled, store_id: String(storeId).trim() },
-        { headers: { 'Cache-Control': 'private, no-store, max-age=0' } }
-      );
-    }
+    const { cancelled } = await syncExpiredOrderAcceptanceForStore(supabaseAdmin, gate.storeIdNum);
 
     return NextResponse.json(
-      { error: 'backend_unavailable', cancelled: 0, store_id: String(storeId).trim() },
-      { status: 503 }
+      { cancelled, store_id: String(storeId).trim() },
+      { headers: { 'Cache-Control': 'private, no-store, max-age=0' } }
     );
   } catch (e) {
     console.error('[sync-acceptance-timeout]', e);

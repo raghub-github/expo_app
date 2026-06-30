@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getSupabaseServiceRole } from '@/lib/supabaseServiceRole'
+import {
+  applyCustomerMenuItemPricing,
+  resolveStoreCommission,
+} from '@/lib/server/resolveStoreCommission'
+import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 
 const DEBUG = process.env.NODE_ENV !== 'production' || process.env.DEBUG === '1'
 
@@ -108,22 +113,32 @@ export async function GET(
     const rawItems = (itemsRes.data ?? []).filter(
       (row: Record<string, unknown>) => row.is_active !== false
     )
+
+    const COMMISSION_TIMEOUT_MS = 4_000
+    const commission = await Promise.race([
+      resolveStoreCommission(storeIdNum),
+      new Promise<Awaited<ReturnType<typeof resolveStoreCommission>>>((resolve) =>
+        setTimeout(
+          () => resolve({ percent: 15, sourceKind: 'DEFAULT' }),
+          COMMISSION_TIMEOUT_MS
+        )
+      ),
+    ])
+
     const items = rawItems.map((row: Record<string, unknown>) => {
-      const basePrice = Number(row.base_price ?? 0)
-      const sellingPrice = Number(row.selling_price ?? row.base_price ?? 0)
-      const discountPct = Number(row.discount_percentage ?? 0)
+      const priced = applyCustomerMenuItemPricing(row, commission.percent)
       return {
         id: String(row.id),
         item_id: row.item_id,
         item_name: row.item_name ?? '',
         description: (row.item_description as string) ?? null,
-        image_url: (row.item_image_url as string) ?? null,
+        image_url: toAbsoluteImageUrl((row.item_image_url as string) ?? null),
         category: row.category_id ? (categoryById[row.category_id as number] ?? null) : null,
         category_id: row.category_id ?? null,
         category_item: (row.food_type as string) ?? 'VEG',
-        price: sellingPrice > 0 ? sellingPrice : basePrice,
-        base_price: basePrice,
-        offer_price: discountPct > 0 ? (sellingPrice || basePrice) * (1 - discountPct / 100) : null,
+        price: priced.price,
+        base_price: priced.base_price,
+        offer_price: priced.offer_price,
         in_stock: row.in_stock !== false,
         is_active: row.is_active !== false,
         is_popular: row.is_popular === true,

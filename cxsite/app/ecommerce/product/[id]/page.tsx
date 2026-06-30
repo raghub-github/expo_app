@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
 import EcomProductDetailView from '@/components/ecommerce/EcomProductDetailView'
+import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata: Metadata = {
-  title: 'Product | GatiMitra Ecom Arche',
+  title: pageTitleSegment('Product'),
   description: 'Product details on GatiMitra Ecom Arche.',
 }
 

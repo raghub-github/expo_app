@@ -26,7 +26,7 @@ export function useOrderServiceArea(): OrderServiceAreaMode {
     const lat = location.lat!
     const lon = location.lon!
     fetch(
-      `/api/restaurants/availability?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}&radius_km=10`
+      `/api/restaurants/availability?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}&radius_km=15`
     )
       .then((r) => r.json())
       .then((d) => {

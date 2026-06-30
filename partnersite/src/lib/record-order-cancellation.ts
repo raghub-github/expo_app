@@ -204,6 +204,8 @@ async function syncMerchantCancellationLedger(input: RecordOrderCancellationInpu
       merchantDebit,
       actorSystemUserId: input.cancelledById ?? null,
       source: 'partner_cancel',
+      cancelledByType: input.cancelledByType,
+      cancelledByLabel: input.cancelledByLabel,
     });
   } catch (ledgerErr) {
     console.warn('[recordOrderCancellation] merchant ledger failed:', ledgerErr);

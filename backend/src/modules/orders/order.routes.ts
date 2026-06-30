@@ -1323,20 +1323,34 @@ export async function orderRoutes(app: FastifyInstance) {
         };
       }
 
-      if (
-        coreRow.orderType === "person_ride" &&
-        coreDbStatus === "delivered" &&
-        rideMetaRow?.pickupWaitSeconds != null &&
-        Number(rideMetaRow.pickupWaitSeconds) > 0 &&
-        coreRow.riderId != null
-      ) {
+      if (coreRow.orderType === "person_ride" && coreDbStatus === "delivered") {
         const ps = String(coreRow.paymentStatus ?? "").trim().toLowerCase();
         const paymentPending = ps !== "paid" && ps !== "completed";
-        if (paymentPending) {
-          await ensureRidePickupWaitingBillingReconciled(
-            coreRow.id,
-            Number(coreRow.riderId)
-          );
+        const snapObj =
+          coreRow.billingSnapshot != null && typeof coreRow.billingSnapshot === "object"
+            ? (coreRow.billingSnapshot as Record<string, unknown>)
+            : {};
+        const snapPaid =
+          typeof snapObj.ride_fare_paid_at === "string" &&
+          snapObj.ride_fare_paid_at.trim().length > 0;
+
+        if (paymentPending && !snapPaid) {
+          if (
+            rideMetaRow?.pickupWaitSeconds != null &&
+            Number(rideMetaRow.pickupWaitSeconds) > 0 &&
+            coreRow.riderId != null
+          ) {
+            await ensureRidePickupWaitingBillingReconciled(
+              coreRow.id,
+              Number(coreRow.riderId)
+            );
+          } else {
+            const { syncRideCustomerBillingSnapshot } = await import(
+              "../rides/ride-bill.service.js"
+            );
+            await syncRideCustomerBillingSnapshot(db, coreRow.id, { skipIfPaid: true });
+          }
+
           const [refreshedCore] = await db
             .select({
               grandTotal: ordersCore.grandTotal,
@@ -2654,6 +2668,142 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
+  const rideFareBillBodySchema = z.object({
+    couponCode: z.string().min(1).optional(),
+    platformOfferId: z.coerce.number().int().positive().optional(),
+    forceNoAutoOffer: z.boolean().optional(),
+  });
+
+  app.post<{ Params: { id: string }; Body: z.infer<typeof rideFareBillBodySchema> }>(
+    "/:id/ride-fare-bill",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: rideFareBillBodySchema,
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            rideFare: z.number(),
+            finalAmount: z.number(),
+            discountTotal: z.number(),
+            platformFee: z.number(),
+            convenienceFee: z.number(),
+            taxTotal: z.number(),
+            tipAmount: z.number(),
+            charges: z.array(z.any()),
+            discounts: z.array(z.any()),
+            taxes: z.array(z.any()),
+            breakdownSteps: z.array(z.any()),
+            rulesetVersion: z.number(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const orderIdParam = (req.params as { id: string }).id;
+      const body = rideFareBillBodySchema.parse(req.body ?? {});
+      const db = getDb();
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk == null) {
+        return reply.status(403).send({ error: "Customer not found" });
+      }
+      const { computeRideBillForCustomerOrder } = await import("../rides/ride-bill.service.js");
+      const result = await computeRideBillForCustomerOrder(db, {
+        customerPk,
+        orderRef: orderIdParam,
+        couponCode: body.couponCode,
+        platformOfferId: body.platformOfferId,
+        forceNoAutoOffer: body.forceNoAutoOffer,
+      });
+      if (!result.ok) {
+        const status = result.statusCode ?? 400;
+        if (status === 404) return reply.status(404).send({ error: result.code });
+        if (status === 409) return reply.status(409).send({ error: result.code, message: result.message });
+        return reply.status(status as 400).send({ error: result.code, message: result.message });
+      }
+
+      const [ridePayRow] = await db
+        .select({ paymentStatus: ordersCore.paymentStatus, billingSnapshot: ordersCore.billingSnapshot })
+        .from(ordersCore)
+        .where(eq(ordersCore.id, result.orderCoreId))
+        .limit(1);
+      const rideSnap =
+        ridePayRow?.billingSnapshot != null && typeof ridePayRow.billingSnapshot === "object"
+          ? (ridePayRow.billingSnapshot as Record<string, unknown>)
+          : {};
+      const rideSnapPaid =
+        typeof rideSnap.ride_fare_paid_at === "string" && rideSnap.ride_fare_paid_at.trim().length > 0;
+      const ridePaymentPending =
+        String(ridePayRow?.paymentStatus ?? "").toLowerCase() !== "completed" && !rideSnapPaid;
+
+      if (ridePaymentPending) {
+        const { syncRideCustomerBillingSnapshot } = await import("../rides/ride-bill.service.js");
+        void syncRideCustomerBillingSnapshot(db, result.orderCoreId, {
+          skipIfPaid: true,
+          couponCode: body.couponCode,
+          platformOfferId: body.platformOfferId,
+        }).catch((err) => {
+          console.warn("[ride-fare-bill] billing snapshot sync failed:", err);
+        });
+      }
+
+      const b = result.billing;
+      void import("../../lib/persist-ride-customer-payment-snapshot.js").then(
+        ({ insertRideCustomerPaymentSnapshot }) =>
+          insertRideCustomerPaymentSnapshot(db, {
+            orderCoreId: result.orderCoreId,
+            orderIdText: result.orderIdText,
+            customerId: result.customerId,
+            phase: "payment_quote",
+            billing: result.billing,
+            billingSnapshot: result.snapshot,
+            offerContext: {
+              couponCode: body.couponCode,
+              platformOfferId: body.platformOfferId,
+            },
+            rideContext: {
+              rideType: result.rideType,
+              pickupAddress: result.pickupAddress,
+              dropAddress: result.dropAddress,
+              distanceKm: result.distanceKm,
+            },
+            paymentContext: { paymentMethod: result.paymentMethod },
+            metadata: {
+              forceNoAutoOffer: body.forceNoAutoOffer === true,
+            },
+          })
+      );
+      return {
+        ok: true as const,
+        rideFare: b.item_total,
+        finalAmount: b.final_amount,
+        discountTotal: b.discount_total,
+        platformFee: b.platform_fee,
+        convenienceFee: b.convenience_fee,
+        taxTotal: b.tax_total,
+        tipAmount: b.tip_amount,
+        charges: b.charges,
+        discounts: b.discounts,
+        taxes: b.taxes,
+        breakdownSteps: b.breakdown_steps,
+        rulesetVersion: b.ruleset_version,
+      };
+    }
+  );
+
   const rideFarePaymentBodySchema = z
     .object({
       razorpayOrderId: z.string().min(1).optional(),
@@ -2730,6 +2880,65 @@ export async function orderRoutes(app: FastifyInstance) {
         if (statusCode === 400) return reply.status(400).send({ error: "invalid_payment", message });
         return reply.status(500).send({ error: "payment_failed", message });
       }
+    }
+  );
+
+  const rideInvoiceEmailBodySchema = z.object({
+    email: z.string().email().optional(),
+  });
+
+  app.post<{ Params: { id: string }; Body: z.infer<typeof rideInvoiceEmailBodySchema> }>(
+    "/:id/ride-invoice-email",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: rideInvoiceEmailBodySchema,
+        response: {
+          200: z.object({ ok: z.literal(true), sentTo: z.string() }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), message: z.string().optional() }),
+          502: z.object({ error: z.string(), message: z.string().optional() }),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const orderIdParam = (req.params as { id: string }).id;
+      const body = rideInvoiceEmailBodySchema.parse(req.body ?? {});
+      const db = getDb();
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk == null) {
+        return reply.status(403).send({ error: "Customer not found" });
+      }
+
+      const { sendRideInvoiceEmailForCustomer } = await import("../rides/ride-invoice.service.js");
+      const result = await sendRideInvoiceEmailForCustomer(db, {
+        customerPk,
+        customerSub: sub,
+        orderRef: orderIdParam,
+        emailOverride: body.email,
+      });
+
+      if (!result.ok) {
+        const status = result.statusCode ?? 400;
+        return reply.status(status as 400).send({
+          error: result.code,
+          message: result.message,
+        });
+      }
+
+      return { ok: true as const, sentTo: result.sentTo };
     }
   );
 

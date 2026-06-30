@@ -430,6 +430,36 @@ export const orderService = {
     return data;
   },
 
+  /** Server-authoritative ride fare bill (billing rules + selected offers). */
+  async getRideFareBill(
+    orderId: string,
+    payload?: {
+      couponCode?: string | null;
+      platformOfferId?: number | null;
+      forceNoAutoOffer?: boolean;
+    }
+  ): Promise<import("@/lib/ride-fare-bill-display").RideFareBillApiResponse> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/ride-fare-bill`, {
+      ...(payload?.couponCode?.trim() ? { couponCode: payload.couponCode.trim() } : {}),
+      ...(payload?.platformOfferId != null && payload.platformOfferId > 0
+        ? { platformOfferId: payload.platformOfferId }
+        : {}),
+      ...(payload?.forceNoAutoOffer ? { forceNoAutoOffer: true } : {}),
+    });
+    return data;
+  },
+
+  /** Email ride invoice PDF-style breakdown to customer (Zoho SMTP on server). */
+  async sendRideInvoiceEmail(
+    orderId: string,
+    payload?: { email?: string }
+  ): Promise<{ ok: true; sentTo: string }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/ride-invoice-email`, {
+      ...(payload?.email?.trim() ? { email: payload.email.trim() } : {}),
+    });
+    return data;
+  },
+
   /** Append a cooking / kitchen note during live food order tracking. */
   async appendMerchantInstruction(
     orderId: string,

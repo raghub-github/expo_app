@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useAppSelector, useAppDispatch } from '@/lib/hooks'
 import AuthModal from '@/components/auth/AuthModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
-import Footer from '@/components/layout/Footer'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import { ServiceCategory, setCurrentService, logout } from '@/lib/slices/authSlice'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
 
@@ -82,7 +82,7 @@ export default function CourierPage() {
       <header className="bg-white shadow-md sticky top-0 z-[1000] py-4 px-[5%]">
         <div className="max-w-[1200px] mx-auto flex justify-between items-center flex-wrap gap-5">
           <Link href="/" className="text-3xl font-extrabold text-[#FF6B6B] flex items-center gap-3">
-            <img src="/img/logo.png" alt="GatiMitra Logo" className="w-10 h-10 object-contain" />
+            <GatiMitraLogo variant="icon" alt="GatiMitra" className="w-10 h-10 object-contain" />
             GatiMitra
           </Link>
           <nav className="flex gap-8">

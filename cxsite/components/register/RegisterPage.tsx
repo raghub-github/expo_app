@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useAppDispatch } from '@/lib/hooks'
 import { signUpWithPhone } from '@/lib/slices/authSlice'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import AuthModal from '@/components/auth/AuthModal'
 
 export default function RegisterPage() {
@@ -17,7 +18,7 @@ export default function RegisterPage() {
       <header className="bg-[#0a1929] sticky top-0 z-[1000] py-4 px-6 shadow-lg backdrop-blur-[10px] bg-[rgba(10,25,41,0.95)]">
         <div className="max-w-[1180px] mx-auto flex justify-between items-center">
           <Link href="/" className="flex items-center gap-3 no-underline">
-            <img src="/img/logo.png" alt="GatiMitra Logo" className="w-10 h-10 object-contain" />
+            <GatiMitraLogo variant="icon" alt="GatiMitra" className="w-10 h-10 object-contain" />
             <div className="flex items-center gap-0.5">
               <span className="text-3xl font-bold text-[#16c2a5]">Gati</span>
               <span className="text-3xl font-bold text-[#ff6b35]">Mitra</span>

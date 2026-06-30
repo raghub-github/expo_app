@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { DEFAULT_SERVICE_RADIUS_KM, filterStoreRowsByUserGeo } from '@/lib/server/merchantStoreGeo'
+import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 
 const MAX_ITEMS = 20
 const MAX_RESTAURANTS = 10
@@ -135,7 +136,7 @@ export async function GET(request: NextRequest) {
         const s2 = scoreText(item.category, q)
         const s3 = scoreText(item.category_item, q)
         const score = Math.max(s1, s2, s3) || 40
-        return { type: 'dish' as const, ...item, score }
+        return { type: 'dish' as const, ...item, image_url: toAbsoluteImageUrl(item.image_url) ?? item.image_url, score }
       })
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score)
@@ -151,7 +152,7 @@ export async function GET(request: NextRequest) {
           restaurant_id: r.store_id,
           restaurant_name: name,
           name,
-          image_url: r.banner_url ?? undefined,
+          image_url: toAbsoluteImageUrl(r.banner_url ?? null) ?? undefined,
           address: r.full_address,
           score,
         }

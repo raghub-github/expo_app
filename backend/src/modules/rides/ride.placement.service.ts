@@ -24,6 +24,9 @@ import { resolveRideAddressDisplayLabel } from "../../lib/ride-address-display.j
 import { resolveRidePickupFreeWaitMinutes, resolveRidePickupWaitingChargePerMin } from "../../lib/ride-pickup-wait.js";
 import { findCustomerOutstandingRideFare } from "../../lib/ride-fare-gate.js";
 import { countDispatchDeclinedForOrder } from "../../lib/rider-dispatch-assignment-audit-read.js";
+import { computeBillForRide } from "../billing/rideBilling.service.js";
+import type { BillingResult } from "../billing/types.js";
+import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
 
 export const DEFAULT_RIDE_SEARCH_TIMEOUT_SEC = 4 * 60;
 
@@ -353,7 +356,36 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
     );
   }
   const estimatedFare = serverFare;
-  const grandTotal = estimatedFare + customerTipAmount;
+
+  let grandTotal = estimatedFare + customerTipAmount;
+  let billingSnapshot: Record<string, unknown> | null = null;
+  let billingRulesetVersion: number | null = null;
+  let placementBillingForSnapshot: BillingResult | null = null;
+
+  if (getEnv().BILLING_RULES_ENABLED) {
+    const billRes = await computeBillForRide(db, {
+      customerId: input.customerPk,
+      rideFare: estimatedFare,
+      distanceKm,
+      pickupLat: input.pickupLat,
+      pickupLng: input.pickupLng,
+      dropLat: input.dropLat,
+      dropLon: input.dropLng,
+      tipAmount: customerTipAmount,
+      pickupPincode: input.pickupPincode,
+      pickupState: input.pickupState,
+    });
+    if (!billRes.ok) {
+      throw Object.assign(new Error(billRes.message), {
+        statusCode: 400,
+        code: billRes.code,
+      });
+    }
+    grandTotal = billRes.billing.final_amount;
+    billingSnapshot = billRes.snapshot;
+    billingRulesetVersion = billRes.billing.ruleset_version;
+    placementBillingForSnapshot = billRes.billing;
+  }
 
   const pickupWaitFreeMinutes = await resolveRidePickupFreeWaitMinutes({
     pickupLat: input.pickupLat,
@@ -443,8 +475,10 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
         fareAmount: String(estimatedFare),
         grandTotal: String(grandTotal),
         tipAmount: customerTipAmount > 0 ? String(customerTipAmount) : "0",
-        itemTotal: "0",
+        itemTotal: String(estimatedFare),
         addonTotal: "0",
+        billingSnapshot: billingSnapshot ?? undefined,
+        billingRulesetVersion: billingRulesetVersion ?? undefined,
         placedAt: now,
         paymentStatus: "pending",
         paymentMethod: paymentMethodEnum,
@@ -550,6 +584,62 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
   });
 
   void maybeStartOrderDispatch(result.coreOrderId);
+
+  const bookingBilling: BillingResult =
+    placementBillingForSnapshot ??
+    ({
+      item_total: estimatedFare,
+      addon_total: 0,
+      discount_total: 0,
+      delivery_fee: 0,
+      platform_fee: 0,
+      packaging_fee: 0,
+      surge_fee: 0,
+      small_order_fee: 0,
+      convenience_fee: 0,
+      misc_fee: 0,
+      tax_total: 0,
+      tip_amount: customerTipAmount,
+      donation_amount: 0,
+      final_amount: grandTotal,
+      items_net_after_discounts: estimatedFare,
+      taxes_by_group: {},
+      gst_components: {
+        items: { original: estimatedFare, discount: 0, taxable_value: estimatedFare, gst: 0 },
+        delivery: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+        platform: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+        surge: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+        packaging: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+        small_order: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+        convenience: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+        subscription: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
+      },
+      gst_totals: { total_discount: 0, total_tax: 0, final_payable: grandTotal },
+      charges: [],
+      discounts: [],
+      taxes: [],
+      breakdown_steps: [],
+      ruleset_version: billingRulesetVersion ?? 1,
+    } satisfies BillingResult);
+
+  void insertRideCustomerPaymentSnapshot(db, {
+    orderCoreId: result.coreOrderId,
+    orderIdText: result.orderId,
+    customerId: input.customerPk,
+    phase: "booking",
+    billing: bookingBilling,
+    billingSnapshot: billingSnapshot ?? {
+      ride_fare: estimatedFare,
+      final_amount: grandTotal,
+    },
+    rideContext: {
+      rideType: input.rideType,
+      pickupAddress,
+      dropAddress,
+      distanceKm,
+    },
+    paymentContext: { paymentMethod: paymentMethodEnum },
+  });
 
   return {
     orderId: result.orderId,

@@ -1,6 +1,8 @@
 'use client'
 
-import Link from "next/link";
+import Link from 'next/link'
+import { GATIMITRA_TAGLINE } from '@/lib/brandTagline'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import {
   Home,
   UtensilsCrossed,
@@ -183,15 +185,11 @@ export default function Footer() {
 
       <div className="max-w-7xl mx-auto border-t border-white/10 pt-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <div className="flex items-center gap-2">
-          <img
-            src="/img/logoo.png"
-            alt="GatiMitra Logo"
-            className="h-9 w-auto object-contain"
-          />
+          <GatiMitraLogo alt="GatiMitra" className="h-9 w-auto object-contain" />
         </div>
         <div className="text-[#a0a0c0] text-[12px] font-medium text-center leading-relaxed">
           <div>© {new Date().getFullYear()} GatiMitra On Demand Services Private Limited</div>
-          <div>All rights reserved • Moving India Forward</div>
+          <div>All rights reserved • {GATIMITRA_TAGLINE}</div>
         </div>
         <div className="flex flex-wrap justify-center gap-x-4 gap-y-2">
           {legalBottom.map((l) => (

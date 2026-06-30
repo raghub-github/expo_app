@@ -25,10 +25,10 @@ function RideOfferCard({ offer }: { offer: RideBookOffer }) {
 
   const details = [
     autoApply
-      ? "Offer will be applied automatically when eligible."
+      ? "This offer will be applied automatically on the payment page when eligible."
       : code
-        ? `Use code ${code} before booking.`
-        : "Apply this offer when eligible.",
+        ? `Enter code ${code} on the payment page to redeem.`
+        : "Redeem this offer on the payment page when eligible.",
     "Valid on ride bookings only.",
     "Cannot be combined with other offers unless stated.",
   ];
@@ -86,6 +86,13 @@ export function RideOffersSheet({ visible, onClose, offers }: RideOffersSheetPro
       <Text style={styles.sheetSub}>
         Coupons and discounts for your trip will show up here.
       </Text>
+      <View style={styles.paymentNotice}>
+        <Ionicons name="information-circle-outline" size={18} color="#0369A1" />
+        <Text style={styles.paymentNoticeText}>
+          Eligible offers are applied exclusively on the fare payment page after your ride is
+          completed — not at the time of booking.
+        </Text>
+      </View>
 
       <ScrollView
         style={[styles.list, { maxHeight: scrollMaxH }]}
@@ -132,7 +139,27 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: "#6B7280",
     paddingHorizontal: 20,
+    marginBottom: 10,
+  },
+  paymentNotice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginHorizontal: 16,
     marginBottom: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: "#F0F9FF",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#BAE6FD",
+  },
+  paymentNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#0369A1",
+    lineHeight: 17,
   },
   list: {
     flexGrow: 0,

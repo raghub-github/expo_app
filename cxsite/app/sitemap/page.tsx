@@ -1,9 +1,10 @@
 import Link from 'next/link'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
+import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata = {
-  title: 'Sitemap | GatiMitra',
+  title: pageTitleSegment('Sitemap'),
   description: 'Explore all major pages and services on GatiMitra.',
 }
 

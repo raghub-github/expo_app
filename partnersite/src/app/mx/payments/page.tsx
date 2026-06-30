@@ -21,6 +21,9 @@ import {
 } from '@/hooks/useMerchantApi'
 import { formatInr } from '@/lib/format-inr';
 import { formatLedgerDescription } from '@/lib/wallet-types';
+import { LedgerEntryAmount } from '@/components/payments/LedgerEntryAmount';
+import type { CancellationLedgerDisplay } from '@/lib/merge-cancellation-ledger-entries';
+import { mergeCancellationLedgerEntries } from '@/lib/merge-cancellation-ledger-entries';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import {
   Wallet,
@@ -187,7 +190,23 @@ function PgTxnIdCell({ pgId }: { pgId: string | null | undefined }) {
 
 function isCancellationNoCreditEntry(row: LedgerEntry): boolean {
   const meta = row.metadata as Record<string, unknown> | null
+  if (getCancellationDisplay(row)) return false
   return meta?.entry_type === 'order_cancellation' && meta?.balance_impact === 'none'
+}
+
+function getCancellationDisplay(row: LedgerEntry): CancellationLedgerDisplay | null {
+  const meta = row.metadata as Record<string, unknown> | null
+  const raw = meta?.cancellation_display
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const d = raw as CancellationLedgerDisplay
+  if (!Number.isFinite(Number(d.originalAmount)) && !Number.isFinite(Number(d.creditAmount))) {
+    return null
+  }
+  return {
+    originalAmount: Math.max(0, Number(d.originalAmount ?? 0)),
+    creditAmount: Math.max(0, Number(d.creditAmount ?? 0)),
+    showCancelledStatus: Boolean(d.showCancelledStatus),
+  }
 }
 
 function pctChangeLabel(current: number, prior: number): { text: string; positive: boolean } {
@@ -238,6 +257,10 @@ function PaymentsContent() {
   }), [ledgerLimit, ledgerOffset, filterFrom, filterTo, filterDirection, filterCategory, filterSearch])
   const { data: ledgerData, isLoading: ledgerLoading } = useMerchantLedger(storeId, ledgerParams)
   const ledger = ledgerData?.entries ?? []
+  const displayLedger = useMemo(
+    () => mergeCancellationLedgerEntries(ledger).entries,
+    [ledger]
+  )
   const ledgerTotal = ledgerData?.total ?? 0
   const withdrawableBalance = getWithdrawableBalance(wallet as WalletSummary | undefined)
   const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance)
@@ -1029,7 +1052,7 @@ function PaymentsContent() {
                     <Loader2 size={28} className="animate-spin mr-2" />
                     Loading transactions...
                   </div>
-                ) : ledger.length === 0 ? (
+                ) : displayLedger.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 text-gray-500">
                     <FileText size={40} className="mb-2 opacity-50" />
                     <p className="font-medium">No transactions found</p>
@@ -1052,7 +1075,7 @@ function PaymentsContent() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {ledger.map((row) => (
+                        {displayLedger.map((row) => (
                           <React.Fragment key={row.id}>
                             <tr className={`transition-colors ${expandedLedgerId === row.id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
                               <td className="py-3 px-4">
@@ -1085,35 +1108,74 @@ function PaymentsContent() {
                                 )}
                               </td>
                               <td className={`py-3 px-4 text-right font-semibold tabular-nums ${
-                                isCancellationNoCreditEntry(row)
-                                  ? 'text-amber-700'
-                                  : row.direction === 'CREDIT'
-                                    ? 'text-emerald-600'
-                                    : 'text-red-600'
+                                getCancellationDisplay(row)
+                                  ? ''
+                                  : isCancellationNoCreditEntry(row)
+                                    ? 'text-amber-700'
+                                    : row.direction === 'CREDIT'
+                                      ? 'text-emerald-600'
+                                      : 'text-red-600'
                               }`}>
-                                {isCancellationNoCreditEntry(row)
-                                  ? formatInr(row.amount)
-                                  : `${row.direction === 'CREDIT' ? '+' : '-'}${formatInr(row.amount)}`}
+                                {(() => {
+                                  const cancellationDisplay = getCancellationDisplay(row)
+                                  if (cancellationDisplay) {
+                                    return <LedgerEntryAmount display={cancellationDisplay} />
+                                  }
+                                  if (isCancellationNoCreditEntry(row)) {
+                                    return formatInr(row.amount)
+                                  }
+                                  return `${row.direction === 'CREDIT' ? '+' : '-'}${formatInr(row.amount)}`
+                                })()}
                               </td>
                               <td className="py-3 px-4 text-center">
-                                {isCancellationNoCreditEntry(row) ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
-                                    <div className="w-2 h-2 rounded-full bg-amber-600"/>
-                                    Cancelled
-                                  </span>
-                                ) : row.direction === 'CREDIT' ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
-                                    <div className="w-2 h-2 rounded-full bg-emerald-600"/>
-                                    Credit
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs font-medium">
-                                    <div className="w-2 h-2 rounded-full bg-red-600"/>
-                                    Debit
-                                  </span>
-                                )}
+                                {(() => {
+                                  const cancellationDisplay = getCancellationDisplay(row)
+                                  if (cancellationDisplay) {
+                                    return cancellationDisplay.creditAmount > 0 ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-600"/>
+                                        Credit
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
+                                        <div className="w-2 h-2 rounded-full bg-amber-600"/>
+                                        Cancelled
+                                      </span>
+                                    )
+                                  }
+                                  if (isCancellationNoCreditEntry(row)) {
+                                    return (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
+                                        <div className="w-2 h-2 rounded-full bg-amber-600"/>
+                                        Cancelled
+                                      </span>
+                                    )
+                                  }
+                                  if (row.direction === 'CREDIT') {
+                                    return (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-600"/>
+                                        Credit
+                                      </span>
+                                    )
+                                  }
+                                  return (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs font-medium">
+                                      <div className="w-2 h-2 rounded-full bg-red-600"/>
+                                      Debit
+                                    </span>
+                                  )
+                                })()}
                               </td>
-                              <td className="py-3 px-4 text-right text-gray-700 tabular-nums">{formatInr(row.balance_after)}</td>
+                              <td className="py-3 px-4 text-right text-gray-700 tabular-nums">
+                                {(() => {
+                                  const cancellationDisplay = getCancellationDisplay(row)
+                                  if (cancellationDisplay) {
+                                    return formatInr(cancellationDisplay.creditAmount)
+                                  }
+                                  return formatInr(row.balance_after)
+                                })()}
+                              </td>
                             </tr>
                             {expandedLedgerId === row.id && row.category === 'WITHDRAWAL' && row.reference_id != null && (() => {
                               const payoutRefId = row.reference_id as number

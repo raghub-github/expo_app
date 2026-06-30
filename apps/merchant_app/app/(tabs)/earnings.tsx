@@ -18,6 +18,10 @@ import {
 } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { useActiveCommission } from "@/hooks/useActiveCommission";
+import {
+  LedgerEntryAmount,
+  type CancellationLedgerDisplay,
+} from "@/components/earnings/LedgerEntryAmount";
 
 const WITHDRAWAL_COMPLETED_DESCRIPTION =
   "Funds have been successfully transferred to the registered bank account.";
@@ -101,7 +105,20 @@ function timeAgo(dateStr: string): string {
 
 function isCancellationNoCreditEntry(entry: LedgerEntry): boolean {
   const meta = entry.metadata as Record<string, unknown> | null | undefined;
+  if (getCancellationDisplay(entry)) return false;
   return meta?.entry_type === "order_cancellation" && meta?.balance_impact === "none";
+}
+
+function getCancellationDisplay(entry: LedgerEntry): CancellationLedgerDisplay | null {
+  const meta = entry.metadata as Record<string, unknown> | null | undefined;
+  const raw = meta?.cancellation_display;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const d = raw as CancellationLedgerDisplay;
+  return {
+    originalAmount: Math.max(0, Number(d.originalAmount ?? 0)),
+    creditAmount: Math.max(0, Number(d.creditAmount ?? 0)),
+    showCancelledStatus: Boolean(d.showCancelledStatus),
+  };
 }
 
 export default function EarningsScreen() {
@@ -329,30 +346,59 @@ export default function EarningsScreen() {
                 <Text style={s.emptyText}>No transactions yet</Text>
               </View>
             ) : (
-              ledger.map((entry) => (
+              ledger.map((entry) => {
+                const cancellationDisplay = getCancellationDisplay(entry);
+                const iconBg = cancellationDisplay
+                  ? cancellationDisplay.creditAmount > 0
+                    ? "#dcfce7"
+                    : "#fef3c7"
+                  : isCancellationNoCreditEntry(entry)
+                    ? "#fef3c7"
+                    : entry.direction === "CREDIT"
+                      ? "#dcfce7"
+                      : "#fee2e2";
+                const iconColor = cancellationDisplay
+                  ? cancellationDisplay.creditAmount > 0
+                    ? "#16a34a"
+                    : "#d97706"
+                  : isCancellationNoCreditEntry(entry)
+                    ? "#d97706"
+                    : entry.direction === "CREDIT"
+                      ? "#16a34a"
+                      : "#dc2626";
+
+                return (
                 <View key={entry.id} style={s.txCard}>
                   <View style={s.txRow}>
-                    <View style={[s.txIcon, { backgroundColor: isCancellationNoCreditEntry(entry) ? "#fef3c7" : entry.direction === "CREDIT" ? "#dcfce7" : "#fee2e2" }]}>
+                    <View style={[s.txIcon, { backgroundColor: iconBg }]}>
                       <Ionicons
                         name={(CAT_ICONS[entry.category] ?? (entry.direction === "CREDIT" ? "add-circle-outline" : "remove-circle-outline")) as any}
                         size={18}
-                        color={isCancellationNoCreditEntry(entry) ? "#d97706" : entry.direction === "CREDIT" ? "#16a34a" : "#dc2626"}
+                        color={iconColor}
                       />
                     </View>
                     <View style={s.txContent}>
                       <Text style={s.txCategory}>{CAT_LABELS[entry.category] ?? entry.category.replace(/_/g, " ")}</Text>
                       {entry.description ? (
-                        <Text style={s.txDesc} numberOfLines={2}>{formatLedgerDescription(entry.description)}</Text>
+                        <Text style={s.txDesc} numberOfLines={3}>{formatLedgerDescription(entry.description)}</Text>
                       ) : null}
                       {entry.category === "WITHDRAWAL" && entry.pg_transaction_id ? (
                         <Text style={s.txPgId} numberOfLines={1}>PG TNX: {entry.pg_transaction_id}</Text>
                       ) : null}
                     </View>
                     <View style={s.txAmountCol}>
-                      <Text style={[s.txAmount, { color: isCancellationNoCreditEntry(entry) ? "#d97706" : entry.direction === "CREDIT" ? "#16a34a" : "#dc2626" }]}>
-                        {isCancellationNoCreditEntry(entry) ? formatCurrency(entry.amount) : `${entry.direction === "CREDIT" ? "+" : "−"}${formatCurrency(entry.amount)}`}
-                      </Text>
-                      {isCancellationNoCreditEntry(entry) ? (
+                      {cancellationDisplay ? (
+                        <LedgerEntryAmount display={cancellationDisplay} formatCurrency={formatCurrency} />
+                      ) : (
+                        <Text style={[s.txAmount, { color: isCancellationNoCreditEntry(entry) ? "#d97706" : entry.direction === "CREDIT" ? "#16a34a" : "#dc2626" }]}>
+                          {isCancellationNoCreditEntry(entry) ? formatCurrency(entry.amount) : `${entry.direction === "CREDIT" ? "+" : "−"}${formatCurrency(entry.amount)}`}
+                        </Text>
+                      )}
+                      {cancellationDisplay ? (
+                        <Text style={[s.txBalance, { color: cancellationDisplay.creditAmount > 0 ? "#16a34a" : "#d97706" }]}>
+                          {cancellationDisplay.creditAmount > 0 ? "Credit" : "Cancelled"}
+                        </Text>
+                      ) : isCancellationNoCreditEntry(entry) ? (
                         <Text style={[s.txBalance, { color: "#d97706" }]}>No credit</Text>
                       ) : (
                         <Text style={s.txBalance}>Bal: {formatCurrency(entry.balance_after)}</Text>
@@ -361,7 +407,8 @@ export default function EarningsScreen() {
                   </View>
                   <Text style={s.txTime}>{timeAgo(entry.created_at)}</Text>
                 </View>
-              ))
+                );
+              })
             )}
           </>
         )}

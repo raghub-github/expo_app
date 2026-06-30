@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import { prefetchLocationListsForCustomer } from '@/lib/locationListCache'
+import { isLandingHeroRoute } from '@/lib/landingHeroRoute'
 
 function buildDisplayName(
   addressLine1?: string,
@@ -49,9 +50,18 @@ export default function AuthLocationSync() {
     if (location.locationCommittedByUser === true) {
       return
     }
+    // Landing / pan‑India browse — wait for an explicit location pick in the sheet.
+    if (isLandingHeroRoute(pathname)) {
+      return
+    }
     // Around You / location-path pages own the location from URL + explicit user picks.
     // Avoid overriding those with profile address; this can create ping-pong update loops.
-    if (pathname === '/around-you' || pathname === '/india/All/Stores' || (pathname?.startsWith('/india/') ?? false)) {
+    if (
+      pathname === '/order' ||
+      pathname === '/around-you' ||
+      pathname === '/india/All/Stores' ||
+      (pathname?.startsWith('/india/') ?? false)
+    ) {
       return
     }
     const displayName = buildDisplayName(user.addressLine1, user.city, user.state)
@@ -59,6 +69,7 @@ export default function AuthLocationSync() {
     if (location.displayName === displayName) return
     setLocation(displayName, user.latitude ?? undefined, user.longitude ?? undefined, {
       userInitiated: true,
+      source: 'selected',
     })
   }, [hydrated, isAuthenticated, user, location.displayName, location.locationCommittedByUser, setLocation, pathname, searchParams])
 

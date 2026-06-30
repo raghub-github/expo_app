@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
@@ -9,18 +9,18 @@ import UserProfileModal from '@/components/auth/UserProfileModal'
 import LocationPopup from '@/components/location-search/LocationPopup'
 import type { LocationItem } from '@/components/location-search/LocationPopup'
 import LocationSheet from '@/components/location-search/LocationSheet'
+import LocationWelcomeModal from '@/components/location-search/LocationWelcomeModal'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import { getRestaurantGeoQueryString } from '@/lib/buildRestaurantGeoQuery'
-import {
-  LandingHeroArcProvider,
-  LandingHeroDynamicCopy,
-  LandingHeroGreenContent,
-  LandingHeroExploreButton,
-} from '@/components/home/LandingHeroArc'
 import { getMagicpinPathAfterLocationSelect, mergeLocationNavigationUrl } from '@/lib/magicpinLocationUrl'
-import { normalizeLatLonForStorage, reverseGeocodeSearchParams } from '@/lib/normalizeLatLon'
+import { detectCurrentLocation } from '@/lib/detectCurrentLocation'
+import { locationAutoDetectErrorMessage } from '@/lib/locationAutoDetect'
+import { resolveHeaderLocationLabel } from '@/lib/webLocationPermission'
+import { isLandingHeroRoute } from '@/lib/landingHeroRoute'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
 import { buildLocationQueryFromState, mergeLocationQuery } from '@/lib/locationQuery'
+import { useLocationPromptAutoOpen } from '@/lib/hooks/useLocationPromptAutoOpen'
 
 type LandingNavItem = {
   href: string
@@ -60,7 +60,6 @@ export default function Header() {
     const pathname = usePathname()
     const router = useRouter()
     const searchParams = useSearchParams()
-    const isLandingHome = pathname === '/'
     const isAboutPage = pathname === '/about'
     const isCorporatesPage = pathname === '/corporates'
     const isAroundYouPage =
@@ -69,16 +68,21 @@ export default function Header() {
       (pathname != null && /^\/india\/[^/]+\/[^/]+\/All\/Stores$/.test(pathname))
     const isCityAreaRoute = Boolean(pathname && pathname.split('/').filter(Boolean).length >= 2)
     /** Home + city/area pages — exclude Around You (`/india/All/Stores`) so the Food Delivery hero is hidden there. */
-    const isLandingHeroPage = isLandingHome || (isCityAreaRoute && !isAroundYouPage)
+    const isLandingHeroPage = isLandingHeroRoute(pathname)
     /** Same landing-style header shell as home (nav + optional hero body). */
     const showLandingHeaderShell =
       isLandingHeroPage || isAboutPage || isCorporatesPage || isAroundYouPage
-    /** Inner pages use the big gradient + hero + search (not home, not about). */
-    const showInnerHeroShell = false
-    const { location: locationState, setLocation: setGlobalLocation } = useLocationContext()
+    const {
+      location: locationState,
+      setLocation: setGlobalLocation,
+      permissionStatus,
+      locationLoading,
+      markAutoDetectInFlight,
+      hydrated,
+    } = useLocationContext()
     const locationCommitted = locationState.locationCommittedByUser === true
     const restaurantGeoQs = useMemo(
-      () => getRestaurantGeoQueryString(locationState, locationCommitted),
+      () => getRestaurantGeoQueryString(locationState),
       [locationState, locationCommitted]
     )
     // Search logic for landing page
@@ -92,80 +96,95 @@ export default function Header() {
     const mobileSearchRef = useRef<HTMLDivElement>(null)
     const mobileSearchResultsRef = useRef<HTMLDivElement>(null)
 
-    // Location states
-    const [location, setLocation] = useState('📍 Detecting location...')
-    const [isLocationManual, setIsLocationManual] = useState(false)
-    const [showLocationModal, setShowLocationModal] = useState(false)
-    const [isLocationLoading, setIsLocationLoading] = useState(true)
+    // Location states — header label derived from context (customer-app pattern)
+    const [showLocationWelcomeModal, setShowLocationWelcomeModal] = useState(false)
     const [showLocationSheet, setShowLocationSheet] = useState(false)
     const [showLocationPopup, setShowLocationPopup] = useState(false)
+    const [autoDetecting, setAutoDetecting] = useState(false)
+    const [welcomeDetectError, setWelcomeDetectError] = useState<string | null>(null)
     const [locationSearchQuery, setLocationSearchQuery] = useState('')
     const locationTriggerRef = useRef<HTMLInputElement>(null)
 
+    const headerLocationLabel = resolveHeaderLocationLabel({
+      displayName: locationState.displayName,
+      locationSource: locationState.locationSource,
+      permissionStatus,
+      loading: locationLoading,
+    })
+
+    const openLocationWelcomeModal = useCallback(() => setShowLocationWelcomeModal(true), [])
+    const { handlePromptDismiss: markLocationPromptDismissed, markSelected: markLocationSelected } =
+      useLocationPromptAutoOpen({
+        enabled: showLandingHeaderShell,
+        hydrated,
+        locationCommitted,
+        promptOpen: showLocationWelcomeModal,
+        openPrompt: openLocationWelcomeModal,
+      })
+
+    const closeLocationWelcomeModal = useCallback(() => {
+      setShowLocationWelcomeModal(false)
+      setWelcomeDetectError(null)
+      markLocationPromptDismissed()
+    }, [markLocationPromptDismissed])
+
+    const closeLocationSheet = useCallback(() => {
+      setShowLocationSheet(false)
+    }, [])
+
     useEffect(() => {
+      if (!hydrated) return
       const q = restaurantGeoQs ? `?${restaurantGeoQs}` : ''
       fetch(`/api/restaurants${q}`)
         .then((res) => res.json())
-        .then((data) => setRestaurantList(data || []))
+        .then((data) => setRestaurantList(Array.isArray(data) ? data : []))
         .catch(() => setRestaurantList([]))
-    }, [restaurantGeoQs])
+    }, [restaurantGeoQs, hydrated])
 
-    // Get user's location on mount (skip if we're on city/area page – URL will drive display)
-    useEffect(() => {
-      // Don't re-detect on every page switch if we already have a selected location.
-      if (!isCityAreaRoute && !locationState.displayName) getLocation()
-    }, [isCityAreaRoute, locationState.displayName])
+    // When on city/area page, location comes from URL sync — no auto GPS override.
 
-    // When on city/area page, mark location as manual from URL context.
-    // Avoid writing local `location` here; it can create update loops.
-    useEffect(() => {
-      if (!isCityAreaRoute || !locationState.displayName) return
-      if (!isLocationManual) setIsLocationManual(true)
-    }, [isCityAreaRoute, locationState.displayName, isLocationManual])
-
-    // Get user's current location (uses server reverse-geocode API for exact address)
     const getLocation = () => {
-      setIsLocationLoading(true);
-      if (!navigator.geolocation) {
-        setLocation('📍 Location not supported');
-        setIsLocationLoading(false);
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(
-        // Success: use fresh coords, no cache (maximumAge: 0)
-        async (position) => {
-          try {
-            const { latitude, longitude } = position.coords
-            const { lat, lon } = normalizeLatLonForStorage(latitude, longitude)
-            const res = await fetch(`/api/locations/reverse-geocode?${reverseGeocodeSearchParams(latitude, longitude)}`)
-            const data = await res.json()
-            const displayName = data?.displayName || `${lat.toFixed(4)}, ${lon.toFixed(4)}`
-            setLocation(`📍 ${displayName}`)
-            setIsLocationManual(false)
-            setGlobalLocation(displayName, lat, lon, { userInitiated: true })
-          } catch {
-            setLocation('📍 Your Location');
-          } finally {
-            setIsLocationLoading(false);
+      openAutoDetectCurrentLocation()
+    }
+
+    const openManualLocationEntry = () => {
+      setShowLocationWelcomeModal(false)
+      setWelcomeDetectError(null)
+      setShowLocationPopup(false)
+      window.requestAnimationFrame(() => {
+        setShowLocationSheet(true)
+      })
+    }
+
+    const openAutoDetectCurrentLocation = () => {
+      setWelcomeDetectError(null)
+      setShowLocationPopup(false)
+      setAutoDetecting(true)
+      markAutoDetectInFlight(true)
+
+      const pending = detectCurrentLocation()
+      void pending
+        .then((result) => {
+          if (result.ok) {
+            handleSelectLocation(result.displayName, {
+              id: 0,
+              location_name: result.displayName,
+              city: result.city || '',
+              latitude: result.lat,
+              longitude: result.lon,
+            })
+            return
           }
-        },
-        (error) => {
-          if (error.code === 1) {
-            setShowLocationModal(true);
-            setLocation('📍 Location access denied');
-          } else if (error.code === 3) {
-            setLocation('📍 Location request timed out');
-          } else {
-            setLocation('📍 Unable to detect location');
-          }
-          setIsLocationLoading(false);
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
-    };
+          setWelcomeDetectError(locationAutoDetectErrorMessage(result))
+        })
+        .finally(() => {
+          setAutoDetecting(false)
+          markAutoDetectInFlight(false)
+        })
+    }
 
     const handleSelectLocation = (displayName: string, item?: LocationItem) => {
-      const label = displayName.startsWith('📍') ? displayName : `📍 ${displayName}`
+      markLocationSelected()
       const nextPath = getMagicpinPathAfterLocationSelect(pathname ?? '', displayName, item)
       if (nextPath) {
         const merged = mergeLocationQuery(
@@ -188,13 +207,14 @@ export default function Header() {
         )
         router.replace(url, { scroll: false })
       }
-      setLocation(label)
-      setIsLocationManual(true)
       setLocationSearchQuery('')
       setShowLocationPopup(false)
       setShowLocationSheet(false)
+      setShowLocationWelcomeModal(false)
+      setWelcomeDetectError(null)
       setGlobalLocation(displayName, item?.latitude ?? undefined, item?.longitude ?? undefined, {
         userInitiated: true,
+        source: 'selected',
       })
     }
 
@@ -318,24 +338,11 @@ export default function Header() {
                 : ''
         }`}
       >
-        {showInnerHeroShell && (
-        <div className="absolute inset-0 rounded-b-[90px] overflow-hidden z-0">
-          <div 
-            className="absolute inset-0"
-            style={{ 
-             background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.60), rgba(59, 130, 246, 0.55), rgba(168, 85, 247, 0.45)), url("/img/bg.png") center/cover no-repeat'
-            }}
-          ></div>
-          {/* Pattern overlay */}
-          <div className="absolute inset-0 opacity-[0.08] pointer-events-none" style={{ backgroundImage: 'url(https://www.transparenttextures.com/patterns/light-sketch.png)' }}></div>
-        </div>
-        )}
-        
         {/* Header content */}
         <header
           className={
             showLandingHeaderShell
-              ? `landing-hero-ref relative z-10 px-0 pt-0 text-black ${isAboutPage || isCorporatesPage || isAroundYouPage ? 'pb-0' : 'pb-6 md:pb-8'}`
+              ? 'landing-hero-ref relative z-10 px-0 pt-0 pb-0 text-black'
               : 'text-white py-4 px-5 md:px-20 pb-[160px] rounded-b-[90px] relative z-10'
           }
         >
@@ -348,8 +355,7 @@ export default function Header() {
                 className="flex items-center gap-2 md:gap-3"
               >
                 <div className="relative flex-shrink-0 logo-blink">
-                  <img
-                    src="/img/logoo.png"
+                  <GatiMitraLogo
                     alt="GatiMitra Logo"
                     className="h-10 md:h-12 w-auto object-contain"
                   />
@@ -576,16 +582,9 @@ export default function Header() {
           </div>
           )}
 
-          {/* Landing-style shell: full hero on home; top bar only on About (same design as home nav) */}
+          {/* Landing-style navbar shell (hero is a sibling section on landing pages) */}
           {showLandingHeaderShell && (
-            <LandingHeroArcProvider>
-              <div
-                className={`landing-hero-split flex w-full max-w-full flex-col rounded-none border-x-0 border-t-0 border-b-0 shadow-none ${
-                  isLandingHome
-                    ? 'mb-0 min-h-[min(72vh,680px)] lg:mb-0 lg:min-h-[min(72vh,680px)]'
-                    : 'mb-0 min-h-0'
-                }`}
-              >
+              <div className="landing-nav-shell w-full">
                 {/* Integrated top bar — overflow-visible so Business dropdown is not clipped */}
                 <div
                   className={`relative z-[100] w-full shrink-0 overflow-visible px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 ${
@@ -605,8 +604,7 @@ export default function Header() {
                       aria-label="GatiMitra for Corporates — home"
                     >
                       <div className="flex h-9 shrink-0 items-center md:h-10">
-                        <img
-                          src="/img/logoo.png"
+                        <GatiMitraLogo
                           alt=""
                           className="h-full w-auto max-w-[min(46vw,200px)] object-contain object-left sm:max-w-[220px]"
                         />
@@ -634,8 +632,7 @@ export default function Header() {
                       className="flex w-max max-w-[min(100%,calc(100vw-8rem))] shrink-0 items-center gap-3 pr-2 no-underline md:justify-self-start"
                     >
                       <div className="relative flex h-10 shrink-0 items-center justify-center md:h-12">
-                        <img
-                          src="/img/logoo.png"
+                        <GatiMitraLogo
                           alt="GatiMitra Logo"
                           className="h-full w-auto max-w-[200px] object-contain md:max-w-[230px]"
                         />
@@ -755,7 +752,9 @@ export default function Header() {
                               className="flex w-full items-center justify-between gap-2 bg-transparent pr-1 text-sm text-gray-700"
                             >
                               <span className="truncate">
-                                {locationState.displayName || (location || '').replace(/^📍\s*/, '') || (isLocationLoading ? 'Detecting location' : 'Select location')}
+                                {isCityAreaRoute && locationState.displayName
+                                  ? locationState.displayName
+                                  : headerLocationLabel}
                               </span>
                               <i className="fas fa-chevron-down ml-1 shrink-0 text-[10px] text-gray-500"></i>
                             </button>
@@ -1056,470 +1055,29 @@ export default function Header() {
                     </div>
                   )}
                 </div>
-
-                {isLandingHeroPage && (
-                  <div className="landing-hero-main relative z-[1] flex min-h-0 min-w-0 flex-1 flex-col gap-0 px-3 pt-3 sm:px-4 sm:pt-4 lg:min-h-0 lg:flex-row lg:items-center lg:gap-8 lg:px-6 lg:pt-5 xl:gap-10 xl:px-8 xl:pt-6">
-                    <div className="flex min-h-0 flex-1 flex-col justify-center px-0 pb-6 pt-2 text-left sm:pb-7 sm:pt-3 lg:basis-[52%] lg:justify-center lg:pb-6 lg:pl-[6%] lg:pr-2 lg:pt-2 xl:pl-[5%]">
-                      <div className="w-full max-w-[42rem] mx-auto lg:mx-0">
-                        <LandingHeroDynamicCopy />
-                        <LandingHeroExploreButton />
-                      </div>
-                    </div>
-
-                    <div className="relative flex min-h-[min(260px,40vh)] flex-1 flex-col items-center justify-center px-0 pb-6 pt-0 sm:min-h-[min(320px,46vh)] sm:pb-7 lg:min-h-0 lg:basis-[48%] lg:justify-center lg:self-stretch lg:px-2 lg:pb-6 lg:pt-2 xl:px-4">
-                      <LandingHeroGreenContent />
-                    </div>
-                  </div>
-                )}
               </div>
-            </LandingHeroArcProvider>
           )}
 
-          {false && (
-          <div className={isLandingHome ? 'relative' : 'hero-section relative'}>
-            {!isLandingHome && (
-            <>
-            {/* Left Arrow - Higher Position */}
-            <svg className="absolute pointer-events-none arrow-blink" width="200" height="300" viewBox="0 0 200 300" style={{left: '-50px', top: '70px', filter: 'drop-shadow(0 0 12px #00e5ff)', animationDelay: '0s'}}>
-              <defs>
-                <linearGradient id="arrowGradLeft" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#00e5ff" />
-                  <stop offset="100%" stopColor="#0099ff" />
-                </linearGradient>
-              </defs>
-              <path d="M 40 50 L 80 100 L 40 150" stroke="url(#arrowGradLeft)" strokeWidth="6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M 100 80 L 140 130 L 100 180" stroke="url(#arrowGradLeft)" strokeWidth="6" fill="none" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
-            </svg>
-            
-            {/* Right Arrow - Higher Position */}
-            <svg className="absolute pointer-events-none arrow-blink" width="200" height="300" viewBox="0 0 200 300" style={{right: '-50px', top: '70px', filter: 'drop-shadow(0 0 12px #00e5ff)', animationDelay: '0.5s'}}>
-              <defs>
-                <linearGradient id="arrowGradRight" x1="100%" y1="0%" x2="0%" y2="100%">
-                  <stop offset="0%" stopColor="#00e5ff" />
-                  <stop offset="100%" stopColor="#0099ff" />
-                </linearGradient>
-              </defs>
-              <path d="M 160 50 L 120 100 L 160 150" stroke="url(#arrowGradRight)" strokeWidth="6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M 100 80 L 60 130 L 100 180" stroke="url(#arrowGradRight)" strokeWidth="6" fill="none" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
-            </svg>
-
-            {/* Blinking Background Logos */}
-            <div className="absolute inset-0 pointer-events-none opacity-25 flex items-center justify-around px-10" style={{zIndex: 1}}>
-              <div className="hero-logo-blink" style={{animationDelay: '0s'}}>
-                <img src="/img/logoo.png" alt="logo" className="h-24 w-auto opacity-50" />
-              </div>
-              <div className="hero-logo-blink" style={{animationDelay: '0.4s'}}>
-                <img src="/img/logoo.png" alt="logo" className="h-20 w-auto opacity-40" />
-              </div>
-              <div className="hero-logo-blink" style={{animationDelay: '0.8s'}}>
-                <img src="/img/logoo.png" alt="logo" className="h-28 w-auto opacity-45" />
-              </div>
-              <div className="hero-logo-blink" style={{animationDelay: '1.2s'}}>
-                <img src="/img/logoo.png" alt="logo" className="h-22 w-auto opacity-35" />
-              </div>
-            </div>
-
-            <h1 className="hero-title relative z-10">
-              India&apos;s <span className="hero-title-accent">Lowest Commission</span>
-              <br />Delivery Platform
-            </h1>
-            <p className="hero-subtitle relative z-10">
-              Food • Parcel • Person Delivery
-            </p>
-            </>
-            )}
-
-            {/* Parallel Location & Search Bar – higher z when suggestion modal open so it stays above quick cards (z-30) */}
-            <div className={`relative mx-auto max-w-[800px] ${isLandingHome ? 'mt-2 px-3 sm:px-4 lg:px-6' : ''} ${showSearchResults && searchQuery ? 'z-[50]' : ''}`} ref={searchRef}>
-              <div className="flex flex-row gap-3 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden h-[60px] transition-all duration-300 hover:shadow-3xl items-center px-4 py-2 flex-wrap md:flex-nowrap">
-                {/* Location: same editable input – typing shows live results in same modal, no second dropdown */}
-                <div className="flex items-center min-w-[180px] max-w-[260px] flex-shrink-0 relative">
-                  <input
-                    ref={locationTriggerRef}
-                    type="text"
-                    value={showLocationPopup ? locationSearchQuery : (isCityAreaRoute && locationState.displayName ? locationState.displayName : (location || '').replace(/^📍\s*/, ''))}
-                    onChange={(e) => {
-                      setShowLocationPopup(true)
-                      setLocationSearchQuery(e.target.value)
-                    }}
-                    onFocus={() => {
-                      setLocationSearchQuery('')
-                      setShowLocationPopup(true)
-                    }}
-                    placeholder={isLocationLoading ? 'Detecting...' : 'Search location'}
-                    aria-expanded={showLocationPopup}
-                    aria-haspopup="dialog"
-                    title="Change location"
-                    className="flex-1 min-w-0 text-gray-500 text-sm bg-transparent border-none outline-none placeholder:text-gray-400"
-                  />
-                  {isLocationManual && !showLocationPopup && (
-                    <span className="text-xs bg-purple-light text-purple px-2 py-0.5 rounded-full ml-1 flex-shrink-0">
-                      Manual
-                    </span>
-                  )}
-                  <button
-                    onClick={getLocation}
-                    className="text-xs text-purple hover:text-purple-dark font-medium px-2 py-1 rounded hover:bg-purple-light transition-colors flex items-center gap-1 ml-1 flex-shrink-0"
-                    title="Refresh location"
-                  >
-                    <i className="fas fa-sync-alt text-[10px]"></i>
-                  </button>
-                  {showLocationPopup && locationSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setLocationSearchQuery('')}
-                      className="text-gray-400 hover:text-gray-600 flex-shrink-0 p-1"
-                      aria-label="Clear"
-                    >
-                      <i className="fas fa-times text-[10px]"></i>
-                    </button>
-                  )}
-                </div>
-                {/* Search input */}
-                <div className="flex items-center flex-1 min-w-[180px] ml-2">
-                  <i className="fas fa-search text-gray-400 mr-3 text-sm"></i>
-                  <input
-                    type="text"
-                    placeholder={searchPlaceholder}
-                    className="flex-1 text-sm text-gray-800 placeholder-gray-400 focus:outline-none bg-transparent"
-                    value={searchQuery}
-                    onChange={handleLandingSearchInput}
-                    onFocus={() => searchQuery.trim() && setShowSearchResults(true)}
-                  />
-                  {searchQuery && (
-                    <button
-                      onClick={() => {
-                        setSearchQuery('');
-                        setShowSearchResults(false);
-                      }}
-                      className="text-gray-400 hover:text-gray-600 ml-2"
-                    >
-                      <i className="fas fa-times"></i>
-                    </button>
-                  )}
-                </div>
-              </div>
-              {/* Location modal: absolute only (no fixed) so it scrolls with search section */}
-              <div className="absolute left-0 right-0 top-full z-50" style={{ position: 'absolute' }}>
-                <LocationPopup
-                  isOpen={showLocationPopup}
-                  onClose={() => {
-                    setShowLocationPopup(false)
-                    setLocationSearchQuery('')
-                  }}
-                  onSelectLocation={handleSelectLocation}
-                  onPermissionDenied={() => setShowLocationModal(true)}
-                  searchQuery={locationSearchQuery}
-                  triggerRef={locationTriggerRef}
-                  anchorRef={searchRef}
-                />
-              </div>
-              {/* Search Results – absolute so it scrolls with the page */}
-              {showSearchResults && searchQuery && (
-                <div
-                  ref={searchResultsRef}
-                  className="absolute left-1/2 -translate-x-1/2 top-full mt-2.5 w-full max-w-[560px] z-[100]"
-                >
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-              {searchLoading && (
-                <div className="px-6 py-8 text-center">
-                  <div className="inline-block w-8 h-8 border-2 border-purple border-t-transparent rounded-full animate-spin mb-3"></div>
-                  <div className="text-gray-500 text-sm">Searching for &quot;{debouncedSearchQuery || searchQuery}&quot;...</div>
-                </div>
-              )}
-              {!searchLoading && searchResults.length > 0 && (() => {
-                const dishes = searchResults.filter((r: { type?: string }) => r.type === 'dish')
-                const restaurants = searchResults.filter((r: { type?: string }) => r.type === 'restaurant')
-                return (
-                  <div className="max-h-[440px] overflow-y-auto">
-                    <div className="px-4 py-3 border-b border-gray-100 sticky top-0 bg-white z-10">
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm font-semibold text-gray-800">
-                          Results for &quot;{debouncedSearchQuery}&quot;
-                        </span>
-                        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
-                          {searchResults.length} found
-                        </span>
-                      </div>
-                    </div>
-                    <div className="py-1">
-                      {dishes.map((item: any, idx: number) => {
-                        const restaurant = restaurantList.find((r: any) => r.restaurant_id === item.restaurant_id || r.id === item.restaurant_id)
-                        const restaurantName = restaurant ? (restaurant.restaurant_name || restaurant.name) : 'Restaurant'
-                        const secondary = [restaurantName, item.category, item.price != null ? `₹${item.price}` : ''].filter(Boolean).join(' • ')
-                        return (
-                          <Link
-                            key={`dish-${item.id}-${idx}`}
-                            href={`/order?restaurant=${item.restaurant_id}`}
-                            onClick={() => setShowSearchResults(false)}
-                            className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors group"
-                          >
-                            <div className="w-12 h-12 rounded-full overflow-hidden bg-gray-100 flex-shrink-0 flex items-center justify-center ring-1 ring-gray-100">
-                              {item.image_url ? (
-                                <img src={item.image_url} alt={item.item_name} className="w-full h-full object-cover" />
-                              ) : (
-                                <span className="text-lg text-gray-400">🍽️</span>
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="font-semibold text-gray-900 text-sm truncate group-hover:text-purple">{item.item_name}</div>
-                              <div className="text-xs text-gray-500 truncate mt-0.5">{secondary}</div>
-                            </div>
-                          </Link>
-                        )
-                      })}
-                      {restaurants.map((item: any, idx: number) => {
-                        const secondary = item.address ? item.address : 'View menu'
-                        return (
-                          <Link
-                            key={`rest-${item.restaurant_id}-${idx}`}
-                            href={restaurantDetailHref(
-                              String(item.restaurant_id),
-                              'search',
-                              mergeLocationQuery(
-                                new URLSearchParams(searchParams?.toString() ?? ''),
-                                buildLocationQueryFromState(locationState)
-                              )
-                            )}
-                            onClick={() => setShowSearchResults(false)}
-                            className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors group"
-                          >
-                            <div className="w-12 h-12 rounded-full overflow-hidden bg-gray-100 flex-shrink-0 flex items-center justify-center ring-1 ring-gray-100">
-                              {item.image_url ? (
-                                <img src={item.image_url} alt={item.restaurant_name || item.name} className="w-full h-full object-cover" />
-                              ) : (
-                                <span className="text-lg text-gray-400">🏪</span>
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="font-semibold text-gray-900 text-sm truncate group-hover:text-purple">{item.restaurant_name || item.name}</div>
-                              <div className="text-xs text-gray-500 truncate mt-0.5">{secondary}</div>
-                            </div>
-                          </Link>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })()}
-              {!searchLoading && searchResults.length === 0 && debouncedSearchQuery && (
-                <div className="px-6 py-8 text-center">
-                  <div className="text-4xl mb-3 text-gray-300">🔍</div>
-                  <div className="text-gray-600 font-semibold text-sm mb-1">No results for &quot;{debouncedSearchQuery}&quot;</div>
-                  <div className="text-gray-400 text-xs max-w-xs mx-auto">Try different keywords or check spelling</div>
-                  <button onClick={() => setShowSearchResults(false)} className="mt-3 text-purple font-medium text-xs hover:underline">Clear search</button>
-                </div>
-              )}
-            </div>
-          </div>
-              )}
-            </div>
-          </div>
-          )}
         </header>
       </div>
 
-      <LocationSheet
-        isOpen={showLocationSheet}
-        onClose={() => setShowLocationSheet(false)}
-        onSelectLocation={handleSelectLocation}
-        onPermissionDenied={() => setShowLocationModal(true)}
+      <LocationWelcomeModal
+        isOpen={showLocationWelcomeModal}
+        onClose={closeLocationWelcomeModal}
+        onAutoDetect={openAutoDetectCurrentLocation}
+        onManualEntry={openManualLocationEntry}
+        detecting={autoDetecting}
+        errorMessage={welcomeDetectError}
       />
 
-      {/* Location Permission Modal */}
-      {showLocationModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[1000] p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full animate-scaleIn">
-            <div className="px-6 py-5 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-text">Enable Location Access</h3>
-                <button
-                  onClick={() => setShowLocationModal(false)}
-                  className="text-gray-400 hover:text-gray-600 text-xl"
-                >
-                  ×
-                </button>
-              </div>
-              <p className="text-gray-600 text-sm mt-1">
-                Location access is required for better delivery experience
-              </p>
-            </div>
-            
-            <div className="px-6 py-5">
-              <div className="space-y-4">
-                <div className="flex items-start gap-3">
-                  <div className="bg-purple-light text-purple w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                    1
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-text text-sm">Click the lock icon</h4>
-                    <p className="text-gray-500 text-xs mt-0.5">
-                      In your browser&apos;s address bar, click the lock or info icon
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="flex items-start gap-3">
-                  <div className="bg-purple-light text-purple w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                    2
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-text text-sm">Open Site Settings</h4>
-                    <p className="text-gray-500 text-xs mt-0.5">
-                      Click on &quot;Site settings&quot; or &quot;Permissions&quot;
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="flex items-start gap-3">
-                  <div className="bg-purple-light text-purple w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                    3
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-text text-sm">Allow Location Access</h4>
-                    <p className="text-gray-500 text-xs mt-0.5">
-                      Change location permission from &quot;Block&quot; to &quot;Allow&quot;
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="flex items-start gap-3">
-                  <div className="bg-purple-light text-purple w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                    4
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-text text-sm">Refresh the Page</h4>
-                    <p className="text-gray-500 text-xs mt-0.5">
-                      Refresh this page after changing the settings
-                    </p>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="mt-6 pt-5 border-t border-gray-200">
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setShowLocationModal(false)
-                      setShowLocationPopup(true)
-                    }}
-                    className="flex-1 border border-gray-300 text-gray-700 px-4 py-2.5 rounded-lg font-medium text-sm hover:bg-gray-50 transition-colors"
-                  >
-                    Enter Location Manually
-                  </button>
-                  <button
-                    onClick={() => {
-                      getLocation();
-                      setShowLocationModal(false);
-                    }}
-                    className="flex-1 bg-gradient-to-r from-purple to-[#6a3aff] text-white px-4 py-2.5 rounded-lg font-medium text-sm hover:shadow-lg transition-all"
-                  >
-                    Try Again
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <LocationSheet
+        isOpen={showLocationSheet}
+        onClose={closeLocationSheet}
+        onSelectLocation={handleSelectLocation}
+      />
 
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       <UserProfileModal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} />
-
-      <style jsx>{`
-        .search-box-responsive {
-          height: 60px !important;
-          min-height: 60px;
-        }
-        
-        .search-input-responsive {
-          height: 100%;
-          padding: 0 16px;
-          font-size: 14px;
-        }
-        
-        .location-input-responsive {
-          height: 100%;
-          padding: 0 16px;
-          font-size: 13px;
-        }
-        
-        @keyframes slideDown {
-          from {
-            opacity: 0;
-            transform: translateY(-10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        
-        .animate-slideDown {
-          animation: slideDown 0.2s ease-out;
-        }
-        
-        @keyframes scaleIn {
-          from {
-            opacity: 0;
-            transform: scale(0.95);
-          }
-          to {
-            opacity: 1;
-            transform: scale(1);
-          }
-        }
-        
-        .animate-scaleIn {
-          animation: scaleIn 0.2s ease-out;
-        }
-        
-        .shadow-3xl {
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(99, 102, 241, 0.1);
-        }
-        
-        .hero-title {
-          font-size: 2.5rem;
-          font-weight: 800;
-          text-align: center;
-          margin-bottom: 1rem;
-          background: linear-gradient(135deg, #ffffff 0%, #e0e7ff 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-          text-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-        }
-        
-        .hero-title-accent {
-          background: linear-gradient(135deg, #0a0600 0%, #ff0400 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
-        
-        .hero-subtitle {
-          font-size: 1.1rem;
-          text-align: center;
-          margin-bottom: 2rem;
-          color: rgba(255, 255, 255, 0.9);
-          font-weight: 500;
-        }
-        
-        @media (max-width: 768px) {
-          .hero-title {
-            font-size: 1.8rem;
-          }
-          
-          .hero-subtitle {
-            font-size: 0.95rem;
-          }
-          
-          .search-box-responsive {
-            height: 55px !important;
-            min-height: 55px;
-          }
-        }
-      `}</style>
     </>
   )
 }

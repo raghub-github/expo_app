@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useAppSelector } from '@/lib/hooks'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 
@@ -27,7 +28,7 @@ export default function EcomArcheHeader() {
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center justify-between gap-3 py-4">
             <Link href="/" className="flex items-center gap-2 shrink-0 no-underline text-white">
-              <img src="/img/logoo.png" alt="Brand Logo" className="h-10 w-auto object-contain" />
+              <GatiMitraLogo alt="GatiMitra" className="h-10 w-auto object-contain" />
             </Link>
 
             <div className="flex-1 min-w-[200px] max-w-xl flex items-stretch rounded-lg overflow-hidden bg-white/10 border border-white/20">

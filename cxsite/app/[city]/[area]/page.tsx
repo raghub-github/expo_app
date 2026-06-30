@@ -1,10 +1,12 @@
 import { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 import Header from '@/components/layout/Header'
+import LandingHero from '@/components/home/LandingHero'
 import Footer from '@/components/layout/Footer'
 import BrandsByLocationView from '@/components/home/BrandsByLocationView'
 import LocationFromUrlSync from '@/components/location-search/LocationFromUrlSync'
 import { slugToTitle } from '@/lib/slug'
+import { pageTitleSegment, fullPageTitle } from '@/lib/pageTitle'
 
 type Props = { params: Promise<{ city: string; area: string }>; searchParams: Promise<{ category?: string }> }
 
@@ -16,19 +18,18 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   const { city, area } = await params
   const { category } = await searchParams
   if (!isValidSlug(city) || !isValidSlug(area)) {
-    return { title: 'Brands | GatiMitra' }
+    return { title: pageTitleSegment('Brands') }
   }
   const cityDisplay = slugToTitle(city)
   const areaDisplay = slugToTitle(area)
-  const title = areaDisplay
-    ? `Brands in ${areaDisplay}, ${cityDisplay} | GatiMitra`
-    : `Brands in ${cityDisplay} | GatiMitra`
+  const segment = category ? `${slugToTitle(category)} Brands` : 'Brands'
   const base = process.env.NEXT_PUBLIC_SITE_URL || ''
   const canonical = base ? `${base}/${city}/${area}${category ? `?category=${category}` : ''}` : undefined
   return {
-    title,
+    title: pageTitleSegment(segment),
     description: `Explore verified brands in ${areaDisplay ? `${areaDisplay}, ` : ''}${cityDisplay}. Food, fashion, pharma & more.`,
     ...(canonical && { alternates: { canonical } }),
+    openGraph: { title: fullPageTitle(segment) },
   }
 }
 
@@ -41,9 +42,10 @@ export default async function CityAreaPage({ params, searchParams }: Props) {
   }
 
   return (
-    <main>
+    <main className="landing-page-bg">
       <LocationFromUrlSync citySlug={city} areaSlug={area} />
       <Header />
+      <LandingHero />
       <BrandsByLocationView citySlug={city} areaSlug={area} categorySlug={category ?? null} />
       <Footer />
     </main>

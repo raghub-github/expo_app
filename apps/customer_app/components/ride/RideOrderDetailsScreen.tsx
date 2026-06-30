@@ -1,8 +1,8 @@
 /**
- * Rapido-style completed / cancelled ride details.
+ * Rapido-style completed / cancelled ride details with invoice breakdown + email.
  */
 
-import { useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -10,18 +10,29 @@ import {
   TouchableOpacity,
   StyleSheet,
   Image,
+  Alert,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { useMutation } from "@tanstack/react-query";
 import type { OrderDetail } from "@/services/order.service";
+import { orderService } from "@/services/order.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+import { useProfile } from "@/hooks/useProfile";
 import {
+  RideInvoiceEmailGateSheet,
+  type RideInvoiceEmailGateMode,
+} from "@/components/ride/RideInvoiceEmailGateSheet";
+import { rideFareBillFromBillingSnapshot } from "@/lib/ride-fare-bill-display";
+import {
+  buildRideSummaryInvoice,
   formatRideFare,
   formatRideHistoryDateTime,
   formatRideTripStats,
-  getRideFareBreakdown,
   getRideHistoryStatusLabel,
   getRideServiceLabel,
   resolveRideOrderTripDistanceKm,
@@ -57,10 +68,54 @@ function RouteStop({
   );
 }
 
+function FareTotalWithDiscount({
+  totalFare,
+  totalBeforeDiscount,
+  size = "md",
+}: {
+  totalFare: number;
+  totalBeforeDiscount?: number | null;
+  size?: "lg" | "md";
+}) {
+  const hasDiscount =
+    totalBeforeDiscount != null && totalBeforeDiscount > totalFare + 0.005;
+
+  if (!hasDiscount) {
+    return (
+      <Text style={size === "lg" ? styles.rideFare : styles.fareHeaderAmount}>
+        {formatRideFare(totalFare)}
+      </Text>
+    );
+  }
+
+  return (
+    <View style={size === "lg" ? styles.fareTotalDiscountRowLg : styles.fareTotalDiscountRow}>
+      <Text style={size === "lg" ? styles.fareTotalStruckLg : styles.fareTotalStruck}>
+        {formatRideFare(totalBeforeDiscount)}
+      </Text>
+      <Text style={size === "lg" ? styles.fareTotalFinalLg : styles.fareTotalFinal}>
+        {formatRideFare(totalFare)}
+      </Text>
+    </View>
+  );
+}
+
 export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { data: profile } = useProfile();
   const [addressExpanded, setAddressExpanded] = useState(true);
   const [fareExpanded, setFareExpanded] = useState(true);
+  const [emailGateVisible, setEmailGateVisible] = useState(false);
+  const [emailGateMode, setEmailGateMode] = useState<RideInvoiceEmailGateMode | null>(null);
+  const [invoiceSentToast, setInvoiceSentToast] = useState<string | null>(null);
+  const invoiceSentToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (invoiceSentToastTimerRef.current) clearTimeout(invoiceSentToastTimerRef.current);
+    };
+  }, []);
 
   const statusNorm = normalizeCustomerOrderStatus(order.status);
   const isCancelled = statusNorm === "CANCELLED";
@@ -71,11 +126,127 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const pickupAddress = order.merchantAddress?.trim() || "Pickup location";
   const dropAddress = order.deliveryAddress?.trim() || "Drop location";
-  const { total, tip, rideCharge } = getRideFareBreakdown(order);
+
+  const invoice = useMemo(() => {
+    const summary = buildRideSummaryInvoice(order);
+    return {
+      lines: summary.lines,
+      totalFare: summary.totalFare,
+      isEstimate: summary.isEstimate,
+    };
+  }, [order]);
+
+  const tipAmount = useMemo(() => {
+    const snapBill = rideFareBillFromBillingSnapshot({
+      billingSnapshot:
+        order.billingSnapshot != null && typeof order.billingSnapshot === "object"
+          ? (order.billingSnapshot as Record<string, unknown>)
+          : null,
+      totalAmount: order.totalAmount,
+      tipAmount: order.tipAmount,
+    });
+    if (snapBill?.tipAmount && snapBill.tipAmount > 0.005) return snapBill.tipAmount;
+    const tipLine = invoice.lines.find((line) => line.label.toLowerCase().includes("tip"));
+    return tipLine?.amount ?? 0;
+  }, [order, invoice.lines]);
+
+  const invoiceTotalExclTip = useMemo(() => {
+    if (tipAmount <= 0.005) return invoice.totalFare;
+    return Math.max(0, Math.round((invoice.totalFare - tipAmount) * 100) / 100);
+  }, [invoice.totalFare, tipAmount]);
+
+  const discountTotal = useMemo(
+    () =>
+      invoice.lines
+        .filter((line) => line.isDiscount)
+        .reduce((sum, line) => sum + line.amount, 0),
+    [invoice.lines]
+  );
+
+  const totalBeforeDiscount = useMemo(() => {
+    if (discountTotal <= 0.005) return null;
+    return Math.round((invoice.totalFare + discountTotal) * 100) / 100;
+  }, [invoice.totalFare, discountTotal]);
   const tripStats = formatRideTripStats(
     resolveRideOrderTripDistanceKm(order),
     order.rideDurationMinutes
   );
+
+  const sendInvoiceMutation = useMutation({
+    mutationFn: () => orderService.sendRideInvoiceEmail(order.orderId),
+  });
+
+  const closeEmailGate = () => {
+    setEmailGateVisible(false);
+    setEmailGateMode(null);
+  };
+
+  const openEmailGate = (mode: RideInvoiceEmailGateMode) => {
+    setEmailGateMode(mode);
+    setEmailGateVisible(true);
+  };
+
+  const handleSendInvoice = () => {
+    const email = profile?.email?.trim();
+    const verified = profile?.is_email_verified ?? false;
+
+    if (!email) {
+      openEmailGate("missing_email");
+      return;
+    }
+    if (!verified) {
+      openEmailGate("unverified_email");
+      return;
+    }
+    openEmailGate("confirm_send");
+  };
+
+  const showInvoiceSentToast = (message: string) => {
+    if (invoiceSentToastTimerRef.current) clearTimeout(invoiceSentToastTimerRef.current);
+    setInvoiceSentToast(message);
+    invoiceSentToastTimerRef.current = setTimeout(() => {
+      setInvoiceSentToast(null);
+      invoiceSentToastTimerRef.current = null;
+    }, 2000);
+  };
+
+  const handleConfirmSendInvoice = () => {
+    void sendInvoiceMutation.mutateAsync().then(
+      (res) => {
+        closeEmailGate();
+        showInvoiceSentToast(`Ride invoice emailed to ${res.sentTo}.`);
+      },
+      (err: unknown) => {
+        const apiErr = err as { response?: { data?: { error?: string; message?: string } } };
+        const code = apiErr?.response?.data?.error;
+        const msg =
+          apiErr?.response?.data?.message ??
+          (err as Error)?.message ??
+          "Could not send invoice. Please try again.";
+
+        if (code === "EMAIL_NOT_VERIFIED") {
+          openEmailGate("unverified_email");
+          return;
+        }
+        if (code === "EMAIL_REQUIRED") {
+          openEmailGate("missing_email");
+          return;
+        }
+        closeEmailGate();
+        Alert.alert("Could not send", msg);
+      },
+    );
+  };
+
+  const handleAddEmail = () => {
+    closeEmailGate();
+    router.push("/profile/edit");
+  };
+
+  const handleVerifyEmail = () => {
+    closeEmailGate();
+    router.push("/profile/verify-email");
+  };
 
   return (
     <View style={styles.screen}>
@@ -98,10 +269,14 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             <View style={styles.summaryLeft}>
               <Text style={styles.rideTypeTitle}>{rideLabel}</Text>
               <Text style={styles.rideDate}>{formatRideHistoryDateTime(order.createdAt)}</Text>
-              <Text style={styles.rideFare}>
-                {formatRideFare(total)}
-                <Text style={styles.estTag}> (.est)</Text>
-              </Text>
+              <View style={styles.rideFareRow}>
+                <FareTotalWithDiscount
+                  totalFare={invoice.totalFare}
+                  totalBeforeDiscount={totalBeforeDiscount}
+                  size="lg"
+                />
+                {invoice.isEstimate ? <Text style={styles.estTag}> (.est)</Text> : null}
+              </View>
             </View>
             <View style={styles.summaryRight}>
               <Image source={vehicleImage} style={styles.summaryVehicle} resizeMode="contain" />
@@ -161,9 +336,9 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
         </TouchableOpacity>
 
         <View style={styles.card}>
-          <View style={styles.summaryHeaderRow}>
+          <View style={styles.invoiceHeaderRow}>
             <Ionicons name="receipt-outline" size={18} color="#111827" />
-            <Text style={styles.summaryHeaderText}>RIDE SUMMARY</Text>
+            <Text style={styles.invoiceHeaderText}>INVOICE</Text>
           </View>
 
           <TouchableOpacity
@@ -171,37 +346,102 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             onPress={() => setFareExpanded((v) => !v)}
             activeOpacity={0.85}
           >
-            <Text style={styles.fareHeaderLabel}>Suggested Fare</Text>
+            <Text style={styles.fareHeaderLabel}>Total Fare</Text>
             <View style={styles.fareHeaderRight}>
-              <Text style={styles.fareHeaderAmount}>{formatRideFare(total)}</Text>
+              <FareTotalWithDiscount
+                totalFare={invoice.totalFare}
+                totalBeforeDiscount={totalBeforeDiscount}
+                size="md"
+              />
               <Ionicons name={fareExpanded ? "chevron-up" : "chevron-down"} size={16} color="#6B7280" />
             </View>
           </TouchableOpacity>
 
           {fareExpanded ? (
             <View style={styles.fareBreakdown}>
-              <View style={styles.fareLine}>
-                <Text style={styles.fareLineLabel}>Ride Charge</Text>
-                <Text style={styles.fareLineValue}>{formatRideFare(rideCharge)}</Text>
-              </View>
-              {tip > 0 ? (
-                <View style={styles.fareLine}>
-                  <Text style={styles.fareLineLabel}>Tip</Text>
-                  <Text style={styles.fareLineValue}>{formatRideFare(tip)}</Text>
+              {invoice.lines.map((line) => (
+                <View key={`${line.label}-${line.amount}`} style={styles.fareLine}>
+                  <Text style={[styles.fareLineLabel, line.isDiscount && styles.fareLineDiscountLabel]}>
+                    {line.label}
+                  </Text>
+                  {line.isDiscount ? (
+                    <Text style={styles.fareLineDiscount}>-{formatRideFare(line.amount)}</Text>
+                  ) : (
+                    <Text style={styles.fareLineValue}>{formatRideFare(line.amount)}</Text>
+                  )}
+                </View>
+              ))}
+
+              {tipAmount > 0.005 ? (
+                <View style={styles.tipInvoiceNoteBlock}>
+                  <Text style={styles.tipInvoiceNote}>
+                    Tip amount is not included in the PDF/email invoice.
+                  </Text>
+                  <View style={styles.tipInvoiceMathRow}>
+                    <Text style={styles.tipInvoiceMath}>
+                      <Text style={styles.tipInvoiceMathValue}>{formatRideFare(invoiceTotalExclTip)}</Text>
+                      <Text style={styles.tipInvoiceMathOp}> + </Text>
+                      <Text style={styles.tipInvoiceMathValue}>{formatRideFare(tipAmount)} tip</Text>
+                      <Text style={styles.tipInvoiceMathOp}> = </Text>
+                      <Text style={styles.tipInvoiceMathTotal}>{formatRideFare(invoice.totalFare)}</Text>
+                    </Text>
+                  </View>
                 </View>
               ) : null}
             </View>
           ) : null}
+
+          <View style={styles.invoiceDivider} />
+
+          <TouchableOpacity
+            style={styles.emailRow}
+            onPress={handleSendInvoice}
+            disabled={sendInvoiceMutation.isPending || isCancelled}
+            activeOpacity={0.85}
+          >
+            {sendInvoiceMutation.isPending ? (
+              <ActivityIndicator size="small" color="#2563EB" />
+            ) : (
+              <Ionicons name="mail-outline" size={20} color="#2563EB" />
+            )}
+            <Text style={styles.emailRowText}>Send invoice via Email</Text>
+            <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.disclaimerRow}>
-          <Ionicons name="information-circle-outline" size={16} color="#9CA3AF" />
-          <Text style={styles.disclaimerText}>
-            Fare shown is an estimate. Final amount may vary based on route and waiting time. Tax
-            invoices are not provided for this trip.
-          </Text>
-        </View>
+        {invoice.isEstimate ? (
+          <View style={styles.disclaimerRow}>
+            <Ionicons name="information-circle-outline" size={16} color="#9CA3AF" />
+            <Text style={styles.disclaimerText}>
+              Fare shown is an estimate until payment is completed. Final amount may vary based on
+              route and waiting time.
+            </Text>
+          </View>
+        ) : null}
       </ScrollView>
+
+      <RideInvoiceEmailGateSheet
+        visible={emailGateVisible}
+        mode={emailGateMode}
+        email={profile?.email}
+        sending={sendInvoiceMutation.isPending}
+        onClose={closeEmailGate}
+        onAddEmail={handleAddEmail}
+        onVerifyEmail={handleVerifyEmail}
+        onConfirmSend={handleConfirmSendInvoice}
+      />
+
+      {invoiceSentToast ? (
+        <View style={styles.invoiceSentToastWrap} pointerEvents="none">
+          <View style={styles.invoiceSentToastCard}>
+            <Ionicons name="checkmark-circle" size={22} color={GREEN} />
+            <View style={styles.invoiceSentToastTextCol}>
+              <Text style={styles.invoiceSentToastTitle}>Invoice sent</Text>
+              <Text style={styles.invoiceSentToastMsg}>{invoiceSentToast}</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -262,6 +502,45 @@ const styles = StyleSheet.create({
   },
   rideFare: {
     fontSize: 22,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  rideFareRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    flexWrap: "wrap",
+    gap: 4,
+  },
+  fareTotalDiscountRowLg: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  fareTotalDiscountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  fareTotalStruckLg: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+  },
+  fareTotalStruck: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+  },
+  fareTotalFinalLg: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  fareTotalFinal: {
+    fontSize: 15,
     fontWeight: "800",
     color: "#111827",
   },
@@ -397,17 +676,17 @@ const styles = StyleSheet.create({
     color: "#64748B",
     marginTop: 2,
   },
-  summaryHeaderRow: {
+  invoiceHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     marginBottom: 12,
   },
-  summaryHeaderText: {
-    fontSize: 13,
+  invoiceHeaderText: {
+    fontSize: 12,
     fontWeight: "800",
     color: "#111827",
-    letterSpacing: 0.4,
+    letterSpacing: 0.6,
   },
   fareHeaderRow: {
     flexDirection: "row",
@@ -417,7 +696,7 @@ const styles = StyleSheet.create({
   },
   fareHeaderLabel: {
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#111827",
   },
   fareHeaderRight: {
@@ -427,7 +706,7 @@ const styles = StyleSheet.create({
   },
   fareHeaderAmount: {
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#111827",
   },
   fareBreakdown: {
@@ -435,7 +714,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: "#F3F4F6",
-    gap: 8,
+    gap: 10,
   },
   fareLine: {
     flexDirection: "row",
@@ -446,11 +725,72 @@ const styles = StyleSheet.create({
   fareLineLabel: {
     fontSize: 14,
     color: "#6B7280",
+    flex: 1,
+    paddingRight: 8,
+  },
+  fareLineDiscountLabel: {
+    color: "#374151",
   },
   fareLineValue: {
     fontSize: 14,
     fontWeight: "600",
     color: "#374151",
+  },
+  fareLineDiscount: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#2563EB",
+  },
+  tipInvoiceNoteBlock: {
+    marginTop: 6,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#F3F4F6",
+    gap: 8,
+  },
+  tipInvoiceNote: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#9CA3AF",
+  },
+  tipInvoiceMathRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingLeft: 8,
+  },
+  tipInvoiceMath: {
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "right",
+    color: "#374151",
+  },
+  tipInvoiceMathValue: {
+    fontWeight: "600",
+    color: "#374151",
+  },
+  tipInvoiceMathOp: {
+    color: "#6B7280",
+  },
+  tipInvoiceMathTotal: {
+    fontWeight: "800",
+    color: "#111827",
+  },
+  invoiceDivider: {
+    height: 1,
+    backgroundColor: "#F3F4F6",
+    marginVertical: 14,
+  },
+  emailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 4,
+  },
+  emailRowText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#2563EB",
   },
   disclaimerRow: {
     flexDirection: "row",
@@ -463,5 +803,52 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     color: "#9CA3AF",
+  },
+  billLoadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+  },
+  billLoadingText: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  invoiceSentToastWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.35)",
+    zIndex: 20,
+  },
+  invoiceSentToastCard: {
+    width: "86%",
+    maxWidth: 340,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  invoiceSentToastTextCol: {
+    flex: 1,
+    gap: 4,
+  },
+  invoiceSentToastTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  invoiceSentToastMsg: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#4B5563",
   },
 });

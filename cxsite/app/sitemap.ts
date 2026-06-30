@@ -27,7 +27,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/around-you",
   ];
 
-  const utility = ["/help-center", "/support", "/delete-account-request", "/sitemap"];
+  const utility = ["/help-center", "/support", "/sitemap"];
 
   const legal = LEGAL_DOCS.map((d) => `/${d.slug}`);
 

@@ -725,7 +725,7 @@ export default function OrderRaiseTicketScreen() {
           </HelpSectionBlock>
         ) : hasRider ? (
           <HelpSectionBlock title="RIDE PARTNER">
-            <HelpActionRow icon="call-outline" title="Call delivery partner" onPress={handleCallRider} />
+            <HelpActionRow icon="call-outline" title="Call ride partner" onPress={handleCallRider} />
           </HelpSectionBlock>
         ) : null}
 
@@ -936,9 +936,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   hubSections: {
-    flex: 1,
-    justifyContent: "space-between",
     marginTop: 2,
+    gap: 10,
   },
   hero: {
     paddingHorizontal: 16,

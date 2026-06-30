@@ -5,6 +5,11 @@ import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-displa
 import { resolvePlaceDisplayName } from "@/services/location.service";
 import { parseRideFareDistanceKm } from "@/lib/ride-fare-distance";
 import {
+  buildRideInvoiceLinesFromFareBill,
+  rideFareBillFromBillingSnapshot,
+  resolveSnapshotDiscountRows,
+} from "@/lib/ride-fare-bill-display";
+import {
   estimateRidePickupWaitingCharge,
   resolveRidePickupWaitingChargePerMin,
   type RidePickupWaitFields,
@@ -245,6 +250,7 @@ export type RidePaymentFareLine = {
   label: string;
   amount: number;
   emphasis?: boolean;
+  isDiscount?: boolean;
 };
 
 export type RidePaymentFareBreakdown = {
@@ -383,7 +389,180 @@ export function resolveRidePaymentDueAmount(
   return Number.isFinite(total) && total > 0 ? Math.round(total) : 0;
 }
 
-/** Full fare breakdown for the post-ride payment screen (ride + waiting + surges + tip). */
+function rideBillingFeeLines(snap: Record<string, unknown>): RidePaymentFareLine[] {
+  const lines: RidePaymentFareLine[] = [];
+  const seen = new Set<string>();
+
+  const pushLine = (label: string, amount: number) => {
+    if (amount <= 0.005) return;
+    const key = `${label}:${amount}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    lines.push({ label, amount: Math.round(amount * 100) / 100 });
+  };
+
+  const rawCharges = snap.charges;
+  if (Array.isArray(rawCharges)) {
+    for (const entry of rawCharges) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as { label?: string; amount?: number; kind?: string };
+      if (row.kind === "tax") continue;
+      const label = String(row.label ?? "").trim();
+      const amount = billNum(row.amount);
+      if (!label || amount <= 0.005) continue;
+      if (label.toLowerCase().includes("tip")) continue;
+      pushLine(label, amount);
+    }
+  }
+
+  const rawTaxes = snap.taxes;
+  if (Array.isArray(rawTaxes)) {
+    for (const entry of rawTaxes) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as { label?: string; amount?: number };
+      const label = String(row.label ?? "GST").trim() || "GST";
+      pushLine(label, billNum(row.amount));
+    }
+  }
+
+  if (lines.length === 0) {
+    pushLine("Booking fee", billNum(snap.platform_fee));
+    pushLine("Convenience charges", billNum(snap.convenience_fee));
+    pushLine("GST", billNum(snap.tax_total));
+  }
+
+  return lines;
+}
+
+export type RideSummaryInvoiceLine = {
+  label: string;
+  amount: number;
+  isDiscount?: boolean;
+};
+
+/** Completed-ride invoice / summary lines — same breakdown as ride checkout bill. */
+export function buildRideSummaryInvoice(
+  order: Pick<
+    OrderDetail,
+    | "totalAmount"
+    | "tipAmount"
+    | "paymentStatus"
+    | "billingSnapshot"
+    | "distanceKm"
+    | "checkoutMetadata"
+    | "orderType"
+    | "paymentMethod"
+    | "pickupOtpVerifiedAt"
+    | "pickupWaitSeconds"
+    | "pickupWaitingChargePerMin"
+    | "estimatedPickupWaitingCharge"
+    | "riderReachedPickupAt"
+  >
+): { lines: RideSummaryInvoiceLine[]; totalFare: number; isEstimate: boolean } {
+  const snap =
+    order.billingSnapshot != null && typeof order.billingSnapshot === "object"
+      ? (order.billingSnapshot as Record<string, unknown>)
+      : {};
+
+  const fareBill = rideFareBillFromBillingSnapshot({
+    billingSnapshot: snap,
+    totalAmount: order.totalAmount,
+    tipAmount: order.tipAmount,
+  });
+
+  const paymentCompleted =
+    String(order.paymentStatus ?? "").toLowerCase() === "completed" ||
+    (typeof snap.ride_fare_paid_at === "string" && snap.ride_fare_paid_at.trim().length > 0);
+
+  if (fareBill) {
+    const { lines, totalFare } = buildRideInvoiceLinesFromFareBill(fareBill);
+
+    return {
+      lines,
+      totalFare,
+      isEstimate: !paymentCompleted,
+    };
+  }
+
+  const breakdown = buildRidePaymentFareBreakdown(order);
+
+  const lines: RideSummaryInvoiceLine[] = [
+    { label: "Ride Charge", amount: breakdown.rideFare },
+  ];
+
+  const platformFee = billNum(snap.platform_fee);
+  const convenienceFee = billNum(snap.convenience_fee);
+  const feeLines = rideBillingFeeLines(snap);
+
+  if (platformFee > 0.005) {
+    lines.push({ label: "Booking fee", amount: platformFee });
+  }
+  if (convenienceFee > 0.005) {
+    lines.push({ label: "Convenience charges", amount: convenienceFee });
+  }
+
+  for (const row of feeLines) {
+    const lower = row.label.toLowerCase();
+    if (lower.includes("booking") && platformFee > 0.005) continue;
+    if (lower.includes("convenience") && convenienceFee > 0.005) continue;
+    if (lines.some((l) => l.label === row.label && Math.abs(l.amount - row.amount) < 0.01)) continue;
+    lines.push(row);
+  }
+
+  if (
+    platformFee <= 0.005 &&
+    convenienceFee <= 0.005 &&
+    feeLines.length === 0 &&
+    breakdown.additionalCharges > 0.005
+  ) {
+    lines.push({
+      label: "Booking Fees & Convenience Charges",
+      amount: breakdown.additionalCharges,
+    });
+  }
+
+  if (breakdown.waitingCharge > 0.005) {
+    lines.push({ label: "Waiting charges", amount: breakdown.waitingCharge });
+  }
+  if (breakdown.surgeCharge > 0.005) {
+    lines.push({ label: "Surge pricing", amount: breakdown.surgeCharge });
+  }
+
+  const taxTotal = billNum(snap.tax_total);
+  if (taxTotal > 0.005) {
+    const snapTaxes = Array.isArray(snap.taxes) ? snap.taxes : [];
+    if (snapTaxes.length > 0) {
+      for (const entry of snapTaxes) {
+        if (!entry || typeof entry !== "object") continue;
+        const row = entry as { label?: string; amount?: number };
+        const amount = billNum(row.amount);
+        if (amount <= 0.005) continue;
+        lines.push({
+          label: String(row.label ?? "GST").trim() || "GST",
+          amount,
+        });
+      }
+    } else {
+      lines.push({ label: "GST", amount: taxTotal });
+    }
+  }
+
+  if (breakdown.tip > 0.005) {
+    lines.push({ label: "Captain tip", amount: breakdown.tip });
+  }
+
+  const rawDiscounts = resolveSnapshotDiscountRows(snap);
+  for (const row of rawDiscounts) {
+    lines.push({ label: row.label, amount: row.amount, isDiscount: true });
+  }
+
+  return {
+    lines,
+    totalFare: breakdown.total,
+    isEstimate: !paymentCompleted,
+  };
+}
+
 export function buildRidePaymentFareBreakdown(
   order: Pick<
     OrderDetail,
@@ -429,21 +608,29 @@ export function buildRidePaymentFareBreakdown(
   const rideFare = snapBill.rideFare > 0 ? snapBill.rideFare : liveTrip.rideFare;
   const surgeCharge = snapBill.surgeCharge;
   const tip = Math.max(snapBill.tip, liveTrip.tip);
-  const additionalCharges = snapBill.additionalCharges;
+  const snap =
+    order.billingSnapshot != null && typeof order.billingSnapshot === "object"
+      ? (order.billingSnapshot as Record<string, unknown>)
+      : {};
+  const billingFeeLines = rideBillingFeeLines(snap);
+  const billingFeesTotal = billingFeeLines.reduce((s, l) => s + l.amount, 0);
+  const additionalCharges =
+    billingFeesTotal > 0.005 ? billingFeesTotal : snapBill.additionalCharges;
   const componentTotal = rideFare + waitingCharge + surgeCharge + additionalCharges + tip;
   const serverTotal = Math.max(0, Number(order.totalAmount ?? 0));
-  const total = Math.max(componentTotal, snapBill.total, serverTotal);
+  const snapFinal = billNum(snap.final_amount);
+  const total = Math.max(componentTotal, snapBill.total, snapFinal, serverTotal);
 
-  const lines: RidePaymentFareLine[] = [
-    { label: "Ride fare", amount: rideFare },
-  ];
+  const lines: RidePaymentFareLine[] = [{ label: "Ride fare", amount: rideFare }];
   if (waitingCharge > 0) {
     lines.push({ label: "Waiting charges", amount: waitingCharge });
   }
   if (surgeCharge > 0) {
     lines.push({ label: "Surge pricing", amount: surgeCharge });
   }
-  if (additionalCharges > 0) {
+  if (billingFeeLines.length > 0) {
+    lines.push(...billingFeeLines);
+  } else if (additionalCharges > 0) {
     lines.push({ label: "Additional charges", amount: additionalCharges });
   }
   if (tip > 0) {

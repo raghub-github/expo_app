@@ -659,6 +659,7 @@ export const customers = pgTable(
     customerId: text("customer_id").notNull().unique(),
     fullName: text("full_name").notNull(),
     email: text("email").unique(),
+    emailVerified: boolean("email_verified").default(false),
     primaryMobile: text("primary_mobile").notNull().unique(),
     primaryMobileNormalized: text("primary_mobile_normalized"),
     primaryMobileCountryCode: text("primary_mobile_country_code").default("+91"),
@@ -4992,6 +4993,78 @@ export const offerOrderApplicationsRelations = relations(offerOrderApplications,
   merchantOffer: one(merchantOffers,       { fields: [offerOrderApplications.merchantOfferId], references: [merchantOffers.id] }),
   platformOffer: one(billingPlatformOffers, { fields: [offerOrderApplications.platformOfferId], references: [billingPlatformOffers.id] }),
 }));
+
+// ============================================================================
+// RIDE CUSTOMER PAYMENT SNAPSHOTS
+// ============================================================================
+
+export const rideCustomerPaymentSnapshots = pgTable(
+  "ride_customer_payment_snapshots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderCoreId: bigint("order_core_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    orderId: text("order_id").notNull(),
+    customerId: bigint("customer_id", { mode: "number" }).references(() => customers.id, {
+      onDelete: "set null",
+    }),
+    snapshotPhase: text("snapshot_phase").notNull(),
+    rideType: text("ride_type"),
+    pickupAddress: text("pickup_address"),
+    dropAddress: text("drop_address"),
+    distanceKm: numeric("distance_km", { precision: 10, scale: 2 }),
+    rideFare: numeric("ride_fare", { precision: 14, scale: 2 }).notNull().default("0"),
+    addonTotal: numeric("addon_total", { precision: 14, scale: 2 }).notNull().default("0"),
+    platformFee: numeric("platform_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    convenienceFee: numeric("convenience_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    deliveryFee: numeric("delivery_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    packagingFee: numeric("packaging_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    surgeFee: numeric("surge_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    smallOrderFee: numeric("small_order_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    miscFee: numeric("misc_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+    taxTotal: numeric("tax_total", { precision: 14, scale: 2 }).notNull().default("0"),
+    tipAmount: numeric("tip_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    donationAmount: numeric("donation_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    waitingCharge: numeric("waiting_charge", { precision: 14, scale: 2 }).notNull().default("0"),
+    tollCharge: numeric("toll_charge", { precision: 14, scale: 2 }).notNull().default("0"),
+    discountTotal: numeric("discount_total", { precision: 14, scale: 2 }).notNull().default("0"),
+    payableTotal: numeric("payable_total", { precision: 14, scale: 2 }).notNull().default("0"),
+    gatiCashApplied: numeric("gati_cash_applied", { precision: 14, scale: 2 }).notNull().default("0"),
+    razorpayAmount: numeric("razorpay_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    amountPaid: numeric("amount_paid", { precision: 14, scale: 2 }),
+    couponCode: text("coupon_code"),
+    platformOfferId: bigint("platform_offer_id", { mode: "number" }),
+    merchantOfferId: bigint("merchant_offer_id", { mode: "number" }),
+    paymentMethod: text("payment_method"),
+    razorpayOrderId: text("razorpay_order_id"),
+    razorpayPaymentId: text("razorpay_payment_id"),
+    billingRulesetVersion: integer("billing_ruleset_version"),
+    billingSnapshot: jsonb("billing_snapshot").notNull().default({}),
+    charges: jsonb("charges").notNull().default([]),
+    discounts: jsonb("discounts").notNull().default([]),
+    taxes: jsonb("taxes").notNull().default([]),
+    breakdownSteps: jsonb("breakdown_steps").notNull().default([]),
+    gstComponents: jsonb("gst_components").notNull().default({}),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderCoreCreatedIdx: index("ride_customer_payment_snapshots_order_core_idx").on(
+      table.orderCoreId,
+      table.createdAt
+    ),
+    orderIdCreatedIdx: index("ride_customer_payment_snapshots_order_id_idx").on(
+      table.orderId,
+      table.createdAt
+    ),
+    phaseIdx: index("ride_customer_payment_snapshots_phase_idx").on(
+      table.orderCoreId,
+      table.snapshotPhase,
+      table.createdAt
+    ),
+  })
+);
 
 // ============================================================================
 // EXPO PUSH TOKENS

@@ -2,6 +2,18 @@ import api from "./api";
 
 const RIDES_PREFIX = "/v1/rides";
 
+export type RideFareQuoteBilling = {
+  finalAmount: number;
+  rideFare: number;
+  platformFee: number;
+  convenienceFee: number;
+  taxTotal: number;
+  tipAmount: number;
+  charges?: Array<{ label: string; amount: number; kind?: string }>;
+  taxes?: Array<{ label: string; amount: number }>;
+  breakdownSteps?: Array<{ step: string; amount: number }>;
+};
+
 export type RideFareQuote = {
   eligible: boolean;
   maxDistanceKm: number | null;
@@ -12,6 +24,7 @@ export type RideFareQuote = {
   appliedSurges: Array<{ name: string; amount: number }>;
   rateCardSummary: string | null;
   waitingChargeNote: string | null;
+  billing?: RideFareQuoteBilling | null;
 };
 
 export type RideFareQuoteResult =
@@ -40,6 +53,7 @@ export async function getRideFareQuote(params: {
       appliedSurges: Array<{ name: string; amount: number }>;
       rateCardSummary: string | null;
       waitingChargeNote: string | null;
+      billing?: RideFareQuoteBilling | null;
     }>(`${RIDES_PREFIX}/quote`, params);
     if (!data?.ok) return { ok: false, error: "Quote unavailable" };
     return {
@@ -54,6 +68,7 @@ export async function getRideFareQuote(params: {
         appliedSurges: data.appliedSurges ?? [],
         rateCardSummary: data.rateCardSummary ?? null,
         waitingChargeNote: data.waitingChargeNote ?? null,
+        billing: data.billing ?? null,
       },
     };
   } catch (err: unknown) {

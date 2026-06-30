@@ -691,7 +691,8 @@ export default function RideBookScreen() {
       for (const entry of entries) {
         if (!entry) continue;
         nextMeta[entry[0]] = entry[1];
-        next[entry[0]] = Math.round(entry[1].finalFare);
+        const payable = entry[1].billing?.finalAmount ?? entry[1].finalFare;
+        next[entry[0]] = Math.round(payable);
       }
       setFareQuoteMeta(nextMeta);
       setFareQuotes(applyBikeLiteFareRule(next));
@@ -859,8 +860,14 @@ export default function RideBookScreen() {
     (customerTipAmount = 0) => {
       if (!selectedRide || !selectedRideId) return;
       const quoted = displayFareQuotes[selectedRideId];
+      const quoteMeta = fareQuoteMeta[selectedRideId];
       if (tripKm != null && tripKm > 0 && (quoted == null || quoted <= 0)) return;
-      const baseFare = quoted != null && quoted > 0 ? quoted : 0;
+      const baseFare =
+        quoteMeta?.finalFare != null && quoteMeta.finalFare > 0
+          ? Math.round(quoteMeta.finalFare)
+          : quoted != null && quoted > 0
+            ? quoted
+            : 0;
       if (baseFare <= 0) return;
       const navParams: Record<string, string> = {
         pickup: effectivePickupAddress,
@@ -902,6 +909,7 @@ export default function RideBookScreen() {
       rideRouteSnapshot,
       fareQuotes,
       displayFareQuotes,
+      fareQuoteMeta,
       pickupGeoHints,
       pickupLabel,
       dropLabel,

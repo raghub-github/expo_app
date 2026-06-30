@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
@@ -13,17 +13,24 @@ import UserProfileModal from '@/components/auth/UserProfileModal'
 
 import RestaurantSwitchModal from '@/components/cart/RestaurantSwitchModal'
 import CustomizeModal from '@/components/cart/CustomizeModal'
-import { normalizeCategoryImageUrl } from '@/lib/normalizeCategoryImageUrl'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import { resolveAppAssetUrl } from '@/lib/resolveAppAssetUrl'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
 import LocationSheet from '@/components/location-search/LocationSheet'
+import LocationWelcomeModal from '@/components/location-search/LocationWelcomeModal'
 import OrderNoServiceArea from '@/components/order/OrderNoServiceArea'
 import GatiMitraSpinner from '@/components/common/GatiMitraSpinner'
 import type { OrderServiceAreaMode } from '@/lib/hooks/useOrderServiceArea'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import { getRestaurantGeoQueryString } from '@/lib/buildRestaurantGeoQuery'
+import { detectCurrentLocation } from '@/lib/detectCurrentLocation'
+import { locationAutoDetectErrorMessage } from '@/lib/locationAutoDetect'
+import { resolveOrderPageLocationLabel } from '@/lib/panIndiaLocation'
+import { formatMerchantDeliveryTime } from '@/lib/merchantDeliveryTime'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
 import { getMagicpinPathAfterLocationSelect, mergeLocationNavigationUrl } from '@/lib/magicpinLocationUrl'
 import type { LocationItem } from '@/components/location-search/LocationPopup'
+import { useLocationPromptAutoOpen } from '@/lib/hooks/useLocationPromptAutoOpen'
 
 interface CategoriesSectionProps {
   onViewRestaurants: () => void
@@ -49,47 +56,118 @@ interface RestaurantWithItems {
   items: Array<{ name: string; price: number; image: string }>
 }
 
-const FOOD_CATEGORIES_CACHE_KEY = 'gatimitra_food_categories_v1'
+const FOOD_CATEGORIES_CACHE_KEY = 'gatimitra_food_categories_v2'
+const TOP_PICKS_PER_PAGE = 14
+const TOP_PICKS_COLS = 7
+
+type FoodCategoryTile = { id: string; name: string; img: string | null }
+
+function splitTopPicksRows(items: FoodCategoryTile[]): [FoodCategoryTile[], FoodCategoryTile[]] {
+  return [items.slice(0, TOP_PICKS_COLS), items.slice(TOP_PICKS_COLS, TOP_PICKS_PER_PAGE)]
+}
 
 function TopPickCategoryCard({
   category,
   locationQueryString,
+  variant = 'desktop',
 }: {
-  category: { id: string; name: string; img: string | null }
+  category: FoodCategoryTile
   locationQueryString?: string
+  variant?: 'desktop' | 'mobile'
 }) {
   const [imgBroken, setImgBroken] = useState(false)
-  const src = category.img ? normalizeCategoryImageUrl(category.img) : null
+  const src = category.img ? resolveAppAssetUrl(category.img) : null
   const firstLetter = (category.name && category.name.trim()[0]) || '?'
   const showImage = Boolean(src) && !imgBroken
+
+  if (variant === 'mobile') {
+    return (
+      <Link
+        href={`/restaurants?category=${encodeURIComponent(category.name)}${locationQueryString ? `&${locationQueryString}` : ''}`}
+        className="flex w-full min-w-0 flex-col items-center text-center no-underline"
+        aria-label={category.name}
+      >
+        <div className="top-picks-circle">
+          {showImage ? (
+            <img
+              src={src!}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              onError={() => setImgBroken(true)}
+            />
+          ) : (
+            <span className="text-2xl font-bold text-[#FF6B6B] select-none sm:text-3xl">
+              {firstLetter.toUpperCase()}
+            </span>
+          )}
+        </div>
+        <div className="top-picks-label">{category.name}</div>
+      </Link>
+    )
+  }
 
   return (
     <Link
       href={`/restaurants?category=${encodeURIComponent(category.name)}${locationQueryString ? `&${locationQueryString}` : ''}`}
-      className="group flex w-full min-w-0 flex-col items-center text-center cursor-pointer no-underline"
+      className="flex min-w-0 flex-col items-center text-center no-underline"
       aria-label={category.name}
     >
-      {/* Fixed square tile — transparent (no card box / border); size still uniform */}
-      <div className="mb-3 flex h-24 w-24 shrink-0 items-center justify-center overflow-visible rounded-2xl bg-transparent p-2 transition-transform duration-300 group-hover:scale-105 sm:h-28 sm:w-28 md:h-32 md:w-32 lg:h-36 lg:w-36">
+      <div className="top-picks-circle">
         {showImage ? (
           <img
             src={src!}
             alt=""
             loading="lazy"
             decoding="async"
-            className="max-h-full max-w-full object-contain object-center"
             onError={() => setImgBroken(true)}
           />
         ) : (
-          <span className="text-3xl sm:text-4xl md:text-5xl font-bold text-[#FF6B6B] select-none">
+          <span className="text-3xl font-bold text-[#FF6B6B] select-none">
             {firstLetter.toUpperCase()}
           </span>
         )}
       </div>
-      <div className="text-xs sm:text-sm font-medium text-gray-800 group-hover:text-[#FF6B6B] transition-colors">
-        {category.name}
-      </div>
+      <div className="top-picks-label">{category.name}</div>
     </Link>
+  )
+}
+
+function TopPicksPageGrid({
+  items,
+  locationQueryString,
+}: {
+  items: FoodCategoryTile[]
+  locationQueryString?: string
+}) {
+  const [row1, row2] = splitTopPicksRows(items)
+
+  return (
+    <>
+      <div className="hidden lg:block top-picks-grid-desktop">
+        {[row1, row2].map((row, rowIdx) => (
+          <div key={`top-picks-row-${rowIdx}`} className="top-picks-row">
+            {row.map((category) => (
+              <TopPickCategoryCard
+                key={category.id}
+                category={category}
+                locationQueryString={locationQueryString}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-4 gap-x-3 gap-y-6 sm:grid-cols-5 sm:gap-x-4 md:grid-cols-6 lg:hidden">
+        {items.map((category) => (
+          <TopPickCategoryCard
+            key={category.id}
+            category={category}
+            locationQueryString={locationQueryString}
+            variant="mobile"
+          />
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -106,9 +184,12 @@ export default function CategoriesSection({
   const { isFromDifferentRestaurant, clearCartItems, addToCart } = useCart()
   const [selectedPriceCard, setSelectedPriceCard] = useState<string | null>(null)
   const [showLocationSheet, setShowLocationSheet] = useState(false)
+  const [showLocationWelcomeModal, setShowLocationWelcomeModal] = useState(false)
+  const [autoDetecting, setAutoDetecting] = useState(false)
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false)
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false)
   const [categoryPage, setCategoryPage] = useState(0)
+  const [categorySlideDir, setCategorySlideDir] = useState<'next' | 'prev' | null>(null)
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('')
@@ -124,7 +205,7 @@ export default function CategoriesSection({
         const id = String(r?.restaurant_id ?? r?.id ?? '')
         const name = String(r?.restaurant_name ?? r?.name ?? '').trim()
         const image = String(r?.store_img ?? r?.banner_url ?? r?.image ?? '').trim()
-        const deliveryTime = Number(r?.delivery_time_minutes ?? r?.deliveryTime ?? 30)
+        const deliveryTime = formatMerchantDeliveryTime(r)
         const avgRating = Number(r?.avg_rating ?? r?.rating)
         const operationalStatus = String(r?.operational_status ?? '').toUpperCase()
         const isClosed = operationalStatus !== 'OPEN' && operationalStatus !== ''
@@ -133,7 +214,7 @@ export default function CategoriesSection({
           id,
           name,
           image: image || '/img/placeholder.png',
-          deliveryTime: Number.isFinite(deliveryTime) && deliveryTime > 0 ? Math.round(deliveryTime) : 30,
+          deliveryTime: deliveryTime || '25-35 mins',
           avgRating: Number.isFinite(avgRating) && avgRating > 0 ? avgRating : null,
           isClosed,
         }
@@ -142,7 +223,7 @@ export default function CategoriesSection({
       id: string
       name: string
       image: string
-      deliveryTime: number
+      deliveryTime: string
       avgRating: number | null
       isClosed: boolean
     }>
@@ -174,7 +255,7 @@ export default function CategoriesSection({
           ? cuisinesRaw.split(',').map((c) => c.trim()).filter(Boolean).slice(0, 2).join(', ')
           : 'Multi-cuisine'
         const minOrder = Number(r?.min_order_amount ?? 0)
-        const deliveryTime = Number(r?.delivery_time_minutes ?? r?.deliveryTime ?? 30)
+        const deliveryTime = formatMerchantDeliveryTime(r)
         const operationalStatus = String(r?.operational_status ?? '').toUpperCase()
         const isClosed = operationalStatus !== 'OPEN' && operationalStatus !== ''
         if (!id || !name) return null
@@ -184,7 +265,7 @@ export default function CategoriesSection({
           image: image || '/img/placeholder.png',
           cuisines,
           minOrder: Number.isFinite(minOrder) && minOrder > 0 ? Math.round(minOrder) : 0,
-          deliveryTime: Number.isFinite(deliveryTime) && deliveryTime > 0 ? Math.round(deliveryTime) : 30,
+          deliveryTime: deliveryTime || '25-35 mins',
           isClosed,
         }
       })
@@ -195,7 +276,7 @@ export default function CategoriesSection({
       image: string
       cuisines: string
       minOrder: number
-      deliveryTime: number
+      deliveryTime: string
       isClosed: boolean
     }>
   }, [restaurantList])
@@ -218,99 +299,99 @@ export default function CategoriesSection({
   const [switchToRestaurant, setSwitchToRestaurant] = useState('')
   
   const { user, isAuthenticated } = useAppSelector(state => state.auth)
-  const { location: locationState, setLocation: setGlobalLocation } = useLocationContext()
+  const {
+    location: locationState,
+    setLocation: setGlobalLocation,
+    permissionStatus,
+    markAutoDetectInFlight,
+    hydrated,
+  } = useLocationContext()
+  const [welcomeDetectError, setWelcomeDetectError] = useState<string | null>(null)
   const locationCommitted = locationState.locationCommittedByUser === true
+  const openLocationWelcomeModal = useCallback(() => setShowLocationWelcomeModal(true), [])
+  const { handlePromptDismiss: markLocationPromptDismissed, markSelected: markLocationSelected } =
+    useLocationPromptAutoOpen({
+      enabled: true,
+      hydrated,
+      locationCommitted,
+      promptOpen: showLocationWelcomeModal,
+      openPrompt: openLocationWelcomeModal,
+    })
+  const closeLocationWelcomeModal = useCallback(() => {
+    setShowLocationWelcomeModal(false)
+    setWelcomeDetectError(null)
+    markLocationPromptDismissed()
+  }, [markLocationPromptDismissed])
+  const closeLocationSheet = useCallback(() => {
+    setShowLocationSheet(false)
+  }, [])
   const restaurantGeoQs = useMemo(
-    () => getRestaurantGeoQueryString(locationState, locationCommitted),
+    () => getRestaurantGeoQueryString(locationState),
     [locationState, locationCommitted]
   )
-  const orderGeoQs = useMemo(() => {
-    const qLat = searchParams?.get('lat')
-    const qLon = searchParams?.get('lon')
-    const lat = qLat != null ? Number(qLat) : NaN
-    const lon = qLon != null ? Number(qLon) : NaN
-    const hasValidCoords =
-      Number.isFinite(lat) &&
-      Number.isFinite(lon) &&
-      lat >= -90 &&
-      lat <= 90 &&
-      lon >= -180 &&
-      lon <= 180 &&
-      !(lat === 0 && lon === 0)
-    if (hasValidCoords) {
-      const p = new URLSearchParams()
-      p.set('lat', String(lat))
-      p.set('lon', String(lon))
-      p.set('radius_km', '10')
-      return p.toString()
-    }
-    return restaurantGeoQs
-  }, [searchParams, restaurantGeoQs])
-  const currentLocation = useMemo(() => {
-    const fromQuery = searchParams?.get('location')
-    if (typeof fromQuery === 'string' && fromQuery.trim() !== '') {
-      return decodeURIComponent(fromQuery)
-    }
-    return locationState.displayName || 'Detecting location...'
-  }, [searchParams, locationState.displayName])
+  const currentLocation = useMemo(
+    () =>
+      resolveOrderPageLocationLabel({
+        locationCommittedByUser: locationCommitted,
+        displayName: locationState.displayName,
+      }),
+    [locationCommitted, locationState.displayName]
+  )
   const locationQueryString = useMemo(() => {
+    if (!locationCommitted) return ''
     const p = new URLSearchParams()
-    const qLocation = searchParams?.get('location')
-    const qLat = searchParams?.get('lat')
-    const qLon = searchParams?.get('lon')
-    if (qLocation && qLocation.trim() !== '') p.set('location', qLocation)
-    if (qLat && qLon) {
-      const lat = Number(qLat)
-      const lon = Number(qLon)
-      if (
-        Number.isFinite(lat) &&
-        Number.isFinite(lon) &&
-        lat >= -90 &&
-        lat <= 90 &&
-        lon >= -180 &&
-        lon <= 180 &&
-        !(lat === 0 && lon === 0)
-      ) {
-        p.set('lat', qLat)
-        p.set('lon', qLon)
-      }
-    } else if (locationState.lat != null && locationState.lon != null) {
+    if (locationState.displayName) {
+      p.set('location', locationState.displayName)
+    }
+    if (locationState.lat != null && locationState.lon != null) {
       p.set('lat', String(locationState.lat))
       p.set('lon', String(locationState.lon))
     }
-    if (!p.get('location') && locationState.displayName) {
-      p.set('location', locationState.displayName)
-    }
     return p.toString()
-  }, [searchParams, locationState.displayName, locationState.lat, locationState.lon])
+  }, [locationCommitted, locationState.displayName, locationState.lat, locationState.lon])
+
+  const handleAutoDetectCurrentLocation = () => {
+    setWelcomeDetectError(null)
+    setAutoDetecting(true)
+    markAutoDetectInFlight(true)
+
+    const pending = detectCurrentLocation()
+    void pending
+      .then((result) => {
+        if (result.ok) {
+          handleSelectLocation(result.displayName, {
+            id: 0,
+            location_name: result.displayName,
+            city: result.city || '',
+            latitude: result.lat,
+            longitude: result.lon,
+          })
+          return
+        }
+        setWelcomeDetectError(locationAutoDetectErrorMessage(result))
+      })
+      .finally(() => {
+        setAutoDetecting(false)
+        markAutoDetectInFlight(false)
+      })
+  }
+
+  const openManualLocationEntry = () => {
+    setShowLocationWelcomeModal(false)
+    setWelcomeDetectError(null)
+    window.requestAnimationFrame(() => {
+      setShowLocationSheet(true)
+    })
+  }
 
   useEffect(() => {
-    const q = orderGeoQs ? `?${orderGeoQs}` : ''
+    if (!hydrated) return
+    const q = restaurantGeoQs ? `?${restaurantGeoQs}` : ''
     fetch(`/api/restaurants${q}`)
       .then((res) => res.json())
-      .then((data) => setRestaurantList(data || []))
+      .then((data) => setRestaurantList(Array.isArray(data) ? data : []))
       .catch(() => setRestaurantList([]))
-  }, [orderGeoQs])
-
-  // On refresh, sync URL location params back into global location context.
-  useEffect(() => {
-    const fromQuery = searchParams?.get('location')
-    const qLat = searchParams?.get('lat')
-    const qLon = searchParams?.get('lon')
-    const lat = qLat != null ? Number(qLat) : NaN
-    const lon = qLon != null ? Number(qLon) : NaN
-    const hasValidCoords =
-      Number.isFinite(lat) &&
-      Number.isFinite(lon) &&
-      lat >= -90 &&
-      lat <= 90 &&
-      lon >= -180 &&
-      lon <= 180 &&
-      !(lat === 0 && lon === 0)
-    if (fromQuery && hasValidCoords) {
-      setGlobalLocation(fromQuery, lat, lon, { userInitiated: true })
-    }
-  }, [searchParams, setGlobalLocation])
+  }, [restaurantGeoQs, hydrated])
 
   // Restore auth state on mount
   useEffect(() => {
@@ -356,11 +437,12 @@ export default function CategoriesSection({
       setSearchResults(refined);
     } else {
       // Fire API call, but do not block UI or show loading
-      fetch(`/api/search?q=${encodeURIComponent(value)}${orderGeoQs ? `&${orderGeoQs}` : ''}`)
+      fetch(`/api/search?q=${encodeURIComponent(value)}${restaurantGeoQs ? `&${restaurantGeoQs}` : ''}`)
         .then(res => res.json())
         .then(data => {
-          searchCache.current[value] = data || [];
-          setSearchResults(data || []);
+          const results = Array.isArray(data) ? data : [];
+          searchCache.current[value] = results;
+          setSearchResults(results);
         })
         .catch(() => {
           setSearchResults([]);
@@ -380,6 +462,7 @@ export default function CategoriesSection({
   }, [])
 
   const handleSelectLocation = (displayName: string, item?: LocationItem) => {
+    markLocationSelected()
     const rawLat = item?.latitude
     const rawLon = item?.longitude
     const lat = rawLat != null ? Number(rawLat) : undefined
@@ -420,6 +503,8 @@ export default function CategoriesSection({
     }
 
     setShowLocationSheet(false)
+    setShowLocationWelcomeModal(false)
+    setWelcomeDetectError(null)
   }
 
   const priceCards: PriceCard[] = [
@@ -580,27 +665,31 @@ export default function CategoriesSection({
   }, [])
 
   const categoryPages = useMemo(() => {
-    const pages: Array<{ id: string; name: string; img: string | null }[]> = []
-    for (let i = 0; i < foodCategories.length; i += 14) {
-      pages.push(foodCategories.slice(i, i + 14))
+    const pages: FoodCategoryTile[][] = []
+    for (let i = 0; i < foodCategories.length; i += TOP_PICKS_PER_PAGE) {
+      pages.push(foodCategories.slice(i, i + TOP_PICKS_PER_PAGE))
     }
     return pages
   }, [foodCategories])
 
   const totalCategoryPages = categoryPages.length
+  const showTopPicksNav = totalCategoryPages > 1
 
   const handleCategoryPrev = () => {
+    setCategorySlideDir('prev')
     setCategoryPage((prev) => Math.max(0, prev - 1))
   }
   const handleCategoryNext = () => {
+    setCategorySlideDir('next')
     setCategoryPage((prev) => Math.min(totalCategoryPages - 1, prev + 1))
   }
   const handleCategoryDot = (idx: number) => {
+    setCategorySlideDir(idx > categoryPage ? 'next' : idx < categoryPage ? 'prev' : null)
     setCategoryPage(idx)
   }
 
   useEffect(() => {
-    const maxPage = Math.max(0, Math.ceil(foodCategories.length / 14) - 1)
+    const maxPage = Math.max(0, Math.ceil(foodCategories.length / TOP_PICKS_PER_PAGE) - 1)
     if (categoryPage > maxPage) setCategoryPage(0)
   }, [foodCategories.length, categoryPage])
 
@@ -772,7 +861,7 @@ export default function CategoriesSection({
   }, [])
 
   return (
-    <div className="min-h-screen bg-[#f5f5f5]">
+    <div className="min-h-screen bg-white">
       {/* Customization Modal for Customizable Items */}
       {customizeModalItem && (
         <CustomizeModal
@@ -792,11 +881,7 @@ export default function CategoriesSection({
           <div className="flex items-center justify-between">
             {/* Logo - Matching Footer Style */}
             <Link href="/" className="flex items-center gap-2 shrink-0 group">
-              <img 
-                src="/img/logoo.png" 
-                alt="Brand Logo" 
-                className="h-10 sm:h-11 w-auto object-contain"
-              />
+              <GatiMitraLogo alt="GatiMitra" className="h-10 sm:h-11 w-auto object-contain" />
             </Link>
 
             {/* Search Bar - Desktop */}
@@ -972,9 +1057,72 @@ export default function CategoriesSection({
           </div>
         </div>
       </header>
+
+      {!locationCommitted && (
+        <div className="border-b border-amber-100 bg-amber-50">
+          <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-2 px-4 py-1.5 sm:px-6 lg:px-8">
+            <div className="flex min-w-0 items-center gap-1.5 text-xs leading-tight text-amber-950 sm:text-[13px]">
+              <i className="fas fa-map-marker-alt shrink-0 text-[#ff6b35]" aria-hidden />
+              <span>
+                {permissionStatus === 'denied'
+                  ? 'Location is off. Turn on location access or pick an address to see stores near you.'
+                  : 'Set your delivery location to see nearby stores. Showing restaurants across India until then.'}
+              </span>
+            </div>
+            <div className="flex shrink-0 gap-1.5">
+              {permissionStatus === 'denied' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleAutoDetectCurrentLocation}
+                    disabled={autoDetecting}
+                    className="rounded-full bg-[#ff6b35] px-3 py-1 text-[11px] font-semibold text-white hover:bg-[#ff8451] transition-colors disabled:opacity-70 sm:px-3.5 sm:py-1.5 sm:text-xs"
+                  >
+                    {autoDetecting ? 'Detecting…' : 'Auto Detect Current Location'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openManualLocationEntry}
+                    className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-semibold text-amber-950 hover:bg-amber-100 transition-colors sm:px-3.5 sm:py-1.5 sm:text-xs"
+                  >
+                    Enter address
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowLocationSheet(true)}
+                    className="rounded-full bg-[#16c2a5] px-3 py-1 text-[11px] font-semibold text-white hover:bg-[#0fa589] transition-colors sm:px-3.5 sm:py-1.5 sm:text-xs"
+                  >
+                    Set location
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLocationWelcomeModal(true)}
+                    className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-semibold text-amber-950 hover:bg-amber-100 transition-colors sm:px-3.5 sm:py-1.5 sm:text-xs"
+                  >
+                    Detect location
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <LocationWelcomeModal
+        isOpen={showLocationWelcomeModal}
+        onClose={closeLocationWelcomeModal}
+        onAutoDetect={handleAutoDetectCurrentLocation}
+        onManualEntry={openManualLocationEntry}
+        detecting={autoDetecting}
+        errorMessage={welcomeDetectError}
+      />
+
       <LocationSheet
         isOpen={showLocationSheet}
-        onClose={() => setShowLocationSheet(false)}
+        onClose={closeLocationSheet}
         onSelectLocation={handleSelectLocation}
       />
 
@@ -996,47 +1144,63 @@ export default function CategoriesSection({
           </p>
         </div>
 
-        {/* Order our best food options - Dynamic categories from database */}
-        <div className="mb-10 sm:mb-12">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Top Picks on GatiMitra</h2>
-            {foodCategories.length > 14 && (
-              <div className="flex gap-2">
+        {/* Top Picks — 7×2 carousel (reference layout) */}
+        <div className="top-picks-section mb-10 sm:mb-12">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <h2 className="text-xl font-bold text-gray-900 sm:text-2xl">Top Picks on GatiMitra</h2>
+            {showTopPicksNav && (
+              <div className="flex shrink-0 gap-2">
                 <button
+                  type="button"
                   onClick={handleCategoryPrev}
                   disabled={categoryPage === 0}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                    categoryPage === 0
-                      ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                      : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                  aria-label="Previous categories"
+                  className={`top-picks-nav-btn ${
+                    categoryPage === 0 ? 'top-picks-nav-btn--disabled' : 'top-picks-nav-btn--enabled'
                   }`}
                 >
-                  <i className="fas fa-chevron-left text-sm"></i>
+                  <i className="fas fa-chevron-left text-sm" />
                 </button>
                 <button
+                  type="button"
                   onClick={handleCategoryNext}
                   disabled={categoryPage >= totalCategoryPages - 1}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+                  aria-label="Next categories"
+                  className={`top-picks-nav-btn ${
                     categoryPage >= totalCategoryPages - 1
-                      ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                      : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                      ? 'top-picks-nav-btn--disabled'
+                      : 'top-picks-nav-btn--enabled'
                   }`}
                 >
-                  <i className="fas fa-chevron-right text-sm"></i>
+                  <i className="fas fa-chevron-right text-sm" />
                 </button>
               </div>
             )}
           </div>
 
           {categoriesLoading ? (
-            <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-7 gap-4 sm:gap-6">
-              {Array.from({ length: 7 }).map((_, i) => (
-                <div key={i} className="flex w-full min-w-0 flex-col items-center animate-pulse">
-                  <div className="mb-3 h-24 w-24 shrink-0 rounded-2xl bg-gray-200 sm:h-28 sm:w-28 md:h-32 md:w-32 lg:h-36 lg:w-36" />
-                  <div className="h-4 w-16 rounded bg-gray-200" />
-                </div>
-              ))}
-            </div>
+            <>
+              <div className="hidden lg:block top-picks-grid-desktop">
+                {[0, 1].map((rowIdx) => (
+                  <div key={rowIdx} className="top-picks-row">
+                    {Array.from({ length: TOP_PICKS_COLS }).map((_, i) => (
+                      <div key={i} className="flex flex-col items-center animate-pulse">
+                        <div className="top-picks-circle bg-gray-200" />
+                        <div className="mt-3 h-4 w-16 rounded bg-gray-200" />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-4 gap-x-3 gap-y-6 sm:grid-cols-5 sm:gap-x-4 md:grid-cols-6 lg:hidden">
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <div key={i} className="flex flex-col items-center animate-pulse">
+                    <div className="top-picks-circle bg-gray-200" />
+                    <div className="mt-3 h-4 w-16 rounded bg-gray-200" />
+                  </div>
+                ))}
+              </div>
+            </>
           ) : foodCategories.length === 0 ? (
             <div className="text-center py-12 rounded-2xl bg-gray-50 border border-gray-100">
               <p className="text-gray-500 font-medium">No categories available yet.</p>
@@ -1052,28 +1216,30 @@ export default function CategoriesSection({
                   {categoryPages.map((pageItems, pageIdx) => (
                     <div
                       key={`top-picks-page-${pageIdx}`}
-                      className="min-w-full grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-7 gap-4 sm:gap-6"
+                      className={`min-w-full shrink-0 ${
+                        pageIdx === categoryPage && categorySlideDir
+                          ? `top-picks-slide top-picks-slide-${categorySlideDir}`
+                          : ''
+                      }`}
                     >
-                      {pageItems.map((category) => (
-                        <TopPickCategoryCard
-                          key={category.id}
-                          category={category}
-                          locationQueryString={locationQueryString}
-                        />
-                      ))}
+                      <TopPicksPageGrid
+                        items={pageItems}
+                        locationQueryString={locationQueryString}
+                      />
                     </div>
                   ))}
                 </div>
               </div>
-              {totalCategoryPages > 1 && (
-                <div className="flex justify-center gap-2 mt-6">
+              {showTopPicksNav && (
+                <div className="mt-8 flex items-center justify-center gap-2">
                   {Array.from({ length: totalCategoryPages }).map((_, idx) => (
                     <button
                       key={idx}
+                      type="button"
                       onClick={() => handleCategoryDot(idx)}
-                      className={`h-2 rounded-full transition-all ${
-                        idx === categoryPage ? 'bg-[#FF6B6B] w-6' : 'bg-gray-300 hover:bg-gray-400 w-2'
-                      }`}
+                      aria-label={`Go to category page ${idx + 1}`}
+                      aria-current={idx === categoryPage ? 'true' : undefined}
+                      className={idx === categoryPage ? 'top-picks-dot-active' : 'top-picks-dot'}
                     />
                   ))}
                 </div>
@@ -1116,7 +1282,7 @@ export default function CategoriesSection({
                     />
                   </div>
                   <p className="mt-2 text-sm font-medium text-gray-900 truncate">{store.name}</p>
-                  <p className="text-xs text-gray-500">{store.isClosed ? 'Closed' : `${store.deliveryTime} min`}</p>
+                  <p className="text-xs text-gray-500">{store.isClosed ? 'Closed' : store.deliveryTime}</p>
                 </Link>
               ))}
             </div>
@@ -1162,7 +1328,7 @@ export default function CategoriesSection({
                     <p className="mt-0.5 text-sm text-gray-500 line-clamp-1">{store.cuisines}</p>
                     <div className="mt-1.5 flex items-center justify-between text-xs text-gray-500">
                       <span>{store.minOrder > 0 ? `₹${store.minOrder} for one` : 'Great prices'}</span>
-                      <span>{store.isClosed ? 'Not accepting orders' : `${store.deliveryTime} min`}</span>
+                      <span>{store.isClosed ? 'Not accepting orders' : store.deliveryTime}</span>
                     </div>
                   </div>
                 </Link>

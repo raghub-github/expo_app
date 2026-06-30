@@ -305,9 +305,17 @@ export async function queryLedger(
   );
   const enrichedEntries = applyWithdrawableBalanceToLedgerEntries(entries, withdrawableById);
   const withPgIds = await enrichLedgerWithPgTransactionIds(sql, enrichedEntries);
+  const { enrichMerchantLedgerDescriptions } = await import(
+    "./enrich-merchant-ledger-descriptions.js"
+  );
+  const withDescriptions = await enrichMerchantLedgerDescriptions(sql, withPgIds);
+  const { mergeCancellationLedgerEntries } = await import(
+    "./merge-cancellation-ledger-entries.js"
+  );
+  const { entries: mergedEntries } = mergeCancellationLedgerEntries(withDescriptions);
 
   return {
-    entries: withPgIds,
+    entries: mergedEntries,
     total: Number((countRows[0] as any)?.cnt ?? entries.length),
   };
 }

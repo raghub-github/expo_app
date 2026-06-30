@@ -2143,6 +2143,8 @@ export async function patchMerchantFoodOrderStatus(
         {
           orderCoreId: corePk,
           source: actionSource === "admin" ? "admin_cancel" : "merchant_cancel",
+          cancelledByType,
+          cancelledByLabel: cancelLabel ?? actionLabels.cancelled_by_label ?? null,
         },
         sql
       );

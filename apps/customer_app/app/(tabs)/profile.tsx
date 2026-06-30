@@ -98,6 +98,21 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const freeDeliveryRadius = subscriptionStatus?.plan?.maxFreeDeliveryRadiusKm ?? null;
+
+  const subscriptionBenefits = useMemo(() => {
+    if (subscriptionActive) {
+      return subscriptionStatus?.plan?.benefits?.length
+        ? subscriptionStatus.plan.benefits
+        : ["Your membership benefits apply automatically on eligible orders."];
+    }
+    return [
+      "Free delivery on eligible orders",
+      "Exclusive member-only offers",
+      "Priority support during peak hours",
+    ];
+  }, [subscriptionActive, subscriptionStatus?.plan?.benefits]);
+
   const freeDeliveryNote = useMemo(() => {
     if (!subscriptionStatus?.plan?.freeDeliveryEnabled || freeDeliveryRadius == null) return null;
     return `Free delivery within ${freeDeliveryRadius} km on eligible orders.`;

@@ -9,6 +9,10 @@ import {
   verifyCustomerEmailVerificationOtp,
 } from "../../services/email/emailVerificationOtp.js";
 import { resolveEmailAvatarUrl, isGenericProfileImageUrl } from "../../lib/email-avatar.js";
+import {
+  isCustomerEmailVerified,
+  markCustomerEmailVerified,
+} from "../../lib/customer-email-verified.js";
 import { getCustomerLifetimeSavingsInr } from "./customer-lifetime-savings.js";
 
 /** Random words for referral code suffix (1 or 2 words) */
@@ -170,7 +174,7 @@ function toResponseFromCustomer(row: typeof customers.$inferSelect) {
     contacts_permission: row.contactsPermission ?? false,
     referral_code: row.referralCode ?? null,
     referred_by: row.referredBy ?? null,
-    is_email_verified: row.isEmailVerified ?? false,
+    is_email_verified: isCustomerEmailVerified(row),
     address_line1: row.addressLine1 ?? null,
     address_line2: row.addressLine2 ?? null,
     city: row.city ?? null,
@@ -214,7 +218,7 @@ async function ensureEmailAvatarForCustomer(
   db: ReturnType<typeof getDb>,
   row: typeof customers.$inferSelect,
 ): Promise<typeof customers.$inferSelect> {
-  if (!row.isEmailVerified) return row;
+  if (!isCustomerEmailVerified(row)) return row;
   const email = row.email?.trim().toLowerCase();
   if (!email) return row;
 
@@ -372,7 +376,7 @@ export async function meRoutes(app: FastifyInstance) {
           }
           const existing = rows[0]!;
           if (
-            existing.isEmailVerified &&
+            isCustomerEmailVerified(existing) &&
             body.email !== undefined &&
             emailNorm &&
             emailNorm !== existing.email?.trim().toLowerCase()
@@ -400,7 +404,7 @@ export async function meRoutes(app: FastifyInstance) {
             .set({
               fullName: body.full_name !== undefined ? body.full_name : existing.fullName,
               email:
-                body.email !== undefined && !existing.isEmailVerified
+                body.email !== undefined && !isCustomerEmailVerified(existing)
                   ? (emailNorm ?? body.email)
                   : existing.email,
               ageGroup: body.age_group !== undefined ? body.age_group : existing.ageGroup,
@@ -552,7 +556,7 @@ export async function meRoutes(app: FastifyInstance) {
         return reply.code(401).send({ message: "Customer not found" });
       }
       const row = rows[0]!;
-      if (row.isEmailVerified) {
+      if (isCustomerEmailVerified(row)) {
         return reply.code(400).send({ message: "Email is already verified" });
       }
       const email = row.email?.trim().toLowerCase();
@@ -619,7 +623,6 @@ export async function meRoutes(app: FastifyInstance) {
         return reply.code(400).send({ message: result.reason ?? "Invalid OTP. Please try again." });
       }
 
-      const now = new Date();
       let profileImageUrl = row.profileImageUrl?.trim() || null;
       if (!profileImageUrl || isGenericProfileImageUrl(profileImageUrl)) {
         try {
@@ -629,15 +632,9 @@ export async function meRoutes(app: FastifyInstance) {
         }
       }
 
-      await db
-        .update(customers)
-        .set({
-          isEmailVerified: true,
-          emailVerifiedAt: now,
-          ...(profileImageUrl ? { profileImageUrl } : {}),
-          updatedAt: now,
-        })
-        .where(eq(customers.customerId, customerId));
+      await markCustomerEmailVerified(db, customerId, {
+        profileImageUrl: profileImageUrl ?? undefined,
+      });
 
       return { verified: true, is_email_verified: true, profile_image_url: profileImageUrl };
     }

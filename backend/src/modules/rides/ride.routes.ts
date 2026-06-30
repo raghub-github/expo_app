@@ -14,6 +14,8 @@ import {
 } from "./ride.tip-boost.service.js";
 import { getNearbyRideSupply } from "./ride.availability.service.js";
 import { quoteCustomerRideFare } from "../ride-state-config/rideQuote.service.js";
+import { getDb } from "../../db/client.js";
+import { computeBillForRide } from "../billing/rideBilling.service.js";
 
 const rideStopSchema = z.object({
   sequence: z.number().int().min(1).max(2),
@@ -178,6 +180,20 @@ export async function rideRoutes(app: FastifyInstance) {
             appliedSurges: z.array(z.object({ name: z.string(), amount: z.number() })),
             rateCardSummary: z.string().nullable(),
             waitingChargeNote: z.string().nullable(),
+            billing: z
+              .object({
+                finalAmount: z.number(),
+                rideFare: z.number(),
+                platformFee: z.number(),
+                convenienceFee: z.number(),
+                taxTotal: z.number(),
+                tipAmount: z.number(),
+                charges: z.array(z.any()).optional(),
+                taxes: z.array(z.any()).optional(),
+                breakdownSteps: z.array(z.any()).optional(),
+              })
+              .nullable()
+              .optional(),
           }),
           400: z.object({ error: z.string(), code: z.string().optional() }),
         },
@@ -189,7 +205,48 @@ export async function rideRoutes(app: FastifyInstance) {
       if (!result.ok) {
         return reply.status(400).send({ error: result.message, code: result.code });
       }
-      return result;
+
+      let billing: {
+        finalAmount: number;
+        rideFare: number;
+        platformFee: number;
+        convenienceFee: number;
+        taxTotal: number;
+        tipAmount: number;
+        charges?: unknown[];
+        taxes?: unknown[];
+        breakdownSteps?: unknown[];
+      } | null = null;
+
+      if (result.eligible && result.finalFare > 0) {
+        const db = getDb();
+        const billRes = await computeBillForRide(db, {
+          customerId: 0,
+          rideFare: result.finalFare,
+          distanceKm: body.tripKm,
+          pickupLat: body.pickupLat,
+          pickupLng: body.pickupLng,
+          dropLat: body.dropLat,
+          dropLon: body.dropLng,
+          pickupPincode: body.pickupPincode,
+          pickupState: body.pickupState,
+        });
+        if (billRes.ok) {
+          billing = {
+            finalAmount: billRes.billing.final_amount,
+            rideFare: result.finalFare,
+            platformFee: billRes.billing.platform_fee,
+            convenienceFee: billRes.billing.convenience_fee,
+            taxTotal: billRes.billing.tax_total,
+            tipAmount: billRes.billing.tip_amount,
+            charges: billRes.billing.charges,
+            taxes: billRes.billing.taxes,
+            breakdownSteps: billRes.billing.breakdown_steps,
+          };
+        }
+      }
+
+      return { ...result, billing };
     }
   );
 

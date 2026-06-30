@@ -123,8 +123,8 @@ function SearchDispatchTimeline({
     <View style={styles.dispatchBlock}>
       <Text style={styles.dispatchLabel} numberOfLines={2}>
         {!hasActiveSupply
-          ? "Searching nearby MitraSathi…"
-          : `${declined} of ${total} MitraSathi didn't accept your ride`}
+          ? "Searching nearby GMitra Saathi…"
+          : `${declined} of ${total} GMitra Saathi didn't accept your ride`}
       </Text>
 
       <View style={styles.progressTrack}>

@@ -2,7 +2,7 @@
  * Post-ride payment pending — summary only; Pay opens full ride checkout.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   ScrollView,
   Platform,
   ImageBackground,
+  ActivityIndicator,
   type ImageStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,15 +19,18 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
+import { useQuery } from "@tanstack/react-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP, resolveTabBarBottomInset } from "@/constants/layout";
 import type { OrderDetail } from "@/services/order.service";
+import { orderService } from "@/services/order.service";
 import {
   formatRideFare,
   getRideServiceLabel,
   parseRideDeliveredBill,
   buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
+import { buildRideFareBillSummaryLines } from "@/lib/ride-fare-bill-display";
 import { RideTollNoticeBanner, RideTollNoticeSheet } from "@/components/ride/RideTollNoticeSheet";
 import { useAppAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -34,6 +38,7 @@ import {
   resolveRideTypeForTollNotice,
   shouldShowRideTollNotice,
 } from "@/lib/ride-toll-notice";
+import { speakRideTollNotice } from "@/lib/speak-ride-notice";
 
 const MINT_DARK = GatiMitraColors.deepMintStart;
 const PENDING_HERO_DELAY_MS = 3 * 60 * 1000;
@@ -90,6 +95,63 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
   const insets = useSafeAreaInsets();
   const deliveredBill = parseRideDeliveredBill(order);
   const fareBreakdown = useMemo(() => buildRidePaymentFareBreakdown(order), [order]);
+
+  const rideFareBillQ = useQuery({
+    queryKey: [
+      "ride-fare-bill",
+      order.orderId,
+      "pending",
+      fareBreakdown.waitingCharge,
+      fareBreakdown.surgeCharge,
+    ],
+    queryFn: () => orderService.getRideFareBill(order.orderId),
+    staleTime: 0,
+    retry: 2,
+  });
+
+  const billSummary = useMemo(() => {
+    const bill = rideFareBillQ.data;
+    if (!bill?.ok) return null;
+    return buildRideFareBillSummaryLines(bill, {
+      waitingCharge: fareBreakdown.waitingCharge,
+      surgeCharge: fareBreakdown.surgeCharge,
+    });
+  }, [rideFareBillQ.data, fareBreakdown.waitingCharge, fareBreakdown.surgeCharge]);
+
+  const fareDueAmount = useMemo(() => {
+    if (billSummary?.payableTotal != null && billSummary.payableTotal > 0) {
+      return billSummary.payableTotal;
+    }
+    return fareBreakdown.total;
+  }, [billSummary?.payableTotal, fareBreakdown.total]);
+
+  const appliedOfferLines = useMemo(() => {
+    const bill = rideFareBillQ.data;
+    if (!bill?.ok) return [];
+    const rows = bill.discounts ?? [];
+    if (rows.length > 0) {
+      return rows
+        .map((row) => ({
+          label: String(row.label ?? "Offer applied").trim() || "Offer applied",
+          amount: Math.round((Number(row.amount) || 0) * 100) / 100,
+        }))
+        .filter((row) => row.amount > 0.005);
+    }
+    if (bill.discountTotal > 0.005) {
+      return [{ label: "Offer applied", amount: bill.discountTotal }];
+    }
+    return [];
+  }, [rideFareBillQ.data]);
+
+  const discountTotal = rideFareBillQ.data?.discountTotal ?? 0;
+  const hasOfferDiscount = discountTotal > 0.005;
+  const strikethroughAmount = useMemo(() => {
+    if (!hasOfferDiscount) return null;
+    return Math.round((fareDueAmount + discountTotal) * 100) / 100;
+  }, [hasOfferDiscount, fareDueAmount, discountTotal]);
+
+  const showCompactBill = !rideFareBillQ.isLoading && (billSummary != null || fareBreakdown.total > 0);
+  const summaryTotalFare = strikethroughAmount ?? fareDueAmount;
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const rideLabel = getRideServiceLabel(order.rideType);
   const vehicleType = rideLabel.replace(/\s*ride$/i, "").trim().toLowerCase() || "ride";
@@ -99,12 +161,20 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
   const waitingHero = useAppAssetSource(CX.ride.waitingHero);
 
   const [tollSheetVisible, setTollSheetVisible] = useState(false);
+  const tollNoticeSpokenRef = useRef<string | null>(null);
   const bottomPad = Math.max(resolveTabBarBottomInset(insets.bottom), 6);
   const scrollBottomPad = bottomPad + 96;
 
   useEffect(() => {
     setTollSheetVisible(showTollNotice);
   }, [order.orderId, showTollNotice]);
+
+  useEffect(() => {
+    if (!showTollNotice) return;
+    if (tollNoticeSpokenRef.current === order.orderId) return;
+    tollNoticeSpokenRef.current = order.orderId;
+    void speakRideTollNotice();
+  }, [showTollNotice, order.orderId]);
 
   const openCheckout = () => {
     router.push({
@@ -171,7 +241,26 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           <View style={styles.fareTopRow}>
             <View style={styles.fareTopLeft}>
               <Text style={styles.sectionLabel}>FARE DUE</Text>
-              <Text style={styles.amount}>{formatRideFare(fareBreakdown.total)}</Text>
+              {rideFareBillQ.isLoading && !billSummary ? (
+                <View style={styles.billLoadingRow}>
+                  <ActivityIndicator size="small" color={MINT_DARK} />
+                  <Text style={styles.billLoadingText}>Calculating fare…</Text>
+                </View>
+              ) : strikethroughAmount != null ? (
+                <View style={styles.fareAmountRow}>
+                  <Text style={styles.amountStrike}>{formatRideFare(strikethroughAmount)}</Text>
+                  <Text style={styles.amount}>{formatRideFare(fareDueAmount)}</Text>
+                </View>
+              ) : (
+                <Text style={styles.amount}>{formatRideFare(fareDueAmount)}</Text>
+              )}
+              {hasOfferDiscount ? (
+                <View style={styles.savedPill}>
+                  <Text style={styles.savedPillText}>
+                    You save {formatRideFare(discountTotal)}
+                  </Text>
+                </View>
+              ) : null}
               <Text style={styles.methodLine}>Pay via {deliveredBill.paymentMethodLabel}</Text>
             </View>
             <View style={styles.walletArt}>
@@ -181,6 +270,23 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
               </View>
             </View>
           </View>
+
+          {showCompactBill ? (
+            <>
+              <View style={styles.routeDivider} />
+              <Text style={styles.breakdownLabel}>Bill summary</Text>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLineLabel}>Total fare</Text>
+                <Text style={styles.breakdownLineValue}>{formatRideFare(summaryTotalFare)}</Text>
+              </View>
+              {appliedOfferLines.map((line) => (
+                <View key={`${line.label}-${line.amount}`} style={styles.breakdownRow}>
+                  <Text style={styles.breakdownLineLabel}>{line.label}</Text>
+                  <Text style={styles.breakdownDiscount}>-{formatRideFare(line.amount)}</Text>
+                </View>
+              ))}
+            </>
+          ) : null}
 
           <View style={styles.routeDivider} />
 
@@ -245,37 +351,6 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           onClose={() => setTollSheetVisible(false)}
         />
       ) : null}
-
-      <RazorpayCheckoutModal
-        visible={razorpayVisible}
-        orderParams={razorpayParams}
-        prefill={{
-          name: profile?.full_name ?? undefined,
-          email: profile?.email ?? undefined,
-          contact: profile?.mobile_number ?? undefined,
-        }}
-        themeColor={MINT_DARK}
-        onSuccess={(result) => void finalizeRidePayment(result)}
-        onCancel={() => {
-          setRazorpayVisible(false);
-          setRazorpayParams(null);
-        }}
-      />
-
-      <Modal visible={simulatedPayment != null} transparent animationType="fade">
-        <View style={styles.simOverlay}>
-          <View style={styles.simCard}>
-            <Text style={styles.simTitle}>Simulate payment</Text>
-            <Text style={styles.simSub}>Dev mode — mark ride fare as paid.</Text>
-            <TouchableOpacity style={styles.simBtn} onPress={handleSimulatedPaySuccess}>
-              <Text style={styles.simBtnText}>Mark paid</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setSimulatedPayment(null)}>
-              <Text style={styles.simCancel}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -356,6 +431,71 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   amount: { fontSize: 34, fontWeight: "900", color: GatiMitraColors.textPrimary },
+  fareAmountRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  amountStrike: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+    marginBottom: 4,
+  },
+  savedPill: {
+    alignSelf: "flex-start",
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  savedPillText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#2563EB",
+  },
+  billLoadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  billLoadingText: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+    fontWeight: "600",
+  },
+  breakdownLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: GatiMitraColors.textSecondary,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  breakdownRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  breakdownLineLabel: {
+    fontSize: 13,
+    color: GatiMitraColors.textPrimary,
+    fontWeight: "600",
+    flex: 1,
+    paddingRight: 8,
+  },
+  breakdownLineValue: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  breakdownDiscount: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#2563EB",
+  },
   methodLine: { fontSize: 13, color: GatiMitraColors.textSecondary, fontWeight: "600" },
   walletArt: {
     width: 56,

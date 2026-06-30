@@ -4,6 +4,7 @@
  */
 import type { Sql } from "postgres";
 import { getSql } from "../db/client.js";
+import { resolveCancelledByBrandForLedger } from "./merchant-cancellation-ledger-brand.js";
 
 export type MerchantDebitMode = "full_debit" | "partial_debit" | "no_debit";
 
@@ -13,6 +14,8 @@ export type ApplyMerchantOrderCancellationLedgerInput = {
   partialAmount?: number | null;
   actorSystemUserId?: number | null;
   source: string;
+  cancelledByType?: string | null;
+  cancelledByLabel?: string | null;
 };
 
 export type ApplyMerchantOrderCancellationLedgerResult = {
@@ -323,6 +326,8 @@ async function recordCancellationInfoLedger(
     balanceImpact: "none" | "debit";
     source: string;
     actorSystemUserId?: number | null;
+    cancelledByType?: string | null;
+    cancelledByLabel?: string | null;
   }
 ): Promise<number | null> {
   const amount = round2(args.amount);
@@ -330,6 +335,11 @@ async function recordCancellationInfoLedger(
 
   const formattedOrderId = (await resolveFormattedOrderId(sql, args.orderCoreId)) ?? `#${args.orderCoreId}`;
   const idempotencyKey = `merchant_cancel_info:${args.orderCoreId}`;
+  const cancelledByBrand = resolveCancelledByBrandForLedger(
+    args.cancelledByType,
+    args.cancelledByLabel,
+    args.source
+  );
   const description =
     args.balanceImpact === "none"
       ? `Order ${formattedOrderId} cancelled — no merchant credit`
@@ -370,6 +380,9 @@ async function recordCancellationInfoLedger(
             orders_core_id: args.orderCoreId,
             trigger_source: args.source,
             actor_system_user_id: args.actorSystemUserId ?? null,
+            cancelled_by_type: args.cancelledByType ?? null,
+            cancelled_by_label: args.cancelledByLabel ?? null,
+            cancelled_by_brand: cancelledByBrand,
           })}::jsonb
           || jsonb_build_object(
             'withdrawable_after', w.withdrawable_balance,
@@ -440,6 +453,8 @@ export async function applyMerchantOrderCancellationLedger(
       balanceImpact,
       source: input.source,
       actorSystemUserId: input.actorSystemUserId,
+      cancelledByType: input.cancelledByType,
+      cancelledByLabel: input.cancelledByLabel,
     });
 
     if (ledgerId) {

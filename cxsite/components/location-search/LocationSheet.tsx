@@ -11,7 +11,9 @@ import {
 } from '@/lib/locationListCache'
 import { RECENT_LOCATIONS_UI_MAX } from '@/lib/recentLocationsLimit'
 import { isPanIndiaSavedRow } from '@/lib/panIndiaLocation'
-import { normalizeLatLonForStorage, reverseGeocodeSearchParams } from '@/lib/normalizeLatLon'
+import { detectCurrentLocation } from '@/lib/detectCurrentLocation'
+import { locationAutoDetectErrorMessage } from '@/lib/locationAutoDetect'
+import { useLocationContext } from '@/components/providers/LocationProvider'
 
 /** Only show in "Recently used" when there is a real place name (not empty / dash placeholders). */
 function hasUsableRecentLocation(item: LocationItem): boolean {
@@ -98,7 +100,6 @@ interface LocationSheetProps {
   isOpen: boolean
   onClose: () => void
   onSelectLocation: (displayName: string, item?: LocationItem) => void
-  onPermissionDenied?: () => void
   title?: string
 }
 
@@ -106,7 +107,6 @@ export default function LocationSheet({
   isOpen,
   onClose,
   onSelectLocation,
-  onPermissionDenied,
   title = 'Select Location',
 }: LocationSheetProps) {
   const CURRENT_LOCATION_KEY = 'gatimitra_location_v1'
@@ -121,8 +121,10 @@ export default function LocationSheet({
   const [popularLoading, setPopularLoading] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
   const [autoDetectLoading, setAutoDetectLoading] = useState(false)
+  const [autoDetectError, setAutoDetectError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'saved' | 'popular'>('saved')
   const { user, isAuthenticated } = useAppSelector((state) => state.auth)
+  const { markAutoDetectInFlight } = useLocationContext()
 
   const toLocationLabel = (item: LocationItem) => `${item.location_name}${item.city ? `, ${item.city}` : ''}`
 
@@ -340,36 +342,34 @@ export default function LocationSheet({
   }
 
   const handleAutoDetect = () => {
-    if (!navigator.geolocation) return
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setAutoDetectError(locationAutoDetectErrorMessage({ ok: false, reason: 'unsupported' }))
+      return
+    }
+
+    setAutoDetectError(null)
+    markAutoDetectInFlight(true)
+    const pending = detectCurrentLocation()
     setAutoDetectLoading(true)
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const { latitude, longitude } = position.coords
-          const { lat, lon } = normalizeLatLonForStorage(latitude, longitude)
-          const res = await fetch(`/api/locations/reverse-geocode?${reverseGeocodeSearchParams(latitude, longitude)}`)
-          const data = await res.json()
-          const displayName = data?.displayName || `${lat.toFixed(4)}, ${lon.toFixed(4)}`
-          const city = typeof data?.city === 'string' ? data.city.trim() : ''
-          const area = typeof data?.area === 'string' ? data.area.trim() : ''
-          const item: LocationItem = {
+
+    void pending
+      .then((result) => {
+        if (result.ok) {
+          selectLocationAndClose({
             id: 0,
-            location_name: area || displayName,
-            city,
-            latitude: lat,
-            longitude: lon,
-          }
-          await selectLocationAndClose(item)
-        } finally {
-          setAutoDetectLoading(false)
+            location_name: result.displayName,
+            city: result.city || '',
+            latitude: result.lat,
+            longitude: result.lon,
+          })
+          return
         }
-      },
-      (error) => {
+        setAutoDetectError(locationAutoDetectErrorMessage(result))
+      })
+      .finally(() => {
         setAutoDetectLoading(false)
-        if (error.code === 1) onPermissionDenied?.()
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-    )
+        markAutoDetectInFlight(false)
+      })
   }
 
   const recentToShow = recentLocations
@@ -378,6 +378,7 @@ export default function LocationSheet({
 
   const handleSheetClose = () => {
     setSearchQuery('')
+    setAutoDetectError(null)
     onClose()
   }
 
@@ -403,6 +404,11 @@ export default function LocationSheet({
           >
             {autoDetectLoading ? 'Detecting location...' : 'Auto-detect current location'}
           </button>
+          {autoDetectError ? (
+            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-950">
+              {autoDetectError}
+            </p>
+          ) : null}
           <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
             <button
               type="button"

@@ -1,21 +1,23 @@
 import { Suspense } from 'react'
 import OrdersPageClient from '@/components/orders/OrdersPage'
+import OrdersPageLoading from '@/components/orders/OrdersPageLoading'
+import { pageTitleSegment } from '@/lib/pageTitle'
 
-function OrdersPageFallback() {
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 flex items-center justify-center">
-      <div className="text-center">
-        <div className="w-12 h-12 rounded-full border-4 border-orange-500 border-t-transparent animate-spin mx-auto mb-4"></div>
-        <p className="text-gray-600">Loading your orders...</p>
-      </div>
-    </div>
-  )
+export const metadata = {
+  title: pageTitleSegment('My Orders'),
 }
 
-export default function Page() {
+type PageProps = {
+  searchParams?: { filter?: string; from?: string }
+}
+
+export default function Page({ searchParams }: PageProps) {
+  const filter = searchParams?.filter
+  const from = searchParams?.from
+
   return (
-    <Suspense fallback={<OrdersPageFallback />}>
-      <OrdersPageClient />
+    <Suspense fallback={<OrdersPageLoading />}>
+      <OrdersPageClient initialFilter={filter} initialFrom={from} />
     </Suspense>
   )
 }

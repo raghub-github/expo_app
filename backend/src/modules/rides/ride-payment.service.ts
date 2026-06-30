@@ -9,7 +9,8 @@ import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
-import { resolveRideFareOfferDiscount } from "../../lib/ride-fare-offer-discount.js";
+import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
+import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
 
 function roundInr(value: number): number {
   return Math.round((Number(value) || 0) * 100) / 100;
@@ -71,20 +72,25 @@ export async function confirmRideFarePaymentForCustomer(input: {
     throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
   }
 
-  const baseFareDue = roundInr(Number(orderRow.grandTotal ?? 0));
-  if (baseFareDue <= 0) {
-    throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
-  }
-
-  const offerDiscount = await resolveRideFareOfferDiscount(db, {
-    fareSubtotal: baseFareDue,
+  const billRes = await computeRideBillForCustomerOrder(db, {
+    customerPk,
+    orderRef: input.orderRef,
     couponCode: input.couponCode,
     platformOfferId: input.platformOfferId,
   });
-  const fareDue = roundInr(Math.max(0, baseFareDue - offerDiscount));
-  if (fareDue <= 0 && offerDiscount <= 0.005) {
+  if (!billRes.ok) {
+    throw Object.assign(new Error(billRes.message), {
+      statusCode: billRes.statusCode ?? 400,
+      code: billRes.code,
+    });
+  }
+
+  const fareDue = roundInr(billRes.billing.final_amount);
+  if (fareDue <= 0) {
     throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
   }
+
+  const offerDiscount = roundInr(billRes.billing.discount_total);
 
   const requestedGatiCash = roundInr(input.gatiCashAmount ?? 0);
   const hasRazorpay = Boolean(
@@ -170,8 +176,10 @@ export async function confirmRideFarePaymentForCustomer(input: {
       .update(ordersCore)
       .set({
         paymentStatus: "completed",
+        grandTotal: String(fareDue),
         billingSnapshot: {
           ...prevSnap,
+          ...billRes.snapshot,
           final_amount: fareDue,
           ride_fare_offer_discount: offerDiscount > 0.005 ? offerDiscount : undefined,
           ride_fare_coupon_code: input.couponCode?.trim() || undefined,
@@ -192,6 +200,37 @@ export async function confirmRideFarePaymentForCustomer(input: {
         updatedAt: now,
       })
       .where(eq(ordersRide.orderId, orderRow.id));
+  });
+
+  void insertRideCustomerPaymentSnapshot(db, {
+    orderCoreId: orderRow.id,
+    orderIdText,
+    customerId: customerPk,
+    phase: "payment_confirmed",
+    billing: billRes.billing,
+    billingSnapshot: billRes.snapshot,
+    offerContext: {
+      couponCode: input.couponCode,
+      platformOfferId: input.platformOfferId,
+    },
+    rideContext: {
+      rideType:
+        typeof prevSnap.rideType === "string"
+          ? prevSnap.rideType
+          : typeof (prevSnap as { ride_type?: string }).ride_type === "string"
+            ? (prevSnap as { ride_type?: string }).ride_type
+            : null,
+    },
+    paymentContext: {
+      gatiCashApplied,
+      razorpayAmount: razorpayDue,
+      amountPaid: fareDue,
+      razorpayOrderId: input.razorpayOrderId,
+      razorpayPaymentId: input.razorpayPaymentId,
+    },
+    metadata: {
+      ride_fare_offer_discount: offerDiscount > 0.005 ? offerDiscount : undefined,
+    },
   });
 
   const riderId = orderRow.riderId != null ? Number(orderRow.riderId) : null;

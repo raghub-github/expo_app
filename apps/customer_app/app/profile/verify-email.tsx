@@ -21,6 +21,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { profileService } from "@/services/profile.service";
 import { ProfileSubpageHeader } from "@/components/profile/ProfileSubpageHeader";
 import { ProfileTheme } from "@/constants/profileTheme";
+import {
+  invalidateProfileCache,
+  PROFILE_QUERY_KEY,
+  writeCachedProfile,
+} from "@/lib/profileCache";
+import type { UserProfile } from "@/services/profile.service";
 
 const { green: GREEN, greenDark: GREEN_DARK, text: TEXT, muted: MUTED, border: BORDER, pageBg: PAGE_BG } =
   ProfileTheme;
@@ -51,8 +57,21 @@ export default function VerifyEmailScreen() {
 
   const confirmMutation = useMutation({
     mutationFn: (otp: string) => profileService.confirmEmailVerification(otp),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["me", "profile"] });
+    onSuccess: async (data) => {
+      queryClient.setQueryData<UserProfile | undefined>(PROFILE_QUERY_KEY, (prev) =>
+        prev
+          ? {
+              ...prev,
+              is_email_verified: true,
+              profile_image_url: data.profile_image_url ?? prev.profile_image_url,
+            }
+          : prev,
+      );
+      const cached = queryClient.getQueryData<UserProfile>(PROFILE_QUERY_KEY);
+      if (cached) {
+        await writeCachedProfile(cached);
+      }
+      await invalidateProfileCache(queryClient);
       Alert.alert("Email verified", "Your email has been verified successfully.", [
         { text: "Done", onPress: () => router.back() },
       ]);

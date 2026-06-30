@@ -53,8 +53,18 @@ export async function createSmtpTransporter() {
   });
 }
 
-export function formatSmtpFrom(): string | null {
+export function formatSmtpFrom(overrides?: { fromName?: string }): string | null {
   const cfg = getSmtpConfig();
   if (!cfg.ok) return null;
-  return `"${cfg.fromName}" <${cfg.fromEmail}>`;
+  const fromName = overrides?.fromName?.trim() || cfg.fromName;
+  return `"${fromName}" <${cfg.fromEmail}>`;
+}
+
+/** Ride invoice emails use a dedicated sender display name. */
+export function formatRideInvoiceSmtpFrom(): string | null {
+  const rideFromName =
+    process.env.RIDE_INVOICE_FROM_NAME?.trim() ||
+    process.env.SMTP_RIDE_FROM_NAME?.trim() ||
+    "GatiMitra - Ride - Services";
+  return formatSmtpFrom({ fromName: rideFromName });
 }

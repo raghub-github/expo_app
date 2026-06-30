@@ -8,6 +8,7 @@ import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
 import { supabase } from '@/lib/supabase'
@@ -1086,7 +1087,7 @@ export default function ParcelServicePageV2() {
       <header className="fixed top-0 left-0 right-0 bg-gradient-to-r from-[#0c0c1a] via-[#1a1a2e] to-[#0c0c1a] shadow-lg z-40 border-b border-[#2a2a4e]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-3">
-            <img src="/img/logo.png" alt="GatiMitra Logo" className="w-12 h-12 sm:w-14 sm:h-14" />
+            <GatiMitraLogo variant="icon" alt="GatiMitra" className="w-12 h-12 sm:w-14 sm:h-14" />
             <span className="text-2xl font-black">
               <span className="text-[#16c2a5]">Gati</span>
               <span className="text-[#ff6b35]">Mitra</span>

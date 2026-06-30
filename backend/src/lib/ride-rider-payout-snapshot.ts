@@ -583,7 +583,6 @@ export async function applyRidePickupWaitingToBilling(
   const rideFare = round0(
     Number(row.estimatedFare) || Number(row.fareAmount) || 0
   );
-  const newGrandTotal = round0(rideFare + customerWaiting + tip);
 
   let snapshot = resolveRideRiderPayoutForDisplay({
     billingSnapshot: row.billingSnapshot,
@@ -629,29 +628,42 @@ export async function applyRidePickupWaitingToBilling(
         ? (row.billingSnapshot as Record<string, unknown>)
         : {};
 
-  await db
-    .update(ordersCore)
-    .set({
-      grandTotal: String(newGrandTotal),
-      billingSnapshot: {
-        ...mergedSnap,
-        ride_fare: rideFare,
-        fare_amount: rideFare,
-        waiting_charge: customerWaiting,
-        pickup_waiting_charge: customerWaiting,
-        tip_amount: tip,
-        final_amount: newGrandTotal,
-        pickup_wait_seconds: waitSeconds,
-      },
-      updatedAt: new Date(),
-    })
-    .where(eq(ordersCore.id, orderCorePk));
+  const { syncRideCustomerBillingSnapshot } = await import(
+    "../modules/rides/ride-bill.service.js"
+  );
+  const synced = await syncRideCustomerBillingSnapshot(db, orderCorePk, {
+    pickupWaitingCharge: customerWaiting,
+    pickupWaitSeconds: waitSeconds,
+    skipIfPaid: true,
+  });
+
+  if (!synced.ok) {
+    const tip = round0(Number(row.customerTipAmount) || Number(row.tipAmount) || 0);
+    const rideFare = round0(Number(row.estimatedFare) || Number(row.fareAmount) || 0);
+    const newGrandTotal = round0(rideFare + customerWaiting + tip);
+    await db
+      .update(ordersCore)
+      .set({
+        grandTotal: String(newGrandTotal),
+        billingSnapshot: {
+          ...mergedSnap,
+          ride_fare: rideFare,
+          fare_amount: rideFare,
+          waiting_charge: customerWaiting,
+          pickup_waiting_charge: customerWaiting,
+          tip_amount: tip,
+          final_amount: newGrandTotal,
+          pickup_wait_seconds: waitSeconds,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(ordersCore.id, orderCorePk));
+  }
 
   await db
     .update(ordersRide)
     .set({
       waitingCharges: String(customerWaiting),
-      finalFare: String(newGrandTotal),
       updatedAt: new Date(),
     })
     .where(eq(ordersRide.orderId, orderCorePk));

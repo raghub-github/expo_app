@@ -15,6 +15,7 @@ import React from "react";
 import Link from "next/link";
 import { ChevronRight, ArrowLeft, FileText, Clock, Share2, BookOpen, CalendarDays, Tag } from "lucide-react";
 import { getLegalDoc, LEGAL_DOCS, LEGAL_PACK_VERSION, type LegalDoc } from "@/lib/legal/registry";
+import { fullPageTitle, pageTitleSegment } from "@/lib/pageTitle";
 import { LEGAL_BUNDLE } from "@/lib/legal/bundle.generated";
 import MarkdownView from "./MarkdownView";
 import { extractToc, extractMeta, estimateReadingMinutes } from "./legal-meta";
@@ -268,14 +269,15 @@ export default function LegalPage({ slug }: Props) {
 
 export function getLegalMetadata(slug: string) {
   const doc = getLegalDoc(slug);
-  if (!doc) return { title: "Policy not found — GatiMitra", description: "" };
+  if (!doc) return { title: pageTitleSegment("Policy not found"), description: "" };
   const url = `https://gatimitra.com/${slug}`;
+  const ogTitle = fullPageTitle(doc.title);
   return {
-    title: `${doc.title} — GatiMitra`,
+    title: pageTitleSegment(doc.title),
     description: doc.description,
     alternates: { canonical: url },
     openGraph: {
-      title: `${doc.title} — GatiMitra`,
+      title: ogTitle,
       description: doc.description,
       url,
       siteName: "GatiMitra",
@@ -283,7 +285,7 @@ export function getLegalMetadata(slug: string) {
     },
     twitter: {
       card: "summary_large_image",
-      title: `${doc.title} — GatiMitra`,
+      title: ogTitle,
       description: doc.description,
     },
   };

@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
 import EcomCategoryPageView from '@/components/ecommerce/EcomCategoryPageView'
+import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata: Metadata = {
-  title: 'Electronics | GatiMitra Ecom Arche',
+  title: pageTitleSegment('Electronics'),
   description: 'Browse electronics categories on GatiMitra Ecom Arche.',
 }
 

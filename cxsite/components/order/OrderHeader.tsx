@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
@@ -12,6 +12,8 @@ import { useLocationContext } from '@/components/providers/LocationProvider'
 import LocationSheet from '@/components/location-search/LocationSheet'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
 import { getMagicpinPathAfterLocationSelect, mergeLocationNavigationUrl } from '@/lib/magicpinLocationUrl'
+import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import { resolveOrderPageLocationLabel } from '@/lib/panIndiaLocation'
 
 interface OrderHeaderProps {
   logoHref?: string
@@ -35,23 +37,16 @@ export default function OrderHeader({
   const [showProfileSheet, setShowProfileSheet] = useState(false)
   const { user, isAuthenticated } = useAppSelector(state => state.auth)
   const { location: locationState, setLocation: setGlobalLocation } = useLocationContext()
-  const urlLocation = searchParams.get('location')
-  const urlLat = searchParams.get('lat')
-  const urlLon = searchParams.get('lon')
-  const resolvedLocation = useMemo(() => {
-    if (urlLocation && urlLocation.trim() !== '') return urlLocation
-    return locationState.displayName || 'Detecting location...'
-  }, [urlLocation, locationState.displayName])
+  const locationCommitted = locationState.locationCommittedByUser === true
+  const resolvedLocation = useMemo(
+    () =>
+      resolveOrderPageLocationLabel({
+        locationCommittedByUser: locationCommitted,
+        displayName: locationState.displayName,
+      }),
+    [locationCommitted, locationState.displayName]
+  )
   const displayUserName = truncateDisplayName(user?.name || user?.phone)
-
-  useEffect(() => {
-    if (!urlLocation || !urlLat || !urlLon) return
-    const lat = Number(urlLat)
-    const lon = Number(urlLon)
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
-    if (lat === 0 && lon === 0) return
-    setGlobalLocation(urlLocation, lat, lon, { userInitiated: true })
-  }, [urlLocation, urlLat, urlLon, setGlobalLocation])
 
   const handleSelectLocation = (displayName: string, item?: LocationItem) => {
     const nextPath = getMagicpinPathAfterLocationSelect(pathname ?? '', displayName, item)
@@ -78,7 +73,7 @@ export default function OrderHeader({
             <div className="flex min-h-[64px] items-center gap-2 md:gap-2.5">
               {/* Logo Section - Matching Landing Page */}
               <Link href={logoHref} className="flex shrink-0 items-center gap-2 md:gap-2.5 group -ml-0.5">
-                <img src="/img/logoo.png" alt="Brand Logo" className="h-8 md:h-9 w-auto flex-shrink-0 object-contain" />
+                <GatiMitraLogo alt="GatiMitra" className="h-8 md:h-9 w-auto flex-shrink-0 object-contain" />
               </Link>
 
               {/* Back Button */}

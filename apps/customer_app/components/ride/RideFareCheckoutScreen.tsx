@@ -32,13 +32,13 @@ import {
   parseRideDeliveredBill,
   buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
+import { buildRideFareBillSummaryLines } from "@/lib/ride-fare-bill-display";
 import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
 import { CheckoutOffersSheet } from "@/components/checkout/CheckoutOffersSheet";
 import { walletService } from "@/services/wallet.service";
 import { addressService } from "@/services/address.service";
 import { isRideFareAlreadyPaidError } from "@/lib/ride-fare-gate";
 import {
-  extractRideBillingDiscountLines,
   fetchRideFareCheckoutOffers,
   resolveAppliedRideOfferDiscount,
 } from "@/lib/ride-fare-checkout-offers";
@@ -63,10 +63,6 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
   const fareBreakdown = useMemo(() => buildRidePaymentFareBreakdown(order), [order]);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const rideLabel = getRideServiceLabel(order.rideType);
-  const snapshotDiscounts = useMemo(
-    () => extractRideBillingDiscountLines(order.billingSnapshot ?? null),
-    [order.billingSnapshot],
-  );
 
   const livePincode = useLocationStore((s) => s.pincode);
   const liveState = useLocationStore((s) => s.state);
@@ -97,6 +93,118 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
   const [appliedCouponLabel, setAppliedCouponLabel] = useState<string | null>(null);
   const [appliedPlatformOfferId, setAppliedPlatformOfferId] = useState<number | null>(null);
   const [appliedMerchantOfferId, setAppliedMerchantOfferId] = useState<number | null>(null);
+  const [forceNoAutoOffer, setForceNoAutoOffer] = useState(false);
+
+  const rideFareBillQ = useQuery({
+    queryKey: [
+      "ride-fare-bill",
+      order.orderId,
+      appliedCouponCode,
+      appliedPlatformOfferId,
+      forceNoAutoOffer,
+      fareBreakdown.waitingCharge,
+      fareBreakdown.surgeCharge,
+    ],
+    queryFn: () =>
+      orderService.getRideFareBill(order.orderId, {
+        couponCode: appliedCouponCode,
+        platformOfferId: appliedPlatformOfferId,
+        forceNoAutoOffer,
+      }),
+    staleTime: 0,
+    retry: 2,
+  });
+
+  const billSummary = useMemo(() => {
+    const bill = rideFareBillQ.data;
+    if (!bill?.ok) return null;
+    return buildRideFareBillSummaryLines(bill, {
+      waitingCharge: fareBreakdown.waitingCharge,
+      surgeCharge: fareBreakdown.surgeCharge,
+    });
+  }, [rideFareBillQ.data, fareBreakdown.waitingCharge, fareBreakdown.surgeCharge]);
+
+  const serverDiscountTotal = rideFareBillQ.data?.discountTotal ?? 0;
+
+  useEffect(() => {
+    const bill = rideFareBillQ.data;
+    if (!bill?.ok || rideFareBillQ.isFetching) return;
+
+    const discounts = bill.discounts ?? [];
+    if (discounts.length === 0) {
+      if (forceNoAutoOffer) {
+        if (appliedPlatformOfferId != null) setAppliedPlatformOfferId(null);
+        if (appliedMerchantOfferId != null) setAppliedMerchantOfferId(null);
+        if (appliedCouponCode) {
+          setAppliedCouponCode(null);
+          setAppliedCouponLabel(null);
+        }
+      }
+      return;
+    }
+
+    const primary = [...discounts].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))[0];
+    const meta = primary.meta ?? {};
+    const platformId =
+      typeof meta.platformOfferId === "number" ? (meta.platformOfferId as number) : null;
+    const merchantId =
+      typeof meta.merchantOfferId === "number" ? (meta.merchantOfferId as number) : null;
+    const couponCode =
+      typeof meta.code === "string"
+        ? String(meta.code).trim()
+        : primary.label?.replace(/^coupon\s+/i, "").trim() || "";
+
+    if (platformId != null) {
+      if (appliedPlatformOfferId !== platformId) setAppliedPlatformOfferId(platformId);
+      if (appliedMerchantOfferId != null) setAppliedMerchantOfferId(null);
+      if (appliedCouponCode) {
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+      }
+      if (!appliedCouponLabel) setAppliedCouponLabel(primary.label ?? "Ride offer");
+      setForceNoAutoOffer(false);
+      return;
+    }
+
+    if (merchantId != null) {
+      if (appliedMerchantOfferId !== merchantId) setAppliedMerchantOfferId(merchantId);
+      if (appliedPlatformOfferId != null) setAppliedPlatformOfferId(null);
+      if (appliedCouponCode) {
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+      }
+      if (!appliedCouponLabel) setAppliedCouponLabel(primary.label ?? "Ride offer");
+      setForceNoAutoOffer(false);
+      return;
+    }
+
+    if (couponCode) {
+      if (appliedCouponCode?.toUpperCase() !== couponCode.toUpperCase()) {
+        setAppliedCouponCode(couponCode);
+        setAppliedCouponLabel(primary.label ?? couponCode);
+      }
+      if (appliedPlatformOfferId != null) setAppliedPlatformOfferId(null);
+      if (appliedMerchantOfferId != null) setAppliedMerchantOfferId(null);
+      setForceNoAutoOffer(false);
+    } else if (!appliedCouponLabel && primary.label) {
+      setAppliedCouponLabel(primary.label);
+    }
+  }, [
+    rideFareBillQ.data,
+    rideFareBillQ.isFetching,
+    forceNoAutoOffer,
+    appliedCouponCode,
+    appliedCouponLabel,
+    appliedPlatformOfferId,
+    appliedMerchantOfferId,
+  ]);
+
+  const payableTotal = useMemo(() => {
+    if (billSummary?.payableTotal != null && billSummary.payableTotal > 0) {
+      return billSummary.payableTotal;
+    }
+    return fareBreakdown.total;
+  }, [billSummary?.payableTotal, fareBreakdown.total]);
 
   const { data: profile } = useProfile();
   const gatiCashBalanceQ = useQuery({
@@ -152,29 +260,9 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
   const checkoutOffersData = rideOffersQ.data?.checkoutOffers;
   const featuredOffers = rideOffersQ.data?.featuredOffers ?? [];
 
-  const appliedOfferDiscount = useMemo(() => {
-    if (!checkoutOffersData) return 0;
-    return resolveAppliedRideOfferDiscount({
-      fareSubtotal: fareBreakdown.total,
-      checkoutOffers: checkoutOffersData,
-      featuredOffers,
-      appliedCouponCode,
-      appliedPlatformOfferId,
-      appliedMerchantOfferId,
-    });
-  }, [
-    checkoutOffersData,
-    featuredOffers,
-    fareBreakdown.total,
-    appliedCouponCode,
-    appliedPlatformOfferId,
-    appliedMerchantOfferId,
-  ]);
+  const appliedOfferDiscount = serverDiscountTotal;
 
-  const fareAfterOffers = useMemo(
-    () => Math.max(0, roundInr(fareBreakdown.total - appliedOfferDiscount)),
-    [fareBreakdown.total, appliedOfferDiscount],
-  );
+  const fareAfterOffers = useMemo(() => Math.max(0, roundInr(payableTotal)), [payableTotal]);
 
   const gatiCashAvailable = useMemo(() => {
     const raw = gatiCashBalanceQ.data?.available_balance ?? gatiCashBalanceQ.data?.balance ?? 0;
@@ -204,6 +292,16 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     gatiCashApplyRef.current = gatiCashApplyAmount;
   }, [gatiCashApplyAmount]);
 
+  const displayOfferLabel = useMemo(() => {
+    if (appliedCouponLabel) return appliedCouponLabel;
+    const bill = rideFareBillQ.data;
+    if (bill?.ok && bill.discounts?.length) {
+      const primary = [...bill.discounts].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))[0];
+      return primary.label?.trim() || "Ride offer";
+    }
+    return null;
+  }, [appliedCouponLabel, rideFareBillQ.data]);
+
   const appliedDiscountsForSheet = useMemo(() => {
     const rows: Array<{
       label: string;
@@ -213,7 +311,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     }> = [];
     if (appliedOfferDiscount > 0.005) {
       rows.push({
-        label: appliedCouponLabel ?? "Ride offer",
+        label: displayOfferLabel ?? appliedCouponLabel ?? "Ride offer",
         amount: appliedOfferDiscount,
         platformOfferId: appliedPlatformOfferId,
         merchantOfferId: appliedMerchantOfferId,
@@ -222,6 +320,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     return rows;
   }, [
     appliedOfferDiscount,
+    displayOfferLabel,
     appliedCouponLabel,
     appliedPlatformOfferId,
     appliedMerchantOfferId,
@@ -355,17 +454,20 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     setAppliedPlatformOfferId(null);
     setAppliedMerchantOfferId(null);
     setCouponError(null);
+    setForceNoAutoOffer(true);
   }, []);
+
+  const hasAppliedOffer =
+    !forceNoAutoOffer &&
+    (serverDiscountTotal > 0.005 ||
+      appliedCouponCode != null ||
+      appliedPlatformOfferId != null ||
+      appliedMerchantOfferId != null);
 
   const payButtonLabel =
     toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005
       ? `Pay ${formatRideFare(gatiCashApplyAmount)} with GatiCash`
       : `Pay ${formatRideFare(toPayAmount)}`;
-
-  const hasAppliedOffer =
-    appliedCouponCode != null ||
-    appliedPlatformOfferId != null ||
-    appliedMerchantOfferId != null;
 
   return (
     <View style={styles.screen}>
@@ -387,61 +489,83 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
           <Text style={styles.metaSub}>Ride ID: {displayOrderId}</Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.offerRow}
-          onPress={() => setOffersOpen(true)}
-          activeOpacity={0.85}
-        >
-          <View style={styles.offerRowLeft}>
-            <Ionicons name="pricetag-outline" size={20} color={MINT_DARK} />
-            <View style={styles.offerTextCol}>
-              <Text style={styles.offerTitle}>
-                {hasAppliedOffer ? "Offer applied" : "Apply ride offers"}
-              </Text>
-              <Text style={styles.offerSub} numberOfLines={1}>
+        <View style={styles.offerCard}>
+          <View style={styles.offerAppliedRow}>
+            {hasAppliedOffer ? (
+              <View style={styles.offerGreenTick}>
+                <Ionicons name="checkmark" size={14} color="#fff" />
+              </View>
+            ) : (
+              <View style={styles.offerCouponIconCircle}>
+                <Text style={styles.offerCouponIconPct}>%</Text>
+              </View>
+            )}
+            <TouchableOpacity
+              style={styles.offerBodyTextCol}
+              onPress={() => setOffersOpen(true)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.offerAppliedHeadline} numberOfLines={2}>
                 {hasAppliedOffer
-                  ? appliedCouponLabel ?? `Saved ₹${Math.round(appliedOfferDiscount)}`
-                  : "Coupons · GatiMitra ride offers"}
+                  ? displayOfferLabel ?? `Saved ₹${Math.round(appliedOfferDiscount)}`
+                  : "Apply ride offers"}
               </Text>
-            </View>
+              {hasAppliedOffer ? (
+                <Text style={styles.offerSubLineMuted}>
+                  You save {formatRideFare(appliedOfferDiscount)}
+                </Text>
+              ) : (
+                <Text style={styles.offerSub} numberOfLines={1}>
+                  Coupons · GatiMitra ride offers
+                </Text>
+              )}
+              {!hasAppliedOffer ? (
+                <Text style={styles.offersLearnMore}>View all coupons ›</Text>
+              ) : null}
+            </TouchableOpacity>
+            {hasAppliedOffer ? (
+              <TouchableOpacity onPress={clearOffers} hitSlop={8} activeOpacity={0.7}>
+                <Text style={styles.offersRemoveRed}>Remove</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.offersApplyOutline}
+                onPress={() => setOffersOpen(true)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.offersApplyOutlineText}>APPLY</Text>
+              </TouchableOpacity>
+            )}
           </View>
-          <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
-        </TouchableOpacity>
+        </View>
 
         <View style={styles.summaryCard}>
           <Text style={styles.sectionLabel}>BILL SUMMARY</Text>
 
-          {fareBreakdown.lines.map((line) => (
+          {rideFareBillQ.isLoading && !billSummary ? (
+            <View style={styles.billLoadingRow}>
+              <ActivityIndicator size="small" color={MINT_DARK} />
+              <Text style={styles.billLoadingText}>Calculating fare…</Text>
+            </View>
+          ) : null}
+
+          {(billSummary?.lines ?? fareBreakdown.lines).map((line) => (
             <View
-              key={line.label}
+              key={`${line.label}-${line.amount}-${line.emphasis ? "t" : "n"}`}
               style={[styles.breakdownRow, line.emphasis && styles.breakdownRowTotal]}
             >
               <Text style={[styles.breakdownLabel, line.emphasis && styles.breakdownLabelMuted]}>
                 {line.label}
               </Text>
-              <Text style={[styles.breakdownValue, line.emphasis && styles.breakdownValueMuted]}>
-                {formatRideFare(line.amount)}
-              </Text>
+              {line.isDiscount ? (
+                <Text style={styles.breakdownDiscount}>-{formatRideFare(line.amount)}</Text>
+              ) : (
+                <Text style={[styles.breakdownValue, line.emphasis && styles.breakdownValueMuted]}>
+                  {formatRideFare(line.amount)}
+                </Text>
+              )}
             </View>
           ))}
-
-          {snapshotDiscounts.map((line) => (
-            <View key={line.label} style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>{line.label}</Text>
-              <Text style={styles.breakdownDiscount}>-{formatRideFare(line.amount)}</Text>
-            </View>
-          ))}
-
-          {appliedOfferDiscount > 0.005 ? (
-            <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>
-                {appliedCouponLabel ?? "Ride offer"}
-              </Text>
-              <Text style={styles.breakdownDiscount}>
-                -{formatRideFare(appliedOfferDiscount)}
-              </Text>
-            </View>
-          ) : null}
 
           {gatiCashApplyAmount > 0.005 ? (
             <View style={styles.breakdownRow}>
@@ -576,6 +700,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
           );
           setAppliedPlatformOfferId(null);
           setAppliedMerchantOfferId(null);
+          setForceNoAutoOffer(false);
           setCouponError(null);
           setOffersOpen(false);
         }}
@@ -601,9 +726,12 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
             setCouponError("This offer is not applicable on your ride fare.");
             return;
           }
-          clearOffers();
+          setAppliedCouponCode(null);
+          setAppliedMerchantOfferId(null);
           setAppliedPlatformOfferId(id);
           setAppliedCouponLabel(name ?? fromBilling?.name ?? fromFeatured?.title ?? "Offer");
+          setForceNoAutoOffer(false);
+          setCouponError(null);
           setOffersOpen(false);
         }}
         onApplyMerchantOffer={(id, couponCode) => {
@@ -628,14 +756,18 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
             setCouponError("This offer is not applicable on your ride fare.");
             return;
           }
-          clearOffers();
+          setAppliedPlatformOfferId(null);
           setAppliedMerchantOfferId(id);
           if (couponCode?.trim()) {
             setAppliedCouponCode(couponCode.trim());
+          } else {
+            setAppliedCouponCode(null);
           }
           setAppliedCouponLabel(
             fromBilling?.title ?? fromFeatured?.title ?? "Offer",
           );
+          setForceNoAutoOffer(false);
+          setCouponError(null);
           setOffersOpen(false);
         }}
         onRemoveCoupon={clearOffers}
@@ -710,19 +842,78 @@ const styles = StyleSheet.create({
   },
   metaTitle: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary },
   metaSub: { fontSize: 12, color: GatiMitraColors.textSecondary, fontWeight: "600" },
-  offerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  offerCard: {
     backgroundColor: GatiMitraColors.cardBg,
     borderRadius: 16,
     padding: 14,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
   },
-  offerRowLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-  offerTextCol: { flex: 1, gap: 2 },
-  offerTitle: { fontSize: 14, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  offerAppliedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  offerGreenTick: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: MINT_DARK,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offerCouponIconCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#9CA3AF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offerCouponIconPct: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+  },
+  offerBodyTextCol: { flex: 1, gap: 2 },
+  offerAppliedHeadline: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    lineHeight: 19,
+  },
+  offerSubLineMuted: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraColors.textSecondary,
+  },
+  offersLearnMore: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: MINT_DARK,
+    marginTop: 2,
+  },
+  offersRemoveRed: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#E23744",
+    letterSpacing: 0.2,
+    paddingTop: 2,
+  },
+  offersApplyOutline: {
+    borderWidth: 1.5,
+    borderColor: MINT_DARK,
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  offersApplyOutlineText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: MINT_DARK,
+    letterSpacing: 0.4,
+  },
   offerSub: { fontSize: 12, color: GatiMitraColors.textSecondary, fontWeight: "500" },
   summaryCard: {
     backgroundColor: GatiMitraColors.cardBg,
@@ -737,6 +928,17 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: GatiMitraColors.textSecondary,
     letterSpacing: 0.6,
+  },
+  billLoadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 6,
+  },
+  billLoadingText: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+    fontWeight: "600",
   },
   breakdownRow: {
     flexDirection: "row",
