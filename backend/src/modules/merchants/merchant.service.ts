@@ -290,7 +290,7 @@ export async function listNearbyStoresByRoadDistance(params: {
       // from @gatimitra/store-status to render the same label the merchant
       // app + partnersite render.
       // No `timezone` column on merchant_stores — engine assumes Asia/Kolkata.
-      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_status, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at",
+      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, delivery_radius_km, status, is_active, is_available, is_accepting_orders, operational_status, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at",
     )
     .eq("status", "ACTIVE")
     .eq("is_active", true)
@@ -497,7 +497,7 @@ export async function listStoresNearby(params: {
       let storesQuery = supabase
         .from("merchant_stores")
         .select(
-          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id, is_pure_veg"
+          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, parent_id, is_pure_veg"
         )
         .eq("status", "ACTIVE")
         .not("latitude", "is", null)
