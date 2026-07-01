@@ -416,6 +416,23 @@ function expandR2LookupCandidates(primary: string): string[] {
   return [...seen];
 }
 
+/**
+ * Neutral 200x200 placeholder SVG returned when an image key was not found in
+ * R2. Rendered by <img> without a console error, so a missing merchant logo /
+ * gallery image doesn't produce red rows in every dashboard load.
+ */
+function MISSING_IMAGE_SVG(): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">` +
+    `<rect width="200" height="200" fill="#f1f5f9"/>` +
+    `<rect x="30" y="60" width="140" height="90" rx="8" fill="#e2e8f0" stroke="#cbd5e1" stroke-width="2"/>` +
+    `<circle cx="70" cy="95" r="10" fill="#94a3b8"/>` +
+    `<path d="M40 145 L80 110 L110 130 L145 100 L160 145 Z" fill="#cbd5e1"/>` +
+    `<text x="100" y="180" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#64748b">No image</text>` +
+    `</svg>`
+  );
+}
+
 /** Allow only our R2-related URLs for security. */
 function isAllowedR2Url(decodedUrl: string): boolean {
   const base = process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -610,6 +627,22 @@ export async function GET(request: NextRequest) {
         key.slice(0, 120),
         lastError,
       );
+    }
+    // Image URLs (loaded via <img>): return a placeholder 200 so the browser
+    // renders a fallback without logging a red 404 in the console. Documents
+    // (PDF, CSV, other) still 404 — those hit dedicated viewers that need to
+    // surface the missing-file error.
+    const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg)(\?|$)/i;
+    if (IMAGE_EXT.test(key)) {
+      const placeholder = MISSING_IMAGE_SVG();
+      return new NextResponse(placeholder, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "public, max-age=300",
+          "X-Attachment-Fallback": "missing-object",
+        },
+      });
     }
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   } catch (err: unknown) {

@@ -158,10 +158,15 @@ function isTransientSupabaseError(message: string, code?: string | null): boolea
 
 async function fetchStoreByIdViaApi(storeId: string): Promise<MerchantStore | null> {
   if (typeof window === 'undefined') return null;
+  // Client-side timeout — nginx returns 504 after ~60s if the backend is slow.
+  // Aborting at 20s means the tab never sits blocked for a full minute on a
+  // single stale request, and the query cache moves on to the next component.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
   try {
     const res = await fetch(
       `/api/merchant/store-record?storeId=${encodeURIComponent(storeId)}`,
-      { credentials: 'include', cache: 'no-store' }
+      { credentials: 'include', cache: 'no-store', signal: controller.signal }
     );
     if (res.status === 404) return null;
     if (!res.ok) return null;
@@ -170,6 +175,8 @@ async function fetchStoreByIdViaApi(storeId: string): Promise<MerchantStore | nu
     return normalizeProfileStore(row as Parameters<typeof normalizeProfileStore>[0]) as MerchantStore;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -22,7 +22,12 @@ export function makeQueryClient() {
         refetchOnWindowFocus: true,
         retry: (failureCount, error) => {
           if (failureCount >= 1) return false;
-          if (error instanceof Error && /network error|failed to fetch/i.test(error.message)) {
+          const msg = error instanceof Error ? error.message : String(error ?? "");
+          // Never retry:
+          //   • network errors / offline (won't recover immediately)
+          //   • aborted (client timeout fired — don't pile on)
+          //   • 5xx from the backend (nginx 504 / 500 — retrying floods the same slow endpoint)
+          if (/network error|failed to fetch|aborted|abortsignal|status: 5\d\d/i.test(msg)) {
             return false;
           }
           return true;
