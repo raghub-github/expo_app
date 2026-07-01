@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, usePathname } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { Restaurant } from '@/lib/types'
@@ -21,9 +21,14 @@ import {
 } from '@/hooks/useMerchantApi'
 import { formatInr } from '@/lib/format-inr';
 import { formatLedgerDescription } from '@/lib/wallet-types';
+import {
+  resolveLedgerDisplayAmount,
+  resolveLedgerDisplayDescription,
+} from '@/lib/merchant-payout-utils';
+import type { LedgerEntry } from '@/lib/wallet-types';
 import { LedgerEntryAmount } from '@/components/payments/LedgerEntryAmount';
-import type { CancellationLedgerDisplay } from '@/lib/merge-cancellation-ledger-entries';
 import { mergeCancellationLedgerEntries } from '@/lib/merge-cancellation-ledger-entries';
+import { partnerPayoutHistoryHref } from '@/lib/partner-payments-routes';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import {
   Wallet,
@@ -111,25 +116,6 @@ interface WalletSummary {
   in_process_withdrawal_total: number
 }
 
-interface LedgerEntry {
-  id: number
-  direction: 'CREDIT' | 'DEBIT'
-  category: string
-  balance_type: string
-  amount: number
-  balance_after: number
-  reference_type: string
-  reference_id: number | null
-  reference_extra: string | null
-  description: string | null
-  metadata: Record<string, unknown> | null
-  created_at: string
-  order_id: number | null
-  formatted_order_id: string | null
-  table_id: string | null
-  pg_transaction_id?: string | null
-}
-
 interface OrderDetailItem {
   id: number
   item_name: string
@@ -190,23 +176,11 @@ function PgTxnIdCell({ pgId }: { pgId: string | null | undefined }) {
 
 function isCancellationNoCreditEntry(row: LedgerEntry): boolean {
   const meta = row.metadata as Record<string, unknown> | null
-  if (getCancellationDisplay(row)) return false
   return meta?.entry_type === 'order_cancellation' && meta?.balance_impact === 'none'
 }
 
-function getCancellationDisplay(row: LedgerEntry): CancellationLedgerDisplay | null {
-  const meta = row.metadata as Record<string, unknown> | null
-  const raw = meta?.cancellation_display
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const d = raw as CancellationLedgerDisplay
-  if (!Number.isFinite(Number(d.originalAmount)) && !Number.isFinite(Number(d.creditAmount))) {
-    return null
-  }
-  return {
-    originalAmount: Math.max(0, Number(d.originalAmount ?? 0)),
-    creditAmount: Math.max(0, Number(d.creditAmount ?? 0)),
-    showCancelledStatus: Boolean(d.showCancelledStatus),
-  }
+function formatLedgerRowDescription(row: LedgerEntry): string {
+  return resolveLedgerDisplayDescription(row) || '—'
 }
 
 function pctChangeLabel(current: number, prior: number): { text: string; positive: boolean } {
@@ -220,6 +194,7 @@ function pctChangeLabel(current: number, prior: number): { text: string; positiv
 
 function PaymentsContent() {
   const searchParams = useSearchParams()
+  const pathname = usePathname()
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
   const [storeId, setStoreId] = useState<string | null>(null)
   const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId)
@@ -624,7 +599,7 @@ function PaymentsContent() {
       const lines = rows.map((r) => [
         new Date(r.created_at).toISOString(),
         r.category,
-        formatLedgerDescription(r.description).replace(/"/g, '""'),
+        resolveLedgerDisplayDescription(r).replace(/"/g, '""'),
         r.direction,
         String(r.amount),
         String(r.balance_after),
@@ -669,7 +644,7 @@ function PaymentsContent() {
                   className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-medium hover:bg-blue-100 transition-colors"
                 >
                   <FileText size={16} />
-                  View refund policy
+                  View refund &amp; cancellation policy
                 </button>
                 <button
                   onClick={openWithdrawalSheet}
@@ -931,8 +906,8 @@ function PaymentsContent() {
                     <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
                   </button>
 
-                  <button
-                    type="button" onClick={() => scrollToLedger({ category: 'WITHDRAWAL' })}
+                  <Link
+                    href={partnerPayoutHistoryHref(pathname)}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
                   >
                     <div className="flex items-center gap-3">
@@ -945,7 +920,7 @@ function PaymentsContent() {
                       </div>
                     </div>
                     <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
-                  </button>
+                  </Link>
 
                   <button
                     type="button" onClick={() => void downloadLedgerCsv()}
@@ -1098,7 +1073,7 @@ function PaymentsContent() {
                               </td>
                               <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</td>
                               <td className="py-3 px-4 align-top text-gray-600 min-w-[200px] max-w-xs whitespace-normal break-words leading-relaxed">
-                                {formatLedgerDescription(row.description) || '—'}
+                                {formatLedgerRowDescription(row)}
                               </td>
                               <td className="py-3 px-4 align-top text-gray-600 min-w-[160px]">
                                 {row.category === 'WITHDRAWAL' ? (
@@ -1107,42 +1082,11 @@ function PaymentsContent() {
                                   '—'
                                 )}
                               </td>
-                              <td className={`py-3 px-4 text-right font-semibold tabular-nums ${
-                                getCancellationDisplay(row)
-                                  ? ''
-                                  : isCancellationNoCreditEntry(row)
-                                    ? 'text-amber-700'
-                                    : row.direction === 'CREDIT'
-                                      ? 'text-emerald-600'
-                                      : 'text-red-600'
-                              }`}>
-                                {(() => {
-                                  const cancellationDisplay = getCancellationDisplay(row)
-                                  if (cancellationDisplay) {
-                                    return <LedgerEntryAmount display={cancellationDisplay} />
-                                  }
-                                  if (isCancellationNoCreditEntry(row)) {
-                                    return formatInr(row.amount)
-                                  }
-                                  return `${row.direction === 'CREDIT' ? '+' : '-'}${formatInr(row.amount)}`
-                                })()}
+                              <td className="py-3 px-4 text-right">
+                                <LedgerEntryAmount display={resolveLedgerDisplayAmount(row)} />
                               </td>
                               <td className="py-3 px-4 text-center">
                                 {(() => {
-                                  const cancellationDisplay = getCancellationDisplay(row)
-                                  if (cancellationDisplay) {
-                                    return cancellationDisplay.creditAmount > 0 ? (
-                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
-                                        <div className="w-2 h-2 rounded-full bg-emerald-600"/>
-                                        Credit
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
-                                        <div className="w-2 h-2 rounded-full bg-amber-600"/>
-                                        Cancelled
-                                      </span>
-                                    )
-                                  }
                                   if (isCancellationNoCreditEntry(row)) {
                                     return (
                                       <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
@@ -1168,13 +1112,7 @@ function PaymentsContent() {
                                 })()}
                               </td>
                               <td className="py-3 px-4 text-right text-gray-700 tabular-nums">
-                                {(() => {
-                                  const cancellationDisplay = getCancellationDisplay(row)
-                                  if (cancellationDisplay) {
-                                    return formatInr(cancellationDisplay.creditAmount)
-                                  }
-                                  return formatInr(row.balance_after)
-                                })()}
+                                {formatInr(row.balance_after)}
                               </td>
                             </tr>
                             {expandedLedgerId === row.id && row.category === 'WITHDRAWAL' && row.reference_id != null && (() => {
@@ -1610,7 +1548,7 @@ function PaymentsContent() {
             <div className="flex-shrink-0 px-4 sm:px-5 py-4 border-b border-gray-200 bg-white/95 backdrop-blur flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.18em] text-orange-600 font-semibold">Policy</p>
-                <h2 className="text-base sm:text-lg font-bold text-gray-900 leading-tight">Refund Policy</h2>
+                <h2 className="text-base sm:text-lg font-bold text-gray-900 leading-tight">Refund &amp; Cancellation Policy</h2>
               </div>
               <button onClick={() => setShowRefundPolicy(false)} className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl hover:bg-gray-100 text-gray-600">
                 <X size={20} />

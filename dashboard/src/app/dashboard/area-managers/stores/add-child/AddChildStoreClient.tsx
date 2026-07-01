@@ -1,9 +1,9 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Menu, X, Loader2 } from "lucide-react";
 import Step3MenuUpload, { MenuUploadMode } from "@/components/onboarding/Step3MenuUpload";

@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         store_id: gate.storeIdNum,
         type: 'system',
         title: WAITING_FOR_ORDER_TITLE,
-        body: 'You are online. We will notify you when a new order arrives.',
+        body: 'Waiting for orders',
         read: false,
       })
       .select('id')

@@ -184,8 +184,8 @@ export default function SettingsScreen() {
           <SettingsRow
             icon="trash-outline"
             label="Delete my account"
-            value="Erase data; reversible for 15 days"
-            onPress={() => router.push("/profile/legal/data-deletion-policy" as never)}
+            value="Request closure — reviewed, permanent"
+            onPress={() => router.push("/profile/delete-account" as never)}
           />
         </View>
 

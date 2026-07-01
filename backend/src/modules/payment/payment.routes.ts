@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ulid } from "ulid";
-import { getDb } from "../../db/client.js";
+import { getDb, getSql } from "../../db/client.js";
+import { emitEvent } from "../notifications/eventBus.js";
 import { riders, onboardingPayments, paymentWebhookEvents } from "../../db/schema.js";
 import { eq, desc, and, or, sql } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
@@ -168,6 +169,28 @@ export async function paymentRoutes(app: FastifyInstance) {
             razorpayPaymentId,
             payload: { event, eventId, finalizedOk: result.ok, finalizeCode: result.code ?? null, durationMs: Date.now() - startedAtMs },
           });
+          if (result.ok) {
+            void (async () => {
+              try {
+                const sql = getSql();
+                const rows = (await sql`
+                  SELECT c.order_id, c.customer_id, c.grand_total
+                  FROM public.orders_core c
+                  WHERE c.razorpay_order_id = ${razorpayOrderId}
+                  LIMIT 1
+                `) as unknown as Array<{ order_id: string; customer_id: string; grand_total: number | string }>;
+                const row = rows[0];
+                if (row?.customer_id && row.order_id) {
+                  emitEvent("payment.settled", {
+                    orderId: String(row.order_id),
+                    customerId: String(row.customer_id),
+                    amount: Number(row.grand_total ?? 0),
+                    status: "SUCCESS",
+                  });
+                }
+              } catch { /* tolerated */ }
+            })();
+          }
           return reply.send({ ok: result.ok });
         }
 
@@ -206,6 +229,27 @@ export async function paymentRoutes(app: FastifyInstance) {
             failureMessage,
             payload: { event, eventId, durationMs: Date.now() - startedAtMs },
           });
+          void (async () => {
+            try {
+              const sql = getSql();
+              const rows = (await sql`
+                SELECT c.order_id, c.customer_id, c.grand_total
+                FROM public.orders_core c
+                WHERE c.razorpay_order_id = ${razorpayOrderId}
+                LIMIT 1
+              `) as unknown as Array<{ order_id: string; customer_id: string; grand_total: number | string }>;
+              const row = rows[0];
+              if (row?.customer_id && row.order_id) {
+                emitEvent("payment.settled", {
+                  orderId: String(row.order_id),
+                  customerId: String(row.customer_id),
+                  amount: Number(row.grand_total ?? 0),
+                  status: "FAILED",
+                  reason: failureMessage,
+                });
+              }
+            } catch { /* tolerated */ }
+          })();
           return reply.send({ ok: true });
         }
 

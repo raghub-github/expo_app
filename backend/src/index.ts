@@ -40,12 +40,14 @@ import { etaRoutes } from "./modules/eta/eta.routes.js";
 import { billingDebugRoutes } from "./modules/billing/billing.debug.routes.js";
 import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
+import { runOrderAutoAcceptTick } from "./services/order-auto-accept.js";
 import { runRideSearchTimeoutTick } from "./services/ride-search-timeout.js";
 import { runOrderDispatchWaveTick } from "./lib/order-dispatch-tick.js";
 import { withLock, closeRedis } from "@gatimitra/redis";
 import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
+import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
 import { customerSubscriptionModule } from "./modules/subscription/customer-subscription.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
@@ -302,6 +304,54 @@ app.post<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/schedule
   }
 });
 
+// Internal: flush expired unaccepted orders for one store (partner portal open).
+app.post<{ Params: { storeId: string } }>(
+  "/v1/internal/stores/:storeId/sync-acceptance-timeout",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const storeId = Number((req.params as { storeId: string }).storeId);
+    if (!Number.isInteger(storeId) || storeId < 1) {
+      return reply.code(400).send({ error: "invalid_store_id" });
+    }
+    try {
+      const { syncOrderAcceptanceTimeoutForStore } = await import(
+        "./services/order-acceptance-timeout.js"
+      );
+      const { cancelled, auto_accepted } = await syncOrderAcceptanceTimeoutForStore(storeId, req.log);
+      return reply.send({ cancelled, auto_accepted, store_id: storeId });
+    } catch (e) {
+      req.log.error({ err: e, storeId }, "sync_acceptance_timeout_failed");
+      return reply.code(500).send({ error: "sync_failed", cancelled: 0 });
+    }
+  }
+);
+
+// Internal: authoritative partner/merchant surface status (schedule tick + postgres read).
+app.get<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/partner-status", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  try {
+    const { buildPartnerStoreStatusSnapshot } = await import(
+      "./modules/merchant-partner/partner-store-status-snapshot.js"
+    );
+    const snapshot = await buildPartnerStoreStatusSnapshot(storeId, req.log);
+    if (!snapshot) return reply.code(404).send({ error: "store_not_found" });
+    return reply.send(snapshot);
+  } catch (e) {
+    req.log.error({ err: e, storeId }, "partner_status_snapshot_failed");
+    return reply.code(500).send({ error: "partner_status_snapshot_failed" });
+  }
+});
+
 await app.register(authRoutes, { prefix: "/v1/auth" });
 await app.register(riderRoutes, { prefix: "/v1/rider" });
 await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });
@@ -373,6 +423,8 @@ await app.register((await import("./modules/rider-payout/riderPayout.routes.js")
 await app.register(geoRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
+await app.register(notificationRoutes);
+await app.register(notificationInternalRoutes, { prefix: "/v1/internal" });
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
@@ -442,6 +494,7 @@ app.addHook("onResponse", async (req, reply) => {
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;
 let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+let orderAutoAcceptInterval: ReturnType<typeof setInterval> | null = null;
 let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
 let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
@@ -487,6 +540,7 @@ const gracefulShutdown = async (signal: string) => {
   if (storeScheduleInterval) { clearInterval(storeScheduleInterval); storeScheduleInterval = null; }
   if (pendingPaymentReconcilerInterval) { clearInterval(pendingPaymentReconcilerInterval); pendingPaymentReconcilerInterval = null; }
   if (orderAcceptanceTimeoutInterval) { clearInterval(orderAcceptanceTimeoutInterval); orderAcceptanceTimeoutInterval = null; }
+  if (orderAutoAcceptInterval) { clearInterval(orderAutoAcceptInterval); orderAutoAcceptInterval = null; }
   if (rideSearchTimeoutInterval) { clearInterval(rideSearchTimeoutInterval); rideSearchTimeoutInterval = null; }
   if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
   if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
@@ -566,6 +620,15 @@ try {
   storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
   app.log.info({ intervalSeconds: 30 }, "store schedule tick started (auto open/close from operating hours)");
 
+  // Notification scheduled-campaign poller — picks up due scheduled campaigns
+  // (status='scheduled' AND scheduled_at <= now()) and dispatches them via
+  // NotificationService. Redis lock ensures only one backend replica polls.
+  void startScheduledPoller().catch((err) => app.log.error({ err }, "notification_scheduled_poller_start_failed"));
+  app.log.info("notification scheduled poller started");
+
+  // Wire domain events → notification templates.
+  registerDomainEventHandlers();
+
   const orderAcceptanceIntervalMs = 15_000;
   const runAcceptanceTickLocked = () =>
     withLock("tick:acceptance-timeout", 25_000, () => runOrderAcceptanceTimeoutTick(app.log))
@@ -581,6 +644,25 @@ try {
   await runAcceptanceTickLocked();
   orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
   app.log.info({ intervalSeconds: 15 }, "order acceptance timeout tick started (auto-cancel + server auto-accept)");
+
+  // Order auto-accept tick — every 10 s; lock TTL 20 s.
+  // Added in MRC merge: server-side auto-accept of new orders when the
+  // merchant has enabled auto-accept on store_operations.
+  const orderAutoAcceptIntervalMs = 10_000;
+  const runAutoAcceptTickLocked = () =>
+    withLock("tick:order-auto-accept", 20_000, () => runOrderAutoAcceptTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "order_auto_accept", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "order_auto_accept_tick"));
+  void runAutoAcceptTickLocked();
+  orderAutoAcceptInterval = setInterval(() => { void runAutoAcceptTickLocked(); }, orderAutoAcceptIntervalMs);
+  app.log.info({ intervalMs: orderAutoAcceptIntervalMs }, "order auto-accept tick started");
 
   const rideSearchTimeoutIntervalMs = 15_000;
   const runRideSearchTickLocked = () =>

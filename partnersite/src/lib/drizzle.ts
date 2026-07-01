@@ -10,6 +10,16 @@ export const client = postgres(connectionString, {
   connect_timeout: 30,
   max_lifetime: 60 * 30,
   prepare: false, // Required for Supabase/PgBouncer pooler — avoids "prepared statement does not exist"
+  // Per-connection settings applied on every checkout. statement_timeout at
+  // 25s ensures a slow / stuck query is killed by Postgres before nginx (60s)
+  // returns 504 — the route returns a clean 500 quickly, the browser sees a
+  // fast error, and the request no longer holds a DB connection.
+  connection: {
+    // statement_timeout is applied as a literal SET during connection setup.
+    // Cast because postgres.js types the connection settings as strings but
+    // the .d.ts declares it numeric — the runtime accepts a string here.
+    statement_timeout: '25000' as unknown as number,
+  },
 });
 
 export const db = drizzle(client);

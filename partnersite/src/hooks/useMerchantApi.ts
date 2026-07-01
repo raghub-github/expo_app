@@ -8,9 +8,12 @@ import {
   keepPreviousData,
 } from '@tanstack/react-query';
 import { merchantKeys } from '@/lib/query-keys';
+import { mapPayoutSettlementApiResponse } from '@/lib/merchant-payout-utils';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { readDashboardWalletCache, writeDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import type { LedgerEntry } from '@/lib/wallet-types';
 
-// ---------- Types ----------
+export type { LedgerEntry };
 export interface WalletSummary {
   available_balance: number;
   locked_balance?: number;
@@ -69,25 +72,6 @@ export interface PayoutRequestRow {
 export interface PayoutRequestsResponse {
   summary: PayoutSummary;
   recent: PayoutRequestRow[];
-}
-
-export interface LedgerEntry {
-  id: number;
-  direction: 'CREDIT' | 'DEBIT';
-  category: string;
-  balance_type: string;
-  amount: number;
-  balance_after: number;
-  reference_type: string;
-  reference_id: number | null;
-  reference_extra: string | null;
-  description: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string;
-  order_id: number | null;
-  formatted_order_id: string | null;
-  table_id: string | null;
-  pg_transaction_id?: string | null;
 }
 
 export interface LedgerResponse {
@@ -236,6 +220,22 @@ async function fetchLedger(
   return { entries: data.entries ?? [], total: data.total ?? 0 };
 }
 
+export async function fetchPayoutSettlement(
+  storeId: string,
+  from: Date,
+  to: Date,
+): Promise<import('@/lib/merchant-payout-utils').PayoutSettlementSummary> {
+  const params = new URLSearchParams({
+    storeId,
+    from: from.toISOString(),
+    to: to.toISOString(),
+  });
+  const res = await fetch(`/api/merchant/wallet/payout-settlement?${params}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return mapPayoutSettlementApiResponse((data.settlement ?? {}) as Record<string, unknown>);
+}
+
 async function fetchBankAccounts(storeId: string): Promise<BankAccount[]> {
   const res = await fetch(`/api/merchant/bank-accounts?storeId=${encodeURIComponent(storeId)}`);
   const data = await res.json();
@@ -356,13 +356,38 @@ export function useMerchantPayoutRequests(
   });
 }
 
+/** Payout cycle settlement summary (A − B − C); cached per store + period. */
+export function usePayoutSettlement(
+  storeId: string | null,
+  periodStart: Date | null,
+  periodEnd: Date | null,
+  options?: { enabled?: boolean },
+) {
+  const from = periodStart?.toISOString() ?? '';
+  const to = periodEnd?.toISOString() ?? '';
+  const enabled =
+    (options?.enabled ?? true) &&
+    !!storeId &&
+    isValidPartnerStoreId(storeId) &&
+    !!from &&
+    !!to &&
+    !!periodStart &&
+    !!periodEnd;
+  return useQuery({
+    queryKey: merchantKeys.payoutSettlement(storeId ?? '', from, to),
+    queryFn: () => fetchPayoutSettlement(storeId!, periodStart!, periodEnd!),
+    enabled,
+    staleTime: 60 * 1000,
+  });
+}
+
 /** Paginated ledger with filters; keepPreviousData for smooth pagination. */
 export function useMerchantLedger(
   storeId: string | null,
   params: { limit: number; offset: number; from?: string; to?: string; direction?: string; category?: string; search?: string },
   options?: { enabled?: boolean }
 ) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const enabled = (options?.enabled ?? true) && !!storeId && isValidPartnerStoreId(storeId);
   return useQuery({
     queryKey: merchantKeys.ledger(storeId ?? '', params),
     queryFn: () => fetchLedger(storeId!, params),
@@ -374,7 +399,7 @@ export function useMerchantLedger(
 
 /** Bank accounts; refetch when withdrawal/bank section is opened. */
 export function useMerchantBankAccounts(storeId: string | null, options?: { enabled?: boolean }) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const enabled = (options?.enabled ?? true) && !!storeId && isValidPartnerStoreId(storeId);
   return useQuery({
     queryKey: merchantKeys.bankAccounts(storeId ?? ''),
     queryFn: () => fetchBankAccounts(storeId!),

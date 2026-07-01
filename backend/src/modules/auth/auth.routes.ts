@@ -67,6 +67,9 @@ function riderLoginLocation(req: { headers: Record<string, unknown> }): string |
 }
 
 const RIDER_REFRESH_CLOCK_TOLERANCE_SEC = 60 * 60 * 24 * 30; // allow refresh up to 30d after JWT exp
+const MERCHANT_REFRESH_CLOCK_TOLERANCE_SEC = 60 * 60 * 24 * 30;
+/** Merchant stays signed in until explicit logout; refresh extends this window. */
+const MERCHANT_SESSION_TTL_SEC = 60 * 60 * 24 * 365;
 
 async function verifyRiderJwtForRefresh(token: string): Promise<{
   sub: string;
@@ -101,6 +104,45 @@ async function verifyRiderJwtForRefresh(token: string): Promise<{
       : "";
 
   if (!sub || role !== "rider" || !phoneE164 || !deviceId) {
+    throw Object.assign(new Error("invalid_token"), { statusCode: 401 });
+  }
+
+  return { sub, role, phoneE164, deviceId };
+}
+
+async function verifyMerchantJwtForRefresh(token: string): Promise<{
+  sub: string;
+  role: string;
+  phoneE164: string;
+  deviceId: string;
+}> {
+  const env = getEnv();
+  const currentKey = createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8"));
+  const previousKey = env.SUPABASE_JWT_SECRET_PREVIOUS
+    ? createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET_PREVIOUS, "utf-8"))
+    : null;
+  const opts = { clockTolerance: MERCHANT_REFRESH_CLOCK_TOLERANCE_SEC };
+
+  let payload;
+  try {
+    ({ payload } = await jwtVerify(token, currentKey, opts));
+  } catch (e) {
+    if (!previousKey) throw e;
+    ({ payload } = await jwtVerify(token, previousKey, opts));
+  }
+
+  const role = String((payload as { role?: string }).role ?? "");
+  const sub = String(payload.sub ?? "");
+  const phoneE164 =
+    typeof (payload as { phone?: string }).phone === "string"
+      ? (payload as { phone: string }).phone
+      : "";
+  const deviceId =
+    typeof (payload as { device_id?: string }).device_id === "string"
+      ? (payload as { device_id: string }).device_id
+      : "";
+
+  if (!sub || role !== "merchant" || !deviceId) {
     throw Object.assign(new Error("invalid_token"), { statusCode: 401 });
   }
 
@@ -425,7 +467,7 @@ export async function authRoutes(app: FastifyInstance) {
           });
         }
 
-        const expiresInSec = 60 * 60 * 24 * 7;
+        const expiresInSec = MERCHANT_SESSION_TTL_SEC;
         const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
         const accessToken = await issueSupabaseCompatibleJwt({
           jwtSecret: env.SUPABASE_JWT_SECRET,
@@ -610,6 +652,7 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
           404: z.object({ error: z.string(), message: z.string() }).optional(),
           429: z.object({ error: z.string() }),
           500: z.object({ error: z.string(), message: z.string().optional() }).optional(),
@@ -779,7 +822,7 @@ export async function authRoutes(app: FastifyInstance) {
             });
           }
 
-          const expiresInSec = 60 * 60 * 24 * 7; // 7 days
+          const expiresInSec = MERCHANT_SESSION_TTL_SEC;
           const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
           const accessToken = await issueSupabaseCompatibleJwt({
             jwtSecret: env.SUPABASE_JWT_SECRET,
@@ -836,7 +879,25 @@ export async function authRoutes(app: FastifyInstance) {
 
           let customerUserId: string;
           if (existing.length > 0) {
-            customerUserId = existing[0]!.customerId;
+            // Closed/deactivated accounts cannot be revived by logging back in.
+            // Deletion is request → review → deactivate, and it is permanent.
+            const existingCustomer = existing[0]!;
+            const isClosed =
+              existingCustomer.deletedAt != null ||
+              existingCustomer.accountStatus === "DEACTIVATED" ||
+              existingCustomer.accountStatus === "BLOCKED";
+            if (isClosed) {
+              req.log?.warn?.(
+                { customerId: existingCustomer.customerId, accountStatus: existingCustomer.accountStatus },
+                "[auth] login refused — customer account closed/deactivated",
+              );
+              return reply.code(403).send({
+                error: "account_closed",
+                message:
+                  "This account has been closed and cannot be reopened. If you think this is a mistake, contact grievance@gatimitra.com.",
+              });
+            }
+            customerUserId = existingCustomer.customerId;
           } else {
             const normalizedMobile = phoneE164.replace(/\D/g, "");
             const placeholderId = `GM_PENDING_${normalizedMobile}`;
@@ -1239,6 +1300,85 @@ export async function authRoutes(app: FastifyInstance) {
   );
 
   /**
+   * Refresh merchant session — re-issue JWT while device session is still active.
+   * Accepts slightly expired tokens so merchants stay signed in until they log out.
+   */
+  app.post(
+    "/merchant/refresh-session",
+    {
+      schema: {
+        body: z.object({
+          deviceId: z.string().min(1),
+        }),
+        response: {
+          200: SessionSchema,
+          401: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const header = req.headers.authorization;
+      const m = header ? /^Bearer\s+(.+)$/.exec(header) : null;
+      const token = m?.[1]?.trim();
+      if (!token) {
+        return reply.code(401).send({ error: "missing_authorization" });
+      }
+
+      const { deviceId: bodyDeviceId } = req.body as { deviceId: string };
+      let claims: Awaited<ReturnType<typeof verifyMerchantJwtForRefresh>>;
+      try {
+        claims = await verifyMerchantJwtForRefresh(token);
+      } catch {
+        return reply.code(401).send({ error: "invalid_token" });
+      }
+
+      if (claims.deviceId !== bodyDeviceId.trim()) {
+        return reply.code(401).send({ error: "invalid_token", message: "Device mismatch." });
+      }
+
+      const sql = getSql();
+      const rows = await sql`
+        SELECT id
+        FROM user_device_sessions
+        WHERE user_id = ${claims.sub}
+          AND device_id = ${claims.deviceId}
+          AND is_active = TRUE
+        LIMIT 1
+      `;
+      if (!rows[0]) {
+        return reply.code(401).send({
+          error: "session_revoked",
+          message: "Signed out from this device.",
+        });
+      }
+
+      await sql`
+        UPDATE user_device_sessions
+        SET last_active = now()
+        WHERE user_id = ${claims.sub} AND device_id = ${claims.deviceId} AND is_active = TRUE
+      `;
+
+      const env = getEnv();
+      const expiresAt = Math.floor(Date.now() / 1000) + MERCHANT_SESSION_TTL_SEC;
+      const accessToken = await issueSupabaseCompatibleJwt({
+        jwtSecret: env.SUPABASE_JWT_SECRET,
+        sub: claims.sub,
+        role: "merchant",
+        phoneE164: claims.phoneE164,
+        deviceId: claims.deviceId,
+        exp: expiresAt,
+      });
+
+      return {
+        accessToken,
+        expiresAt,
+        role: "merchant" as const,
+        userId: claims.sub,
+      };
+    },
+  );
+
+  /**
    * Exchange a Supabase access token (from Supabase Auth phone OTP) for a backend customer session.
    * This lets the customer app use Supabase Send SMS hook for OTP delivery
    * while backend remains the session authority.
@@ -1510,7 +1650,7 @@ export async function authRoutes(app: FastifyInstance) {
           };
         });
 
-        const expiresInSec = 60 * 60 * 24 * 7; // 7 days
+        const expiresInSec = MERCHANT_SESSION_TTL_SEC;
         const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
         const jwtToken = await issueSupabaseCompatibleJwt({
           jwtSecret: env.SUPABASE_JWT_SECRET,

@@ -380,6 +380,7 @@ export default function OrderDetailScreen() {
                 rider={displayRider}
                 deliveryType={order.delivery_type}
                 riderReachedAt={displayRiderReachedAt}
+                orderStage={stage}
               />
             </View>
 

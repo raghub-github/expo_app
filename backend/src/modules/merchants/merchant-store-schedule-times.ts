@@ -14,6 +14,7 @@ const STORE_TZ = "Asia/Kolkata";
 export type StoreScheduleTimes = {
   nextOpenAt: string | null;
   nextCloseAt: string | null;
+  withinOperatingHours: boolean;
 };
 
 function hhmmToIsoOnIstDate(timeStr: string, dateStr: string): string | null {
@@ -88,6 +89,7 @@ export async function getScheduleTimesForStores(
     map.set(storeId, {
       nextOpenAt: within ? null : nextOpenIso,
       nextCloseAt: within ? resolveCloseIso(next.next_close_time, nowRef, minutesSinceMidnight) : null,
+      withinOperatingHours: within,
     });
   }
 

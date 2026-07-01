@@ -2,39 +2,9 @@
  * Push + in-app notification when a new CREATED food order lands for a merchant store.
  */
 import type { Sql } from "postgres";
+import { getMerchantStorePushTokens, insertMerchantStoreNotification } from "./merchant-push-notify.js";
 import { resolveMerchantVisibleOrderTotal } from "./merchant-visible-pricing.js";
-
-type PushPayload = {
-  title: string;
-  body: string;
-  data?: Record<string, unknown>;
-};
-
-async function sendExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
-  if (!tokens.length) return;
-  const messages = tokens.map((to) => ({
-    to,
-    sound: "default",
-    title: payload.title,
-    body: payload.body,
-    data: payload.data ?? {},
-    priority: "high",
-    channelId: "merchant_default",
-  }));
-  try {
-    await fetch("https://exp.host/--/api/v2/push/send", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Accept-Encoding": "gzip, deflate",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(messages),
-    });
-  } catch {
-    /* best-effort */
-  }
-}
+import { send as sendNotification } from "../modules/notifications/notificationService.js";
 
 /** Merchant CTM — always 2 decimal places (matches wallet ledger). */
 function formatExactMerchantInr(amount: number): string {
@@ -87,35 +57,45 @@ export async function notifyMerchantStoreNewOrder(
       ? `${displayId} · ₹${formatExactMerchantInr(total)} — tap to accept`
       : `${displayId} — tap to accept`;
 
-  await sql`
-    INSERT INTO merchant_store_notifications (store_id, type, title, body, read, order_id, action_url)
-    VALUES (
-      ${merchantStoreId},
-      'order',
-      ${title},
-      ${body},
-      FALSE,
-      ${foodId ? Number(foodId) : null},
-      ${foodId ? `/order/${foodId}` : "/(tabs)/"}
-    )
-  `;
-
-  const tokenRows = await sql`
-    SELECT token FROM merchant_store_push_tokens WHERE store_id = ${merchantStoreId}
-  `;
-  const tokens = (tokenRows as unknown as Array<{ token: string }>)
-    .map((t) => t.token)
-    .filter(Boolean);
-
-  await sendExpoPush(tokens, {
+  // Legacy in-app inbox row (kept for backward compat with the merchant app's
+  // existing notifications tab reading merchant_store_notifications).
+  await insertMerchantStoreNotification(sql, {
+    storeId: merchantStoreId,
+    type: "order",
     title,
     body,
-    data: {
-      type: "merchant_new_order",
-      orderId: orderIdText,
-      foodOrderId: foodId,
-      url: foodId ? `/order/${foodId}` : "/(tabs)/",
-      screen: "new_order",
-    },
+    orderId: foodId ? Number(foodId) : null,
+    actionUrl: foodId ? `/order/${foodId}` : "/(tabs)/",
   });
+
+  // v2 send — provides audit log + preference handling + super-admin visibility.
+  // Uses direct device_tokens (merchant_store_push_tokens, not expo_push_tokens
+  // by user_id) so this works even when the merchant has multiple stores on
+  // different phones. Idempotency key = MERCHANT_NEW_ORDER:<order-id>:<store-id>
+  // dedupes if the placement service retries mid-transaction.
+  const tokens = await getMerchantStorePushTokens(sql, merchantStoreId);
+  if (tokens.length > 0) {
+    await sendNotification({
+      templateCode: "MERCHANT_NEW_ORDER",
+      variables: {
+        orderId: orderIdText,
+        orderShortId: displayId,
+        itemCount: 1, // template body uses this — template can be edited to omit
+        amount: total ?? 0,
+        customerName: "Customer",
+      },
+      target: { device_tokens: tokens },
+      priority: "critical",
+      idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
+      metadata: {
+        type: "merchant_new_order",
+        orderId: orderIdText,
+        foodOrderId: foodId,
+        url: foodId ? `/order/${foodId}` : "/(tabs)/",
+        screen: "new_order",
+      },
+    }).catch((e) =>
+      console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)
+    );
+  }
 }

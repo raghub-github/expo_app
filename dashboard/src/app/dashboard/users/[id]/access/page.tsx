@@ -1,6 +1,6 @@
 "use client";
+import { useAppParams } from "@/hooks/useAppSearchParams";
 
-import { useAppParams } from "@/lib/navigation/use-app-params";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Save, Loader2 } from "lucide-react";
@@ -225,3 +225,4 @@ export default function UserAccessPage() {
     </div>
   );
 }
+

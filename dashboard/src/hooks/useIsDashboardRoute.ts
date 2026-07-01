@@ -1,6 +1,5 @@
 "use client";
-
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 
 
@@ -17,3 +16,4 @@ export function useIsDashboardRoute(routePrefix: string): boolean {
   const clean = pathname?.split("?")[0].split("#")[0] ?? "";
   return routePrefix === clean || clean.startsWith(routePrefix + "/");
 }
+

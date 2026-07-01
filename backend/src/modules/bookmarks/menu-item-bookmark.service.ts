@@ -76,7 +76,8 @@ export async function listBookmarkedMenuItems(
       .from("merchant_menu_items")
       .select("id, item_id, item_name, item_image_url, selling_price, food_type, store_id")
       .in("id", menuItemIds)
-      .eq("is_deleted", false);
+      .eq("is_deleted", false)
+      .eq("is_locked_by_plan", false);
     if (menuErr) {
       if (isTableMissingError(menuErr)) return [];
       throw menuErr;

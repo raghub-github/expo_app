@@ -4,6 +4,7 @@ import fp from "fastify-plugin";
 import { isTransientDbError, hasTransientDbCause } from "../lib/db/is-transient-db-error.js";
 import { isDbConnectionError } from "../db/client.js";
 import { AuthHttpError } from "./auth.js";
+import { DbSlotTimeoutError } from "../lib/db/db-slot.js";
 
 /**
  * Global Error Handler
@@ -91,13 +92,14 @@ async function errorHandlerPlugin(app: FastifyInstance) {
     }
 
     const dbUnavailable =
+      error instanceof DbSlotTimeoutError ||
       isTransientDbError(error) ||
       isDbConnectionError(error) ||
       hasTransientDbCause(error);
     if (dbUnavailable) {
       app.log.error({ error: error.message, stack: error.stack }, "Database error");
       return reply.status(503).send({
-        error: "database_unavailable",
+        error: error instanceof DbSlotTimeoutError ? "database_slot_timeout" : "database_unavailable",
         message: "Database is busy. Please try again in a moment.",
         requestId,
       });

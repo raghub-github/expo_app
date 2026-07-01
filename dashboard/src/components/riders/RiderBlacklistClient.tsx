@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";

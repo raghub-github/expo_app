@@ -8,7 +8,7 @@
  *
  * Supabase Dashboard > Authentication > URL Configuration (for partner app at partner.gatimitra.com):
  * - Site URL: use https://partner.gatimitra.com (not gatimitra.com or localhost) so cookies and redirects use the correct domain.
- * - Redirect URLs: must include https://partner.gatimitra.com/auth/callback and http://localhost:3000/auth/callback.
+ * - Redirect URLs: must include https://partner.gatimitra.com/auth/callback and http://localhost:3002/auth/callback.
  */
 
 import { createClient } from "@/lib/supabase/client";
@@ -33,7 +33,7 @@ function getAuthRedirectBaseUrl(): string {
   if (typeof window !== "undefined") {
     return window.location.origin;
   }
-  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
 }
 
 /** Redirect to Google sign-in (Supabase OAuth). Configure Google in Supabase Dashboard > Authentication > Providers. */

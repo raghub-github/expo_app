@@ -24,4 +24,11 @@ describe("merchant-menu-prep", () => {
     expect(resolveStorePrepMinutesForEta(22, 30)).toBe(22);
     expect(resolveStorePrepMinutesForEta(null, 30)).toBe(30);
   });
+
+  it("adds preparation buffer to base prep for customer ETA", () => {
+    expect(resolveStorePrepMinutesForEta(20, 30, 10)).toBe(30);
+    expect(resolveStorePrepMinutesForEta(null, 20, 10)).toBe(30);
+    expect(resolveStorePrepMinutesForEta(20, 30, 0)).toBe(20);
+    expect(resolveStorePrepMinutesForEta(20, 30, null)).toBe(20);
+  });
 });

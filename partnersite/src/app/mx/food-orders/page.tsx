@@ -13,6 +13,7 @@ import {
   shouldClearOrderNotifications,
 } from '@/lib/clear-store-order-notifications';
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
+import { displayLabelForAcceptedStep } from '@/lib/merchantVisibleTimeline';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import {
   Clock,
@@ -43,6 +44,11 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
+import {
+  DEFAULT_FOOD_ORDER_STATS,
+  readCachedFoodOrderStats,
+  writeCachedFoodOrderStats,
+} from '@/lib/food-order-stats-cache';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { MerchantStore } from '@/lib/merchantStore';
@@ -238,7 +244,12 @@ function OrdersPageContent() {
     if (!id) return [];
     return getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(id)) ?? [];
   });
-  const [stats, setStats] = useState<FoodOrderStats | null>(null);
+  const [stats, setStats] = useState<FoodOrderStats>(() => {
+    if (typeof window === 'undefined') return DEFAULT_FOOD_ORDER_STATS;
+    const id = readPartnerSelectedStoreId();
+    if (!id) return DEFAULT_FOOD_ORDER_STATS;
+    return readCachedFoodOrderStats(id) ?? DEFAULT_FOOD_ORDER_STATS;
+  });
   const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
@@ -619,23 +630,25 @@ function OrdersPageContent() {
   const fetchStats = useCallback(async () => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/food-orders/stats?store_id=${encodeURIComponent(storeId)}`);
+      const res = await fetch(`/api/food-orders/stats?store_id=${encodeURIComponent(storeId)}`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
-      if (res.ok) setStats(data);
-    } catch {}
+      if (res.ok) {
+        const next = { ...DEFAULT_FOOD_ORDER_STATS, ...data } as FoodOrderStats;
+        setStats(next);
+        writeCachedFoodOrderStats(storeId, next);
+      }
+    } catch {
+      /* keep last known / default stats visible */
+    }
   }, [storeId]);
 
-  const lastFreshnessSyncAtRef = useRef(0);
-  const refreshOnFocusOrVisible = useCallback(() => {
+  useEffect(() => {
     if (!storeId) return;
-    const now = Date.now();
-    if (now - lastFreshnessSyncAtRef.current < 1200) return;
-    lastFreshnessSyncAtRef.current = now;
-    // Read-only freshness sync: refetch latest backend state on return/focus.
-    void fetchStoreStatus();
-    void fetchOrders();
-    void fetchStats();
-  }, [storeId, fetchStoreStatus, fetchOrders, fetchStats]);
+    const cached = readCachedFoodOrderStats(storeId);
+    setStats(cached ?? DEFAULT_FOOD_ORDER_STATS);
+  }, [storeId]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -644,34 +657,22 @@ function OrdersPageContent() {
       { method: 'POST', credentials: 'include', cache: 'no-store' }
     ).catch(() => {});
     void fetchOrders();
-  }, [fetchOrders, storeId]);
+    void fetchStats();
+  }, [fetchOrders, fetchStats, storeId]);
 
   useEffect(() => {
-    const onRefresh = () => void fetchOrders();
+    const onRefresh = () => {
+      void fetchOrders();
+      void fetchStats();
+    };
     window.addEventListener('partner-food-orders-refresh', onRefresh);
     return () => window.removeEventListener('partner-food-orders-refresh', onRefresh);
-  }, [fetchOrders]);
+  }, [fetchOrders, fetchStats]);
 
   useEffect(() => {
-    const onFocus = () => refreshOnFocusOrVisible();
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') refreshOnFocusOrVisible();
-    };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [refreshOnFocusOrVisible]);
-
-  useEffect(() => {
-    fetchStats();
-    const t = setInterval(fetchStats, 15000);
+    const t = setInterval(() => void fetchStats(), 15000);
     return () => clearInterval(t);
   }, [fetchStats]);
-
-  /** Poll orders so admin / dashboard status changes appear even if realtime misses an event. */
   useEffect(() => {
     if (!storeId) return;
     const t = setInterval(() => {
@@ -1024,6 +1025,7 @@ function OrdersPageContent() {
     void confirmStoreClose();
   }, [closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, confirmStoreClose]);
 
+  const autoCancelFiredRef = useRef<Set<number>>(new Set());
   const orderPipelineByKeyRef = useRef<Map<number, string>>(new Map());
 
   const updateStatus = useCallback(
@@ -1303,9 +1305,7 @@ function OrdersPageContent() {
     const st = resolveOrderSidebarPipelineStatus(selectedOrder);
     if (st !== 'CREATED' && st !== 'NEW') return { label: undefined, disabled: false };
     const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-    const deadline = selectedOrder.merchant_response_deadline_at
-      ? new Date(selectedOrder.merchant_response_deadline_at).getTime()
-      : new Date(selectedOrder.created_at).getTime() + mins * 60_000;
+    const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
     const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
     const m = Math.floor(secondsLeft / 60);
     const s = secondsLeft % 60;
@@ -1320,9 +1320,7 @@ function OrdersPageContent() {
       const st = resolveOrderSidebarPipelineStatus(order);
       if (st !== 'CREATED' && st !== 'NEW') return { label: undefined as string | undefined, disabled: false };
       const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-      const deadline = order.merchant_response_deadline_at
-        ? new Date(order.merchant_response_deadline_at).getTime()
-        : new Date(order.created_at).getTime() + mins * 60_000;
+      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
       const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
       const m = Math.floor(secondsLeft / 60);
       const s = secondsLeft % 60;
@@ -1333,6 +1331,31 @@ function OrdersPageContent() {
     },
     [acceptanceSettings?.acceptance_window_minutes, nowTick]
   );
+
+  useEffect(() => {
+    if (!storeId) return;
+    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+    for (const order of orders) {
+      const st = resolveOrderSidebarPipelineStatus(order);
+      if (st !== 'CREATED') continue;
+      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      if (nowTick < deadline) continue;
+      if (autoCancelFiredRef.current.has(order.id)) continue;
+      if (actionLoading === order.id) continue;
+      autoCancelFiredRef.current.add(order.id);
+      void updateStatus(order, 'CANCELLED', {
+        rejected_reason: 'Auto Cancelled',
+        cancel_mode: 'auto',
+      });
+    }
+  }, [
+    nowTick,
+    orders,
+    storeId,
+    acceptanceSettings?.acceptance_window_minutes,
+    actionLoading,
+    updateStatus,
+  ]);
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 
@@ -1454,26 +1477,20 @@ function OrdersPageContent() {
     return 'PREPARING' as const;
   }, [filteredOrders.length, displayOrders.length, filter]);
 
-  if (loading && orders.length === 0) {
-    return (
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
-        <PageSkeletonOrders />
-      </MXLayoutWhite>
-    );
-  }
+  const displayStats = stats;
 
-  const mobileStatsExtra = stats ? (
+  const mobileStatsExtra = (
     <div className="grid grid-cols-1 gap-2.5 text-sm">
       <div className="flex justify-between items-center">
         <span className="text-gray-500">Avg Prep</span>
-        <span className="font-semibold text-gray-900">{stats.avgPreparationTimeMinutes}m</span>
+        <span className="font-semibold text-gray-900">{displayStats.avgPreparationTimeMinutes}m</span>
       </div>
       <div className="flex justify-between items-center">
         <span className="text-gray-500">Completion</span>
-        <span className="font-semibold text-gray-900">{stats.completionRatePercent}%</span>
+        <span className="font-semibold text-gray-900">{displayStats.completionRatePercent}%</span>
       </div>
     </div>
-  ) : null;
+  );
 
   function StoreClosedOrdersState() {
     return (
@@ -1561,29 +1578,25 @@ function OrdersPageContent() {
                 <div className="md:hidden mr-2">
                   <MobileHamburgerButton />
                 </div>
-                {stats && (
-                  <div className="flex items-center gap-2 shrink-0">
-                    <StatBadge
-                      label="Today"
-                      value={String(
-                        Math.max(stats.ordersToday ?? 0, stats.deliveredTodayCount ?? 0)
-                      )}
-                      title="Orders placed or delivered today (IST)"
-                    />
-                    <StatBadge
-                      label="Active"
-                      value={String(orders.length > 0 ? liveActiveCount : (stats.activeOrders ?? 0))}
-                      title="Pending live orders (New + Preparing + Ready + Picked up + RTO)"
-                      accent
-                    />
-                  </div>
-                )}
-                {stats && (
-                  <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
-                    <StatBadge label="Avg Prep" value={`${stats.avgPreparationTimeMinutes}m`} />
-                    <StatBadge label="Completion" value={`${stats.completionRatePercent}%`} />
-                  </div>
-                )}
+                <div className="flex items-center gap-2 shrink-0">
+                  <StatBadge
+                    label="Today"
+                    value={String(
+                      Math.max(displayStats.ordersToday ?? 0, displayStats.deliveredTodayCount ?? 0)
+                    )}
+                    title="Orders placed or delivered today (IST)"
+                  />
+                  <StatBadge
+                    label="Active"
+                    value={String(orders.length > 0 ? liveActiveCount : (displayStats.activeOrders ?? 0))}
+                    title="Pending live orders (New + Preparing + Ready + Picked up + RTO)"
+                    accent
+                  />
+                </div>
+                <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
+                  <StatBadge label="Avg Prep" value={`${displayStats.avgPreparationTimeMinutes}m`} />
+                  <StatBadge label="Completion" value={`${displayStats.completionRatePercent}%`} />
+                </div>
               </div>
               <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
               <button
@@ -1721,7 +1734,9 @@ function OrdersPageContent() {
 
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
-            {showFullStoreClosedBlankState ? (
+            {loading && orders.length === 0 && !showFullStoreClosedBlankState ? (
+              <PageSkeletonOrders />
+            ) : showFullStoreClosedBlankState ? (
               <StoreClosedOrdersState />
             ) : (
               <>
@@ -2608,6 +2623,11 @@ function OrderActivityStrip({ ordersFoodId, storeId }: { ordersFoodId: number; s
   );
 }
 
+function orderStepLabel(step: (typeof ORDER_STEPS)[number], order: OrdersFoodRow): string {
+  if (step.key === 'accepted') return displayLabelForAcceptedStep(order);
+  return step.label;
+}
+
 function OrderStatusTimeline({ order, compact }: { order: OrdersFoodRow; compact?: boolean }) {
   const status = order.order_status || 'CREATED';
   const isTerminal = status === 'CANCELLED' || status === 'RTO';
@@ -2628,7 +2648,7 @@ function OrderStatusTimeline({ order, compact }: { order: OrdersFoodRow; compact
           <div className="flex-1 flex min-w-0">
             {stepsToShow.map((step) => (
               <div key={step.key} className="flex-1 flex flex-col items-center min-w-0 px-0.5">
-                <span className="text-[9px] font-medium text-gray-600 text-center leading-tight truncate w-full" title={step.label}>{step.label}</span>
+                <span className="text-[9px] font-medium text-gray-600 text-center leading-tight truncate w-full" title={orderStepLabel(step, order)}>{orderStepLabel(step, order)}</span>
               </div>
             ))}
             {isTerminal && (
@@ -2728,7 +2748,7 @@ function OrderStatusTimeline({ order, compact }: { order: OrdersFoodRow; compact
               >
                 {done ? <Check size={12} strokeWidth={3} /> : <span className="text-[9px] font-bold">{i + 1}</span>}
               </div>
-              <span className="text-[9px] font-medium text-gray-600 mt-1 text-center leading-tight">{step.label}</span>
+              <span className="text-[9px] font-medium text-gray-600 mt-1 text-center leading-tight">{orderStepLabel(step, order)}</span>
               {ts ? <span className="text-[8px] text-gray-400 text-center">{formatTs(ts)}</span> : null}
             </div>
           </React.Fragment>

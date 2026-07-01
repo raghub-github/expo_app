@@ -6,6 +6,7 @@ import {
   getMenuVersion,
   getMenuDelta,
   getStoreLiveStatus,
+  getStoreSurfaceLiveStatus,
   getMenuItemFullConfig,
   getOrderedTogetherPairs,
   getOrderedTogetherRecommendations,
@@ -15,6 +16,10 @@ import {
 import { listUserAppCategories } from "./userAppCategory.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
+import {
+  computeSurfaceLiveStatus,
+  customerOperationalFromStoreRow,
+} from "../../lib/store-surface-online.js";
 import { getPrimaryOfferHeadlinesForStores } from "./merchant-offer-headline.js";
 import { getStoreRatingsForStores } from "./merchant-store-ratings.js";
 import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
@@ -22,6 +27,7 @@ import { getCompletedOrderCountsForStores } from "./merchant-store-order-stats.j
 import {
   averagePrepMinutesFromMenuItemRows,
   getAverageMenuPrepMinutesForStores,
+  getPreparationBufferMinutesForStores,
   resolveStorePrepMinutesForEta,
 } from "./merchant-menu-prep.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
@@ -272,7 +278,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           return empty;
         }
       };
-      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs] =
+      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs, prepBuffers] =
         await Promise.all([
         settleEnrichment("offer-headlines", getPrimaryOfferHeadlinesForStores(storeInternalIds), new Map()),
         settleEnrichment("rating-summaries", getStoreRatingsForStores(storeInternalIds), new Map()),
@@ -281,6 +287,11 @@ export async function merchantRoutes(app: FastifyInstance) {
         settleEnrichment(
           "menu-prep-averages",
           getAverageMenuPrepMinutesForStores(storeInternalIds),
+          new Map()
+        ),
+        settleEnrichment(
+          "prep-buffers",
+          getPreparationBufferMinutesForStores(storeInternalIds),
           new Map()
         ),
       ]);
@@ -316,7 +327,11 @@ export async function merchantRoutes(app: FastifyInstance) {
           Number.isFinite(storeInternalId) && storeInternalId > 0
             ? menuPrepAvgs.get(storeInternalId) ?? null
             : null;
-        const prepMin = resolveStorePrepMinutesForEta(menuAvgPrep, storeLevelPrep);
+        const prepBuffer =
+          Number.isFinite(storeInternalId) && storeInternalId > 0
+            ? prepBuffers.get(storeInternalId) ?? 0
+            : 0;
+        const prepMin = resolveStorePrepMinutesForEta(menuAvgPrep, storeLevelPrep, prepBuffer);
         // ETA range: canonical "(prep + distance/18kmh) + 5..10 min buffer"
         // formula stamped server-side so list, merchant detail header, and
         // checkout all show the same numbers for one store.
@@ -324,23 +339,21 @@ export async function merchantRoutes(app: FastifyInstance) {
           distanceKm: "distance_km" in s ? (nearby.distance_km as number) : null,
           prepMinutes: prepMin,
         });
-        const rawLiveStatus = (s as NearbyStoreRow).live_status;
-        const normalized =
-          typeof rawLiveStatus === "string" ? rawLiveStatus.trim().toUpperCase() : "";
-        const liveStatus: "OPEN" | "CLOSED" =
-          normalized === "OPEN" || normalized === "CLOSED"
-            ? normalized
-            : computeLiveStatus({
-                is_active: s.is_active,
-                is_available: (s as { is_available?: boolean | null }).is_available,
-                is_accepting_orders: s.is_accepting_orders,
-                operational_status: (s as { operational_status?: string | null }).operational_status,
-              });
-        const isOpen = liveStatus === "OPEN";
         const sched =
           Number.isFinite(storeInternalId) && storeInternalId > 0
             ? scheduleTimes.get(storeInternalId)
             : undefined;
+        const operational = customerOperationalFromStoreRow({
+          is_active: s.is_active,
+          is_available: (s as { is_available?: boolean | null }).is_available,
+          is_accepting_orders: s.is_accepting_orders,
+          operational_status: (s as { operational_status?: string | null }).operational_status,
+        });
+        const liveStatus = computeSurfaceLiveStatus(
+          operational,
+          sched?.withinOperatingHours ?? false
+        );
+        const isOpen = liveStatus === "OPEN";
         return {
           id: s.store_id,
           name: s.store_display_name ?? s.store_name,
@@ -559,6 +572,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             liveStatus: z.enum(["OPEN", "CLOSED"]),
+            withinOperatingHours: z.boolean().optional(),
             nextOpenAt: z.string().nullable().optional(),
             nextCloseAt: z.string().nullable().optional(),
           }),
@@ -568,20 +582,13 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params;
-      const { getStoreByStoreId } = await import("./merchant.service.js");
-      const store = await getStoreByStoreId(id);
-      if (!store) return reply.status(404).send({ error: "Store not found" });
-      const liveStatus = await getStoreLiveStatus(id);
-      if (liveStatus == null) return reply.status(404).send({ error: "Store not found" });
-      const internalId = Number(store.id);
-      const sched =
-        Number.isFinite(internalId) && internalId > 0
-          ? (await getScheduleTimesForStores([internalId])).get(internalId)
-          : undefined;
+      const surface = await getStoreSurfaceLiveStatus(id, request.log);
+      if (surface == null) return reply.status(404).send({ error: "Store not found" });
       return reply.send({
-        liveStatus,
-        nextOpenAt: sched?.nextOpenAt ?? null,
-        nextCloseAt: sched?.nextCloseAt ?? null,
+        liveStatus: surface.liveStatus,
+        withinOperatingHours: surface.withinOperatingHours,
+        nextOpenAt: surface.nextOpenAt,
+        nextCloseAt: surface.nextCloseAt,
       });
     }
   );
@@ -818,26 +825,26 @@ export async function merchantRoutes(app: FastifyInstance) {
         .filter((row): row is NonNullable<ReturnType<typeof mapCustomerMenuItem>> => row != null);
 
       const menuAvgPrep = averagePrepMinutesFromMenuItemRows(items);
+      const prepBuffers = await getPreparationBufferMinutesForStores(
+        Number.isFinite(storeInternalId) && storeInternalId > 0 ? [storeInternalId] : []
+      );
+      const prepBuffer = prepBuffers.get(storeInternalId) ?? 0;
       const prepMin = resolveStorePrepMinutesForEta(
         menuAvgPrep,
-        store.avg_preparation_time_minutes
+        store.avg_preparation_time_minutes,
+        prepBuffer
       );
 
-      const rawLiveStatus = (store as { live_status?: string | null }).live_status;
-      const liveStatus =
-        rawLiveStatus === "OPEN" || rawLiveStatus === "CLOSED"
-          ? rawLiveStatus
-          : computeLiveStatus({
-              is_active: store.is_active,
-              is_available: store.is_available,
-              is_accepting_orders: store.is_accepting_orders,
-              operational_status: store.operational_status,
-            });
+      const surface = await getStoreSurfaceLiveStatus(id, request.log);
+      if (!surface) {
+        return reply.status(404).send({ error: "Store not found" });
+      }
+      const liveStatus = surface.liveStatus;
       const isOpen = liveStatus === "OPEN";
-      const sched =
-        Number.isFinite(storeInternalId) && storeInternalId > 0
-          ? (await getScheduleTimesForStores([storeInternalId])).get(storeInternalId)
-          : undefined;
+      const sched = {
+        nextOpenAt: surface.nextOpenAt,
+        nextCloseAt: surface.nextCloseAt,
+      };
       const bannerImagesAbsolute = bannerImages
         .map((u) => toAbsoluteClientMediaUrl(u))
         .filter((u): u is string => Boolean(u));

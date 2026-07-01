@@ -1,5 +1,6 @@
 import type { Sql } from "postgres";
 import { merchantFundedDiscountFromBilling } from "../../lib/merchant-billing-discount.js";
+import { emitEvent } from "../notifications/eventBus.js";
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
@@ -19,6 +20,7 @@ import {
 } from "../../lib/merchant-order-food-action-labels.js";
 import { recordAcceptanceTimeline } from "../../lib/order-acceptance-timeline.js";
 import { recordCancellationTimeline } from "../../lib/order-cancellation-timeline.js";
+import { resolveStorePrepWithBuffer } from "../../lib/order-prep-time.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
 import {
   executeOrderCancellationFinancials,
@@ -38,6 +40,10 @@ import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { fetchFoodRiderAcceptFlow } from "../../lib/food-rider-accept-flow.js";
 import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
 import { resolveMerchantCancellationFields } from "../../lib/merchant-cancellation-fields.js";
+import {
+  resolveOrderCancellationCompensationDisplay,
+  type MerchantCancellationCompensationDisplay,
+} from "../../lib/merchant-cancellation-compensation-display.js";
 import { recordRiderAssignmentDeliveredIfActive } from "../../lib/order-rider-assignment-history.js";
 import {
   resolveReachedMerchantAt,
@@ -122,6 +128,8 @@ export type MerchantFoodOrderDto = {
   accepted_by_label: string | null;
   cancelled_by_label: string | null;
   cancelled_by_type: string | null;
+  /** Zomato-style compensation message from penalty engine (cancelled orders). */
+  cancellation_compensation: MerchantCancellationCompensationDisplay | null;
   customer_email: string | null;
   drop_address: string | null;
   distance_km: number | null;
@@ -1074,6 +1082,7 @@ async function buildOrderDto(
       Number.isFinite(Number(food.merchant_acceptance_window_seconds))
         ? Math.max(0, Math.floor(Number(food.merchant_acceptance_window_seconds)))
         : null,
+    cancellation_compensation: null,
   };
 }
 
@@ -1622,33 +1631,63 @@ export async function loadMerchantFoodOrders(
       const food = matchFoodToCore(core, byCorePk, byTextId);
       const dto = await buildOrderDto(core, food, buildOpts);
       const catalog = cancelCatalogByCore.get(core.id);
-      if (!catalog || dto.order_status !== "CANCELLED") return dto;
+      const isCancelledOrder =
+        dto.order_status === "CANCELLED" || dto.order_status === "REJECTED";
+      if (!isCancelledOrder) return dto;
+
       const meta =
-        catalog.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
+        catalog?.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
           ? (catalog.metadata as Record<string, unknown>)
           : null;
       const resolved = resolveMerchantCancellationFields({
-        rejected_reason: catalog.food_rejected_reason ?? dto.rejected_reason,
-        cancelled_by_label: catalog.food_cancelled_by_label ?? dto.cancelled_by_label,
-        cancelled_by_type: catalog.cancelled_by_type,
-        cancellation_details: catalog.cancellation_details,
+        rejected_reason: catalog?.food_rejected_reason ?? dto.rejected_reason,
+        cancelled_by_label: catalog?.food_cancelled_by_label ?? dto.cancelled_by_label,
+        cancelled_by_type: catalog?.cancelled_by_type ?? dto.cancelled_by_type,
+        cancellation_details: catalog?.cancellation_details,
         catalog_attribute:
-          catalog.attribute ??
+          catalog?.attribute ??
           (meta && typeof meta.attribute === "string" ? meta.attribute : null),
         catalog_rejection:
-          catalog.rejection_label ??
+          catalog?.rejection_label ??
           (meta && typeof meta.rejection === "string" ? meta.rejection : null),
-        reason_text: catalog.reason_text,
-        refund_reason: catalog.refund_reason,
-        ocr_display_reason: catalog.display_reason,
-        ocr_cancelled_by_label: catalog.ocr_cancelled_by_label,
-        ocr_cancelled_by_type: catalog.ocr_cancelled_by_type,
+        reason_text: catalog?.reason_text,
+        refund_reason: catalog?.refund_reason,
+        ocr_display_reason: catalog?.display_reason,
+        ocr_cancelled_by_label: catalog?.ocr_cancelled_by_label,
+        ocr_cancelled_by_type: catalog?.ocr_cancelled_by_type,
       });
+
+      const netOrderValue =
+        num(dto.pricing?.total) > 0
+          ? num(dto.pricing.total)
+          : num(dto.food_items_total_value) > 0
+            ? num(dto.food_items_total_value)
+            : num(dto.grand_total);
+
+      let cancellation_compensation: MerchantCancellationCompensationDisplay | null = null;
+      try {
+        cancellation_compensation = await resolveOrderCancellationCompensationDisplay(sql, {
+          orderCoreId: core.id,
+          merchantStoreId: storeId,
+          cancelledByType: resolved.cancelled_by_type,
+          cancelledByLabel: resolved.cancelled_by_label,
+          rejectedReason: resolved.rejected_reason,
+          orderCreatedAt: dto.created_at,
+          cancelledAt: dto.cancelled_at,
+          preparedAt: dto.prepared_at,
+          riderPickedUpAt: dto.rider_picked_up_at,
+          netOrderValue,
+        });
+      } catch {
+        /* optional engine */
+      }
+
       return {
         ...dto,
         rejected_reason: resolved.rejected_reason,
         cancelled_by_label: resolved.cancelled_by_label,
         cancelled_by_type: resolved.cancelled_by_type,
+        cancellation_compensation,
       };
     })
   );
@@ -1756,15 +1795,25 @@ export async function patchMerchantFoodOrderStatus(
   });
 
   if (status === "ACCEPTED") {
-    const storeRows = await sql<{ avg_preparation_time_minutes: number | null }[]>`
-      SELECT avg_preparation_time_minutes FROM merchant_stores WHERE id = ${storeId} LIMIT 1
+    const storeRows = await sql<{
+      avg_preparation_time_minutes: number | null;
+      preparation_buffer_minutes: number | null;
+    }[]>`
+      SELECT ms.avg_preparation_time_minutes, COALESCE(ss.preparation_buffer_minutes, 0) AS preparation_buffer_minutes
+      FROM merchant_stores ms
+      LEFT JOIN merchant_store_settings ss ON ss.store_id = ms.id
+      WHERE ms.id = ${storeId}
+      LIMIT 1
     `;
-    const { resolveAcceptPrepCommitment, resolveStoreDefaultPrepMinutes } = await import(
-      "../../lib/order-prep-time.js"
+    const { resolveAcceptPrepCommitment } = await import("../../lib/order-prep-time.js");
+    const storeRow = storeRows[0];
+    const storeDefaultWithBuffer = resolveStorePrepWithBuffer(
+      storeRow?.avg_preparation_time_minutes,
+      storeRow?.preparation_buffer_minutes
     );
     const prep = resolveAcceptPrepCommitment({
       acceptedAtIso: now,
-      storeDefaultMinutes: resolveStoreDefaultPrepMinutes(storeRows[0]?.avg_preparation_time_minutes),
+      storeDefaultMinutes: storeDefaultWithBuffer,
       bodyPrepMinutes: opts?.preparationTimeMinutes,
     });
 
@@ -2138,13 +2187,16 @@ export async function patchMerchantFoodOrderStatus(
   });
 
   if (status === "CANCELLED") {
+    const cancelledByType =
+      actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store";
+    const cancelledByLabel = actionLabels.cancelled_by_label ?? null;
     try {
       await applyMerchantOrderCancellationLedger(
         {
           orderCoreId: corePk,
           source: actionSource === "admin" ? "admin_cancel" : "merchant_cancel",
           cancelledByType,
-          cancelledByLabel: cancelLabel ?? actionLabels.cancelled_by_label ?? null,
+          cancelledByLabel,
         },
         sql
       );
@@ -2168,6 +2220,33 @@ export async function patchMerchantFoodOrderStatus(
       /* non-fatal */
     }
   }
+
+  // Emit domain event so notifications module can send status pushes to
+  // customer / merchant / rider without this file knowing anything about
+  // the notification pipeline.
+  try {
+    const orderIdText = existing.core_order_id ?? String(existing.order_id ?? "");
+    const ownerRows = (await sql`
+      SELECT c.customer_id AS customer_user_id, s.user_id AS merchant_user_id, s.store_display_name AS store_name
+      FROM public.orders_core oc
+      LEFT JOIN public.customers c ON c.id = oc.customer_id
+      LEFT JOIN public.merchant_stores s ON s.id = ${storeId}
+      WHERE oc.id = ${corePk}
+      LIMIT 1
+    `) as unknown as Array<{ customer_user_id: string | null; merchant_user_id: string | null; store_name: string | null }>;
+    const owner = ownerRows[0];
+    emitEvent("order.status_changed", {
+      orderId: orderIdText,
+      orderShortId: order.formatted_order_id ?? orderIdText,
+      fromStatus: currentStatus,
+      toStatus: status,
+      customerId: owner?.customer_user_id ?? null,
+      merchantUserId: owner?.merchant_user_id ?? null,
+      merchantStoreId: storeId,
+      merchantName: owner?.store_name ?? null,
+      reason: rejectedReason ?? undefined,
+    });
+  } catch { /* tolerated */ }
 
   return order;
 }

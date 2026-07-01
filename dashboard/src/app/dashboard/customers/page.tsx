@@ -1,9 +1,8 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, Suspense, useRef } from "react";
 import dynamic from "next/dynamic";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { SummaryCards } from "@/components/customers/SummaryCards";
 import { UserCategoryCards } from "@/components/customers/UserCategoryCards";
@@ -109,7 +108,7 @@ function CustomersPageContent() {
 
   // Only fetch if super admin OR if there's a search query
   const shouldFetch = isSuperAdmin || !!debouncedSearch;
-  const { data, isLoading, error, authGateReady } = useCustomersQuery({
+  const { data, isLoading, error } = useCustomersQuery({
     page,
     limit: 20,
     search: debouncedSearch || undefined,
@@ -264,7 +263,7 @@ function CustomersPageContent() {
             )}
 
             {/* No Results Message */}
-            {!isLoading && authGateReady && (!data?.customers || data.customers.length === 0) && (
+            {!isLoading && (!data?.customers || data.customers.length === 0) && (
               <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-4">
                 <div className="flex items-start space-x-3">
                   <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />

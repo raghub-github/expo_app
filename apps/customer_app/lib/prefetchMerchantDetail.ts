@@ -12,6 +12,8 @@ import {
   readSyncMerchantMenu,
 } from "@/lib/merchantMenuCache";
 import { syncMerchantMenuInBackground } from "@/lib/merchantMenuSync";
+import { STORE_LIVE_STATUS_QUERY_KEY } from "@/hooks/useStoreDetailLiveStatus";
+import { merchantService } from "@/services/merchant.service";
 
 export {
   MERCHANT_DETAIL_QUERY_KEY,
@@ -88,6 +90,12 @@ export function prefetchMerchantDetail(
   if (!merchantId) return;
 
   void hydrateMerchantMenuQuery(queryClient, merchantId);
+
+  void queryClient.prefetchQuery({
+    queryKey: STORE_LIVE_STATUS_QUERY_KEY(merchantId),
+    queryFn: () => merchantService.getStoreLiveStatusSnapshot(merchantId),
+    staleTime: 30_000,
+  });
 
   const placeholder = getMerchantDetailPlaceholder(queryClient, merchantId);
   if (placeholder && !queryClient.getQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId))) {

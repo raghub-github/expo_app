@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useMemo } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
 import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 import { QueueAutoAssignCapSection } from "@/components/tickets/queue/QueueAutoAssignCapSection";

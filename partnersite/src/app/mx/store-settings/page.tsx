@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, Suspense, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useLayoutEffect, Suspense, useRef, useCallback, useMemo } from 'react'
 import dynamicImport from 'next/dynamic'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
@@ -17,9 +17,27 @@ import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
-import { SettingsSidebar } from './components/SettingsSidebar'
+import { SettingsSidebarRail, settingsRailMainPaddingClass } from './components/SettingsSidebarRail'
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal'
+import { StoreOperationsPanel } from '@/components/merchant/StoreOperationsPanel'
+import { MenuCapacityPanel } from '@/components/merchant/MenuCapacityPanel'
 import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning'
+import {
+  buildGatimitraCustomerStoreUrl,
+  buildStoreSettingsBreadcrumbs,
+} from '@/lib/store-settings-tabs'
+import {
+  markPlanEnforceRan,
+  readCachedPlanUsage,
+  shouldRunPlanEnforce,
+  writeCachedPlanUsage,
+} from '@/lib/plan-usage-cache'
+import {
+  panelFieldsFromStoreOpsGet,
+  panelFieldsFromStoreSettings,
+  readCachedStoreOperationsPanel,
+  writeCachedStoreOperationsPanel,
+} from '@/lib/store-operations-panel-cache'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
@@ -78,6 +96,40 @@ function parseDbBool(value: unknown): boolean {
   return Boolean(value)
 }
 
+type PlanTierLike = {
+  id?: number
+  price?: number | string | null
+  display_order?: number | string | null
+}
+
+function planTierRank(plan: PlanTierLike | null | undefined): number {
+  if (!plan) return 0
+  const displayOrder = Number(plan.display_order)
+  if (Number.isFinite(displayOrder)) return displayOrder
+  return Number(plan.price ?? 0)
+}
+
+function isStoreSubscriptionActive(
+  subscription: {
+    expiry_date?: string | null
+    billing_end_at?: string | null
+    subscription_status?: string | null
+  } | null
+): boolean {
+  if (!subscription) return false
+  const status = String(subscription.subscription_status ?? 'ACTIVE').toUpperCase()
+  if (status !== 'ACTIVE') return false
+  const expiryRaw = subscription.billing_end_at ?? subscription.expiry_date
+  if (!expiryRaw) return true
+  const expiryMs = new Date(String(expiryRaw)).getTime()
+  return Number.isFinite(expiryMs) && expiryMs > Date.now()
+}
+
+function isLowerPlanTier(candidate: PlanTierLike, current: PlanTierLike): boolean {
+  if (candidate.id != null && current.id != null && candidate.id === current.id) return false
+  return planTierRank(candidate) < planTierRank(current)
+}
+
 function StoreSettingsContent() {
   const searchParams = useSearchParams()
   const [store, setStore] = useState<MerchantStore | null>(null)
@@ -98,6 +150,19 @@ function StoreSettingsContent() {
 
   /** Desktop right settings rail: icon-only vs full labels (matches partner left sidebar behaviour). */
   const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false)
+
+  // Lock shell scroll before paint: only the center column scrolls.
+  useLayoutEffect(() => {
+    if (typeof document === 'undefined') return
+    const html = document.documentElement
+    const body = document.body
+    html.classList.add('mx-no-page-scroll')
+    body.classList.add('mx-no-page-scroll')
+    return () => {
+      html.classList.remove('mx-no-page-scroll')
+      body.classList.remove('mx-no-page-scroll')
+    }
+  }, [])
 
   const validTabsList = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'audit', 'gatimitra']
   useEffect(() => {
@@ -210,7 +275,9 @@ function StoreSettingsContent() {
   
   // Store Operations state
   const [autoAcceptOrders, setAutoAcceptOrders] = useState(false)
-  const [preparationBufferMinutes, setPreparationBufferMinutes] = useState(15)
+  const [autoAcceptTimeSeconds, setAutoAcceptTimeSeconds] = useState(30)
+  const [avgPreparationTimeMinutes, setAvgPreparationTimeMinutes] = useState(30)
+  const [preparationBufferMinutes, setPreparationBufferMinutes] = useState(0)
   const [manualActivationLock, setManualActivationLock] = useState(false)
   const [licenseBlockedForOps, setLicenseBlockedForOps] = useState(false)
   
@@ -220,6 +287,14 @@ function StoreSettingsContent() {
   const [maxMenuItems, setMaxMenuItems] = useState<number | null>(null)
   const [maxCuisines, setMaxCuisines] = useState<number | null>(null)
   const [imageUploadAllowed, setImageUploadAllowed] = useState(false)
+  const [planUsage, setPlanUsage] = useState<{
+    totalItems: number
+    unlockedItems: number
+    lockedItems: number
+    lockedCategories: number
+    planLockingSupported: boolean
+  } | null>(null)
+  const [planUsageLoading, setPlanUsageLoading] = useState(false)
   
   // Packaging charge (store-level; editable once per 30 days)
   const [packagingChargeAmount, setPackagingChargeAmount] = useState<string>('')
@@ -578,6 +653,32 @@ function StoreSettingsContent() {
     loadStore()
   }, [storeId])
 
+  const applyOperationsPanelToState = useCallback(
+    (panel: {
+      autoAcceptOrders: boolean
+      autoAcceptTimeSeconds: number
+      avgPreparationTimeMinutes: number
+      preparationBufferMinutes: number
+      manualActivationLock: boolean
+      licenseBlockedForOps: boolean
+    }) => {
+      setAutoAcceptOrders(panel.autoAcceptOrders)
+      setAutoAcceptTimeSeconds(panel.autoAcceptTimeSeconds)
+      setAvgPreparationTimeMinutes(panel.avgPreparationTimeMinutes)
+      setPreparationBufferMinutes(panel.preparationBufferMinutes)
+      setManualActivationLock(panel.manualActivationLock)
+      setLicenseBlockedForOps(panel.licenseBlockedForOps)
+    },
+    []
+  )
+
+  // Hydrate Store Operations panel from session cache (instant on revisit).
+  useEffect(() => {
+    if (!storeId) return
+    const cached = readCachedStoreOperationsPanel(storeId)
+    if (cached) applyOperationsPanelToState(cached)
+  }, [storeId, applyOperationsPanelToState])
+
   // Load store operations (open/closed, manual_close_until, block_auto_open)
   const fetchStoreOperations = async () => {
     if (!storeId) return
@@ -600,6 +701,7 @@ function StoreSettingsContent() {
         // Load manual activation lock state from block_auto_open
         setManualActivationLock(data.block_auto_open === true)
         setLicenseBlockedForOps(data.license_blocked === true)
+        writeCachedStoreOperationsPanel(storeId, panelFieldsFromStoreOpsGet(data as Record<string, unknown>))
       }
     } catch {
       // fallback from store if loaded
@@ -615,81 +717,95 @@ function StoreSettingsContent() {
   // Load delivery settings (toggles + radius comes from store in loadStore)
   useEffect(() => {
     if (!storeId) return
+    let cancelled = false
     const load = async () => {
       try {
         const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`)
         const data = await res.json().catch(() => ({}))
-        if (res.ok) {
-          setGatimitraDeliveryEnabled(data.platform_delivery !== false)
-          setSelfDeliveryEnabled(data.self_delivery === true)
-          if (typeof data.delivery_radius_km === 'number' && !isNaN(data.delivery_radius_km)) {
-            setDeliveryRadiusKm(data.delivery_radius_km)
-          }
-          if (data.delivery_charge_per_km != null && !isNaN(Number(data.delivery_charge_per_km))) {
-            setDeliveryChargePerKm(String(data.delivery_charge_per_km))
-          } else {
-            setDeliveryChargePerKm('')
-          }
-          if (data.delivery_charge_per_km_last_updated_at != null) {
-            setDeliveryChargePerKmLastUpdatedAt(data.delivery_charge_per_km_last_updated_at)
-          } else {
-            setDeliveryChargePerKmLastUpdatedAt(null)
-          }
-          setCanEditDeliveryChargePerKm(data.can_edit_delivery_charge_per_km !== false)
-          if (data.next_delivery_charge_editable_at) {
-            setNextDeliveryChargeEditableAt(data.next_delivery_charge_editable_at)
-          } else {
-            setNextDeliveryChargeEditableAt(null)
-          }
-          if (typeof data.auto_accept_orders === 'boolean') {
-            setAutoAcceptOrders(data.auto_accept_orders)
-          }
-          if (typeof data.preparation_buffer_minutes === 'number' && !isNaN(data.preparation_buffer_minutes)) {
-            setPreparationBufferMinutes(data.preparation_buffer_minutes)
-          }
-          if (data.packaging_charge_amount != null && !isNaN(Number(data.packaging_charge_amount))) {
-            setPackagingChargeAmount(String(data.packaging_charge_amount))
-          } else {
-            setPackagingChargeAmount('')
-          }
-          if (data.packaging_charge_last_updated_at != null) {
-            setPackagingChargeLastUpdatedAt(data.packaging_charge_last_updated_at)
-          } else {
-            setPackagingChargeLastUpdatedAt(null)
-          }
-          setCanEditPackagingCharge(data.can_edit_packaging_charge !== false)
-          if (data.next_packaging_editable_at) {
-            setNextPackagingEditableAt(data.next_packaging_editable_at)
-          } else {
-            setNextPackagingEditableAt(null)
-          }
-          if (data.address) {
-            const addr = data.address
-            if (addr.full_address != null) setFullAddress(addr.full_address)
-            if (addr.landmark != null) setAddressLandmark(addr.landmark)
-            if (addr.city != null) setStoreAddress(addr.city)
-            if (addr.state != null) setAddressState(addr.state)
-            if (addr.postal_code != null) setAddressPostalCode(addr.postal_code)
-            if (addr.latitude != null) setLatitude(String(addr.latitude))
-            if (addr.longitude != null) setLongitude(String(addr.longitude))
-            if (addr.full_address != null) setAddressSearchQuery(addr.full_address)
-            initialAddressRef.current = {
-              full_address: addr.full_address ?? '',
-              landmark: addr.landmark ?? '',
-              city: addr.city ?? '',
-              state: addr.state ?? '',
-              postal_code: addr.postal_code ?? '',
-              latitude: addr.latitude != null ? String(addr.latitude) : '',
-              longitude: addr.longitude != null ? String(addr.longitude) : '',
-            }
+        if (cancelled || !res.ok) return
+
+        const panelPatch = panelFieldsFromStoreSettings(data as Record<string, unknown>)
+        if (Object.keys(panelPatch).length > 0) {
+          const cached = readCachedStoreOperationsPanel(storeId)
+          applyOperationsPanelToState({
+            autoAcceptOrders: panelPatch.autoAcceptOrders ?? cached?.autoAcceptOrders ?? false,
+            autoAcceptTimeSeconds: panelPatch.autoAcceptTimeSeconds ?? cached?.autoAcceptTimeSeconds ?? 30,
+            avgPreparationTimeMinutes:
+              panelPatch.avgPreparationTimeMinutes ?? cached?.avgPreparationTimeMinutes ?? 30,
+            preparationBufferMinutes:
+              panelPatch.preparationBufferMinutes ?? cached?.preparationBufferMinutes ?? 0,
+            manualActivationLock: cached?.manualActivationLock ?? false,
+            licenseBlockedForOps: cached?.licenseBlockedForOps ?? false,
+          })
+          writeCachedStoreOperationsPanel(storeId, panelPatch)
+        }
+
+        setGatimitraDeliveryEnabled(data.platform_delivery !== false)
+        setSelfDeliveryEnabled(data.self_delivery === true)
+        if (typeof data.delivery_radius_km === 'number' && !isNaN(data.delivery_radius_km)) {
+          setDeliveryRadiusKm(data.delivery_radius_km)
+        }
+        if (data.delivery_charge_per_km != null && !isNaN(Number(data.delivery_charge_per_km))) {
+          setDeliveryChargePerKm(String(data.delivery_charge_per_km))
+        } else {
+          setDeliveryChargePerKm('')
+        }
+        if (data.delivery_charge_per_km_last_updated_at != null) {
+          setDeliveryChargePerKmLastUpdatedAt(data.delivery_charge_per_km_last_updated_at)
+        } else {
+          setDeliveryChargePerKmLastUpdatedAt(null)
+        }
+        setCanEditDeliveryChargePerKm(data.can_edit_delivery_charge_per_km !== false)
+        if (data.next_delivery_charge_editable_at) {
+          setNextDeliveryChargeEditableAt(data.next_delivery_charge_editable_at)
+        } else {
+          setNextDeliveryChargeEditableAt(null)
+        }
+        if (data.packaging_charge_amount != null && !isNaN(Number(data.packaging_charge_amount))) {
+          setPackagingChargeAmount(String(data.packaging_charge_amount))
+        } else {
+          setPackagingChargeAmount('')
+        }
+        if (data.packaging_charge_last_updated_at != null) {
+          setPackagingChargeLastUpdatedAt(data.packaging_charge_last_updated_at)
+        } else {
+          setPackagingChargeLastUpdatedAt(null)
+        }
+        setCanEditPackagingCharge(data.can_edit_packaging_charge !== false)
+        if (data.next_packaging_editable_at) {
+          setNextPackagingEditableAt(data.next_packaging_editable_at)
+        } else {
+          setNextPackagingEditableAt(null)
+        }
+        if (data.address) {
+          const addr = data.address
+          if (addr.full_address != null) setFullAddress(addr.full_address)
+          if (addr.landmark != null) setAddressLandmark(addr.landmark)
+          if (addr.city != null) setStoreAddress(addr.city)
+          if (addr.state != null) setAddressState(addr.state)
+          if (addr.postal_code != null) setAddressPostalCode(addr.postal_code)
+          if (addr.latitude != null) setLatitude(String(addr.latitude))
+          if (addr.longitude != null) setLongitude(String(addr.longitude))
+          if (addr.full_address != null) setAddressSearchQuery(addr.full_address)
+          initialAddressRef.current = {
+            full_address: addr.full_address ?? '',
+            landmark: addr.landmark ?? '',
+            city: addr.city ?? '',
+            state: addr.state ?? '',
+            postal_code: addr.postal_code ?? '',
+            latitude: addr.latitude != null ? String(addr.latitude) : '',
+            longitude: addr.longitude != null ? String(addr.longitude) : '',
           }
         }
       } catch {
-        // keep defaults
+        // keep defaults / cache
       }
     }
-    load()
-  }, [storeId])
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [storeId, applyOperationsPanelToState])
 
   // Address tab: enable Save only when address or coordinates have changed from initial
   const hasAddressChanges = useMemo(() => {
@@ -706,13 +822,17 @@ function StoreSettingsContent() {
     )
   }, [fullAddress, addressLandmark, storeAddress, addressState, addressPostalCode, latitude, longitude])
 
-  /** Customer-facing store page on partner (public `store_id`, e.g. GMMC1025). */
+  /** Customer-facing store page on gatimitra.com (public `store_id`, e.g. GMMC1025). */
   const gatimitraCustomerStoreUrl = useMemo(() => {
     const slug = (store?.store_id ?? storeId ?? '').trim()
     if (!slug) return null
-    const origin = 'https://partner.gatimitra.com'
-    return `${origin}/restaurant/${encodeURIComponent(slug)}?from=around-you&location=India`
+    return buildGatimitraCustomerStoreUrl(slug)
   }, [store?.store_id, storeId])
+
+  const settingsHeaderBreadcrumbs = useMemo(
+    () => buildStoreSettingsBreadcrumbs(activeTab, storeId),
+    [activeTab, storeId]
+  )
 
   // Address search: click outside to close results
   useEffect(() => {
@@ -1020,50 +1140,136 @@ function StoreSettingsContent() {
     }
   }, [storeId])
 
-  // Load menu items count for capacity display
+  // Clear a selected plan if it is lower than the store's active plan.
+  useEffect(() => {
+    if (!currentPlan || selectedPlanId == null) return
+    const selected = plans.find((p) => p.id === selectedPlanId)
+    if (!selected) return
+    if (
+      isStoreSubscriptionActive(currentSubscription) &&
+      isLowerPlanTier(selected, currentPlan)
+    ) {
+      setSelectedPlanId(null)
+    }
+  }, [currentPlan, currentSubscription, plans, selectedPlanId])
+
+  // Load menu items count for capacity display (merchant menu-items API — /api/menu is POST-only for legacy create)
   useEffect(() => {
     if (!storeId) return
     const loadMenuStats = async () => {
       try {
-        const res = await fetch(`/api/menu?storeId=${encodeURIComponent(storeId)}`)
+        const res = await fetch(
+          `/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}&view=list`
+        )
         if (!res.ok) {
-          console.warn('Menu API returned non-ok status:', res.status);
-          return;
+          console.warn('Menu items API returned non-ok status:', res.status)
+          return
         }
-        
-        // Check if response has content before parsing
-        const contentType = res.headers.get('content-type');
+
+        const contentType = res.headers.get('content-type')
         if (!contentType || !contentType.includes('application/json')) {
-          console.warn('Menu API response is not JSON');
-          return;
+          console.warn('Menu items API response is not JSON')
+          return
         }
-        
-        const text = await res.text();
+
+        const text = await res.text()
         if (!text || text.trim().length === 0) {
-          console.warn('Menu API returned empty response');
-          return;
+          setCurrentMenuItemsCount(0)
+          setCurrentCuisinesCount(0)
+          return
         }
-        
-        let data;
+
+        let data: unknown
         try {
-          data = JSON.parse(text);
+          data = JSON.parse(text)
         } catch (jsonError) {
-          console.error('Failed to parse menu JSON:', jsonError, 'Response text:', text.substring(0, 100));
-          return;
+          console.error('Failed to parse menu items JSON:', jsonError)
+          return
         }
-        
-        if (data?.items && Array.isArray(data.items)) {
-          setCurrentMenuItemsCount(data.items.length || 0)
-          // Count unique cuisines
-          const cuisines = new Set(data.items.map((item: any) => item.cuisine_type).filter(Boolean))
-          setCurrentCuisinesCount(cuisines.size)
+
+        const items = (Array.isArray(data)
+          ? data
+          : data && typeof data === 'object' && Array.isArray((data as { items?: unknown[] }).items)
+            ? (data as { items: unknown[] }).items
+            : []
+        ).filter((item) => !(item as { is_deleted?: boolean }).is_deleted)
+
+        setCurrentMenuItemsCount(items.length)
+        const cuisines = new Set<string>()
+        for (const item of items) {
+          const cuisineType = (item as { cuisine_type?: string | null }).cuisine_type
+          if (!cuisineType) continue
+          for (const part of String(cuisineType).split(',')) {
+            const trimmed = part.trim()
+            if (trimmed) cuisines.add(trimmed)
+          }
         }
+        setCurrentCuisinesCount(cuisines.size)
       } catch (error) {
         console.error('Error loading menu stats:', error)
       }
     }
     loadMenuStats()
   }, [storeId])
+
+  // Hydrate plan usage from session cache when store changes (avoids loading flash on tab revisit).
+  useEffect(() => {
+    if (!storeId) return
+    const cached = readCachedPlanUsage(storeId)
+    if (!cached) return
+    setPlanUsage({
+      totalItems: cached.totalItems,
+      unlockedItems: cached.unlockedItems,
+      lockedItems: cached.lockedItems,
+      lockedCategories: cached.lockedCategories,
+      planLockingSupported: cached.planLockingSupported,
+    })
+    setCurrentMenuItemsCount(cached.totalItems)
+  }, [storeId])
+
+  // Enforce plan locks + refresh usage for Menu & Capacity (cached; no spinner on revisit).
+  useEffect(() => {
+    if (!storeId || activeTab !== 'menu-capacity') return
+    let cancelled = false
+    const hadCache = Boolean(readCachedPlanUsage(storeId))
+    const loadPlanUsage = async () => {
+      if (!hadCache) setPlanUsageLoading(true)
+      try {
+        if (shouldRunPlanEnforce(storeId)) {
+          await fetch(`/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(storeId)}`, {
+            method: 'POST',
+          })
+          markPlanEnforceRan(storeId)
+        }
+        const res = await fetch(
+          `/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(storeId)}`
+        )
+        if (!res.ok || cancelled) return
+        const data = await res.json()
+        if (!data?.usage || cancelled) return
+        const next = {
+          totalItems: Number(data.usage.totalItems ?? 0),
+          unlockedItems: Number(data.usage.unlockedItems ?? 0),
+          lockedItems: Number(data.usage.lockedItems ?? 0),
+          lockedCategories: Number(data.usage.lockedCategories ?? 0),
+          planLockingSupported: data.usage.planLockingSupported !== false,
+        }
+        setPlanUsage(next)
+        writeCachedPlanUsage(storeId, next)
+        if (Number.isFinite(next.totalItems)) {
+          setCurrentMenuItemsCount(next.totalItems)
+        }
+      } catch (error) {
+        console.error('Error loading plan usage:', error)
+      } finally {
+        if (!cancelled) setPlanUsageLoading(false)
+      }
+    }
+    loadPlanUsage()
+    return () => {
+      cancelled = true
+    }
+  }, [storeId, activeTab])
 
   // Load self-delivery riders when Delivery tab is active (delivery includes riders)
   useEffect(() => {
@@ -1347,7 +1553,12 @@ function StoreSettingsContent() {
           body: JSON.stringify({
             storeId,
             auto_accept_orders: autoAcceptOrders,
-            preparation_buffer_minutes: typeof preparationBufferMinutes === 'number' && !isNaN(preparationBufferMinutes) ? preparationBufferMinutes : 15,
+            auto_accept_time_seconds: autoAcceptTimeSeconds,
+            avg_preparation_time_minutes: avgPreparationTimeMinutes,
+            preparation_buffer_minutes:
+              typeof preparationBufferMinutes === 'number' && !isNaN(preparationBufferMinutes)
+                ? preparationBufferMinutes
+                : 0,
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -1355,6 +1566,12 @@ function StoreSettingsContent() {
           toast.error(data.error || '❌ Failed to save store operations')
           return
         }
+        writeCachedStoreOperationsPanel(storeId, {
+          autoAcceptOrders,
+          autoAcceptTimeSeconds,
+          avgPreparationTimeMinutes,
+          preparationBufferMinutes,
+        })
         toast.success('✅ Store operations saved successfully!')
         return
       }
@@ -1614,6 +1831,18 @@ function StoreSettingsContent() {
       return;
     }
 
+    // Block downgrade to any lower tier while the current subscription is still active.
+    if (
+      currentPlan &&
+      isStoreSubscriptionActive(currentSubscription) &&
+      isLowerPlanTier(selectedPlan, currentPlan)
+    ) {
+      toast.error(
+        `You cannot switch to ${selectedPlan.plan_name} while your ${currentPlan.plan_name} plan is active.`
+      );
+      return;
+    }
+
     // Prevent downgrading to free plan if there's an active paid subscription
     if ((selectedPlan.price === 0 || selectedPlan.price === null) && currentPlan && currentPlan.price > 0) {
       const expiryDate = currentSubscription?.expiry_date ? new Date(currentSubscription.expiry_date) : null;
@@ -1858,6 +2087,7 @@ function StoreSettingsContent() {
 
       const result = await res.json();
       if (result.success) {
+        writeCachedStoreOperationsPanel(storeId, { manualActivationLock: enabled });
         toast.success(enabled ? '🔒 Manual activation lock enabled' : '🔓 Manual activation lock disabled');
         // Log activity
         await logActivity('MANUAL_LOCK_TOGGLE', `Manual activation lock ${enabled ? 'enabled' : 'disabled'}`, {
@@ -2780,7 +3010,9 @@ function StoreSettingsContent() {
   }
 
   const handleViewStore = () => {
-    window.open('https://gatimitra.com', '_blank', 'noopener,noreferrer')
+    const slug = (store?.store_id ?? storeId ?? '').trim()
+    if (!slug) return
+    window.open(buildGatimitraCustomerStoreUrl(slug), '_blank', 'noopener,noreferrer')
   }
 
   if (!storeId) {
@@ -2797,9 +3029,12 @@ function StoreSettingsContent() {
         <PartnerPageHeader
           title="Store Settings"
           subtitle="Manage store configuration and preferences"
+          breadcrumbs={settingsHeaderBreadcrumbs}
         />
-        <div className="flex h-full min-h-0 overflow-hidden bg-gray-50">
-          {/* Main content scrolls; right settings nav stays fixed (sibling, not inside this scroll). */}
+        <div
+          className={`flex flex-1 min-h-0 overflow-hidden bg-gray-50 ${settingsRailMainPaddingClass(settingsSidebarCollapsed)}`}
+        >
+          {/* Main content scrolls; right settings rail is fixed (see SettingsSidebarRail). */}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div
               className={`min-h-0 flex-1 hide-scrollbar ${
@@ -2926,7 +3161,7 @@ function StoreSettingsContent() {
                       onClick={openRefundPolicySheet}
                       className="text-sm text-indigo-600 hover:text-indigo-700 font-medium underline underline-offset-2"
                     >
-                      View refund policy
+                      View refund &amp; cancellation policy
                     </button>
                   </div>
                   {loadingPlans && plans.length === 0 ? (
@@ -2937,12 +3172,13 @@ function StoreSettingsContent() {
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                       {plans.map((plan) => {
-                        const isFreePlan = plan.price === 0 || plan.price === null;
-                        const hasActivePaidPlan = currentPlan && currentPlan.price > 0 && currentSubscription && new Date(currentSubscription.expiry_date) > new Date();
-                        const currentPrice = Number(currentPlan?.price ?? 0);
-                        const planPrice = Number(plan.price ?? 0);
-                        const isLowerThanCurrent = hasActivePaidPlan && plan.id !== currentPlan?.id && planPrice < currentPrice;
-                        const isDisabled = (isFreePlan && hasActivePaidPlan) || isLowerThanCurrent;
+                        const subscriptionIsActive = isStoreSubscriptionActive(currentSubscription);
+                        const isLowerThanCurrent = Boolean(
+                          currentPlan &&
+                            subscriptionIsActive &&
+                            isLowerPlanTier(plan, currentPlan)
+                        );
+                        const isDisabled = isLowerThanCurrent;
                         const planCode = (plan.plan_code || '').toUpperCase();
                         const isEnterprise = planCode === 'ENTERPRISE' || planCode === 'PRO';
                         const isPremium = planCode === 'PREMIUM' || planCode === 'GROWTH' || (plan.price > 0 && !isEnterprise);
@@ -3034,7 +3270,11 @@ function StoreSettingsContent() {
                                   onClick={(e) => e.stopPropagation()}
                                 />
                                 <span className="text-[11px] font-semibold text-white/85 whitespace-nowrap">
-                                  {currentPlan?.id === plan.id ? 'Current' : 'Select'}
+                                  {currentPlan?.id === plan.id
+                                    ? 'Current'
+                                    : isDisabled
+                                      ? 'Locked'
+                                      : 'Select'}
                                 </span>
                               </div>
                             </div>
@@ -3143,9 +3383,7 @@ function StoreSettingsContent() {
                             }`}
                             title={
                               isDisabled
-                                ? isLowerThanCurrent
-                                  ? 'Lower plan — available after your current plan ends'
-                                  : 'Active paid plan expire होने तक Free plan पर move नहीं कर सकते'
+                                ? `Lower than your active ${currentPlan?.plan_name ?? 'plan'} — upgrade only to higher plans`
                                 : selectedPlanId !== plan.id && currentPlan?.id !== plan.id
                                 ? 'Please select this plan first'
                                 : undefined
@@ -3159,7 +3397,7 @@ function StoreSettingsContent() {
                             ) : currentPlan?.id === plan.id ? (
                               'Current Plan'
                             ) : isDisabled ? (
-                              'Not Available'
+                              'Lower Plan'
                             ) : selectedPlanId === plan.id ? (
                               'Upgrade Selected'
                             ) : (
@@ -3329,248 +3567,118 @@ function StoreSettingsContent() {
             )}
 
             {activeTab === 'operations' && (
-              <div className="space-y-4 sm:space-y-6">
-                <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-bold text-gray-900">Store Operations</h3>
-                    <button
-                      onClick={handleSaveSettings}
-                      disabled={isSaving}
-                      className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                    >
-                      <Save size={16} />
-                      {isSaving ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                      <div>
-                        <p className="font-semibold text-gray-900">Auto Accept Orders</p>
-                        <p className="text-sm text-gray-600">Automatically accept incoming orders</p>
-                      </div>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={autoAcceptOrders}
-                          onChange={(e) => setAutoAcceptOrders(e.target.checked)}
-                          className="sr-only peer"
-                        />
-                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
-                      </label>
-                    </div>
-                    <div className="p-4 bg-gray-50 rounded-lg">
-                      <label className="block text-sm font-semibold text-gray-900 mb-2">
-                        Preparation Buffer Time (minutes)
-                      </label>
-                      <input
-                        type="number"
-                        value={preparationBufferMinutes}
-                        onChange={(e) => setPreparationBufferMinutes(parseInt(e.target.value) || 15)}
-                        min="0"
-                        max="120"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Extra time added to estimated preparation time</p>
-                    </div>
-                    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                      <div>
-                        <p className="font-semibold text-gray-900">Manual Activation Lock</p>
-                        <p className="text-sm text-gray-600">
-                          {licenseBlockedForOps
-                            ? 'Cannot change while store is closed due to expired licence'
-                            : 'Prevent automatic store opening'}
-                        </p>
-                      </div>
-                      <label
-                        className={`relative inline-flex items-center ${
-                          licenseBlockedForOps ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={manualActivationLock}
-                          disabled={licenseBlockedForOps}
-                          onChange={async (e) => {
-                            if (licenseBlockedForOps) return;
-                            const newValue = e.target.checked;
-                            setManualActivationLock(newValue);
-                            await saveManualActivationLock(newValue);
-                          }}
-                          className="sr-only peer"
-                        />
-                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <StoreOperationsPanel
+                autoAcceptOrders={autoAcceptOrders}
+                onAutoAcceptOrdersChange={setAutoAcceptOrders}
+                avgPreparationTimeMinutes={avgPreparationTimeMinutes}
+                onAvgPreparationTimeMinutesChange={setAvgPreparationTimeMinutes}
+                preparationBufferMinutes={preparationBufferMinutes}
+                onPreparationBufferMinutesChange={setPreparationBufferMinutes}
+                manualActivationLock={manualActivationLock}
+                onManualActivationLockChange={async (enabled) => {
+                  if (licenseBlockedForOps) return
+                  setManualActivationLock(enabled)
+                  await saveManualActivationLock(enabled)
+                }}
+                licenseBlockedForOps={licenseBlockedForOps}
+                isSaving={isSaving}
+                onSave={handleSaveSettings}
+              />
             )}
 
             {activeTab === 'menu-capacity' && (
-              <div className="space-y-4 sm:space-y-6">
-                <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-bold text-gray-900">Menu & Capacity Controls</h3>
-                    <button
-                      onClick={handleSaveSettings}
-                      disabled={isSaving}
-                      className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                    >
-                      <Save size={16} />
-                      {isSaving ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-semibold text-gray-900">Menu Items</span>
-                        <span className={`text-sm font-bold ${
-                          maxMenuItems && currentMenuItemsCount >= maxMenuItems ? 'text-red-600' : 'text-green-600'
-                        }`}>
-                          {currentMenuItemsCount} / {maxMenuItems || '∞'}
-                        </span>
-                      </div>
-                      {maxMenuItems && (
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className={`h-2 rounded-full ${
-                              currentMenuItemsCount >= maxMenuItems ? 'bg-red-500' : 'bg-blue-500'
-                            }`}
-                            style={{ width: `${Math.min((currentMenuItemsCount / maxMenuItems) * 100, 100)}%` }}
-                          ></div>
-                        </div>
-                      )}
-                      {maxMenuItems && currentMenuItemsCount >= maxMenuItems && (
-                        <p className="text-xs text-red-600 mt-2 flex items-center gap-1">
-                          <Lock size={12} />
-                          Limit reached. Upgrade plan to add more items.
-                        </p>
-                      )}
-                    </div>
-                    <div className="p-4 bg-purple-50 rounded-lg border border-purple-200">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-semibold text-gray-900">Cuisines</span>
-                        <span className={`text-sm font-bold ${
-                          maxCuisines && currentCuisinesCount >= maxCuisines ? 'text-red-600' : 'text-green-600'
-                        }`}>
-                          {currentCuisinesCount} / {maxCuisines || '∞'}
-                        </span>
-                      </div>
-                      {maxCuisines && (
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className={`h-2 rounded-full ${
-                              currentCuisinesCount >= maxCuisines ? 'bg-red-500' : 'bg-purple-500'
-                            }`}
-                            style={{ width: `${Math.min((currentCuisinesCount / maxCuisines) * 100, 100)}%` }}
-                          ></div>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                      <div>
-                        <p className="font-semibold text-gray-900">Image Uploads</p>
-                        <p className="text-sm text-gray-600">Upload images for menu items</p>
-                      </div>
-                      {imageUploadAllowed ? (
-                        <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
-                          Enabled
-                        </span>
-                      ) : (
-                        <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm font-medium flex items-center gap-1">
-                          <Lock size={14} />
-                          Locked
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <MenuCapacityPanel
+                currentMenuItemsCount={currentMenuItemsCount}
+                maxMenuItems={maxMenuItems}
+                currentCuisinesCount={currentCuisinesCount}
+                maxCuisines={maxCuisines}
+                imageUploadAllowed={imageUploadAllowed}
+                planUsage={planUsage}
+                planUsageLoading={planUsageLoading}
+                isSaving={isSaving}
+                onSave={handleSaveSettings}
+                onUpgradePlan={() => setActiveTab('plans')}
+              />
             )}
 
             {activeTab === 'delivery' && (
               <div className="space-y-4 sm:space-y-6">
-                <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-bold text-gray-900">Delivery Settings</h3>
+                <div className="rounded-xl border border-gray-200 bg-white p-3 sm:p-4 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-base font-bold text-gray-900 sm:text-lg">Delivery Settings</h3>
                     <button
                       onClick={handleSaveSettings}
                       disabled={isSaving}
-                      className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2 sm:text-sm"
                     >
-                      <Save size={16} />
+                      <Save size={14} />
                       {isSaving ? 'Saving...' : 'Save'}
                     </button>
                   </div>
-                  <div className="space-y-4">
-                    <div className={`p-4 rounded-lg border-2 transition-colors ${
-                      gatimitraDeliveryEnabled ? 'border-purple-300 bg-purple-50' : 'border-gray-200'
-                    }`}>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-semibold text-gray-900">GatiMitra Delivery</p>
-                          <p className="text-sm text-gray-600">Use platform delivery service</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={gatimitraDeliveryEnabled}
-                            onChange={(e) => {
-                              setGatimitraDeliveryEnabled(e.target.checked)
-                              if (e.target.checked) setSelfDeliveryEnabled(false)
-                            }}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                        </label>
-                      </div>
-                    </div>
-                    <div className={`p-4 rounded-lg border-2 transition-colors ${
-                      selfDeliveryEnabled ? 'border-orange-300 bg-orange-50' : 'border-gray-200'
-                    }`}>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-semibold text-gray-900">Self Delivery</p>
-                          <p className="text-sm text-gray-600">Use your own delivery staff</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={selfDeliveryEnabled}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setShowSelfDeliveryConfirm(true)
-                              } else {
-                                setSelfDeliveryEnabled(false)
-                                setGatimitraDeliveryEnabled(true)
-                              }
-                            }}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
-                        </label>
-                      </div>
-                    </div>
-                    <div className="p-4 bg-gray-50 rounded-lg">
-                      <label className="block text-sm font-semibold text-gray-900 mb-2">
-                        Delivery Radius (km)
+
+                  <div className="flex items-stretch gap-2 overflow-x-auto pb-0.5 hide-scrollbar">
+                    <div
+                      className={`flex min-w-[148px] shrink-0 items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+                        gatimitraDeliveryEnabled ? 'border-purple-200 bg-purple-50' : 'border-gray-200 bg-gray-50/80'
+                      }`}
+                    >
+                      <p className="truncate text-sm font-semibold text-gray-900">GatiMitra Delivery</p>
+                      <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={gatimitraDeliveryEnabled}
+                          onChange={(e) => {
+                            setGatimitraDeliveryEnabled(e.target.checked)
+                            if (e.target.checked) setSelfDeliveryEnabled(false)
+                          }}
+                          className="peer sr-only"
+                        />
+                        <div className="h-5 w-9 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-4 peer-focus:outline-none" />
                       </label>
+                    </div>
+
+                    <div
+                      className={`flex min-w-[148px] shrink-0 items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+                        selfDeliveryEnabled ? 'border-orange-200 bg-orange-50' : 'border-gray-200 bg-gray-50/80'
+                      }`}
+                    >
+                      <p className="truncate text-sm font-semibold text-gray-900">Self Delivery</p>
+                      <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={selfDeliveryEnabled}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setShowSelfDeliveryConfirm(true)
+                            } else {
+                              setSelfDeliveryEnabled(false)
+                              setGatimitraDeliveryEnabled(true)
+                            }
+                          }}
+                          className="peer sr-only"
+                        />
+                        <div className="h-5 w-9 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-orange-600 peer-checked:after:translate-x-4 peer-focus:outline-none" />
+                      </label>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
+                      <label className="whitespace-nowrap text-xs font-semibold text-gray-700">Radius</label>
                       <input
                         type="number"
                         value={deliveryRadiusKm}
-                        onChange={(e) => setDeliveryRadiusKm(parseInt(e.target.value) || 5)}
-                        min="1"
-                        max="50"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                        onChange={(e) => setDeliveryRadiusKm(parseInt(e.target.value, 10) || 5)}
+                        min={1}
+                        max={50}
+                        className="w-14 rounded-md border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-orange-500"
                       />
+                      <span className="text-xs text-gray-500">km</span>
                     </div>
-                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 max-w-xs">
-                      <label className="block text-sm font-semibold text-gray-900 mb-2">
-                        Delivery charge per km (₹10 – ₹15)
-                      </label>
-                      <p className="text-xs text-gray-600 mb-2">
-                        When you deliver with your own riders, customers are charged this amount per km. Editable <strong>once in 30 days</strong>.
-                      </p>
+
+                    <div
+                      className="flex min-w-[120px] shrink-0 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2"
+                      title="₹10–₹15 per km for self delivery. Editable once in 30 days."
+                    >
+                      <label className="shrink-0 whitespace-nowrap text-xs font-semibold text-gray-700">₹/km</label>
                       <input
                         type="number"
                         min={10}
@@ -3580,21 +3688,20 @@ function StoreSettingsContent() {
                         onChange={(e) => setDeliveryChargePerKm(e.target.value)}
                         disabled={!canEditDeliveryChargePerKm}
                         placeholder="10–15"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                        className="w-16 rounded-md border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-orange-500 disabled:cursor-not-allowed disabled:bg-gray-100"
                       />
-                      <p className="text-xs text-gray-500 mt-1">Must be between ₹10 and ₹15 per km.</p>
-                      {deliveryChargePerKmLastUpdatedAt && (
-                        <p className="text-xs text-gray-500 mt-2">
-                          Last updated: {new Date(deliveryChargePerKmLastUpdatedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-                        </p>
-                      )}
-                      {!canEditDeliveryChargePerKm && nextDeliveryChargeEditableAt && (
-                        <p className="text-xs text-amber-700 mt-2 font-medium">
-                          You can edit again from {new Date(nextDeliveryChargeEditableAt).toLocaleDateString('en-IN')}.
-                        </p>
-                      )}
+                      <span className="hidden truncate text-[10px] text-gray-500 xl:inline">
+                        {canEditDeliveryChargePerKm ? '10–15 · edit 1×/30d' : 'Locked 30d'}
+                      </span>
                     </div>
                   </div>
+
+                  {!canEditDeliveryChargePerKm && nextDeliveryChargeEditableAt ? (
+                    <p className="mt-2 text-[11px] font-medium text-amber-700">
+                      Delivery charge editable again from{' '}
+                      {new Date(nextDeliveryChargeEditableAt).toLocaleDateString('en-IN')}.
+                    </p>
+                  ) : null}
                 </div>
 
                 {/* Packaging Charge (same page) */}
@@ -4756,30 +4863,34 @@ function StoreSettingsContent() {
                 <div className="bg-white rounded-xl border border-sky-200/80 shadow-sm overflow-hidden">
                   <div className="p-6 flex items-start justify-between gap-4">
                     <div className="flex-1">
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
                         <h3 className="text-lg font-bold text-gray-900">Point of sale system [POS]</h3>
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                          Coming Soon
+                        </span>
                         <button
-                          onClick={savePosIntegration}
-                          disabled={posSaving || !posPartner.trim()}
-                          className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                          type="button"
+                          disabled
+                          className="ml-auto px-4 py-2 bg-orange-600 text-white rounded-lg font-semibold text-sm opacity-50 cursor-not-allowed flex items-center gap-2"
                         >
                           <Save size={16} />
-                          {posSaving ? 'Saving...' : 'Save'}
+                          Save
                         </button>
                       </div>
                       <p className="text-sm text-gray-600">Configure and integrate your external POS</p>
                     </div>
-                    <div className="p-2.5 rounded-lg bg-sky-100">
+                    <div className="p-2.5 rounded-lg bg-sky-100 shrink-0">
                       <Smartphone size={22} className="text-sky-600" />
                     </div>
                   </div>
-                  <div className="px-6 pb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="px-6 pb-6 grid grid-cols-1 md:grid-cols-2 gap-4 opacity-60 pointer-events-none select-none">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">Choose your partner POS</label>
                       <select
                         value={posPartner}
                         onChange={(e) => setPosPartner(e.target.value)}
-                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                        disabled
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-500 cursor-not-allowed"
                       >
                         <option value="">Choose your partner POS</option>
                         <option value="PetPooja">PetPooja</option>
@@ -4799,7 +4910,8 @@ function StoreSettingsContent() {
                         value={posStoreId}
                         onChange={(e) => setPosStoreId(e.target.value)}
                         placeholder="POS store ID (optional)"
-                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                        disabled
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-500 placeholder-gray-400 cursor-not-allowed"
                       />
                     </div>
                   </div>
@@ -4807,31 +4919,16 @@ function StoreSettingsContent() {
                     <div className="flex items-center gap-2 p-3 rounded-lg bg-teal-50 border border-teal-200">
                       <AlertCircle size={18} className="text-teal-600 flex-shrink-0" />
                       <p className="text-sm font-medium text-teal-900">
-                        <strong>NOTE:</strong> Please ask your POS partner to initiate the integration once you complete registration.
+                        <strong>NOTE:</strong> POS integration is coming soon. You will be able to connect your partner POS from here.
                       </p>
                     </div>
-                    <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <button
-                        onClick={savePosIntegration}
-                        disabled={posSaving || !posPartner.trim()}
-                        className="px-4 py-2.5 bg-orange-600 text-white rounded-lg font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {posSaving ? 'Saving...' : 'Save'}
-                      </button>
-                      {posStatus === 'PENDING' && (
-                        <button
-                          onClick={markPosActive}
-                          className="px-4 py-2.5 border border-emerald-300 bg-emerald-50 text-emerald-700 rounded-lg font-semibold hover:bg-emerald-100"
-                        >
-                          Partner has initiated – mark active
-                        </button>
-                      )}
-                      {posIntegrationActive && (
+                    {posIntegrationActive && (
+                      <div className="mt-4">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-sm font-medium">
                           <CheckCircle2 size={16} /> Integration active – you can switch to POS on dashboard
                         </span>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4840,36 +4937,14 @@ function StoreSettingsContent() {
             </div>
           </div>
           </div>
-
-          {/* Right nav — collapsible on desktop (icon strip vs full labels) */}
-          <div
-            className={`hidden h-full min-h-0 shrink-0 overflow-hidden bg-[#f5f5f5] border-l border-[#e8e8e8] transition-[width] duration-200 ease-out lg:flex lg:flex-col ${
-              settingsSidebarCollapsed ? 'lg:w-14' : 'lg:w-56'
-            }`}
-          >
-            <SettingsSidebar
-              activeTab={activeTab}
-              onTabChange={(tab: string) => setActiveTab(tab as typeof activeTab)}
-              collapsed={settingsSidebarCollapsed}
-            />
-            <div className="flex justify-center py-2 border-t border-[#e8e8e8] shrink-0">
-              <button
-                type="button"
-                onClick={() => setSettingsSidebarCollapsed((c) => !c)}
-                className="p-1.5 rounded-lg hover:bg-gray-200/80 text-gray-600 hover:text-gray-900"
-                title={settingsSidebarCollapsed ? 'Expand settings menu' : 'Collapse settings menu'}
-                aria-expanded={!settingsSidebarCollapsed}
-                aria-label={settingsSidebarCollapsed ? 'Expand settings menu' : 'Collapse settings menu'}
-              >
-                {settingsSidebarCollapsed ? (
-                  <ChevronLeft size={18} aria-hidden />
-                ) : (
-                  <ChevronRight size={18} aria-hidden />
-                )}
-              </button>
-            </div>
-          </div>
         </div>
+
+        <SettingsSidebarRail
+          activeTab={activeTab}
+          onTabChange={(tab: string) => setActiveTab(tab as typeof activeTab)}
+          collapsed={settingsSidebarCollapsed}
+          onCollapsedChange={setSettingsSidebarCollapsed}
+        />
 
         {/* Main Toggle Warning Modal */}
         {typeof document !== 'undefined' && showMainToggleWarning && createPortal(
@@ -5244,7 +5319,7 @@ function StoreSettingsContent() {
                   <div className="min-w-0">
                     <p className="text-[11px] uppercase tracking-[0.18em] text-orange-600 font-semibold">Policy</p>
                     <h2 id="refund-policy-sheet-title" className="text-base sm:text-lg font-bold text-gray-900 leading-tight">
-                      Refund Policy
+                      Refund &amp; Cancellation Policy
                     </h2>
                   </div>
                   <button

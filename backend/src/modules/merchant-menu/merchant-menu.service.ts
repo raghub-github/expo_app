@@ -805,6 +805,8 @@ export async function listItems(
     approval_status: string | null;
     has_pending_change_request: boolean;
     pending_change_request_type: string | null;
+    is_locked_by_plan?: boolean;
+    locked_reason?: string | null;
   }>;
   total: number;
 }> {
@@ -891,6 +893,8 @@ export async function listItems(
            merchant_menu_items.item_size_value,
            merchant_menu_items.item_size_unit,
            merchant_menu_items.approval_status,
+           COALESCE(merchant_menu_items.is_locked_by_plan, FALSE) AS is_locked_by_plan,
+           merchant_menu_items.locked_reason,
            (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
            (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type
     FROM merchant_menu_items

@@ -37,6 +37,7 @@ import { extendStartupApiGate } from "@/lib/startup-api-gate";
 import { isNetworkError } from "@/utils/networkError";
 import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
 import { ProfilePrefetch } from "@/components/ProfilePrefetch";
+import { WalletBalancePrefetch } from "@/components/WalletBalancePrefetch";
 import { SubscriptionPlansPrefetch } from "@/components/SubscriptionPlansPrefetch";
 import { FoodHomeLayoutPrefetch } from "@/components/FoodHomeLayoutPrefetch";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
@@ -215,6 +216,7 @@ export default function RootLayout() {
               <PendingAddressShareResume />
               <FoodHomeLayoutPrefetch />
               <ProfilePrefetch />
+              <WalletBalancePrefetch />
               <SubscriptionPlansPrefetch />
             </>
           ) : null}

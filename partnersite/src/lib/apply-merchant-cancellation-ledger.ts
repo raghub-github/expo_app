@@ -5,6 +5,11 @@
 import type postgres from "postgres";
 import { client as pgClient } from "@/lib/drizzle";
 import { resolveCancelledByBrandForLedger } from "@/lib/merchant-cancellation-ledger-brand";
+import {
+  compensationMetadataForLedger,
+  planMerchantCancellationLedger,
+} from "@/lib/merchant-cancellation-compensation-service";
+import { buildCancellationInfoLedgerDescription } from "@/lib/merchant-cancellation-compensation-display";
 
 export type MerchantDebitMode = "full_debit" | "partial_debit" | "no_debit";
 
@@ -79,8 +84,15 @@ async function resolveMerchantCtmAmount(
     LIMIT 1
   `;
   const row = rows[0];
-  const frozen = Number(row?.total_ctm ?? row?.food_items_total_value ?? 0);
-  return round2(Math.max(0, Number.isFinite(frozen) ? frozen : 0));
+  const frozenCtm = Number(row?.total_ctm ?? 0);
+  const foodItemsTotal = Number(row?.food_items_total_value ?? 0);
+  const frozen =
+    Number.isFinite(frozenCtm) && frozenCtm > 0
+      ? frozenCtm
+      : Number.isFinite(foodItemsTotal) && foodItemsTotal > 0
+        ? foodItemsTotal
+        : 0;
+  return round2(frozen);
 }
 
 async function resolveFormattedOrderId(sql: postgres.Sql, orderCoreId: number): Promise<string | null> {
@@ -137,6 +149,7 @@ async function debitFromBucket(
     mode: MerchantDebitMode;
     idempotencySuffix: string;
     actorSystemUserId?: number | null;
+    compensationMeta?: Record<string, unknown>;
   }
 ): Promise<number | null> {
   const amount = round2(args.amount);
@@ -161,7 +174,10 @@ async function debitFromBucket(
         trigger_source: args.idempotencySuffix,
         entry_type: "order_cancellation",
         balance_impact: "debit",
+        cancellation_refund: amount,
+        customer_compensation: amount,
         actor_system_user_id: args.actorSystemUserId ?? null,
+        ...(args.compensationMeta ?? {}),
       })}::jsonb
     ) AS ledger_id
   `;
@@ -178,6 +194,7 @@ async function applyWalletDebit(
     orderCoreId: number;
     mode: MerchantDebitMode;
     actorSystemUserId?: number | null;
+    compensationMeta?: Record<string, unknown>;
   }
 ): Promise<{ applied: boolean; ledgerId?: number; skipped?: string }> {
   const target = round2(args.amount);
@@ -202,6 +219,7 @@ async function applyWalletDebit(
           mode: args.mode,
           idempotencySuffix: `${args.mode}:${slice}`,
           actorSystemUserId: args.actorSystemUserId,
+          compensationMeta: args.compensationMeta,
         });
         if (ledgerId) {
           lastLedgerId = ledgerId;
@@ -225,7 +243,8 @@ async function applyWalletDebit(
 
 async function applyMerchantCancellationDebit(
   sql: postgres.Sql,
-  input: ApplyMerchantOrderCancellationLedgerInput
+  input: ApplyMerchantOrderCancellationLedgerInput,
+  compensationMeta?: Record<string, unknown>
 ): Promise<ApplyMerchantOrderCancellationLedgerResult> {
   const mode = normalizeMode(input.merchantDebit);
   if (!mode || mode === "no_debit") {
@@ -265,6 +284,7 @@ async function applyMerchantCancellationDebit(
     orderCoreId: input.orderCoreId,
     mode,
     actorSystemUserId: input.actorSystemUserId,
+    compensationMeta,
   });
 
   return {
@@ -312,6 +332,7 @@ async function recordCancellationInfoLedger(
     actorSystemUserId?: number | null;
     cancelledByType?: string | null;
     cancelledByLabel?: string | null;
+    compensationMeta?: Record<string, unknown>;
   }
 ): Promise<number | null> {
   const amount = round2(args.amount);
@@ -324,10 +345,11 @@ async function recordCancellationInfoLedger(
     args.cancelledByLabel,
     args.source
   );
-  const description =
-    args.balanceImpact === "none"
-      ? `Order ${formattedOrderId} cancelled — no merchant credit`
-      : `Order ${formattedOrderId} cancelled`;
+  const description = buildCancellationInfoLedgerDescription({
+    formattedOrderId,
+    balanceImpact: args.balanceImpact,
+    compensationMeta: args.compensationMeta,
+  });
 
   const rows = await sql<{ ledger_id: number | null }[]>`
     WITH w AS (
@@ -367,6 +389,7 @@ async function recordCancellationInfoLedger(
             cancelled_by_type: args.cancelledByType ?? null,
             cancelled_by_label: args.cancelledByLabel ?? null,
             cancelled_by_brand: cancelledByBrand,
+            ...(args.compensationMeta ?? {}),
           })}::jsonb
           || jsonb_build_object(
             'withdrawable_after', w.withdrawable_balance,
@@ -398,7 +421,24 @@ export async function applyMerchantOrderCancellationLedger(
   }
 
   try {
-    const debitResult = await applyMerchantCancellationDebit(sql, input);
+    const plan = await planMerchantCancellationLedger(
+      sql,
+      input.orderCoreId,
+      input.merchantDebit
+    );
+
+    const effectiveInput =
+      plan.merchantDebit && !input.merchantDebit?.trim()
+        ? {
+            ...input,
+            merchantDebit: plan.merchantDebit,
+            partialAmount: plan.partialAmount ?? input.partialAmount,
+          }
+        : input;
+
+    const compensationMeta = compensationMetadataForLedger(plan.resolved, plan.display);
+
+    const debitResult = await applyMerchantCancellationDebit(sql, effectiveInput, compensationMeta);
     if (debitResult.applied) {
       return { ...debitResult, recorded: true };
     }
@@ -436,6 +476,7 @@ export async function applyMerchantOrderCancellationLedger(
       actorSystemUserId: input.actorSystemUserId,
       cancelledByType: input.cancelledByType,
       cancelledByLabel: input.cancelledByLabel,
+      compensationMeta,
     });
 
     if (ledgerId) {

@@ -1,7 +1,7 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { usePageVisible } from "@/hooks/usePageVisible";
 
 const FOOD_ORDERS_PATH = "/dashboard/orders/food";
@@ -13,3 +13,4 @@ export function useFoodOrdersListActive(): boolean {
   const pageVisible = usePageVisible();
   return clean === FOOD_ORDERS_PATH && pageVisible;
 }
+

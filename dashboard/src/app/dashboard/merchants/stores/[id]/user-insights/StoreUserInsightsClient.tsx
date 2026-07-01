@@ -1,6 +1,6 @@
 "use client";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import React, { useState, useEffect, Suspense, useRef, useMemo } from "react";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import {
   Star,

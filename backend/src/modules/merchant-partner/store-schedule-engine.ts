@@ -1196,6 +1196,9 @@ async function runStoreScheduleTickOnce(
           OR msa.next_schedule_transition_at <= ${dueCutoff}::timestamptz
           OR (msa.manual_close_until IS NOT NULL AND msa.manual_close_until <= ${dueCutoff}::timestamptz)
           OR (msa.schedule_end_prompt_expires_at IS NOT NULL AND msa.schedule_end_prompt_expires_at <= ${dueCutoff}::timestamptz)
+          -- Backfill rows that don't yet have a live-status row written.
+          -- This handles brand-new columns (migration 0381) and new stores.
+          OR ms.live_status_updated_at IS NULL
         )
       ORDER BY msa.next_schedule_transition_at ASC NULLS FIRST
       LIMIT 500
@@ -1287,6 +1290,21 @@ async function runStoreScheduleTickOnce(
         },
         log
       );
+
+      // Single source-of-truth write for clients that don't want to
+      // recompute the schedule. See migration 0381 + @gatimitra/store-status
+      // for the contract these columns implement.
+      try {
+        await syncLiveScheduleColumnsForStore(
+          sql,
+          storeId,
+          hoursByStore.get(storeId) ?? null,
+          now,
+          activeClosureEndByStore.get(storeId) ?? null,
+        );
+      } catch (e) {
+        log.error({ storeId, err: e }, "store_schedule_tick_live_columns_write_failed");
+      }
   }
   } catch (err) {
     log.error({ err }, "store_schedule_tick_query_failed");
@@ -1376,7 +1394,162 @@ export async function runStoreScheduleTickForStore(
       },
       log
     );
+
+    try {
+      await syncLiveScheduleColumnsForStore(
+        sql,
+        storeId,
+        hoursRow ?? null,
+        now,
+        activeClosureEndAtIso,
+      );
+    } catch (e) {
+      log.error({ storeId, err: e }, "store_schedule_tick_for_store_live_columns_write_failed");
+    }
   } catch (err) {
     log.error({ storeId, err }, "store_schedule_tick_for_store_failed");
   }
+}
+
+/**
+ * Single source-of-truth post-write for the 5 columns added in migration
+ * 0381 (`live_schedule_phase`, `next_open_at`, `next_close_at`,
+ * `manual_override_active`, `live_status_updated_at`).
+ *
+ * Reads the JUST-UPDATED merchant_stores row (so we see the boolean flags
+ * the main tick already wrote) and the operating-hours row passed in,
+ * derives the phase, and writes the five columns in one UPDATE.
+ *
+ * The contract these columns implement is defined in
+ * `@gatimitra/store-status` — partnersite, merchant app, customer app
+ * all read these columns and pass them to `formatStoreStatusLabel` so
+ * the user-visible label is identical in every UI.
+ */
+async function syncLiveScheduleColumnsForStore(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  hoursRow: Record<string, unknown> | null,
+  now: Date,
+  activeClosureEndAtIso: string | null,
+): Promise<void> {
+  // Re-read the row so we observe the flags the main tick just wrote.
+  // The cost is one extra SELECT per store per 30s — negligible.
+  // NOTE: merchant_stores has no `timezone` column. The engine assumes
+  // STORE_TIMEZONE_DEFAULT (Asia/Kolkata) like every other helper here.
+  const rows = (await sql`
+    SELECT
+      id,
+      operational_status,
+      is_accepting_orders,
+      is_available,
+      is_active
+    FROM merchant_stores
+    WHERE id = ${storeId}
+    LIMIT 1
+  `) as Array<{
+    operational_status?: string | null;
+    is_accepting_orders?: boolean | null;
+    is_available?: boolean | null;
+    is_active?: boolean | null;
+  }>;
+  const row = rows[0];
+  if (!row) return;
+
+  const tz = STORE_TIMEZONE_DEFAULT;
+  const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(tz);
+
+  // Phase derivation. Keep this in lock-step with the union in
+  // @gatimitra/store-status. We don't currently distinguish BREAK / PRE_BREAK
+  // here because the backend tick doesn't compute the in-between-slots
+  // case yet; that's a follow-up. The partnersite/customer client will see
+  // OUTSIDE_HOURS for now, which is acceptable.
+  let phase: "OFF_DAY" | "WITHIN_SLOT" | "OUTSIDE_HOURS" | "NO_HOURS" = "NO_HOURS";
+  if (activeClosureEndAtIso) {
+    // Vacation/temp closure — treat as OFF_DAY (closed). The closure end
+    // is the next-open time; we already write it into manual_close_until.
+    phase = "OFF_DAY";
+  } else if (!hoursRow) {
+    phase = "NO_HOURS";
+  } else {
+    const dayKey = DAY_NAMES[dayOfWeek];
+    const closedDays = (hoursRow.closed_days as string[] | null) ?? [];
+    const isDayClosed =
+      closedDays.some((d) => String(d).trim().toLowerCase() === dayKey) ||
+      hoursRow[`${dayKey}_open`] !== true;
+    if (isDayClosed) {
+      phase = "OFF_DAY";
+    } else if (isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight)) {
+      phase = "WITHIN_SLOT";
+    } else {
+      phase = "OUTSIDE_HOURS";
+    }
+  }
+
+  // Next-open ISO: the same helper the rest of the engine uses.
+  let nextOpenAtIso: string | null = null;
+  try {
+    if (hoursRow) {
+      nextOpenAtIso = getNextOpenIso(hoursRow, dayOfWeek, minutesSinceMidnight, now);
+    } else if (activeClosureEndAtIso) {
+      nextOpenAtIso = activeClosureEndAtIso;
+    }
+  } catch {
+    // never throw from the tick — leave null
+  }
+
+  // Next-close ISO: when WITHIN_SLOT, find the slot end. For other
+  // phases the store is currently closed, so next_close is null.
+  let nextCloseAtIso: string | null = null;
+  if (phase === "WITHIN_SLOT" && hoursRow) {
+    try {
+      const next = getNextOpenClose(hoursRow, dayOfWeek, minutesSinceMidnight);
+      if (next.next_close_time) {
+        // Build today's ISO timestamp for HH:mm in IST. Mirrors the
+        // logic in resolveNextSlotTransitionIso just above.
+        const ist = new Intl.DateTimeFormat("en-CA", {
+          timeZone: tz,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(now);
+        const y = ist.find((p) => p.type === "year")?.value ?? "1970";
+        const m = ist.find((p) => p.type === "month")?.value ?? "01";
+        const d = ist.find((p) => p.type === "day")?.value ?? "01";
+        nextCloseAtIso = toIsoOrNull(`${y}-${m}-${d}T${next.next_close_time}:00+05:30`);
+      }
+    } catch {
+      // leave null
+    }
+  }
+
+  // Manual override: schedule says open, but the live flags say closed.
+  // `is_accepting_orders === true` is the canonical "live open" signal
+  // in merchant_stores. operational_status is a denormalisation we also
+  // check for robustness.
+  const liveOpen =
+    row.is_accepting_orders === true &&
+    row.is_active !== false &&
+    row.is_available !== false &&
+    String(row.operational_status || "").toUpperCase() === "OPEN";
+  const manualOverrideActive = phase === "WITHIN_SLOT" && !liveOpen;
+
+  // When the store is open, next_open is null; the client uses next_close
+  // to drive a "closes in X" countdown. When closed, next_close is null.
+  if (phase === "WITHIN_SLOT" && liveOpen) {
+    nextOpenAtIso = null;
+  }
+  if (phase !== "WITHIN_SLOT") {
+    nextCloseAtIso = null;
+  }
+
+  await sql`
+    UPDATE merchant_stores
+    SET
+      live_schedule_phase    = ${phase},
+      next_open_at           = ${nextOpenAtIso},
+      next_close_at          = ${nextCloseAtIso},
+      manual_override_active = ${manualOverrideActive},
+      live_status_updated_at = NOW()
+    WHERE id = ${storeId}
+  `;
 }

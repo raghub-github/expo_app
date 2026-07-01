@@ -3,6 +3,7 @@
 import { forwardRef, useImperativeHandle, useRef, useEffect, useCallback } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import { disableMapboxTelemetry } from '@/lib/mapbox/disable-telemetry';
 
 export interface StoreLocationMapboxGLRef {
   flyTo: (opts: { center: [number, number]; zoom: number; duration?: number }) => void;
@@ -26,6 +27,7 @@ const StoreLocationMapboxGL = forwardRef<StoreLocationMapboxGLRef, StoreLocation
       if (!containerRef.current || !mapboxToken) return;
 
       mapboxgl.accessToken = mapboxToken;
+      disableMapboxTelemetry();
       const center: [number, number] =
         latitude != null && longitude != null ? [longitude, latitude] : [78.9629, 20.5937];
       const zoom = latitude != null && longitude != null ? 14 : 4;

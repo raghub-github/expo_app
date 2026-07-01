@@ -58,3 +58,9 @@
 # Cursor IDE local indices (NOT source code)
 **/cursor/crepe/
 
+# Firebase / FCM credentials — NEVER commit these
+serviceAccountKey.json
+**/serviceAccountKey.json
+**/google-services.json
+**/GoogleService-Info.plist
+

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getSql } from "../../db/client.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import { auth } from "../../plugins/auth.js";
+import { send as sendNotification } from "../notifications/notificationService.js";
 import {
   isWithinOperatingHours,
   isBeforeFirstSlotToday,
@@ -17,9 +18,15 @@ import {
   emitStoreStatusChanged,
   syncMerchantStoresOnlineTriple,
 } from "./store-schedule-engine.js";
+import {
+  computeSurfaceLiveStatus,
+  effectiveOperationalFromStoreRow,
+} from "../../lib/store-surface-online.js";
 import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-title-for-insert.js";
 import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
 import { buildLivePreviewInsights } from "./live-preview-insights.js";
+import { buildGrowthQuickInsights } from "./growth-quick-insights.js";
+import { buildGrowthKitchenInsights } from "./growth-kitchen-insights.js";
 import {
   countMerchantDeliveredOrdersIst,
   sumMerchantLedgerEarningsIst,
@@ -3222,6 +3229,36 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** GET /merchant-partner/stores/:storeId/wallet/payout-settlement — A−B−C summary for a period. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { from?: string; to?: string } }>(
+        "/stores/:storeId/wallet/payout-settlement",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const periodStart = req.query.from ? new Date(req.query.from) : null;
+          const periodEnd = req.query.to ? new Date(req.query.to) : null;
+          if (!periodStart || !periodEnd || Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime())) {
+            return reply.code(400).send({ error: "from_and_to_required" });
+          }
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          try {
+            const { getPayoutSettlement } = await import("../../lib/merchant-payout-settlement.js");
+            const settlement = await getPayoutSettlement(storeId, periodStart, periodEnd);
+            return reply.send({ success: true, settlement });
+          } catch (e) {
+            req.log.error({ err: e, storeId }, "payout-settlement failed");
+            return reply.code(500).send({ error: "settlement_failed" });
+          }
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/payout-quote — withdrawal breakdown. */
       protectedApp.get<{ Params: { storeId: string }; Querystring: { amount: string } }>(
         "/stores/:storeId/payout-quote",
@@ -3325,6 +3362,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                    ms.operational_status,
                    ms.is_accepting_orders,
                    ms.is_active,
+                   ms.is_available AS store_is_available,
+                   ms.approval_status,
                    msa.is_available,
                    msa.is_accepting_orders AS avail_accepting,
                    msa.auto_open_from_schedule,
@@ -3476,11 +3515,16 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
               `;
               const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
-              await sendExpoPush(tokens, {
-                title: reminderTitle,
-                body: reminderBody,
-                data: { url: "/(tabs)/profile/vacation", screen: "scheduled_off" },
-              });
+              if (tokens.length > 0) {
+                await sendNotification({
+                  templateCode: "MERCHANT_SCHEDULED_OFF_REMINDER",
+                  variables: { closeTime: "1 hour", reason: "your scheduled closure" },
+                  target: { device_tokens: tokens },
+                  priority: "high",
+                  idempotencyKey: `SCHEDULED_OFF_REMINDER:${storeId}:${Math.floor(Date.now()/3600000)}`,
+                  metadata: { url: "/(tabs)/profile/vacation", screen: "scheduled_off" },
+                }).catch((e) => console.warn("[scheduled-off reminder] v2 send failed", (e as Error).message));
+              }
             }
 
             const inWindow = nowMs >= startsMs && nowMs < endsMs;
@@ -3642,14 +3686,15 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                   INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
                   VALUES (${storeId}, 'store', ${notifTitle}, ${notifBody}, FALSE, '/(tabs)/profile/status')
                 `;
-                try {
-                  await sendExpoPush(tokens, {
-                    title: notifTitle,
-                    body: notifBody,
-                    data: { url: "/(tabs)/profile/status", screen: "store_status", action: "reopen_prompt" },
-                  });
-                } catch {
-                  // ignore push send failure
+                if (tokens.length > 0) {
+                  await sendNotification({
+                    templateCode: "MERCHANT_REOPEN_PROMPT",
+                    variables: { endTime: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) },
+                    target: { device_tokens: tokens },
+                    priority: "high",
+                    idempotencyKey: `REOPEN_PROMPT:${storeId}:${Math.floor(Date.now()/60000)}`,
+                    metadata: { url: "/(tabs)/profile/status", screen: "store_status", action: "reopen_prompt" },
+                  }).catch(() => undefined);
                 }
               }
             }
@@ -3861,13 +3906,19 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
           const operationalStatus =
             row.operational_status != null ? String(row.operational_status).trim().toUpperCase() : "";
-          const operationalOpen = operationalStatus === "OPEN";
-          const surfaceOnline = operationalOpen && withinHoursComputed;
+          const effectiveOp = effectiveOperationalFromStoreRow({
+            operational_status: operationalStatus,
+            is_active: row.is_active,
+            is_accepting_orders: row.is_accepting_orders,
+            is_available: (row as { store_is_available?: boolean | null }).store_is_available,
+            approval_status: (row as { approval_status?: string | null }).approval_status,
+          });
+          const surfaceOnline = computeSurfaceLiveStatus(effectiveOp, withinHoursComputed) === "OPEN";
 
           return reply.send({
             store_id: storeId,
             is_open: surfaceOnline,
-            operational_status: operationalStatus || null,
+            operational_status: effectiveOp,
             within_operating_hours: withinHoursComputed,
             is_accepting_orders: baseAccepting,
             is_available: available,
@@ -4359,9 +4410,33 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         const closedByLabel =
           mergedManualCloseUntil != null ? (closingStore ? lastToggledByName : (availRow as any)?.last_toggled_by_name ?? null) : null;
 
+        const freshStoreRows = await sql`
+          SELECT operational_status, is_active, is_accepting_orders, is_available, approval_status
+          FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        const hoursRowsPatch = await sql`
+          SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
+        `;
+        const { dayOfWeek: patchDow, minutesSinceMidnight: patchMin } = nowInStoreTz();
+        const hoursRowPatch = hoursRowsPatch[0] as Record<string, unknown> | undefined;
+        const withinHoursPatch = hoursRowPatch
+          ? isWithinOperatingHours(hoursRowPatch, patchDow, patchMin)
+          : false;
+        const freshStore = freshStoreRows[0] as {
+          operational_status?: string | null;
+          is_active?: boolean | null;
+          is_accepting_orders?: boolean | null;
+          is_available?: boolean | null;
+          approval_status?: string | null;
+        } | undefined;
+        const patchEffectiveOp = effectiveOperationalFromStoreRow(freshStore);
+        const patchSurfaceOnline = computeSurfaceLiveStatus(patchEffectiveOp, withinHoursPatch) === "OPEN";
+
         return reply.send({
           store_id: storeId,
-          is_open: mergedAvailAccepting && mergedAvailable && (storeRow.is_active ?? true),
+          is_open: patchSurfaceOnline,
           is_accepting_orders: mergedAvailAccepting,
           is_available: mergedAvailable,
           auto_open_from_schedule: mergedAutoOpen,
@@ -4723,6 +4798,62 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const raw = String(req.query?.period ?? "today").toLowerCase();
           const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
           const body = await buildLivePreviewInsights(sql, storeId, period);
+          return reply.send(body);
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/growth/quick-insights — at-a-glance KPIs for Quick tab (IST). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { period?: string } }>(
+        "/stores/:storeId/growth/quick-insights",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const raw = String(req.query?.period ?? "today").toLowerCase();
+          const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
+          const body = await buildGrowthQuickInsights(sql, storeId, period);
+          return reply.send(body);
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/growth/kitchen-insights — prep performance for Kitchen tab (IST). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { period?: string } }>(
+        "/stores/:storeId/growth/kitchen-insights",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const raw = String(req.query?.period ?? "today").toLowerCase();
+          const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
+          const body = await buildGrowthKitchenInsights(sql, storeId, period);
           return reply.send(body);
         }
       );
@@ -5127,7 +5258,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
-      const WAITING_FOR_ORDER_TITLE = "Waiting for Order";
+      const WAITING_FOR_ORDER_TITLE = "🟢 Your restaurant is online";
+      const WAITING_FOR_ORDER_BODY = "Waiting for orders";
 
       /** POST /merchant-partner/stores/:storeId/notifications/waiting-for-order/ensure — idempotent in-app row for idle pipeline. */
       protectedApp.post<{ Params: { storeId: string } }>(
@@ -5185,15 +5317,27 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               ${storeId},
               'system',
               ${WAITING_FOR_ORDER_TITLE},
-              'You are online. We will notify you when a new order arrives.',
+              ${WAITING_FOR_ORDER_BODY},
               FALSE,
-              NULL
+              '/(tabs)/'
             )
             RETURNING id
           `;
           const row = ins[0] as { id?: unknown } | undefined;
           const id = row?.id != null ? String(row.id) : null;
           if (!id) return reply.code(500).send({ error: "insert_failed" });
+          const tokenRows = await sql`
+            SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
+          `;
+          const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+          if (tokens.length > 0) {
+            await sendNotification({
+              templateCode: "MERCHANT_WAITING_FOR_ORDER",
+              target: { device_tokens: tokens },
+              idempotencyKey: `WAITING_FOR_ORDER:${storeId}:${id}`,
+              metadata: { type: "store_online", screen: "notifications" },
+            }).catch(() => undefined);
+          }
           return reply.send({ id, created: true });
         }
       );
@@ -5576,11 +5720,18 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
           `;
           const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
-          await sendExpoPush(tokens, {
-            title: "Scheduled store closure set",
-            body: "Your store closure schedule has been set successfully.",
-            data: { url: "/(tabs)/profile/vacation", scheduledClosureId: schedId },
-          });
+          if (tokens.length > 0) {
+            await sendNotification({
+              templateCode: "MERCHANT_SCHEDULED_CLOSURE_SET",
+              variables: {
+                startTime: new Date().toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit" }),
+                endTime: "later",
+              },
+              target: { device_tokens: tokens },
+              idempotencyKey: `SCHEDULED_CLOSURE_SET:${storeId}:${schedId}`,
+              metadata: { url: "/(tabs)/profile/vacation", scheduledClosureId: schedId },
+            }).catch(() => undefined);
+          }
 
           // Log the action in merchant_store_status_log for analytics and audit.
           const parentRow = await getParentForAudit(sql, parentId);
@@ -7011,6 +7162,34 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           );
           const { cancelled } = await syncOrderAcceptanceTimeoutForStore(storeId, req.log);
           return reply.send({ cancelled, store_id: storeId });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/cancellation-compensation-policy */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/cancellation-compensation-policy",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { loadMerchantCompensationPolicyDisplay } = await import(
+            "../../lib/merchant-cancellation-compensation-display.js"
+          );
+          const policy = await loadMerchantCompensationPolicyDisplay(sql);
+          if (!policy) return reply.code(404).send({ error: "engine_not_configured" });
+          return reply.send({ success: true, policy });
         }
       );
 

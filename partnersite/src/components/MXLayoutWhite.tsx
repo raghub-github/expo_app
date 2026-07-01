@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useSyncExternalStore, Suspense } from 'react'
+import React, { useState, useSyncExternalStore, Suspense, useEffect } from 'react'
 import { PartnerShellHeaderProvider } from '@/context/PartnerShellHeaderContext'
 import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
@@ -46,6 +46,10 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
     () => false
   );
   const [effectiveCollapsed, setEffectiveCollapsed] = useState(leftSidebarCollapsed);
+  // Keep desktop sidebar expanded after reload — never start icon-only on refresh.
+  useEffect(() => {
+    if (!isSmallScreen) setEffectiveCollapsed(false);
+  }, [isSmallScreen]);
   const collapsed = isSmallScreen ? true : effectiveCollapsed;
   return (
     <PartnerShellHeaderProvider>

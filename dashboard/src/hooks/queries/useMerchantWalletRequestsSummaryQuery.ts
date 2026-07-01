@@ -1,6 +1,6 @@
 "use client";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
 import { useCallback } from "react";
 
 import { useQuery } from "@tanstack/react-query";
@@ -74,4 +74,5 @@ export function useMerchantWalletRequestsSummaryQuery(storeId: string | null | u
     retry: 1,
   });
 }
+
 

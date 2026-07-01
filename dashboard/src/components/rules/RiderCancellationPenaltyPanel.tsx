@@ -17,6 +17,7 @@ import {
   readRiderPenaltyCache,
   writeRiderPenaltyCache,
 } from "@/components/rules/rider-penalty-engine-cache";
+import { MerchantCancellationCompensationPanel } from "@/components/rules/MerchantCancellationCompensationPanel";
 import type {
   PenaltyCatalogChannel,
   PenaltyPartyCode,
@@ -229,14 +230,16 @@ export function RiderCancellationPenaltyPanel({ party, onPartyChange, refreshKey
     }
   };
 
+  if (party === "MERCHANT") {
+    return <MerchantCancellationCompensationPanel refreshKey={refreshKey} />;
+  }
+
   if (party !== "RIDER") {
     return (
       <section className={`${re.card} border-dashed p-10 text-center`}>
-        <p className="text-lg font-medium text-slate-700">
-          {party === "MERCHANT" ? "Merchant" : "Customer"} penalty engine
-        </p>
+        <p className="text-lg font-medium text-slate-700">Customer penalty engine</p>
         <p className="mt-2 text-sm text-slate-500">
-          Coming soon. Configure rider penalties first — order dashboard integration will follow.
+          Coming soon. Configure rider penalties and merchant compensation first.
         </p>
         <button
           type="button"

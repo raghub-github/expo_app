@@ -35,12 +35,47 @@ export function isGmailEmail(email: string): boolean {
 }
 
 /**
- * Get user avatar URL from multiple sources
+ * Deterministic pastel background color from a string (email).
+ * Same input → same color across sessions, so an avatar looks stable.
+ */
+function stringToPastelColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  const hue = Math.abs(hash) % 360;
+  // 40% saturation, 55% lightness → readable, WCAG-decent contrast with white text.
+  return `hsl(${hue}, 40%, 55%)`;
+}
+
+/**
+ * Generate an inline SVG data URL for an initials avatar. Zero network requests,
+ * zero external tracking, no browser Tracking Prevention warnings.
+ */
+export function generateInitialsAvatarDataUrl(
+  seed: string,
+  initials: string,
+  size: number = 40,
+): string {
+  const bg = stringToPastelColor(seed);
+  const fontSize = Math.floor(size * 0.42);
+  const safeInitials = initials.slice(0, 2).replace(/[<>&"]/g, "");
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+    `<rect width="${size}" height="${size}" fill="${bg}" rx="${size / 2}"/>` +
+    `<text x="50%" y="50%" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" ` +
+    `font-size="${fontSize}" font-weight="600" fill="#fff">${safeInitials}</text>` +
+    `</svg>`;
+  return `data:image/svg+xml;base64,${typeof btoa === "function" ? btoa(svg) : Buffer.from(svg).toString("base64")}`;
+}
+
+/**
+ * Get user avatar URL from multiple sources.
  * Priority:
- * 1. Supabase user metadata (avatar_url, picture, avatar - from Google OAuth)
- * 2. Google profile picture API (for Gmail users)
- * 3. Gravatar (works for any email)
- * 4. null (fallback to default icon)
+ *   1. Supabase user metadata (avatar_url, picture, avatar — from Google OAuth)
+ *   2. Locally-generated initials SVG data URL (no external requests)
+ *
+ * Gravatar was previously used as the fallback but triggered Edge Tracking
+ * Prevention warnings and made every user card do a third-party network
+ * request. The generated data URL avoids both.
  */
 export function getUserAvatarUrl(
   email: string | null | undefined,
@@ -50,31 +85,13 @@ export function getUserAvatarUrl(
   if (!email) return null;
 
   // First, check if avatar is in user metadata (from Supabase/Google OAuth)
-  // Supabase stores Google profile pictures in different fields
-  if (userMetadata?.avatar_url) {
-    return userMetadata.avatar_url;
-  }
-  if (userMetadata?.picture) {
-    return userMetadata.picture;
-  }
-  if (userMetadata?.avatar) {
-    return userMetadata.avatar;
-  }
+  if (userMetadata?.avatar_url) return userMetadata.avatar_url;
+  if (userMetadata?.picture) return userMetadata.picture;
+  if (userMetadata?.avatar) return userMetadata.avatar;
 
-  // For Gmail users, try to get profile picture from Google
-  // Note: This requires the user to be logged in via Google OAuth
-  // If they're not, we'll fall back to Gravatar
-  if (isGmailEmail(email)) {
-    // Try Google profile picture API (this works if user logged in via Google)
-    // Format: https://lh3.googleusercontent.com/a/{identifier}
-    // But we need the identifier from OAuth, which should be in metadata
-    
-    // If we have app_metadata from Google OAuth, we can construct the URL
-    // For now, we'll try Gravatar first, then fall back
-  }
-
-  // Try Gravatar (works for Gmail and other emails if they have Gravatar)
-  return getGravatarUrl(email, size);
+  // Fallback — generated initials avatar (client-side, no network request).
+  const initials = getUserInitials(userMetadata?.full_name ?? userMetadata?.name ?? null, email);
+  return generateInitialsAvatarDataUrl(email, initials, size);
 }
 
 /**

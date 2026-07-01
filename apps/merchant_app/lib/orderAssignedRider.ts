@@ -5,6 +5,17 @@ export function orderHasAssignedRider(order: OrderRecord): boolean {
   return order.riderId != null || !!(order.riderName?.trim());
 }
 
+export function isOrderPastRiderAssignment(stage: OrderRecord["status"]): boolean {
+  return stage === "rejected" || stage === "rto";
+}
+
+export function pendingRiderStatusLabel(stage: OrderRecord["status"]): string {
+  if (isOrderPastRiderAssignment(stage)) {
+    return "No delivery partner assigned";
+  }
+  return "Assigning delivery partner…";
+}
+
 export function riderFirstName(name: string | null | undefined): string {
   const n = (name ?? "").trim();
   if (!n) return "Delivery partner";
@@ -19,7 +30,7 @@ export function riderStatusLabelFromOrder(order: OrderRecord): string {
     return order.riderReachedAt ? "Rider at store" : "Rider on the way";
   }
   if (orderHasAssignedRider(order)) return "Rider assigned";
-  return "Assigning delivery partner…";
+  return pendingRiderStatusLabel(order.status);
 }
 
 /** Card headline — "{Name} is on the way" / "arriving in N mins" (partnersite-style). */

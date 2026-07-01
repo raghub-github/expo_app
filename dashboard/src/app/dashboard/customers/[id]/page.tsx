@@ -1,24 +1,17 @@
 "use client";
 
-import { useAppParams } from "@/lib/navigation/use-app-params";
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useRef, Suspense } from "react";
+import { useAppParams, useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ChevronDown, ExternalLink, Wallet } from "lucide-react";
+import { AlertCircle, ChevronDown, ExternalLink } from "lucide-react";
 import {
   resolveTrustTier,
   TRUST_TIER_LABEL,
   trustTierUserTypeClass,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
-import { CustomerFraudReasonModal } from "@/components/customers/CustomerFraudReasonModal";
-import { buildCustomerDetailQueryString } from "@/lib/navigation/customer-dashboard-from-order";
-import type {
-  CustomerAddressRow,
-  CustomerWalletSummary,
-} from "@/lib/db/operations/customers";
+import type { CustomerAddressRow } from "@/lib/db/operations/customers";
 
 interface CustomerDetail {
   id: number;
@@ -53,7 +46,6 @@ interface CustomerDetail {
   trustTier?: string | null;
   walletBalance?: number | string | null;
   walletLockedAmount?: number | string | null;
-  wallet?: CustomerWalletSummary | null;
   isIdentityVerified?: boolean | null;
   isEmailVerified?: boolean | null;
   isMobileVerified?: boolean | null;
@@ -91,7 +83,6 @@ interface CustomerDetail {
   contactTags?: string[] | null;
   referralInstallCount?: number;
   addresses?: CustomerAddressRow[];
-  fraudReasons?: string[];
 }
 
 /** Drop redundant "Current location: " prefix from saved label + address strings. */
@@ -274,15 +265,14 @@ function CustomerDetailsContent() {
   const [customerTickets, setCustomerTickets] = useState<CustomerTicketRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
-  const [fraudModalOpen, setFraudModalOpen] = useState(false);
   const router = useRouter();
   const pathname = useAppPathname();
 
   const searchQs = searchParams.get("search");
-  const idLinkSuffix = buildCustomerDetailQueryString({
-    search: searchQs,
-    fromOrderSource: searchParams,
-  });
+  const idLinkSuffix =
+    searchQs && searchQs.length > 0
+      ? `?search=${encodeURIComponent(searchQs)}`
+      : "";
 
   useEffect(() => {
     setAddressIndex(0);
@@ -504,18 +494,6 @@ function CustomerDetailsContent() {
 
   const gmitraActive = customer.gmitraPlusActive === true;
 
-  const walletCurrent =
-    customer.wallet?.currentBalance ??
-    (customer.walletBalance == null ? null : Number(customer.walletBalance));
-  const walletLocked =
-    customer.wallet?.lockedAmount ??
-    (customer.walletLockedAmount == null ? null : Number(customer.walletLockedAmount));
-  const walletAvailable =
-    customer.wallet?.availableBalance ??
-    (walletCurrent != null && walletLocked != null
-      ? Math.max(walletCurrent - walletLocked, 0)
-      : walletCurrent);
-
   const addresses = customer.addresses ?? [];
   const safeAddrIdx =
     addresses.length === 0 ? 0 : Math.min(addressIndex, addresses.length - 1);
@@ -565,39 +543,10 @@ function CustomerDetailsContent() {
         {/* User Stats header + scrollable detail grid */}
         <div className="px-4 py-5 sm:px-6">
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
-              <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80 shrink-0">
-                User Stats
-              </p>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-emerald-200/80 bg-emerald-50/90 px-3 py-1.5 text-xs">
-                <Wallet className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden />
-                <span className="text-gray-600">
-                  GatiCash{" "}
-                  <span className="font-semibold tabular-nums text-gray-900">
-                    {formatCurrency(walletCurrent)}
-                  </span>
-                </span>
-                <span className="text-gray-300" aria-hidden>
-                  |
-                </span>
-                <span className="text-gray-600">
-                  Available{" "}
-                  <span className="font-medium tabular-nums text-emerald-700">
-                    {formatCurrency(walletAvailable)}
-                  </span>
-                </span>
-                <span className="text-gray-300" aria-hidden>
-                  |
-                </span>
-                <span className="text-gray-600">
-                  Locked{" "}
-                  <span className="font-medium tabular-nums text-amber-600">
-                    {formatCurrency(walletLocked)}
-                  </span>
-                </span>
-              </div>
-            </div>
+          <div className="flex flex-row items-baseline justify-between gap-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80">
+              User Stats
+            </p>
             <span className="shrink-0 text-xs font-medium text-[#0f2d42]/70 text-right">
               Current Addresses
             </span>
@@ -707,18 +656,7 @@ function CustomerDetailsContent() {
 
           <DetailRow>
             <FieldItem label="User type ">
-              {tier === "FRAUD" ? (
-                <button
-                  type="button"
-                  onClick={() => setFraudModalOpen(true)}
-                  className={`${tierClass} underline decoration-dotted underline-offset-2 hover:opacity-80`}
-                  title="View fraud reason"
-                >
-                  {tierLabel}
-                </button>
-              ) : (
-                <span className={tierClass}>{tierLabel}</span>
-              )}
+              <span className={tierClass}>{tierLabel}</span>
             </FieldItem>
             <FieldItem label="Trust score">
               <span className="tabular-nums font-medium">
@@ -735,9 +673,8 @@ function CustomerDetailsContent() {
             <FieldItem label="Global active">
               <BoolVal v={customer.isGlobalActive} />
             </FieldItem>
-            <FieldItem label="Wallet balance">{formatCurrency(walletCurrent)}</FieldItem>
-            <FieldItem label="Wallet locked">{formatCurrency(walletLocked)}</FieldItem>
-            <FieldItem label="Wallet available">{formatCurrency(walletAvailable)}</FieldItem>
+            <FieldItem label="Wallet balance">{formatCurrency(customer.walletBalance)}</FieldItem>
+            <FieldItem label="Wallet locked">{formatCurrency(customer.walletLockedAmount)}</FieldItem>
           </DetailRow>
 
           <DetailRow>
@@ -978,14 +915,6 @@ function CustomerDetailsContent() {
             </div>
           )}
         </section>
-      ) : null}
-
-      {fraudModalOpen && tier === "FRAUD" ? (
-        <CustomerFraudReasonModal
-          customerLabel={`${customer.customerId} · ${customer.fullName}`}
-          reasons={customer.fraudReasons ?? []}
-          onClose={() => setFraudModalOpen(false)}
-        />
       ) : null}
     </div>
   );

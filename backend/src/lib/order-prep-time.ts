@@ -14,6 +14,18 @@ export function resolveStoreDefaultPrepMinutes(storeAvgPrepMinutes: unknown): nu
   return clampPrepMinutes(storeAvgPrepMinutes, PLATFORM_DEFAULT_PREP_MINUTES);
 }
 
+/** Default prep + optional store buffer (merchant_store_settings.preparation_buffer_minutes). */
+export function resolveStorePrepWithBuffer(
+  storeAvgPrepMinutes: unknown,
+  bufferMinutes: unknown
+): number {
+  const base = resolveStoreDefaultPrepMinutes(storeAvgPrepMinutes);
+  const buffer = Number.isFinite(Number(bufferMinutes))
+    ? Math.max(0, Math.min(120, Math.floor(Number(bufferMinutes))))
+    : 0;
+  return clampPrepMinutes(base + buffer, base);
+}
+
 export function computePrepReadyByAtIso(acceptedAtIso: string, prepMinutes: number): string {
   const base = new Date(acceptedAtIso).getTime();
   return new Date(base + clampPrepMinutes(prepMinutes) * 60_000).toISOString();

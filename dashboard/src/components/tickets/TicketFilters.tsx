@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { Search, X, ChevronDown, Loader2 } from "lucide-react";
 import { useTicketFilters } from "@/hooks/tickets/useTicketFilters";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";

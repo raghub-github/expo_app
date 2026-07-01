@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   FileText,
   Shield,
@@ -11,18 +11,101 @@ import {
   Clock,
   RefreshCw,
   HelpCircle,
+  Ban,
+  Wallet,
+  Loader2,
 } from 'lucide-react';
+import {
+  buildCompensationPolicySections,
+  type CompensationPolicySection,
+} from '@/lib/merchantCancellationCompensation';
+import { fetchCompensationPolicy } from '@/lib/compensationPolicyCache';
 
 type RefundPolicyContentProps = {
   compact?: boolean;
 };
 
+const FALLBACK_CANCELLATION_BULLETS = [
+  'If you reject or cancel an order after acceptance, GatiMitra may compensate the customer based on how far the order had progressed (e.g. picked up, marked ready, or still preparing).',
+  'Compensation is calculated as a percentage of the net order value and is debited from your merchant wallet — it appears in your ledger and payout breakdown.',
+  'If the customer cancels within the grace period after placing the order, or you accept their cancellation request, no customer compensation applies.',
+  'Order-ready marking accuracy in the previous week can affect the compensation percentage when an order was marked ready but not yet picked up.',
+];
+
+function CancellationScenarioList({
+  sections,
+  compact,
+}: {
+  sections: CompensationPolicySection[];
+  compact: boolean;
+}) {
+  return (
+    <div className={compact ? 'space-y-4 mt-4' : 'space-y-5 mt-5'}>
+      {sections.map((section, sectionIdx) => (
+        <div
+          key={`${section.heading}-${sectionIdx}`}
+          className={
+            section.variant === 'exclusion'
+              ? 'rounded-xl border border-amber-200 bg-amber-50/60 p-3 sm:p-4'
+              : 'rounded-xl border border-slate-100 bg-slate-50/80 p-3 sm:p-4'
+          }
+        >
+          <h3
+            className={`font-semibold leading-snug ${
+              compact ? 'text-xs sm:text-sm' : 'text-sm'
+            } ${section.variant === 'exclusion' ? 'text-amber-900' : 'text-slate-900'}`}
+          >
+            {section.heading}
+          </h3>
+          <ul className={compact ? 'mt-2 space-y-2' : 'mt-2.5 space-y-2.5'}>
+            {section.bullets.map((bullet, bulletIdx) => (
+              <li key={`${sectionIdx}-${bulletIdx}`} className="flex gap-2.5">
+                <span
+                  className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                    section.variant === 'exclusion' ? 'bg-amber-500' : 'bg-emerald-500'
+                  }`}
+                />
+                <span
+                  className={
+                    compact
+                      ? 'text-slate-600 text-xs sm:text-sm leading-relaxed'
+                      : 'text-slate-600 text-sm leading-relaxed'
+                  }
+                >
+                  {bullet}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function RefundPolicyContent({ compact = false }: RefundPolicyContentProps) {
-  const lastUpdated = (() => {
+  const [cancellationLoading, setCancellationLoading] = useState(true);
+  const [cancellationSections, setCancellationSections] = useState<CompensationPolicySection[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setCancellationLoading(true);
+      const policy = await fetchCompensationPolicy();
+      if (cancelled) return;
+      setCancellationSections(policy ? buildCompensationPolicySections(policy) : []);
+      setCancellationLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const lastUpdated = useMemo(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
     return d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-  })();
+  }, []);
 
   const shellClassName = compact
     ? 'w-full px-4 sm:px-5 py-4 sm:py-5'
@@ -41,60 +124,175 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
     ? 'rounded-2xl border border-amber-200 bg-amber-50/80 p-4 mb-5 flex items-start gap-3'
     : 'rounded-2xl border-2 border-amber-200 bg-amber-50/80 p-4 sm:p-5 mb-8 flex items-start gap-3';
 
+  const bodyTextClass = compact
+    ? 'text-slate-700 text-xs sm:text-sm leading-relaxed'
+    : 'text-slate-700 text-sm leading-relaxed';
+
   return (
     <div className={shellClassName}>
-      {/* Hero */}
       <div className={heroSpacingClassName}>
         <div className={heroIconClassName}>
           <FileText size={28} />
         </div>
-        <h1 className={compact ? 'text-xl sm:text-2xl font-bold text-slate-900 tracking-tight' : 'text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight'}>
-          GatiMitra Refund Policy
+        <h1
+          className={
+            compact
+              ? 'text-xl sm:text-2xl font-bold text-slate-900 tracking-tight'
+              : 'text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight'
+          }
+        >
+          GatiMitra Refund &amp; Cancellation Policy
         </h1>
-        <p className={compact ? 'text-slate-600 mt-2 text-xs sm:text-sm max-w-xl mx-auto leading-relaxed' : 'text-slate-600 mt-2 text-sm sm:text-base max-w-xl mx-auto'}>
-          Clear guidelines on payments, refunds, and reversals for onboarding fees, subscriptions, and other charges.
+        <p
+          className={
+            compact
+              ? 'text-slate-600 mt-2 text-xs sm:text-sm max-w-xl mx-auto leading-relaxed'
+              : 'text-slate-600 mt-2 text-sm sm:text-base max-w-xl mx-auto'
+          }
+        >
+          Guidelines on payments, refunds, subscription charges, and order cancellation compensation
+          for partner restaurants.
         </p>
-        <p className="text-xs text-slate-500 mt-2">
-          Last updated: {lastUpdated}
-        </p>
+        <p className="text-xs text-slate-500 mt-2">Last updated: {lastUpdated}</p>
       </div>
 
-      {/* Summary card */}
       <div className={summaryClassName}>
         <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
         <div>
-          <h2 className={compact ? 'font-semibold text-amber-900 text-sm' : 'font-semibold text-amber-900 text-sm sm:text-base'}>In short</h2>
-          <p className={compact ? 'text-amber-800 text-xs sm:text-sm mt-1 leading-relaxed' : 'text-amber-800 text-xs sm:text-sm mt-1 leading-relaxed'}>
-            Payments are <strong>non-refundable</strong> once processed. Refunds or reversals may be considered only for duplicate charges, service failures, or erroneous debits, at GatiMitra&apos;s discretion and after verification.
+          <h2
+            className={
+              compact
+                ? 'font-semibold text-amber-900 text-sm'
+                : 'font-semibold text-amber-900 text-sm sm:text-base'
+            }
+          >
+            In short
+          </h2>
+          <p
+            className={
+              compact
+                ? 'text-amber-800 text-xs sm:text-sm mt-1 leading-relaxed'
+                : 'text-amber-800 text-xs sm:text-sm mt-1 leading-relaxed'
+            }
+          >
+            Subscription and onboarding payments are <strong>non-refundable</strong> once processed.
+            For order cancellations you initiate, customer compensation may apply based on order
+            stage and is reflected in your wallet and payouts. Payment refunds are considered only
+            for duplicate charges, service failures, or erroneous debits.
           </p>
         </div>
       </div>
 
-      {/* Sections */}
       <div className={sectionStackClassName}>
         <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className={cardHeaderClassName}>
             <Shield className="w-5 h-5 text-slate-600" />
-            <h2 className={compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'}>General policy</h2>
+            <h2
+              className={
+                compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'
+              }
+            >
+              General refund policy
+            </h2>
           </div>
-          <div className={cardBodyClassName + ' prose prose-slate prose-sm max-w-none'}>
+          <div className={`${cardBodyClassName} prose prose-slate prose-sm max-w-none`}>
             <p className="text-slate-700 leading-relaxed">
-              All payments made to GatiMitra—including but not limited to <strong>onboarding fees</strong>, <strong>subscription charges</strong>, <strong>plan upgrades</strong>, and any other one-time or recurring fees—are <strong>non-refundable</strong> once the payment has been successfully processed and reflected in our systems.
+              All payments made to GatiMitra—including but not limited to{' '}
+              <strong>onboarding fees</strong>, <strong>subscription charges</strong>,{' '}
+              <strong>plan upgrades</strong>, and any other one-time or recurring fees—are{' '}
+              <strong>non-refundable</strong> once the payment has been successfully processed and
+              reflected in our systems.
             </p>
             <p className="text-slate-700 leading-relaxed mt-4">
-              By completing a payment, you acknowledge that you have read and accepted the applicable terms and this refund policy. We recommend reviewing your plan and amount before confirming payment.
+              By completing a payment, you acknowledge that you have read and accepted the
+              applicable terms and this policy. We recommend reviewing your plan and amount before
+              confirming payment.
             </p>
           </div>
         </section>
 
         <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className={cardHeaderClassName}>
-            <RefreshCw className="w-5 h-5 text-emerald-600" />
-            <h2 className={compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'}>When refunds or reversals may be considered</h2>
+            <Ban className="w-5 h-5 text-rose-600" />
+            <h2
+              className={
+                compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'
+              }
+            >
+              Order cancellation policy
+            </h2>
           </div>
           <div className={cardBodyClassName}>
-            <p className={compact ? 'text-slate-700 text-xs sm:text-sm leading-relaxed mb-3' : 'text-slate-700 text-sm leading-relaxed mb-4'}>
-              GatiMitra may, at its sole discretion and subject to verification, consider a refund or reversal only in the following circumstances:
+            <p className={bodyTextClass}>
+              When you <strong>reject or cancel</strong> an accepted order, GatiMitra may compensate
+              the customer depending on how far the order had progressed. Compensation is calculated
+              as a percentage of the <strong>net order value</strong> and is{' '}
+              <strong>debited from your merchant wallet</strong> — you will see it in your payments
+              ledger and payout breakdown.
+            </p>
+            <p className={`${bodyTextClass} mt-3`}>
+              The scenarios below reflect the current platform policy. Amounts and eligibility may
+              vary by order stage, pickup status, and your order-ready marking accuracy.
+            </p>
+
+            {cancellationLoading ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-slate-500">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className={compact ? 'text-xs sm:text-sm' : 'text-sm'}>
+                  Loading cancellation rules…
+                </span>
+              </div>
+            ) : cancellationSections.length > 0 ? (
+              <CancellationScenarioList sections={cancellationSections} compact={compact} />
+            ) : (
+              <ul className={compact ? 'mt-4 space-y-2.5' : 'mt-5 space-y-3'}>
+                {FALLBACK_CANCELLATION_BULLETS.map((bullet) => (
+                  <li key={bullet} className="flex gap-2.5">
+                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" />
+                    <span className={bodyTextClass}>{bullet}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div
+              className={
+                compact
+                  ? 'mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3 flex items-start gap-3'
+                  : 'mt-5 rounded-xl border border-slate-100 bg-slate-50 p-4 flex items-start gap-3'
+              }
+            >
+              <Wallet className="w-5 h-5 text-slate-600 shrink-0 mt-0.5" />
+              <p className={bodyTextClass}>
+                Cancellation compensation is <strong>not a refund to you</strong> — it is a customer
+                goodwill credit funded from your wallet. Repeated cancellations may affect your store
+                metrics and visibility on the platform.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className={cardHeaderClassName}>
+            <RefreshCw className="w-5 h-5 text-emerald-600" />
+            <h2
+              className={
+                compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'
+              }
+            >
+              When refunds or reversals may be considered
+            </h2>
+          </div>
+          <div className={cardBodyClassName}>
+            <p
+              className={
+                compact
+                  ? 'text-slate-700 text-xs sm:text-sm leading-relaxed mb-3'
+                  : 'text-slate-700 text-sm leading-relaxed mb-4'
+              }
+            >
+              GatiMitra may, at its sole discretion and subject to verification, consider a refund
+              or reversal only in the following circumstances:
             </p>
             <ul className={compact ? 'space-y-3' : 'space-y-4'}>
               <li className="flex gap-3">
@@ -102,9 +300,25 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
                   <CheckCircle2 className="w-4 h-4" />
                 </span>
                 <div>
-                  <h3 className={compact ? 'font-semibold text-sm text-slate-900' : 'font-semibold text-slate-900'}>Duplicate payment</h3>
-                  <p className={compact ? 'text-slate-600 text-xs sm:text-sm mt-0.5 leading-relaxed' : 'text-slate-600 text-sm mt-0.5'}>
-                    The same payment was charged more than once due to a technical or processing error (e.g. double click, gateway retry). Proof of duplicate debit may be required.
+                  <h3
+                    className={
+                      compact
+                        ? 'font-semibold text-sm text-slate-900'
+                        : 'font-semibold text-slate-900'
+                    }
+                  >
+                    Duplicate payment
+                  </h3>
+                  <p
+                    className={
+                      compact
+                        ? 'text-slate-600 text-xs sm:text-sm mt-0.5 leading-relaxed'
+                        : 'text-slate-600 text-sm mt-0.5'
+                    }
+                  >
+                    The same payment was charged more than once due to a technical or processing
+                    error (e.g. double click, gateway retry). Proof of duplicate debit may be
+                    required.
                   </p>
                 </div>
               </li>
@@ -113,9 +327,25 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
                   <CheckCircle2 className="w-4 h-4" />
                 </span>
                 <div>
-                  <h3 className={compact ? 'font-semibold text-sm text-slate-900' : 'font-semibold text-slate-900'}>Service failure</h3>
-                  <p className={compact ? 'text-slate-600 text-xs sm:text-sm mt-0.5 leading-relaxed' : 'text-slate-600 text-sm mt-0.5'}>
-                    Payment was taken but the corresponding service (e.g. plan activation, onboarding completion, feature access) was not provided or could not be completed due to a platform or operational failure on GatiMitra&apos;s side.
+                  <h3
+                    className={
+                      compact
+                        ? 'font-semibold text-sm text-slate-900'
+                        : 'font-semibold text-slate-900'
+                    }
+                  >
+                    Service failure
+                  </h3>
+                  <p
+                    className={
+                      compact
+                        ? 'text-slate-600 text-xs sm:text-sm mt-0.5 leading-relaxed'
+                        : 'text-slate-600 text-sm mt-0.5'
+                    }
+                  >
+                    Payment was taken but the corresponding service (e.g. plan activation,
+                    onboarding completion, feature access) was not provided or could not be completed
+                    due to a platform or operational failure on GatiMitra&apos;s side.
                   </p>
                 </div>
               </li>
@@ -124,15 +354,38 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
                   <CheckCircle2 className="w-4 h-4" />
                 </span>
                 <div>
-                  <h3 className={compact ? 'font-semibold text-sm text-slate-900' : 'font-semibold text-slate-900'}>Erroneous charge</h3>
-                  <p className={compact ? 'text-slate-600 text-xs sm:text-sm mt-0.5 leading-relaxed' : 'text-slate-600 text-sm mt-0.5'}>
-                    The amount debited was incorrect, or the charge was applied in error (wrong plan, wrong store, or similar). Documentation may be required for verification.
+                  <h3
+                    className={
+                      compact
+                        ? 'font-semibold text-sm text-slate-900'
+                        : 'font-semibold text-slate-900'
+                    }
+                  >
+                    Erroneous charge
+                  </h3>
+                  <p
+                    className={
+                      compact
+                        ? 'text-slate-600 text-xs sm:text-sm mt-0.5 leading-relaxed'
+                        : 'text-slate-600 text-sm mt-0.5'
+                    }
+                  >
+                    The amount debited was incorrect, or the charge was applied in error (wrong
+                    plan, wrong store, or similar). Documentation may be required for verification.
                   </p>
                 </div>
               </li>
             </ul>
-            <p className={compact ? 'text-slate-600 text-xs sm:text-sm mt-3 p-3 rounded-xl bg-slate-50 border border-slate-100 leading-relaxed' : 'text-slate-600 text-sm mt-4 p-3 rounded-xl bg-slate-50 border border-slate-100'}>
-              Approval of any refund or reversal is not guaranteed. Each request is evaluated on a case-by-case basis. Reversals may be credited to your wallet or refunded to the original payment method, depending on the situation and our policy at the time.
+            <p
+              className={
+                compact
+                  ? 'text-slate-600 text-xs sm:text-sm mt-3 p-3 rounded-xl bg-slate-50 border border-slate-100 leading-relaxed'
+                  : 'text-slate-600 text-sm mt-4 p-3 rounded-xl bg-slate-50 border border-slate-100'
+              }
+            >
+              Approval of any refund or reversal is not guaranteed. Each request is evaluated on a
+              case-by-case basis. Reversals may be credited to your wallet or refunded to the
+              original payment method, depending on the situation and our policy at the time.
             </p>
           </div>
         </section>
@@ -140,10 +393,20 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
         <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className={cardHeaderClassName}>
             <XCircle className="w-5 h-5 text-slate-500" />
-            <h2 className={compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'}>What we do not refund</h2>
+            <h2
+              className={
+                compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'
+              }
+            >
+              What we do not refund
+            </h2>
           </div>
           <div className={cardBodyClassName}>
-            <ul className={compact ? 'space-y-2 text-xs sm:text-sm text-slate-700' : 'space-y-2 text-sm text-slate-700'}>
+            <ul
+              className={
+                compact ? 'space-y-2 text-xs sm:text-sm text-slate-700' : 'space-y-2 text-sm text-slate-700'
+              }
+            >
               <li className="flex items-start gap-2">
                 <span className="text-slate-400 mt-1">•</span>
                 Change of mind or no longer needing the service after payment.
@@ -154,11 +417,17 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-slate-400 mt-1">•</span>
-                Disputes related to commission, fees, or payouts that are in line with your agreed terms.
+                Disputes related to commission, fees, or payouts that are in line with your agreed
+                terms.
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-slate-400 mt-1">•</span>
-                Payments made from an incorrect account or by mistake without a qualifying reason above.
+                Customer cancellation compensation debited from your wallet under this policy.
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-slate-400 mt-1">•</span>
+                Payments made from an incorrect account or by mistake without a qualifying reason
+                above.
               </li>
             </ul>
           </div>
@@ -167,11 +436,20 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
         <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className={cardHeaderClassName}>
             <Clock className="w-5 h-5 text-indigo-600" />
-            <h2 className={compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'}>Processing time</h2>
+            <h2
+              className={
+                compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'
+              }
+            >
+              Processing time
+            </h2>
           </div>
           <div className={cardBodyClassName}>
-            <p className={compact ? 'text-slate-700 text-xs sm:text-sm leading-relaxed' : 'text-slate-700 text-sm leading-relaxed'}>
-              If your refund or reversal is approved, we will process it within <strong>5–10 business days</strong>. The time taken for the amount to reflect in your bank account or wallet may vary depending on your bank or payment provider. We are not responsible for delays caused by third-party payment processors or banks.
+            <p className={bodyTextClass}>
+              If your refund or reversal is approved, we will process it within{' '}
+              <strong>5–10 business days</strong>. The time taken for the amount to reflect in your
+              bank account or wallet may vary depending on your bank or payment provider. We are not
+              responsible for delays caused by third-party payment processors or banks.
             </p>
           </div>
         </section>
@@ -179,48 +457,126 @@ export function RefundPolicyContent({ compact = false }: RefundPolicyContentProp
         <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className={cardHeaderClassName}>
             <Mail className="w-5 h-5 text-orange-600" />
-            <h2 className={compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'}>How to request a refund</h2>
+            <h2
+              className={
+                compact ? 'text-base font-bold text-slate-900' : 'text-lg font-bold text-slate-900'
+              }
+            >
+              How to request a refund
+            </h2>
           </div>
           <div className={cardBodyClassName}>
-            <p className={compact ? 'text-slate-700 text-xs sm:text-sm leading-relaxed mb-3' : 'text-slate-700 text-sm leading-relaxed mb-4'}>
-              To request a refund or reversal, contact our support team with the following information:
+            <p
+              className={
+                compact
+                  ? 'text-slate-700 text-xs sm:text-sm leading-relaxed mb-3'
+                  : 'text-slate-700 text-sm leading-relaxed mb-4'
+              }
+            >
+              To request a refund or reversal, contact our support team with the following
+              information:
             </p>
-            <ul className={compact ? 'space-y-1.5 text-xs sm:text-sm text-slate-700 mb-3 list-disc list-inside' : 'space-y-1.5 text-sm text-slate-700 mb-4 list-disc list-inside'}>
-              <li>Your <strong>merchant ID</strong> or registered email / phone</li>
-              <li><strong>Transaction details</strong> (date, amount, payment reference or order ID if any)</li>
-              <li>Clear <strong>reason</strong> for the request (e.g. duplicate charge, service not received)</li>
-              <li>Any <strong>screenshots or proof</strong> (e.g. bank statement showing duplicate debit)</li>
+            <ul
+              className={
+                compact
+                  ? 'space-y-1.5 text-xs sm:text-sm text-slate-700 mb-3 list-disc list-inside'
+                  : 'space-y-1.5 text-sm text-slate-700 mb-4 list-disc list-inside'
+              }
+            >
+              <li>
+                Your <strong>merchant ID</strong> or registered email / phone
+              </li>
+              <li>
+                <strong>Transaction details</strong> (date, amount, payment reference or order ID if
+                any)
+              </li>
+              <li>
+                Clear <strong>reason</strong> for the request (e.g. duplicate charge, service not
+                received)
+              </li>
+              <li>
+                Any <strong>screenshots or proof</strong> (e.g. bank statement showing duplicate
+                debit)
+              </li>
             </ul>
-            <p className={compact ? 'text-slate-700 text-xs sm:text-sm leading-relaxed mb-2' : 'text-slate-700 text-sm leading-relaxed mb-3'}>
+            <p
+              className={
+                compact
+                  ? 'text-slate-700 text-xs sm:text-sm leading-relaxed mb-2'
+                  : 'text-slate-700 text-sm leading-relaxed mb-3'
+              }
+            >
               Email us at:
             </p>
             <a
               href="mailto:support@gatimitra.com"
-              className={compact ? 'inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-orange-600 text-white text-xs sm:text-sm font-semibold hover:bg-orange-700 transition-colors shadow-sm' : 'inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-600 text-white text-sm font-semibold hover:bg-orange-700 transition-colors shadow-sm'}
+              className={
+                compact
+                  ? 'inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-orange-600 text-white text-xs sm:text-sm font-semibold hover:bg-orange-700 transition-colors shadow-sm'
+                  : 'inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-600 text-white text-sm font-semibold hover:bg-orange-700 transition-colors shadow-sm'
+              }
             >
               <Mail size={18} />
               support@gatimitra.com
             </a>
-            <p className={compact ? 'text-slate-500 text-[11px] sm:text-xs mt-3 leading-relaxed' : 'text-slate-500 text-xs mt-4'}>
-              We aim to respond to refund requests within 2–3 business days. Approval and processing time may vary based on the nature of the request and verification required.
+            <p
+              className={
+                compact
+                  ? 'text-slate-500 text-[11px] sm:text-xs mt-3 leading-relaxed'
+                  : 'text-slate-500 text-xs mt-4'
+              }
+            >
+              We aim to respond to refund requests within 2–3 business days. Approval and processing
+              time may vary based on the nature of the request and verification required.
             </p>
           </div>
         </section>
 
-        <section className={compact ? 'rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100/80 p-4 sm:p-5 flex items-start gap-3' : 'rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100/80 p-5 sm:p-6 flex items-start gap-3'}>
+        <section
+          className={
+            compact
+              ? 'rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100/80 p-4 sm:p-5 flex items-start gap-3'
+              : 'rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100/80 p-5 sm:p-6 flex items-start gap-3'
+          }
+        >
           <HelpCircle className="w-5 h-5 text-slate-600 shrink-0 mt-0.5" />
           <div>
-            <h2 className={compact ? 'font-semibold text-sm text-slate-900' : 'font-semibold text-slate-900'}>Questions?</h2>
-            <p className={compact ? 'text-slate-600 text-xs sm:text-sm mt-1 leading-relaxed' : 'text-slate-600 text-sm mt-1'}>
-              For any questions about payments, subscriptions, or this refund policy, reach out to <a href="mailto:support@gatimitra.com" className="text-orange-600 hover:underline font-medium">support@gatimitra.com</a>. Our team is here to help.
+            <h2
+              className={
+                compact ? 'font-semibold text-sm text-slate-900' : 'font-semibold text-slate-900'
+              }
+            >
+              Questions?
+            </h2>
+            <p
+              className={
+                compact
+                  ? 'text-slate-600 text-xs sm:text-sm mt-1 leading-relaxed'
+                  : 'text-slate-600 text-sm mt-1'
+              }
+            >
+              For questions about payments, cancellations, or this policy, reach out to{' '}
+              <a
+                href="mailto:support@gatimitra.com"
+                className="text-orange-600 hover:underline font-medium"
+              >
+                support@gatimitra.com
+              </a>
+              . Our team is here to help.
             </p>
           </div>
         </section>
       </div>
 
-      {/* Footer note */}
-      <p className={compact ? 'text-center text-[11px] text-slate-500 mt-6 pb-4' : 'text-center text-xs text-slate-500 mt-10 pb-8'}>
-        This policy forms part of your agreement with GatiMitra. We may update it from time to time; the latest version will be available on this page.
+      <p
+        className={
+          compact
+            ? 'text-center text-[11px] text-slate-500 mt-6 pb-4'
+            : 'text-center text-xs text-slate-500 mt-10 pb-8'
+        }
+      >
+        This policy forms part of your agreement with GatiMitra. We may update it from time to time;
+        the latest version will be available on this page.
       </p>
     </div>
   );

@@ -6,6 +6,8 @@
 export function partnerSurfaceOnlineFromStoreOperationsBody(
   data: Record<string, unknown>
 ): boolean | null {
+  if (typeof data.surface_online === 'boolean') return data.surface_online;
+  if (typeof data.is_open === 'boolean') return data.is_open;
   const opRaw = data.operational_status;
   if (typeof opRaw !== 'string') return null;
   const opOpen = opRaw.trim().toUpperCase() === 'OPEN';

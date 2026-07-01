@@ -14,8 +14,16 @@ type Props = {
   buttonClassName?: string;
 };
 
-function PreviewFrame({ href, label }: { href: string; label: string }) {
-  const kind = partnerDocumentKindFromUrl(href, label);
+function PreviewFrame({
+  href,
+  rawUrl,
+  label,
+}: {
+  href: string;
+  rawUrl?: string | null;
+  label: string;
+}) {
+  const kind = partnerDocumentKindFromUrl(href, rawUrl ?? label);
 
   if (kind === 'image') {
     return (
@@ -30,7 +38,7 @@ function PreviewFrame({ href, label }: { href: string; label: string }) {
   if (kind === 'pdf') {
     return (
       <iframe
-        src={href}
+        src={`${href}#toolbar=0&navpanes=0`}
         title={label}
         className="h-[min(260px,38vh)] w-full rounded-lg border border-gray-200 bg-gray-50"
       />
@@ -62,6 +70,7 @@ export function DocumentUrlPreview({ url, backUrl, title = 'Document', buttonCla
   if (!frontHref && !backHref) return null;
 
   const activeHref = side === 'back' && backHref ? backHref : frontHref ?? backHref;
+  const activeRawUrl = side === 'back' && backUrl ? backUrl : url ?? backUrl;
   if (!activeHref) return null;
 
   const btnClass =
@@ -117,7 +126,7 @@ export function DocumentUrlPreview({ url, backUrl, title = 'Document', buttonCla
             </div>
           </div>
           <div className="p-2.5 bg-white">
-            <PreviewFrame href={activeHref} label={title} />
+            <PreviewFrame href={activeHref} rawUrl={activeRawUrl} label={title} />
           </div>
         </div>
       ) : null}

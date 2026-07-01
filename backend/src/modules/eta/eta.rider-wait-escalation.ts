@@ -2,7 +2,7 @@
  * Rider wait escalation — notify merchant at 5/10 min, admin at 15 min.
  */
 import { getSql } from "../../db/client.js";
-import { enqueuePush } from "../push/enqueuePush.js";
+import { send as sendNotification } from "../notifications/notificationService.js";
 
 type EscalationLevel = 1 | 2 | 3;
 
@@ -116,20 +116,21 @@ export async function processRiderWaitEscalations(args: {
       const copy = LEVEL_COPY[level];
       const tokens = await merchantTokensForStore(sql, args.merchantStoreId);
       if (tokens.length > 0) {
-        await enqueuePush({
-          to: tokens,
-          title: copy.title,
-          body: copy.body,
-          sound: "default",
-          channelId: level >= 2 ? "merchant_urgent" : "merchant_default",
-          screen: `/orders/${args.orderIdText}`,
-          data: {
-            gmType: "RIDER_WAIT_ESCALATION",
+        await sendNotification({
+          templateCode: "MERCHANT_RIDER_WAIT_ESCALATION",
+          variables: {
             orderId: args.orderIdText,
+            title: copy.title,
+            body: copy.body,
             waitMinutes: args.riderWaitMinutes,
             escalationLevel: level,
-            priority: copy.priority,
-            gmMessage: copy.body,
+          },
+          target: { device_tokens: tokens },
+          priority: level >= 2 ? "critical" : "high",
+          metadata: {
+            gmType: "RIDER_WAIT_ESCALATION",
+            orderId: args.orderIdText,
+            escalationLevel: level,
           },
         }).catch((e) =>
           console.warn("[eta] merchant wait escalation push failed", (e as Error).message)

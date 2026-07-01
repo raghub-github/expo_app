@@ -59,6 +59,7 @@ import {
   seedMerchantMenuQueryIfCached,
 } from "@/lib/merchantMenuCache";
 import { syncMerchantMenuInBackground } from "@/lib/merchantMenuSync";
+import { useStoreDetailLiveStatus } from "@/hooks/useStoreDetailLiveStatus";
 import { useMerchantMenuRealtime } from "@/hooks/useMerchantMenuRealtime";
 import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
 import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
@@ -237,6 +238,16 @@ export default function MerchantDetailScreen() {
     prefetchMerchantDetail(queryClient, merchantId);
   }, [merchantId, queryClient]);
 
+  const { data: liveStatusSnapshot } = useStoreDetailLiveStatus(merchantId);
+
+  const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      setSecondaryQueriesReady(true);
+    });
+    return () => task.cancel();
+  }, [merchantId]);
+
   const { data: merchant, isPending, isError, refetch } = useQuery({
     queryKey: MERCHANT_DETAIL_QUERY_KEY(merchantId),
     queryFn: () => fetchMerchantByIdWithCache(merchantId),
@@ -275,7 +286,10 @@ export default function MerchantDetailScreen() {
   useEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
     void prefetchMenuItemImagesForMenu(merchant.menu);
-    prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
+    const task = InteractionManager.runAfterInteractions(() => {
+      prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
+    });
+    return () => task.cancel();
   }, [merchantId, merchant?.menu, queryClient]);
 
   /** List screen often has displayImage already; detail payload can miss URLs — reuse for header banner. */
@@ -461,7 +475,7 @@ export default function MerchantDetailScreen() {
   const { data: myOrders = [] } = useQuery({
     queryKey: ["my-orders-store", merchantId],
     queryFn: () => orderService.getMyOrders({ limit: 40 }),
-    enabled: !!merchantId,
+    enabled: !!merchantId && secondaryQueriesReady,
     staleTime: 2 * 60 * 1000,
   });
 
@@ -473,7 +487,7 @@ export default function MerchantDetailScreen() {
         lng: coords?.longitude,
         limit: 8,
       }),
-    enabled: !!merchantId && coords != null,
+    enabled: !!merchantId && coords != null && secondaryQueriesReady,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -510,7 +524,7 @@ export default function MerchantDetailScreen() {
   const { data: orderedTogetherRecs } = useQuery({
     queryKey: ["merchant", merchantId, "ordered-together-recs"],
     queryFn: () => merchantService.getOrderedTogetherRecommendations(merchantId),
-    enabled: !!merchantId,
+    enabled: !!merchantId && secondaryQueriesReady,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -952,18 +966,23 @@ export default function MerchantDetailScreen() {
   const liveStatusFromStore = useStoreStatusStore((s) => s.statusMap[merchantId] ?? null);
 
   const merchantNextOpenAt =
-    (merchant as { nextOpenAt?: string | number | null } | undefined)?.nextOpenAt ?? null;
+    liveStatusSnapshot?.nextOpenAt ??
+    (merchant as { nextOpenAt?: string | number | null } | undefined)?.nextOpenAt ??
+    null;
   const merchantNextCloseAt =
-    (merchant as { nextCloseAt?: string | number | null } | undefined)?.nextCloseAt ?? null;
+    liveStatusSnapshot?.nextCloseAt ??
+    (merchant as { nextCloseAt?: string | number | null } | undefined)?.nextCloseAt ??
+    null;
   const scheduleTickEnabled =
     toTimestamp(merchantNextOpenAt) != null || toTimestamp(merchantNextCloseAt) != null;
   const scheduleNow = useScheduleTick(scheduleTickEnabled);
 
   const merchantLiveStatus =
     merchant != null ? resolveMerchantLiveStatus(merchant, {}) : "CLOSED";
+  const effectiveLiveStatus =
+    liveStatusSnapshot?.liveStatus ?? liveStatusFromStore ?? merchantLiveStatus ?? "CLOSED";
   const isStoreClosedForStatus =
-    merchant != null &&
-    (liveStatusFromStore ?? merchantLiveStatus ?? "CLOSED") === "CLOSED";
+    merchant != null && effectiveLiveStatus === "CLOSED";
 
   const openStatusLabel = useMemo(
     () =>
@@ -1085,17 +1104,6 @@ export default function MerchantDetailScreen() {
     }, 600);
     return () => clearTimeout(t);
   }, [openCart, merchantId, cartMerchantId, flashListData, flashListHeaderRowCount]);
-
-  useEffect(() => {
-    if (merchant?.id != null) {
-      const safeStatus = resolveMerchantLiveStatus(merchant, {});
-      useStoreStatusStore.getState().setStatusFromApi(
-        merchant.id,
-        safeStatus === "OPEN",
-        safeStatus
-      );
-    }
-  }, [merchant]);
 
   const handleShareRestaurant = useCallback(async () => {
     closeOptionsSheet();

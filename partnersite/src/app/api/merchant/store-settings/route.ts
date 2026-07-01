@@ -53,6 +53,7 @@ export async function GET(req: NextRequest) {
             'order_notification_sound',
             'auto_accept_orders',
             'auto_accept_time_seconds',
+            'preparation_buffer_minutes',
             'self_delivery',
             'platform_delivery',
             'delivery_charge_type',
@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
       db
         .from('merchant_stores')
         .select(
-          'delivery_radius_km, store_phones, full_address, landmark, city, state, postal_code, latitude, longitude, packaging_charge_amount, packaging_charge_last_updated_at, delivery_charge_per_km, delivery_charge_per_km_last_updated_at'
+          'delivery_radius_km, store_phones, full_address, landmark, city, state, postal_code, latitude, longitude, packaging_charge_amount, packaging_charge_last_updated_at, delivery_charge_per_km, delivery_charge_per_km_last_updated_at, avg_preparation_time_minutes'
         )
         .eq('store_id', storeId)
         .maybeSingle(),
@@ -96,12 +97,28 @@ export async function GET(req: NextRequest) {
         : [];
     const primary_phone = store_phones[0] ?? null;
 
-    const settingsRow = settingsData as { settings_metadata?: unknown } | null;
+    const settingsRow = settingsData as {
+      settings_metadata?: unknown;
+      preparation_buffer_minutes?: number | null;
+    } | null;
     const metadata = settingsRow?.settings_metadata as Record<string, unknown> | null | undefined;
-    const preparationBufferMinutes =
-      typeof metadata?.preparation_buffer_minutes === 'number' && !Number.isNaN(metadata.preparation_buffer_minutes)
-        ? Number(metadata.preparation_buffer_minutes)
+    const preparationBufferFromColumn =
+      settingsRow?.preparation_buffer_minutes != null &&
+      !Number.isNaN(Number(settingsRow.preparation_buffer_minutes))
+        ? Number(settingsRow.preparation_buffer_minutes)
         : undefined;
+    const preparationBufferMinutes =
+      preparationBufferFromColumn !== undefined
+        ? preparationBufferFromColumn
+        : typeof metadata?.preparation_buffer_minutes === 'number' && !Number.isNaN(metadata.preparation_buffer_minutes)
+          ? Number(metadata.preparation_buffer_minutes)
+          : undefined;
+
+    const avgPreparationTimeMinutes =
+      storeData?.avg_preparation_time_minutes != null &&
+      !Number.isNaN(Number(storeData.avg_preparation_time_minutes))
+        ? Number(storeData.avg_preparation_time_minutes)
+        : 30;
 
     // Manage communications (merchant app parity) — stored under settings_metadata
     const comm = (metadata?.communication_settings as Record<string, unknown> | undefined) ?? undefined;
@@ -183,6 +200,7 @@ export async function GET(req: NextRequest) {
       show_floating_orders: (settingsData as any)?.show_floating_orders ?? true,
 
       ...(preparationBufferMinutes !== undefined && { preparation_buffer_minutes: preparationBufferMinutes }),
+      avg_preparation_time_minutes: avgPreparationTimeMinutes,
       store_phones,
       primary_phone,
       communication_settings,
@@ -205,7 +223,7 @@ export async function GET(req: NextRequest) {
 
 /**
  * PATCH /api/merchant/store-settings
- * Body: { storeId, self_delivery?, platform_delivery?, delivery_radius_km?, address?: {...}, auto_accept_orders?, preparation_buffer_minutes? }
+ * Body: { storeId, ..., auto_accept_orders?, preparation_buffer_minutes?, avg_preparation_time_minutes? }
  */
 export async function PATCH(req: NextRequest) {
   try {
@@ -262,6 +280,13 @@ export async function PATCH(req: NextRequest) {
     const preparation_buffer_minutes =
       typeof body.preparation_buffer_minutes === 'number' && !Number.isNaN(body.preparation_buffer_minutes) && body.preparation_buffer_minutes >= 0 && body.preparation_buffer_minutes <= 120
         ? body.preparation_buffer_minutes
+        : undefined;
+    const avg_preparation_time_minutes =
+      typeof body.avg_preparation_time_minutes === 'number' &&
+      Number.isFinite(body.avg_preparation_time_minutes) &&
+      body.avg_preparation_time_minutes >= 5 &&
+      body.avg_preparation_time_minutes <= 180
+        ? Math.floor(body.avg_preparation_time_minutes)
         : undefined;
 
     const commRaw = body?.communication_settings;
@@ -383,7 +408,7 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    if (!hasDeliveryPayload && !hasAddressPayload && !hasOperationsPayload && !hasPackagingPayload && !hasDeliveryChargePerKmPayload) {
+    if (!hasDeliveryPayload && !hasAddressPayload && !hasOperationsPayload && !hasPackagingPayload && !hasDeliveryChargePerKmPayload && avg_preparation_time_minutes === undefined) {
       return NextResponse.json({ success: true });
     }
 
@@ -397,18 +422,25 @@ export async function PATCH(req: NextRequest) {
       const { data: storeRow } = await db
         .from('merchant_stores')
         .select(
-          'delivery_radius_km, packaging_charge_amount, delivery_charge_per_km, full_address, landmark, city, state, postal_code, latitude, longitude'
+          'delivery_radius_km, packaging_charge_amount, delivery_charge_per_km, full_address, landmark, city, state, postal_code, latitude, longitude, avg_preparation_time_minutes'
         )
         .eq('id', internalId)
         .maybeSingle();
       if (storeRow) storeBefore = storeRow as Record<string, unknown>;
     }
 
-    let settingsBefore: { id?: number; self_delivery?: boolean; platform_delivery?: boolean; auto_accept_orders?: boolean; settings_metadata?: unknown } | null = null;
+    let settingsBefore: {
+      id?: number;
+      self_delivery?: boolean;
+      platform_delivery?: boolean;
+      auto_accept_orders?: boolean;
+      preparation_buffer_minutes?: number | null;
+      settings_metadata?: unknown;
+    } | null = null;
     if (hasDeliveryPayload || hasOperationsPayload) {
       const { data: existing } = await db
         .from('merchant_store_settings')
-        .select('id, self_delivery, platform_delivery, auto_accept_orders, auto_accept_time_seconds, settings_metadata')
+        .select('id, self_delivery, platform_delivery, auto_accept_orders, auto_accept_time_seconds, preparation_buffer_minutes, settings_metadata')
         .eq('store_id', internalId)
         .maybeSingle();
       settingsBefore = existing ?? null;
@@ -432,6 +464,7 @@ export async function PATCH(req: NextRequest) {
       if (delivery_priority !== undefined) payload.delivery_priority = delivery_priority;
       if (show_floating_orders !== undefined) payload.show_floating_orders = show_floating_orders;
       if (preparation_buffer_minutes !== undefined) {
+        payload.preparation_buffer_minutes = preparation_buffer_minutes;
         const currentMeta = (settingsBefore?.settings_metadata as Record<string, unknown>) || {};
         payload.settings_metadata = { ...currentMeta, preparation_buffer_minutes };
       }
@@ -499,6 +532,9 @@ export async function PATCH(req: NextRequest) {
     if (hasDeliveryChargePerKmPayload) {
       storeUpdates.delivery_charge_per_km = delivery_charge_per_km;
       storeUpdates.delivery_charge_per_km_last_updated_at = new Date().toISOString();
+    }
+    if (avg_preparation_time_minutes !== undefined) {
+      storeUpdates.avg_preparation_time_minutes = avg_preparation_time_minutes;
     }
     if (hasAddressPayload && addressPayload) {
       if (addressPayload.full_address !== undefined) storeUpdates.full_address = addressPayload.full_address;
@@ -595,13 +631,24 @@ export async function PATCH(req: NextRequest) {
       });
     }
     if (preparation_buffer_minutes !== undefined) {
-      const oldMeta = settingsBefore?.settings_metadata as Record<string, unknown> | undefined;
       await logMerchantAudit(db, {
         ...auditBase,
         action_field: 'PREPARATION_BUFFER_MINUTES',
-        old_value: oldMeta?.preparation_buffer_minutes != null ? { preparation_buffer_minutes: oldMeta.preparation_buffer_minutes } : null,
+        old_value:
+          settingsBefore?.preparation_buffer_minutes != null
+            ? { preparation_buffer_minutes: settingsBefore.preparation_buffer_minutes }
+            : null,
         new_value: { preparation_buffer_minutes },
         audit_metadata: { description: 'Preparation buffer (minutes) updated' },
+      });
+    }
+    if (avg_preparation_time_minutes !== undefined) {
+      await logMerchantAudit(db, {
+        ...auditBase,
+        action_field: 'AVG_PREPARATION_TIME_MINUTES',
+        old_value: storeBefore ? { avg_preparation_time_minutes: storeBefore.avg_preparation_time_minutes } : null,
+        new_value: { avg_preparation_time_minutes },
+        audit_metadata: { description: 'Default preparation time (minutes) updated' },
       });
     }
 

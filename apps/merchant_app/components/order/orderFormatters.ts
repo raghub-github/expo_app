@@ -3,6 +3,7 @@ import {
   GATIMITRA_TEAM_REJECTION_LABEL,
   isCatalogCancellationReason,
   isGatiMitraTeamCancellationLabel,
+  merchantFacingCancelledByLabel,
 } from "@/lib/merchant-cancellation-display";
 
 /** Shared order display formatting (IST). */
@@ -46,7 +47,7 @@ export function splitRejectionMessage(
   cancelledByLabel?: string | null,
   cancelledByType?: string | null
 ): { prefix: string; detail: string } {
-  const label = (cancelledByLabel ?? "").trim();
+  const label = merchantFacingCancelledByLabel(cancelledByLabel, cancelledByType);
   const r = (reason ?? "").trim();
   const source = (cancelledByType ?? "").trim().toLowerCase();
   if (status === "rto") {

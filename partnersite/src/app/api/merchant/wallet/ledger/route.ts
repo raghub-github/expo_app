@@ -97,12 +97,26 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
-      query = query.gte('created_at', `${from}T00:00:00.000Z`);
+    if (from) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+        query = query.gte('created_at', `${from}T00:00:00.000Z`);
+      } else {
+        const fromDate = new Date(from);
+        if (!Number.isNaN(fromDate.getTime())) {
+          query = query.gte('created_at', fromDate.toISOString());
+        }
+      }
     }
-    if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      const toEnd = new Date(to + 'T23:59:59.999Z');
-      query = query.lte('created_at', toEnd.toISOString());
+    if (to) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+        const toEnd = new Date(to + 'T23:59:59.999Z');
+        query = query.lte('created_at', toEnd.toISOString());
+      } else {
+        const toDate = new Date(to);
+        if (!Number.isNaN(toDate.getTime())) {
+          query = query.lte('created_at', toDate.toISOString());
+        }
+      }
     }
     if (direction === 'CREDIT' || direction === 'DEBIT') {
       query = query.eq('direction', direction);

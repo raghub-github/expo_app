@@ -49,6 +49,10 @@ export function VerificationLocationMap({
           return;
         }
         mapboxgl.accessToken = token;
+        try {
+          const { disableMapboxTelemetry } = await import("@/lib/mapbox/disable-telemetry");
+          disableMapboxTelemetry();
+        } catch { /* non-fatal */ }
 
         const hasCoords = latitude != null && longitude != null && Number.isFinite(latitude) && Number.isFinite(longitude);
         const center: [number, number] = hasCoords ? [longitude, latitude] : DEFAULT_CENTER;

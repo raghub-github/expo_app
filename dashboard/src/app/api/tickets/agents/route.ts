@@ -104,18 +104,24 @@ export async function GET(request: NextRequest) {
       const userIdsFromAccessPoints = accessPointRows.map((r) => r.systemUserId);
       userIds = [...new Set([...userIdsFromAccess, ...userIdsFromAccessPoints])];
 
-      // Also include agents who are currently assigned to tickets
-      const assignedAgentsResult = (await sqlClient`
-      SELECT DISTINCT current_assignee_user_id
-      FROM tickets
-      WHERE current_assignee_user_id IS NOT NULL
-    `) as unknown as { current_assignee_user_id: unknown }[];
-      const assignedAgentIds = assignedAgentsResult
-        .map((r) => r.current_assignee_user_id)
-        .filter((id): id is number => id != null && (typeof id === "number" || typeof id === "bigint"))
-        .map((id) => Number(id));
-
-      userIds = [...new Set([...userIds, ...assignedAgentIds])];
+      // Also include agents who are currently assigned to tickets. This
+      // enrichment is best-effort — if the `tickets` table isn't present
+      // in this environment (fresh dev DB, feature-flagged deploy) we log
+      // and continue with just the dashboard_access rows.
+      try {
+        const assignedAgentsResult = (await sqlClient`
+        SELECT DISTINCT current_assignee_user_id
+        FROM tickets
+        WHERE current_assignee_user_id IS NOT NULL
+      `) as unknown as { current_assignee_user_id: unknown }[];
+        const assignedAgentIds = assignedAgentsResult
+          .map((r) => r.current_assignee_user_id)
+          .filter((id): id is number => id != null && (typeof id === "number" || typeof id === "bigint"))
+          .map((id) => Number(id));
+        userIds = [...new Set([...userIds, ...assignedAgentIds])];
+      } catch (e) {
+        console.warn("[tickets/agents] assigned-agents enrichment failed:", (e as Error).message);
+      }
     }
 
     const selfId = Number(systemUser.id);
@@ -158,16 +164,30 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const profileRows = (await sqlClient`
-      SELECT user_id, current_status, is_online, last_activity_at
-      FROM agent_profiles
-      WHERE user_id IN ${sqlClient(userIds)}
-    `) as {
+    // Enrichment queries below are all best-effort — if any of the
+    // agent presence / activity / availability tables is missing or has
+    // a schema drift, we return the base agent list without the extras
+    // rather than 500'ing the whole endpoint.
+    let profileRows: {
       user_id: number;
       current_status: string | null;
       is_online: boolean | null;
       last_activity_at: string | null;
-    }[];
+    }[] = [];
+    try {
+      profileRows = (await sqlClient`
+        SELECT user_id, current_status, is_online, last_activity_at
+        FROM agent_profiles
+        WHERE user_id IN ${sqlClient(userIds)}
+      `) as {
+        user_id: number;
+        current_status: string | null;
+        is_online: boolean | null;
+        last_activity_at: string | null;
+      }[];
+    } catch (e) {
+      console.warn("[tickets/agents] agent_profiles enrichment failed:", (e as Error).message);
+    }
 
     const profileById = new Map(
       profileRows.map((r) => [
@@ -181,17 +201,27 @@ export async function GET(request: NextRequest) {
     );
 
     const todayUtc = new Date().toISOString().slice(0, 10);
-    const dayRows = (await sqlClient`
-      SELECT agent_user_id, online_time_minutes, break_time_minutes, busy_time_minutes
-      FROM agent_activity_logs
-      WHERE activity_date = ${todayUtc}::date
-        AND agent_user_id IN ${sqlClient(userIds)}
-    `) as {
+    let dayRows: {
       agent_user_id: number;
       online_time_minutes: number | null;
       break_time_minutes: number | null;
       busy_time_minutes: number | null;
-    }[];
+    }[] = [];
+    try {
+      dayRows = (await sqlClient`
+        SELECT agent_user_id, online_time_minutes, break_time_minutes, busy_time_minutes
+        FROM agent_activity_logs
+        WHERE activity_date = ${todayUtc}::date
+          AND agent_user_id IN ${sqlClient(userIds)}
+      `) as {
+        agent_user_id: number;
+        online_time_minutes: number | null;
+        break_time_minutes: number | null;
+        busy_time_minutes: number | null;
+      }[];
+    } catch (e) {
+      console.warn("[tickets/agents] agent_activity_logs enrichment failed:", (e as Error).message);
+    }
 
     const dayByAgent = new Map(
       dayRows.map((r) => {
@@ -210,19 +240,27 @@ export async function GET(request: NextRequest) {
       })
     );
 
-    const logoutRows =
-      userIds.length > 0
-        ? ((await sqlClient`
-        SELECT DISTINCT ON (agent_user_id) agent_user_id, changed_at, reason
-        FROM public.agent_availability_logs
-        WHERE agent_user_id IN ${sqlClient(userIds)} AND status = 'offline'
-        ORDER BY agent_user_id, changed_at DESC
-      `) as {
-            agent_user_id: number;
-            changed_at: string;
-            reason: string | null;
-          }[])
-        : [];
+    let logoutRows: {
+      agent_user_id: number;
+      changed_at: string;
+      reason: string | null;
+    }[] = [];
+    if (userIds.length > 0) {
+      try {
+        logoutRows = (await sqlClient`
+          SELECT DISTINCT ON (agent_user_id) agent_user_id, changed_at, reason
+          FROM public.agent_availability_logs
+          WHERE agent_user_id IN ${sqlClient(userIds)} AND status = 'offline'
+          ORDER BY agent_user_id, changed_at DESC
+        `) as {
+          agent_user_id: number;
+          changed_at: string;
+          reason: string | null;
+        }[];
+      } catch (e) {
+        console.warn("[tickets/agents] agent_availability_logs enrichment failed:", (e as Error).message);
+      }
+    }
 
     const logoutByAgent = new Map(
       logoutRows.map((r) => [

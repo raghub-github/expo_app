@@ -1,8 +1,7 @@
 "use client";
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import SearchBar from "./SearchBar";
 import { Suspense, useState } from "react";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 
 import type { Metadata } from "next";

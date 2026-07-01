@@ -731,6 +731,38 @@ export const customers = pgTable(
   })
 );
 
+/**
+ * Account deletion requests — review queue for customer-initiated account
+ * closure. The customer raises a request from the app with a reason; the
+ * account is deactivated and retained (identity/documents/number kept per
+ * Indian law), and ops reviews each row before final closure. See
+ * Account Deletion & Closure Policy.
+ */
+export const accountDeletionRequests = pgTable(
+  "account_deletion_requests",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: text("customer_id").notNull(),
+    phoneE164: text("phone_e164"),
+    reasonCode: text("reason_code").notNull().default("other"),
+    reasonText: text("reason_text"),
+    // pending_review | approved | rejected | completed
+    status: text("status").notNull().default("pending_review"),
+    // app | web
+    source: text("source").notNull().default("app"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedBy: text("reviewed_by"),
+    reviewNotes: text("review_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    customerIdx: index("account_deletion_requests_customer_idx").on(table.customerId),
+    statusIdx: index("account_deletion_requests_status_idx").on(table.status),
+  })
+);
+
 /** Saved delivery addresses per customer. Matches public.customer_addresses (address_id, address_line1, city, state, postal_code, etc.). */
 export const customerAddresses = pgTable(
   "customer_addresses",

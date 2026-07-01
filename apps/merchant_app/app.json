@@ -28,12 +28,15 @@
         "foregroundImage": "./assets/onlylogo.png",
         "backgroundColor": "#16A34A"
       },
-      "package": "com.anonymous.gatimitramerchantapp",
+      "package": "com.gatimitra.partner",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "READ_SMS",
         "RECEIVE_SMS",
         "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE"
+        "VIBRATE",
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK"
       ],
       "useNextNotificationsApi": true
     },
@@ -43,16 +46,7 @@
     },
     "plugins": [
       "expo-router",
-      "expo-floating-bubble",
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/onlylogo.png",
-          "color": "#3EB489",
-          "sounds": [],
-          "defaultChannel": "merchant_default"
-        }
-      ]
+      "expo-floating-bubble"
     ]
   }
 }

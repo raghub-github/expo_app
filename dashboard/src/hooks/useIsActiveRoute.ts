@@ -1,6 +1,5 @@
 "use client";
-
-import { useAppPathname } from "@/lib/navigation/use-app-pathname";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 
 
@@ -11,3 +10,4 @@ export function useIsActiveRoute(prefix: string, exact = false): boolean {
   if (exact) return clean === prefix;
   return clean === prefix || clean.startsWith(`${prefix}/`);
 }
+

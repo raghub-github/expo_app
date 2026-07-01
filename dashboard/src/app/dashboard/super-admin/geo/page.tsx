@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { GeoTree, type GeoTreeFilters } from "@/components/geo-admin/GeoTree";
 import { SearchBar } from "@/components/geo-admin/SearchBar";
 import { FilterPanel, type ServiceTriState } from "@/components/geo-admin/FilterPanel";
@@ -13,9 +13,6 @@ import { EditLocationModal } from "@/components/geo-admin/EditLocationModal";
 import { PlatformOfferMapModal } from "@/components/geo-admin/PlatformOfferMapModal";
 import { DeliverySlabsModal } from "@/components/geo-admin/DeliverySlabsModal";
 import { DeliveryFallbackPanel } from "@/components/geo-admin/DeliveryFallbackPanel";
-import { prefetchDeliveryRateSlabs } from "@/lib/geo/deliveryRateSlabsCache";
-import { prefetchRideCustomerPricing } from "@/lib/geo/rideCustomerPricingCache";
-import { prefetchRiderPayoutSlabs } from "@/lib/geo/riderPayoutSlabsCache";
 import { useGeoStatesQuery, useLazyGeoSearchQuery } from "@/store/api/geoAdminApi";
 import type { GeoChildRow, GeoSearchRow } from "@/lib/geo/geo-shared";
 import { GitBranch, LayoutList, MapPin, Plus, Truck } from "lucide-react";
@@ -59,10 +56,11 @@ function searchRowToChild(r: GeoSearchRow): GeoChildRow {
 }
 
 export default function GeoSuperAdminPage() {
+  const searchParams = useAppSearchParams();
   const [view, setViewState] = useState<GeoView>("tree");
 
   useEffect(() => {
-    const fromUrl = parseGeoView(new URLSearchParams(window.location.search).get("view"));
+    const fromUrl = parseGeoView(searchParams.get("view"));
     if (fromUrl) {
       setViewState(fromUrl);
       try {
@@ -78,7 +76,7 @@ export default function GeoSuperAdminPage() {
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [searchParams]);
 
   const setView = useCallback((next: GeoView) => {
     setViewState(next);
@@ -148,20 +146,6 @@ export default function GeoSuperAdminPage() {
     setEditRow(searchRowToChild(r));
   }, []);
 
-  const openDeliverySlabs = useCallback((row: GeoChildRow) => {
-    const level = row.kind;
-    prefetchDeliveryRateSlabs({ level, refId: row.id, serviceType: "food", actorType: "customer" });
-    prefetchDeliveryRateSlabs({ level, refId: row.id, serviceType: "food", actorType: "rider" });
-    prefetchDeliveryRateSlabs({ level, refId: row.id, serviceType: "parcel", actorType: "customer" });
-    prefetchDeliveryRateSlabs({ level, refId: row.id, serviceType: "person_ride", actorType: "customer" });
-    prefetchRideCustomerPricing({ level, refId: row.id, vehicleType: "2_wheeler" });
-    prefetchRideCustomerPricing({ level, refId: row.id, vehicleType: "4_wheeler_ac" });
-    prefetchRiderPayoutSlabs({ level, refId: row.id, service: "food" });
-    prefetchRiderPayoutSlabs({ level, refId: row.id, service: "parcel" });
-    prefetchRiderPayoutSlabs({ level, refId: row.id, service: "ride", vehicleType: "2_wheeler" });
-    setSlabsRow(row);
-  }, []);
-
   return (
     <div className="relative min-h-[calc(100vh-4rem)] w-full min-w-0 overflow-x-hidden bg-slate-50/80">
       <div className="border-b border-slate-200/90 bg-white">
@@ -181,9 +165,7 @@ export default function GeoSuperAdminPage() {
                 <span className="hidden text-slate-300 sm:inline" aria-hidden>
                   ·
                 </span>
-                <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">
-                  Geo & coverage
-                </h1>
+                <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">Geo & coverage</h1>
               </div>
               <p className="mt-0.5 line-clamp-2 text-xs leading-snug text-slate-500 sm:max-w-2xl">
                 Hierarchy from state to pincode; lazy load, service rules, and search.
@@ -205,7 +187,6 @@ export default function GeoSuperAdminPage() {
       </div>
 
       <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-4 px-3 py-4 sm:px-4 sm:py-5">
-        <>
         {view !== "fallback" ? (
           <FilterPanel
             states={states}
@@ -293,7 +274,7 @@ export default function GeoSuperAdminPage() {
             filters={filters}
             onEdit={setEditRow}
             onPlatformOfferMap={setOfferMapRow}
-            onDeliverySlabs={openDeliverySlabs}
+            onDeliverySlabs={setSlabsRow}
           />
         ) : view === "flat" ? (
           <div className="flex min-w-0 flex-col gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-md shadow-slate-200/30 sm:rounded-2xl sm:p-5">
@@ -323,7 +304,7 @@ export default function GeoSuperAdminPage() {
                   onChainFor={setFlatChainRow}
                   onEditRow={onPickSearchRow}
                   onPlatformOfferMap={(r) => setOfferMapRow(searchRowToChild(r))}
-                  onDeliverySlabs={(r) => openDeliverySlabs(searchRowToChild(r))}
+                  onDeliverySlabs={(r) => setSlabsRow(searchRowToChild(r))}
                   onDataMutated={refetchSearch}
                 />
                 <SearchChainPanel
@@ -338,7 +319,6 @@ export default function GeoSuperAdminPage() {
         ) : (
           <DeliveryFallbackPanel />
         )}
-        </>
       </div>
 
       {addOpen && (

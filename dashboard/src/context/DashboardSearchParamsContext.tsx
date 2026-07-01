@@ -1,6 +1,5 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import {
   Suspense,
   createContext,
@@ -10,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 const DashboardSearchParamsContext = createContext<URLSearchParams>(
   new URLSearchParams()
@@ -24,7 +23,7 @@ function SearchParamsSync({
   const searchParams = useAppSearchParams();
 
   useLayoutEffect(() => {
-    onChange(new URLSearchParams(searchParams?.toString() ?? ""));
+    onChange(new URLSearchParams(searchParams.toString()));
   }, [searchParams, onChange]);
 
   return null;

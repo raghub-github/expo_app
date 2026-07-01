@@ -28,8 +28,20 @@ import type {
 } from "@gatimitra/contracts";
 import { roundMoney, idempotencyKey, WALLET_CONSTANTS } from "@gatimitra/contracts";
 import { getSql } from "../db/client.js";
+import {
+  compensationMetadataForLedger,
+  planMerchantCancellationLedger,
+} from "./merchant-cancellation-compensation-service.js";
+import { buildEligibleCompensationMessage, buildCancellationInfoLedgerDescription } from "./merchant-cancellation-compensation-display.js";
 import { countMerchantDeliveredOrdersIst } from "./merchant-growth-metrics.js";
 import { logStoreActivity } from "./store-activity-feed.js";
+
+const SETTLEMENT_LEDGER_LIMIT = 5000;
+
+function normalizeLedgerTimeBound(value: string, end: boolean): string {
+  if (value.includes("T")) return value;
+  return end ? `${value}T23:59:59.999Z` : `${value}T00:00:00.000Z`;
+}
 
 // ─── Get or create wallet ─────────────────────────────────────────────────────
 
@@ -225,8 +237,8 @@ export async function queryLedger(
   const limit = Math.min(opts.limit ?? WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE, WALLET_CONSTANTS.MAX_LEDGER_PAGE_SIZE);
   const offset = opts.offset ?? 0;
 
-  const fromFilter = opts.from ? `${opts.from}T00:00:00.000Z` : null;
-  const toFilter = opts.to ? `${opts.to}T23:59:59.999Z` : null;
+  const fromFilter = opts.from ? normalizeLedgerTimeBound(opts.from, false) : null;
+  const toFilter = opts.to ? normalizeLedgerTimeBound(opts.to, true) : null;
 
   const rows = await sql`
     SELECT id, direction, category, balance_type, amount,
@@ -305,19 +317,43 @@ export async function queryLedger(
   );
   const enrichedEntries = applyWithdrawableBalanceToLedgerEntries(entries, withdrawableById);
   const withPgIds = await enrichLedgerWithPgTransactionIds(sql, enrichedEntries);
+  // Main enrichments: payout breakdown, order context, cancellation
+  // compensation, cancellation descriptions — added in the compensation
+  // series on main.
+  const withPayoutBreakdown = await enrichLedgerWithPayoutBreakdown(sql, withPgIds);
+  const withMerchantBill = await enrichLedgerWithOrderContext(sql, withPayoutBreakdown);
+  const withCompensation = await enrichLedgerWithCancellationCompensation(sql, withMerchantBill);
+  const withMainDescriptions = enrichLedgerWithCancellationDescriptions(withCompensation);
+  // CRS enrichments (ride-service invoice system): overlay
+  // enrichMerchantLedgerDescriptions on top, then merge cancellation
+  // entries in one final pass.
   const { enrichMerchantLedgerDescriptions } = await import(
     "./enrich-merchant-ledger-descriptions.js"
   );
-  const withDescriptions = await enrichMerchantLedgerDescriptions(sql, withPgIds);
+  const withCrsDescriptions = await enrichMerchantLedgerDescriptions(sql, withMainDescriptions);
   const { mergeCancellationLedgerEntries } = await import(
     "./merge-cancellation-ledger-entries.js"
   );
-  const { entries: mergedEntries } = mergeCancellationLedgerEntries(withDescriptions);
+  const { entries: mergedEntries } = mergeCancellationLedgerEntries(withCrsDescriptions);
 
   return {
     entries: mergedEntries,
     total: Number((countRows[0] as any)?.cnt ?? entries.length),
   };
+}
+
+/** Ledger rows for payout settlement (higher limit, ISO period bounds). */
+export async function queryLedgerForSettlement(
+  storeId: number,
+  periodStart: Date,
+  periodEnd: Date,
+): Promise<{ entries: LedgerEntry[]; total: number }> {
+  return queryLedger(storeId, {
+    limit: SETTLEMENT_LEDGER_LIMIT,
+    offset: 0,
+    from: periodStart.toISOString(),
+    to: periodEnd.toISOString(),
+  });
 }
 
 // ─── Payout quote ─────────────────────────────────────────────────────────────
@@ -378,6 +414,558 @@ async function enrichLedgerWithPgTransactionIds(
     if (entry.category !== "WITHDRAWAL" || entry.reference_id == null) return entry;
     const pg = pgByPayoutId.get(entry.reference_id);
     return pg ? { ...entry, pg_transaction_id: pg } : entry;
+  });
+}
+
+type OrderBreakdownRow = {
+  orders_food_id: number;
+  total_ctm: string | number | null;
+  food_items_total_value: string | number | null;
+  item_total: string | number | null;
+  packaging_charge: string | number | null;
+  merchant_gross: string | number | null;
+  coupon_discount: string | number | null;
+  merchant_funded_discount: string | number | null;
+  delivery_fee: string | number | null;
+  promo_discount: string | number | null;
+  other_restaurant_discount: string | number | null;
+  delivery_charge_discount: string | number | null;
+  coupon_offer_discount: string | number | null;
+  percentage_flat_offer_discount: string | number | null;
+  combo_offer_discount: string | number | null;
+  free_delivery_offer_discount: string | number | null;
+  payment_mechanism_fee: string | number | null;
+  customer_compensation: string | number | null;
+  cancellation_refund: string | number | null;
+  cancellation_compensation: string | number | null;
+  compensation_scenario: string | null;
+  compensation_pct: string | number | null;
+  merchant_net: string | number | null;
+  commission_amount: string | number | null;
+  fulfillment_status: string | null;
+};
+
+function n(v: string | number | null | undefined): number {
+  const x = Number(v ?? 0);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function mergePayoutMeta(
+  existing: Record<string, unknown> | null | undefined,
+  row: OrderBreakdownRow
+): Record<string, unknown> {
+  const itemTotal = n(row.item_total);
+  const packaging = n(row.packaging_charge);
+  const frozenCtm =
+    n(row.total_ctm) || n(row.food_items_total_value) || n(row.merchant_gross);
+  const merchantCtm = frozenCtm > 0 ? frozenCtm : itemTotal + packaging;
+  const coupon =
+    n(row.coupon_offer_discount) || n(row.promo_discount) || n(row.coupon_discount);
+  const percentageFlat =
+    n(row.percentage_flat_offer_discount) ||
+    n(row.other_restaurant_discount) ||
+    n(row.merchant_funded_discount);
+  const combo = n(row.combo_offer_discount);
+  const freeDelivery =
+    n(row.free_delivery_offer_discount) ||
+    n(row.delivery_charge_discount) ||
+    n(row.delivery_fee);
+  const mechanism = n(row.payment_mechanism_fee) || n(row.commission_amount);
+  const compensation = Math.max(
+    n(row.customer_compensation),
+    n(row.cancellation_refund),
+  );
+  const status = row.fulfillment_status?.trim() || "DELIVERED";
+  const isRejected = ["REJECTED", "CANCELLED", "RTO"].includes(status.toUpperCase());
+  const cancellationComp = n(row.cancellation_compensation);
+  const merchantKeeps =
+    cancellationComp > 0
+      ? cancellationComp
+      : isRejected && n(row.merchant_net) > 0
+        ? n(row.merchant_net)
+        : 0;
+
+  return {
+    ...(existing ?? {}),
+    item_subtotal: itemTotal,
+    item_total: itemTotal,
+    packaging_charge: packaging,
+    packaging_charges: packaging,
+    merchant_gross: merchantCtm > 0 ? merchantCtm : 0,
+    ...(merchantCtm > 0 ? { total_ctm: merchantCtm, merchant_ctm: merchantCtm, merchant_gross_revenue: merchantCtm } : {}),
+    coupon_offer_discount: coupon,
+    coupon_discount: coupon,
+    percentage_flat_offer_discount: percentageFlat,
+    combo_offer_discount: combo,
+    free_delivery_offer_discount: freeDelivery,
+    promo_discount: coupon,
+    restaurant_discount_promo: coupon,
+    other_restaurant_discount: percentageFlat,
+    merchant_funded_discount: percentageFlat,
+    delivery_charge_discount: freeDelivery,
+    payment_mechanism_fee: mechanism,
+    mechanism_fee: mechanism,
+    customer_compensation: compensation,
+    cancellation_refund: compensation,
+    order_status: status,
+    fulfillment_status: status,
+    ...(merchantKeeps > 0
+      ? {
+          merchant_keeps_amount: merchantKeeps,
+          cancellation_compensation: merchantKeeps,
+          compensation_engine: true,
+        }
+      : {}),
+    ...(row.compensation_scenario?.trim()
+      ? { compensation_scenario: row.compensation_scenario.trim() }
+      : {}),
+    ...(n(row.compensation_pct) > 0 ? { compensation_pct: n(row.compensation_pct) } : {}),
+    ...(isRejected && merchantKeeps > 0 ? { merchant_net: merchantKeeps } : {}),
+  };
+}
+
+async function enrichLedgerWithOrderContext(
+  sql: ReturnType<typeof getSql>,
+  entries: LedgerEntry[]
+): Promise<LedgerEntry[]> {
+  const foodIds = new Set<number>();
+  const coreIds = new Set<number>();
+
+  for (const entry of entries) {
+    if (String(entry.reference_type ?? "").toUpperCase() !== "ORDER") continue;
+    if (entry.reference_id != null && entry.reference_id > 0) {
+      foodIds.add(entry.reference_id);
+    }
+    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const coreFromMeta = Number(meta?.orders_core_id);
+    if (Number.isFinite(coreFromMeta) && coreFromMeta > 0) coreIds.add(coreFromMeta);
+    if (entry.order_id != null && entry.order_id > 0) coreIds.add(entry.order_id);
+  }
+
+  if (foodIds.size === 0 && coreIds.size === 0) return entries;
+
+  type OrderContextRow = {
+    orders_food_id: number;
+    orders_core_id: number;
+    formatted_order_id: string | null;
+    rejected_reason: string | null;
+    cancelled_by_label: string | null;
+    cancelled_by_type: string | null;
+    total_ctm: string | number | null;
+    food_items_total_value: string | number | null;
+    item_total: string | number | null;
+    packaging_charge: string | number | null;
+    billing_item_total: string | number | null;
+    billing_addon_total: string | number | null;
+    billing_packaging_fee: string | number | null;
+  };
+
+  let rows: OrderContextRow[] = [];
+  try {
+    rows = (await sql`
+      SELECT
+        f.id AS orders_food_id,
+        c.id AS orders_core_id,
+        COALESCE(
+          NULLIF(TRIM(c.formatted_order_id), ''),
+          NULLIF(TRIM(f.formatted_order_id), '')
+        ) AS formatted_order_id,
+        NULLIF(TRIM(f.rejected_reason), '') AS rejected_reason,
+        NULLIF(TRIM(f.cancelled_by_label), '') AS cancelled_by_label,
+        NULLIF(TRIM(COALESCE(f.cancelled_by_type, c.cancelled_by_type)), '') AS cancelled_by_type,
+        c.total_ctm,
+        f.food_items_total_value,
+        osb.item_total,
+        osb.packaging_charge,
+        (c.billing_snapshot->>'item_total')::numeric AS billing_item_total,
+        (c.billing_snapshot->>'addon_total')::numeric AS billing_addon_total,
+        (c.billing_snapshot->>'packaging_fee')::numeric AS billing_packaging_fee
+      FROM public.orders_food f
+      INNER JOIN public.orders_core c ON c.id = f.order_id
+      LEFT JOIN public.order_settlement_breakdown osb ON osb.order_id = c.id
+      WHERE f.id = ANY(${[...foodIds]})
+         OR c.id = ANY(${[...coreIds]})
+    `) as OrderContextRow[];
+  } catch {
+    return entries;
+  }
+
+  const byFoodId = new Map(rows.map((r) => [Number(r.orders_food_id), r]));
+  const byCoreId = new Map(rows.map((r) => [Number(r.orders_core_id), r]));
+
+  const resolveRow = (entry: LedgerEntry): OrderContextRow | undefined => {
+    if (String(entry.reference_type ?? "").toUpperCase() !== "ORDER") return undefined;
+    if (entry.reference_id != null && entry.reference_id > 0) {
+      const byFood = byFoodId.get(entry.reference_id);
+      if (byFood) return byFood;
+    }
+    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const coreFromMeta = Number(meta?.orders_core_id);
+    if (Number.isFinite(coreFromMeta) && coreFromMeta > 0) {
+      const byCore = byCoreId.get(coreFromMeta);
+      if (byCore) return byCore;
+    }
+    if (entry.order_id != null && entry.order_id > 0) {
+      return byCoreId.get(entry.order_id);
+    }
+    return undefined;
+  };
+
+  const resolveBillParts = (row: OrderContextRow): { itemSubtotal: number; packaging: number } => {
+    const billingItems = n(row.billing_item_total) + n(row.billing_addon_total);
+    const billingPackaging = n(row.billing_packaging_fee);
+    if (billingItems > 0 || billingPackaging > 0) {
+      return {
+        itemSubtotal: billingItems > 0 ? billingItems : n(row.item_total),
+        packaging: billingPackaging > 0 ? billingPackaging : n(row.packaging_charge),
+      };
+    }
+
+    const itemSubtotal = n(row.item_total);
+    const packaging = n(row.packaging_charge);
+    if (itemSubtotal > 0 || packaging > 0) {
+      return { itemSubtotal, packaging };
+    }
+
+    const frozen = n(row.total_ctm);
+    if (frozen > 0) {
+      return { itemSubtotal: Math.max(0, frozen - packaging), packaging };
+    }
+    return { itemSubtotal: 0, packaging: 0 };
+  };
+
+  const resolveCtm = (row: OrderContextRow): number => {
+    const frozen = n(row.total_ctm);
+    if (frozen > 0) return frozen;
+    const fromFood = n(row.food_items_total_value);
+    if (fromFood > 0) return fromFood;
+    const { itemSubtotal, packaging } = resolveBillParts(row);
+    const fromBill = itemSubtotal + packaging;
+    if (fromBill > 0) return fromBill;
+    return 0;
+  };
+
+  return entries.map((entry) => {
+    const row = resolveRow(entry);
+    if (!row) return entry;
+    const formatted = row.formatted_order_id?.trim() || null;
+    const { itemSubtotal, packaging } = resolveBillParts(row);
+    const merchantCtm = resolveCtm(row);
+    const existingMeta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const metadata: Record<string, unknown> = {
+      ...(existingMeta ?? {}),
+      ...(formatted ? { formatted_order_id: formatted } : {}),
+      orders_core_id: Number(row.orders_core_id),
+    };
+    if (row.rejected_reason) {
+      metadata.food_rejected_reason = row.rejected_reason;
+      metadata.rejected_reason = row.rejected_reason;
+      metadata.reason_detail = row.rejected_reason;
+    }
+    if (row.cancelled_by_label) {
+      metadata.cancelled_by_label = row.cancelled_by_label;
+    }
+    if (row.cancelled_by_type) {
+      metadata.cancelled_by_type = row.cancelled_by_type;
+    }
+    if (itemSubtotal > 0) {
+      metadata.item_subtotal = itemSubtotal;
+      metadata.item_total = itemSubtotal;
+    }
+    if (packaging > 0) {
+      metadata.packaging_charge = packaging;
+      metadata.packaging_charges = packaging;
+    }
+    if (merchantCtm > 0) {
+      metadata.merchant_gross_revenue = merchantCtm;
+      metadata.total_ctm = merchantCtm;
+      metadata.merchant_ctm = merchantCtm;
+      metadata.food_items_total_value = merchantCtm;
+    }
+    return {
+      ...entry,
+      formatted_order_id: formatted,
+      order_id: entry.order_id ?? (Number(row.orders_core_id) || null),
+      metadata,
+    };
+  });
+}
+
+async function enrichLedgerWithPayoutBreakdown(
+  sql: ReturnType<typeof getSql>,
+  entries: LedgerEntry[]
+): Promise<LedgerEntry[]> {
+  const foodIds = [
+    ...new Set(
+      entries
+        .filter((e) => {
+          if (e.reference_id == null || e.reference_id <= 0) return false;
+          if (e.category === "ORDER_EARNING") return true;
+          const meta = (e.metadata ?? null) as Record<string, unknown> | null;
+          return meta?.entry_type === "order_cancellation";
+        })
+        .map((e) => e.reference_id as number)
+    ),
+  ];
+  if (foodIds.length === 0) return entries;
+
+  let rows: OrderBreakdownRow[] = [];
+  try {
+    rows = (await sql`
+      SELECT
+        f.id AS orders_food_id,
+        c.total_ctm,
+        f.food_items_total_value,
+        osb.item_total,
+        osb.packaging_charge,
+        osb.merchant_gross,
+        osb.coupon_discount,
+        osb.merchant_funded_discount,
+        osb.delivery_fee,
+        osb.promo_discount,
+        osb.other_restaurant_discount,
+        osb.delivery_charge_discount,
+        osb.coupon_offer_discount,
+        osb.percentage_flat_offer_discount,
+        osb.combo_offer_discount,
+        osb.free_delivery_offer_discount,
+        osb.payment_mechanism_fee,
+        osb.customer_compensation,
+        osb.cancellation_refund,
+        osb.cancellation_compensation,
+        osb.compensation_scenario,
+        osb.compensation_pct,
+        osb.merchant_net,
+        osb.commission_amount,
+        osb.fulfillment_status
+      FROM public.orders_food f
+      INNER JOIN public.orders_core c ON c.id = f.order_id
+      INNER JOIN public.order_settlement_breakdown osb ON osb.order_id = f.order_id
+      WHERE f.id = ANY(${foodIds})
+    `) as OrderBreakdownRow[];
+  } catch {
+    return entries;
+  }
+
+  const byFoodId = new Map(rows.map((r) => [Number(r.orders_food_id), r]));
+  return entries.map((entry) => {
+    if (entry.reference_id == null) return entry;
+    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const isEarning = entry.category === "ORDER_EARNING";
+    const isCancellation = meta?.entry_type === "order_cancellation";
+    if (!isEarning && !isCancellation) return entry;
+    const row = byFoodId.get(entry.reference_id);
+    if (!row) return entry;
+    const mergedMeta = mergePayoutMeta(
+      (entry.metadata ?? null) as Record<string, unknown> | null,
+      row
+    );
+    return {
+      ...entry,
+      metadata: mergedMeta,
+      commission_amount: entry.commission_amount ?? n(row.commission_amount),
+    };
+  });
+}
+
+function ledgerEntryOrderCoreId(entry: LedgerEntry): number | null {
+  const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+  if (entry.order_id != null && entry.order_id > 0) return entry.order_id;
+  const fromMeta = Number(meta?.orders_core_id);
+  return Number.isFinite(fromMeta) && fromMeta > 0 ? fromMeta : null;
+}
+
+function ledgerEntryNeedsCompensationEnrichment(entry: LedgerEntry): boolean {
+  const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+  if (!meta) return false;
+  const status = String(meta.order_status ?? meta.fulfillment_status ?? "").toUpperCase();
+  const isCancelled =
+    meta.entry_type === "order_cancellation" ||
+    status === "REJECTED" ||
+    status === "CANCELLED" ||
+    status === "RTO";
+  if (!isCancelled) return false;
+  if (meta.compensation_engine && meta.eligible_message) {
+    return meta.merchant_keeps_amount == null;
+  }
+  return !meta.compensation_engine || !meta.eligible_message;
+}
+
+function enrichLedgerWithCancellationDescriptions(entries: LedgerEntry[]): LedgerEntry[] {
+  return entries.map((entry) => {
+    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    if (!meta || meta.entry_type !== "order_cancellation") return entry;
+
+    const desc = String(entry.description ?? "").trim();
+    const needsRewrite =
+      !desc ||
+      /no merchant credit/i.test(desc) ||
+      /^Order\s+\S+\s+cancelled\s*$/i.test(desc);
+    if (!needsRewrite) return entry;
+
+    const fromDesc = desc.match(/^Order\s+(\S+)/i)?.[1]?.replace(/^#/, "");
+    const formattedOrderId =
+      String(entry.formatted_order_id ?? "").trim().replace(/^#/, "") ||
+      fromDesc ||
+      (entry.order_id != null ? String(entry.order_id) : String(entry.reference_id ?? entry.id));
+
+    const balanceImpact =
+      String(meta.balance_impact ?? "").toLowerCase() === "debit" ? "debit" : "none";
+
+    return {
+      ...entry,
+      description: buildCancellationInfoLedgerDescription({
+        formattedOrderId,
+        balanceImpact,
+        compensationMeta: meta,
+      }),
+    };
+  });
+}
+
+async function enrichLedgerWithCancellationCompensation(
+  sql: ReturnType<typeof getSql>,
+  entries: LedgerEntry[]
+): Promise<LedgerEntry[]> {
+  const cancelledEntries = entries.filter((e) => {
+    const meta = (e.metadata ?? null) as Record<string, unknown> | null;
+    const status = String(meta?.order_status ?? meta?.fulfillment_status ?? "").toUpperCase();
+    return (
+      meta?.entry_type === "order_cancellation" ||
+      status === "REJECTED" ||
+      status === "CANCELLED" ||
+      status === "RTO"
+    );
+  });
+
+  const coreIds = [
+    ...new Set(
+      cancelledEntries
+        .map((e) => ledgerEntryOrderCoreId(e))
+        .filter((id): id is number => id != null)
+    ),
+  ];
+  if (coreIds.length === 0) return entries;
+
+  type OrderCancelRow = {
+    orders_core_id: number;
+    rejected_reason: string | null;
+    cancelled_by_label: string | null;
+    cancelled_by_type: string | null;
+  };
+
+  let cancelRows: OrderCancelRow[] = [];
+  try {
+    cancelRows = (await sql`
+      SELECT
+        c.id AS orders_core_id,
+        NULLIF(TRIM(f.rejected_reason), '') AS rejected_reason,
+        NULLIF(TRIM(f.cancelled_by_label), '') AS cancelled_by_label,
+        NULLIF(TRIM(COALESCE(f.cancelled_by_type, c.cancelled_by_type)), '') AS cancelled_by_type
+      FROM orders_core c
+      LEFT JOIN orders_food f ON f.order_id = c.id
+      WHERE c.id = ANY(${coreIds})
+    `) as OrderCancelRow[];
+  } catch {
+    return entries;
+  }
+
+  const cancelByCore = new Map(
+    cancelRows.map((r) => [Number(r.orders_core_id), r]),
+  );
+
+  const needsPlanIds = coreIds.filter((coreId) =>
+    entries.some((e) => {
+      if (ledgerEntryOrderCoreId(e) !== coreId) return false;
+      return ledgerEntryNeedsCompensationEnrichment(e);
+    }),
+  );
+
+  const compensationByCore = new Map<number, Record<string, unknown>>();
+  await Promise.all(
+    needsPlanIds.map(async (coreId) => {
+      try {
+        const ctx = cancelByCore.get(coreId);
+        const plan = await planMerchantCancellationLedger(sql, coreId, null, {
+          cancelledByType: ctx?.cancelled_by_type ?? null,
+          cancelledByLabel: ctx?.cancelled_by_label ?? null,
+          rejectedReason: ctx?.rejected_reason ?? null,
+        });
+        if (!plan.resolved?.engineEnabled) return;
+        const meta = compensationMetadataForLedger(plan.resolved, plan.display);
+        if (Object.keys(meta).length > 0) compensationByCore.set(coreId, meta);
+      } catch {
+        /* optional enrichment */
+      }
+    }),
+  );
+
+  return entries.map((entry) => {
+    const coreId = ledgerEntryOrderCoreId(entry);
+    if (coreId == null) return entry;
+    const ctx = cancelByCore.get(coreId);
+    const existing = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const status = String(existing?.order_status ?? existing?.fulfillment_status ?? "").toUpperCase();
+    const isCancelled =
+      existing?.entry_type === "order_cancellation" ||
+      status === "REJECTED" ||
+      status === "CANCELLED" ||
+      status === "RTO";
+    if (!isCancelled) return entry;
+
+    const rejectedReason =
+      ctx?.rejected_reason?.trim() ||
+      (typeof existing?.food_rejected_reason === "string"
+        ? existing.food_rejected_reason.trim()
+        : "") ||
+      null;
+    const reasonPatch: Record<string, unknown> = {};
+    if (rejectedReason) {
+      reasonPatch.food_rejected_reason = rejectedReason;
+      reasonPatch.rejected_reason = rejectedReason;
+      reasonPatch.reason_detail = rejectedReason;
+      if (existing?.compensation_engine) {
+        const pct = Number(existing.compensation_pct);
+        if (Number.isFinite(pct)) {
+          reasonPatch.eligible_message = buildEligibleCompensationMessage({
+            cancelledByBrand: String(existing.cancelled_by_brand ?? "GatiMitra"),
+            reasonDetail: rejectedReason,
+            compensationPct: pct,
+          });
+        }
+      }
+    }
+    if (ctx?.cancelled_by_label) {
+      reasonPatch.cancelled_by_label = ctx.cancelled_by_label;
+    }
+    if (ctx?.cancelled_by_type) {
+      reasonPatch.cancelled_by_type = ctx.cancelled_by_type;
+    }
+
+    const extra = compensationByCore.get(coreId);
+    const needsPlan = ledgerEntryNeedsCompensationEnrichment(entry);
+    if (!needsPlan && !rejectedReason && !extra) return entry;
+
+    const compensationPatch =
+      needsPlan && extra
+        ? (() => {
+            const next = { ...extra };
+            if (rejectedReason) {
+              next.reason_detail = rejectedReason;
+              delete next.rejected_reason;
+            }
+            return next;
+          })()
+        : {};
+
+    return {
+      ...entry,
+      metadata: {
+        ...(existing ?? {}),
+        ...compensationPatch,
+        ...reasonPatch,
+      },
+    };
   });
 }
 

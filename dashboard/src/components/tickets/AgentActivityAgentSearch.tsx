@@ -1,7 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useDeferredValue, useEffect, useMemo, useRef, useState, startTransition } from "react";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { AGENT_ACTIVITY_PATH } from "@/lib/tickets/ticket-path-utils";

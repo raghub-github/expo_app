@@ -54,6 +54,24 @@ function throwAuthError(statusCode: number, errorCode: string, message: string):
   throw new AuthHttpError(statusCode, errorCode, message);
 }
 
+type MerchantDeviceSessionCacheEntry = {
+  valid: boolean;
+  checkedAt: number;
+};
+
+const merchantDeviceSessionCache = new Map<string, MerchantDeviceSessionCacheEntry>();
+const MERCHANT_DEVICE_SESSION_CACHE_MS = 45_000;
+
+function readMerchantDeviceSessionCache(sub: string, deviceId: string): boolean | null {
+  const cached = merchantDeviceSessionCache.get(`${sub}:${deviceId}`);
+  if (!cached || Date.now() - cached.checkedAt > MERCHANT_DEVICE_SESSION_CACHE_MS) return null;
+  return cached.valid;
+}
+
+function writeMerchantDeviceSessionCache(sub: string, deviceId: string, valid: boolean): void {
+  merchantDeviceSessionCache.set(`${sub}:${deviceId}`, { valid, checkedAt: Date.now() });
+}
+
 function readCustomerSessionCache(sub: string, iat: number): CustomerSessionCacheEntry | "revoked" | null {
   const cached = customerSessionCache.get(sub);
   if (!cached || Date.now() - cached.checkedAt > CUSTOMER_SESSION_CACHE_MS) return null;
@@ -162,27 +180,37 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
       if (role === "merchant" || role === "rider") {
         const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
         if (deviceId) {
-          await withDbSlot(
-            () =>
-              withSqlRetry(async () => {
-                const sql = getSql();
-                const rows = await sql`
+          const cachedValid = readMerchantDeviceSessionCache(sub, deviceId);
+          if (cachedValid === false) {
+            throwAuthError(401, "session_revoked", "Signed out from this device.");
+          } else if (cachedValid !== true) {
+            await withDbSlot(
+              () =>
+                withSqlRetry(async () => {
+                  const sql = getSql();
+                  const rows = await sql`
               SELECT id
               FROM user_device_sessions
               WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
               LIMIT 1
             `;
-                if (!rows[0]) {
-                  throwAuthError(401, "session_revoked", "Signed out from this device.");
-                }
-                await sql`
+                  if (!rows[0]) {
+                    writeMerchantDeviceSessionCache(sub, deviceId, false);
+                    throwAuthError(401, "session_revoked", "Signed out from this device.");
+                  }
+                  writeMerchantDeviceSessionCache(sub, deviceId, true);
+                }),
+              req
+            );
+            void withSqlRetry(async () => {
+              const sql = getSql();
+              await sql`
               UPDATE user_device_sessions
               SET last_active = now()
               WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
             `;
-              }),
-            req
-          );
+            }).catch(() => undefined);
+          }
         }
       }
     } catch (err) {

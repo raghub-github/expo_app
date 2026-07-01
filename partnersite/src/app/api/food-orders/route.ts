@@ -17,6 +17,7 @@ import {
 import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 import { enrichOrdersWithCancellationDisplay } from '@/lib/fetch-order-cancellation-display';
+import { enrichOrdersWithCancellationCompensation } from '@/lib/enrich-orders-cancellation-compensation';
 import {
   buildRiderSelfieUrlMap,
   resolveRiderSelfieFromStored,
@@ -625,12 +626,13 @@ export async function GET(req: NextRequest) {
     );
 
     const ordersEnriched = await enrichOrdersWithCancellationDisplay(db, ordersWithDetails);
+    const ordersWithCompensation = await enrichOrdersWithCancellationCompensation(ordersEnriched);
 
     console.log(
-      `[food-orders GET] ${ordersEnriched.length} partner orders (orders_core–centric) for store_id=${storeId}`
+      `[food-orders GET] ${ordersWithCompensation.length} partner orders (orders_core–centric) for store_id=${storeId}`
     );
 
-    return NextResponse.json({ orders: ordersEnriched });
+    return NextResponse.json({ orders: ordersWithCompensation });
   } catch (err) {
     console.error('[food-orders] Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

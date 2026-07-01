@@ -1,9 +1,8 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { invalidateRiderSummary } from "@/lib/cache-invalidation";

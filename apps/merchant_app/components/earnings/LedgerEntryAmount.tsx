@@ -1,42 +1,54 @@
 import { View, Text, StyleSheet } from "react-native";
+import { GatiMitraMerchant } from "@/constants/theme";
+import {
+  formatCurrency,
+  type LedgerAmountDisplay,
+} from "@/lib/merchantPayoutUtils";
 
-export type CancellationLedgerDisplay = {
-  originalAmount: number;
-  creditAmount: number;
-  showCancelledStatus: boolean;
-};
+const ACCENT = {
+  credit: "#16A34A",
+  debit: "#DC2626",
+  neutral: GatiMitraMerchant.textSecondary,
+} as const;
 
 type Props = {
-  display: CancellationLedgerDisplay;
-  formatCurrency: (amount: number) => string;
+  display: LedgerAmountDisplay;
 };
 
-export function LedgerEntryAmount({ display, formatCurrency }: Props) {
-  const { originalAmount, creditAmount } = display;
-  const showStrike =
-    originalAmount > 0 && (creditAmount <= 0 || originalAmount > creditAmount);
+export function LedgerEntryAmount({ display }: Props) {
+  if (display.compensationPolicy) {
+    const { orderCtm, receivedAmount } = display.compensationPolicy;
+    const accent = receivedAmount > 0 ? ACCENT.credit : ACCENT.neutral;
+    return (
+      <View style={s.col}>
+        <Text style={[s.ctmStrike, { color: GatiMitraMerchant.textSecondary }]}>
+          {formatCurrency(orderCtm)}
+        </Text>
+        <Text style={[s.amount, { color: accent }]}>
+          {receivedAmount > 0 ? `+${formatCurrency(receivedAmount)}` : formatCurrency(0)}
+        </Text>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.col}>
-      {showStrike ? (
-        <Text style={styles.strike}>{formatCurrency(originalAmount)}</Text>
-      ) : null}
-      <Text style={[styles.amount, creditAmount > 0 ? styles.credit : styles.zero]}>
-        {creditAmount > 0 ? `+${formatCurrency(creditAmount)}` : formatCurrency(0)}
-      </Text>
-    </View>
+    <Text style={[s.amount, { color: ACCENT[display.accent] }]}>
+      {display.text}
+    </Text>
   );
 }
 
-const styles = StyleSheet.create({
+const s = StyleSheet.create({
   col: { alignItems: "flex-end" },
-  strike: {
+  ctmStrike: {
     fontSize: 12,
     fontWeight: "500",
-    color: "#9ca3af",
     textDecorationLine: "line-through",
+    marginBottom: 2,
   },
-  amount: { fontSize: 15, fontWeight: "700" },
-  credit: { color: "#16a34a" },
-  zero: { color: "#6b7280" },
+  amount: {
+    fontSize: 15,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
 });

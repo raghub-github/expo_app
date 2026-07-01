@@ -14,7 +14,7 @@ import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { merchantOrderCardLayoutStyles as styles } from "@/components/order/merchantOrderCardLayoutStyles";
 import { MerchantOrderBillBreakdown } from "@/components/order/MerchantOrderBillBreakdown";
 import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
-import { orderHasAssignedRider } from "@/lib/orderAssignedRider";
+import { orderHasAssignedRider, riderStatusLabelFromOrder } from "@/lib/orderAssignedRider";
 
 export type MerchantOrderCardLayoutProps = {
   order: OrderRecord;
@@ -88,7 +88,7 @@ export function MerchantOrderCardLayout({
           <View style={styles.riderAvatar}>
             <Ionicons name="bicycle" size={16} color="#888888" />
           </View>
-          <Text style={styles.riderText}>Assigning delivery partner…</Text>
+          <Text style={styles.riderText}>{riderStatusLabelFromOrder(order)}</Text>
         </View>
       )
     ) : null;

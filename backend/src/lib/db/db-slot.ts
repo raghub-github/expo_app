@@ -21,17 +21,22 @@ export class DbSlotTimeoutError extends Error {
   }
 }
 
-function dbSlotLimit(): number {
+/** Align slot limit with postgres pool — one in-flight HTTP request ≈ one slot. */
+export function dbSlotLimit(): number {
   const env = getEnv();
   const poolMax =
     env.DATABASE_POOL_MAX ??
-    (env.NODE_ENV === "production" ? 30 : 6);
-  return Math.max(2, Math.min(poolMax, env.NODE_ENV === "production" ? 30 : 6));
+    (env.NODE_ENV === "production" ? 30 : 20);
+  const hardCap = env.NODE_ENV === "production" ? 30 : 24;
+  return Math.max(2, Math.min(poolMax, hardCap));
 }
 
 function acquireTimeoutMs(): number {
   const env = getEnv();
-  return env.NODE_ENV === "production" ? 12_000 : 8_000;
+  if (env.DATABASE_SLOT_ACQUIRE_TIMEOUT_MS != null) {
+    return env.DATABASE_SLOT_ACQUIRE_TIMEOUT_MS;
+  }
+  return env.NODE_ENV === "production" ? 12_000 : 25_000;
 }
 
 export async function acquireDbSlot(): Promise<void> {

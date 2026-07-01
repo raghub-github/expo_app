@@ -20,19 +20,56 @@ export function averagePrepMinutesFromMenuItemRows(
   );
 }
 
-/** Menu-item average first; fall back to merchant_stores.avg_preparation_time_minutes. */
+/** Menu-item average first; fall back to merchant_stores.avg_preparation_time_minutes; then add kitchen buffer. */
+export function normalizePreparationBufferMinutes(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(0, Math.min(120, Math.floor(n)));
+}
+
 export function resolveStorePrepMinutesForEta(
   menuAvgPrep: number | null | undefined,
-  storeAvgPrep: number | null | undefined
+  storeAvgPrep: number | null | undefined,
+  preparationBufferMinutes: number | null | undefined = 0
 ): number | null {
+  let base: number | null = null;
   if (menuAvgPrep != null && Number.isFinite(menuAvgPrep) && menuAvgPrep > 0) {
-    return Math.round(menuAvgPrep);
-  }
-  if (storeAvgPrep != null && (storeAvgPrep as unknown) !== "") {
+    base = Math.round(menuAvgPrep);
+  } else if (storeAvgPrep != null && (storeAvgPrep as unknown) !== "") {
     const n = Number(storeAvgPrep);
-    if (Number.isFinite(n) && n > 0) return Math.round(n);
+    if (Number.isFinite(n) && n > 0) base = Math.round(n);
   }
-  return null;
+  if (base == null) return null;
+  const buffer = normalizePreparationBufferMinutes(preparationBufferMinutes);
+  if (buffer <= 0) return base;
+  return Math.min(180, base + buffer);
+}
+
+/** Batch preparation_buffer_minutes per store internal id (defaults to 0). */
+export async function getPreparationBufferMinutesForStores(
+  storeInternalIds: number[]
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  const ids = [...new Set(storeInternalIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return map;
+
+  const pg = getSql();
+  try {
+    const rows = await pg<Array<{ store_id: number; preparation_buffer_minutes: number | null }>>`
+      SELECT store_id::int AS store_id,
+             COALESCE(preparation_buffer_minutes, 0)::int AS preparation_buffer_minutes
+      FROM merchant_store_settings
+      WHERE store_id = ANY(${ids}::int[])
+    `;
+    for (const row of rows) {
+      map.set(row.store_id, normalizePreparationBufferMinutes(row.preparation_buffer_minutes));
+    }
+  } catch (err) {
+    console.warn("[merchants] getPreparationBufferMinutesForStores failed", {
+      err: (err as Error).message,
+    });
+  }
+  return map;
 }
 
 /** Batch avg prep per store internal id (active, approved menu items only). */

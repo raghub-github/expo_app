@@ -67,6 +67,7 @@ import {
 } from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { emitPartnerStoreOperationsRefresh } from '@/lib/partnerStoreOperationsRefresh';
+import { STORE_SETTINGS_TAB_LABELS } from '@/lib/store-settings-tabs';
 import {
   migrateDeviceOrderAlertsFromServer,
   syncFoodOrdersUiNotifyFromDevice,
@@ -1569,7 +1570,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     await refetchAllStoreOps();
   }, [refetchAllStoreOps]);
 
-  const leftW = sidebarCollapsed ? 'md:w-14' : 'md:w-52';
+  const leftW = sidebarCollapsed ? 'md:w-14 md:min-w-[13rem]' : 'md:w-52';
   const resolvedOpsRow = resolvedStoreId ? storeOpsById[resolvedStoreId] : undefined;
   const onlineLabel =
     storeOpen === null
@@ -1613,22 +1614,9 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       profile: 'Profile',
       'audit-logs': 'Audit & Activity',
       customizations: 'Customizations',
-      'refund-policy': 'Refund Policy',
+      'refund-policy': 'Refund & Cancellation Policy',
       'user-insights': 'User Insights',
       'support-inbox': 'Support Inbox',
-    };
-    const storeSettingsTabLabelMap: Record<string, string> = {
-      plans: 'Plans & Subscription',
-      premium: 'Premium Plans',
-      timings: 'Outlet Timings',
-      operations: 'Store Operations',
-      'menu-capacity': 'Menu & Capacity',
-      delivery: 'Delivery & Riders',
-      address: 'Store Address',
-      pos: 'POS Integration',
-      notifications: 'Notifications',
-      audit: 'Audit & Activity',
-      gatimitra: 'Store on GatiMitra',
     };
     const sectionLabel =
       sectionLabelMap[appRoute] ||
@@ -1640,7 +1628,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         : '');
     const pageLabel =
       appRoute === 'store-settings' && storeSettingsTab
-        ? storeSettingsTabLabelMap[storeSettingsTab] || 'Store Settings'
+        ? STORE_SETTINGS_TAB_LABELS[storeSettingsTab] || 'Store Settings'
         : resolvedHeaderTitle || headerTitle || sectionLabel;
     const rootCrumb = { label: 'Partner', href: '/partners/dashboard' };
     const sectionHref = parts.length >= 2 ? `/${parts.slice(0, 2).join('/')}` : '/partners/dashboard';

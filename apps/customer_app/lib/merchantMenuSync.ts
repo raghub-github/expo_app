@@ -10,9 +10,23 @@ import {
   updateCachedMerchantMenu,
   writeCachedMerchantMenu,
 } from "@/lib/merchantMenuCache";
+import { patchMerchantDetailLiveStatus } from "@/lib/patchMerchantLiveStatus";
 import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
+import { useStoreStatusStore } from "@/store/storeStatusStore";
 
 const syncInFlight = new Set<string>();
+
+async function refreshLiveStatusInCache(
+  queryClient: QueryClient,
+  merchantId: string
+): Promise<void> {
+  const snapshot = await merchantService.getStoreLiveStatusSnapshot(merchantId);
+  if (!snapshot) return;
+  useStoreStatusStore
+    .getState()
+    .setStatusFromApi(merchantId, snapshot.liveStatus === "OPEN", snapshot.liveStatus);
+  patchMerchantDetailLiveStatus(queryClient, merchantId, snapshot);
+}
 
 /** Non-blocking version check + delta merge. Never blocks UI. */
 export async function syncMerchantMenuInBackground(
@@ -40,6 +54,7 @@ export async function syncMerchantMenuInBackground(
     if (!version) return;
 
     if (menuVersionsMatch(cached.menuVersion, version.menuVersion)) {
+      await refreshLiveStatusInCache(queryClient, merchantId);
       return;
     }
 

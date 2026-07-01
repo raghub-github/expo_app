@@ -129,7 +129,8 @@ export interface OrdersFoodRow {
   cancelled_by_label?: string | null;
   cancelled_by?: string | null;
   cancelled_by_type?: string | null;
-  cancellation_details?: any; // JSONB
+  cancellation_details?: any;
+  cancellation_compensation?: import('@/lib/merchantCancellationCompensation').MerchantCancellationCompensationDisplay | null;
   pickup_otp?: string | null;
   rto_otp?: string | null;
   /** True when this order has been returned to merchant (RTO). */

@@ -3,7 +3,7 @@
  */
 
 import { and, eq, isNull, isNotNull, inArray, or, sql, desc, asc, notInArray } from "drizzle-orm";
-import { getDb } from "../../db/client.js";
+import { getDb, getSql } from "../../db/client.js";
 import { recordRiderOrderMilestoneLocationEvent } from "../../lib/rider-location-business-event.js";
 import {
   customers,
@@ -29,6 +29,7 @@ import {
   recordRiderPickedUpTimelineTx,
 } from "../../lib/order-food-status-timeline.js";
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
+import { notifyMerchantRiderReachedPickup } from "../../lib/merchant-push-notify.js";
 import {
   publishOrderEvent,
   publishStoreEvent,
@@ -3731,6 +3732,7 @@ async function markReachedFoodPickupForRider(
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
+  let didNewlyReachStore = false;
 
   const updated = await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -3855,8 +3857,63 @@ async function markReachedFoodPickupForRider(
 
     const full = await selectFoodOrderRowForRider(tx, row.id);
     if (!full?.orderId) throw new Error("Food order missing after update");
+    didNewlyReachStore = true;
     return mapFoodRowForActiveRider(tx, full, riderId, row.id);
   });
+
+  if (didNewlyReachStore) {
+    void (async () => {
+      try {
+        const sql = getSql();
+        const orderIdText = updated.id?.trim();
+        if (!orderIdText) return;
+        const rows = await sql`
+          SELECT
+            f.id::text AS food_id,
+            f.formatted_order_id,
+            f.merchant_store_id,
+            c.formatted_order_id AS core_formatted
+          FROM orders_core c
+          INNER JOIN orders_food f ON f.order_id = c.id
+          WHERE c.order_id = ${orderIdText}
+          LIMIT 1
+        `;
+        const meta = rows[0] as
+          | {
+              food_id?: string;
+              formatted_order_id?: string | null;
+              merchant_store_id?: number;
+              core_formatted?: string | null;
+            }
+          | undefined;
+        const storeId = Number(meta?.merchant_store_id);
+        if (!Number.isFinite(storeId) || storeId < 1) return;
+        const riderRows = await sql`
+          SELECT name FROM riders WHERE id = ${riderId} LIMIT 1
+        `;
+        const riderName = String((riderRows[0] as { name?: string } | undefined)?.name ?? "Rider");
+        const displayOrderId =
+          (meta?.formatted_order_id && String(meta.formatted_order_id).trim()) ||
+          (meta?.core_formatted && String(meta.core_formatted).trim()) ||
+          orderIdText;
+        const foodOrderId =
+          meta?.food_id != null && /^\d+$/.test(String(meta.food_id))
+            ? Number(meta.food_id)
+            : null;
+        await notifyMerchantRiderReachedPickup(sql, {
+          storeId,
+          displayOrderId,
+          riderName,
+          foodOrderId,
+        });
+      } catch (err) {
+        console.warn(
+          "[markReachedFoodPickupForRider] merchant pickup notify failed",
+          (err as Error).message
+        );
+      }
+    })();
+  }
 
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,

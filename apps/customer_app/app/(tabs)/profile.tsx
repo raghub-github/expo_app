@@ -98,25 +98,27 @@ export default function ProfileScreen() {
     }
   }, []);
 
-  const freeDeliveryRadius = subscriptionStatus?.plan?.maxFreeDeliveryRadiusKm ?? null;
-
   const subscriptionBenefits = useMemo(() => {
+    const planBenefits = subscriptionStatus?.plan?.benefits;
+    if (planBenefits?.length) return planBenefits;
     if (subscriptionActive) {
-      return subscriptionStatus?.plan?.benefits?.length
-        ? subscriptionStatus.plan.benefits
-        : ["Your membership benefits apply automatically on eligible orders."];
+      return ["Your membership benefits apply automatically on eligible orders."];
     }
     return [
       "Free delivery on eligible orders",
       "Exclusive member-only offers",
       "Priority support during peak hours",
     ];
-  }, [subscriptionActive, subscriptionStatus?.plan?.benefits]);
+  }, [subscriptionStatus?.plan?.benefits, subscriptionActive]);
 
   const freeDeliveryNote = useMemo(() => {
+    const freeDeliveryRadius = subscriptionStatus?.plan?.maxFreeDeliveryRadiusKm;
     if (!subscriptionStatus?.plan?.freeDeliveryEnabled || freeDeliveryRadius == null) return null;
     return `Free delivery within ${freeDeliveryRadius} km on eligible orders.`;
-  }, [subscriptionStatus?.plan?.freeDeliveryEnabled, freeDeliveryRadius]);
+  }, [
+    subscriptionStatus?.plan?.freeDeliveryEnabled,
+    subscriptionStatus?.plan?.maxFreeDeliveryRadiusKm,
+  ]);
 
   const handleSubscriptionPress = useCallback(() => {
     setMembershipSheetVisible(true);

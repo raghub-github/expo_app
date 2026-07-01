@@ -1,7 +1,9 @@
 "use client";
 
+import { useAppParams } from "@/hooks/useAppSearchParams";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+
 import { Check } from "lucide-react";
 
 import { FoodHomeLayoutPhonePreview } from "@/components/cxapp-home/FoodHomeLayoutPhonePreview";
@@ -120,8 +122,8 @@ function LayoutPreviewMock({ layoutKey }: { layoutKey: FoodHomeLayoutKey }) {
 }
 
 export default function CxAppHomeStateDetailPage() {
-  const params = useParams<{ stateId: string }>();
-  const stateId = params?.stateId ?? "";
+  const params = useAppParams<{ stateId: string }>();
+  const stateId = params.stateId ?? "";
 
   const { data: statesData } = useGeoStatesQuery();
   const states = statesData?.states ?? [];

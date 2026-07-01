@@ -14,7 +14,9 @@ import {
 } from "../../lib/financial-rule-executor.js";
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
+import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
 import { completeOrderDispatch } from "../../lib/order-dispatch.service.js";
+import { emitEvent } from "../notifications/eventBus.js";
 
 export const CUSTOMER_FOOD_CANCELLED_BY_LABEL = "Cancelled by me";
 
@@ -150,6 +152,7 @@ export async function cancelFoodOrderForCustomer(
       cancelled_at = ${now.toISOString()}::timestamptz,
       rejected_reason = ${displayReason},
       cancelled_by_label = ${CUSTOMER_FOOD_CANCELLED_BY_LABEL},
+      cancelled_by_type = 'customer',
       rider_id = NULL,
       updated_at = ${now.toISOString()}::timestamptz
     WHERE id = ${row.ordersFoodId}
@@ -222,6 +225,18 @@ export async function cancelFoodOrderForCustomer(
     },
   });
 
+  try {
+    await applyMerchantOrderCancellationLedger(
+      {
+        orderCoreId: row.coreId,
+        source: "customer_cancel",
+      },
+      sql
+    );
+  } catch (ledgerErr) {
+    console.warn("[cancelFoodOrderForCustomer] cancellation ledger failed:", ledgerErr);
+  }
+
   if (!engineResult.applied) {
     try {
       await applyPaymentCancellationPayment({
@@ -238,6 +253,24 @@ export async function cancelFoodOrderForCustomer(
       /* non-fatal */
     }
   }
+
+  // Emit to notifications module — will fan out to customer + merchant + rider.
+  // We do a quick lookup for the user_id form since orderCtx.customerPk is numeric.
+  try {
+    const sqlDb = getSql();
+    const customerRows = (await sqlDb`
+      SELECT customer_id FROM public.customers WHERE id = ${input.customerPk} LIMIT 1
+    `) as unknown as Array<{ customer_id: string }>;
+    emitEvent("order.status_changed", {
+      orderId: orderIdText,
+      orderShortId: orderIdText,
+      fromStatus: previousStatus,
+      toStatus: "CANCELLED",
+      customerId: customerRows[0]?.customer_id ?? null,
+      merchantStoreId: orderCtx.merchantStoreId ?? null,
+      reason: reasonText || "Cancelled by customer",
+    });
+  } catch { /* tolerated */ }
 
   return { orderId: orderIdText, status: "CANCELLED" };
 }

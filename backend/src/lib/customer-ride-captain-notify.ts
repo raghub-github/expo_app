@@ -2,7 +2,7 @@
  * Customer push notifications for person-ride captain assignment lifecycle.
  */
 import { getSql } from "../db/client.js";
-import { enqueuePush } from "../modules/push/enqueuePush.js";
+import { send as sendNotification } from "../modules/notifications/notificationService.js";
 
 export const RIDE_CAPTAIN_CANCELLED_TITLE = "Captain cancelled ride";
 export const RIDE_CAPTAIN_CANCELLED_BODY =
@@ -42,19 +42,11 @@ export async function notifyCustomerRideCaptainCancelled(
     const tokens = await customerTokensForOrdersCoreId(ordersCoreId);
     if (tokens.length === 0) return;
 
-    await enqueuePush({
-      to: tokens,
-      title: RIDE_CAPTAIN_CANCELLED_TITLE,
-      body: RIDE_CAPTAIN_CANCELLED_BODY,
-      sound: "default",
-      channelId: "customer_default",
-      screen: `/orders/${orderIdText}`,
-      data: {
-        gmType: "RIDE_CAPTAIN_CANCELLED",
-        orderId: orderIdText,
-        gmTitle: RIDE_CAPTAIN_CANCELLED_TITLE,
-        gmMessage: RIDE_CAPTAIN_CANCELLED_BODY,
-      },
+    await sendNotification({
+      templateCode: "RIDE_CAPTAIN_CANCELLED",
+      variables: { orderId: orderIdText, orderShortId: orderIdText },
+      target: { device_tokens: tokens },
+      metadata: { gmType: "RIDE_CAPTAIN_CANCELLED", orderId: orderIdText },
     });
   } catch (err) {
     console.warn(
@@ -75,24 +67,17 @@ export async function notifyCustomerRideCaptainOnTheWay(
     if (tokens.length === 0) return;
 
     const captainName = await riderDisplayName(riderId);
-    const title = "Captain on the way! 👮";
-    const body = `Captain ${captainName} will be there in a bit.`;
 
-    await enqueuePush({
-      to: tokens,
-      title,
-      body,
-      sound: "default",
-      channelId: "customer_default",
-      screen: `/orders/${orderIdText}`,
-      data: {
-        gmType: "RIDE_CAPTAIN_ON_THE_WAY",
+    await sendNotification({
+      templateCode: "RIDE_CAPTAIN_ON_THE_WAY",
+      variables: {
         orderId: orderIdText,
-        riderId,
+        orderShortId: orderIdText,
         captainName,
-        gmTitle: title,
-        gmMessage: body,
+        riderId: String(riderId),
       },
+      target: { device_tokens: tokens },
+      metadata: { gmType: "RIDE_CAPTAIN_ON_THE_WAY", orderId: orderIdText, riderId: String(riderId) },
     });
   } catch (err) {
     console.warn(

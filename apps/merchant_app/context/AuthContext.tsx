@@ -1,14 +1,26 @@
 /**
  * Merchant partner auth: token + parent + child stores.
- * Token persisted in SecureStore; partner data from login response or GET /v1/merchant-partner/me.
+ * Session persists in SecureStore until the merchant explicitly logs out.
+ * Token auto-refreshes while the device session remains active.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { getConfig } from "@/config/env";
 import { resetSessionRevokedFlag } from "@/services/sessionEvents";
+import {
+  MERCHANT_TOKEN_KEY,
+  clearMerchantSessionToken,
+  readMerchantAccessToken,
+  writeMerchantSessionToken,
+} from "@/lib/merchantSessionStorage";
+import { clearLastSelectedStore } from "@/lib/selectedStoreStorage";
+import {
+  onMerchantTokenRefreshed,
+  refreshMerchantSessionIfNeeded,
+} from "@/services/merchantSessionRefresh";
 
-const TOKEN_KEY = "gatimitra_merchant_access_token";
 const PARTNER_KEY = "gatimitra_merchant_partner";
 const SUPABASE_USER_ID_KEY = "gatimitra_merchant_supabase_user_id";
 
@@ -44,24 +56,20 @@ export type PartnerData = {
 type AuthContextValue = {
   token: string | null;
   partner: PartnerData | null;
-  /** Supabase Auth user id (UUID) — presence / ticket room identity; from login exchange. */
   supabaseUserId: string | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  setTokenAndPartner: (token: string, partner: PartnerData, supabaseUserId?: string | null) => Promise<void>;
+  setTokenAndPartner: (
+    token: string,
+    partner: PartnerData,
+    supabaseUserId?: string | null,
+    expiresAt?: number | null
+  ) => Promise<void>;
   signOut: () => Promise<void>;
   refreshPartner: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-async function getStoredToken(): Promise<string | null> {
-  try {
-    return await SecureStore.getItemAsync(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
 
 async function getStoredPartner(): Promise<PartnerData | null> {
   try {
@@ -89,59 +97,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   const setTokenAndPartner = useCallback(
-    async (newToken: string, newPartner: PartnerData, newSupabaseUserId?: string | null) => {
-    // New login/session – allow future session_revoked events to fire again.
-    resetSessionRevokedFlag();
-    await SecureStore.setItemAsync(TOKEN_KEY, newToken);
-    setTokenState(newToken);
-    if (newSupabaseUserId !== undefined) {
-      const sb =
-        typeof newSupabaseUserId === "string" && newSupabaseUserId.trim()
-          ? newSupabaseUserId.trim()
-          : null;
-      if (sb) {
-        await SecureStore.setItemAsync(SUPABASE_USER_ID_KEY, sb);
-        setSupabaseUserIdState(sb);
-      } else {
-        try {
-          await SecureStore.deleteItemAsync(SUPABASE_USER_ID_KEY);
-        } catch {
-          /* ignore */
+    async (
+      newToken: string,
+      newPartner: PartnerData,
+      newSupabaseUserId?: string | null,
+      expiresAt?: number | null
+    ) => {
+      resetSessionRevokedFlag();
+      const exp =
+        expiresAt != null && Number.isFinite(expiresAt) && expiresAt > 0
+          ? Math.floor(expiresAt)
+          : Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365;
+      await writeMerchantSessionToken(newToken, exp);
+      setTokenState(newToken);
+
+      if (newSupabaseUserId !== undefined) {
+        const sb =
+          typeof newSupabaseUserId === "string" && newSupabaseUserId.trim()
+            ? newSupabaseUserId.trim()
+            : null;
+        if (sb) {
+          await SecureStore.setItemAsync(SUPABASE_USER_ID_KEY, sb);
+          setSupabaseUserIdState(sb);
+        } else {
+          try {
+            await SecureStore.deleteItemAsync(SUPABASE_USER_ID_KEY);
+          } catch {
+            /* ignore */
+          }
+          setSupabaseUserIdState(null);
         }
-        setSupabaseUserIdState(null);
       }
-    }
 
-    // Prefer fresh data from /me (ensures activeDevices and latest child stores).
-    try {
-      const { apiBaseUrl } = getConfig();
-      const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
-        headers: { Authorization: `Bearer ${newToken}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const partnerData: PartnerData = {
-          parent: data.parent,
-          childStores: data.childStores ?? [],
-          activeDevices: data.activeDevices ?? 0,
-        };
-        await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(partnerData));
-        setPartnerState(partnerData);
-        return;
+      try {
+        const { apiBaseUrl } = getConfig();
+        const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
+          headers: { Authorization: `Bearer ${newToken}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const partnerData: PartnerData = {
+            parent: data.parent,
+            childStores: data.childStores ?? [],
+            activeDevices: data.activeDevices ?? 0,
+          };
+          await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(partnerData));
+          setPartnerState(partnerData);
+          return;
+        }
+      } catch {
+        // fall back to partner from login response
       }
-    } catch {
-      // fall back to partner from login response
-    }
 
-    await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(newPartner));
-    setPartnerState(newPartner);
-  },
-  []
-);
+      await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(newPartner));
+      setPartnerState(newPartner);
+    },
+    []
+  );
 
   const signOut = useCallback(async () => {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await clearMerchantSessionToken();
     await SecureStore.deleteItemAsync(PARTNER_KEY);
+    await clearLastSelectedStore();
     try {
       await SecureStore.deleteItemAsync(SUPABASE_USER_ID_KEY);
     } catch {
@@ -153,7 +170,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshPartner = useCallback(async () => {
-    const t = token ?? (await getStoredToken());
+    const t = token ?? (await readMerchantAccessToken());
     if (!t) return;
     const { apiBaseUrl } = getConfig();
     try {
@@ -176,9 +193,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [token]);
 
   useEffect(() => {
+    const unsub = onMerchantTokenRefreshed((newToken) => {
+      setTokenState(newToken);
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
-      const t = await getStoredToken();
+      const t = await readMerchantAccessToken();
       if (cancelled) return;
       if (t) {
         setTokenState(t);
@@ -187,13 +211,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setPartnerState(p);
         setSupabaseUserIdState(sbId);
-        // Refresh partner from API in the background so the app can render
-        // immediately using cached data instead of blocking on the network.
+        await refreshMerchantSessionIfNeeded();
+        if (cancelled) return;
+        const refreshed = await readMerchantAccessToken();
+        if (refreshed) setTokenState(refreshed);
+
         const { apiBaseUrl } = getConfig();
         (async () => {
           try {
+            const activeToken = refreshed ?? t;
             const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
-              headers: { Authorization: `Bearer ${t}` },
+              headers: { Authorization: `Bearer ${activeToken}` },
             });
             if (cancelled || !res.ok) return;
             const data = await res.json();
@@ -215,6 +243,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!token) return undefined;
+    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state === "active") {
+        void refreshMerchantSessionIfNeeded().then(async (next) => {
+          if (next) setTokenState(next);
+        });
+      }
+    });
+    return () => sub.remove();
+  }, [token]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -238,3 +278,6 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
 }
+
+// Legacy export for any code still referencing TOKEN_KEY
+export { MERCHANT_TOKEN_KEY as TOKEN_KEY };

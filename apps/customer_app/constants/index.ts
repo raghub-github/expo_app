@@ -30,6 +30,8 @@ export const STORAGE_KEYS = {
   USER_APP_CATEGORIES_CACHE: "gm_customer_user_app_categories_cache_v1",
   /** Default delivery partner tip amount saved from tracking sheet */
   SAVED_DELIVERY_TIP: "gm_saved_delivery_tip_v1",
+  /** Last known GatiCash balance for instant header paint */
+  WALLET_BALANCE_CACHE: "gm_customer_wallet_balance_cache_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppParams } from "@/lib/navigation/use-app-params";
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState } from 'react';
+import { useAppParams, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from '@tanstack/react-query';
 import { useGetRiderDetailsQuery } from '@/store/api/riderApi';

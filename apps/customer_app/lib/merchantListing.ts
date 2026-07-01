@@ -5,7 +5,6 @@
 
 import type { MerchantSummary } from "@/services/merchant.service";
 import type { LiveStatus } from "@/store/storeStatusStore";
-import { toTimestamp } from "@/lib/storeScheduleUi";
 
 export type MerchantListSort = "default" | "rating" | "distance";
 export type DeliveryFilter = "any" | "30" | "45" | "60";
@@ -15,24 +14,8 @@ export function resolveMerchantLiveStatus(
   statusMap: Record<string, LiveStatus | undefined>
 ): LiveStatus {
   const rawApi = (merchant.liveStatus ?? "").toString().trim().toUpperCase();
-  let apiStatus: LiveStatus | null =
+  const apiStatus: LiveStatus | null =
     rawApi === "OPEN" ? "OPEN" : rawApi === "CLOSED" ? "CLOSED" : null;
-  /**
-   * Backend guardrail for occasional inconsistent payloads:
-   * if API says OPEN but also provides a future nextOpenAt and no nextCloseAt,
-   * treat it as CLOSED on UI until backend payload stabilizes.
-   */
-  if (apiStatus === "OPEN") {
-    const nextOpenTs = toTimestamp(merchant.nextOpenAt);
-    const nextCloseTs = toTimestamp(merchant.nextCloseAt);
-    // Countdown crossed zero: treat stale OPEN payload as CLOSED until API catches up.
-    if (nextCloseTs != null && nextCloseTs <= Date.now()) {
-      apiStatus = "CLOSED";
-    }
-    if (nextOpenTs != null && nextOpenTs > Date.now() && nextCloseTs == null) {
-      apiStatus = "CLOSED";
-    }
-  }
   return statusMap[merchant.id] ?? apiStatus ?? "CLOSED";
 }
 

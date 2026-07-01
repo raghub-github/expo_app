@@ -108,6 +108,7 @@ export async function backfillMissingCancelledOrderLedger(
           AND l.reference_id = f.id
           AND (
             l.idempotency_key = ('merchant_cancel_info:' || f.order_id::text)
+            OR l.idempotency_key = ('merchant_cancel_comp_credit:' || f.order_id::text)
             OR l.idempotency_key LIKE ('merchant_cancel_debit:' || f.order_id::text || ':%')
             OR (l.metadata->>'entry_type') = 'order_cancellation'
           )

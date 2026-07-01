@@ -35,7 +35,7 @@ function applyCookieOptions(
  * validate merchant, then redirect to /partners/all-stores. This avoids client-side exchange and
  * ensures cookies are set by the same response that redirects (reliable on new devices).
  *
- * Add to Supabase Redirect URLs: https://partner.gatimitra.com/api/auth/callback and http://localhost:3000/api/auth/callback
+ * Add to Supabase Redirect URLs: https://partner.gatimitra.com/api/auth/callback and http://localhost:3002/api/auth/callback
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);

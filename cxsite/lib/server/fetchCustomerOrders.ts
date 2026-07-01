@@ -121,7 +121,7 @@ function parseItemsFromJson(items: unknown): CustomerOrderLineItem[] {
         customization: addonParts.length > 0 ? addonParts.join(' · ') : null,
       }
     })
-    .filter((x): x is CustomerOrderLineItem => x != null)
+    .filter((x): x is NonNullable<typeof x> => x != null) as CustomerOrderLineItem[]
 }
 
 function parseCoreItemRows(
@@ -149,7 +149,7 @@ function parseCoreItemRows(
         customization: null,
       }
     })
-    .filter((x): x is CustomerOrderLineItem => x != null)
+    .filter((x): x is NonNullable<typeof x> => x != null) as CustomerOrderLineItem[]
 }
 
 function resolveTotalAmount(row: {

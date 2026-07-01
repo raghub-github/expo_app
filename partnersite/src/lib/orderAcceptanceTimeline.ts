@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   buildAcceptedByLabel,
+  buildAcceptanceTimelineStatus,
   type MerchantOrderActionMode,
   type MerchantOrderActionSource,
 } from '@/lib/merchantOrderFoodActions';
@@ -26,6 +27,7 @@ export async function appendAcceptanceTimeline(
 ): Promise<void> {
   const actionSource = input.actionSource ?? 'website';
   const acceptMode = input.acceptMode ?? 'manual';
+  const timelineStatus = buildAcceptanceTimelineStatus(acceptMode);
   const label =
     input.acceptedByLabel?.trim() ||
     buildAcceptedByLabel(actionSource, acceptMode);
@@ -41,7 +43,7 @@ export async function appendAcceptanceTimeline(
     .from('order_timelines')
     .select('id')
     .eq('order_id', input.orderCorePk)
-    .eq('status', 'Accepted')
+    .in('status', ['Accepted', 'Auto Accepted'])
     .limit(1)
     .maybeSingle();
   if (existing?.id) return;
@@ -61,7 +63,7 @@ export async function appendAcceptanceTimeline(
 
   await db.from('order_timelines').insert({
     order_id: input.orderCorePk,
-    status: 'Accepted',
+    status: timelineStatus,
     previous_status: last?.status ?? input.previousStatus ?? null,
     actor_type: actorType,
     status_message: message,

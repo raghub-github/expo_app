@@ -20,10 +20,15 @@ const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().positive().max(120)
   ).optional(),
-  /** Postgres.js pool size. Keep low in dev — Supabase transaction pooler is easy to exhaust. */
+  /** Postgres.js pool size. Keep moderate in dev — Supabase pooler is easy to exhaust. */
   DATABASE_POOL_MAX: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().positive().max(50)
+  ).optional(),
+  /** Max ms to wait for a DB concurrency slot before 503 (dev bursts / mobile parallel loads). */
+  DATABASE_SLOT_ACQUIRE_TIMEOUT_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(120_000)
   ).optional(),
 
   // Supabase
@@ -54,13 +59,34 @@ const EnvSchema = z.object({
     z.boolean()
   ).default(false),
 
-  // Firebase Admin (backend-only; used to verify Firebase ID tokens in dev flow)
+  // Firebase Admin (backend-only) — used for both Firebase Auth ID-token verification
+  // AND FCM v1 messaging. Three credential sources are supported, in priority:
+  //   1. GOOGLE_APPLICATION_CREDENTIALS — file path to a serviceAccountKey.json
+  //   2. FCM_SERVICE_ACCOUNT_JSON       — full JSON contents as a single line string
+  //   3. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY trio (legacy)
+  // The singleton in src/config/firebase.ts resolves these in order.
+  GOOGLE_APPLICATION_CREDENTIALS: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
+  FCM_SERVICE_ACCOUNT_JSON: z.preprocess(emptyToUndefined, z.string().min(40).optional()),
   FIREBASE_PROJECT_ID: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
   FIREBASE_CLIENT_EMAIL: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
   FIREBASE_PRIVATE_KEY: z.preprocess(emptyToUndefined, z.string().min(30).optional()),
 
   // Webhook signature secrets (backend-only)
   WEBHOOK_SIGNING_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  // Internal server-to-server secret — same key already used by partnersite +
+  // dashboard for the store-schedule-tick endpoint. Notifications module reuses
+  // it so dashboard proxies can call admin routes without JWT forwarding.
+  BACKEND_SCHEDULE_TICK_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  // Notification system v2 feature flag. When FALSE (default), the new
+  // NotificationService.send() code path still runs — but if any part of it
+  // fails, callers fall back to the legacy enqueuePush behaviour. When TRUE
+  // in prod, treat v2 as authoritative.
+  NOTIFICATIONS_V2_ENABLED: z
+    .preprocess((v) => (typeof v === "string" ? v.trim().toLowerCase() : v), z.enum(["true", "false"]).optional())
+    .transform((v) => v === "true")
+    .default(false),
 
   // Cloudflare R2 (backend-only)
   R2_TOKEN_VALUE: z.preprocess(emptyToUndefined, z.string().min(10).optional()),

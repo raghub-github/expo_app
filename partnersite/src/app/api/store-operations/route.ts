@@ -11,6 +11,10 @@ import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import {
+  formatStoreStatusLabel,
+  type LiveSchedulePhase,
+} from '@gatimitra/store-status';
+import {
   getNextOpenDayStartIso,
   getNextOpenIso,
   getNextOpenIsoAfterIstCalendarDay,
@@ -28,6 +32,7 @@ import {
   schedulePhaseLabel,
 } from '@/lib/storeScheduleEngine';
 import { loadMerchantLicenseEvaluation } from '@/lib/syncMerchantLicenseCompliance';
+import { fetchPartnerStoreStatusSnapshot } from '@/lib/fetchPartnerStoreStatusSnapshot';
 import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notifications-panel';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
@@ -219,6 +224,7 @@ export async function GET(req: NextRequest) {
     if (!storeInternalId) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
 
     await ensureAvailabilityRow(db, storeInternalId);
+    const authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
 
     const trace = (step: string, payload: Record<string, unknown>) => {
       if (!storeOpsDebugEnabled()) return;
@@ -231,7 +237,13 @@ export async function GET(req: NextRequest) {
       db
         .from('merchant_stores')
         .select(
-          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, timezone'
+          // Tail of the SELECT contains the 5 columns written by the
+          // backend store-schedule-engine tick (migration 0381). The
+          // client uses formatStoreStatusLabel() from
+          // @gatimitra/store-status to render a consistent label without
+          // re-running the schedule math here.
+          // No timezone column on merchant_stores; engine assumes Asia/Kolkata.
+          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at'
         )
         .eq('id', storeInternalId)
         .single(),
@@ -248,7 +260,7 @@ export async function GET(req: NextRequest) {
     const storeTz = (store as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
     const ohRecord = (oh ?? null) as Record<string, unknown> | null;
     const schedule = evaluateStoreSchedule(ohRecord, storeTz);
-    const withinHours = schedule.withinOperatingHours;
+    let withinHours = authoritative?.within_operating_hours ?? schedule.withinOperatingHours;
     const isTodayScheduledClosed = schedule.isTodayScheduledClosed;
 
     trace('initial_read', {
@@ -266,21 +278,35 @@ export async function GET(req: NextRequest) {
       is_today_scheduled_closed: isTodayScheduledClosed,
     });
 
-    // Auto open/close is owned by backend store-schedule-engine (30s tick). GET is read-only.
+    // Auto open/close is owned by backend store-schedule-engine; GET triggers a tick so reads match merchant app.
     const manualCloseUntil = parseManualCloseUntilDate(
-      avail?.manual_close_until as string | null | undefined
+      (authoritative?.manual_close_until ?? avail?.manual_close_until) as string | null | undefined
     );
     const availFinal = avail;
     const licenseStatus = await loadMerchantLicenseEvaluation(db, storeInternalId);
 
     let storeGated = store;
-    let displayOperational = effectiveOpenFromMerchantStoreRow(storeGated as MerchantStoreGateRow);
+    let displayOperational: 'OPEN' | 'CLOSED' = authoritative?.operational_status
+      ?? effectiveOpenFromMerchantStoreRow(storeGated as MerchantStoreGateRow);
+
+    trace('authoritative_status', {
+      from_backend: authoritative != null,
+      operational_status: displayOperational,
+      surface_online: authoritative?.surface_online ?? null,
+      within_operating_hours: withinHours,
+      db_operational_status: store?.operational_status ?? null,
+      db_is_available: store?.is_available ?? null,
+      db_is_accepting_orders: store?.is_accepting_orders ?? null,
+    });
 
     const rawAvail: typeof availFinal | typeof avail | null | undefined = availFinal ?? avail ?? null;
 
-    const blockAutoOpen = rawAvail?.block_auto_open === true;
-    const unavailNorm =
-      rawAvail?.unavailable_reason != null ? String(rawAvail.unavailable_reason).trim().toLowerCase() : '';
+    const blockAutoOpen = authoritative?.block_auto_open ?? rawAvail?.block_auto_open === true;
+    const unavailNorm = authoritative?.unavailable_reason
+      ? String(authoritative.unavailable_reason).trim().toLowerCase()
+      : rawAvail?.unavailable_reason != null
+        ? String(rawAvail.unavailable_reason).trim().toLowerCase()
+        : '';
 
     const nowAfterLogic = new Date();
     const opens_at = computeOpensAtIso({
@@ -402,25 +428,55 @@ export async function GET(req: NextRequest) {
     const scheduleEndPromptActive =
       !!scheduleEndPromptExpiresAt && Date.now() < scheduleEndPromptExpiresAt.getTime();
 
+    const surfaceOnline =
+      authoritative?.surface_online ?? (displayOperational === 'OPEN' && withinHours);
+
+    const liveStoreRow = store as {
+      live_schedule_phase?: string | null;
+      next_open_at?: string | null;
+      next_close_at?: string | null;
+      manual_override_active?: boolean | null;
+      live_status_updated_at?: string | null;
+    } | null;
+    const livePhase = (liveStoreRow?.live_schedule_phase ?? null) as LiveSchedulePhase | null;
+    const liveLabel = formatStoreStatusLabel({
+      phase: livePhase,
+      nextOpenAt: liveStoreRow?.next_open_at ?? null,
+      nextCloseAt: liveStoreRow?.next_close_at ?? null,
+      manualOverrideActive: liveStoreRow?.manual_override_active === true,
+      isOpenNow: surfaceOnline,
+      timezone: storeTz,
+    });
+
     const responseBody: Record<string, unknown> = {
       operational_status: displayOperational,
+      surface_online: surfaceOnline,
+      is_open: surfaceOnline,
+      live_schedule_phase: livePhase,
+      live_next_open_at: liveStoreRow?.next_open_at ?? null,
+      live_next_close_at: liveStoreRow?.next_close_at ?? null,
+      live_manual_override_active: liveStoreRow?.manual_override_active === true,
+      live_status_updated_at: liveStoreRow?.live_status_updated_at ?? null,
+      live_label: liveLabel.primary,
+      live_label_chip: liveLabel.chip,
+      live_label_secondary: liveLabel.secondary ?? null,
+      live_label_countdown: liveLabel.countdown ?? null,
       license_blocked: licenseStatus.blocked,
       license_can_manual_open: licenseStatus.can_manual_open,
       license_expired_documents: licenseStatus.expired,
       license_pending_verification: licenseStatus.pending_verification,
-      approval_status: (storeGated as MerchantStoreGateRow | null)?.approval_status ?? null,
-      is_active: (storeGated as MerchantStoreGateRow | null)?.is_active ?? null,
+      approval_status: authoritative?.approval_status ?? (storeGated as MerchantStoreGateRow | null)?.approval_status ?? null,
+      is_active: authoritative?.is_active ?? (storeGated as MerchantStoreGateRow | null)?.is_active ?? null,
       is_accepting_orders: displayOperational === 'OPEN',
-      is_available: (storeGated as MerchantStoreGateRow | null)?.is_available ?? null,
+      is_available: authoritative?.is_available ?? (storeGated as MerchantStoreGateRow | null)?.is_available ?? null,
       manual_close_until: manualCloseUntil ? manualCloseUntil.toISOString() : null,
       close_reason: (rawAvail?.close_reason as string | null | undefined) ?? null,
       opens_at,
-      auto_open_from_schedule: isAutoOpenFromScheduleEnabled(
-        rawAvail?.auto_open_from_schedule ?? avail?.auto_open_from_schedule
-      ),
+      auto_open_from_schedule: authoritative?.auto_open_from_schedule
+        ?? isAutoOpenFromScheduleEnabled(rawAvail?.auto_open_from_schedule ?? avail?.auto_open_from_schedule),
       block_auto_open: blockAutoOpen,
-      unavailable_reason: (rawAvail?.unavailable_reason as string | null | undefined) ?? null,
-      restriction_type: displayRestriction,
+      unavailable_reason: authoritative?.unavailable_reason ?? (rawAvail?.unavailable_reason as string | null | undefined) ?? null,
+      restriction_type: authoritative?.restriction_type ?? displayRestriction,
       today_date: schedule.todayDate,
       today_slots: schedule.todaySlots,
       configured_today_slots: schedule.configuredTodaySlots,
@@ -430,11 +486,11 @@ export async function GET(req: NextRequest) {
       is_today_scheduled_closed: isTodayScheduledClosed,
       /** True when current time in the store's timezone falls inside a configured slot (or 24h). */
       within_operating_hours: withinHours,
-      last_toggled_by_email: rawAvail?.last_toggled_by_email ?? null,
-      last_toggled_by_name: rawAvail?.last_toggled_by_name ?? null,
-      last_toggled_by_id: rawAvail?.last_toggled_by_id ?? null,
-      last_toggle_type: rawAvail?.last_toggle_type ?? null,
-      last_toggled_at: rawAvail?.last_toggled_at ?? null,
+      last_toggled_by_email: authoritative?.last_toggled_by_email ?? rawAvail?.last_toggled_by_email ?? null,
+      last_toggled_by_name: authoritative?.last_toggled_by_name ?? rawAvail?.last_toggled_by_name ?? null,
+      last_toggled_by_id: authoritative?.last_toggled_by_id ?? rawAvail?.last_toggled_by_id ?? null,
+      last_toggle_type: authoritative?.last_toggle_type ?? rawAvail?.last_toggle_type ?? null,
+      last_toggled_at: authoritative?.last_toggled_at ?? rawAvail?.last_toggled_at ?? null,
       within_hours_but_restricted: withinHoursButRestricted,
       is_manual_override: (availFinal?.is_manual_override ?? rawAvail?.is_manual_override) === true,
       schedule_end_prompt_active: scheduleEndPromptActive,
@@ -814,6 +870,7 @@ export async function POST(req: NextRequest) {
       storeOpsDebugLog('POST:manual_open:done', { storeId, storeInternalId, status_log_ok: !logErr });
 
       await resetPartnerNotificationsPanelCleared(db, storeInternalId);
+      await fetchPartnerStoreStatusSnapshot(storeInternalId);
 
       return NextResponse.json({
         success: true,
@@ -916,6 +973,8 @@ export async function POST(req: NextRequest) {
         unavailable_reason: unavailReason,
         manual_close_until: mergedManualCloseUntil,
       });
+
+      await fetchPartnerStoreStatusSnapshot(storeInternalId);
 
       return NextResponse.json({
         success: true,

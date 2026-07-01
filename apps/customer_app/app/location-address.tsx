@@ -21,6 +21,7 @@ import {
   Animated,
   Easing,
   Image,
+  useWindowDimensions,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -42,7 +43,7 @@ import {
   type ReverseGeocodeResult,
 } from "@/services/location.service";
 import { profileService } from "@/services/profile.service";
-import { useLocationStore } from "@/store/locationStore";
+import { useLocationStore, type LocationSource } from "@/store/locationStore";
 import { parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -66,6 +67,41 @@ function splitSavedAddressLines(addr: Address): { line1: string; line2: string }
   const parts = rest.split(",").map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return { line1: (addr.fullAddress || "—").trim(), line2: "" };
   return { line1: parts[0]!, line2: parts.slice(1).join(", ") };
+}
+
+/** Parse city/state/pincode from comma-separated Mapbox full address when context fields are missing. */
+function inferAddressPartsFromFullAddress(
+  fullAddress: string,
+  hints?: { city?: string | null; state?: string | null; pincode?: string | null }
+): { city?: string; state?: string; pincode?: string } {
+  const parts = fullAddress
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p && p !== "—" && p !== "-");
+  const isPincode = (p: string) => /^\d{6}$/.test(p);
+  const pinIdx = parts.findIndex(isPincode);
+  const pincode = hints?.pincode?.trim() || (pinIdx >= 0 ? parts[pinIdx] : undefined);
+
+  let state = hints?.state?.trim() || undefined;
+  if (!state && pinIdx > 0) {
+    const beforePin = parts[pinIdx - 1]!;
+    const cityHint = hints?.city?.trim().toLowerCase();
+    if (beforePin.toLowerCase() !== "india") {
+      if (!cityHint || beforePin.toLowerCase() !== cityHint) {
+        state = beforePin;
+      } else if (pinIdx > 1) {
+        state = parts[pinIdx - 2];
+      }
+    }
+  }
+
+  let city = hints?.city?.trim() || undefined;
+  if (!city && state) {
+    const stateIdx = parts.findIndex((p) => p.toLowerCase() === state!.toLowerCase());
+    if (stateIdx > 0) city = parts[stateIdx - 1];
+  }
+
+  return { city, state, pincode };
 }
 
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -115,6 +151,8 @@ function SheetSkeleton({ opacity }: { opacity: Animated.AnimatedInterpolation<nu
 
 export default function LocationAddressScreen() {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const mapHeight = Math.round(Math.min(300, Math.max(220, windowHeight * 0.3)));
   const router = useRouter();
   const queryClient = useQueryClient();
   const submittingRef = useRef(false);
@@ -168,6 +206,12 @@ export default function LocationAddressScreen() {
   const mapRef = useRef<CustomerMapRef | null>(null);
   const editSeedAppliedRef = useRef(false);
   const editBaselineRef = useRef<{ lat: number; lon: number } | null>(null);
+  const addressSavedRef = useRef(false);
+  const locationSnapshotRef = useRef<{
+    address: ReverseGeocodeResult;
+    coords: { latitude: number; longitude: number };
+    source: LocationSource | null;
+  } | null>(null);
   const [mapCenter, setMapCenter] = useState({ latitude: initialLat, longitude: initialLon });
   /** When true, skip reverse-geocode so saved city/state/pin are not overwritten until the user moves the pin. */
   const [editGeoLocked, setEditGeoLocked] = useState(isEditMode);
@@ -210,7 +254,6 @@ export default function LocationAddressScreen() {
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
   const [resultRoadDistances, setResultRoadDistances] = useState<Record<string, number>>({});
   const [isCurrentLocationSheetLoading, setIsCurrentLocationSheetLoading] = useState(false);
-  const [stickyCtaHeight, setStickyCtaHeight] = useState(0);
   const [distanceOrigin, setDistanceOrigin] = useState<{
     latitude: number;
     longitude: number;
@@ -278,20 +321,48 @@ export default function LocationAddressScreen() {
   const liveMapAddress = [line2.trim(), city.trim(), state.trim(), pincode.trim()].filter(Boolean).join(", ");
   const getDistanceKey = (lat: number, lon: number) => `${lat.toFixed(5)},${lon.toFixed(5)}`;
 
+  useEffect(() => {
+    const state = useLocationStore.getState();
+    if (state.coords && state.address) {
+      locationSnapshotRef.current = {
+        address: state.address,
+        coords: state.coords,
+        source: state.locationSource,
+      };
+    }
+    return () => {
+      if (!addressSavedRef.current && locationSnapshotRef.current) {
+        const snap = locationSnapshotRef.current;
+        useLocationStore.getState().setAddressAndCoords(snap.address, snap.coords, {
+          source: snap.source ?? "selected",
+        });
+      }
+    };
+  }, []);
+
   const applyReverseResult = (result: ReverseGeocodeResult) => {
-    if (result.city) {
-      setCity(result.city);
+    const inferred = inferAddressPartsFromFullAddress(result.fullAddress, {
+      city: result.city,
+      state: result.state,
+      pincode: result.pincode,
+    });
+    const resolvedCity = result.city?.trim() || inferred.city || "";
+    const resolvedState = result.state?.trim() || inferred.state || "";
+    const resolvedPincode = result.pincode?.trim() || inferred.pincode || "";
+
+    if (resolvedCity) {
+      setCity(resolvedCity);
       setPrefilled((p) => ({ ...p, city: true }));
     }
-    if (result.state) {
-      setState(result.state);
+    if (resolvedState) {
+      setState(resolvedState);
       setPrefilled((p) => ({ ...p, state: true }));
     }
-    if (result.pincode) {
-      setPincode(result.pincode);
+    if (resolvedPincode) {
+      setPincode(resolvedPincode);
       setPrefilled((p) => ({ ...p, pincode: true }));
     }
-    if (result.secondary) {
+    if (result.secondary && result.secondary !== "—") {
       setLine2(result.secondary);
       setPrefilled((p) => ({ ...p, line2: true }));
     }
@@ -620,6 +691,7 @@ export default function LocationAddressScreen() {
                 address: savedWithin500m.fullAddress,
               });
               const primary = savedWithin500m.label ?? "Address";
+              addressSavedRef.current = true;
               useLocationStore.getState().setAddressAndCoords(
                 {
                   primary,
@@ -711,6 +783,7 @@ export default function LocationAddressScreen() {
         await uploadPendingDoorImage(editAddressId);
         queryClient.invalidateQueries({ queryKey: ["addresses"] });
         queryClient.invalidateQueries({ queryKey: ["active-location"] });
+        addressSavedRef.current = true;
         router.back();
         return;
       }
@@ -747,6 +820,7 @@ export default function LocationAddressScreen() {
         state: stateVal === "—" ? null : stateVal,
         pincode: pincodeVal === "—" ? null : pincodeVal,
       };
+      addressSavedRef.current = true;
       useLocationStore.getState().setAddressAndCoords(
         reverseResult,
         { latitude: selectedLat, longitude: selectedLon },
@@ -896,7 +970,7 @@ export default function LocationAddressScreen() {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={[styles.container, { paddingBottom: insets.bottom }]}
+      style={styles.container}
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
@@ -907,16 +981,12 @@ export default function LocationAddressScreen() {
           <Text style={styles.headerSearchText}>Search for area, street name...</Text>
         </TouchableOpacity>
       </View>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: 20 }}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.mapCard}>
+      <View style={styles.mapCard}>
+        <View style={[styles.mapSlot, { height: mapHeight }]}>
           <MapboxWebPannableMap
             key={isEditMode && editAddressId != null ? `edit-addr-${editAddressId}` : "new-address-map"}
             ref={mapRef}
-            style={styles.inlineMap}
+            style={StyleSheet.absoluteFillObject}
             initialRegion={{
               latitude: mapCenter.latitude,
               longitude: mapCenter.longitude,
@@ -947,9 +1017,17 @@ export default function LocationAddressScreen() {
             <Ionicons name="locate" size={15} color={TEAL} />
             <Text style={styles.mapUseCurrentText}>Use current location</Text>
           </TouchableOpacity>
-          <Text style={styles.mapHint}>Move map to set exact delivery location</Text>
         </View>
-        <View style={styles.card}>
+        <Text style={styles.mapHint}>Move map to set exact delivery location</Text>
+      </View>
+      <View style={styles.sheet}>
+        <ScrollView
+          style={styles.sheetScroll}
+          contentContainerStyle={styles.sheetScrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.card}>
           <View style={styles.sheetHandle} />
           {isCurrentLocationSheetLoading ? (
             <SheetSkeleton opacity={shimmer.interpolate({ inputRange: [0.45, 1], outputRange: [0.45, 1] })} />
@@ -1199,27 +1277,21 @@ export default function LocationAddressScreen() {
 
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
+          </View>
+        </ScrollView>
+        <View style={[styles.stickyCtaWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <TouchableOpacity
+            style={[styles.primaryBtn, (submitting || !canSaveAddress) && styles.primaryBtnDisabled]}
+            onPress={handleSave}
+            disabled={submitting || !canSaveAddress}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.primaryBtnText}>{isEditMode ? "Update address" : "Save address"}</Text>
+            )}
+          </TouchableOpacity>
         </View>
-        <View style={{ height: stickyCtaHeight + insets.bottom + 16 }} />
-      </ScrollView>
-      <View
-        style={[styles.stickyCtaWrap, { paddingBottom: insets.bottom + 10 }]}
-        onLayout={(e) => {
-          const h = Math.ceil(e.nativeEvent.layout.height);
-          if (h !== stickyCtaHeight) setStickyCtaHeight(h);
-        }}
-      >
-        <TouchableOpacity
-          style={[styles.primaryBtn, (submitting || !canSaveAddress) && styles.primaryBtnDisabled]}
-          onPress={handleSave}
-          disabled={submitting || !canSaveAddress}
-        >
-          {submitting ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.primaryBtnText}>{isEditMode ? "Update address" : "Save address"}</Text>
-          )}
-        </TouchableOpacity>
       </View>
       <Modal visible={locationSearchVisible} transparent animationType="fade" statusBarTranslucent>
         <View style={styles.modalOverlay}>
@@ -1428,16 +1500,24 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerSearchText: { color: TEXT_GRAY, fontSize: 15, fontWeight: "500" },
-  scroll: { flex: 1, paddingHorizontal: 0, paddingTop: 0 },
+  sheet: {
+    flex: 1,
+    backgroundColor: CARD_BG,
+  },
+  sheetScroll: { flex: 1 },
+  sheetScrollContent: { flexGrow: 1 },
   mapCard: {
+    flexShrink: 0,
     backgroundColor: CARD_BG,
     borderRadius: 0,
     overflow: "hidden",
     marginBottom: 0,
   },
-  inlineMap: {
+  mapSlot: {
     width: "100%",
-    height: 220,
+    position: "relative",
+    overflow: "hidden",
+    backgroundColor: "#E5E7EB",
   },
   mapPinOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1482,15 +1562,9 @@ const styles = StyleSheet.create({
   mapUseCurrentText: { color: TEAL, fontSize: 13, fontWeight: "600" },
   card: {
     backgroundColor: CARD_BG,
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
     paddingHorizontal: 14,
     paddingTop: 10,
-    paddingBottom: 14,
-    shadowOpacity: 0,
-    elevation: 0,
+    paddingBottom: 8,
   },
   sheetHandle: {
     alignSelf: "center",
@@ -1624,17 +1698,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   stickyCtaWrap: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: CARD_BG,
     borderTopWidth: 1,
     borderTopColor: BORDER,
-    paddingHorizontal: 8,
+    paddingHorizontal: 14,
     paddingTop: 10,
-    zIndex: 20,
-    elevation: 20,
   },
   modalOverlay: {
     flex: 1,

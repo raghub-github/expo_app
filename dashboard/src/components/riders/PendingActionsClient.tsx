@@ -1,8 +1,7 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useState, useEffect, useCallback } from "react";
-
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { invalidateRiderSummary } from "@/lib/cache-invalidation";

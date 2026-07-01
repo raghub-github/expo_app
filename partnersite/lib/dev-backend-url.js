@@ -3,7 +3,7 @@
  * Used by next.config.js rewrites and src/lib/backend-api-url.ts (keep in sync).
  *
  * Dev layout:
- * - Partnersite:     http://127.0.0.1:3000  (`npm run dev` in partnersite/)
+ * - Partnersite:     http://127.0.0.1:3002  (`npm run dev` in partnersite/)
  * - Dashboard:       http://127.0.0.1:3001  (separate app)
  * - Fastify backend: http://127.0.0.1:3000  (`npm run dev` in backend/)
  */
@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DEV_BACKEND_FALLBACK = 'http://127.0.0.1:3000';
-const PARTNERSITE_DEV_PORT = '3000';
+const PARTNERSITE_DEV_PORT = '3002';
 
 const LEGACY_DEV_BACKEND_URLS = new Set([
   'http://127.0.0.1:4000',
@@ -49,9 +49,17 @@ function normalizeBaseUrl(raw) {
   return String(raw).trim().replace(/\/+$/, '');
 }
 
+/** Host-only values (e.g. api.gatimitra.com) need a scheme for fetch() and Next rewrites. */
+function ensureAbsoluteHttpUrl(raw) {
+  const trimmed = normalizeBaseUrl(raw);
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 /** Map legacy :4000 / :30000 backend URLs → :3000 fallback; empty dev env → fallback. */
 function normalizeDevBackendUrl(raw) {
-  const trimmed = normalizeBaseUrl(raw);
+  const trimmed = ensureAbsoluteHttpUrl(raw);
   if (!trimmed) {
     return process.env.NODE_ENV === 'development' ? DEV_BACKEND_FALLBACK : '';
   }
@@ -80,8 +88,10 @@ function resolveBackendApiBaseUrlCandidates() {
   const out = [];
 
   function push(url) {
-    if (!url || isPartnersiteSelfLoop(url)) return;
-    const n = normalizeBaseUrl(url);
+    if (!url) return;
+    const absolute = ensureAbsoluteHttpUrl(url);
+    if (isPartnersiteSelfLoop(absolute)) return;
+    const n = normalizeBaseUrl(absolute);
     if (!n || seen.has(n)) return;
     seen.add(n);
     out.push(n);
@@ -109,6 +119,7 @@ module.exports = {
   PARTNERSITE_DEV_PORT,
   LEGACY_DEV_BACKEND_URLS,
   readBackendEnvRaw,
+  ensureAbsoluteHttpUrl,
   normalizeDevBackendUrl,
   resolveBackendApiBaseUrlCandidates,
   resolvePartnersiteBackendBaseUrl,

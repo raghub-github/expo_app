@@ -142,6 +142,7 @@ function isMissingDbRelationError(err: unknown, relation: string): boolean {
   const msg = String(err);
   return msg.includes(relation) && /does not exist|42P01/i.test(msg);
 }
+import { notifyMerchantNewRating } from "../../lib/merchant-push-notify.js";
 import { getDb, getSql, withDbSlot } from "../../db/client.js";
 import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
@@ -431,6 +432,50 @@ async function mapWithConcurrency<T, R>(
 
   await Promise.all(Array.from({ length: safeLimit }, () => run()));
   return results;
+}
+
+function voidNotifyMerchantStoreRating(args: {
+  storeId: number;
+  stars: number;
+  customerPk: number;
+  orderCorePk: number;
+}): void {
+  void (async () => {
+    try {
+      const sql = getSql();
+      const [customerRow] = await sql`
+        SELECT full_name FROM customers WHERE id = ${args.customerPk} LIMIT 1
+      `;
+      const [orderMeta] = await sql`
+        SELECT c.order_id, c.formatted_order_id, f.id::text AS food_id
+        FROM orders_core c
+        LEFT JOIN orders_food f ON f.order_id = c.id
+        WHERE c.id = ${args.orderCorePk}
+        LIMIT 1
+      `;
+      const meta = orderMeta as
+        | { order_id?: string; formatted_order_id?: string | null; food_id?: string | null }
+        | undefined;
+      const displayOrderId =
+        (meta?.formatted_order_id && String(meta.formatted_order_id).trim()) ||
+        (meta?.order_id && String(meta.order_id).trim()) ||
+        String(args.orderCorePk);
+      const foodOrderId =
+        meta?.food_id != null && /^\d+$/.test(String(meta.food_id))
+          ? Number(meta.food_id)
+          : null;
+      const customerName = String((customerRow as { full_name?: string } | undefined)?.full_name ?? "Customer");
+      await notifyMerchantNewRating(sql, {
+        storeId: args.storeId,
+        stars: args.stars,
+        customerName,
+        displayOrderId,
+        foodOrderId,
+      });
+    } catch (err) {
+      console.warn("[store-rating] merchant notify failed", (err as Error).message);
+    }
+  })();
 }
 
 export async function orderRoutes(app: FastifyInstance) {
@@ -2382,6 +2427,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
 
         if (Object.keys(patch).length > 0) {
+          const hadStoreRating = resolveStoreStarFromRatingRow(existing) != null;
           await db
             .update(merchantStoreRatings)
             .set(patch)
@@ -2399,6 +2445,21 @@ export async function orderRoutes(app: FastifyInstance) {
             serviceRating:
               patch.serviceRating != null ? patch.serviceRating : existing.serviceRating,
           });
+
+          if (
+            !isPersonRide &&
+            storeId != null &&
+            !hadStoreRating &&
+            nextStoreRating != null &&
+            nextStoreRating >= 1
+          ) {
+            voidNotifyMerchantStoreRating({
+              storeId,
+              stars: nextStoreRating,
+              customerPk,
+              orderCorePk: orderRow.id,
+            });
+          }
 
           return {
             submitted: true as const,
@@ -2455,6 +2516,15 @@ export async function orderRoutes(app: FastifyInstance) {
           deliveryRating != null && deliveryRating >= 1 ? riderReviewTags : [],
         isVerified: true,
       });
+
+      if (!isPersonRide && storeId != null && storeRating != null && storeRating >= 1) {
+        voidNotifyMerchantStoreRating({
+          storeId,
+          stars: storeRating,
+          customerPk,
+          orderCorePk: orderRow.id,
+        });
+      }
 
       if (riderTipAmount > 0 && orderRow.riderId != null) {
         const nextSnap = {

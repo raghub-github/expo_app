@@ -1545,6 +1545,11 @@ export default function RiderRouteMap({
         }
 
         mapboxgl.accessToken = token;
+        // Prevent noisy `ERR_BLOCKED_BY_CLIENT` for events.mapbox.com telemetry.
+        try {
+          const { disableMapboxTelemetry } = await import("@/lib/mapbox/disable-telemetry");
+          disableMapboxTelemetry();
+        } catch { /* non-fatal */ }
 
         const map = new mapboxgl.Map({
           container,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { extractR2KeyFromUrl, toStoredDocumentUrl } from '@/lib/r2';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
@@ -9,16 +10,6 @@ function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-}
-
-async function resolveStoreInternalId(db: ReturnType<typeof getDb>, storeIdParam: string): Promise<number | null> {
-  const { data, error } = await db
-    .from('merchant_stores')
-    .select('id')
-    .eq('store_id', storeIdParam.trim())
-    .single();
-  if (error || !data) return null;
-  return data.id as number;
 }
 
 /**
@@ -33,16 +24,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'storeId is required' }, { status: 400 });
     }
 
-    const db = getDb();
-    const internalId = await resolveStoreInternalId(db, storeId.trim());
-    if (internalId === null) {
-      return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    const access = await assertStoreAccess(storeId.trim());
+    if (!access.ok) {
+      return NextResponse.json({ error: access.error }, { status: access.status });
     }
 
+    const db = getDb();
     const { data: row, error } = await db
       .from('merchant_store_agreement_acceptances')
       .select('id, store_id, template_key, template_version, template_snapshot, contract_pdf_url, signer_name, signer_email, signer_phone, accepted_at, acceptance_source')
-      .eq('store_id', internalId)
+      .eq('store_id', access.storeIdNum)
       .single();
 
     if (error || !row) {
@@ -56,6 +47,8 @@ export async function GET(req: NextRequest) {
     // Prefer proxy URL so contract is always accessible (no expiry); proxy serves on demand
     if (r2Key) {
       contractPdfUrl = toStoredDocumentUrl(r2Key) || contractPdfUrl;
+    } else if (contractPdfUrl) {
+      contractPdfUrl = toStoredDocumentUrl(contractPdfUrl) || contractPdfUrl;
     }
 
     const rowAny = row as Record<string, unknown>;
