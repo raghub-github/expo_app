@@ -47,6 +47,7 @@ import { withLock, closeRedis } from "@gatimitra/redis";
 import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
+import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
 import { customerSubscriptionModule } from "./modules/subscription/customer-subscription.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
@@ -422,6 +423,8 @@ await app.register((await import("./modules/rider-payout/riderPayout.routes.js")
 await app.register(geoRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
+await app.register(notificationRoutes);
+await app.register(notificationInternalRoutes, { prefix: "/v1/internal" });
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
@@ -616,6 +619,15 @@ try {
   void runScheduleTickLocked();
   storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
   app.log.info({ intervalSeconds: 30 }, "store schedule tick started (auto open/close from operating hours)");
+
+  // Notification scheduled-campaign poller — picks up due scheduled campaigns
+  // (status='scheduled' AND scheduled_at <= now()) and dispatches them via
+  // NotificationService. Redis lock ensures only one backend replica polls.
+  void startScheduledPoller().catch((err) => app.log.error({ err }, "notification_scheduled_poller_start_failed"));
+  app.log.info("notification scheduled poller started");
+
+  // Wire domain events → notification templates.
+  registerDomainEventHandlers();
 
   const orderAcceptanceIntervalMs = 15_000;
   const runAcceptanceTickLocked = () =>

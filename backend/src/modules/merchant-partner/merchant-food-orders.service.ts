@@ -1,5 +1,6 @@
 import type { Sql } from "postgres";
 import { merchantFundedDiscountFromBilling } from "../../lib/merchant-billing-discount.js";
+import { emitEvent } from "../notifications/eventBus.js";
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
@@ -2214,6 +2215,33 @@ export async function patchMerchantFoodOrderStatus(
       /* non-fatal */
     }
   }
+
+  // Emit domain event so notifications module can send status pushes to
+  // customer / merchant / rider without this file knowing anything about
+  // the notification pipeline.
+  try {
+    const orderIdText = existing.core_order_id ?? String(existing.order_id ?? "");
+    const ownerRows = (await sql`
+      SELECT c.customer_id AS customer_user_id, s.user_id AS merchant_user_id, s.store_display_name AS store_name
+      FROM public.orders_core oc
+      LEFT JOIN public.customers c ON c.id = oc.customer_id
+      LEFT JOIN public.merchant_stores s ON s.id = ${storeId}
+      WHERE oc.id = ${corePk}
+      LIMIT 1
+    `) as unknown as Array<{ customer_user_id: string | null; merchant_user_id: string | null; store_name: string | null }>;
+    const owner = ownerRows[0];
+    emitEvent("order.status_changed", {
+      orderId: orderIdText,
+      orderShortId: order.formatted_order_id ?? orderIdText,
+      fromStatus: currentStatus,
+      toStatus: status,
+      customerId: owner?.customer_user_id ?? null,
+      merchantUserId: owner?.merchant_user_id ?? null,
+      merchantStoreId: storeId,
+      merchantName: owner?.store_name ?? null,
+      reason: rejectedReason ?? undefined,
+    });
+  } catch { /* tolerated */ }
 
   return order;
 }

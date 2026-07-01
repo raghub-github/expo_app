@@ -3,7 +3,7 @@
  * bump prep_time_minutes, recalc live ETA, enqueue push notification.
  */
 import type postgres from "postgres";
-import { enqueuePush } from "../modules/push/enqueuePush.js";
+import { send as sendNotification } from "../modules/notifications/notificationService.js";
 import { recalcOrderEta } from "../modules/eta/eta.recalc-service.js";
 
 type Sql = postgres.Sql;
@@ -71,25 +71,20 @@ export async function applyPrepDelayCustomerEffects(
   const storeLabel =
     (args.storeName ?? core.store_name ?? "Restaurant").trim() || "Restaurant";
   const etaMins = snap?.etaMaxMinutes ?? newPrep + 15;
-  const body = `${storeLabel} needs ${args.additionalMinutes} more min to prepare your order. Updated arrival ~${etaMins} mins.`;
 
   try {
     const tokens = await customerTokensForOrdersCoreId(sql, args.ordersCoreId);
     if (tokens.length > 0) {
-      await enqueuePush({
-        to: tokens,
-        title: "Delivery time updated",
-        body,
-        sound: "default",
-        channelId: "customer_default",
-        screen: `/orders/${orderIdText}`,
-        data: {
-          gmType: "ORDER_PREP_DELAY",
+      await sendNotification({
+        templateCode: "ORDER_PREP_DELAY",
+        variables: {
           orderId: orderIdText,
+          storeName: storeLabel,
           additionalMinutes: args.additionalMinutes,
           etaMinutes: etaMins,
-          gmMessage: body,
         },
+        target: { device_tokens: tokens },
+        metadata: { gmType: "ORDER_PREP_DELAY", orderId: orderIdText },
       });
     }
   } catch (err) {

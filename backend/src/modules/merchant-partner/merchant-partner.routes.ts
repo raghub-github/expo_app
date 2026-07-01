@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getSql } from "../../db/client.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import { auth } from "../../plugins/auth.js";
+import { send as sendNotification } from "../notifications/notificationService.js";
 import {
   isWithinOperatingHours,
   isBeforeFirstSlotToday,
@@ -3514,11 +3515,16 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
               `;
               const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
-              await sendExpoPush(tokens, {
-                title: reminderTitle,
-                body: reminderBody,
-                data: { url: "/(tabs)/profile/vacation", screen: "scheduled_off" },
-              });
+              if (tokens.length > 0) {
+                await sendNotification({
+                  templateCode: "MERCHANT_SCHEDULED_OFF_REMINDER",
+                  variables: { closeTime: "1 hour", reason: "your scheduled closure" },
+                  target: { device_tokens: tokens },
+                  priority: "high",
+                  idempotencyKey: `SCHEDULED_OFF_REMINDER:${storeId}:${Math.floor(Date.now()/3600000)}`,
+                  metadata: { url: "/(tabs)/profile/vacation", screen: "scheduled_off" },
+                }).catch((e) => console.warn("[scheduled-off reminder] v2 send failed", (e as Error).message));
+              }
             }
 
             const inWindow = nowMs >= startsMs && nowMs < endsMs;
@@ -3680,14 +3686,15 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                   INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
                   VALUES (${storeId}, 'store', ${notifTitle}, ${notifBody}, FALSE, '/(tabs)/profile/status')
                 `;
-                try {
-                  await sendExpoPush(tokens, {
-                    title: notifTitle,
-                    body: notifBody,
-                    data: { url: "/(tabs)/profile/status", screen: "store_status", action: "reopen_prompt" },
-                  });
-                } catch {
-                  // ignore push send failure
+                if (tokens.length > 0) {
+                  await sendNotification({
+                    templateCode: "MERCHANT_REOPEN_PROMPT",
+                    variables: { endTime: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) },
+                    target: { device_tokens: tokens },
+                    priority: "high",
+                    idempotencyKey: `REOPEN_PROMPT:${storeId}:${Math.floor(Date.now()/60000)}`,
+                    metadata: { url: "/(tabs)/profile/status", screen: "store_status", action: "reopen_prompt" },
+                  }).catch(() => undefined);
                 }
               }
             }
@@ -5323,11 +5330,14 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
           `;
           const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
-          await sendExpoPush(tokens, {
-            title: WAITING_FOR_ORDER_TITLE,
-            body: WAITING_FOR_ORDER_BODY,
-            data: { type: "store_online", screen: "notifications" },
-          });
+          if (tokens.length > 0) {
+            await sendNotification({
+              templateCode: "MERCHANT_WAITING_FOR_ORDER",
+              target: { device_tokens: tokens },
+              idempotencyKey: `WAITING_FOR_ORDER:${storeId}:${id}`,
+              metadata: { type: "store_online", screen: "notifications" },
+            }).catch(() => undefined);
+          }
           return reply.send({ id, created: true });
         }
       );
@@ -5710,11 +5720,18 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
           `;
           const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
-          await sendExpoPush(tokens, {
-            title: "Scheduled store closure set",
-            body: "Your store closure schedule has been set successfully.",
-            data: { url: "/(tabs)/profile/vacation", scheduledClosureId: schedId },
-          });
+          if (tokens.length > 0) {
+            await sendNotification({
+              templateCode: "MERCHANT_SCHEDULED_CLOSURE_SET",
+              variables: {
+                startTime: new Date().toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit" }),
+                endTime: "later",
+              },
+              target: { device_tokens: tokens },
+              idempotencyKey: `SCHEDULED_CLOSURE_SET:${storeId}:${schedId}`,
+              metadata: { url: "/(tabs)/profile/vacation", scheduledClosureId: schedId },
+            }).catch(() => undefined);
+          }
 
           // Log the action in merchant_store_status_log for analytics and audit.
           const parentRow = await getParentForAudit(sql, parentId);

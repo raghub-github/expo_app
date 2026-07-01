@@ -17,6 +17,7 @@
 import "dotenv/config";
 import { QUEUE_NAMES, attachLifecycleHandlers, runWorker } from "@gatimitra/queue";
 import { sendPush } from "./expoPush.js";
+import { reportDeadTokens } from "./reportDeadTokens.js";
 
 const log = {
   info: (...args: unknown[]) => console.log("[notif]", ...args),
@@ -45,15 +46,17 @@ runWorker(
     const payload = job.data;
     const result = await sendPush(payload, jobLog);
     jobLog.info(
-      `[push] accepted=${result.accepted} failed=${result.failed} chunks=${result.chunks}`,
+      `[push] accepted=${result.accepted} failed=${result.failed} chunks=${result.chunks} dead=${result.deadTokens.length}`,
     );
+    if (result.deadTokens.length > 0) {
+      // Fire-and-forget — report to backend so those tokens get purged.
+      void reportDeadTokens(result.deadTokens, jobLog);
+    }
     if (result.failed > 0 && result.accepted === 0) {
-      // 100% failure → tell BullMQ to retry. Partial failures are accepted
-      // (Expo's failed-token cleanup is handled separately by the existing
-      // backend logger).
+      // 100% failure → tell BullMQ to retry.
       throw new Error(`push job ${job.id}: all ${result.failed} tokens failed`);
     }
-    return { accepted: result.accepted, failed: result.failed };
+    return { accepted: result.accepted, failed: result.failed, dead: result.deadTokens.length };
   },
   { concurrency: 4, log },
 );

@@ -7,7 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { expoPushTokens } from "../db/schema.js";
 import { publishRiderEvent } from "../modules/realtime/publish.js";
-import { enqueuePush } from "../modules/push/enqueuePush.js";
+import { send as sendNotification } from "../modules/notifications/notificationService.js";
 import type { DispatchOrderTarget, EligibleDispatchRider } from "./order-assignment-engine.js";
 
 const SERVICE_LABEL: Record<DispatchOrderTarget["serviceType"], string> = {
@@ -30,7 +30,7 @@ async function loadRiderPushTokens(riderId: number): Promise<string[]> {
     .from(expoPushTokens)
     .where(and(eq(expoPushTokens.userId, userId), eq(expoPushTokens.role, "rider")));
 
-  return rows.map((r) => r.token).filter(Boolean);
+  return rows.map((r) => r.token).filter((t): t is string => Boolean(t));
 }
 
 export type DispatchOfferPayload = {
@@ -76,23 +76,24 @@ export async function notifyRiderDispatchOffer(
   const tokens = await loadRiderPushTokens(rider.riderId);
   if (tokens.length === 0) return;
 
-  await enqueuePush({
-    to: tokens,
-    title: `New ${label} order`,
-    body: `${displayId} · ${dist} from pickup — tap to view`,
-    sound: "default",
-    channelId: "default",
-    screen: "/(tabs)/orders",
-    data: {
+  await sendNotification({
+    templateCode: "RIDER_DISPATCH_OFFER",
+    variables: {
+      orderId: target.orderId,
+      formattedOrderId: target.formattedOrderId ?? "",
+      serviceLabel: label,
+      displayId,
+      pickupDistance: dist,
+      serviceType: target.serviceType,
+      waveNumber: target.waveNumber,
+    },
+    target: { device_tokens: tokens },
+    metadata: {
       type: "dispatch_offer",
       gmType: "DISPATCH_OFFER",
       orderId: target.orderId,
-      formattedOrderId: target.formattedOrderId ?? undefined,
-      serviceType: target.serviceType,
-      category: toCategory(target.serviceType),
-      waveNumber: String(target.waveNumber),
       pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
-      gmMessage: `${displayId} · ${dist} from pickup`,
+      category: toCategory(target.serviceType),
     },
   });
 }

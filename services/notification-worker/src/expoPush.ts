@@ -26,7 +26,24 @@ export type ExpoPushMessage = {
   richContent?: { image?: string };
 };
 
-type Ticket = { status: "ok" | "error"; message?: string; id?: string };
+type Ticket = {
+  status: "ok" | "error";
+  message?: string;
+  id?: string;
+  details?: { error?: string };
+};
+
+/**
+ * Terminal (do-not-retry) Expo error codes. When any of these are returned
+ * for a specific token, that token should be purged from the DB — the app
+ * was uninstalled, the token was rotated, or the credentials are broken.
+ */
+const DEAD_TOKEN_ERRORS = new Set([
+  "DeviceNotRegistered",
+  "InvalidCredentials",
+  "MessageTooBig",     // caller bug; not a device error, but do not retry
+  "MessageRateExceeded", // rare — retry once, then treat as dead
+]);
 
 function chunk<T>(arr: T[], n: number): T[][] {
   const out: T[][] = [];
@@ -80,15 +97,16 @@ async function sendBatch(
 export async function sendPush(
   payload: { to: string | string[]; title: string; body: string; data?: Record<string, unknown>; sound?: string; channelId?: string; imageUrl?: string },
   log: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
-): Promise<{ accepted: number; failed: number; chunks: number }> {
+): Promise<{ accepted: number; failed: number; chunks: number; deadTokens: string[] }> {
   const tokens = Array.isArray(payload.to) ? payload.to : [payload.to];
   const valid = tokens.filter((t) => typeof t === "string" && t.startsWith("ExponentPushToken"));
   if (valid.length === 0) {
-    return { accepted: 0, failed: 0, chunks: 0 };
+    return { accepted: 0, failed: 0, chunks: 0, deadTokens: [] };
   }
 
   let accepted = 0;
   let failed = 0;
+  const deadTokens: string[] = [];
   const batches = chunk(valid, CHUNK_SIZE);
   for (const tokenSlice of batches) {
     const message: ExpoPushMessage = {
@@ -107,10 +125,19 @@ export async function sendPush(
       log.warn(`batch failed: ${res.error ?? res.status}`);
       continue;
     }
-    for (const ticket of res.tickets) {
-      if (ticket.status === "ok") accepted++;
-      else failed++;
-    }
+    // Expo returns tickets in the same order as the tokens sent → we can zip.
+    res.tickets.forEach((ticket, i) => {
+      if (ticket.status === "ok") {
+        accepted++;
+        return;
+      }
+      failed++;
+      const err = ticket.details?.error ?? "";
+      if (DEAD_TOKEN_ERRORS.has(err)) {
+        const tok = tokenSlice[i];
+        if (tok) deadTokens.push(tok);
+      }
+    });
   }
-  return { accepted, failed, chunks: batches.length };
+  return { accepted, failed, chunks: batches.length, deadTokens };
 }

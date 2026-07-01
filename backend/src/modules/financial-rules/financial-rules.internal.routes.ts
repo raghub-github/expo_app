@@ -15,7 +15,7 @@ import {
   ticketMessages,
   ticketParticipants,
 } from "../../db/schema.js";
-import { enqueuePush } from "../push/enqueuePush.js";
+import { send as sendNotification } from "../notifications/notificationService.js";
 
 const processEventBody = z.object({
   topic: z.string().min(1),
@@ -94,11 +94,14 @@ export async function financialRulesInternalRoutes(app: FastifyInstance) {
       if (execStatus === "APPROVAL_REQUIRED") {
         const adminTokens = await tokensForRoles(["admin", "dashboard", "super_admin"]);
         if (adminTokens.length > 0) {
-          await enqueuePush({
-            to: adminTokens,
-            title: "Financial rule approval required",
-            body: `Order ${orderId ?? "unknown"} requires approval for ₹${refund.toFixed(2)} refund.`,
-            data: {
+          await sendNotification({
+            templateCode: "FINANCIAL_RULE_APPROVAL_PENDING",
+            variables: {
+              ruleName: `Order ${orderId ?? "unknown"} (₹${refund.toFixed(2)} refund)`,
+              ruleId: String(payload.execution_log_id ?? ""),
+            },
+            target: { device_tokens: adminTokens },
+            metadata: {
               screen: "/dashboard/super-admin/rule-engine",
               tab: "approvals",
               execution_log_id: payload.execution_log_id,
@@ -108,11 +111,15 @@ export async function financialRulesInternalRoutes(app: FastifyInstance) {
       } else if (refund > 0 && orderId != null && Number.isFinite(orderId)) {
         const customerTokens = await customerTokensForOrder(orderId);
         if (customerTokens.length > 0) {
-          await enqueuePush({
-            to: customerTokens,
-            title: "Refund update",
-            body: `₹${refund.toFixed(2)} refund has been initiated for your order.`,
-            data: { order_id: orderId, execution_log_id: payload.execution_log_id },
+          await sendNotification({
+            templateCode: "FINANCIAL_RULE_CUSTOMER_NOTIFY",
+            variables: {
+              orderId: String(orderId ?? ""),
+              title: "Refund update",
+              body: `₹${refund.toFixed(2)} refund has been initiated for your order.`,
+            },
+            target: { device_tokens: customerTokens },
+            metadata: { order_id: orderId, execution_log_id: payload.execution_log_id },
           });
         }
       }
@@ -193,11 +200,15 @@ export async function financialRulesInternalRoutes(app: FastifyInstance) {
       if (orderId != null && Number.isFinite(orderId)) {
         const customerTokens = await customerTokensForOrder(orderId);
         if (customerTokens.length > 0) {
-          await enqueuePush({
-            to: customerTokens,
-            title: "Refund approved",
-            body: `Your refund of ₹${amount.toFixed(2)} has been approved.`,
-            data: { order_id: orderId, execution_log_id: payload.execution_log_id },
+          await sendNotification({
+            templateCode: "FINANCIAL_RULE_CUSTOMER_NOTIFY",
+            variables: {
+              orderId: String(orderId ?? ""),
+              title: "Refund approved",
+              body: `Your refund of ₹${amount.toFixed(2)} has been approved.`,
+            },
+            target: { device_tokens: customerTokens },
+            metadata: { order_id: orderId, execution_log_id: payload.execution_log_id },
           });
         }
       }
@@ -225,11 +236,14 @@ export async function financialRulesInternalRoutes(app: FastifyInstance) {
     let notified = 0;
     if (adminTokens.length > 0) {
       for (const row of pending as Array<Record<string, unknown>>) {
-        await enqueuePush({
-          to: adminTokens,
-          title: "Pending financial approval",
-          body: `${row.rule_code}: ₹${Number(row.amount ?? 0).toFixed(2)} for order ${row.core_order_id ?? row.order_id}`,
-          data: { approval_id: row.id, screen: "/dashboard/super-admin/rule-engine", tab: "approvals" },
+        await sendNotification({
+          templateCode: "FINANCIAL_RULE_APPROVAL_PENDING",
+          variables: {
+            ruleName: `${row.rule_code}: ₹${Number(row.amount ?? 0).toFixed(2)} for order ${row.core_order_id ?? row.order_id}`,
+            ruleId: String(row.id ?? ""),
+          },
+          target: { device_tokens: adminTokens },
+          metadata: { approval_id: row.id, screen: "/dashboard/super-admin/rule-engine", tab: "approvals" },
         }).catch(() => undefined);
         notified++;
       }

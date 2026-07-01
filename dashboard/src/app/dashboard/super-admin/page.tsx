@@ -174,9 +174,17 @@ const adminOptions: AdminOption[] = [
     name: "Push Notification",
     href: "/dashboard/super-admin/push",
     Icon: PushIcon,
-    description: "Push notification to the Rider, Customer & Merchant app",
+    description: "One-off push notification (legacy)",
     color: "text-emerald-700",
     bgColor: "bg-emerald-50 hover:bg-emerald-100",
+  },
+  {
+    name: "Notifications v2",
+    href: "/dashboard/super-admin/notifications",
+    Icon: PushIcon,
+    description: "Templates, campaigns, scheduled, history, analytics — the enterprise notification centre",
+    color: "text-teal-700",
+    bgColor: "bg-teal-50 hover:bg-teal-100",
   },
   {
     name: "Order acceptance",
