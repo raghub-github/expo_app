@@ -29,5 +29,9 @@ export const supabase = createClient(safeSupabaseUrl, safeSupabaseAnonKey, {
     autoRefreshToken: false,
     persistSession: true,
     detectSessionInUrl: true,
+    // Explicit storageKey prevents "Multiple GoTrueClient instances detected"
+    // if another module (a lazy-loaded chunk, e.g.) initialises another client
+    // for the same URL — they'll share the storage via the same explicit key.
+    storageKey: "sb-gm-dashboard-auth-token",
   },
 });
