@@ -89,6 +89,7 @@ export default function CampaignsPage() {
     { refreshInterval: 15_000 },
   );
   const [creating, setCreating] = useState(false);
+  const [detail, setDetail] = useState<Campaign | null>(null);
   const items = data?.items ?? [];
 
   const totals = useMemo(() => {
@@ -165,7 +166,11 @@ export default function CampaignsPage() {
                 items.map((c) => {
                   const s = STATUS_STYLES[c.status] ?? { label: c.status, classes: "bg-slate-100 text-slate-700 border-slate-200" };
                   return (
-                    <tr key={c.id} className="hover:bg-slate-50/60">
+                    <tr
+                      key={c.id}
+                      onClick={() => setDetail(c)}
+                      className="cursor-pointer transition hover:bg-teal-50/40"
+                    >
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-900">{c.name}</div>
                         {c.description ? (
@@ -187,7 +192,7 @@ export default function CampaignsPage() {
                           ? new Date(c.scheduled_at).toLocaleString()
                           : new Date(c.created_at).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                         {c.status === "scheduled" || c.status === "running" ? (
                           <button
                             onClick={async () => {
@@ -221,7 +226,188 @@ export default function CampaignsPage() {
           onSaved={() => { setCreating(false); mutate(); }}
         />
       ) : null}
+      {detail ? (
+        <CampaignDetail
+          campaign={detail}
+          onClose={() => setDetail(null)}
+          onCancelled={() => { setDetail(null); mutate(); }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/* ============================================================================
+ *  Campaign detail — opened by clicking a row in the list
+ * ==========================================================================*/
+
+function CampaignDetail({
+  campaign,
+  onClose,
+  onCancelled,
+}: {
+  campaign: Campaign;
+  onClose: () => void;
+  onCancelled: () => void;
+}) {
+  const { data: logs } = useSWR<{ items: Array<{
+    id: number;
+    recipient_user_id: string;
+    recipient_role: string;
+    platform: string | null;
+    status: string;
+    error_code: string | null;
+    error_message: string | null;
+    queued_at: string;
+    delivered_at: string | null;
+    clicked_at: string | null;
+  }> }>(
+    `/api/super-admin/notifications/logs?campaign=${campaign.id}&limit=100`,
+    fetcher,
+  );
+  const items = logs?.items ?? [];
+  const s = STATUS_STYLES[campaign.status] ?? { label: campaign.status, classes: "bg-slate-100 text-slate-700 border-slate-200" };
+  const deliveredRate = campaign.sent_count > 0
+    ? Math.round((campaign.delivered_count / campaign.sent_count) * 100)
+    : 0;
+  const clickRate = campaign.delivered_count > 0
+    ? Math.round((campaign.clicked_count / campaign.delivered_count) * 100)
+    : 0;
+
+  const cancel = async () => {
+    if (!confirm(`Cancel "${campaign.name}"?`)) return;
+    await fetch(`/api/super-admin/notifications/campaigns/${campaign.id}/cancel`, { method: "POST" });
+    onCancelled();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex bg-slate-900/40 backdrop-blur-sm">
+      <div className="ml-auto flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-teal-700">Campaign</div>
+              <span className={"inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium " + s.classes}>{s.label}</span>
+            </div>
+            <div className="mt-1 truncate text-base font-semibold text-slate-900">{campaign.name}</div>
+            {campaign.description ? (
+              <div className="mt-0.5 text-xs text-slate-500">{campaign.description}</div>
+            ) : null}
+            <div className="mt-1 text-[11px] text-slate-500">
+              Template <span className="font-mono">{campaign.template_code ?? "—"}</span>
+              {campaign.created_by ? <> · Created by <span className="font-mono">{campaign.created_by}</span></> : null}
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button>
+        </div>
+
+        <div className="flex-1 space-y-5 overflow-y-auto p-6">
+          {/* KPIs */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MiniKpi label="Sent" value={campaign.sent_count} accent="text-slate-900" />
+            <MiniKpi label="Delivered" value={campaign.delivered_count} accent="text-teal-700" sub={campaign.sent_count > 0 ? `${deliveredRate}% of sent` : undefined} />
+            <MiniKpi label="Clicked" value={campaign.clicked_count} accent="text-amber-700" sub={campaign.delivered_count > 0 ? `${clickRate}% CTR` : undefined} />
+            <MiniKpi label="Failed" value={campaign.failed_count} accent="text-rose-600" />
+          </div>
+
+          {/* Timeline */}
+          <div className="rounded-lg border border-slate-200 bg-white">
+            <div className="border-b border-slate-100 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Timeline</div>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 px-4 py-3 text-sm sm:grid-cols-4">
+              <TimelineRow label="Created" ts={campaign.created_at} />
+              <TimelineRow label="Scheduled" ts={campaign.scheduled_at} />
+              <TimelineRow label="Started" ts={campaign.started_at} />
+              <TimelineRow label="Finished" ts={campaign.finished_at} />
+            </dl>
+          </div>
+
+          {/* Delivery breakdown */}
+          <div className="rounded-lg border border-slate-200 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Per-recipient log</div>
+              <div className="text-[11px] text-slate-500">{items.length} row{items.length === 1 ? "" : "s"}</div>
+            </div>
+            {items.length === 0 ? (
+              <div className="px-4 py-6 text-center text-xs text-slate-500">
+                No deliveries yet. This campaign hasn't fanned out to any recipients — usually because the
+                target had no active push tokens.
+              </div>
+            ) : (
+              <div className="max-h-[360px] overflow-y-auto">
+                <table className="min-w-full divide-y divide-slate-100 text-xs">
+                  <thead className="bg-slate-50 text-left font-semibold uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Queued</th>
+                      <th className="px-3 py-2">Recipient</th>
+                      <th className="px-3 py-2">Platform</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {items.map((r) => (
+                      <tr key={r.id}>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{new Date(r.queued_at).toLocaleString()}</td>
+                        <td className="px-3 py-2">
+                          <div className="text-slate-800">{r.recipient_user_id}</div>
+                          <div className="text-[10px] text-slate-400">{r.recipient_role}</div>
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">{r.platform ?? "—"}</td>
+                        <td className="px-3 py-2">
+                          <span className={"inline-flex rounded-md px-1.5 py-0.5 " + (STATUS_STYLES[r.status]?.classes ?? "bg-slate-100 text-slate-700 border-slate-200")}>
+                            {r.status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 max-w-[280px] truncate text-rose-700">
+                          {r.error_code ? <span className="font-mono">{r.error_code}</span> : ""}
+                          {r.error_message ? <div className="text-[10px] text-rose-600">{r.error_message}</div> : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-slate-200 px-6 py-4">
+          <div className="text-[11px] text-slate-500">
+            Recipients on iOS / Android receive via FCM. Web-push is delivered via the browser push protocol.
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">Close</button>
+            {campaign.status === "scheduled" || campaign.status === "running" ? (
+              <button
+                onClick={cancel}
+                className="inline-flex items-center gap-1 rounded-md border border-rose-200 px-3 py-2 text-sm text-rose-700 hover:bg-rose-50"
+              >
+                <Square className="h-3.5 w-3.5" /> Cancel campaign
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniKpi({ label, value, accent, sub }: { label: string; value: number; accent: string; sub?: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={"mt-0.5 text-xl font-semibold tabular-nums " + accent}>{value.toLocaleString()}</div>
+      {sub ? <div className="text-[10px] text-slate-500">{sub}</div> : null}
+    </div>
+  );
+}
+
+function TimelineRow({ label, ts }: { label: string; ts: string | null }) {
+  return (
+    <>
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className="text-xs text-slate-700">{ts ? new Date(ts).toLocaleString() : <span className="text-slate-400">—</span>}</dd>
+    </>
   );
 }
 
