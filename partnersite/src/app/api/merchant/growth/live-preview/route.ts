@@ -3,6 +3,7 @@ import { assertStoreAccess } from "@/lib/auth/assert-store-access";
 import { client as sql } from "@/lib/drizzle";
 import { buildLivePreviewInsights } from "@/lib/merchant-growth/live-preview-insights";
 import { withRouteTimeout, RouteTimeoutError } from "@/lib/route-timeout";
+import { withGrowthCache } from "@/lib/growth-insights-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 /** GET /api/merchant/growth/live-preview?storeId=GMMC1015&period=today */
 export async function GET(req: NextRequest) {
   try {
-    return await withRouteTimeout("merchant.growth.live-preview", 30_000, async () => {
+    return await withRouteTimeout("merchant.growth.live-preview", 45_000, async () => {
       const storeId =
         req.nextUrl.searchParams.get("storeId") ?? req.nextUrl.searchParams.get("store_id");
       if (!storeId?.trim()) {
@@ -25,7 +26,11 @@ export async function GET(req: NextRequest) {
       const raw = String(req.nextUrl.searchParams.get("period") ?? "today").toLowerCase();
       const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
 
-      const body = await buildLivePreviewInsights(sql, gate.storeIdNum, period);
+      const body = await withGrowthCache(
+        `live-preview:${gate.storeIdNum}:${period}`,
+        60_000,
+        () => buildLivePreviewInsights(sql, gate.storeIdNum, period),
+      );
       return NextResponse.json(body);
     });
   } catch (e) {

@@ -76,12 +76,25 @@ function shapeTimeColumn(value: unknown): string | null {
   return `${m[1].padStart(2, '0')}:${m[2]}`;
 }
 
+/**
+ * Old rows have absolute dev URLs baked in (`http://localhost:3000/api/attachments/proxy?...`)
+ * from when uploads ran on a dev host. On production those trigger mixed-content warnings and
+ * fail to load. Strip the absolute prefix so the browser fetches via the same origin.
+ */
+function relativizeProxyUrl(v: unknown): unknown {
+  if (typeof v !== 'string' || !v) return v;
+  const m = v.match(/^https?:\/\/[^/]+(\/(?:api|v1)\/attachments\/proxy[^\s]*)$/i);
+  return m ? m[1] : v;
+}
+
 function shapeOfferRow(row: Record<string, unknown>) {
   const meta = (row.offer_metadata as Record<string, unknown>) || {};
+  const rawImageUrl = row.offer_image_url ?? row.image_url ?? null;
   return {
     ...row,
     menu_item_ids: (meta.menu_item_ids as string[]) ?? null,
-    image_url: row.offer_image_url ?? row.image_url ?? null,
+    image_url: relativizeProxyUrl(rawImageUrl) as string | null,
+    offer_image_url: relativizeProxyUrl(row.offer_image_url) as string | null,
     applicable_time_start: shapeTimeColumn(row.applicable_time_start),
     applicable_time_end: shapeTimeColumn(row.applicable_time_end),
     applicable_on_days: Array.isArray(row.applicable_on_days) ? row.applicable_on_days : null,

@@ -27,6 +27,11 @@ export async function POST(req: NextRequest) {
     const storeId = new URL(req.url).searchParams.get('store_id');
     const gate = await assertStoreAccess(storeId);
     if (!gate.ok) {
+      console.warn('[sync-acceptance-timeout] gate.deny', {
+        storeId,
+        status: gate.status,
+        error: gate.error,
+      });
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
 
