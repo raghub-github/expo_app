@@ -22,14 +22,6 @@ import type {
 
 const TOKEN_STALENESS_DAYS = 90;
 
-type ExpoTokenRow = {
-  user_id: string;
-  role: string | null;
-  device_id: string | null;
-  device_type: string | null;
-  token: string;
-};
-
 function normaliseRole(r: string | null | undefined): NotificationRole {
   const lower = (r ?? "").toLowerCase();
   if (lower === "customer" || lower === "merchant" || lower === "rider" || lower === "admin" || lower === "manager" || lower === "support") {
@@ -53,58 +45,44 @@ async function tokensForUserIds(
 ): Promise<Recipient[]> {
   if (userIds.length === 0) return [];
   const sql = getSql();
-  // Use parameterised query — never interpolate.
+  // Real column names in this schema:
+  //   expo_push_token   (not "token")
+  //   device_type       (there is no device_id)
+  //   updated_at        (there is no last_active_at)
   const rows = (await sql`
-    SELECT user_id, role, device_id, device_type, token
+    SELECT user_id, role, device_type, expo_push_token AS token
     FROM public.expo_push_tokens
     WHERE user_id = ANY(${userIds}::text[])
-      AND token IS NOT NULL
-      AND last_active_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval
+      AND expo_push_token IS NOT NULL
+      AND (updated_at IS NULL OR updated_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
       ${role && role !== "all" ? sql`AND lower(role) = ${role}` : sql``}
-  `) as unknown as ExpoTokenRow[];
+  `) as unknown as Array<{
+    user_id: string;
+    role: string | null;
+    device_type: string | null;
+    token: string;
+  }>;
 
   return rows.map((r) => ({
     userId: r.user_id,
     role: normaliseRole(r.role),
     deviceToken: r.token,
-    deviceId: r.device_id,
+    deviceId: null,
     platform: normalisePlatform(r.device_type),
   }));
 }
 
-async function userIdsByRole(role: NotificationRole, filters: { city?: string; zone?: string; status?: string } = {}): Promise<string[]> {
+async function userIdsByRole(role: NotificationRole, _filters: { city?: string; zone?: string; status?: string } = {}): Promise<string[]> {
   const sql = getSql();
-
-  if (role === "rider") {
+  // We only care about users with an active push token — resolving via
+  // expo_push_tokens directly avoids depending on user_profiles / rider_profiles
+  // (neither table exists in this schema) and skips users with no token anyway.
+  if (role === "rider" || role === "merchant" || role === "customer" || role === "admin" || role === "manager" || role === "support") {
     const rows = (await sql`
-      SELECT user_id
-      FROM public.rider_profiles
-      WHERE user_id IS NOT NULL
-        ${filters.status ? sql`AND lower(status) = ${filters.status.toLowerCase()}` : sql``}
-    `) as unknown as Array<{ user_id: string }>;
-    return rows.map((r) => r.user_id);
-  }
-  if (role === "merchant") {
-    const rows = (await sql`
-      SELECT DISTINCT user_id FROM public.merchant_stores
-      WHERE user_id IS NOT NULL
-        ${filters.status ? sql`AND lower(status) = ${filters.status.toLowerCase()}` : sql``}
-    `) as unknown as Array<{ user_id: string }>;
-    return rows.map((r) => r.user_id);
-  }
-  if (role === "customer") {
-    const rows = (await sql`
-      SELECT user_id FROM public.user_profiles
-      WHERE user_id IS NOT NULL
-        AND user_id LIKE 'GMC-%'
-    `) as unknown as Array<{ user_id: string }>;
-    return rows.map((r) => r.user_id);
-  }
-  if (role === "admin" || role === "manager" || role === "support") {
-    const rows = (await sql`
-      SELECT user_id FROM public.user_profiles
+      SELECT DISTINCT user_id FROM public.expo_push_tokens
       WHERE user_id IS NOT NULL
         AND lower(role) = ${role}
+        AND (updated_at IS NULL OR updated_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
     `) as unknown as Array<{ user_id: string }>;
     return rows.map((r) => r.user_id);
   }
@@ -113,9 +91,13 @@ async function userIdsByRole(role: NotificationRole, filters: { city?: string; z
 
 async function userIdsForStore(storeId: number): Promise<string[]> {
   const sql = getSql();
+  // merchant_stores has no user_id column — the owning user lives on
+  // merchant_parents.supabase_user_id via merchant_stores.parent_id.
   const rows = (await sql`
-    SELECT DISTINCT user_id FROM public.merchant_stores
-    WHERE id = ${storeId} AND user_id IS NOT NULL
+    SELECT DISTINCT p.supabase_user_id AS user_id
+    FROM public.merchant_stores s
+    INNER JOIN public.merchant_parents p ON p.id = s.parent_id
+    WHERE s.id = ${storeId} AND p.supabase_user_id IS NOT NULL
   `) as unknown as Array<{ user_id: string }>;
   return rows.map((r) => r.user_id);
 }

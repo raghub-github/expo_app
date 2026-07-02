@@ -72,6 +72,8 @@ export type CreateLogRow = {
  */
 export async function insertQueuedLog(row: CreateLogRow): Promise<void> {
   const sql = getSql();
+  // jsonb sent as text + ::jsonb cast (Supabase pooler safe).
+  const metadataStr = row.metadata ? JSON.stringify(row.metadata) : null;
   await sql`
     INSERT INTO public.notification_dispatch_logs (
       notification_id, campaign_id, template_code,
@@ -82,7 +84,7 @@ export async function insertQueuedLog(row: CreateLogRow): Promise<void> {
       ${row.notificationId}::uuid, ${row.campaignId ?? null}, ${row.templateCode},
       ${row.recipient.userId}, ${row.recipient.role}, ${row.recipient.deviceToken}, ${row.recipient.deviceId}, ${row.recipient.platform},
       ${row.channel}, ${row.title}, ${row.body}, ${row.imageUrl}, ${row.deepLink}, ${row.priority}, 'queued',
-      ${row.metadata ? sql.json(row.metadata as never) : null}
+      ${metadataStr === null ? null : sql`${metadataStr}::jsonb`}
     )
   `;
 }
@@ -92,6 +94,7 @@ export async function bulkInsertQueuedLogs(rows: CreateLogRow[]): Promise<void> 
   const sql = getSql();
   await sql.begin(async (tx) => {
     for (const r of rows) {
+      const metadataStr = r.metadata ? JSON.stringify(r.metadata) : null;
       await tx`
         INSERT INTO public.notification_dispatch_logs (
           notification_id, campaign_id, template_code,
@@ -102,7 +105,7 @@ export async function bulkInsertQueuedLogs(rows: CreateLogRow[]): Promise<void> 
           ${r.notificationId}::uuid, ${r.campaignId ?? null}, ${r.templateCode},
           ${r.recipient.userId}, ${r.recipient.role}, ${r.recipient.deviceToken}, ${r.recipient.deviceId}, ${r.recipient.platform},
           ${r.channel}, ${r.title}, ${r.body}, ${r.imageUrl}, ${r.deepLink}, ${r.priority}, 'queued',
-          ${r.metadata ? tx.json(r.metadata as never) : null}
+          ${metadataStr === null ? null : tx`${metadataStr}::jsonb`}
         )
       `;
     }
@@ -168,6 +171,15 @@ export type CampaignInsert = {
 
 export async function createCampaign(c: CampaignInsert): Promise<{ id: number }> {
   const sql = getSql();
+  // Send jsonb columns as pre-stringified text with an explicit `::jsonb` cast.
+  // `sql.json(...)` builds a Parameter with type OID 3802, but on this pooler
+  // that path was crashing during Bind with ERR_INVALID_ARG_TYPE — probably
+  // because the type descriptor round-trip stripped the OID and postgres.js
+  // ended up writing the raw object to the wire. Passing a JSON string + cast
+  // is stable across pooler configurations and does not require prepared
+  // statement support.
+  const targetFilterStr = JSON.stringify(c.targetFilter ?? {});
+  const variablesStr = JSON.stringify(c.variables ?? {});
   const rows = (await sql`
     INSERT INTO public.notification_campaigns (
       name, description, template_code,
@@ -177,8 +189,8 @@ export async function createCampaign(c: CampaignInsert): Promise<{ id: number }>
     VALUES (
       ${c.name}, ${c.description ?? null}, ${c.templateCode},
       ${c.overrideTitle ?? null}, ${c.overrideBody ?? null}, ${c.overrideImage ?? null}, ${c.overrideDeepLink ?? null},
-      ${sql.json(c.targetFilter as never)},
-      ${sql.json((c.variables ?? {}) as never)},
+      ${targetFilterStr}::jsonb,
+      ${variablesStr}::jsonb,
       ${c.scheduledAt ?? null},
       ${c.status ?? "draft"},
       ${c.createdBy ?? null}

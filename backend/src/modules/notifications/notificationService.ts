@@ -92,9 +92,12 @@ export async function send(intent: SendIntent): Promise<SendResult> {
   // with the shape { idempotency_key: <key> }. Cheap partial-index lookup.
   if (intent.idempotencyKey) {
     const sql = getSql();
+    // `sql.json(...)` crashes over the Supabase pooler (pgbouncer strips
+    // prepared-statement param descriptors). Use a JSON string + ::jsonb cast.
+    const idempotencyMatch = JSON.stringify({ idempotency_key: intent.idempotencyKey });
     const rows = (await sql`
       SELECT 1 FROM public.notification_dispatch_logs
-      WHERE metadata @> ${sql.json({ idempotency_key: intent.idempotencyKey } as never)}::jsonb
+      WHERE metadata @> ${idempotencyMatch}::jsonb
         AND queued_at >= now() - interval '24 hours'
       LIMIT 1
     `) as unknown as Array<unknown>;

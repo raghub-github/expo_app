@@ -164,6 +164,10 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: "missing_required_fields" });
       }
       const sql = getSql();
+      // Send jsonb as text + ::jsonb cast — `sql.json(...)` crashes over the
+      // Supabase pooler.
+      const variablesSchemaStr = JSON.stringify(b.variables_schema ?? {});
+      const buttonsStr = b.buttons ? JSON.stringify(b.buttons) : null;
       const rows = (await sql`
         INSERT INTO public.notification_templates (
           code, category, role, channel, title_template, body_template,
@@ -175,8 +179,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           ${b.title_template}, ${b.body_template},
           ${b.image_url ?? null}, ${b.deep_link ?? null},
           ${b.priority ?? "normal"}, ${b.locale ?? "en"},
-          ${sql.json((b.variables_schema ?? {}) as never)},
-          ${b.buttons ? sql.json(b.buttons as never) : null},
+          ${variablesSchemaStr}::jsonb,
+          ${buttonsStr === null ? null : sql`${buttonsStr}::jsonb`},
           ${b.retry_count ?? 3}, ${b.expiry_seconds ?? 86400},
           ${req.auth?.sub ?? null}
         )
