@@ -330,7 +330,7 @@ export function MerchantIncomingOrderModal() {
     if (modalOrder) return;
     try {
       const res = await fetch(
-        `/api/merchant/stores/${storeId}/orders?limit=${FALLBACK_SCAN_LIMIT}`,
+        `/api/merchant/stores/${storeId}/orders?limit=${FALLBACK_SCAN_LIMIT}&lightweight=1`,
         { credentials: 'include' }
       );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };

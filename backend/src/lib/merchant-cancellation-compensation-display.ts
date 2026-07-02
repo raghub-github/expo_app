@@ -62,15 +62,21 @@ export function resolveCancelledByBrand(
   const lower = label.toLowerCase();
 
   if (t === "store" || t === "merchant" || lower.includes("restaurant")) {
-    return "Restaurant";
+    return "store";
   }
   if (t === "customer" && lower.includes("customer")) {
-    return "Customer";
+    return "customer";
+  }
+  if (t === "customer" || lower.includes("cancelled by me")) {
+    return "customer";
   }
   if (t === "rider" || lower.includes("rider") || lower.includes("delivery")) {
     return "Delivery partner";
   }
-  if (lower.includes("gatimitra")) {
+  if (t === "system" || /^auto cancel/i.test(lower)) {
+    return "__AUTO__";
+  }
+  if (t === "admin" || lower.includes("gatimitra")) {
     return GATIMITRA_BRAND;
   }
   return GATIMITRA_BRAND;
@@ -83,7 +89,28 @@ export function buildEligibleCompensationMessage(args: {
 }): string {
   const reason = args.reasonDetail.trim() || "Order cancelled";
   const brand = args.cancelledByBrand.trim() || GATIMITRA_BRAND;
-  const prefix = `Cancelled by ${brand}: ${reason}`;
+
+  if (brand === "__AUTO__" || /^auto cancel/i.test(reason)) {
+    const stripped = reason.replace(/^auto cancelled?:?\s*/i, "").trim();
+    const prefix = stripped ? `Auto Canceled: ${stripped}` : "Auto Canceled";
+    if (args.compensationPct <= 0.009) {
+      return `${prefix}. As per policy, you will not receive compensation for this cancellation.`;
+    }
+    if (args.compensationPct >= 99.99) {
+      return `${prefix}. As per policy, you will receive ${formatPct(args.compensationPct)}% of net order value as compensation.`;
+    }
+    return `${prefix}. As per policy, you will get ${formatPct(args.compensationPct)}% of net order value as compensation.`;
+  }
+
+  const displayBrand =
+    brand === "Customer"
+      ? "customer"
+      : brand === "Store Itself"
+        ? "store"
+        : brand === "GatiMitra Team"
+          ? GATIMITRA_BRAND
+          : brand;
+  const prefix = `Cancelled by ${displayBrand}: ${reason}`;
 
   if (args.compensationPct <= 0.009) {
     return `${prefix}. As per policy, you will not receive compensation for this cancellation.`;

@@ -324,6 +324,7 @@ function RestaurantPage({
 
   // Filtered menu items
   const filteredMenuItems = menuItems.filter(item => {
+    if (item.in_stock === false) return false;
     const categoryMatch = selectedCategory === 'All' || item.category_item === selectedCategory || item.category === selectedCategory;
     const vegMatch = !localVegOnly || (String(item.category_item || item.category || '').toUpperCase() === 'VEG');
     const q = searchQuery.trim().toLowerCase();

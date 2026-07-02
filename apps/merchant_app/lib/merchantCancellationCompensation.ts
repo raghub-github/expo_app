@@ -135,12 +135,24 @@ export function buildCompensationPolicySections(
   return sections;
 }
 
+import {
+  applyMerchantCancellationActorToText,
+  merchantCancellationBrandPrefix,
+  resolveMerchantCancellationActor,
+} from "@/lib/merchant-cancellation-ledger-brand";
 /** Split eligible message into brand prefix + body for styled rendering. */
 export function splitEligibleMessage(message: string): {
   brandPrefix: string | null;
   body: string;
 } {
   const m = message.trim();
+  const autoMatch = /^Auto Canceled:?\s*/i.exec(m);
+  if (autoMatch) {
+    return {
+      brandPrefix: "Auto Canceled:",
+      body: m.slice(autoMatch[0].length).trim(),
+    };
+  }
   const match = /^Cancelled by ([^:]+):\s*/i.exec(m);
   if (!match) return { brandPrefix: null, body: m };
   const brand = match[1]?.trim() ?? "";
@@ -178,6 +190,9 @@ export function splitCancellationEligibleMessage(message: string): {
 export function resolveCancellationMessageParts(args: {
   eligibleMessage?: string | null;
   cancelledByBrand?: string | null;
+  cancelledByType?: string | null;
+  cancelledByLabel?: string | null;
+  triggerSource?: string | null;
   reasonDetail?: string | null;
   rejectedReason?: string | null;
 }): {
@@ -190,25 +205,42 @@ export function resolveCancellationMessageParts(args: {
     args.rejectedReason?.trim() ||
     args.reasonDetail?.trim() ||
     null;
+  const actor = resolveMerchantCancellationActor(
+    args.cancelledByType,
+    args.cancelledByLabel,
+    args.triggerSource,
+    rejected,
+  );
+  const resolvedBrandPrefix = merchantCancellationBrandPrefix(actor);
 
   if (eligible) {
-    const split = splitCancellationEligibleMessage(eligible);
+    const fixedEligible = applyMerchantCancellationActorToText(eligible, actor, rejected);
+    const split = splitCancellationEligibleMessage(fixedEligible);
     const cancelReason = rejected || split.cancelReason;
-    if (cancelReason || split.policySentence) {
+    const detail =
+      actor.kind === "auto" && cancelReason && /^auto cancel/i.test(cancelReason)
+        ? null
+        : cancelReason;
+    if (detail || split.policySentence || resolvedBrandPrefix) {
       return {
-        brandPrefix: split.brandPrefix,
-        cancelReason: cancelReason || null,
+        brandPrefix: detail && resolvedBrandPrefix
+          ? `${resolvedBrandPrefix}:`
+          : resolvedBrandPrefix,
+        cancelReason: detail || null,
         policySentence: split.policySentence,
       };
     }
   }
 
-  const brand = args.cancelledByBrand?.trim();
   const reason = rejected;
-  if (brand || reason) {
+  if (resolvedBrandPrefix || reason) {
+    const detail =
+      actor.kind === "auto" && reason && /^auto cancel/i.test(reason) ? null : reason;
     return {
-      brandPrefix: brand ? `Cancelled by ${brand}:` : null,
-      cancelReason: reason || null,
+      brandPrefix: detail && resolvedBrandPrefix
+        ? `${resolvedBrandPrefix}:`
+        : resolvedBrandPrefix,
+      cancelReason: detail || null,
       policySentence: eligible ? splitCancellationEligibleMessage(eligible).policySentence : null,
     };
   }

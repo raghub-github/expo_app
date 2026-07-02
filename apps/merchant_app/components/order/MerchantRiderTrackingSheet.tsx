@@ -147,7 +147,7 @@ export function MerchantRiderTrackingSheet({
         <Text style={styles.headerSub} numberOfLines={1}>
           {order.formattedOrderId
             ? `#${order.formattedOrderId.replace(/^#/, "")}`
-            : order.orderNumber}
+            : "Order ID unavailable"}
         </Text>
       </View>
 

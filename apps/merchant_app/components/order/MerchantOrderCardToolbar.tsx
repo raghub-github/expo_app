@@ -28,15 +28,20 @@ export function MerchantOrderIdRow({ formattedOrderId, fallbackOrderId }: Props)
     <View style={styles.row}>
       <FormattedOrderId
         formattedOrderId={formattedOrderId}
-        fallbackCoreId={fallbackOrderId}
+        fallbackCoreId={0}
         size="md"
         showHash
       />
-      <Pressable onPress={() => void onCopy()} hitSlop={8} style={styles.copyBtn}>
+      <Pressable
+        onPress={() => void onCopy()}
+        hitSlop={8}
+        style={styles.copyBtn}
+        disabled={!body}
+      >
         <Ionicons
           name={copied ? "checkmark" : "copy-outline"}
           size={15}
-          color={copied ? "#16A34A" : "#666666"}
+          color={copied ? "#16A34A" : body ? "#666666" : "#B0B0B0"}
         />
       </Pressable>
     </View>

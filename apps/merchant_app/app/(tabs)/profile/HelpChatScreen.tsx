@@ -520,9 +520,8 @@ export default function HelpChatScreen() {
   const linkedOrderLabel = useMemo(() => {
     const raw = typeof formattedOrderIdParam === "string" ? formattedOrderIdParam.trim() : "";
     if (raw) return raw.startsWith("#") ? raw : `#${raw}`;
-    if (resolvedOrderCoreId != null) return `#${resolvedOrderCoreId}`;
     return null;
-  }, [formattedOrderIdParam, resolvedOrderCoreId]);
+  }, [formattedOrderIdParam]);
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
 

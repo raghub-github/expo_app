@@ -58,10 +58,15 @@ export type MenuItemRow = {
   item_size_value: number | null;
   item_size_unit: string | null;
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  primary_image_moderation_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  rejection_reason?: string | null;
   has_pending_change_request?: boolean;
   pending_change_request_type?: "CREATE" | "UPDATE" | "DELETE" | null;
   is_locked_by_plan?: boolean;
   locked_reason?: string | null;
+  is_recommended?: boolean | null;
+  is_popular?: boolean | null;
+  image_count?: number;
 };
 
 export type ListCategoriesResponse = { categories: MenuCategory[] };
@@ -547,6 +552,41 @@ export async function patchItemStock(
   }
 }
 
+export async function patchItemFlags(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body: { is_recommended?: boolean; is_popular?: boolean }
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/flags?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "PATCH", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Item flags update failed: ${res.status}`);
+  }
+}
+
+export async function deleteMenuItemImage(
+  storeId: string,
+  imageId: number,
+  token: string
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/images/${imageId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Delete image failed: ${res.status}`);
+  }
+}
+
 export type OutOfStockMode = "CLEAR" | "MANUAL" | "HOURS" | "NEXT_OPEN" | "CUSTOM";
 
 /**
@@ -710,7 +750,16 @@ export type MenuItemDetail = MenuItemRow & {
       in_stock: boolean;
     }>;
   }>;
-  images: Array<{ id: number; image_url: string; is_primary: boolean; display_order: number }>;
+  images: Array<{
+    id: number;
+    image_url: string;
+    is_primary: boolean;
+    display_order: number;
+    moderation_status?: string | null;
+    rejection_reason?: string | null;
+    moderated_at?: string | null;
+    created_at?: string | null;
+  }>;
   linked_modifier_groups?: Array<{
     id: number;
     modifier_group_id: number;

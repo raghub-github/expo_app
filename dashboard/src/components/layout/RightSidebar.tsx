@@ -61,6 +61,7 @@ import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { shouldShowDashboardNavOverlay } from "@/lib/navigation/dashboard-nav-transition";
 import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
 import { MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
+import { MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT } from "@/lib/merchant/menu-review-queue";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -139,6 +140,7 @@ export function RightSidebar({
   const [areaManagerType, setAreaManagerType] =
     useState<AreaManagerTypeFilter | null>(null);
   const [pendingMenuRequestsCount, setPendingMenuRequestsCount] = useState<number>(0);
+  const [storeMenuReviewPendingCount, setStoreMenuReviewPendingCount] = useState<number>(0);
   const [resubmittedDocsCount, setResubmittedDocsCount] = useState<number>(0);
 
   const refreshResubmittedDocsCount = useCallback(() => {
@@ -168,33 +170,50 @@ export function RightSidebar({
     };
   }, [isAreaManagerDashboard]);
 
-  useEffect(() => {
+  const refreshReviewQueueSummary = useCallback(() => {
+    const storeMatch = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
+    const storeId = storeMatch ? storeMatch[1] : null;
     const isAdminMerchantsArea =
       cleanPathname.startsWith("/dashboard/merchants") && portal === "admin";
-    if (!isAdminMerchantsArea) {
+
+    if (isAdminMerchantsArea) {
+      fetch("/api/merchant-menu/review-queue-summary")
+        .then((res) => res.json())
+        .then((body) => {
+          if (!body?.success) return;
+          const total = Number(body.total_pending ?? 0);
+          setPendingMenuRequestsCount(Number.isFinite(total) ? total : 0);
+        })
+        .catch(() => setPendingMenuRequestsCount(0));
+      refreshResubmittedDocsCount();
+    } else {
       setPendingMenuRequestsCount(0);
       setResubmittedDocsCount(0);
-      return;
     }
 
-    let cancelled = false;
-    fetch("/api/merchant-menu/change-requests?status=PENDING&limit=1&offset=0")
-      .then((res) => res.json())
-      .then((body) => {
-        if (cancelled) return;
-        const total = Number(body?.total ?? 0);
-        setPendingMenuRequestsCount(Number.isFinite(total) ? total : 0);
-      })
-      .catch(() => {
-        if (!cancelled) setPendingMenuRequestsCount(0);
-      });
-
-    refreshResubmittedDocsCount();
-
-    return () => {
-      cancelled = true;
-    };
+    if (storeId) {
+      fetch(`/api/merchant-menu/review-queue-summary?storeId=${encodeURIComponent(storeId)}`)
+        .then((res) => res.json())
+        .then((body) => {
+          if (!body?.success) return;
+          const total = Number(body.total_pending ?? 0);
+          setStoreMenuReviewPendingCount(Number.isFinite(total) ? total : 0);
+        })
+        .catch(() => setStoreMenuReviewPendingCount(0));
+    } else {
+      setStoreMenuReviewPendingCount(0);
+    }
   }, [cleanPathname, portal, refreshResubmittedDocsCount]);
+
+  useEffect(() => {
+    refreshReviewQueueSummary();
+  }, [refreshReviewQueueSummary]);
+
+  useEffect(() => {
+    const onRefresh = () => refreshReviewQueueSummary();
+    window.addEventListener(MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT, onRefresh);
+  }, [refreshReviewQueueSummary]);
 
   useEffect(() => {
     const onRefresh = () => refreshResubmittedDocsCount();
@@ -801,6 +820,9 @@ export function RightSidebar({
                         .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
                 const linkEl = (route: DashboardSubRoute) => {
                   const isAllMerchantsRoute = route.href === "/dashboard/merchants";
+                  const isMenuChangeRequestsRoute = route.href.endsWith("/menu-change-requests");
+                  const menuReviewBadgeCount = isMenuChangeRequestsRoute ? storeMenuReviewPendingCount : 0;
+                  const showMenuReviewBadge = menuReviewBadgeCount > 0;
                   const isActive =
                     activeHref === route.href &&
                     !(isResubmittedActive && isAllMerchantsRoute);
@@ -811,7 +833,11 @@ export function RightSidebar({
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
                       className={`group relative cursor-pointer rounded-lg transition-all duration-200 ${
                         isOpen
-                          ? `grid w-full min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-x-2 px-2 py-2 text-xs font-medium ${
+                          ? `grid w-full min-w-0 ${
+                              showMenuReviewBadge
+                                ? "grid-cols-[1.25rem_minmax(0,1fr)_auto]"
+                                : "grid-cols-[1.25rem_minmax(0,1fr)]"
+                            } items-center gap-x-2 px-2 py-2 text-xs font-medium ${
                               isActive
                                 ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
                                 : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
@@ -822,7 +848,13 @@ export function RightSidebar({
                                 : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900"
                             }`
                       }`}
-                      title={!isOpen ? route.name : route.description}
+                      title={
+                        !isOpen
+                          ? showMenuReviewBadge
+                            ? `${route.name} (${menuReviewBadgeCount} pending)`
+                            : route.name
+                          : route.description
+                      }
                     >
                       {isOpen ? (
                         <>
@@ -838,13 +870,31 @@ export function RightSidebar({
                               />
                             )}
                           </span>
+                          {showMenuReviewBadge ? (
+                            <span
+                              className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                                isActive ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {menuReviewBadgeCount}
+                            </span>
+                          ) : null}
                         </>
                       ) : (
-                        <Icon className="h-5 w-5 shrink-0" aria-hidden />
+                        <>
+                          <Icon className="h-5 w-5 shrink-0" aria-hidden />
+                          {showMenuReviewBadge ? (
+                            <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+                              {menuReviewBadgeCount > 9 ? "9+" : menuReviewBadgeCount}
+                            </span>
+                          ) : null}
+                        </>
                       )}
                       {!isOpen && (
                         <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
-                          {route.name}
+                          {showMenuReviewBadge
+                            ? `${route.name} (${menuReviewBadgeCount} pending)`
+                            : route.name}
                           <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900"></div>
                         </div>
                       )}

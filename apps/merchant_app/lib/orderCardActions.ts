@@ -3,7 +3,7 @@ import type { OrderRecord } from "@/hooks/useOrders";
 import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
 
 function billLines(order: OrderRecord, storeName?: string | null, kotOnly = false): string {
-  const id = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId);
+  const id = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId) || "ID unavailable";
   const header = [storeName?.trim() || "GatiMitra Partner", `Order ${id}`, ""];
   const items = order.lineItems.map(
     (it) =>
@@ -18,7 +18,7 @@ function billLines(order: OrderRecord, storeName?: string | null, kotOnly = fals
 }
 
 function billHtml(order: OrderRecord, storeName?: string | null, kotOnly = false): string {
-  const id = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId);
+  const id = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId) || "ID unavailable";
   const rows = order.lineItems
     .map(
       (it) =>

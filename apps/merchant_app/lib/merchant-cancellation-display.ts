@@ -34,6 +34,9 @@ export function cancellationReasonsAreDuplicate(
 
 /** Customer app stores "Cancelled by me"; merchant UI shows who cancelled from the store's view. */
 export const CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL = "Cancelled by customer";
+export const STORE_CANCELLED_BY_STORE_LABEL = "Cancelled by store";
+export const GATIMITRA_CANCELLED_LABEL = "Cancelled by GatiMitra";
+export const AUTO_CANCELED_LABEL = "Auto Canceled";
 
 export function merchantFacingCancelledByLabel(
   label: string | null | undefined,
@@ -42,6 +45,9 @@ export function merchantFacingCancelledByLabel(
   const trimmed = (label ?? "").trim();
   const type = (cancelledByType ?? "").trim().toLowerCase();
 
+  if (/^auto cancel/i.test(trimmed)) {
+    return AUTO_CANCELED_LABEL;
+  }
   if (/^cancelled by me$/i.test(trimmed)) {
     return CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL;
   }
@@ -50,6 +56,25 @@ export function merchantFacingCancelledByLabel(
   }
   if (type === "customer" && (!trimmed || /^cancelled by (me|customer)$/i.test(trimmed))) {
     return CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL;
+  }
+  if (
+    type === "store" ||
+    type === "merchant" ||
+    /cancelled by store/i.test(trimmed) ||
+    /cancelled - merchant/i.test(trimmed) ||
+    /store itself/i.test(trimmed)
+  ) {
+    return STORE_CANCELLED_BY_STORE_LABEL;
+  }
+  if (
+    type === "admin" ||
+    isGatiMitraTeamCancellationLabel(trimmed) ||
+    /cancelled by gatimitra/i.test(trimmed)
+  ) {
+    return GATIMITRA_CANCELLED_LABEL;
+  }
+  if (type === "system") {
+    return AUTO_CANCELED_LABEL;
   }
   return trimmed;
 }

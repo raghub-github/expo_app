@@ -71,6 +71,8 @@ export function OrderCancellationBanner({
   const parts = resolveCancellationMessageParts({
     eligibleMessage: cancellationCompensation?.eligible_message,
     cancelledByBrand: cancellationCompensation?.cancelled_by_brand,
+    cancelledByType,
+    cancelledByLabel,
     reasonDetail: cancellationCompensation?.reason_detail,
     rejectedReason: rejectedReason ?? cancellationCompensation?.reason_detail,
   });

@@ -18,7 +18,7 @@ export function StoreLayoutWrapper({
   children,
 }: {
   storeId: string;
-  store: StoreInfo;
+  store: StoreInfo | null;
   children: React.ReactNode;
 }) {
   useLayoutEffect(() => {

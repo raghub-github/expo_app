@@ -1,21 +1,23 @@
 import { headers } from "next/headers";
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
 import { StoreLayoutWrapper } from "./StoreLayoutWrapper";
+import type { StoreInfo } from "./StoreLayoutShell";
+import {
+  getInternalDashboardOrigin,
+  readJsonResponse,
+} from "@/lib/server/internal-dashboard-origin";
 
 /** Fetch full store (verification=1). Cached 90s so revisits and nav within store are fast. */
-async function getStore(storeId: number) {
+async function getStore(storeId: number): Promise<StoreInfo | null> {
   const h = await headers();
-  const base =
-    process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : `http://127.0.0.1:${process.env.PORT || 3000}`;
+  const base = await getInternalDashboardOrigin();
   const res = await fetch(`${base}/api/merchant/stores/${storeId}?verification=1`, {
     next: { revalidate: 90 },
     headers: { cookie: h.get("cookie") ?? "" },
   });
   if (!res.ok) return null;
-  const data = await res.json();
-  return data?.success ? data.store : null;
+  const data = await readJsonResponse<{ success?: boolean; store?: StoreInfo }>(res, {});
+  return data?.success ? (data.store ?? null) : null;
 }
 
 export default async function StoreDashboardLayout({

@@ -868,7 +868,21 @@ export async function getMenuByStoreId(
             m.item_id,
             m.item_name,
             m.item_description,
-            m.item_image_url,
+            COALESCE(
+              NULLIF(TRIM((
+                SELECT img.image_url
+                FROM merchant_menu_item_images img
+                WHERE img.menu_item_id = m.id
+                  AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
+                ORDER BY CASE WHEN img.is_primary THEN 0 ELSE 1 END, img.created_at DESC, img.id DESC
+                LIMIT 1
+              )), ''),
+              CASE
+                WHEN m.approval_status = 'APPROVED'::merchant_menu_item_approval_status
+                THEN NULLIF(TRIM(m.item_image_url), '')
+                ELSE NULL
+              END
+            ) AS item_image_url,
             m.food_type,
             m.spice_level,
             m.cuisine_type,
@@ -906,7 +920,21 @@ export async function getMenuByStoreId(
             m.item_id,
             m.item_name,
             m.item_description,
-            m.item_image_url,
+            COALESCE(
+              NULLIF(TRIM((
+                SELECT img.image_url
+                FROM merchant_menu_item_images img
+                WHERE img.menu_item_id = m.id
+                  AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
+                ORDER BY CASE WHEN img.is_primary THEN 0 ELSE 1 END, img.created_at DESC, img.id DESC
+                LIMIT 1
+              )), ''),
+              CASE
+                WHEN m.approval_status = 'APPROVED'::merchant_menu_item_approval_status
+                THEN NULLIF(TRIM(m.item_image_url), '')
+                ELSE NULL
+              END
+            ) AS item_image_url,
             m.food_type,
             m.spice_level,
             m.cuisine_type,
@@ -1064,7 +1092,21 @@ export async function getMenuDelta(
       m.item_id,
       m.item_name,
       m.item_description,
-      m.item_image_url,
+      COALESCE(
+        NULLIF(TRIM((
+          SELECT img.image_url
+          FROM merchant_menu_item_images img
+          WHERE img.menu_item_id = m.id
+            AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
+          ORDER BY CASE WHEN img.is_primary THEN 0 ELSE 1 END, img.created_at DESC, img.id DESC
+          LIMIT 1
+        )), ''),
+        CASE
+          WHEN m.approval_status = 'APPROVED'::merchant_menu_item_approval_status
+          THEN NULLIF(TRIM(m.item_image_url), '')
+          ELSE NULL
+        END
+      ) AS item_image_url,
       m.food_type,
       m.spice_level,
       m.cuisine_type,

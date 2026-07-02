@@ -233,11 +233,9 @@ export default function EarningsScreen() {
             style={({ pressed }) => [s.cycleRowLeft, pressed && s.pressed]}
           >
             <Text style={s.payoutAmount}>
-              {formatCurrency(cycleExpanded ? currentCycleCard.netPayout : withdrawableBalance)}
+              {formatCurrency(withdrawableBalance)}
             </Text>
-            <Text style={s.cycleMetricLabel}>
-              {cycleExpanded ? "Total earnings" : "Available balance"}
-            </Text>
+            <Text style={s.cycleMetricLabel}>Available balance</Text>
             {cycleExpanded ? (
               <Text style={s.payoutOrders}>
                 Total orders · {currentCycleCard.orderCount}

@@ -8,6 +8,7 @@ import { FloatingTabBar } from "@/components/FloatingTabBar";
 import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar";
 import { ActiveTabProvider } from "@/context/ActiveTabContext";
 import { usePrefetchLiveOrderSupportTopics } from "@/hooks/useLiveOrderSupportTopics";
+import { usePrefetchMenuCatalog } from "@/hooks/useMenuQueries";
 
 const LABEL_FONT_SIZE = 12;
 
@@ -35,6 +36,7 @@ export default function TabsLayout() {
   const bottomInset = insets.bottom;
   const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP;
   usePrefetchLiveOrderSupportTopics();
+  usePrefetchMenuCatalog();
 
   return (
     <ActiveTabProvider>

@@ -99,7 +99,7 @@ export function StoreLayoutShell({
   children,
 }: {
   storeId: string;
-  store: StoreInfo;
+  store: StoreInfo | null;
   children: React.ReactNode;
 }) {
   const router = useRouter();

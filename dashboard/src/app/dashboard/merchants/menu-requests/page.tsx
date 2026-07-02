@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ChevronLeft, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
+import {
+  dispatchMenuReviewQueueRefresh,
+  MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT,
+  type MenuReviewQueueSummary,
+} from "@/lib/merchant/menu-review-queue";
 type ChangeRequestRow = {
   id: number;
   store_id: number;
@@ -30,6 +35,21 @@ export default function MenuRequestsPage() {
   const [actioningId, setActioningId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState<Record<number, string>>({});
   const [showRejectModal, setShowRejectModal] = useState<number | null>(null);
+  const [reviewSummary, setReviewSummary] = useState<MenuReviewQueueSummary | null>(null);
+
+  const fetchReviewSummary = useCallback(() => {
+    fetch("/api/merchant-menu/review-queue-summary")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!body?.success) return;
+        setReviewSummary({
+          pending_change_requests: Number(body.pending_change_requests ?? 0),
+          pending_photo_reviews: Number(body.pending_photo_reviews ?? 0),
+          total_pending: Number(body.total_pending ?? 0),
+        });
+      })
+      .catch(() => setReviewSummary(null));
+  }, []);
 
   const fetchRequests = async () => {
     setLoading(true);
@@ -52,7 +72,14 @@ export default function MenuRequestsPage() {
 
   useEffect(() => {
     fetchRequests();
+    fetchReviewSummary();
   }, [statusFilter]);
+
+  useEffect(() => {
+    const onRefresh = () => fetchReviewSummary();
+    window.addEventListener(MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT, onRefresh);
+  }, [fetchReviewSummary]);
 
   const handleApprove = async (id: number) => {
     setActioningId(id);
@@ -61,6 +88,8 @@ export default function MenuRequestsPage() {
       const data = await res.json();
       if (data.success) {
         await fetchRequests();
+        fetchReviewSummary();
+        dispatchMenuReviewQueueRefresh();
       } else {
         alert(data.error || "Approve failed");
       }
@@ -85,6 +114,8 @@ export default function MenuRequestsPage() {
         setShowRejectModal(null);
         setRejectReason((prev) => ({ ...prev, [id]: "" }));
         await fetchRequests();
+        fetchReviewSummary();
+        dispatchMenuReviewQueueRefresh();
       } else {
         alert(data.error || "Reject failed");
       }
@@ -107,8 +138,21 @@ export default function MenuRequestsPage() {
         </Link>
         <h1 className="text-2xl font-bold text-gray-900">Menu item change requests</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Review and approve or reject merchant update/delete requests for approved items.
+          Review merchant edit/delete requests and pending item photo uploads across all stores.
         </p>
+        {reviewSummary ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-900">
+              {reviewSummary.total_pending} total pending
+            </span>
+            <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700">
+              {reviewSummary.pending_change_requests} change requests
+            </span>
+            <span className="rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-xs font-semibold text-purple-800">
+              {reviewSummary.pending_photo_reviews} photo reviews
+            </span>
+          </div>
+        ) : null}
 
         <div className="mt-4 flex flex-wrap items-center gap-4">
           <label className="flex items-center gap-2">

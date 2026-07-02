@@ -117,6 +117,13 @@ export async function GET(
              protein, protein_unit, carbohydrates, carbohydrates_unit,
              fat, fat_unit, fibre, fibre_unit, item_tags, allergens,
              approval_status::text,
+             rejection_reason,
+             (
+               SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
+               LIMIT 1
+             ) AS primary_image_moderation_status,
              (SELECT EXISTS(
                SELECT 1 FROM merchant_menu_item_change_requests r
                WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING'

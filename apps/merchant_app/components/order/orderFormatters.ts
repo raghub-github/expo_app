@@ -4,7 +4,14 @@ import {
   isCatalogCancellationReason,
   isGatiMitraTeamCancellationLabel,
   merchantFacingCancelledByLabel,
+  GATIMITRA_CANCELLED_LABEL,
+  AUTO_CANCELED_LABEL,
+  STORE_CANCELLED_BY_STORE_LABEL,
+  CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL,
 } from "@/lib/merchant-cancellation-display";
+import {
+  resolveMerchantCancellationActor,
+} from "@/lib/merchant-cancellation-ledger-brand";
 
 /** Shared order display formatting (IST). */
 
@@ -50,11 +57,42 @@ export function splitRejectionMessage(
   const label = merchantFacingCancelledByLabel(cancelledByLabel, cancelledByType);
   const r = (reason ?? "").trim();
   const source = (cancelledByType ?? "").trim().toLowerCase();
+  const actor = resolveMerchantCancellationActor(cancelledByType, cancelledByLabel, null, r);
+
   if (status === "rto") {
     return r
       ? { prefix: label || "RTO:", detail: r }
       : { prefix: label || "Return to origin", detail: "" };
   }
+
+  if (actor.kind === "auto") {
+    if (!r || /^auto cancel/i.test(r)) {
+      return { prefix: AUTO_CANCELED_LABEL, detail: "" };
+    }
+    return { prefix: AUTO_CANCELED_LABEL, detail: r.replace(/^auto cancelled?:?\s*/i, "").trim() };
+  }
+
+  if (actor.kind === "actor" && actor.label === "GatiMitra") {
+    if (!r || cancellationReasonsAreDuplicate(r, label) || isCatalogCancellationReason(r)) {
+      return { prefix: GATIMITRA_CANCELLED_LABEL, detail: isCatalogCancellationReason(r) ? r : "" };
+    }
+    return { prefix: GATIMITRA_CANCELLED_LABEL, detail: r };
+  }
+
+  if (actor.kind === "actor" && actor.label === "customer") {
+    if (!r || cancellationReasonsAreDuplicate(r, label)) {
+      return { prefix: CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL, detail: "" };
+    }
+    return { prefix: CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL, detail: r };
+  }
+
+  if (actor.kind === "actor" && actor.label === "store") {
+    if (!r || cancellationReasonsAreDuplicate(r, label)) {
+      return { prefix: STORE_CANCELLED_BY_STORE_LABEL, detail: "" };
+    }
+    return { prefix: STORE_CANCELLED_BY_STORE_LABEL, detail: r };
+  }
+
   if (label) {
     if (isGatiMitraTeamCancellationLabel(label)) {
       if (!r || cancellationReasonsAreDuplicate(r, label)) {
@@ -68,18 +106,18 @@ export function splitRejectionMessage(
     return { prefix: label, detail: r };
   }
   if (/^auto cancelled/i.test(r)) {
-    return { prefix: "Auto Cancelled", detail: r.replace(/^auto cancelled:\s*/i, "").trim() };
+    return { prefix: AUTO_CANCELED_LABEL, detail: r.replace(/^auto cancelled:\s*/i, "").trim() };
   }
   if (source === "admin" || isCatalogCancellationReason(r)) {
     if (!r || GENERIC_CANCEL_REASONS.has(r.toLowerCase())) {
-      return { prefix: GATIMITRA_TEAM_REJECTION_LABEL, detail: "" };
+      return { prefix: GATIMITRA_CANCELLED_LABEL, detail: "" };
     }
-    return { prefix: GATIMITRA_TEAM_REJECTION_LABEL, detail: r };
+    return { prefix: GATIMITRA_CANCELLED_LABEL, detail: r };
   }
   if (r) {
-    return { prefix: "Rejected by Restaurant:", detail: r };
+    return { prefix: STORE_CANCELLED_BY_STORE_LABEL, detail: r };
   }
-  return { prefix: "Rejected by Restaurant:", detail: "Order cancelled" };
+  return { prefix: STORE_CANCELLED_BY_STORE_LABEL, detail: "" };
 }
 
 /** Same resolution as Partner Site `FormattedOrderId` (core formatted id, else #core pk). */
@@ -218,8 +256,8 @@ export function formatOrderIdDisplay(
 ): string {
   const f = (formattedOrderId ?? "").trim();
   if (f.length > 0) return f;
-  if (fallbackCoreId > 0) return String(fallbackCoreId);
-  if (fallbackFoodId != null && fallbackFoodId > 0) return String(fallbackFoodId);
+  void fallbackCoreId;
+  void fallbackFoodId;
   return "";
 }
 

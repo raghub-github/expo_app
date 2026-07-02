@@ -8,7 +8,13 @@ import type { OrderRecord } from "@/hooks/useOrders";
 import {
   GATIMITRA_TEAM_REJECTION_LABEL,
   isCatalogCancellationReason,
+  AUTO_CANCELED_LABEL,
+  CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL,
+  STORE_CANCELLED_BY_STORE_LABEL,
+  GATIMITRA_CANCELLED_LABEL,
+  merchantFacingCancelledByLabel,
 } from "@/lib/merchant-cancellation-display";
+import { resolveMerchantCancellationActor } from "@/lib/merchant-cancellation-ledger-brand";
 
 export type TimelineActorDetail =
   | {
@@ -63,6 +69,7 @@ export type MerchantTimelineOrder = {
   rejected_reason?: string | null;
   accepted_by_label?: string | null;
   cancelled_by_label?: string | null;
+  cancelled_by_type?: string | null;
   rider_picked_up_at?: string | null;
   handed_over_to_rider_at?: string | null;
   is_rto?: boolean;
@@ -93,13 +100,22 @@ export function displayLabelForStep(
   order: MerchantTimelineOrder
 ): string {
   if (step.key === "cancelled") {
-    const lbl = (order.cancelled_by_label ?? "").trim();
+    const actor = resolveMerchantCancellationActor(
+      order.cancelled_by_type,
+      order.cancelled_by_label,
+      null,
+      order.rejected_reason,
+    );
+    if (actor.kind === "auto") return AUTO_CANCELED_LABEL;
+
+    const lbl = merchantFacingCancelledByLabel(order.cancelled_by_label, order.cancelled_by_type);
     if (lbl) return lbl;
+
     const r = (order.rejected_reason ?? "").trim();
-    if (/^auto cancelled/i.test(r)) return "Auto Cancelled";
-    if (/customer/i.test(r) && !isCatalogCancellationReason(r)) return "Cancelled by customer";
-    if (isCatalogCancellationReason(r) || r) return GATIMITRA_TEAM_REJECTION_LABEL;
-    return GATIMITRA_TEAM_REJECTION_LABEL;
+    if (/^auto cancelled/i.test(r)) return AUTO_CANCELED_LABEL;
+    if (/customer/i.test(r) && !isCatalogCancellationReason(r)) return CUSTOMER_CANCELLED_BY_CUSTOMER_LABEL;
+    if (isCatalogCancellationReason(r) || r) return GATIMITRA_CANCELLED_LABEL;
+    return GATIMITRA_CANCELLED_LABEL;
   }
   return DISPLAY_LABELS[step.key] ?? step.label;
 }
@@ -118,6 +134,7 @@ export function apiFoodOrderToTimelineOrder(o: ApiFoodOrder): MerchantTimelineOr
     rejected_reason: o.rejected_reason,
     accepted_by_label: o.accepted_by_label,
     cancelled_by_label: o.cancelled_by_label,
+    cancelled_by_type: o.cancelled_by_type ?? null,
     rider_picked_up_at: o.rider_picked_up_at?.trim() || null,
     handed_over_to_rider_at: o.handed_over_to_rider_at?.trim() || null,
     is_rto: st === "RTO",
@@ -139,6 +156,7 @@ export function orderRecordToTimelineOrder(o: OrderRecord): MerchantTimelineOrde
     rejected_reason: o.rejectedReason ?? null,
     accepted_by_label: o.acceptedByLabel ?? null,
     cancelled_by_label: o.cancelledByLabel ?? null,
+    cancelled_by_type: o.cancelledByType ?? null,
     rider_picked_up_at: o.riderPickedUpAt ?? null,
     handed_over_to_rider_at: o.handedOverToRiderAt ?? null,
     is_rto: st === "RTO" || o.status === "rto",

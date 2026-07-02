@@ -1,6 +1,12 @@
 import type { LedgerEntry } from "@/services/walletApi";
 import { ledgerEntryTimestamp, parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import { splitCancellationEligibleMessage } from "@/lib/merchantCancellationCompensation";
+import {
+  applyMerchantCancellationActorToText,
+  merchantCancellationBrandPrefix,
+  merchantCancellationHeadline,
+  resolveMerchantCancellationActor,
+} from "@/lib/merchant-cancellation-ledger-brand";
 
 export type PayoutStatus = "PAID" | "PROCESSING" | "FAILED" | "ACCRUING";
 
@@ -194,35 +200,80 @@ export function isCancellationNoCreditLedgerEntry(entry: LedgerEntry): boolean {
 const WITHDRAWAL_COMPLETED_DESCRIPTION =
   "Funds have been successfully transferred to the registered bank account.";
 
+function replaceOrderHashWithFormattedId(desc: string, formattedOrderId: string | null): string {
+  if (!desc) return desc;
+  const cleanedId = (formattedOrderId ?? "").trim().replace(/^#/, "");
+  if (!cleanedId) {
+    return desc
+      .replace(/\bOrder\s*#\d+\b/gi, "Order ID unavailable")
+      .replace(/(^|[^\w])#\d+\b/g, "$1ID unavailable");
+  }
+  return desc
+    .replace(/\bOrder\s*#\d+\b/gi, `Order ${cleanedId}`)
+    .replace(/(^|[^\w])#\d+\b/g, `$1${cleanedId}`);
+}
+
+function cancellationBrandPrefixWithColon(
+  actor: ReturnType<typeof resolveMerchantCancellationActor>,
+  detail: string | null,
+): string | null {
+  const prefix = merchantCancellationBrandPrefix(actor);
+  if (!prefix) return null;
+  return detail ? `${prefix}:` : prefix;
+}
+
+function resolveLedgerCancellationActor(meta: Record<string, unknown> | null) {
+  const rejectedReason =
+    metaString(meta, "food_rejected_reason") ||
+    metaString(meta, "rejected_reason") ||
+    metaString(meta, "reason_detail");
+  return resolveMerchantCancellationActor(
+    metaString(meta, "cancelled_by_type"),
+    metaString(meta, "cancelled_by_label"),
+    metaString(meta, "trigger_source"),
+    rejectedReason,
+  );
+}
+
 /** Merchant-facing ledger description (policy-aware for cancellations). */
 export function resolveLedgerDisplayDescription(entry: LedgerEntry): string {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-  const desc = entry.description?.trim() ?? "";
+  const formattedOrderId = resolveLedgerFormattedOrderId(entry, meta);
+  const desc = replaceOrderHashWithFormattedId(entry.description?.trim() ?? "", formattedOrderId);
 
   if (/^Withdrawal completed #\d+$/i.test(desc)) {
     return WITHDRAWAL_COMPLETED_DESCRIPTION;
   }
 
   if (meta?.entry_type === "order_cancellation") {
+    const actor = resolveLedgerCancellationActor(meta);
+    const rejectedReason =
+      metaString(meta, "food_rejected_reason") ||
+      metaString(meta, "rejected_reason") ||
+      metaString(meta, "reason_detail");
+
     const eligible = String(meta.eligible_message ?? "").trim();
     if (eligible) {
-      const orderId = resolveLedgerFormattedOrderId(entry, meta);
-      if (orderId && !eligible.toLowerCase().includes(orderId.toLowerCase())) {
-        return `Order ${orderId} — ${eligible}`;
+      const fixedEligible = applyMerchantCancellationActorToText(eligible, actor, rejectedReason);
+      if (formattedOrderId && !fixedEligible.toLowerCase().includes(formattedOrderId.toLowerCase())) {
+        return `Order ${formattedOrderId} — ${fixedEligible}`;
       }
-      if (/no merchant credit/i.test(desc) || !desc) return eligible;
+      if (/no merchant credit/i.test(desc) || !desc) return fixedEligible;
+      return applyMerchantCancellationActorToText(desc, actor, rejectedReason);
     }
+
     if (/no merchant credit/i.test(desc)) {
       const policy = String(meta.applied_policy_title ?? "").trim();
-      const reason =
-        String(meta.reason_detail ?? meta.rejected_reason ?? meta.food_rejected_reason ?? "").trim();
-      const brand = String(meta.cancelled_by_brand ?? "GatiMitra").trim();
-      const orderId = resolveLedgerFormattedOrderId(entry, meta) ?? "Order";
-      const reasonPart = reason ? `Cancelled by ${brand}: ${reason}` : `Cancelled by ${brand}`;
+      const reasonPart = merchantCancellationHeadline(actor, rejectedReason);
+      const orderId = formattedOrderId ?? "Order";
       const why = policy
         ? `No compensation — ${policy}`
         : "No compensation as per cancellation policy";
       return `Order ${orderId} · ${reasonPart}. ${why}`;
+    }
+
+    if (desc && /cancel/i.test(desc)) {
+      return applyMerchantCancellationActorToText(desc, actor, rejectedReason);
     }
   }
 
@@ -984,10 +1035,25 @@ export function resolveLedgerFormattedOrderId(
   entry: LedgerEntry,
   meta: Record<string, unknown> | null | undefined,
 ): string | null {
-  const fromEntry = String(entry.formatted_order_id ?? "").trim();
-  if (fromEntry) return fromEntry.replace(/^#/, "");
-  const fromMeta = metaString(meta, "formatted_order_id");
-  if (fromMeta) return fromMeta.replace(/^#/, "");
+  const fromEntry = String(entry.formatted_order_id ?? "").trim().replace(/^#/, "");
+  if (fromEntry) return fromEntry;
+
+  const metaCandidates = [
+    "formatted_order_id",
+    "order_number",
+    "display_order_id",
+    "public_order_id",
+    "merchant_order_id",
+  ];
+  for (const key of metaCandidates) {
+    const value = metaString(meta, key).replace(/^#/, "");
+    if (value) return value;
+  }
+
+  const desc = String(entry.description ?? "");
+  const gmfMatch = desc.match(/\bGMF[A-Z0-9-]*\d+\b/i);
+  if (gmfMatch?.[0]) return gmfMatch[0].replace(/^#/, "");
+
   return null;
 }
 
@@ -1056,24 +1122,33 @@ function resolveCancellationDisplay(meta: Record<string, unknown> | null): {
   const rejectedReason =
     metaString(meta, "food_rejected_reason") ||
     metaString(meta, "rejected_reason");
-  const brandFromMeta = metaString(meta, "cancelled_by_brand");
   const reasonFromMeta = metaString(meta, "reason_detail");
+  const actor = resolveLedgerCancellationActor(meta);
 
   if (raw) {
     const split = splitCancellationEligibleMessage(raw);
     const cancelReason = rejectedReason || split.cancelReason || reasonFromMeta || null;
+    const detail =
+      actor.kind === "auto" && cancelReason && /^auto cancel/i.test(cancelReason)
+        ? null
+        : cancelReason;
     return {
-      cancelReason,
-      brandPrefix: split.brandPrefix ?? (brandFromMeta ? `Cancelled by ${brandFromMeta}:` : null),
+      cancelReason: detail,
+      brandPrefix: cancellationBrandPrefixWithColon(actor, detail),
       policySentence: split.policySentence,
       showPolicyLink: Boolean(meta?.compensation_engine),
     };
   }
 
-  if (brandFromMeta || rejectedReason || reasonFromMeta) {
+  if (rejectedReason || reasonFromMeta) {
+    const cancelReason = rejectedReason || reasonFromMeta || null;
+    const detail =
+      actor.kind === "auto" && cancelReason && /^auto cancel/i.test(cancelReason)
+        ? null
+        : cancelReason;
     return {
-      cancelReason: rejectedReason || reasonFromMeta || null,
-      brandPrefix: brandFromMeta ? `Cancelled by ${brandFromMeta}:` : null,
+      cancelReason: detail,
+      brandPrefix: cancellationBrandPrefixWithColon(actor, detail),
       policySentence: null,
       showPolicyLink: Boolean(meta?.compensation_engine),
     };
@@ -1125,8 +1200,7 @@ export function buildOrderPayoutBreakdown(
           return Number.isFinite(fromMeta) && fromMeta > 0 ? fromMeta : null;
         })();
 
-  const displayOrderId = formattedOrderId
-    ?? (ordersCoreId != null ? String(ordersCoreId) : String(entry.reference_id ?? entry.id));
+  const displayOrderId = formattedOrderId ?? "Order";
 
   const paymentRaw = meta?.payment_method ?? meta?.payment_status ?? "Paid online";
   const paymentLabel = typeof paymentRaw === "string" && paymentRaw.trim()

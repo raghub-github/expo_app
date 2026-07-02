@@ -1,9 +1,9 @@
 /**
  * POST /api/merchant/stores/[id]/menu/items/[itemId]/images
- * Upload menu item image to R2 and set as primary (replace semantics).
+ * Upload menu item image to R2 and set as primary (history preserved).
  *
  * - Uploads to R2 using key format compatible with backend.
- * - Deletes previous primary image from R2 and DB row.
+ * - Previous primary images are kept in merchant_menu_item_images (is_primary = false).
  * - Inserts new row into merchant_menu_item_images and updates merchant_menu_items.item_image_url.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -13,7 +13,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
-import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
+import { uploadWithKey } from "@/lib/services/r2";
 import { validateMenuItemSquareImage } from "@/lib/menuItemImageValidation";
 import { randomUUID } from "crypto";
 
@@ -69,13 +69,14 @@ export async function POST(
 
     const sql = getSql();
     const [itemRow] = await sql`
-      SELECT id, item_id
+      SELECT id, item_id, approval_status::text AS approval_status
       FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeId}
       LIMIT 1
     `;
     if (!itemRow) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
     const itemPublicId = String((itemRow as any).item_id);
+    const wasApproved = String((itemRow as { approval_status?: string }).approval_status ?? "").toUpperCase() === "APPROVED";
     const storePublicId = String((store as any).store_id ?? storeId);
 
     const ext = extFromName(file.name);
@@ -92,34 +93,49 @@ export async function POST(
 
     const imageUrl = buildStoredImageUrl(r2Key);
 
-    const [existingPrimary] = await sql`
-      SELECT id, r2_key FROM merchant_menu_item_images
-      WHERE menu_item_id = ${menuItemId} AND is_primary = true
-      LIMIT 1
+    const [orderRow] = await sql`
+      SELECT COALESCE(MAX(display_order), -1) + 1 AS next_order
+      FROM merchant_menu_item_images
+      WHERE menu_item_id = ${menuItemId}
     `;
-    if (existingPrimary) {
-      const oldKey = (existingPrimary as any).r2_key as string | null;
-      if (oldKey) {
-        try {
-          await deleteDocument(oldKey);
-        } catch {
-          // continue
-        }
-      }
-      await sql`DELETE FROM merchant_menu_item_images WHERE id = ${(existingPrimary as any).id}`;
-    }
+    const nextOrder = Number((orderRow as any)?.next_order ?? 0);
 
-    await sql`UPDATE merchant_menu_item_images SET is_primary = false WHERE menu_item_id = ${menuItemId}`;
+    await sql`
+      UPDATE merchant_menu_item_images
+      SET is_primary = false, updated_at = NOW()
+      WHERE menu_item_id = ${menuItemId} AND is_primary = true
+    `;
     const [imgRow] = await sql`
-      INSERT INTO merchant_menu_item_images (menu_item_id, image_url, r2_key, is_primary, format, display_order)
-      VALUES (${menuItemId}, ${imageUrl}, ${r2Key}, true, ${ext}, 0)
+      INSERT INTO merchant_menu_item_images (
+        menu_item_id, image_url, r2_key, is_primary, format, display_order,
+        moderation_status, rejection_reason, moderated_at, moderated_by
+      )
+      VALUES (
+        ${menuItemId}, ${imageUrl}, ${r2Key}, true, ${ext}, ${nextOrder},
+        'PENDING', NULL, NULL, NULL
+      )
       RETURNING id
     `;
-    await sql`
-      UPDATE merchant_menu_items
-      SET item_image_url = ${imageUrl}, updated_at = NOW()
-      WHERE id = ${menuItemId} AND store_id = ${storeId}
-    `;
+    if (wasApproved) {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${imageUrl},
+            rejection_reason = NULL,
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeId}
+      `;
+    } else {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${imageUrl},
+            approval_status = 'PENDING'::merchant_menu_item_approval_status,
+            rejection_reason = NULL,
+            approved_at = NULL,
+            approved_by = NULL,
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeId}
+      `;
+    }
 
     return NextResponse.json(
       { success: true, id: Number((imgRow as any).id), image_url: imageUrl, r2_key: r2Key },

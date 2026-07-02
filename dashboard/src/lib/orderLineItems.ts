@@ -1,4 +1,7 @@
-import { merchantFundedDiscountFromBilling } from '@/lib/merchant-billing-discount';
+import {
+  merchantFundedDiscountFromBilling,
+  parseBillingSnapshot,
+} from '@/lib/merchant-billing-discount';
 
 /** Shared order line-item parsing for partner food order APIs and UI. */
 
@@ -66,7 +69,7 @@ export function extractItemsArray(rawItems: unknown): unknown[] {
 
 function itemSnapshot(row: Record<string, unknown>): Record<string, unknown> | null {
   const snap = row.item_snapshot ?? row.itemSnapshot;
-  return snap && typeof snap === 'object' ? (snap as Record<string, unknown>) : null;
+  return parseBillingSnapshot(snap);
 }
 
 /** True when JSON items lack real names (placeholders like "Item 1") — prefer orders_core_items. */
@@ -242,7 +245,7 @@ export function mapCoreDbItemsToRaw(
     const unit = Number(row.base_price) || 0;
     const variant = String(row.variant_name ?? '').trim();
     const baseName = String(row.item_name ?? 'Item').trim();
-    const snap = row.item_snapshot ?? null;
+    const snap = parseBillingSnapshot(row.item_snapshot);
     const imageUrl = imageUrlFromSnapshot(snap);
     const addonUnit = Number(row.addon_price) || 0;
     return {
@@ -270,10 +273,7 @@ export function parseMerchantBillingBreakdown(
   core: Record<string, unknown>,
   foodTotal: number | string | null | undefined
 ): OrderPricingBreakdown {
-  const snap =
-    core.billing_snapshot && typeof core.billing_snapshot === 'object'
-      ? (core.billing_snapshot as Record<string, unknown>)
-      : null;
+  const snap = parseBillingSnapshot(core.billing_snapshot);
 
   const itemTotal = Number(snap?.item_total ?? core.item_total ?? 0) || 0;
   const addonTotal = Number(snap?.addon_total ?? core.addon_total ?? 0) || 0;
