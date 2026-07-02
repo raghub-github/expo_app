@@ -424,6 +424,28 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       };
     });
 
+    // --- devices: list registered push tokens for a user_id ---
+    // Powers the "Devices" super-admin page. Returns tokens across roles
+    // (customer / merchant / rider) so support can confirm which apps a user
+    // is signed into and see when each device last checked in.
+    admin.get<{ Querystring: { user_id?: string } }>(
+      "/devices",
+      async (req, reply) => {
+        const uid = (req.query?.user_id ?? "").trim();
+        if (!uid) return reply.code(400).send({ error: "user_id_required" });
+        const sql = getSql();
+        const rows = await sql`
+          SELECT id, user_id, role, device_type, expo_push_token,
+                 created_at, updated_at
+          FROM public.expo_push_tokens
+          WHERE user_id = ${uid}
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC
+          LIMIT 50
+        `;
+        return { items: rows };
+      },
+    );
+
     // --- logs (paged) ---
     admin.get<{ Querystring: { user_id?: string; status?: string; template?: string; campaign?: string; limit?: string; offset?: string } }>(
       "/logs",
