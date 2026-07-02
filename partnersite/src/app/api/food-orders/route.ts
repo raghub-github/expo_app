@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { withRouteTimeout, RouteTimeoutError } from '@/lib/route-timeout';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import { parseMerchantBillingBreakdown } from '@/lib/orderLineItems';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
@@ -67,6 +68,7 @@ type FoodRow = Record<string, unknown>;
  */
 export async function GET(req: NextRequest) {
   try {
+    return await withRouteTimeout('food-orders.get', 40_000, async () => {
     const { searchParams } = new URL(req.url);
     const storeId = searchParams.get('store_id') || searchParams.get('storeId');
     const status = searchParams.get('status');
@@ -633,7 +635,12 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.json({ orders: ordersWithCompensation });
+    });
   } catch (err) {
+    if (err instanceof RouteTimeoutError) {
+      console.warn('[food-orders] timeout after', err.ms, 'ms');
+      return NextResponse.json({ error: 'timeout', orders: [] }, { status: 504 });
+    }
     console.error('[food-orders] Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

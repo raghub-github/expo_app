@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { roundMoney } from '@/lib/wallet-types';
+import { withRouteTimeout, RouteTimeoutError } from '@/lib/route-timeout';
 import { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } from '@/lib/backfill-merchant-wallet-credits';
 import { latestRunningBalanceFromLedgerRows } from '@/lib/merchant-wallet-ledger-display';
 
@@ -30,6 +31,7 @@ async function resolveStoreInternalId(db: ReturnType<typeof getDb>, storeId: str
  */
 export async function GET(req: NextRequest) {
   try {
+    return await withRouteTimeout('merchant.wallet.get', 45_000, async () => {
     const storeId = req.nextUrl.searchParams.get('storeId') ?? req.nextUrl.searchParams.get('store_id');
     if (!storeId?.trim()) {
       return NextResponse.json({ error: 'storeId is required' }, { status: 400 });
@@ -42,11 +44,23 @@ export async function GET(req: NextRequest) {
     }
 
     // Heal missing ORDER_EARNING rows for orders delivered outside merchant PATCH (e.g. dashboard agent).
+    // Time-boxed: the backfill iterates ledger rows and can hang for minutes on
+    // large stores. If it doesn't finish in 10s we skip and continue with the
+    // rest of the wallet summary, so the route returns fast. A real backfill
+    // still runs periodically via the scheduled worker.
     try {
-      await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
-      await backfillMissingCancelledOrderLedger(db, merchantStoreId);
+      const backfillWithTimeout = Promise.race([
+        (async () => {
+          await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
+          await backfillMissingCancelledOrderLedger(db, merchantStoreId);
+        })(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('backfill_timeout_10s')), 10_000),
+        ),
+      ]);
+      await backfillWithTimeout;
     } catch (backfillErr) {
-      console.warn('[merchant/wallet] backfill credits:', backfillErr);
+      console.warn('[merchant/wallet] backfill skipped/failed:', (backfillErr as Error).message);
     }
 
     // V2 select includes locked_balance + lifetime columns. Older prod DBs may
@@ -290,7 +304,12 @@ export async function GET(req: NextRequest) {
       total_balance,
       settlement_paused,
     });
+    });
   } catch (e) {
+    if (e instanceof RouteTimeoutError) {
+      console.warn('[merchant/wallet] timeout after', e.ms, 'ms');
+      return NextResponse.json({ error: 'timeout' }, { status: 504 });
+    }
     console.error('[merchant/wallet]', e);
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
