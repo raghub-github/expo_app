@@ -186,12 +186,7 @@ export function stageTransitionToApi(from: OrderStage, to: OrderStage): string {
 
 export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
   const formatted = (o.formatted_order_id ?? "").trim();
-  const orderNumber =
-    formatted.length > 0
-      ? formatted
-      : o.orders_core_id > 0
-        ? String(o.orders_core_id)
-        : String(o.orders_food_id);
+  const orderNumber = formatted.length > 0 ? formatted : "";
   const deliveryType = (o.delivery_type ?? "GATIMITRA_RIDER") as DeliveryType;
 
   const foodRowId = o.core_only ? null : o.orders_food_id;

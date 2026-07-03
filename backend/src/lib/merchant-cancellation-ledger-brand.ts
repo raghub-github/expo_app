@@ -17,7 +17,7 @@ export function resolveCancelledByBrandForLedger(
     label.includes("customer") ||
     label.includes("cancelled by me")
   ) {
-    return "Customer";
+    return "customer";
   }
 
   if (
@@ -32,27 +32,32 @@ export function resolveCancelledByBrandForLedger(
     label.includes("restaurant") ||
     label.includes("store itself")
   ) {
-    return "Store Itself";
+    return "store";
   }
 
   if (
     type === "admin" ||
     source === "admin_cancel" ||
     source.includes("dashboard") ||
-    label.includes("gatimitra team")
+    label.includes("gatimitra team") ||
+    label.includes("gatimitra")
   ) {
-    return "GatiMitra Team";
+    return "GatiMitra";
   }
 
   if (type === "system" || source === "system" || /auto cancel/i.test(label)) {
-    return "GatiMitra Team";
+    return "__AUTO__";
   }
 
   if (source.includes("merchant") || source.includes("partner")) {
-    return "Store Itself";
+    return "store";
   }
 
-  return "GatiMitra Team";
+  return "GatiMitra";
+}
+
+export function isAutoCancellationBrand(brand: string): boolean {
+  return brand.trim().toUpperCase() === "__AUTO__";
 }
 
 export function applyCancelledByBrandToDescription(
@@ -60,8 +65,27 @@ export function applyCancelledByBrandToDescription(
   brand: string
 ): string {
   if (!description?.trim()) return "";
+  if (isAutoCancellationBrand(brand)) {
+    return description.replace(
+      /Cancelled by [^:—·\n.]+:\s*([^:—·\n.]+)/gi,
+      (_match, reason: string) => {
+        const stripped = String(reason ?? "").trim().replace(/^auto cancelled?:?\s*/i, "").trim();
+        return stripped ? `Auto Canceled: ${stripped}` : "Auto Canceled";
+      },
+    ).replace(/^Cancelled by [^:—·\n.]+(?=[:—·\n.]|$)/gi, "Auto Canceled");
+  }
+
+  const displayBrand =
+    brand === "Customer"
+      ? "customer"
+      : brand === "Store Itself"
+        ? "store"
+        : brand === "GatiMitra Team"
+          ? "GatiMitra"
+          : brand;
+
   return description.replace(
     /Cancelled by [^:—·\n.]+(?=[:—·\n.]|$)/gi,
-    `Cancelled by ${brand}`
+    `Cancelled by ${displayBrand}`,
   );
 }

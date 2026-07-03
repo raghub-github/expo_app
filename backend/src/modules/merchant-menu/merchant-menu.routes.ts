@@ -21,6 +21,7 @@ import {
   updateItem,
   deleteItem,
   patchItemStock,
+  patchItemFlags,
   patchCategoryOutOfStock,
   patchItemOutOfStock,
   patchComboOutOfStock,
@@ -214,6 +215,11 @@ const itemUpdateSchema = z.object({
 const stockPatchSchema = z.object({
   in_stock: z.boolean().optional(),
   available_quantity: z.number().int().min(0).optional().nullable(),
+});
+
+const itemFlagsPatchSchema = z.object({
+  is_recommended: z.boolean().optional(),
+  is_popular: z.boolean().optional(),
 });
 
 const outOfStockPatchSchema = z.object({
@@ -854,6 +860,38 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
       );
 
       protectedApp.patch<{
+        Params: { id: string };
+        Body: z.infer<typeof itemFlagsPatchSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/items/:id/flags",
+        { schema: { body: itemFlagsPatchSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          const ok = await patchItemFlags(id, access.storeIdNum, req.body);
+          if (!ok) return reply.code(404).send({ error: "item_not_found_or_invalid_body" });
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "menu_item",
+              action: "update",
+              entityId: id,
+              summary: `Merchant updated item flags for item #${id}`,
+              diff: { patch: req.body },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
+          return reply.send({ ok: true });
+        }
+      );
+
+      protectedApp.patch<{
         Params: { categoryId: string };
         Body: z.infer<typeof outOfStockPatchSchema>;
         Querystring: { storeId: string };
@@ -1157,6 +1195,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
 
       const approvalPatchSchema = z.object({
         approval_status: z.enum(["APPROVED", "REJECTED"]),
+        rejection_reason: z.string().max(1000).optional().nullable(),
       });
 
       protectedApp.patch<{
@@ -1184,6 +1223,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
             approval_status: req.body.approval_status,
             approved_by: req.auth?.sub ?? "unknown",
             approved_by_role: role,
+            rejection_reason: req.body.rejection_reason,
           });
           if (!ok) return reply.code(404).send({ error: "item_not_found" });
           try { await logStoreActivity({ storeId: storeIdNum, section: "menu_item", action: "update", entityId: id, summary: `Merchant set item #${id} approval to ${req.body.approval_status}`, actorType: "merchant", source: "merchant_app" }); } catch {}
@@ -1475,7 +1515,6 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               r2_key: uploadedKey,
               is_primary: true,
               format: ext,
-              display_order: 0,
             });
             if (req.auth?.role === "merchant" && req.auth?.sub) {
               await setItemPendingForReReview(itemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });

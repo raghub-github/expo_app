@@ -48,7 +48,11 @@ export default function NotificationsLayout({ children }: { children: ReactNode 
         </div>
         <nav className="space-y-0.5 px-2">
           {ITEMS.map(({ href, label, Icon }) => {
-            const active = pathname === href || (href !== "/dashboard/super-admin/notifications" && pathname.startsWith(href));
+            const active =
+              pathname === href ||
+              (href !== "/dashboard/super-admin/notifications" &&
+                pathname != null &&
+                pathname.startsWith(href));
             return (
               <Link
                 key={href}

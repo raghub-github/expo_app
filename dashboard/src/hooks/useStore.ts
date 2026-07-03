@@ -47,8 +47,17 @@ async function fetchStore(storeId: string): Promise<StoreProfile | null> {
     `/api/merchant/stores/${storeId}?verification=1`,
     { credentials: "include" }
   );
-  const data = await res.json();
-  if (!res.ok || !data.success) return null;
+  const text = await res.text();
+  const data = text.trim()
+    ? (() => {
+        try {
+          return JSON.parse(text) as { success?: boolean; store?: StoreProfile };
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+  if (!res.ok || !data?.success) return null;
   return data.store ?? null;
 }
 

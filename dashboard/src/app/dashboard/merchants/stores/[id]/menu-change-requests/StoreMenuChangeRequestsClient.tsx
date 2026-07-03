@@ -3,10 +3,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { FileText, X } from "lucide-react";
+import { FileText, ImageIcon, X } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { R2Image } from "@/components/ui/R2Image";
 import { useStoreMenuQuery } from "@/hooks/queries/useMerchantStoreQueries";
 import { queryKeys } from "@/lib/queryKeys";
+import {
+  dispatchMenuReviewQueueRefresh,
+  MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT,
+  type MenuReviewQueueSummary,
+} from "@/lib/merchant/menu-review-queue";
+import { ITEM_PLACEHOLDER_SVG, type MenuItem, type MenuCategory } from "../menu/menu-types";
 import {
   buildChangeRequestDiff,
   ChangeRequestFullPayloadPanels,
@@ -14,6 +21,15 @@ import {
   menuItemChangeFieldLabel,
   parseChangeRequestJson,
 } from "../menu/menuChangeRequestReview";
+import { MenuItemPhotoCustomerPreview } from "@/components/merchant/MenuItemPhotoCustomerPreview";
+
+const PHOTO_REJECT_PRESETS = [
+  "Image is blurry or low quality",
+  "Dish is not clearly visible",
+  "Image contains watermark or promotional text",
+  "Wrong dish photo uploaded",
+  "Image does not match item name/description",
+] as const;
 
 export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
@@ -23,7 +39,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
 
   const refreshMenu = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
-    await queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId), type: "active" });
+    await queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
   }, [queryClient, storeId]);
 
   const trackAudit = useCallback(
@@ -73,6 +89,67 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
   const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
   const [changeRequests, setChangeRequests] = useState<Record<string, unknown>[]>([]);
   const [crDetailModal, setCrDetailModal] = useState<Record<string, unknown> | null>(null);
+  const [crRejectReason, setCrRejectReason] = useState("");
+  const [reviewSummary, setReviewSummary] = useState<MenuReviewQueueSummary | null>(null);
+  const [photoReviewItem, setPhotoReviewItem] = useState<MenuItem | null>(null);
+  const [photoRejectReason, setPhotoRejectReason] = useState("");
+  const [photoRejectError, setPhotoRejectError] = useState<string | null>(null);
+  const [photoActionLoading, setPhotoActionLoading] = useState<"APPROVE" | "REJECT" | null>(null);
+
+  const menuItems = ((data as { items?: MenuItem[] } | null)?.items ?? []) as MenuItem[];
+  const categories = ((data as { categories?: MenuCategory[] } | null)?.categories ?? []) as MenuCategory[];
+
+  const getCategoryLabel = useCallback(
+    (categoryId: number | null | undefined) => {
+      if (categoryId == null) return undefined;
+      const cat = categories.find((c) => Number(c.id) === Number(categoryId));
+      if (!cat) return undefined;
+      if (cat.parent_category_id) {
+        const parent = categories.find((c) => Number(c.id) === Number(cat.parent_category_id));
+        return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
+      }
+      return cat.category_name;
+    },
+    [categories]
+  );
+
+  const pendingPhotoItems = useMemo(
+    () =>
+      menuItems.filter((item) => {
+        if (!item.item_image_url?.trim()) return false;
+        const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
+        if (primaryMod === "PENDING") return true;
+        const st = String(item.approval_status ?? "PENDING").toUpperCase();
+        return st === "PENDING";
+      }),
+    [menuItems]
+  );
+
+  const fetchReviewSummary = useCallback(() => {
+    const id = storePublicId ?? storeId;
+    if (!id) return;
+    fetch(`/api/merchant-menu/review-queue-summary?storeId=${encodeURIComponent(id)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!body?.success) return;
+        setReviewSummary({
+          pending_change_requests: Number(body.pending_change_requests ?? 0),
+          pending_photo_reviews: Number(body.pending_photo_reviews ?? 0),
+          total_pending: Number(body.total_pending ?? 0),
+        });
+      })
+      .catch(() => setReviewSummary(null));
+  }, [storePublicId, storeId]);
+
+  useEffect(() => {
+    fetchReviewSummary();
+  }, [fetchReviewSummary]);
+
+  useEffect(() => {
+    const onRefresh = () => fetchReviewSummary();
+    window.addEventListener(MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT, onRefresh);
+  }, [fetchReviewSummary]);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,6 +209,8 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
       });
       await refreshMenu();
       refetchChangeRequests();
+      fetchReviewSummary();
+      dispatchMenuReviewQueueRefresh();
       setCrDetailModal((m) => (m && Number(m.id) === id ? null : m));
     } catch (e) {
       toast(e instanceof Error ? e.message : "Approve failed");
@@ -149,13 +228,18 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     }
   };
 
-  const handleRejectCr = async (id: number) => {
+  const handleRejectCr = async (id: number, reviewedReason?: string) => {
+    const reason = (reviewedReason ?? crRejectReason).trim();
+    if (reason.length < 3) {
+      toast("Add a rejection reason (min 3 characters).");
+      return;
+    }
     setCrActionLoadingId(id);
     try {
       const res = await fetch(`/api/merchant-menu/change-requests/${id}/reject`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reviewed_reason: "Rejected by agent" }),
+        body: JSON.stringify({ reviewed_reason: reason }),
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok || resData?.success === false) throw new Error(resData?.error || "Reject failed");
@@ -170,7 +254,10 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
       });
       await refreshMenu();
       refetchChangeRequests();
+      fetchReviewSummary();
+      dispatchMenuReviewQueueRefresh();
       setCrDetailModal((m) => (m && Number(m.id) === id ? null : m));
+      setCrRejectReason("");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Reject failed");
       trackAudit({
@@ -245,15 +332,208 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     return [...changed, ...rest];
   }, [crDetailModal, crParsedCurrent, crParsedRequested, crChangedKeys]);
 
+  const handleApprovePhoto = async (item: MenuItem) => {
+    setPhotoActionLoading("APPROVE");
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${item.id}/approval`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approval_status: "APPROVED" }),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok || resData?.success === false) throw new Error(resData?.error || "Approve failed");
+      toast("Photo approved.");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(item.id),
+        actionDetails: { action: "approve_item_photo" },
+        actionStatus: "SUCCESS",
+        requestMethod: "PATCH",
+      });
+      await refreshMenu();
+      fetchReviewSummary();
+      dispatchMenuReviewQueueRefresh();
+      setPhotoReviewItem(null);
+      setPhotoRejectReason("");
+      setPhotoRejectError(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Approve failed");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(item.id),
+        actionDetails: { action: "approve_item_photo" },
+        actionStatus: "FAILED",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        requestMethod: "PATCH",
+      });
+    } finally {
+      setPhotoActionLoading(null);
+    }
+  };
+
+  const handleRejectPhoto = async (item: MenuItem, reasonInput?: string) => {
+    const reason = (reasonInput ?? photoRejectReason).trim();
+    if (reason.length < 3) {
+      const message = "Rejection reason is required (min 3 characters).";
+      setPhotoRejectError(message);
+      toast(message);
+      return;
+    }
+    setPhotoRejectError(null);
+    setPhotoActionLoading("REJECT");
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${item.id}/approval`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approval_status: "REJECTED", rejection_reason: reason }),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok || resData?.success === false) throw new Error(resData?.error || "Reject failed");
+      toast(
+        resData?.restored_previous_photo
+          ? "Photo rejected. Previous approved image restored."
+          : "Photo rejected."
+      );
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(item.id),
+        actionDetails: { action: "reject_item_photo", rejection_reason: reason },
+        actionStatus: "SUCCESS",
+        requestMethod: "PATCH",
+      });
+      await refreshMenu();
+      fetchReviewSummary();
+      dispatchMenuReviewQueueRefresh();
+      setPhotoReviewItem(null);
+      setPhotoRejectReason("");
+      setPhotoRejectError(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Reject failed");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(item.id),
+        actionDetails: { action: "reject_item_photo" },
+        actionStatus: "FAILED",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        requestMethod: "PATCH",
+      });
+    } finally {
+      setPhotoActionLoading(null);
+    }
+  };
+
   return (
     <div className="flex flex-1 min-h-0 flex-col bg-slate-50">
       <div className="border-b border-gray-200 bg-white px-3 py-3 sm:px-4">
         <h1 className="text-lg font-bold text-gray-900 sm:text-xl">Menu change requests</h1>
-        <p className="mt-0.5 text-sm text-gray-500">Merchant edit/delete requests for this store (agent review).</p>
+        <p className="mt-0.5 text-sm text-gray-500">
+          Merchant edit/delete requests and uploaded photo reviews for this store.
+        </p>
+        {reviewSummary ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-900">
+              {reviewSummary.total_pending} total pending
+            </span>
+            <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700">
+              {reviewSummary.pending_change_requests} change requests
+            </span>
+            <span className="rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-xs font-semibold text-purple-800">
+              {reviewSummary.pending_photo_reviews} photo reviews
+            </span>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-4">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-6xl space-y-8">
+          <section>
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-bold text-gray-900">
+                  <ImageIcon className="h-4 w-4 text-purple-600" aria-hidden />
+                  Photo reviews
+                </div>
+                <div className="text-xs text-gray-500">
+                  New or replaced item photos waiting for approval.
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-x-auto rounded-xl border border-gray-200 bg-white">
+              <table className="min-w-full text-sm">
+                <thead className="sticky top-0 z-10 bg-white">
+                  <tr className="text-xs text-gray-500 border-b border-gray-200">
+                    <th className="text-left font-semibold py-3 px-4">Item</th>
+                    <th className="text-left font-semibold py-3 px-4">Photo</th>
+                    <th className="text-left font-semibold py-3 px-4">Status</th>
+                    <th className="text-right font-semibold py-3 px-4">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {menuQuery.isLoading ? (
+                    <tr>
+                      <td className="px-4 py-6 text-xs text-gray-500" colSpan={4}>
+                        Loading photo reviews…
+                      </td>
+                    </tr>
+                  ) : pendingPhotoItems.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-6 text-xs text-gray-500" colSpan={4}>
+                        No pending photo reviews.
+                      </td>
+                    </tr>
+                  ) : (
+                    pendingPhotoItems.map((item) => (
+                      <tr key={item.id} className="border-t border-gray-100">
+                        <td className="py-3 px-4">
+                          <button
+                            type="button"
+                            onClick={() => setPhotoReviewItem(item)}
+                            className="cursor-pointer font-semibold text-left text-blue-700 hover:text-blue-900 hover:underline underline-offset-2"
+                          >
+                            {item.item_name}
+                          </button>
+                          <div className="text-xs text-gray-500">₹{item.selling_price}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="h-12 w-12 overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+                            <R2Image
+                              src={item.item_image_url}
+                              alt={item.item_name}
+                              className="h-full w-full object-cover"
+                              fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                            />
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs font-bold text-amber-800">
+                            Pending
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setPhotoReviewItem(item)}
+                              className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50"
+                            >
+                              Review
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section>
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
             <div>
               <div className="text-sm font-bold text-gray-900">Requests</div>
@@ -371,6 +651,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
               </tbody>
             </table>
           </div>
+          </section>
         </div>
       </div>
 
@@ -479,14 +760,27 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                 </div>
 
                 {String(crDetailModal.status) === "PENDING" ? (
-                  <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+                  <div className="px-4 py-3 border-t border-gray-100 space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">
+                        Rejection reason (required if rejecting)
+                      </label>
+                      <textarea
+                        value={crRejectReason}
+                        onChange={(e) => setCrRejectReason(e.target.value)}
+                        rows={2}
+                        placeholder="Why is this change request being rejected?"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 resize-y"
+                      />
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => handleRejectCr(Number(crDetailModal.id))}
                       disabled={crActionLoadingId === Number(crDetailModal.id)}
-                      className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 disabled:opacity-50"
+                      className="px-3 py-2 rounded-lg text-sm font-medium text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-50"
                     >
-                      {crActionLoadingId === Number(crDetailModal.id) ? "…" : "Reject"}
+                      {crActionLoadingId === Number(crDetailModal.id) ? "…" : "Reject request"}
                     </button>
                     <button
                       type="button"
@@ -494,8 +788,9 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                       disabled={crActionLoadingId === Number(crDetailModal.id)}
                       className="px-3 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
                     >
-                      {crActionLoadingId === Number(crDetailModal.id) ? "…" : "Approve"}
+                      {crActionLoadingId === Number(crDetailModal.id) ? "…" : "Approve request"}
                     </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-end">
@@ -508,6 +803,99 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                     </button>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {photoReviewItem &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9998] flex items-stretch justify-end bg-black/40 backdrop-blur-sm"
+            onClick={() => {
+              setPhotoReviewItem(null);
+              setPhotoRejectReason("");
+              setPhotoRejectError(null);
+            }}
+          >
+            <div
+              className="w-full max-w-lg bg-white shadow-xl border-l border-gray-200 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                <h2 className="text-sm font-bold text-gray-900">Review item photo</h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPhotoReviewItem(null);
+                    setPhotoRejectReason("");
+                    setPhotoRejectError(null);
+                  }}
+                  className="text-xs text-gray-500 hover:text-gray-800"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="p-4 flex-1 overflow-auto space-y-4 text-sm">
+                <MenuItemPhotoCustomerPreview
+                  item={photoReviewItem}
+                  categoryLabel={getCategoryLabel(photoReviewItem.category_id)}
+                />
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Rejection reason (required if rejecting)
+                  </label>
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {PHOTO_REJECT_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          setPhotoRejectReason(preset);
+                          setPhotoRejectError(null);
+                        }}
+                        className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-left text-[10px] font-medium text-gray-700 hover:bg-gray-100"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    value={photoRejectReason}
+                    onChange={(e) => {
+                      setPhotoRejectReason(e.target.value);
+                      if (photoRejectError) setPhotoRejectError(null);
+                    }}
+                    rows={2}
+                    placeholder="Why is this photo being rejected?"
+                    className={`w-full rounded-lg border px-3 py-2 text-sm text-gray-900 resize-y ${
+                      photoRejectError ? "border-red-400 ring-1 ring-red-200" : "border-gray-300"
+                    }`}
+                  />
+                  {photoRejectError ? (
+                    <p className="mt-1 text-xs font-medium text-red-600">{photoRejectError}</p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="px-4 py-3 border-t border-gray-200 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleRejectPhoto(photoReviewItem)}
+                  disabled={photoActionLoading !== null}
+                  className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-red-200 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50"
+                >
+                  {photoActionLoading === "REJECT" ? "Rejecting…" : "Reject photo"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleApprovePhoto(photoReviewItem)}
+                  disabled={photoActionLoading !== null}
+                  className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md text-xs font-bold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                >
+                  {photoActionLoading === "APPROVE" ? "Approving…" : "Approve photo"}
+                </button>
               </div>
             </div>
           </div>,

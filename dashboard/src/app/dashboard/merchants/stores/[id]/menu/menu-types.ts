@@ -117,6 +117,17 @@ export interface Variant {
   is_default?: boolean;
 }
 
+export interface MenuItemImage {
+  id: number;
+  image_url: string;
+  is_primary: boolean;
+  display_order: number;
+  moderation_status?: string | null;
+  rejection_reason?: string | null;
+  moderated_at?: string | null;
+  created_at?: string | null;
+}
+
 export interface MenuItem {
   id: number;
   item_id: string;
@@ -167,8 +178,11 @@ export interface MenuItem {
   is_active?: boolean;
   store_id?: number;
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  primary_image_moderation_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  rejection_reason?: string | null;
   has_pending_change_request?: boolean;
   pending_change_request_type?: "CREATE" | "UPDATE" | "DELETE" | null;
+  images?: MenuItemImage[];
   /** From GET item detail: reusable addon groups linked to this item */
   linked_modifier_groups?: Array<{
     id: number;

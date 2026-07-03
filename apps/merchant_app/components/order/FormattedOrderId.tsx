@@ -52,10 +52,10 @@ export function FormattedOrderId({
     );
   }
 
-  const fallback = display || String(fallbackCoreId);
+  const fallback = display || "ORDER";
   return (
     <View style={styles.row}>
-      {showHash ? (
+      {showHash && display ? (
         <Text style={[styles.hash, isLg ? styles.prefixLg : styles.prefixMd]}>#</Text>
       ) : null}
       <Text style={[styles.fallback, isLg ? styles.prefixLg : styles.prefixMd]}>{fallback}</Text>

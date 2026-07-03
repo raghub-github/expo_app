@@ -39,23 +39,13 @@ import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
+import { formatCurrency } from "@/lib/merchantPayoutUtils";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
 const MAX_RECENT_ORDERS = 5;
 
 type OrderFilterTab = "New" | "Active";
-
-function formatCurrency(n: number): string {
-  return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
-}
-
-function formatCurrencyPrecise(n: number): string {
-  return `₹${n.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
 
 // GatiMitra brand only: white/surface cards + primary green or navy for accent
 function KpiCard({
@@ -194,7 +184,8 @@ export default function DashboardScreen() {
   useFocusEffect(
     useCallback(() => {
       void refresh();
-    }, [refresh])
+      void loadDashboardStats();
+    }, [refresh, loadDashboardStats])
   );
 
   // Show the yellow banner ONLY when store is closed AND closure is manual/scheduled
@@ -375,7 +366,7 @@ export default function DashboardScreen() {
       <View style={styles.walletTodayChip}>
         <Ionicons name="wallet-outline" size={14} color={GatiMitraMerchant.navy} />
         <Text style={styles.walletTodayChipText}>
-          Wallet balance: {formatCurrencyPrecise(walletBalance)}
+          Wallet balance: {formatCurrency(walletBalance)}
         </Text>
       </View>
 

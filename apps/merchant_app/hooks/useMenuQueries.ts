@@ -5,6 +5,8 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
   fetchMenuCategories,
   fetchMenuItems,
@@ -17,8 +19,32 @@ import {
   deleteCategory,
   type MenuItemPayload,
 } from "@/services/menuApi";
+import {
+  readMenuCatalogSnapshot,
+  writeMenuCatalogCategories,
+  writeMenuCatalogItems,
+} from "@/lib/menuCatalogCache";
 
 // ─── Query keys (single place for invalidation) ─────────────────────────────
+
+export const MENU_CATALOG_STALE_MS = 10 * 60 * 1000;
+export const MENU_CATALOG_GC_MS = 30 * 60 * 1000;
+
+export type MenuItemsFilters = {
+  categoryId?: number | null;
+  search?: string;
+  approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  inStock?: boolean | null;
+  changeRequestType?: "DELETE" | "UPDATE" | null;
+  limit?: number;
+  offset?: number;
+};
+
+/** Default list query for the Catalog tab (must match prefetch + screen). */
+export const MENU_CATALOG_LIST_FILTERS: MenuItemsFilters = {
+  limit: 500,
+  offset: 0,
+};
 
 export const menuKeys = {
   all: ["menu"] as const,
@@ -38,32 +64,41 @@ export const menuKeys = {
 // ─── Queries ───────────────────────────────────────────────────────────────
 
 export function useMenuCategories(storeId: string | null, token: string | null) {
+  const snapshot = readMenuCatalogSnapshot(storeId);
   return useQuery({
     queryKey: menuKeys.categories(storeId),
-    queryFn: () => fetchMenuCategories(storeId!, token!).then((r) => r.categories ?? []),
+    queryFn: async () => {
+      const rows = await fetchMenuCategories(storeId!, token!).then((r) => r.categories ?? []);
+      writeMenuCatalogCategories(storeId!, rows);
+      return rows;
+    },
     enabled: Boolean(storeId && token),
+    staleTime: MENU_CATALOG_STALE_MS,
+    gcTime: MENU_CATALOG_GC_MS,
+    initialData: snapshot?.categories,
+    initialDataUpdatedAt: snapshot?.savedAt,
   });
 }
-
-export type MenuItemsFilters = {
-  categoryId?: number | null;
-  search?: string;
-  approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
-  inStock?: boolean | null;
-  changeRequestType?: "DELETE" | "UPDATE" | null;
-  limit?: number;
-  offset?: number;
-};
 
 export function useMenuItems(
   storeId: string | null,
   token: string | null,
   filters: MenuItemsFilters = {}
 ) {
+  const snapshot = readMenuCatalogSnapshot(storeId);
+  const hasCatalogDefaults =
+    (filters.limit ?? 100) === MENU_CATALOG_LIST_FILTERS.limit &&
+    (filters.offset ?? 0) === MENU_CATALOG_LIST_FILTERS.offset &&
+    filters.categoryId == null &&
+    !filters.search &&
+    filters.approvalStatus == null &&
+    filters.inStock == null &&
+    filters.changeRequestType == null;
+
   return useQuery({
     queryKey: menuKeys.items(storeId, filters),
-    queryFn: () =>
-      fetchMenuItems(storeId!, token!, {
+    queryFn: async () => {
+      const data = await fetchMenuItems(storeId!, token!, {
         categoryId: filters.categoryId ?? undefined,
         search: filters.search ?? undefined,
         approvalStatus: filters.approvalStatus ?? undefined,
@@ -71,10 +106,27 @@ export function useMenuItems(
         changeRequestType: filters.changeRequestType ?? undefined,
         limit: filters.limit ?? 100,
         offset: filters.offset ?? 0,
-      }),
+      });
+      if (hasCatalogDefaults && storeId) {
+        writeMenuCatalogItems(storeId, data);
+      }
+      return data;
+    },
     enabled: Boolean(storeId && token),
-    staleTime: 15_000,
+    staleTime: MENU_CATALOG_STALE_MS,
+    gcTime: MENU_CATALOG_GC_MS,
+    initialData: hasCatalogDefaults ? snapshot?.catalog : undefined,
+    initialDataUpdatedAt: hasCatalogDefaults ? snapshot?.savedAt : undefined,
   });
+}
+
+/** Warm menu cache when tabs mount so Catalog opens instantly. */
+export function usePrefetchMenuCatalog() {
+  const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
+  const storeId = selectedStore?.store_id ?? null;
+  useMenuCategories(storeId, token);
+  useMenuItems(storeId, token, MENU_CATALOG_LIST_FILTERS);
 }
 
 export function useMenuItem(

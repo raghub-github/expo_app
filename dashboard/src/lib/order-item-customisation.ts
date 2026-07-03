@@ -6,6 +6,7 @@ import {
   formatMenuOptionDisplayName,
   formatMenuPortionLabel,
 } from "@/lib/format-menu-portion-label";
+import { parseBillingSnapshot } from "@/lib/merchant-billing-discount";
 
 export type OrderItemAddonDetail = {
   name: string;
@@ -639,7 +640,7 @@ export function enrichRawOrderItemFromCoreRow(args: {
   const detail = buildCustomisationDetail({
     variantName: args.row.variant_name ?? null,
     basePrice: Number(args.row.base_price) || null,
-    itemSnapshot: args.row.item_snapshot ?? null,
+    itemSnapshot: parseBillingSnapshot(args.row.item_snapshot),
     cartLine,
     storedAddonPrice: Number(args.row.addon_price) || 0,
     addons: args.dbAddons.map((a) => ({
@@ -689,7 +690,7 @@ export function customizationLabelsForCoreItem(args: {
   const detail = buildCustomisationDetail({
     variantName: args.row.variant_name ?? null,
     basePrice: Number(args.row.base_price) || null,
-    itemSnapshot: args.row.item_snapshot ?? null,
+    itemSnapshot: parseBillingSnapshot(args.row.item_snapshot),
     cartLine,
     storedAddonPrice: storedAddon,
     addons: args.dbAddons.map((a) => ({

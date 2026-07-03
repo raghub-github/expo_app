@@ -55,6 +55,8 @@ import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import Link from "next/link";
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
 import { ensureStoreCuisinesLinkedForItemNames } from "@/lib/merchant/ensureStoreCuisinesForItem";
+import { dispatchMenuReviewQueueRefresh } from "@/lib/merchant/menu-review-queue";
+import { MenuItemPhotoCustomerPreview } from "@/components/merchant/MenuItemPhotoCustomerPreview";
 import type { MenuMediaFile } from "@/lib/merchant-menu-media";
 import {
   MENU_PAGE_GLOBAL_STYLES,
@@ -216,6 +218,7 @@ function normalizeItem(
     variants: (item.variants as Variant[]) ?? [],
     allergens: (item.allergens as any) ?? undefined,
     approval_status: (item.approval_status as any) ?? null,
+    rejection_reason: (item.rejection_reason as string | null) ?? null,
     has_pending_change_request: Boolean((item as any).has_pending_change_request),
     pending_change_request_type: ((item as any).pending_change_request_type as any) ?? null,
     linked_modifier_groups: ((item as any).linked_modifier_groups as any) ?? [],
@@ -540,6 +543,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [reviewItem, setReviewItem] = useState<MenuItem | null>(null);
   const [showReviewDrawer, setShowReviewDrawer] = useState(false);
+  const [photoRejectReason, setPhotoRejectReason] = useState("");
   const [isReviewActionLoading, setIsReviewActionLoading] = useState<"APPROVE" | "REJECT" | null>(null);
   const [showAppliedAddonsDrawer, setShowAppliedAddonsDrawer] = useState(false);
   const [appliedAddonsItem, setAppliedAddonsItem] = useState<MenuItem | null>(null);
@@ -2991,52 +2995,42 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             onClick={() => {
               setShowReviewDrawer(false);
               setReviewItem(null);
+              setPhotoRejectReason("");
             }}
           >
             <div
-              className="w-full max-w-md bg-white shadow-xl border-l border-gray-200 flex flex-col"
+              className="w-full max-w-lg bg-white shadow-xl border-l border-gray-200 flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-                <h2 className="text-sm font-bold text-gray-900">Review item</h2>
+                <h2 className="text-sm font-bold text-gray-900">Review item photo</h2>
                 <button
                   type="button"
                   onClick={() => {
                     setShowReviewDrawer(false);
                     setReviewItem(null);
+                    setPhotoRejectReason("");
                   }}
                   className="text-xs text-gray-500 hover:text-gray-800"
                 >
                   Close
                 </button>
               </div>
-              <div className="p-4 flex-1 overflow-auto space-y-3 text-sm">
-                <div className="w-full h-40 rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
-                  <R2Image
-                    src={reviewItem.item_image_url}
-                    alt={reviewItem.item_name}
-                    className="w-full h-full object-cover"
-                    fallbackSrc={ITEM_PLACEHOLDER_SVG}
-                  />
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-0.5">
-                    {formatCategoryLabel(categories, reviewItem.category_id)}
+              <div className="p-4 flex-1 overflow-auto space-y-4 text-sm">
+                <MenuItemPhotoCustomerPreview
+                  item={reviewItem}
+                  categoryLabel={formatCategoryLabel(categories, reviewItem.category_id)}
+                />
+                {reviewItem.rejection_reason ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                    <div className="text-[11px] font-bold text-red-800 uppercase tracking-wide">Previous rejection reason</div>
+                    <p className="text-sm text-red-700 mt-1 whitespace-pre-wrap">{reviewItem.rejection_reason}</p>
                   </div>
-                  <div className="text-base font-bold text-gray-900">{reviewItem.item_name}</div>
-                  {reviewItem.item_description && (
-                    <p className="mt-1 text-sm text-gray-700 whitespace-pre-line">{reviewItem.item_description}</p>
-                  )}
-                </div>
+                ) : null}
                 <div className="flex flex-wrap gap-1.5">
                   <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 text-[11px] font-semibold">
                     Status: {(reviewItem.approval_status ?? "PENDING").toLowerCase()}
                   </span>
-                  {reviewItem.food_type && (
-                    <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[11px] font-semibold">
-                      {getFoodTypeLabel(reviewItem.food_type)}
-                    </span>
-                  )}
                   {reviewItem.spice_level && (
                     <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-semibold">
                       {normalizeSpiceLevelForForm(reviewItem.spice_level)}
@@ -3056,12 +3050,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[11px] font-semibold">
                       Addons
                     </span>
-                  )}
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-lg font-bold text-orange-600">₹{reviewItem.selling_price}</span>
-                  {reviewItem.base_price && reviewItem.base_price > reviewItem.selling_price && (
-                    <span className="text-xs text-gray-500 line-through">₹{reviewItem.base_price}</span>
                   )}
                 </div>
                 <div className="text-xs text-gray-600 space-y-0.5">
@@ -3159,11 +3147,46 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   </div>
                 )}
               </div>
-              <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between gap-2">
+              <div className="px-4 py-3 border-t border-gray-200 space-y-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Rejection reason (required to reject photo)
+                  </label>
+                  <textarea
+                    value={photoRejectReason}
+                    onChange={(e) => setPhotoRejectReason(e.target.value)}
+                    rows={3}
+                    placeholder="e.g. Tags - All components of the dish are not clearly visible in the image"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 resize-y min-h-[72px]"
+                  />
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {[
+                      "Tags - All components of the dish are not clearly visible in the image",
+                      "Image is blurry or low quality",
+                      "Dish is not clearly visible",
+                      "Image contains watermark or promotional text",
+                    ].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setPhotoRejectReason(preset)}
+                        className="px-2 py-1 rounded-md border border-gray-200 bg-gray-50 text-[10px] font-medium text-gray-700 hover:bg-gray-100 text-left"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={async () => {
                     if (!reviewItem) return;
+                    const reason = photoRejectReason.trim();
+                    if (reason.length < 3) {
+                      toast("Add a rejection reason (min 3 characters).");
+                      return;
+                    }
                     setIsReviewActionLoading("REJECT");
                     try {
                       const res = await fetch(
@@ -3171,30 +3194,32 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                         {
                           method: "PATCH",
                           headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ approval_status: "REJECTED" }),
+                          body: JSON.stringify({ approval_status: "REJECTED", rejection_reason: reason }),
                         }
                       );
                       const r = await res.json().catch(() => ({}));
                       if (!res.ok || r?.success === false) throw new Error(r?.error || "Reject failed");
-                      toast("Item rejected.");
+                      toast("Photo rejected.");
                       trackAudit({
                         actionType: "UPDATE",
                         resourceType: "merchant_menu_items",
                         resourceId: String(reviewItem.id),
-                        actionDetails: { action: "reject_item" },
+                        actionDetails: { action: "reject_item_photo", rejection_reason: reason },
                         actionStatus: "SUCCESS",
                         requestMethod: "PATCH",
                       });
                       await refreshMenu();
+                      dispatchMenuReviewQueueRefresh();
                       setShowReviewDrawer(false);
                       setReviewItem(null);
+                      setPhotoRejectReason("");
                     } catch (e) {
                       toast(e instanceof Error ? e.message : "Reject failed");
                       trackAudit({
                         actionType: "UPDATE",
                         resourceType: "merchant_menu_items",
                         resourceId: reviewItem ? String(reviewItem.id) : undefined,
-                        actionDetails: { action: "reject_item" },
+                        actionDetails: { action: "reject_item_photo" },
                         actionStatus: "FAILED",
                         errorMessage: e instanceof Error ? e.message : "Reject failed",
                         requestMethod: "PATCH",
@@ -3206,7 +3231,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   disabled={isReviewActionLoading !== null}
                   className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-red-200 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50"
                 >
-                  {isReviewActionLoading === "REJECT" ? "Rejecting…" : "Reject"}
+                  {isReviewActionLoading === "REJECT" ? "Rejecting…" : "Reject photo"}
                 </button>
                 <button
                   type="button"
@@ -3224,18 +3249,20 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       );
                       const r = await res.json().catch(() => ({}));
                       if (!res.ok || r?.success === false) throw new Error(r?.error || "Approve failed");
-                      toast("Item approved.");
+                      toast("Photo approved.");
                       trackAudit({
                         actionType: "UPDATE",
                         resourceType: "merchant_menu_items",
                         resourceId: String(reviewItem.id),
-                        actionDetails: { action: "approve_item" },
+                        actionDetails: { action: "approve_item_photo" },
                         actionStatus: "SUCCESS",
                         requestMethod: "PATCH",
                       });
                       await refreshMenu();
+                      dispatchMenuReviewQueueRefresh();
                       setShowReviewDrawer(false);
                       setReviewItem(null);
+                      setPhotoRejectReason("");
                     } catch (e) {
                       toast(e instanceof Error ? e.message : "Approve failed");
                       trackAudit({
@@ -3254,8 +3281,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   disabled={isReviewActionLoading !== null}
                   className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-green-200 text-xs font-bold text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50"
                 >
-                  {isReviewActionLoading === "APPROVE" ? "Approving…" : "Approve"}
+                  {isReviewActionLoading === "APPROVE" ? "Approving…" : "Approve photo"}
                 </button>
+                </div>
               </div>
             </div>
           </div>,

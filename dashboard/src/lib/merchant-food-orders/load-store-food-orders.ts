@@ -9,7 +9,7 @@ import {
 } from "@/lib/orderLineItems";
 import { enrichRawOrderItemFromCoreRow } from "@/lib/order-item-customisation";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
-import { merchantFundedDiscountFromBilling } from "@/lib/merchant-billing-discount";
+import { merchantFundedDiscountFromBilling, parseBillingSnapshot } from "@/lib/merchant-billing-discount";
 import { merchantBillPartsFromItems } from "@/lib/merchant-order-item-display";
 import {
   applyMerchantBaseToOrderItems,
@@ -33,6 +33,8 @@ export type LoadStoreFoodOrdersOptions = {
   ordersFoodId?: number;
   ordersCoreId?: number;
   formattedOrderId?: string | null;
+  /** Skip heavy enrichment (customer counts, item snapshots, rider selfie DB lookups). */
+  lightweight?: boolean;
 };
 
 function getDb() {
@@ -50,6 +52,7 @@ export async function loadMerchantStoreFoodOrders(
   const ordersFoodId = options.ordersFoodId ?? NaN;
   const ordersCoreId = options.ordersCoreId ?? NaN;
   const formattedOrderId = (options.formattedOrderId ?? "").trim();
+  const lightweight = options.lightweight === true;
 
   const storeNameRow = await db
     .from("merchant_stores")
@@ -167,6 +170,52 @@ export async function loadMerchantStoreFoodOrders(
           if (Number.isFinite(fk)) foodByCoreId.set(fk, fr as FoodRow);
         }
       }
+    }
+
+    if (lightweight) {
+      return coreRows.map((core) => {
+        const coreId = Number(core.id);
+        const food = foodByCoreId.get(coreId) ?? null;
+        const coreStatus = String(core.status ?? "assigned");
+        const currentSt = (core.current_status as string | null) ?? null;
+        const riderPickedUpAt = (food?.rider_picked_up_at as string | null) ?? null;
+        const uiStatus = resolvePartnerPipeline(
+          food ? (food.order_status as string | null) : null,
+          coreStatus,
+          currentSt,
+          riderPickedUpAt
+        );
+        const rawItems =
+          food != null &&
+          food.items != null &&
+          Array.isArray(food.items) &&
+          (food.items as unknown[]).length > 0
+            ? food.items
+            : core.items != null && extractItemsArray(core.items).length > 0
+              ? core.items
+              : [];
+        const items = normalizeOrderItems(rawItems);
+
+        return {
+          ...(food || {}),
+          id: food != null ? Number(food.id) : coreId,
+          core_only: food == null,
+          orders_food_row_id: food != null ? Number(food.id) : null,
+          core_order_id: coreId,
+          core_status: coreStatus,
+          current_status: currentSt,
+          order_id: coreId,
+          merchant_store_id: Number(core.merchant_store_id),
+          restaurant_name: (food?.restaurant_name as string | null) ?? defaultStoreName,
+          formatted_order_id:
+            (core.formatted_order_id as string) ?? (food?.formatted_order_id as string) ?? null,
+          is_bulk_order: Boolean((core as Record<string, unknown>).is_bulk_order),
+          order_status: uiStatus,
+          created_at: String(food?.created_at ?? core.created_at),
+          updated_at: String(food?.updated_at ?? core.updated_at),
+          items,
+        } as OrdersFoodRow;
+      });
     }
 
     const customerIds = [
@@ -532,10 +581,7 @@ export async function loadMerchantStoreFoodOrders(
               ? Number(coreGrandRaw)
               : null;
         const customerPricing = parseMerchantBillingBreakdown(core, pricingTotal);
-        const billingSnap =
-          core.billing_snapshot && typeof core.billing_snapshot === 'object'
-            ? (core.billing_snapshot as Record<string, unknown>)
-            : null;
+        const billingSnap = parseBillingSnapshot(core.billing_snapshot);
         const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,

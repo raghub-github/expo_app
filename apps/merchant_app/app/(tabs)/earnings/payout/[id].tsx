@@ -12,7 +12,7 @@ import {
 } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
-import { fetchLedger, fetchPayoutSettlement, type LedgerEntry, type PayoutSettlementSummary } from "@/services/walletApi";
+import { fetchLedger, type LedgerEntry } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
@@ -29,6 +29,8 @@ import {
   selectPayoutOrderLedgerEntries,
   orderSettlementBadge,
   MERCHANT_GROSS_REVENUE_LABEL,
+  computeSettlement,
+  type SettlementSummary,
   type OrderPayoutBreakdown,
   type PayoutOrderTypeFilter,
   type PayoutStatus,
@@ -39,7 +41,7 @@ import { prefetchCompensationPolicy } from "@/lib/compensationPolicyCache";
 
 type DetailTab = "summary" | "orders";
 
-const EMPTY_SETTLEMENT: PayoutSettlementSummary = {
+const EMPTY_SETTLEMENT: SettlementSummary = {
   netOrderValue: 0,
   itemSubtotal: 0,
   packagingCharges: 0,
@@ -264,8 +266,7 @@ function OrderPayoutCard({
         <Text style={s.orderIdLabel}>ID: </Text>
         <FormattedOrderId
           formattedOrderId={item.formattedOrderId}
-          fallbackCoreId={item.ordersCoreId ?? 0}
-          fallbackFoodId={item.foodOrderId ?? undefined}
+          fallbackCoreId={0}
           size="md"
         />
       </Pressable>
@@ -336,7 +337,6 @@ export default function PayoutDetailScreen() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("summary");
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
-  const [settlement, setSettlement] = useState<PayoutSettlementSummary>(EMPTY_SETTLEMENT);
   const [bank, setBank] = useState<BankAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -370,17 +370,13 @@ export default function PayoutDetailScreen() {
       setLoading(true);
       setLoadError(null);
       try {
-        const [l, settlementData] = await Promise.all([
-          fetchLedger(storeId, token, {
-            limit: 200,
-            from: periodStart.toISOString(),
-            to: periodEnd.toISOString(),
-          }),
-          fetchPayoutSettlement(storeId, token, periodStart, periodEnd),
-        ]);
+        const l = await fetchLedger(storeId, token, {
+          limit: 200,
+          from: periodStart.toISOString(),
+          to: periodEnd.toISOString(),
+        });
         if (!cancelled) {
           setLedger(l.entries);
-          setSettlement(settlementData);
         }
         listBankAccounts(storeId, token)
           .then((banks) => {
@@ -409,8 +405,13 @@ export default function PayoutDetailScreen() {
     [ledger, periodStart, periodEnd, payoutDate],
   );
 
+  const settlement = useMemo<SettlementSummary>(
+    () => (periodEntries.length > 0 ? computeSettlement(periodEntries) : EMPTY_SETTLEMENT),
+    [periodEntries],
+  );
+
   const displayHeroPayout = isCurrentCycle
-    ? Math.max(0, settlement.estimatedPayout)
+    ? Math.max(0, netPayout || settlement.estimatedPayout)
     : Math.max(0, netPayout);
 
   const orderEntries = useMemo(
@@ -427,6 +428,19 @@ export default function PayoutDetailScreen() {
     () => filterPayoutOrderBreakdowns(orderBreakdowns, orderTypeFilter),
     [orderBreakdowns, orderTypeFilter],
   );
+  const qaOrderBreakdownsNet = useMemo(
+    () =>
+      orderBreakdowns.reduce((sum, row) => {
+        if (row.fulfillmentStatus === "rejected") return sum;
+        return sum + row.netReceivable;
+      }, 0),
+    [orderBreakdowns],
+  );
+  const qaSummaryEstPayout = Math.max(
+    0,
+    isCurrentCycle ? (netPayout || settlement.estimatedPayout) : settlement.estimatedPayout,
+  );
+  const qaDelta = Math.round((qaOrderBreakdownsNet - qaSummaryEstPayout) * 100) / 100;
 
   const storeName = selectedStore?.store_name ?? "Store";
   const storePublicId = selectedStore?.store_id ?? "";
@@ -556,7 +570,7 @@ export default function PayoutDetailScreen() {
               <View style={s.settleDivider} />
               <SettlementRow
                 label="Est. payout (A − B − C)"
-                amount={Math.max(0, settlement.estimatedPayout)}
+                amount={Math.max(0, isCurrentCycle ? (netPayout || settlement.estimatedPayout) : settlement.estimatedPayout)}
                 bold
                 green
               />
@@ -612,6 +626,17 @@ export default function PayoutDetailScreen() {
               ))
             )}
           </>
+        ) : null}
+
+        {__DEV__ && !loading && !loadError ? (
+          <View style={s.qaDebugCard}>
+            <Text style={s.qaDebugTitle}>QA Debug (dev only)</Text>
+            <Text style={s.qaDebugLine}>Orders net (sum): {formatCurrency(qaOrderBreakdownsNet)}</Text>
+            <Text style={s.qaDebugLine}>Summary est payout: {formatCurrency(qaSummaryEstPayout)}</Text>
+            <Text style={[s.qaDebugLine, qaDelta !== 0 && s.qaDebugWarn]}>
+              Delta: {formatCurrency(qaDelta)}
+            </Text>
+          </View>
         ) : null}
       </ScrollView>
 
@@ -799,12 +824,12 @@ const s = StyleSheet.create({
   },
   badgeRow: { flexDirection: "row", gap: 6, flex: 1, flexWrap: "wrap" },
   badgeDelivered: {
-    backgroundColor: "#F0F0F0",
+    backgroundColor: "#BBF7D0",
     borderRadius: 4,
     paddingHorizontal: 6,
     paddingVertical: 3,
   },
-  badgeDeliveredText: { fontSize: 10, fontWeight: "700", color: GatiMitraMerchant.textSecondary, letterSpacing: 0.3 },
+  badgeDeliveredText: { fontSize: 10, fontWeight: "800", color: "#14532D", letterSpacing: 0.3 },
   badgeRejected: { backgroundColor: "#FEE2E2" },
   badgeRejectedText: { color: "#DC2626" },
   badgeSettled: {
@@ -870,4 +895,16 @@ const s = StyleSheet.create({
     textAlign: "center",
     lineHeight: 20,
   },
+  qaDebugCard: {
+    marginTop: 12,
+    backgroundColor: "#0F172A",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  qaDebugTitle: { fontSize: 11, fontWeight: "700", color: "#93C5FD", marginBottom: 4 },
+  qaDebugLine: { fontSize: 11, color: "#E2E8F0", lineHeight: 16 },
+  qaDebugWarn: { color: "#FCA5A5", fontWeight: "700" },
 });

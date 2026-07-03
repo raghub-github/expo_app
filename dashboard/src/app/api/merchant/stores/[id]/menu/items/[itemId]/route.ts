@@ -119,6 +119,7 @@ export async function GET(
              protein, protein_unit, carbohydrates, carbohydrates_unit,
              fat, fat_unit, fibre, fibre_unit, item_tags,
              approval_status::text,
+             rejection_reason,
              (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
              (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' ORDER BY r.created_at DESC LIMIT 1) AS pending_change_request_type
       FROM merchant_menu_items
@@ -134,8 +135,10 @@ export async function GET(
         FROM merchant_menu_item_customizations WHERE menu_item_id = ${menuItemId} ORDER BY display_order ASC, id ASC
       `,
       sql`
-        SELECT id, image_url, is_primary, display_order FROM merchant_menu_item_images
-        WHERE menu_item_id = ${menuItemId} ORDER BY display_order ASC, id ASC
+        SELECT id, image_url, is_primary, display_order, moderation_status, rejection_reason, moderated_at, created_at
+        FROM merchant_menu_item_images
+        WHERE menu_item_id = ${menuItemId}
+        ORDER BY created_at DESC, id DESC
       `,
     ]);
 

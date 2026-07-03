@@ -1,3 +1,4 @@
+import { prefetchAuthImage } from "@/components/AuthProxyImage";
 import type { MenuItemDetail } from "@/services/menuApi";
 import { fetchMenuItem } from "@/services/menuApi";
 
@@ -19,6 +20,37 @@ export function setCachedMenuItem(
   cache.set(menuItemCacheKey(storeId, itemId), detail);
 }
 
+export function invalidateMenuItemCache(storeId: string | number, itemId: number): void {
+  cache.delete(menuItemCacheKey(storeId, itemId));
+}
+
+function warmMenuItemImageCache(detail: MenuItemDetail, token: string): void {
+  void prefetchAuthImage(detail.item_image_url, token);
+  for (const img of detail.images ?? []) {
+    void prefetchAuthImage(img.image_url, token);
+  }
+}
+
+/** Warm item detail + image files before opening photo/edit sheets. */
+export function prefetchMenuItemDetail(
+  storeId: string | number,
+  itemId: number,
+  token: string,
+): void {
+  const cached = getCachedMenuItem(storeId, itemId);
+  if (cached) {
+    warmMenuItemImageCache(cached, token);
+    return;
+  }
+  void fetchMenuItem(String(storeId), itemId, token)
+    .then((detail) => {
+      if (!detail) return;
+      setCachedMenuItem(storeId, itemId, detail);
+      warmMenuItemImageCache(detail, token);
+    })
+    .catch(() => {});
+}
+
 /** Warm cache when orders load so item sheet opens without a spinner. */
 export function prefetchMenuItemsForOrders(
   storeId: string | number,
@@ -34,7 +66,9 @@ export function prefetchMenuItemsForOrders(
   for (const id of pending) {
     void fetchMenuItem(String(storeId), id, token)
       .then((detail) => {
-        if (detail) setCachedMenuItem(storeId, id, detail);
+        if (!detail) return;
+        setCachedMenuItem(storeId, id, detail);
+        warmMenuItemImageCache(detail, token);
       })
       .catch(() => {});
   }

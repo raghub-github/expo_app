@@ -68,7 +68,7 @@ export function RejectOrderSheet({
             <View style={styles.headerText}>
               <Text style={styles.title}>Cancel order</Text>
               <Text style={styles.subtitle}>
-                {formatOrderIdDisplay(formattedOrderId, fallbackOrderId)}
+                {formatOrderIdDisplay(formattedOrderId, fallbackOrderId) || "Order ID unavailable"}
               </Text>
             </View>
             <Pressable

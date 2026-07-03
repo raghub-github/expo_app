@@ -51,8 +51,7 @@ export function merchantNotificationDisplayBody(
 
   const displayId =
     order.formattedOrderId?.trim() ||
-    order.orderNumber?.trim() ||
-    `Order #${order.ordersCoreId}`;
+    "Order";
   const amount = formatMerchantRs(order.total);
 
   if (NEW_ORDER_BODY_RE.test(n.body)) {

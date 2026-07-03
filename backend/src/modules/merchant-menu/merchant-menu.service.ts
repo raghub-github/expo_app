@@ -893,10 +893,18 @@ export async function listItems(
            merchant_menu_items.item_size_value,
            merchant_menu_items.item_size_unit,
            merchant_menu_items.approval_status,
+           merchant_menu_items.rejection_reason,
            COALESCE(merchant_menu_items.is_locked_by_plan, FALSE) AS is_locked_by_plan,
            merchant_menu_items.locked_reason,
            (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
-           (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type
+           (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type,
+           (SELECT COUNT(*)::int FROM merchant_menu_item_images img WHERE img.menu_item_id = merchant_menu_items.id) AS image_count,
+           (
+             SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
+             FROM merchant_menu_item_images img
+             WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
+             LIMIT 1
+           ) AS primary_image_moderation_status
     FROM merchant_menu_items
     LEFT JOIN merchant_menu_categories c
       ON c.id = merchant_menu_items.category_id
@@ -975,7 +983,7 @@ export async function getItem(
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
            fat, fat_unit, fibre, fibre_unit, item_tags,
-           approval_status, approved_at, approved_by
+           approval_status, approved_at, approved_by, rejection_reason
     FROM merchant_menu_items
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
@@ -992,8 +1000,10 @@ export async function getItem(
       FROM merchant_menu_item_customizations WHERE menu_item_id = ${itemId} ORDER BY display_order ASC, id ASC
     `,
     sql`
-      SELECT id, image_url, is_primary, display_order FROM merchant_menu_item_images
-      WHERE menu_item_id = ${itemId} ORDER BY display_order ASC, id ASC
+      SELECT id, image_url, is_primary, display_order, moderation_status, rejection_reason, moderated_at, created_at
+      FROM merchant_menu_item_images
+      WHERE menu_item_id = ${itemId}
+      ORDER BY created_at DESC, id DESC
     `,
   ]);
 
@@ -1179,6 +1189,10 @@ export async function getItem(
       image_url: i.image_url,
       is_primary: i.is_primary ?? false,
       display_order: i.display_order ?? 0,
+      moderation_status: i.moderation_status ?? "PENDING",
+      rejection_reason: i.rejection_reason ?? null,
+      moderated_at: i.moderated_at ?? null,
+      created_at: i.created_at ?? null,
     })),
     linked_modifier_groups: linkedModifierGroups,
     // Unified catalog fields (new):
@@ -1458,26 +1472,51 @@ export async function deleteItem(itemId: number, storeIdNum: number): Promise<bo
 export async function setItemApproval(
   itemId: number,
   storeIdNum: number,
-  body: { approval_status: "APPROVED" | "REJECTED"; approved_by: string; approved_by_role?: string }
+  body: {
+    approval_status: "APPROVED" | "REJECTED";
+    approved_by: string;
+    approved_by_role?: string;
+    rejection_reason?: string | null;
+  }
 ): Promise<boolean> {
   const sql = getSql();
   const [before] = await sql`
     SELECT approval_status::text FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
   const previousStatus = before ? (before as any).approval_status : null;
+  const rejectionReason =
+    body.approval_status === "REJECTED" ? (body.rejection_reason?.trim() || null) : null;
   const result = await sql`
     UPDATE merchant_menu_items
     SET approval_status = ${body.approval_status}::merchant_menu_item_approval_status,
-        approved_at = NOW(),
-        approved_by = ${body.approved_by},
+        approved_at = ${body.approval_status === "APPROVED" ? sql`NOW()` : null},
+        approved_by = ${body.approval_status === "APPROVED" ? body.approved_by : null},
+        rejection_reason = ${body.approval_status === "REJECTED" ? rejectionReason : null},
         updated_at = NOW()
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
   if ((result.count ?? 0) > 0) {
+    const imageModerationStatus = body.approval_status === "APPROVED" ? "APPROVED" : "REJECTED";
+    await sql`
+      UPDATE merchant_menu_item_images
+      SET moderation_status = ${imageModerationStatus},
+          rejection_reason = ${body.approval_status === "REJECTED" ? rejectionReason : null},
+          moderated_at = NOW(),
+          moderated_by = ${body.approved_by},
+          updated_at = NOW()
+      WHERE menu_item_id = ${itemId} AND is_primary = true
+    `;
     try {
       await sql`
-        INSERT INTO merchant_menu_item_approval_log (menu_item_id, previous_status, new_status, changed_by, changed_by_role)
-        VALUES (${itemId}, ${previousStatus}, ${body.approval_status}, ${body.approved_by}, ${body.approved_by_role ?? "agent"})
+        INSERT INTO merchant_menu_item_approval_log (menu_item_id, previous_status, new_status, changed_by, changed_by_role, note)
+        VALUES (
+          ${itemId},
+          ${previousStatus},
+          ${body.approval_status},
+          ${body.approved_by},
+          ${body.approved_by_role ?? "agent"},
+          ${body.approval_status === "REJECTED" ? rejectionReason : null}
+        )
       `;
     } catch {
       /* log table may not exist yet */
@@ -1597,6 +1636,43 @@ export async function patchItemStock(
     return (result.count ?? 0) > 0;
   }
   return false;
+}
+
+export async function patchItemFlags(
+  itemId: number,
+  storeIdNum: number,
+  body: { is_recommended?: boolean; is_popular?: boolean }
+): Promise<boolean> {
+  const sql = getSql();
+  if (body.is_recommended === undefined && body.is_popular === undefined) return false;
+  if (body.is_recommended !== undefined && body.is_popular !== undefined) {
+    const result = await sql`
+      UPDATE merchant_menu_items
+      SET
+        is_recommended = ${body.is_recommended},
+        is_popular = ${body.is_popular},
+        updated_at = NOW()
+      WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    `;
+    return (result.count ?? 0) > 0;
+  }
+  if (body.is_recommended !== undefined) {
+    const result = await sql`
+      UPDATE merchant_menu_items
+      SET is_recommended = ${body.is_recommended}, updated_at = NOW()
+      WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    `;
+    return (result.count ?? 0) > 0;
+  }
+  // Only `is_popular` is defined here (the top guard rejected both-undefined),
+  // but TypeScript can't chain those two narrows, so pin it explicitly.
+  const isPopular = body.is_popular as boolean;
+  const result = await sql`
+    UPDATE merchant_menu_items
+    SET is_popular = ${isPopular}, updated_at = NOW()
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  return (result.count ?? 0) > 0;
 }
 
 // --- Variants
@@ -1816,41 +1892,62 @@ export async function addItemImageRow(
 ): Promise<{ id: number }> {
   await assertItemOwnership(menuItemId, storeIdNum);
   const sql = getSql();
-  const [existingPrimary] = await sql`
-    SELECT id, r2_key
+  const makePrimary = data.is_primary !== false;
+  const [orderRow] = await sql`
+    SELECT COALESCE(MAX(display_order), -1) + 1 AS next_order
     FROM merchant_menu_item_images
-    WHERE menu_item_id = ${menuItemId} AND is_primary = true
-    LIMIT 1
+    WHERE menu_item_id = ${menuItemId}
   `;
-  const makePrimary = data.is_primary || !existingPrimary;
+  const nextOrder = data.display_order ?? Number((orderRow as any)?.next_order ?? 0);
   if (makePrimary) {
-    await sql`UPDATE merchant_menu_item_images SET is_primary = false WHERE menu_item_id = ${menuItemId}`;
-    // Replace semantics: delete previous primary from R2 and remove its row so the new image becomes the only primary
-    if (existingPrimary) {
-      const keyToDelete = (existingPrimary as { r2_key?: string | null }).r2_key;
-      if (keyToDelete && typeof keyToDelete === "string") {
-        try {
-          const { deleteFromR2 } = await import("../../services/r2/r2Service.js");
-          await deleteFromR2(keyToDelete);
-        } catch {
-          // Continue so new image is still added
-        }
-      }
-      await sql`DELETE FROM merchant_menu_item_images WHERE id = ${(existingPrimary as any).id}`;
-    }
+    await sql`
+      UPDATE merchant_menu_item_images
+      SET is_primary = false, updated_at = NOW()
+      WHERE menu_item_id = ${menuItemId} AND is_primary = true
+    `;
   }
   const [row] = await sql`
-    INSERT INTO merchant_menu_item_images (menu_item_id, image_url, r2_key, is_primary, format, display_order)
-    VALUES (${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary}, ${data.format ?? null}, ${data.display_order ?? 0})
+    INSERT INTO merchant_menu_item_images (
+      menu_item_id, image_url, r2_key, is_primary, format, display_order,
+      moderation_status, rejection_reason, moderated_at, moderated_by
+    )
+    VALUES (
+      ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary}, ${data.format ?? null}, ${nextOrder},
+      ${makePrimary ? "PENDING" : "PENDING"}, NULL, NULL, NULL
+    )
     RETURNING id
   `;
   const imageId = Number((row as any).id);
   if (makePrimary) {
-    await sql`
-      UPDATE merchant_menu_items
-      SET item_image_url = ${data.image_url}, updated_at = NOW()
+    const [itemRow] = await sql`
+      SELECT approval_status::text AS approval_status, approved_at, approved_by
+      FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      LIMIT 1
     `;
+    const prevStatus = String((itemRow as { approval_status?: string })?.approval_status ?? "").toUpperCase();
+    const wasApproved = prevStatus === "APPROVED";
+
+    if (wasApproved) {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${data.image_url},
+            rejection_reason = NULL,
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
+    } else {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${data.image_url},
+            approval_status = 'PENDING'::merchant_menu_item_approval_status,
+            rejection_reason = NULL,
+            approved_at = NULL,
+            approved_by = NULL,
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
+    }
   }
   return { id: imageId };
 }
@@ -1862,11 +1959,14 @@ export async function deleteItemImage(
 ): Promise<boolean> {
   const sql = getSql();
   const [img] = await sql`
-    SELECT i.id, i.r2_key FROM merchant_menu_item_images i
+    SELECT i.id, i.r2_key, i.is_primary, i.menu_item_id
+    FROM merchant_menu_item_images i
     INNER JOIN merchant_menu_items m ON m.id = i.menu_item_id AND m.store_id = ${storeIdNum}
     WHERE i.id = ${imageId}
   `;
   if (!img) return false;
+  const menuItemId = Number((img as any).menu_item_id);
+  const wasPrimary = !!(img as any).is_primary;
   const keyToDelete = r2Key ?? (img as any).r2_key;
   if (keyToDelete && typeof keyToDelete === "string") {
     try {
@@ -1877,6 +1977,43 @@ export async function deleteItemImage(
     }
   }
   const result = await sql`DELETE FROM merchant_menu_item_images WHERE id = ${imageId}`;
+  if ((result.count ?? 0) > 0 && wasPrimary) {
+    const [nextPrimary] = await sql`
+      SELECT id, image_url, moderation_status, rejection_reason
+      FROM merchant_menu_item_images
+      WHERE menu_item_id = ${menuItemId}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `;
+    if (nextPrimary) {
+      await sql`
+        UPDATE merchant_menu_item_images
+        SET is_primary = true, updated_at = NOW()
+        WHERE id = ${(nextPrimary as any).id}
+      `;
+      const modStatus = String((nextPrimary as any).moderation_status ?? "PENDING").toUpperCase();
+      const itemStatus = modStatus === "APPROVED" || modStatus === "REJECTED" ? modStatus : "PENDING";
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${(nextPrimary as any).image_url},
+            approval_status = ${itemStatus}::merchant_menu_item_approval_status,
+            rejection_reason = ${itemStatus === "REJECTED" ? (nextPrimary as any).rejection_reason : null},
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
+    } else {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = NULL,
+            approval_status = 'PENDING'::merchant_menu_item_approval_status,
+            rejection_reason = NULL,
+            approved_at = NULL,
+            approved_by = NULL,
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
+    }
+  }
   return (result.count ?? 0) > 0;
 }
 

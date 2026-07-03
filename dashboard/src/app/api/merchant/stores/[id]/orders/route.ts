@@ -34,6 +34,14 @@ export async function GET(
         ? parseInt(ordersFoodIdRaw, 10)
         : NaN;
     const formattedOrderId = searchParams.get("formatted_order_id")?.trim() || null;
+    const lightweightParam = searchParams.get("lightweight");
+    const lightweight =
+      lightweightParam === "1" ||
+      lightweightParam === "true" ||
+      (limit <= 20 &&
+        !Number.isFinite(ordersCoreId) &&
+        !Number.isFinite(ordersFoodId) &&
+        !formattedOrderId);
 
     const orders = await loadMerchantStoreFoodOrders(access.store.id, {
       limit,
@@ -41,6 +49,7 @@ export async function GET(
       ordersCoreId: Number.isFinite(ordersCoreId) ? ordersCoreId : undefined,
       ordersFoodId: Number.isFinite(ordersFoodId) ? ordersFoodId : undefined,
       formattedOrderId,
+      lightweight,
     });
 
     return NextResponse.json({ success: true, orders });
