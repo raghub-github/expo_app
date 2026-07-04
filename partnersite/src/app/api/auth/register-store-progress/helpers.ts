@@ -381,12 +381,22 @@ export async function upsertStoreDraft(
   if (existingStoreDbId) {
     const { data: storeExists } = await db
       .from("merchant_stores")
-      .select("id")
+      .select("id, store_id, onboarding_completed, approval_status")
       .eq("id", existingStoreDbId)
       .maybeSingle();
     if (!storeExists) {
       // Store was deleted (e.g. manually); fall through to create new or reuse DRAFT
     } else {
+      const approval = String(storeExists.approval_status || "").toUpperCase();
+      const terminal =
+        storeExists.onboarding_completed === true ||
+        ["SUBMITTED", "UNDER_VERIFICATION", "PENDING_VERIFICATION", "APPROVED"].includes(approval);
+      if (terminal) {
+        return {
+          storeDbId: storeExists.id as number,
+          storePublicId: storeExists.store_id as string,
+        };
+      }
       const { data, error } = await db
         .from("merchant_stores")
         .update(draftPayload)

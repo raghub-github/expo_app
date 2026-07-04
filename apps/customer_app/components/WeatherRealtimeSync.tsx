@@ -162,7 +162,7 @@ export function WeatherRealtimeSync() {
         }
 
         const cachedFromTicket = ticketJson.zoneWeather?.[zoneKey];
-        if (cachedFromTicket) {
+        if (cachedFromTicket?.rainDetected && cachedFromTicket?.showBanner) {
           patchLocationWeatherCache(queryClient, weatherParams, cachedFromTicket);
         }
 
@@ -184,7 +184,14 @@ export function WeatherRealtimeSync() {
           try {
             const payload = JSON.parse(String(event.data)) as WeatherChangedEvent;
             if (payload.type !== "weather_changed" || !payload.weather) return;
-            patchLocationWeatherCache(queryClient, weatherParams, payload.weather);
+            const w = payload.weather;
+            const isRainPush =
+              w.rainDetected ||
+              w.showBanner ||
+              payload.event === "rain_stopped" ||
+              w.severity === "CLEAR";
+            if (!isRainPush) return;
+            patchLocationWeatherCache(queryClient, weatherParams, w);
           } catch {
             /* ignore malformed frames */
           }

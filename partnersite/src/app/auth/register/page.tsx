@@ -3,15 +3,27 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Store, Mail, Phone, User, Loader2, ArrowRight, CheckCircle, MapPin, Image } from "lucide-react";
+import { Mail, Phone, User, Loader2, ArrowRight, CheckCircle, MapPin, Image } from "lucide-react";
 import { requestEmailOTP, verifyEmailOTP, requestPhoneOTP, verifyPhoneOTP } from "@/lib/auth/supabase-client";
 import { ENABLE_PHONE_OTP_REGISTER } from "@/lib/auth/phone-otp-config";
 import { supabase } from "@/lib/supabase";
-import { ClientMountInput } from "@/components/auth/ClientMountInput";
+import { LoginPageShell } from "@/app/auth/login/components/LoginPageShell";
+import { LoginInputField } from "@/app/auth/login/components/LoginInputField";
+import { PrimaryButton } from "@/app/auth/login/components/PrimaryButton";
+import { RegisterFormHeader, RegisterSecurityTrust } from "@/app/auth/register/components/RegisterFormHeader";
 
 type Step = 1 | 2 | 3;
 
-const RESEND_OTP_COOLDOWN_SEC = 60; // Resend OTP button becomes active after this many seconds
+const RESEND_OTP_COOLDOWN_SEC = 60;
+
+const FIELD_CLASS =
+  "w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:ring-offset-2 focus:border-orange-400 focus:bg-white hover:border-slate-300";
+
+const SECONDARY_BTN =
+  "py-2.5 px-4 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+
+const RESEND_BTN =
+  "py-2.5 px-4 rounded-xl border border-orange-200 bg-orange-50 text-orange-700 text-sm font-medium hover:bg-orange-100 hover:border-orange-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
 
 function normalizePhone(input: string): string {
   const digits = input.replace(/\D/g, "");
@@ -360,49 +372,33 @@ export default function RegisterPage() {
     setStoreLogoPreview(URL.createObjectURL(file));
   };
 
-  const isOtpError = error && /otp|code|invalid|expired|failed to send/i.test(error);
-  const isSmsError = error && /sms|provider|configured|dlt/i.test(error);
+  const stepSubtitle =
+    step === 1
+      ? "Verify your business email to get started"
+      : step === 2
+        ? ENABLE_PHONE_OTP_REGISTER
+          ? "Verify your mobile number to continue"
+          : "Add your mobile number to continue"
+        : "Complete your business profile";
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 sm:p-6 bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/40 relative overflow-hidden">
-      {/* Background accents */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-30%,rgba(99,102,241,0.15),transparent)]" />
-      <div className="absolute top-0 right-0 w-[40%] h-[40%] bg-gradient-to-bl from-blue-400/10 to-transparent rounded-full blur-3xl" />
-      <div className="absolute bottom-0 left-0 w-[30%] h-[30%] bg-gradient-to-tr from-indigo-400/10 to-transparent rounded-full blur-3xl" />
+    <LoginPageShell
+      contentMaxWidthClass={step === 3 ? "max-w-xl" : "max-w-md"}
+      headerPrompt="Have an account?"
+      headerLinkLabel="Log In"
+      headerLinkHref="/auth/login"
+      sidebarVariant="signup"
+    >
+      <RegisterFormHeader step={step} subtitle={stepSubtitle} />
 
-      <div className="relative w-full max-w-lg rounded-3xl bg-white/90 backdrop-blur-xl shadow-xl shadow-slate-200/50 border border-slate-200/60 overflow-hidden">
-        {/* Header with gradient strip */}
-        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-6 pt-6 pb-5">
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/20">
-              <Store className="h-7 w-7 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white tracking-tight">Merchant Registration</h1>
-              <p className="text-slate-300 text-sm mt-0.5">
-                {ENABLE_PHONE_OTP_REGISTER ? "Email & mobile OTP, then details" : "Email OTP, mobile, then details"}
-              </p>
-            </div>
-          </div>
-          {/* Step indicator */}
-          <div className="flex gap-2 mt-4">
-            {[1, 2, 3].map((s) => (
-              <div
-                key={s}
-                className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${step >= s ? "bg-white/90" : "bg-white/20"}`}
-              />
-            ))}
-          </div>
-        </div>
-
-        <div className="px-6 pb-6 pt-6">
+      <div className={`mt-8 ${step === 3 ? "" : "max-w-sm mx-auto"}`}>
         {error && (
-          <div className="mb-4 p-4 rounded-2xl bg-red-50/90 border border-red-200/80 text-red-800 text-sm">
+          <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200/80 text-red-800 text-sm">
             {typeof error === "string" ? error : "Something went wrong. Please try again."}
           </div>
         )}
         {successMessage && (
-          <div className="mb-4 p-4 rounded-2xl bg-emerald-50/90 border border-emerald-200/80 text-emerald-800 text-sm">
+          <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-emerald-800 text-sm font-medium">
             {successMessage}
           </div>
         )}
@@ -412,44 +408,30 @@ export default function RegisterPage() {
           <div className="space-y-5">
             {!emailOtpSent ? (
               <form onSubmit={handleSendEmailOtp} className="space-y-5">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Email address</label>
-                  <div className="relative group">
-                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                    <ClientMountInput
-                      type="email"
-                      name="email"
-                      autoComplete="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="you@example.com"
-                      required
-                      className="w-full pl-12 pr-4 py-3 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 bg-slate-50/50 transition-shadow placeholder:text-slate-400"
-                    />
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2">We’ll send an 8-digit verification code to your email.</p>
-                </div>
-                <button
+                <LoginInputField
+                  type="email"
+                  label="Business email address"
+                  value={email}
+                  onChange={setEmail}
+                  placeholder="you@business.com"
+                  icon={<Mail className="w-5 h-5" />}
+                  autoComplete="email"
+                />
+                <PrimaryButton
                   type="submit"
-                  disabled={loading || resendCooldown > 0}
-                  className="w-full py-3.5 rounded-2xl font-semibold text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 transition-all"
+                  loading={loading}
+                  disabled={resendCooldown > 0}
                 >
-                  {loading ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : resendCooldown > 0 ? (
-                    `Wait ${resendCooldown}s`
-                  ) : (
-                    "Send OTP to email"
-                  )}
-                </button>
+                  {resendCooldown > 0 ? `Wait ${resendCooldown}s` : "Send OTP to email"}
+                </PrimaryButton>
               </form>
             ) : (
               <form onSubmit={handleVerifyEmailOtp} className="space-y-5">
-                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 text-sm text-slate-700">
+                <div className="rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3.5 text-sm text-slate-700">
                   Code sent to <strong className="text-slate-900">{email.trim().toLowerCase()}</strong>. Enter the 8-digit code from your email.
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Verification code</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Verification code</label>
                   <input
                     type="text"
                     inputMode="numeric"
@@ -458,14 +440,14 @@ export default function RegisterPage() {
                     onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
                     placeholder="00000000"
                     maxLength={8}
-                    className="w-full px-4 py-3.5 border border-slate-200 rounded-2xl text-center text-xl tracking-[0.4em] font-medium focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 bg-slate-50/50"
+                    className={`${FIELD_CLASS} text-center text-xl tracking-[0.35em] font-medium`}
                   />
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => { setEmailOtpSent(false); setEmailOtp(""); setError(""); setSuccessMessage(""); setResendCooldown(0); }}
-                    className="py-2.5 px-4 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                    className={SECONDARY_BTN}
                   >
                     Change email
                   </button>
@@ -510,27 +492,27 @@ export default function RegisterPage() {
                       }
                     }}
                     disabled={loading || resendCooldown > 0}
-                    className={`py-2.5 px-4 rounded-xl border text-sm font-medium flex items-center gap-1.5 transition-all ${
-                      resendCooldown > 0
-                        ? "border-slate-200 bg-slate-50 text-slate-500 cursor-not-allowed"
-                        : "border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 hover:border-indigo-400"
-                    }`}
+                    className={resendCooldown > 0 ? SECONDARY_BTN : RESEND_BTN}
                   >
                     {loading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span className="inline-flex items-center gap-1.5">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Sending…
+                      </span>
                     ) : resendCooldown > 0 ? (
-                      <>Resend OTP in {resendCooldown}s</>
+                      `Resend OTP in ${resendCooldown}s`
                     ) : (
                       "Resend OTP"
                     )}
                   </button>
-                  <button
+                  <PrimaryButton
                     type="submit"
-                    disabled={loading || emailOtp.length < 8}
-                    className="flex-1 min-w-[140px] py-3 rounded-2xl font-semibold text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 transition-all"
+                    loading={loading}
+                    disabled={emailOtp.length < 8}
+                    className="flex-1 min-w-[140px]"
                   >
-                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify & continue"}
-                  </button>
+                    Verify & continue
+                  </PrimaryButton>
                 </div>
                 {resendCooldown > 0 && (
                   <p className="text-xs text-slate-500 text-center">
@@ -544,82 +526,63 @@ export default function RegisterPage() {
 
         {/* Step 2: Mobile (collect only when OTP disabled; otherwise OTP verify) */}
         {step === 2 && (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-2xl p-3">
+          <div className="space-y-5">
+            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
               <CheckCircle className="w-4 h-4 flex-shrink-0" />
               <span>Email verified: {verifiedEmail}</span>
             </div>
             {!ENABLE_PHONE_OTP_REGISTER ? (
-              <form onSubmit={handleMobileContinueWithoutOtp} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Mobile (10 digits)</label>
-                  <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                    <input
-                      type="tel"
-                      value={mobile}
-                      onChange={(e) => setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                      placeholder="9876543210"
-                      maxLength={10}
-                      className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">We’ll use this to contact you. OTP verification can be enabled later.</p>
-                </div>
-                <button
+              <form onSubmit={handleMobileContinueWithoutOtp} className="space-y-5">
+                <LoginInputField
+                  type="tel"
+                  label="Mobile number"
+                  value={mobile}
+                  onChange={(v) => setMobile(v.replace(/\D/g, "").slice(0, 10))}
+                  placeholder="9876543210"
+                  helperText="We'll use this to contact you. OTP verification can be enabled later."
+                  icon={<Phone className="w-5 h-5" />}
+                  maxLength={10}
+                  inputMode="numeric"
+                  autoComplete="tel"
+                />
+                <PrimaryButton
                   type="submit"
-                  disabled={loading || mobile.replace(/\D/g, "").length !== 10}
-                  className="w-full py-3 rounded-xl font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                  loading={loading}
+                  disabled={mobile.replace(/\D/g, "").length !== 10}
                 >
-                  {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
                   Continue
-                  <ArrowRight className="w-5 h-5 ml-1" />
-                </button>
+                  <ArrowRight className="w-4 h-4" />
+                </PrimaryButton>
               </form>
             ) : !mobileOtpSent ? (
-              <form onSubmit={handleSendMobileOtp} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Mobile (10 digits)</label>
-                  <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                    <input
-                      type="tel"
-                      value={mobile}
-                      onChange={(e) => setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                      placeholder="9876543210"
-                      maxLength={10}
-                      className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">We’ll send a 6-digit OTP via SMS.</p>
-                </div>
-                <button
+              <form onSubmit={handleSendMobileOtp} className="space-y-5">
+                <LoginInputField
+                  type="tel"
+                  label="Mobile number"
+                  value={mobile}
+                  onChange={(v) => setMobile(v.replace(/\D/g, "").slice(0, 10))}
+                  placeholder="9876543210"
+                  helperText="We'll send a 6-digit OTP via SMS."
+                  icon={<Phone className="w-5 h-5" />}
+                  maxLength={10}
+                  inputMode="numeric"
+                  autoComplete="tel"
+                />
+                <PrimaryButton
                   type="submit"
-                  disabled={loading || mobile.replace(/\D/g, "").length !== 10}
-                  className="w-full py-3 rounded-xl font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                  loading={loading}
+                  disabled={mobile.replace(/\D/g, "").length !== 10}
                 >
-                  {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Send OTP to mobile"}
-                </button>
-                {!ENABLE_PHONE_OTP_REGISTER && (
-                  <p className="text-xs text-slate-500 text-center">
-                    OTP requires DLT. Can&apos;t receive SMS?{" "}
-                    <button
-                      type="button"
-                      onClick={(e) => { e.preventDefault(); handleMobileContinueWithoutOtp({ preventDefault: () => {} } as React.FormEvent); }}
-                      className="text-blue-600 hover:underline font-medium"
-                    >
-                      Skip mobile verification
-                    </button>
-                  </p>
-                )}
+                  Send OTP to mobile
+                </PrimaryButton>
               </form>
             ) : (
-              <form onSubmit={handleVerifyMobileOtp} className="space-y-4">
-                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-700">
+              <form onSubmit={handleVerifyMobileOtp} className="space-y-5">
+                <div className="rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3.5 text-sm text-slate-700">
                   OTP sent to <strong>+91 {mobile.replace(/\D/g, "").slice(-10)}</strong>. Enter the 6-digit code.
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Mobile OTP</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Mobile OTP</label>
                   <input
                     type="text"
                     inputMode="numeric"
@@ -628,24 +591,25 @@ export default function RegisterPage() {
                     onChange={(e) => setMobileOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
                     placeholder="000000"
                     maxLength={6}
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-center text-lg tracking-widest focus:ring-2 focus:ring-blue-500"
+                    className={`${FIELD_CLASS} text-center text-lg tracking-[0.4em] font-medium`}
                   />
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => { setMobileOtpSent(false); setMobileOtp(""); setError(""); setMobileResendCooldown(0); }}
-                    className="py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 text-sm font-medium"
+                    className={SECONDARY_BTN}
                   >
                     Change number
                   </button>
-                  <button
+                  <PrimaryButton
                     type="submit"
-                    disabled={loading || mobileOtp.length < 6}
-                    className="flex-1 py-3 rounded-xl font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                    loading={loading}
+                    disabled={mobileOtp.length < 6}
+                    className="flex-1 min-w-[140px]"
                   >
-                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify & continue"}
-                  </button>
+                    Verify & continue
+                  </PrimaryButton>
                 </div>
                 <p className="text-sm text-slate-600 text-center">
                   Didn&apos;t receive OTP?{" "}
@@ -656,24 +620,12 @@ export default function RegisterPage() {
                       type="button"
                       onClick={handleResendMobileOtp}
                       disabled={loading}
-                      className="text-blue-600 hover:underline font-medium disabled:opacity-50"
+                      className="text-orange-600 hover:underline font-medium disabled:opacity-50"
                     >
                       Resend SMS
                     </button>
                   )}
                 </p>
-                {!ENABLE_PHONE_OTP_REGISTER && (
-                  <p className="text-xs text-slate-500 text-center">
-                    Can&apos;t receive SMS?{" "}
-                    <button
-                      type="button"
-                      onClick={(e) => { e.preventDefault(); handleMobileContinueWithoutOtp({ preventDefault: () => {} } as React.FormEvent); }}
-                      className="text-blue-600 hover:underline font-medium"
-                    >
-                      Skip mobile verification
-                    </button>
-                  </p>
-                )}
               </form>
             )}
             <button
@@ -689,7 +641,7 @@ export default function RegisterPage() {
         {/* Step 3: Full parent details — responsive */}
         {step === 3 && (
           <form onSubmit={handleSubmitDetails} className="space-y-5">
-            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-2xl p-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
               <CheckCircle className="w-4 h-4 flex-shrink-0" />
               <span>{ENABLE_PHONE_OTP_REGISTER ? "Email & mobile verified" : "Email verified, mobile added"}</span>
             </div>
@@ -706,7 +658,7 @@ export default function RegisterPage() {
                     onChange={(e) => setOwnerName(e.target.value)}
                     placeholder="Your name"
                     required
-                    className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={`${FIELD_CLASS} pl-10`}
                   />
                 </div>
               </div>
@@ -718,7 +670,7 @@ export default function RegisterPage() {
                   onChange={(e) => setParentName(e.target.value)}
                   placeholder="My Restaurant / Brand"
                   required
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className={FIELD_CLASS}
                 />
               </div>
               <div>
@@ -726,7 +678,7 @@ export default function RegisterPage() {
                 <select
                   value={merchant_type}
                   onChange={(e) => setMerchantType(e.target.value as "LOCAL" | "BRAND" | "CHAIN" | "FRANCHISE")}
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className={FIELD_CLASS}
                 >
                   <option value="LOCAL">Local</option>
                   <option value="BRAND">Brand</option>
@@ -742,7 +694,7 @@ export default function RegisterPage() {
                     value={brand_name}
                     onChange={(e) => setBrandName(e.target.value)}
                     placeholder="Brand / chain name"
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={FIELD_CLASS}
                   />
                 </div>
               )}
@@ -751,7 +703,7 @@ export default function RegisterPage() {
                 <select
                   value={business_category}
                   onChange={(e) => setBusinessCategory(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className={FIELD_CLASS}
                 >
                   <option value="">Select</option>
                   <option value="RESTAURANT">Restaurant</option>
@@ -772,7 +724,7 @@ export default function RegisterPage() {
                   value={alternate_phone}
                   onChange={(e) => setAlternatePhone(e.target.value.replace(/\D/g, "").slice(0, 15))}
                   placeholder="+91 or 10–15 digits"
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className={FIELD_CLASS}
                 />
               </div>
             </div>
@@ -790,7 +742,7 @@ export default function RegisterPage() {
                     value={address_line1}
                     onChange={(e) => setAddressLine1(e.target.value)}
                     placeholder="Street, building, landmark"
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={FIELD_CLASS}
                   />
                 </div>
                 <div>
@@ -800,7 +752,7 @@ export default function RegisterPage() {
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
                     placeholder="City"
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={FIELD_CLASS}
                   />
                 </div>
                 <div>
@@ -810,7 +762,7 @@ export default function RegisterPage() {
                     value={state}
                     onChange={(e) => setState(e.target.value)}
                     placeholder="State"
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={FIELD_CLASS}
                   />
                 </div>
                 <div>
@@ -820,7 +772,7 @@ export default function RegisterPage() {
                     value={pincode}
                     onChange={(e) => setPincode(e.target.value.replace(/\D/g, "").slice(0, 10))}
                     placeholder="Pincode"
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={FIELD_CLASS}
                   />
                 </div>
               </div>
@@ -832,7 +784,7 @@ export default function RegisterPage() {
                 <Image className="w-4 h-4" /> Parent / Store logo
               </div>
               <div className="flex flex-col sm:flex-row gap-4 items-start">
-                <label className="cursor-pointer flex-shrink-0 rounded-xl border-2 border-dashed border-slate-300 hover:border-blue-400 bg-slate-50/50 p-4 text-center w-full sm:w-auto min-w-[140px]">
+                <label className="cursor-pointer flex-shrink-0 rounded-xl border-2 border-dashed border-slate-300 hover:border-orange-400 bg-slate-50/50 p-4 text-center w-full sm:w-auto min-w-[140px]">
                   <input
                     type="file"
                     accept="image/jpeg,image/png,image/webp"
@@ -862,41 +814,30 @@ export default function RegisterPage() {
               <button
                 type="button"
                 onClick={() => setStep(2)}
-                className="py-2.5 sm:py-3 rounded-xl border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50"
+                className={`${SECONDARY_BTN} sm:py-3`}
               >
                 ← Back to mobile
               </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className="flex-1 py-3 rounded-xl font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {loading ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <>
-                    Complete registration
-                    <ArrowRight className="w-5 h-5" />
-                  </>
-                )}
-              </button>
+              <PrimaryButton type="submit" loading={loading} className="flex-1">
+                Complete registration
+                <ArrowRight className="w-4 h-4" />
+              </PrimaryButton>
             </div>
           </form>
         )}
 
-        <div className="mt-8 pt-6 border-t border-slate-200/80 space-y-2">
-          <p className="text-center text-sm text-slate-600">
-            Already registered?{" "}
-            <Link href="/auth/login" className="font-semibold text-indigo-600 hover:text-indigo-700 hover:underline">
-              Login
-            </Link>
-          </p>
-          <p className="text-center text-sm text-slate-500">
-            <Link href="/auth" className="text-slate-500 hover:text-slate-700 hover:underline transition-colors">Back to home</Link>
-          </p>
-        </div>
-        </div>
+        <RegisterSecurityTrust />
+
+        <p className="mt-6 text-center text-sm text-slate-600 lg:hidden">
+          Have an account?{" "}
+          <Link
+            href="/auth/login"
+            className="font-semibold text-orange-600 hover:text-orange-700 hover:underline"
+          >
+            Log In
+          </Link>
+        </p>
       </div>
-    </div>
+    </LoginPageShell>
   );
 }

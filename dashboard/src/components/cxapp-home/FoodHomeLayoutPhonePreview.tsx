@@ -17,6 +17,9 @@ type Props = {
   subscriptionRowEnabled?: boolean;
   subscriptionRowText?: string;
   subscriptionRowBgColor?: string;
+  under250Enabled?: boolean;
+  under250FilterLabel?: string;
+  under250TabImageUrl?: string | null;
 };
 
 function PhoneChrome({ children, skyTop }: { children: React.ReactNode; skyTop?: boolean }) {
@@ -300,25 +303,110 @@ function GoldStrip({
   );
 }
 
-function CategoryTabs({ data }: { data: FoodHomePreviewPayload }) {
-  const cats = data.categories.slice(0, 5);
+function MealsUnderExplorePreview({
+  maxPrice,
+  imageUrl,
+}: {
+  maxPrice: number;
+  imageUrl?: string | null;
+}) {
   return (
-    <div className="mt-2 flex gap-2 overflow-x-auto px-2.5 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      <div className="flex shrink-0 flex-col items-center">
-        <div className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-emerald-500 bg-white ring-1 ring-slate-200">
-          <span className="text-[10px] text-slate-600">▦</span>
+    <div className="flex min-w-0 flex-1 flex-col items-center">
+      <div className="flex h-[42px] w-[42px] flex-col overflow-hidden rounded-[10px] border border-amber-200/60 bg-[#FFF7ED] shadow-sm">
+        {imageUrl ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-0.5">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={imageUrl} alt="" className="max-h-full max-w-full object-contain" />
+          </div>
+        ) : (
+          <>
+            <div className="bg-red-600 px-1 py-0.5 text-center text-[5px] font-black tracking-wide text-white">
+              MEALS UNDER
+            </div>
+            <div className="flex flex-1 items-center justify-center text-[11px] font-black text-blue-700">
+              ₹{maxPrice}
+            </div>
+          </>
+        )}
+        <div className="flex h-[10px] items-center justify-center bg-blue-600 text-[5px] font-extrabold text-white">
+          Explore ›
         </div>
-        <span className="mt-0.5 text-[7px] font-extrabold text-slate-900">All</span>
-        <div className="mt-0.5 h-0.5 w-6 rounded bg-rose-500" />
       </div>
-      {cats.map((cat) => (
-        <div key={cat.id} className="flex shrink-0 flex-col items-center">
-          <Thumb src={cat.imageUrl} alt={cat.name} className="h-8 w-8 rounded-full ring-1 ring-slate-200" />
-          <span className="mt-0.5 max-w-[52px] truncate text-[7px] font-semibold text-slate-600">
-            {cat.name}
-          </span>
+      <div className="mt-0.5 h-0.5 w-6" />
+    </div>
+  );
+}
+
+function CategoryTabCell({
+  label,
+  imageUrl,
+  active,
+  fallback,
+}: {
+  label: string;
+  imageUrl?: string | null;
+  active?: boolean;
+  fallback?: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col items-center">
+      {imageUrl ? (
+        <Thumb src={imageUrl} alt={label} className="mb-1.5 h-8 w-8 rounded-full object-contain bg-white p-0.5" />
+      ) : (
+        <div className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-full bg-slate-50">
+          <span className="text-[10px] text-slate-500">{fallback ?? "▦"}</span>
         </div>
-      ))}
+      )}
+      <span
+        className={`max-w-full truncate px-0.5 text-center text-[7px] ${
+          active ? "font-extrabold text-slate-900" : "font-semibold text-slate-600"
+        }`}
+      >
+        {label}
+      </span>
+      {active ? (
+        <div className="mt-0.5 h-0.5 w-6 rounded bg-rose-500" />
+      ) : (
+        <div className="mt-0.5 h-0.5 w-6" />
+      )}
+    </div>
+  );
+}
+
+function CategoryTabs({
+  data,
+  under250Enabled = true,
+  under250FilterLabel = "Meals under ₹250",
+  under250TabImageUrl,
+}: {
+  data: FoodHomePreviewPayload;
+  under250Enabled?: boolean;
+  under250FilterLabel?: string;
+  under250TabImageUrl?: string | null;
+}) {
+  const allTab = data.allTab ?? { label: "All", imageUrl: null };
+  const showUnder = under250Enabled && under250FilterLabel.trim().length > 0;
+  const tabImage =
+    under250TabImageUrl ?? data.gridFirstUnder250TabImageUrl ?? null;
+  const maxPrice = data.gridFirstUnder250MaxPrice ?? 250;
+  const firstPageCats = data.categories.slice(0, showUnder ? 3 : 4);
+
+  return (
+    <div className="mt-2 overflow-hidden px-2.5 pb-1">
+      <div className="flex gap-2">
+        {showUnder ? (
+          <MealsUnderExplorePreview maxPrice={maxPrice} imageUrl={tabImage} />
+        ) : null}
+        <CategoryTabCell
+          label={allTab.label}
+          imageUrl={allTab.imageUrl}
+          active
+          fallback="▦"
+        />
+        {firstPageCats.map((cat) => (
+          <CategoryTabCell key={cat.id} label={cat.name} imageUrl={cat.imageUrl} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -356,8 +444,20 @@ function CategoryChips({ data }: { data: FoodHomePreviewPayload }) {
   );
 }
 
-function FilterBar({ data, layoutKey }: { data: FoodHomePreviewPayload; layoutKey: FoodHomeLayoutKey }) {
+function FilterBar({
+  data,
+  layoutKey,
+  under250Enabled,
+  under250FilterLabel,
+}: {
+  data: FoodHomePreviewPayload;
+  layoutKey: FoodHomeLayoutKey;
+  under250Enabled?: boolean;
+  under250FilterLabel?: string;
+}) {
   if (layoutKey === "grid_first") {
+    const chipLabel = under250FilterLabel ?? data.gridFirstUnder250FilterLabel;
+    const showMealsChip = under250Enabled !== false && chipLabel?.trim();
     return (
       <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
         <div className="flex gap-1 overflow-hidden">
@@ -370,6 +470,11 @@ function FilterBar({ data, layoutKey }: { data: FoodHomePreviewPayload; layoutKe
           <span className="shrink-0 rounded-lg bg-white px-2 py-1 text-[7px] font-semibold ring-1 ring-slate-200">
             No packaging charges
           </span>
+          {showMealsChip ? (
+            <span className="shrink-0 rounded-lg bg-rose-50 px-2 py-1 text-[7px] font-semibold text-rose-800 ring-1 ring-rose-200">
+              {chipLabel}
+            </span>
+          ) : null}
         </div>
         <span className="shrink-0 text-[7px] font-semibold text-slate-500">{data.storeCountLabel}</span>
       </div>
@@ -454,12 +559,18 @@ function PreviewBody({
   subscriptionRowEnabled,
   subscriptionRowText,
   subscriptionRowBgColor,
+  under250Enabled,
+  under250FilterLabel,
+  under250TabImageUrl,
 }: {
   data: FoodHomePreviewPayload;
   layoutKey: FoodHomeLayoutKey;
   subscriptionRowEnabled: boolean;
   subscriptionRowText: string;
   subscriptionRowBgColor: string;
+  under250Enabled: boolean;
+  under250FilterLabel: string;
+  under250TabImageUrl?: string | null;
 }) {
   if (layoutKey === "grid_first") {
     return (
@@ -482,8 +593,18 @@ function PreviewBody({
           text={subscriptionRowText}
           backgroundColor={subscriptionRowBgColor}
         />
-        <CategoryTabs data={data} />
-        <FilterBar data={data} layoutKey={layoutKey} />
+        <CategoryTabs
+          data={data}
+          under250Enabled={under250Enabled}
+          under250FilterLabel={under250FilterLabel}
+          under250TabImageUrl={under250TabImageUrl}
+        />
+        <FilterBar
+          data={data}
+          layoutKey={layoutKey}
+          under250Enabled={under250Enabled}
+          under250FilterLabel={under250FilterLabel}
+        />
         <LovedSection data={data} layoutKey={layoutKey} />
         <RestaurantList data={data} />
       </>
@@ -518,6 +639,9 @@ export function FoodHomeLayoutPhonePreview({
   subscriptionRowEnabled: subscriptionRowEnabledProp,
   subscriptionRowText: subscriptionRowTextProp,
   subscriptionRowBgColor: subscriptionRowBgColorProp,
+  under250Enabled: under250EnabledProp,
+  under250FilterLabel: under250FilterLabelProp,
+  under250TabImageUrl: under250TabImageUrlProp,
 }: Props) {
   const [data, setData] = useState<FoodHomePreviewPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -558,6 +682,11 @@ export function FoodHomeLayoutPhonePreview({
     subscriptionRowBgColorProp ??
     data?.gridFirstSubscriptionRowBgColor ??
     "#FFF4E8";
+  const under250Enabled = under250EnabledProp ?? data?.gridFirstUnder250Enabled ?? true;
+  const under250FilterLabel =
+    under250FilterLabelProp ?? data?.gridFirstUnder250FilterLabel ?? "Meals under ₹250";
+  const under250TabImageUrl =
+    under250TabImageUrlProp ?? data?.gridFirstUnder250TabImageUrl ?? null;
 
   return (
     <div className="mb-2 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-white p-3">
@@ -582,6 +711,9 @@ export function FoodHomeLayoutPhonePreview({
             subscriptionRowEnabled={subscriptionRowEnabled}
             subscriptionRowText={subscriptionRowText}
             subscriptionRowBgColor={subscriptionRowBgColor}
+            under250Enabled={under250Enabled}
+            under250FilterLabel={under250FilterLabel}
+            under250TabImageUrl={under250TabImageUrl}
           />
         </PhoneChrome>
       ) : null}

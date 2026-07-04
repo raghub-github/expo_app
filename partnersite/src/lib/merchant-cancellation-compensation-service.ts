@@ -19,6 +19,7 @@ export type MerchantCancellationLedgerPlan = {
   resolved: ResolvedMerchantCompensation | null;
   display: MerchantCancellationCompensationDisplay | null;
   engineUsed: boolean;
+  adminOverride?: boolean;
 };
 
 export async function planMerchantCancellationLedger(
@@ -38,6 +39,7 @@ export async function planMerchantCancellationLedger(
       resolved: null,
       display: null,
       engineUsed: false,
+      adminOverride: true,
     };
   }
 

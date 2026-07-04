@@ -2,9 +2,20 @@ import React from "react";
 import { View, StyleSheet } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
-/** GatiMitra-style grey cloche placeholder when a menu item has no photo. */
+const ICON_GREY = "#D1D5DB";
+const ICON_GREY_SOFT = "#E5E7EB";
+
+/** Zomato-style grey image card placeholder — cloche + cutlery when a menu item has no photo. */
 export function MenuItemImagePlaceholder({ size = "md" }: { size?: "xs" | "sm" | "md" | "lg" }) {
-  const iconSize = size === "xs" ? 14 : size === "sm" ? 22 : size === "lg" ? 36 : 28;
+  const metrics =
+    size === "xs"
+      ? { cloche: 16, cutlery: 10, gap: 2 }
+      : size === "sm"
+        ? { cloche: 24, cutlery: 14, gap: 3 }
+        : size === "lg"
+          ? { cloche: 40, cutlery: 22, gap: 5 }
+          : { cloche: 30, cutlery: 17, gap: 4 };
+
   return (
     <View
       style={[
@@ -15,7 +26,18 @@ export function MenuItemImagePlaceholder({ size = "md" }: { size?: "xs" | "sm" |
         size === "sm" && styles.wrapSmFixed,
       ]}
     >
-      <MaterialCommunityIcons name="room-service-outline" size={iconSize} color="#C8C8C8" />
+      <View style={[styles.iconCluster, { gap: metrics.gap }]}>
+        <MaterialCommunityIcons
+          name="room-service-outline"
+          size={metrics.cloche}
+          color={ICON_GREY}
+        />
+        <MaterialCommunityIcons
+          name="silverware-fork-knife"
+          size={metrics.cutlery}
+          color={ICON_GREY_SOFT}
+        />
+      </View>
     </View>
   );
 }
@@ -25,8 +47,12 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F2F2F2",
+    backgroundColor: "#F0F0F0",
     borderRadius: 12,
+  },
+  iconCluster: {
+    alignItems: "center",
+    justifyContent: "center",
   },
   /** Fixed footprint inside customization rows (no flex growth). */
   wrapSmFixed: {

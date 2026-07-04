@@ -28,7 +28,14 @@ export function MerchantWeatherBanner({ storeId }: { storeId: string | null | un
         });
         if (!res.ok) return;
         const data = (await res.json()) as MerchantWeather;
-        if (!cancelled) setWeather(data?.showBanner ? data : null);
+        if (!cancelled) {
+          const active =
+            data?.showBanner &&
+            data?.bannerTitle &&
+            data.severity !== "CLEAR" &&
+            data.severity !== "LIGHT_RAIN";
+          setWeather(active ? data : null);
+        }
       } catch {
         /* never block merchant UI on weather failures */
       }

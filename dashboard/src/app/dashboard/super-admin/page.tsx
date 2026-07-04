@@ -171,14 +171,6 @@ const adminOptions: AdminOption[] = [
     bgColor: "bg-sky-50 hover:bg-sky-100",
   },
   {
-    name: "Push Notification",
-    href: "/dashboard/super-admin/push",
-    Icon: PushIcon,
-    description: "One-off push notification (legacy)",
-    color: "text-emerald-700",
-    bgColor: "bg-emerald-50 hover:bg-emerald-100",
-  },
-  {
     name: "Notifications v2",
     href: "/dashboard/super-admin/notifications",
     Icon: PushIcon,
@@ -272,10 +264,10 @@ const adminOptions: AdminOption[] = [
 
   // ✅ INCOMING MODULE (merged)
   {
-    name: "Onboarding fee",
+    name: "Onboarding fee & Mx Agreement",
     href: "/dashboard/super-admin/store-onboarding-fee",
     Icon: StoreOnboardingIcon,
-    description: "Onboarding fee & commission config",
+    description: "Onboarding fee, commission config & merchant agreement",
     color: "text-violet-600",
     bgColor: "bg-violet-50 hover:bg-violet-100",
   },

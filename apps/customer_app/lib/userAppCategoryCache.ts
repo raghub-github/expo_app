@@ -5,6 +5,7 @@ import { STORAGE_KEYS } from "@/constants";
 import {
   fetchUserAppCategories,
   type UserAppCategoryItem,
+  type UserAppCategoriesResponse,
 } from "@/services/userAppCategory.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
@@ -21,7 +22,7 @@ export const USER_APP_CATEGORIES_QUERY_OPTIONS = {
 } as const;
 
 type CachedUserAppCategoriesEntry = {
-  items: UserAppCategoryItem[];
+  response: UserAppCategoriesResponse;
   cachedAt: number;
 };
 
@@ -34,9 +35,9 @@ export function userAppCategoriesQueryKey(storeType: string) {
   return [USER_APP_CATEGORIES_QUERY_ROOT, storeType] as const;
 }
 
-export function readSyncUserAppCategories(storeType: string): UserAppCategoryItem[] | undefined {
-  const items = memoryByStoreType.get(storeType)?.items;
-  return items?.length ? items : undefined;
+export function readSyncUserAppCategories(storeType: string): UserAppCategoriesResponse | undefined {
+  const response = memoryByStoreType.get(storeType)?.response;
+  return response?.items?.length ? response : response?.allTab?.imageUrl ? response : undefined;
 }
 
 export function getUserAppCategoriesCachedAt(storeType: string): number | undefined {
@@ -66,9 +67,9 @@ async function writePersistedBlob(blob: UserAppCategoriesCacheBlob): Promise<voi
 export async function hydrateUserAppCategoriesMemoryFromStorage(): Promise<void> {
   const blob = await readPersistedBlob();
   for (const [storeType, entry] of Object.entries(blob)) {
-    if (entry?.items?.length) {
+    if (entry?.response?.items?.length || entry?.response?.allTab) {
       memoryByStoreType.set(storeType, entry);
-      prefetchUserAppCategoryImages(entry.items);
+      prefetchUserAppCategoryImages(entry.response.items, entry.response.allTab?.imageUrl);
     }
   }
 }
@@ -77,9 +78,9 @@ void hydrateUserAppCategoriesMemoryFromStorage();
 
 export async function writeCachedUserAppCategories(
   storeType: string,
-  items: UserAppCategoryItem[]
+  response: UserAppCategoriesResponse
 ): Promise<void> {
-  const entry: CachedUserAppCategoriesEntry = { items, cachedAt: Date.now() };
+  const entry: CachedUserAppCategoriesEntry = { response, cachedAt: Date.now() };
   memoryByStoreType.set(storeType, entry);
   const blob = await readPersistedBlob();
   blob[storeType] = entry;
@@ -91,46 +92,46 @@ export function seedUserAppCategoriesQueryIfCached(
   storeType: string
 ): boolean {
   const queryKey = userAppCategoriesQueryKey(storeType);
-  if (queryClient.getQueryData<UserAppCategoryItem[]>(queryKey)?.length) return true;
+  if (queryClient.getQueryData<UserAppCategoriesResponse>(queryKey)?.items?.length) return true;
 
   const cached = readSyncUserAppCategories(storeType);
-  if (!cached?.length) return false;
+  if (!cached) return false;
 
   queryClient.setQueryData(queryKey, cached);
-  prefetchUserAppCategoryImages(cached);
+  prefetchUserAppCategoryImages(cached.items, cached.allTab?.imageUrl);
   return true;
 }
 
 export async function hydrateUserAppCategoriesQuery(
   queryClient: QueryClient,
   storeType: string
-): Promise<UserAppCategoryItem[] | undefined> {
+): Promise<UserAppCategoriesResponse | undefined> {
   if (seedUserAppCategoriesQueryIfCached(queryClient, storeType)) {
-    return queryClient.getQueryData<UserAppCategoryItem[]>(userAppCategoriesQueryKey(storeType));
+    return queryClient.getQueryData<UserAppCategoriesResponse>(userAppCategoriesQueryKey(storeType));
   }
 
   await hydrateUserAppCategoriesMemoryFromStorage();
   if (seedUserAppCategoriesQueryIfCached(queryClient, storeType)) {
-    return queryClient.getQueryData<UserAppCategoryItem[]>(userAppCategoriesQueryKey(storeType));
+    return queryClient.getQueryData<UserAppCategoriesResponse>(userAppCategoriesQueryKey(storeType));
   }
 
   const blob = await readPersistedBlob();
   const entry = blob[storeType];
-  if (!entry?.items?.length) return undefined;
+  if (!entry?.response) return undefined;
 
   memoryByStoreType.set(storeType, entry);
-  prefetchUserAppCategoryImages(entry.items);
-  queryClient.setQueryData(userAppCategoriesQueryKey(storeType), entry.items);
-  return entry.items;
+  prefetchUserAppCategoryImages(entry.response.items, entry.response.allTab?.imageUrl);
+  queryClient.setQueryData(userAppCategoriesQueryKey(storeType), entry.response);
+  return entry.response;
 }
 
 export async function fetchUserAppCategoriesWithCache(
   storeType: string
-): Promise<UserAppCategoryItem[]> {
-  const items = await fetchUserAppCategories({ storeType });
-  await writeCachedUserAppCategories(storeType, items);
-  void prefetchUserAppCategoryImagesAwait(items);
-  return items;
+): Promise<UserAppCategoriesResponse> {
+  const response = await fetchUserAppCategories({ storeType });
+  await writeCachedUserAppCategories(storeType, response);
+  void prefetchUserAppCategoryImagesAwait(response.items, response.allTab?.imageUrl);
+  return response;
 }
 
 export async function prefetchUserAppCategories(
@@ -145,7 +146,17 @@ export async function prefetchUserAppCategories(
   });
 }
 
-export function prefetchUserAppCategoryImages(categories: UserAppCategoryItem[]) {
+export function prefetchUserAppCategoryImages(
+  categories: UserAppCategoryItem[],
+  allTabImageUrl?: string | null
+) {
+  if (allTabImageUrl?.trim()) {
+    const allUri = toAbsoluteImageUrl(allTabImageUrl) ?? allTabImageUrl;
+    if (!prefetchedImageUris.has(allUri)) {
+      prefetchedImageUris.add(allUri);
+      void Image.prefetch(allUri, { cachePolicy: "memory-disk" });
+    }
+  }
   for (const cat of categories) {
     if (!cat.imageUrl?.trim()) continue;
     const uri = toAbsoluteImageUrl(cat.imageUrl) ?? cat.imageUrl;
@@ -156,9 +167,17 @@ export function prefetchUserAppCategoryImages(categories: UserAppCategoryItem[])
 }
 
 export async function prefetchUserAppCategoryImagesAwait(
-  categories: UserAppCategoryItem[]
+  categories: UserAppCategoryItem[],
+  allTabImageUrl?: string | null
 ): Promise<void> {
   const uris: string[] = [];
+  if (allTabImageUrl?.trim()) {
+    const allUri = toAbsoluteImageUrl(allTabImageUrl) ?? allTabImageUrl;
+    if (!prefetchedImageUris.has(allUri)) {
+      prefetchedImageUris.add(allUri);
+      uris.push(allUri);
+    }
+  }
   for (const cat of categories) {
     if (!cat.imageUrl?.trim()) continue;
     const uri = toAbsoluteImageUrl(cat.imageUrl) ?? cat.imageUrl;

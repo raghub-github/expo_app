@@ -2,17 +2,19 @@ import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { Image } from "expo-image";
 import { fetchCustomerAppAssets } from "@/services/appAssets.service";
+import { prefetchCriticalHomeAssetImages } from "@/lib/homeCriticalAssets";
+import { prefetchCriticalRideAssetImages } from "@/lib/rideCriticalAssets";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 
 const prefetched = new Set<string>();
 const RETRY_MS = [0, 2_000, 5_000, 10_000];
 
-function prefetchAssetUrls(assets: Record<string, { url: string | null }>) {
+function prefetchRemainingAssetUrls(assets: Record<string, { url: string | null }>) {
   for (const item of Object.values(assets)) {
     const uri = item.url?.trim();
     if (!uri || prefetched.has(uri)) continue;
     prefetched.add(uri);
-    void Image.prefetch(uri, { cachePolicy: "disk" });
+    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
   }
 }
 
@@ -21,7 +23,12 @@ async function loadAppAssets(): Promise<boolean> {
   const assets = res.assets ?? {};
   if (Object.keys(assets).length === 0) return false;
   useAppAssetsStore.getState().setAssets(assets);
-  prefetchAssetUrls(assets);
+  await Promise.allSettled([
+    prefetchCriticalHomeAssetImages(assets),
+    prefetchCriticalRideAssetImages(assets),
+  ]);
+  useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+  prefetchRemainingAssetUrls(assets);
   return true;
 }
 

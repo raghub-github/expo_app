@@ -115,6 +115,28 @@ function pickBestPrompt(
   return list[0];
 }
 
+/** Best currently eligible checkout offer for inline cart banners. */
+export function resolveBestEligibleCheckoutOffer(
+  offersData: CheckoutOffersResponse | undefined,
+  cartSubtotal: number
+): CouponAvailablePrompt | null {
+  if (!offersData || cartSubtotal <= 0) return null;
+  const snapshot = buildEligibleSnapshot(offersData, cartSubtotal);
+  return pickBestPrompt([...snapshot.keys], snapshot.candidates);
+}
+
+/** Zomato-style unlock copy above the store Continue cart bar. */
+export function formatStoreCartOfferBannerText(prompt: CouponAvailablePrompt): string {
+  if (prompt.savingsInr != null && prompt.savingsInr > 0) {
+    return `You have unlocked Flat ₹${prompt.savingsInr} OFF. Apply coupon on cart.`;
+  }
+  const label = prompt.offerTitle?.trim() || prompt.description?.trim();
+  if (label) {
+    return `You have unlocked ${label}. Apply coupon on cart.`;
+  }
+  return "You have unlocked an offer. Apply coupon on cart.";
+}
+
 export function useCouponAvailablePrompt(options: {
   offersData: CheckoutOffersResponse | undefined;
   offersFetching: boolean;

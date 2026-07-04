@@ -215,10 +215,11 @@ export async function queryLedger(
   const sql = getSql();
 
   try {
-    const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } =
+    const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger, repairErroneousZeroCompensationCancellationDebits } =
       await import("./backfill-merchant-wallet-credits.js");
     await backfillMissingDeliveredOrderCredits(sql, storeId);
     await backfillMissingCancelledOrderLedger(sql, storeId);
+    await repairErroneousZeroCompensationCancellationDebits(sql, storeId);
   } catch (e) {
     console.warn("[queryLedger] backfill:", e);
   }
@@ -778,6 +779,7 @@ function ledgerEntryOrderCoreId(entry: LedgerEntry): number | null {
 function ledgerEntryNeedsCompensationEnrichment(entry: LedgerEntry): boolean {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
   if (!meta) return false;
+  if (meta.admin_override === true) return false;
   const status = String(meta.order_status ?? meta.fulfillment_status ?? "").toUpperCase();
   const isCancelled =
     meta.entry_type === "order_cancellation" ||

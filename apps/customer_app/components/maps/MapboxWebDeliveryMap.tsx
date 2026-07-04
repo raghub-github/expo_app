@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef } from "react";
-import { StyleSheet, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { WebView } from "react-native-webview";
 import { getConfig } from "@/config/env";
 import {
   buildDeliveryTrackingMapHtml,
   type DeliveryMapPayload,
 } from "@/components/maps/mapbox-web-delivery-html";
-import { mapbikeMarkerUri } from "@/lib/customer-map-assets";
+import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
 import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
 
 type Props = {
@@ -16,6 +16,10 @@ type Props = {
   onReady?: () => void;
   style?: object;
 };
+
+function escJsString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
 
 function payloadSyncKey(p: DeliveryMapPayload): string {
   const remaining = p.remainingRoute.length >= 2 ? p.remainingRoute : p.fullRoute ?? p.route ?? [];
@@ -65,11 +69,16 @@ export function MapboxWebDeliveryMap({
   const lastSyncKeyRef = useRef("");
   const lastRefitNonceRef = useRef(0);
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
+  const markerDataUri = useMapMarkerDataUri("bike");
 
   const html = useMemo(() => {
-    if (!token) return "";
-    return buildDeliveryTrackingMapHtml(token, center, mapbikeMarkerUri());
-  }, [token, center.latitude, center.longitude]);
+    if (!token || !markerDataUri) return "";
+    return buildDeliveryTrackingMapHtml(token, center, markerDataUri);
+  }, [token, markerDataUri, center.latitude, center.longitude]);
+
+  useEffect(() => {
+    readyRef.current = false;
+  }, [html]);
 
   const markReady = useCallback(() => {
     if (readyRef.current) return;
@@ -77,6 +86,14 @@ export function MapboxWebDeliveryMap({
     lastSyncKeyRef.current = "";
     onReady?.();
   }, [onReady]);
+
+  const injectMarkerIcon = useCallback(() => {
+    if (!readyRef.current || !markerDataUri) return;
+    const uri = escJsString(markerDataUri);
+    webRef.current?.injectJavaScript(
+      `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
+    );
+  }, [markerDataUri]);
 
   const sync = useCallback(() => {
     if (!readyRef.current) return;
@@ -96,15 +113,20 @@ export function MapboxWebDeliveryMap({
     );
   }, [payload, refitNonce]);
 
-  useEffect(() => {
+  const syncAll = useCallback(() => {
+    injectMarkerIcon();
     sync();
-  }, [sync, refitNonce]);
+  }, [injectMarkerIcon, sync]);
+
+  useEffect(() => {
+    syncAll();
+  }, [syncAll, refitNonce]);
 
   useEffect(() => {
     if (!readyRef.current) return;
-    const t = setTimeout(() => sync(), 80);
+    const t = setTimeout(() => syncAll(), 80);
     return () => clearTimeout(t);
-  }, [payload.remainingRoute.length, payload.connectorRoute?.length, payload.preRiderArcRoute?.length, sync]);
+  }, [payload.remainingRoute.length, payload.connectorRoute?.length, payload.preRiderArcRoute?.length, syncAll]);
 
   if (!token || !html) {
     return <CustomerMapUnavailable style={style} />;
@@ -120,10 +142,15 @@ export function MapboxWebDeliveryMap({
         javaScriptEnabled
         domStorageEnabled
         scrollEnabled={false}
+        nestedScrollEnabled={Platform.OS === "android"}
+        overScrollMode="never"
+        androidLayerType="hardware"
+        allowFileAccess
+        allowUniversalAccessFromFileURLs
         mixedContentMode="always"
         onLoadEnd={() => {
           markReady();
-          setTimeout(() => sync(), 120);
+          setTimeout(() => syncAll(), 120);
         }}
         onMessage={(event) => {
           try {
@@ -131,7 +158,7 @@ export function MapboxWebDeliveryMap({
             if (msg.type === "ready") {
               markReady();
               lastSyncKeyRef.current = "";
-              sync();
+              syncAll();
             }
           } catch {
             /* ignore */

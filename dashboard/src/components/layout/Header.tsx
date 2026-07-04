@@ -331,7 +331,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/system": "System",
   "/dashboard/analytics": "Analytics",
   "/dashboard/super-admin": "Super Admin",
-  "/dashboard/super-admin/store-onboarding-fee": "Onboarding fee",
+  "/dashboard/super-admin/store-onboarding-fee": "Onboarding fee & Mx Agreement",
   "/dashboard/super-admin/ticket-settings": "Ticket Management",
   "/dashboard/super-admin/order-acceptance": "Order acceptance settings",
   "/dashboard/super-admin/cancellation-reasons": "Cancellation reasons",
@@ -342,6 +342,14 @@ const ROUTE_TITLES: Record<string, string> = {
 };
 
 const SUPER_ADMIN_HUB_PATH = "/dashboard/super-admin";
+
+/** One-step back within Super Admin nested routes (not always the hub). */
+function resolveSuperAdminBackHref(cleanPath: string): string {
+  if (/^\/dashboard\/super-admin\/cxapp-home\/[^/]+$/.test(cleanPath)) {
+    return "/dashboard/super-admin/cxapp-home";
+  }
+  return SUPER_ADMIN_HUB_PATH;
+}
 
 const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
 const TICKET_SETTINGS_PATH = "/dashboard/super-admin/ticket-settings";
@@ -737,18 +745,6 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
-        ) : cleanPathname.startsWith("/dashboard/super-admin/push") ? (
-          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
-              href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
-              title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
-          </div>
         ) : cleanPathname === ORDER_ACCEPTANCE_SETTINGS_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
@@ -838,10 +834,10 @@ function HeaderComponent() {
         ) : isSuperAdminSubRoute ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
-              href="/dashboard/super-admin"
+              href={resolveSuperAdminBackHref(cleanPathname)}
               className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
-              title="Back to Super Admin"
+              aria-label="Back"
+              title="Back"
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>

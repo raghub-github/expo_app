@@ -21,7 +21,7 @@ import { StatusBar } from "expo-status-bar";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import type { OrderDetail } from "@/services/order.service";
 import { orderService } from "@/services/order.service";
@@ -514,6 +514,9 @@ export function FoodOrderDeliveredScreen({
       </View>
     );
 
+  const headerTopPadding =
+    (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT) + STATUS_BAR_TO_HEADER_GAP;
+
   return (
     <View style={styles.screen}>
       <StatusBar style="light" backgroundColor={HEADER_GREEN} />
@@ -528,7 +531,7 @@ export function FoodOrderDeliveredScreen({
           locations={[0, 0.12, 0.42, 0.92]}
           start={{ x: 0, y: 0 }}
           end={{ x: 0, y: 1 }}
-          style={[styles.receiptHeroBg, { paddingTop: STATUS_BAR_TO_HEADER_GAP }]}
+          style={[styles.receiptHeroBg, { paddingTop: headerTopPadding }]}
         >
           <View style={styles.heroTopRow}>
             <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.heroSideBtnLeft}>

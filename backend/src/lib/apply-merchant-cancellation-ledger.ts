@@ -10,8 +10,18 @@ import {
   planMerchantCancellationLedger,
 } from "./merchant-cancellation-compensation-service.js";
 import { buildCancellationInfoLedgerDescription } from "./merchant-cancellation-compensation-display.js";
+import {
+  adminCancellationLedgerMetadata,
+  COMPENSATION_CREDIT_REASON,
+  COMPENSATION_RECOVERY_REASON,
+  normalizeMerchantDebitMode,
+  orderHasPayoutCredited,
+  resolveAdminCancellationWalletAction,
+  resolveCancellationPayoutScenario,
+  type MerchantDebitMode,
+} from "./merchant-cancellation-wallet-action.js";
 
-export type MerchantDebitMode = "full_debit" | "partial_debit" | "no_debit";
+export type { MerchantDebitMode };
 
 export type ApplyMerchantOrderCancellationLedgerInput = {
   orderCoreId: number;
@@ -37,13 +47,7 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function normalizeMode(raw: string | null | undefined): MerchantDebitMode | null {
-  const v = String(raw ?? "")
-    .trim()
-    .toLowerCase();
-  if (v === "full_debit" || v === "partial_debit" || v === "no_debit") return v;
-  return null;
-}
+const normalizeMode = normalizeMerchantDebitMode;
 
 function isRelationMissingError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
@@ -184,7 +188,10 @@ async function debitFromBucket(
   if (!(amount > 0)) return null;
 
   const idempotencyKey = `merchant_cancel_debit:${args.orderCoreId}:${args.idempotencySuffix}:${args.balanceType}`;
-  const description = "Order Cancelled — Cancellation Charges Applied";
+  const description =
+    args.compensationMeta?.admin_override === true
+      ? COMPENSATION_RECOVERY_REASON
+      : "Order Cancelled — Cancellation Charges Applied";
 
   const rows = await sql<{ ledger_id: number | null }[]>`
     SELECT merchant_wallet_debit(
@@ -285,7 +292,10 @@ async function applyCompensationCredit(
   if (!(amount > 0)) return { applied: false };
 
   const idempotencyKey = `merchant_cancel_comp_credit:${args.orderCoreId}`;
-  const description = "Order Cancelled — Compensation Credit";
+  const description =
+    args.compensationMeta?.admin_override === true
+      ? COMPENSATION_CREDIT_REASON
+      : "Order Cancelled — Compensation Credit";
 
   const rows = await sql<{ ledger_id: number | null }[]>`
     SELECT merchant_wallet_credit(
@@ -519,12 +529,169 @@ async function recordCancellationInfoLedger(
   return Number.isFinite(ledgerId) && ledgerId > 0 ? ledgerId : null;
 }
 
+async function applyAdminOverrideCancellationLedger(
+  sql: Sql,
+  input: ApplyMerchantOrderCancellationLedgerInput,
+  mode: MerchantDebitMode
+): Promise<ApplyMerchantOrderCancellationLedgerResult> {
+  const ctx = await resolveOrderWalletContext(sql, input.orderCoreId);
+  if (!ctx) return { applied: false, skipped: "merchant_not_found" };
+
+  const ctmTotal = await resolveMerchantCtmAmount(sql, {
+    orderCoreId: input.orderCoreId,
+    ordersFoodId: ctx.ordersFoodId,
+  });
+  if (!(ctmTotal > 0)) return { applied: false, skipped: "zero_ctm" };
+
+  const walletRows = await sql<{ wallet_id: number | string }[]>`
+    SELECT get_or_create_merchant_wallet(${ctx.merchantStoreId}::bigint) AS wallet_id
+  `;
+  const walletId = Number(walletRows[0]?.wallet_id);
+  if (!Number.isFinite(walletId) || walletId <= 0) {
+    return { applied: false, skipped: "wallet_not_found" };
+  }
+
+  if (await hasCancellationLedgerEntry(sql, walletId, ctx.ordersFoodId, input.orderCoreId)) {
+    return { applied: true, recorded: true, skipped: "already_recorded", entryType: "info", mode };
+  }
+
+  const hasPayout = await orderHasPayoutCredited(sql, walletId, ctx.ordersFoodId, input.orderCoreId);
+  const scenario = resolveCancellationPayoutScenario(hasPayout);
+  const action = resolveAdminCancellationWalletAction(mode, scenario, ctmTotal);
+  const compensationMeta = adminCancellationLedgerMetadata({
+    action,
+    mode,
+    scenario,
+    orderCoreId: input.orderCoreId,
+    eligibleAmount: ctmTotal,
+    source: input.source,
+    actorSystemUserId: input.actorSystemUserId,
+  });
+
+  if (action.kind === "credit") {
+    const creditResult = await applyCompensationCredit(sql, {
+      walletId,
+      amount: action.amount,
+      ordersFoodId: ctx.ordersFoodId,
+      orderCoreId: input.orderCoreId,
+      source: input.source,
+      actorSystemUserId: input.actorSystemUserId,
+      compensationMeta,
+    });
+    if (creditResult.applied) {
+      await syncCancellationSettlementBreakdown(sql, input.orderCoreId);
+      return {
+        applied: true,
+        recorded: true,
+        amount: action.amount,
+        ledgerId: creditResult.ledgerId,
+        entryType: "credit",
+        mode,
+      };
+    }
+    return { applied: false, skipped: "credit_failed", mode };
+  }
+
+  if (action.kind === "debit") {
+    const debitResult = await applyWalletDebit(sql, {
+      walletId,
+      amount: action.amount,
+      ordersFoodId: ctx.ordersFoodId,
+      orderCoreId: input.orderCoreId,
+      mode,
+      actorSystemUserId: input.actorSystemUserId,
+      compensationMeta,
+    });
+    if (debitResult.applied) {
+      await syncCancellationSettlementBreakdown(sql, input.orderCoreId);
+      return {
+        applied: true,
+        recorded: true,
+        amount: action.amount,
+        ledgerId: debitResult.ledgerId,
+        entryType: "debit",
+        mode,
+      };
+    }
+    if (debitResult.skipped === "not_yet_credited") {
+      const ledgerId = await recordCancellationInfoLedger(sql, {
+        walletId,
+        ordersFoodId: ctx.ordersFoodId,
+        orderCoreId: input.orderCoreId,
+        amount: ctmTotal,
+        balanceImpact: "none",
+        source: input.source,
+        actorSystemUserId: input.actorSystemUserId,
+        cancelledByType: input.cancelledByType,
+        cancelledByLabel: input.cancelledByLabel,
+        compensationMeta: {
+          ...compensationMeta,
+          recovery_skipped: "not_yet_credited",
+        },
+      });
+      if (ledgerId) {
+        await syncCancellationSettlementBreakdown(sql, input.orderCoreId);
+        return {
+          applied: true,
+          recorded: true,
+          amount: ctmTotal,
+          ledgerId,
+          entryType: "info",
+          skipped: "not_yet_credited",
+          mode,
+        };
+      }
+    }
+    return { applied: false, skipped: debitResult.skipped ?? "debit_failed", mode };
+  }
+
+  const ledgerId = await recordCancellationInfoLedger(sql, {
+    walletId,
+    ordersFoodId: ctx.ordersFoodId,
+    orderCoreId: input.orderCoreId,
+    amount: action.amount > 0 ? action.amount : ctmTotal,
+    balanceImpact: "none",
+    source: input.source,
+    actorSystemUserId: input.actorSystemUserId,
+    cancelledByType: input.cancelledByType,
+    cancelledByLabel: input.cancelledByLabel,
+    compensationMeta,
+  });
+
+  if (ledgerId) {
+    await syncCancellationSettlementBreakdown(sql, input.orderCoreId);
+    return {
+      applied: true,
+      recorded: true,
+      amount: action.amount > 0 ? action.amount : ctmTotal,
+      ledgerId,
+      entryType: "info",
+      mode,
+    };
+  }
+
+  return { applied: false, skipped: "info_ledger_failed", mode };
+}
+
 export async function applyMerchantOrderCancellationLedger(
   input: ApplyMerchantOrderCancellationLedgerInput,
   sql: Sql = getSql()
 ): Promise<ApplyMerchantOrderCancellationLedgerResult> {
   if (!Number.isFinite(input.orderCoreId) || input.orderCoreId <= 0) {
     return { applied: false, skipped: "invalid_order" };
+  }
+
+  const explicitMode = normalizeMode(input.merchantDebit);
+  if (explicitMode) {
+    try {
+      return await applyAdminOverrideCancellationLedger(sql, input, explicitMode);
+    } catch (e) {
+      if (isRelationMissingError(e)) {
+        return { applied: false, skipped: "merchant_wallet_not_migrated" };
+      }
+      console.error("[applyMerchantOrderCancellationLedger/admin]", e);
+      throw e;
+    }
   }
 
   try {

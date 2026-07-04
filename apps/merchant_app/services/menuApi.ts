@@ -147,6 +147,27 @@ export async function fetchCategoryUiConfig(
   return (await res.json()) as CategoryUiConfig;
 }
 
+export type MenuImageUploadStatus = {
+  totalUsed: number;
+  maxImageUploads: number | null;
+  imageUploadAllowed: boolean;
+  imageLimitReached: boolean;
+  imageSlotsLeft: number | null;
+};
+
+export async function fetchMenuImageUploadStatus(
+  storeId: string,
+  token: string
+): Promise<MenuImageUploadStatus | null> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/image-upload-status`,
+    token
+  );
+  if (!res.ok) return null;
+  return (await res.json()) as MenuImageUploadStatus;
+}
+
 function normalizeMenuCuisineRows(raw: unknown): MenuCuisineOption[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter(

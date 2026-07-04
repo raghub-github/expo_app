@@ -15,7 +15,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useRoute } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import Animated, { FadeInDown, FadeIn } from "react-native-reanimated";
 import { orderService } from "@/services/order.service";
 import { LegalFooter } from "@/components/LegalLinks";
@@ -25,7 +25,6 @@ const PAD = 20;
 const CARD_RADIUS = 18;
 const AUTO_REDIRECT_SEC = 4;
 const GREEN = GatiMitraColors.primaryMint;
-const GREEN_DARK = GatiMitraColors.deepMintStart;
 
 function OrderInfoRow({
   icon,
@@ -62,17 +61,6 @@ function OrderSuccessFooterArt() {
         {[28, 44, 36, 52, 32, 40, 48].map((h, i) => (
           <View key={i} style={[styles.footerBuilding, { height: h, opacity: 0.35 + (i % 3) * 0.08 }]} />
         ))}
-      </View>
-      <View style={styles.footerScene}>
-        <View style={styles.footerStore}>
-          <MaterialCommunityIcons name="storefront-outline" size={42} color={GREEN} />
-        </View>
-        <View style={styles.footerBag}>
-          <MaterialCommunityIcons name="shopping" size={28} color={GREEN_DARK} />
-        </View>
-        <View style={styles.footerCup}>
-          <MaterialCommunityIcons name="coffee-outline" size={22} color={GREEN} />
-        </View>
       </View>
     </View>
   );
@@ -455,25 +443,5 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 4,
     borderTopRightRadius: 4,
     backgroundColor: GREEN,
-  },
-  footerScene: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 8,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    gap: 28,
-    opacity: 0.55,
-  },
-  footerStore: {
-    marginBottom: 2,
-  },
-  footerBag: {
-    marginBottom: 10,
-  },
-  footerCup: {
-    marginBottom: 4,
   },
 });

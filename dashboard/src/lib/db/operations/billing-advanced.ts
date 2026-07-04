@@ -14,6 +14,70 @@ function sanitizePlatformOfferConditions(input: unknown): Record<string, unknown
   return {};
 }
 
+function parseJsonArrayField(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (!t) return [];
+    try {
+      const parsed = JSON.parse(t) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function normalizeTimestamptzInput(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const t = String(v).trim();
+  if (!t) return null;
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error("Invalid date/time value");
+  }
+  return d.toISOString();
+}
+
+function normalizePlatformOfferInput(input: InsertPlatformOfferInput): InsertPlatformOfferInput {
+  const starts_at = normalizeTimestamptzInput(input.starts_at);
+  const ends_at = normalizeTimestamptzInput(input.ends_at);
+  if (starts_at && ends_at && new Date(starts_at) > new Date(ends_at)) {
+    throw new Error("End date/time must be on or after start date/time.");
+  }
+  return {
+    ...input,
+    geo_ids: parseJsonArrayField(input.geo_ids),
+    merchant_ids: parseJsonArrayField(input.merchant_ids),
+    starts_at,
+    ends_at,
+    priority: Number(input.priority ?? 0) || 0,
+    buy_qty: input.buy_qty == null ? null : Number(input.buy_qty),
+    get_qty: input.get_qty == null ? null : Number(input.get_qty),
+  };
+}
+
+export function formatPlatformOfferDbError(e: unknown): string {
+  const err = e as { code?: string; constraint_name?: string; message?: string };
+  if (err.code === "23514") {
+    if (
+      err.constraint_name === "billing_platform_offers_time_window_chk" ||
+      /time_window/i.test(err.message ?? "")
+    ) {
+      return "End date/time must be on or after start date/time.";
+    }
+    if (err.constraint_name === "billing_platform_offers_share_pct_chk") {
+      return "Platform and merchant share percentages must add up to 100.";
+    }
+    if (err.constraint_name === "billing_platform_offers_offer_kind_chk") {
+      return "This offer kind is not allowed by the database. Run billing migrations or pick a supported kind.";
+    }
+    return "Offer failed a database validation rule. Check dates, shares, and field values.";
+  }
+  return e instanceof Error ? e.message : "Failed";
+}
+
 export type DeliveryRateCardAdminRow = {
   id: number;
   name: string | null;
@@ -178,7 +242,7 @@ export type PlatformOfferAdminRow = {
 export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
   const sql = getSql();
   return sql<PlatformOfferAdminRow[]>`
-    SELECT id, name, service_type,
+    SELECT id::int AS id, name, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
@@ -198,6 +262,33 @@ export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
     FROM billing_platform_offers
     ORDER BY priority ASC, id ASC
   `;
+}
+
+export async function getPlatformOfferById(id: number): Promise<PlatformOfferAdminRow | null> {
+  const sql = getSql();
+  const [row] = await sql<PlatformOfferAdminRow[]>`
+    SELECT id::int AS id, name, service_type,
+      offer_kind, offer_audience, funding_mode,
+      platform_share_pct::text AS platform_share_pct,
+      merchant_share_pct::text AS merchant_share_pct,
+      max_platform_contribution::text AS max_platform_contribution,
+      max_merchant_contribution::text AS max_merchant_contribution,
+      target_scope, geo_level, geo_ids, merchant_ids, customer_segment,
+      min_order_amount::text AS min_order_amount,
+      max_discount_amount::text AS max_discount_amount,
+      buy_qty, get_qty, is_stackable, exclusion_group,
+      starts_at::text AS starts_at, ends_at::text AS ends_at,
+      budget_total::text AS budget_total, budget_used::text AS budget_used,
+      discount_type,
+      value_numeric::text AS value_numeric,
+      delivery_discount_type,
+      delivery_discount_value::text AS delivery_discount_value,
+      priority, is_active, is_hidden, conditions, metadata
+    FROM billing_platform_offers
+    WHERE id = ${id}
+    LIMIT 1
+  `;
+  return row ?? null;
 }
 
 export type InsertPlatformOfferInput = {
@@ -238,7 +329,8 @@ export type InsertPlatformOfferInput = {
 
 export async function insertPlatformOffer(input: InsertPlatformOfferInput): Promise<PlatformOfferAdminRow> {
   const sql = getSql();
-  const st = (input.service_type ?? "FOOD").trim().toUpperCase();
+  const normalized = normalizePlatformOfferInput(input);
+  const st = (normalized.service_type ?? "FOOD").trim().toUpperCase();
   const [row] = await sql<PlatformOfferAdminRow[]>`
     INSERT INTO billing_platform_offers (
       name, service_type,
@@ -251,41 +343,41 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       delivery_discount_type, delivery_discount_value,
       priority, is_active, is_hidden, conditions, metadata
     ) VALUES (
-      ${input.name ?? null},
+      ${normalized.name ?? null},
       ${st},
-      ${(input.offer_kind ?? "DISCOUNT").toUpperCase()},
-      ${(input.offer_audience ?? "CUSTOMER").toUpperCase()},
-      ${(input.funding_mode ?? "PLATFORM_ONLY").toUpperCase()},
-      ${input.platform_share_pct ?? 100},
-      ${input.merchant_share_pct ?? 0},
-      ${input.max_platform_contribution ?? null},
-      ${input.max_merchant_contribution ?? null},
-      ${(input.target_scope ?? "GLOBAL").toUpperCase()},
-      ${input.geo_level ?? null},
-      ${sqlJsonb(Array.isArray(input.geo_ids) ? input.geo_ids : [])}::jsonb,
-      ${sqlJsonb(Array.isArray(input.merchant_ids) ? input.merchant_ids : [])}::jsonb,
-      ${(input.customer_segment ?? "ALL").toUpperCase()},
-      ${input.min_order_amount ?? null},
-      ${input.max_discount_amount ?? null},
-      ${input.buy_qty ?? null},
-      ${input.get_qty ?? null},
-      ${input.is_stackable ?? false},
-      ${input.exclusion_group ?? null},
-      ${input.starts_at ?? null},
-      ${input.ends_at ?? null},
-      ${input.budget_total ?? null},
-      ${input.budget_used ?? 0},
-      ${input.discount_type ?? "PERCENTAGE"},
-      ${input.value_numeric ?? null},
-      ${input.delivery_discount_type ?? null},
-      ${input.delivery_discount_value ?? null},
-      ${input.priority ?? 0},
-      ${input.is_active ?? true},
-      ${input.is_hidden ?? false},
-      ${sqlJsonb(sanitizePlatformOfferConditions(input.conditions))}::jsonb,
-      ${sqlJsonb(input.metadata ?? null)}::jsonb
+      ${(normalized.offer_kind ?? "DISCOUNT").toUpperCase()},
+      ${(normalized.offer_audience ?? "CUSTOMER").toUpperCase()},
+      ${(normalized.funding_mode ?? "PLATFORM_ONLY").toUpperCase()},
+      ${normalized.platform_share_pct ?? 100},
+      ${normalized.merchant_share_pct ?? 0},
+      ${normalized.max_platform_contribution ?? null},
+      ${normalized.max_merchant_contribution ?? null},
+      ${(normalized.target_scope ?? "GLOBAL").toUpperCase()},
+      ${normalized.geo_level ?? null},
+      ${sqlJsonb(parseJsonArrayField(normalized.geo_ids))}::jsonb,
+      ${sqlJsonb(parseJsonArrayField(normalized.merchant_ids))}::jsonb,
+      ${(normalized.customer_segment ?? "ALL").toUpperCase()},
+      ${normalized.min_order_amount ?? null},
+      ${normalized.max_discount_amount ?? null},
+      ${normalized.buy_qty ?? null},
+      ${normalized.get_qty ?? null},
+      ${normalized.is_stackable ?? false},
+      ${normalized.exclusion_group ?? null},
+      ${normalized.starts_at ?? null},
+      ${normalized.ends_at ?? null},
+      ${normalized.budget_total ?? null},
+      ${normalized.budget_used ?? 0},
+      ${normalized.discount_type ?? "PERCENTAGE"},
+      ${normalized.value_numeric ?? null},
+      ${normalized.delivery_discount_type ?? null},
+      ${normalized.delivery_discount_value ?? null},
+      ${normalized.priority ?? 0},
+      ${normalized.is_active ?? true},
+      ${normalized.is_hidden ?? false},
+      ${sqlJsonb(sanitizePlatformOfferConditions(normalized.conditions))}::jsonb,
+      ${sqlJsonb(normalized.metadata ?? null)}::jsonb
     )
-    RETURNING id, name, service_type,
+    RETURNING id::int AS id, name, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
@@ -313,45 +405,46 @@ export async function updatePlatformOffer(
   input: InsertPlatformOfferInput
 ): Promise<PlatformOfferAdminRow | null> {
   const sql = getSql();
-  const st = (input.service_type ?? "FOOD").trim().toUpperCase();
+  const normalized = normalizePlatformOfferInput(input);
+  const st = (normalized.service_type ?? "FOOD").trim().toUpperCase();
   const [row] = await sql<PlatformOfferAdminRow[]>`
     UPDATE billing_platform_offers SET
-      name = ${input.name ?? null},
+      name = ${normalized.name ?? null},
       service_type = ${st},
-      offer_kind = ${(input.offer_kind ?? "DISCOUNT").toUpperCase()},
-      offer_audience = ${(input.offer_audience ?? "CUSTOMER").toUpperCase()},
-      funding_mode = ${(input.funding_mode ?? "PLATFORM_ONLY").toUpperCase()},
-      platform_share_pct = ${input.platform_share_pct ?? 100},
-      merchant_share_pct = ${input.merchant_share_pct ?? 0},
-      max_platform_contribution = ${input.max_platform_contribution ?? null},
-      max_merchant_contribution = ${input.max_merchant_contribution ?? null},
-      target_scope = ${(input.target_scope ?? "GLOBAL").toUpperCase()},
-      geo_level = ${input.geo_level ?? null},
-      geo_ids = ${sqlJsonb(Array.isArray(input.geo_ids) ? input.geo_ids : [])}::jsonb,
-      merchant_ids = ${sqlJsonb(Array.isArray(input.merchant_ids) ? input.merchant_ids : [])}::jsonb,
-      customer_segment = ${(input.customer_segment ?? "ALL").toUpperCase()},
-      min_order_amount = ${input.min_order_amount ?? null},
-      max_discount_amount = ${input.max_discount_amount ?? null},
-      buy_qty = ${input.buy_qty ?? null},
-      get_qty = ${input.get_qty ?? null},
-      is_stackable = ${input.is_stackable ?? false},
-      exclusion_group = ${input.exclusion_group ?? null},
-      starts_at = ${input.starts_at ?? null},
-      ends_at = ${input.ends_at ?? null},
-      budget_total = ${input.budget_total ?? null},
-      budget_used = ${input.budget_used ?? 0},
-      discount_type = ${input.discount_type ?? "PERCENTAGE"},
-      value_numeric = ${input.value_numeric ?? null},
-      delivery_discount_type = ${input.delivery_discount_type ?? null},
-      delivery_discount_value = ${input.delivery_discount_value ?? null},
-      priority = ${input.priority ?? 0},
-      is_active = ${input.is_active ?? true},
-      is_hidden = ${input.is_hidden ?? false},
-      conditions = ${sqlJsonb(sanitizePlatformOfferConditions(input.conditions))}::jsonb,
-      metadata = ${sqlJsonb(input.metadata ?? null)}::jsonb,
+      offer_kind = ${(normalized.offer_kind ?? "DISCOUNT").toUpperCase()},
+      offer_audience = ${(normalized.offer_audience ?? "CUSTOMER").toUpperCase()},
+      funding_mode = ${(normalized.funding_mode ?? "PLATFORM_ONLY").toUpperCase()},
+      platform_share_pct = ${normalized.platform_share_pct ?? 100},
+      merchant_share_pct = ${normalized.merchant_share_pct ?? 0},
+      max_platform_contribution = ${normalized.max_platform_contribution ?? null},
+      max_merchant_contribution = ${normalized.max_merchant_contribution ?? null},
+      target_scope = ${(normalized.target_scope ?? "GLOBAL").toUpperCase()},
+      geo_level = ${normalized.geo_level ?? null},
+      geo_ids = ${sqlJsonb(parseJsonArrayField(normalized.geo_ids))}::jsonb,
+      merchant_ids = ${sqlJsonb(parseJsonArrayField(normalized.merchant_ids))}::jsonb,
+      customer_segment = ${(normalized.customer_segment ?? "ALL").toUpperCase()},
+      min_order_amount = ${normalized.min_order_amount ?? null},
+      max_discount_amount = ${normalized.max_discount_amount ?? null},
+      buy_qty = ${normalized.buy_qty ?? null},
+      get_qty = ${normalized.get_qty ?? null},
+      is_stackable = ${normalized.is_stackable ?? false},
+      exclusion_group = ${normalized.exclusion_group ?? null},
+      starts_at = ${normalized.starts_at ?? null},
+      ends_at = ${normalized.ends_at ?? null},
+      budget_total = ${normalized.budget_total ?? null},
+      budget_used = ${normalized.budget_used ?? 0},
+      discount_type = ${normalized.discount_type ?? "PERCENTAGE"},
+      value_numeric = ${normalized.value_numeric ?? null},
+      delivery_discount_type = ${normalized.delivery_discount_type ?? null},
+      delivery_discount_value = ${normalized.delivery_discount_value ?? null},
+      priority = ${normalized.priority ?? 0},
+      is_active = ${normalized.is_active ?? true},
+      is_hidden = ${normalized.is_hidden ?? false},
+      conditions = ${sqlJsonb(sanitizePlatformOfferConditions(normalized.conditions))}::jsonb,
+      metadata = ${sqlJsonb(normalized.metadata ?? null)}::jsonb,
       updated_at = now()
     WHERE id = ${id}
-    RETURNING id, name, service_type,
+    RETURNING id::int AS id, name, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,

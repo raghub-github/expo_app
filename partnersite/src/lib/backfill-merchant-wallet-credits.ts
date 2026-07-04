@@ -199,3 +199,127 @@ export async function repairCancellationLedgerWithdrawableMetadata(
 
   return { repaired };
 }
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Reverse cancellation debits when the order was never credited (no ORDER_EARNING).
+ * Keep in sync with backend/src/lib/backfill-merchant-wallet-credits.ts
+ */
+export async function repairErroneousZeroCompensationCancellationDebits(
+  merchantStoreId: number,
+  limit = 20
+): Promise<{ reversed: number; skipped: number }> {
+  const { client: sql } = await import('@/lib/drizzle');
+
+  const walletRows = await sql<{ id: number }[]>`
+    SELECT id FROM merchant_wallet WHERE merchant_store_id = ${merchantStoreId} LIMIT 1
+  `;
+  const walletId = Number(walletRows[0]?.id);
+  if (!Number.isFinite(walletId) || walletId <= 0) return { reversed: 0, skipped: 0 };
+
+  const debits = await sql<
+    { id: number; amount: string; reference_id: number; orders_core_id: number }[]
+  >`
+    SELECT
+      l.id,
+      l.amount::text,
+      l.reference_id,
+      COALESCE(
+        NULLIF((l.metadata->>'orders_core_id')::bigint, 0),
+        NULLIF(l.order_id, 0)
+      ) AS orders_core_id
+    FROM merchant_wallet_ledger l
+    WHERE l.wallet_id = ${walletId}
+      AND l.direction = 'DEBIT'
+      AND COALESCE(l.metadata->>'entry_type', '') = 'order_cancellation'
+      AND COALESCE(l.metadata->>'balance_impact', '') = 'debit'
+      AND COALESCE(l.metadata->>'reversed_by_repair', '') <> 'true'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM merchant_wallet_ledger e
+        WHERE e.wallet_id = l.wallet_id
+          AND e.direction = 'CREDIT'
+          AND e.category = 'ORDER_EARNING'::wallet_transaction_category
+          AND e.reference_id = l.reference_id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM merchant_wallet_ledger r
+        WHERE r.wallet_id = l.wallet_id
+          AND r.idempotency_key = (
+            'repair_cancel_debit_reversal:'
+            || COALESCE(
+              NULLIF((l.metadata->>'orders_core_id')::bigint, 0),
+              NULLIF(l.order_id, 0)
+            )::text
+          )
+      )
+    ORDER BY l.created_at DESC
+    LIMIT ${limit}
+  `;
+
+  let reversed = 0;
+  let skipped = 0;
+
+  for (const row of debits) {
+    const orderCoreId = Number(row.orders_core_id);
+    const ordersFoodId = Number(row.reference_id);
+    const amount = round2(Number(row.amount));
+    if (!Number.isFinite(orderCoreId) || orderCoreId <= 0 || !(amount > 0)) {
+      skipped += 1;
+      continue;
+    }
+    if (!Number.isFinite(ordersFoodId) || ordersFoodId <= 0) {
+      skipped += 1;
+      continue;
+    }
+
+    const idempotencyKey = `repair_cancel_debit_reversal:${orderCoreId}`;
+    const description = 'Cancellation debit reversed — order was not credited to wallet';
+
+    try {
+      const creditRows = await sql<{ ledger_id: number | null }[]>`
+        SELECT merchant_wallet_credit(
+          ${walletId}::bigint,
+          ${amount}::numeric,
+          'ORDER_ADJUSTMENT'::wallet_transaction_category,
+          'AVAILABLE'::wallet_balance_type,
+          'ORDER'::wallet_reference_type,
+          ${ordersFoodId}::bigint,
+          ${idempotencyKey}::text,
+          ${description}::text,
+          ${JSON.stringify({
+            orders_core_id: orderCoreId,
+            entry_type: 'order_cancellation',
+            balance_impact: 'credit',
+            transaction_type: 'COMPENSATION_CREDIT',
+            reason: 'Erroneous cancellation debit reversal',
+            trigger_source: 'repair_erroneous_cancel_debit',
+            reversed_ledger_id: row.id,
+            reversed_amount: amount,
+          })}::jsonb
+        ) AS ledger_id
+      `;
+      const ledgerId = Number(creditRows[0]?.ledger_id);
+      if (!Number.isFinite(ledgerId) || ledgerId <= 0) {
+        skipped += 1;
+        continue;
+      }
+
+      reversed += 1;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/duplicate|idempotency/i.test(msg)) {
+        skipped += 1;
+        continue;
+      }
+      console.warn('[repairErroneousZeroCompensationCancellationDebits]', orderCoreId, e);
+      skipped += 1;
+    }
+  }
+
+  return { reversed, skipped };
+}

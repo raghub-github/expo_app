@@ -31,7 +31,9 @@ export type MerchantListItemType =
   | "menu_item"
   | "footer"
   | "empty_menu"
-  | "menu_skeleton";
+  | "menu_skeleton"
+  | "menu_loading"
+  | "pairing_strip";
 
 export type MerchantFlashListItem =
   | { type: "hero"; key: "hero" }
@@ -63,10 +65,17 @@ export type MerchantFlashListItem =
       sectionIndex: number;
       itemIndex: number;
       isLastInSection: boolean;
+      showDivider: boolean;
+    }
+  | {
+      type: "pairing_strip";
+      key: string;
+      companions: MenuListRow[];
     }
   | { type: "footer"; key: "footer" }
   | { type: "empty_menu"; key: "empty_menu" }
-  | { type: "menu_skeleton"; key: string };
+  | { type: "menu_skeleton"; key: string }
+  | { type: "menu_loading"; key: "menu_loading" };
 
 export type MerchantScrollIndexMap = {
   pastOrders: number | null;

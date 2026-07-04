@@ -138,9 +138,7 @@ export function LivePreviewInsightsPanel({
   const period = mapInsightsDatePreset(periodPreset);
   const marketId = marketStoreId ?? storeId;
 
-  const [data, setData] = React.useState<LivePreviewInsights | null>(() =>
-    storeId ? readLivePreviewCache(storeId, period) : null
-  );
+  const [data, setData] = React.useState<LivePreviewInsights | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -154,8 +152,8 @@ export function LivePreviewInsightsPanel({
     let cancelled = false;
     setError(null);
     void fetch(
-      `/api/merchant/growth/live-preview?storeId=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`,
-      { cache: "no-store" }
+      `/api/merchant/growth/live-preview?storeId=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}&lite=1`,
+      { credentials: "include" },
     )
       .then(async (res) => {
         if (!res.ok) {

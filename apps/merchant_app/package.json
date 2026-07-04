@@ -19,6 +19,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@gatimitra/contracts": "^0.0.1",
+    "@gatimitra/merchant-payout": "*",
     "@gatimitra/expo-push-kit": "^0.0.1",
     "@maniac-tech/react-native-expo-read-sms": "^9.1.2",
     "@react-native-community/datetimepicker": "^8.6.0",

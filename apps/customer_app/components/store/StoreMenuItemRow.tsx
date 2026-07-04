@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -6,20 +6,16 @@ import {
   StyleSheet,
   Platform,
   Vibration,
-  Alert,
 } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from "react-native-reanimated";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
+import { StoreFonts } from "@/constants/storeTypography";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
-import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
+import { StoreMenuAddButton, StoreMenuQtyStepper, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
+import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -35,14 +31,13 @@ export type StoreMenuItemRowProps = {
   isHighlyReordered?: boolean;
   isBookmarked?: boolean;
   highlighted?: boolean;
-  /** Top co-purchased companion item name from order history. */
+  /** @deprecated Pairing strip replaces inline companion hint. */
   goesWithName?: string | null;
   onBookmark?: (item: MenuItem) => void;
   onShare?: (item: MenuItem) => void;
 };
 
 const IMAGE_SIZE = 118;
-const ADD_LOCK_MS = 320;
 
 export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   item,
@@ -61,16 +56,12 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 }: StoreMenuItemRowProps) {
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
   const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
-  const [addLocked, setAddLocked] = useState(false);
-  const addLockUntilRef = useRef(0);
   const imageUri = useMemo(
     () => (item.imageUrl?.trim() ? (toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl) : null),
     [item.imageUrl]
   );
   const imageWasPrefetched = imageUri ? isMenuItemImagePrefetched(imageUri) : false;
   const [imageFailed, setImageFailed] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(imageWasPrefetched);
-  const addScale = useSharedValue(1);
 
   const isCustomisable = item.hasVariants || item.hasAddons || item.hasCustomizations;
   const displayQty = optimisticQty ?? cartQty;
@@ -89,44 +80,20 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 
   useEffect(() => {
     setImageFailed(false);
-    setImageLoaded(imageWasPrefetched);
-  }, [imageUri, imageWasPrefetched]);
-
-  const runAddAnimation = useCallback(() => {
-    addScale.value = withSpring(0.96, { damping: 15, stiffness: 320 }, () => {
-      addScale.value = withSpring(1);
-    });
-  }, [addScale]);
+  }, [imageUri]);
 
   const handleAdd = useCallback(() => {
     if (isStoreClosed) return;
-    const now = Date.now();
-    if (now < addLockUntilRef.current) return;
-    addLockUntilRef.current = now + ADD_LOCK_MS;
-    setAddLocked(true);
-    setTimeout(() => setAddLocked(false), ADD_LOCK_MS);
 
     if (!isCustomisable) {
       setOptimisticQty((prev) => (prev ?? cartQty) + 1);
     }
 
-    if (Platform.OS === "android") Vibration.vibrate(15);
-    runAddAnimation();
-
-    try {
-      onAdd(item);
-    } catch {
-      setOptimisticQty(null);
-      addLockUntilRef.current = 0;
-      Alert.alert("Could not add item", "Please try again.");
-    }
-  }, [cartQty, isCustomisable, isStoreClosed, item, onAdd, runAddAnimation]);
+    onAdd(item);
+  }, [cartQty, isCustomisable, isStoreClosed, item, onAdd]);
 
   const handleIncrementPress = useCallback(() => {
     if (isStoreClosed) return;
-    const now = Date.now();
-    if (now < addLockUntilRef.current) return;
-    addLockUntilRef.current = now + ADD_LOCK_MS;
     setOptimisticQty((prev) => (prev ?? cartQty) + 1);
     onIncrement(item.id, item.menuItemId);
   }, [cartQty, isStoreClosed, item.id, item.menuItemId, onIncrement]);
@@ -149,21 +116,27 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     onShare(item);
   }, [item, onShare]);
 
-  const addStyle = useAnimatedStyle(() => ({ transform: [{ scale: addScale.value }] }));
-
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
   const showDiscount = basePrice != null && basePrice > sellingPrice;
   const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
+  const spicy = isItemSpicy(item);
 
   return (
     <View style={[styles.wrap, highlighted && styles.wrapHighlighted]}>
       <View style={styles.row}>
         <View style={styles.leftCol}>
           <View style={styles.titleRow}>
-            <DietIndicator type={diet} />
-            <Text style={styles.name} numberOfLines={2}>
+            <View style={styles.titleIcons}>
+              <DietIndicator type={diet} />
+              {spicy ? (
+                <View style={styles.spicyBadge} accessibilityLabel="Spicy">
+                  <Text style={styles.spicyEmoji}>🌶</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text style={styles.name} numberOfLines={3}>
               {item.name}
             </Text>
           </View>
@@ -175,10 +148,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               </View>
               <Text style={styles.reorderText}>Highly reordered</Text>
             </View>
-          ) : goesWithName ? (
-            <Text style={styles.goesWithText} numberOfLines={1}>
-              Often ordered with {goesWithName}
-            </Text>
           ) : null}
 
           <View style={styles.priceBlock}>
@@ -237,83 +206,47 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
           </View>
         </View>
 
-        <View style={styles.rightCol}>
-          <View style={styles.imageWrap}>
-            {showRemoteImage ? (
-              <>
-                {!imageLoaded && !imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
-                <Image
-                  source={{ uri: imageUri! }}
-                  style={[styles.image, imageLoaded ? styles.imageVisible : styles.imageHidden]}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  recyclingKey={item.id}
-                  transition={imageWasPrefetched ? 0 : 120}
-                  allowDownscaling
-                  onLoad={() => setImageLoaded(true)}
-                  onError={() => setImageFailed(true)}
-                />
-              </>
-            ) : (
-              <MenuItemImagePlaceholder />
-            )}
-            {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
-          </View>
+        <View style={styles.rightCol} collapsable={false}>
+          <View style={styles.imageStack} collapsable={false}>
+            <View style={styles.imageWrap} pointerEvents="none">
+              {showRemoteImage ? (
+                <>
+                  {!imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
+                  <Image
+                    source={{ uri: imageUri! }}
+                    style={styles.image}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    recyclingKey={item.id}
+                    transition={0}
+                    priority={imageWasPrefetched ? "normal" : "low"}
+                    allowDownscaling
+                    onError={() => setImageFailed(true)}
+                  />
+                </>
+              ) : (
+                <MenuItemImagePlaceholder />
+              )}
+              {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
+            </View>
 
-          <View style={styles.addSlot}>
-            {displayQty === 0 ? (
-              <Pressable
-                onPress={handleAdd}
-                disabled={isStoreClosed || addLocked}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                pressRetentionOffset={{ top: 20, bottom: 20, left: 20, right: 20 }}
-                accessibilityRole="button"
-                accessibilityLabel={`Add ${item.name} to cart`}
-              >
-                {({ pressed }) => (
-                  <Animated.View
-                    style={[
-                      styles.addBtn,
-                      addStyle,
-                      isStoreClosed && styles.addBtnDisabled,
-                      addLocked && styles.addBtnLocked,
-                      pressed && !isStoreClosed && !addLocked && styles.addBtnPressed,
-                    ]}
-                  >
-                    <Text style={[styles.addBtnText, isStoreClosed && styles.addBtnTextDisabled]}>
-                      {isStoreClosed ? "Closed" : "ADD"}
-                    </Text>
-                    {!isStoreClosed ? (
-                      <Ionicons name="add" size={14} color={StoreTheme.accentMint} />
-                    ) : null}
-                  </Animated.View>
-                )}
-              </Pressable>
-            ) : (
-              <View style={[styles.qtyWrap, isStoreClosed && styles.addBtnDisabled]}>
-                <Pressable
-                  onPress={handleDecrementPress}
-                  style={styles.qtyBtn}
+            <View style={styles.addSlot} collapsable={false}>
+              {displayQty === 0 ? (
+                <StoreMenuAddButton
+                  onPress={handleAdd}
                   disabled={isStoreClosed}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Decrease ${item.name} quantity`}
-                >
-                  <Ionicons name="remove" size={16} color={StoreTheme.accentMint} />
-                </Pressable>
-                <Text style={styles.qtyText}>{displayQty}</Text>
-                <Pressable
-                  onPress={handleIncrementPress}
-                  style={styles.qtyBtn}
+                  accessibilityLabel={`Add ${item.name} to cart`}
+                />
+              ) : (
+                <StoreMenuQtyStepper
+                  quantity={displayQty}
                   disabled={isStoreClosed}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Increase ${item.name} quantity`}
-                >
-                  <Ionicons name="add" size={16} color={StoreTheme.accentMint} />
-                </Pressable>
-              </View>
-            )}
+                  onIncrement={handleIncrementPress}
+                  onDecrement={handleDecrementPress}
+                  accessibilityLabel={`${item.name} quantity`}
+                />
+              )}
+            </View>
           </View>
 
           {isCustomisable ? <Text style={styles.customisable}>customisable</Text> : null}
@@ -328,8 +261,8 @@ const styles = StyleSheet.create({
   wrap: {
     backgroundColor: StoreTheme.background,
     paddingHorizontal: 16,
-    paddingTop: 18,
-    paddingBottom: 4,
+    paddingTop: 20,
+    paddingBottom: 6,
     minHeight: 172,
   },
   wrapHighlighted: {
@@ -348,15 +281,32 @@ const styles = StyleSheet.create({
   titleRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 8,
-    marginBottom: 4,
+    gap: 10,
+    marginBottom: 6,
+  },
+  titleIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingTop: 3,
+  },
+  spicyBadge: {
+    width: 16,
+    height: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spicyEmoji: {
+    fontSize: 12,
+    lineHeight: 14,
   },
   name: {
     flex: 1,
-    fontSize: 15,
-    fontWeight: "600",
+    fontFamily: StoreFonts.loraBold,
+    fontSize: 17,
     color: StoreTheme.textPrimary,
-    lineHeight: 20,
+    lineHeight: 23,
+    letterSpacing: -0.2,
   },
   reorderRow: {
     flexDirection: "row",
@@ -379,44 +329,43 @@ const styles = StyleSheet.create({
   },
   reorderText: {
     fontSize: 11,
-    color: StoreTheme.textSecondary,
-    fontWeight: "500",
-  },
-  goesWithText: {
-    fontSize: 11,
-    color: StoreTheme.linkBlue,
-    fontWeight: "500",
-    marginBottom: 6,
+    color: StoreTheme.reorderGreen,
+    fontWeight: "700",
   },
   priceBlock: {
-    marginBottom: 4,
-  },
-  basePrice: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: StoreTheme.textPrimary,
-  },
-  basePriceStrike: {
-    fontSize: 13,
-    fontWeight: "500",
-    color: StoreTheme.textSecondary,
-    textDecorationLine: "line-through",
-  },
-  discountPrice: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: StoreTheme.linkBlue,
-    marginTop: 1,
-  },
-  desc: {
-    fontSize: 12,
-    color: StoreTheme.textSecondary,
-    lineHeight: 17,
+    marginBottom: 6,
     marginTop: 2,
   },
-  moreLink: {
+  basePrice: {
+    fontFamily: StoreFonts.poppinsBold,
+    fontSize: 18,
+    color: StoreTheme.textPrimary,
+    letterSpacing: -0.2,
+  },
+  basePriceStrike: {
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontSize: 14,
     color: StoreTheme.textSecondary,
-    fontWeight: "600",
+    textDecorationLine: "line-through",
+    letterSpacing: -0.15,
+  },
+  discountPrice: {
+    fontFamily: StoreFonts.poppinsBold,
+    fontSize: 17,
+    color: StoreTheme.linkBlue,
+    marginTop: 2,
+    letterSpacing: -0.15,
+  },
+  desc: {
+    fontFamily: StoreFonts.loraRegular,
+    fontSize: 13,
+    color: StoreTheme.textSecondary,
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  moreLink: {
+    fontFamily: StoreFonts.loraRegular,
+    color: StoreTheme.textSecondary,
   },
   couponNote: {
     fontSize: 10,
@@ -427,16 +376,16 @@ const styles = StyleSheet.create({
   },
   actionIcons: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 10,
+    gap: 10,
+    marginTop: 12,
     zIndex: 4,
     elevation: 4,
     alignSelf: "flex-start",
   },
   circleBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     borderWidth: 1,
     borderColor: StoreTheme.border,
     backgroundColor: "#fff",
@@ -452,6 +401,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingBottom: 2,
   },
+  imageStack: {
+    width: IMAGE_SIZE,
+    alignItems: "stretch",
+  },
   imageWrap: {
     width: IMAGE_SIZE,
     height: IMAGE_SIZE,
@@ -464,8 +417,6 @@ const styles = StyleSheet.create({
     height: "100%",
     borderRadius: 12,
   },
-  imageVisible: { opacity: 1 },
-  imageHidden: { opacity: 0 },
   imageShimmer: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#E5E7EB",
@@ -477,79 +428,25 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   addSlot: {
-    width: IMAGE_SIZE - 16,
     marginTop: 8,
-    alignSelf: "center",
-    zIndex: 2,
-  },
-  addBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: StoreTheme.accentMint,
-    borderRadius: 6,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    minHeight: 32,
     width: "100%",
-    ...StoreTheme.cardShadow,
-  },
-  addBtnPressed: {
-    backgroundColor: StoreTheme.accentMintSoft,
-  },
-  addBtnLocked: {
-    opacity: 0.72,
-  },
-  addBtnDisabled: {
-    borderColor: "#9CA3AF",
-    opacity: 0.85,
-  },
-  addBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: StoreTheme.accentMint,
-    letterSpacing: 0.5,
-  },
-  addBtnTextDisabled: {
-    color: "#9CA3AF",
-    fontSize: 11,
-  },
-  qtyWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: StoreTheme.accentMint,
-    borderRadius: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-    minHeight: 32,
-    width: "100%",
-    ...StoreTheme.cardShadow,
-  },
-  qtyBtn: {
-    padding: 4,
-    minWidth: 24,
-    alignItems: "center",
+    height: MENU_ADD_CONTROL_HEIGHT,
+    minHeight: MENU_ADD_CONTROL_HEIGHT,
+    zIndex: 12,
+    elevation: 12,
+    alignItems: "stretch",
     justifyContent: "center",
-  },
-  qtyText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: StoreTheme.accentMint,
   },
   customisable: {
     fontSize: 10,
+    fontWeight: "600",
     color: StoreTheme.textMuted,
-    marginTop: 6,
+    marginTop: 8,
     textAlign: "center",
+    textTransform: "lowercase",
   },
   divider: {
-    marginTop: 18,
+    marginTop: 20,
     borderBottomWidth: 1,
     borderStyle: "dotted",
     borderColor: StoreTheme.borderDotted,

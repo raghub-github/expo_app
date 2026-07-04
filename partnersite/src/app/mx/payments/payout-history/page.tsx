@@ -10,7 +10,7 @@ import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { PageSkeletonGeneric } from '@/components/PageSkeleton';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
-import { useMerchantLedger } from '@/hooks/useMerchantApi';
+import { useMerchantLedger, usePayoutSettlement } from '@/hooks/useMerchantApi';
 import {
   buildPayoutCards,
   formatCurrency,
@@ -81,6 +81,15 @@ function PayoutHistoryContent() {
     () => payoutCards.find((c) => c.isCurrentCycle),
     [payoutCards],
   );
+
+  const { data: currentCycleSettlementRaw, isLoading: settlementLoading } = usePayoutSettlement(
+    storeId,
+    currentCycleCard?.periodStart ?? null,
+    currentCycleCard?.periodEnd ?? null,
+    { enabled: !!currentCycleCard?.periodStart && !!currentCycleCard?.periodEnd },
+  );
+  const currentCycleEstPayout = currentCycleSettlementRaw?.estimatedPayout ?? 0;
+
   const pastPayoutCards = useMemo(() => {
     const past = payoutCards.filter((c) => !c.isCurrentCycle);
     if (statusFilter === 'all') return past;
@@ -162,7 +171,7 @@ function PayoutHistoryContent() {
           </div>
 
           <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-4 pb-10">
-            {isLoading ? (
+            {isLoading || (showCurrentCycle && settlementLoading && !currentCycleSettlementRaw) ? (
               <div className="flex justify-center py-16">
                 <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
               </div>
@@ -201,7 +210,7 @@ function PayoutHistoryContent() {
                           Est. payout
                         </p>
                         <p className="text-2xl font-bold text-gray-900 mt-1">
-                          {formatCurrency(currentCycleCard.netPayout)}
+                          {formatCurrency(currentCycleEstPayout)}
                         </p>
                       </div>
                       <div className="px-5 py-4">
@@ -209,7 +218,7 @@ function PayoutHistoryContent() {
                           Orders
                         </p>
                         <p className="text-2xl font-bold text-gray-900 mt-1">
-                          {currentCycleCard.orderCount}
+                          {currentCycleSettlementRaw?.orderCount ?? currentCycleCard.orderCount}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">
                           in this cycle

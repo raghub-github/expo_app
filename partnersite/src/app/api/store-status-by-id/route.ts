@@ -34,6 +34,7 @@ export async function GET(req: NextRequest) {
         approval_status,
         status,
         onboarding_completed,
+        onboarding_completed_at,
         current_onboarding_step,
         created_at,
         updated_at
@@ -46,6 +47,69 @@ export async function GET(req: NextRequest) {
         { success: false, error: "Store not found" },
         { status: 404 }
       );
+    }
+
+    if (storeData.onboarding_completed !== true) {
+      const { data: completedProgress } = await db
+        .from("merchant_store_registration_progress")
+        .select("registration_status, completed_at")
+        .eq("store_id", storeData.id)
+        .eq("registration_status", "COMPLETED")
+        .order("completed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      let shouldRepair = !!completedProgress;
+      if (!shouldRepair) {
+        const { data: agreementRow } = await db
+          .from("merchant_store_agreement_acceptances")
+          .select("id, accepted_at")
+          .eq("store_id", storeData.id)
+          .limit(1)
+          .maybeSingle();
+        shouldRepair = !!agreementRow;
+        if (agreementRow?.accepted_at && !completedProgress) {
+          storeData.onboarding_completed_at = agreementRow.accepted_at;
+        }
+      }
+
+      if (shouldRepair) {
+        const repairApproval =
+          String(storeData.approval_status || "").toUpperCase() === "DRAFT"
+            ? "SUBMITTED"
+            : storeData.approval_status;
+        const repairedAt =
+          completedProgress?.completed_at ||
+          storeData.onboarding_completed_at ||
+          new Date().toISOString();
+        const { data: repairedStore } = await db
+          .from("merchant_stores")
+          .update({
+            onboarding_completed: true,
+            onboarding_completed_at: repairedAt,
+            approval_status: repairApproval,
+            current_onboarding_step: 9,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", storeData.id)
+          .select(`
+            id,
+            store_id,
+            store_name,
+            owner_full_name,
+            approval_status,
+            status,
+            onboarding_completed,
+            onboarding_completed_at,
+            current_onboarding_step,
+            created_at,
+            updated_at
+          `)
+          .single();
+        if (repairedStore) {
+          Object.assign(storeData, repairedStore);
+        }
+      }
     }
 
     // Get registration progress from database

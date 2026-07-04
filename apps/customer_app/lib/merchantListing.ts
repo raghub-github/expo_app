@@ -93,3 +93,13 @@ export function merchantListingStoreCountLabel(
   }
   return `${total} ${total === 1 ? "store" : "stores"}`;
 }
+
+/** Open-store count for the restaurant section subline (always from full nearby list). */
+export function openRestaurantsDeliveringLabel(
+  merchants: MerchantSummary[],
+  statusMap: Record<string, LiveStatus | undefined>
+): string {
+  const open = merchants.filter((m) => resolveMerchantLiveStatus(m, statusMap) === "OPEN").length;
+  if (open === 0) return "NO RESTAURANTS OPEN NEAR YOU";
+  return `${open} RESTAURANT${open === 1 ? "" : "S"} DELIVERING TO YOU`;
+}

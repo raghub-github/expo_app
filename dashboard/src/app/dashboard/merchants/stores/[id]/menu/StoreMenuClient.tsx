@@ -72,6 +72,7 @@ import { useMenuOutOfStock } from "./useMenuOutOfStock";
 import { MenuOutOfStockSheet } from "@/components/merchant/MenuOutOfStockSheet";
 import { MenuRestoreStockConfirm } from "@/components/merchant/MenuRestoreStockConfirm";
 import { MenuItemStockToggle } from "@/components/merchant/MenuItemStockToggle";
+import { MenuItemPriceRow } from "./MenuItemPriceRow";
 
 async function throwMenuApiError(res: Response, fallback: string): Promise<never> {
   const j = await res.json().catch(() => ({}));
@@ -2384,7 +2385,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           {categoryDisplayLabel}
                         </p>
                       </div>
-                      <p className="shrink-0 text-sm font-bold text-orange-600">₹{item.selling_price}</p>
+                      <MenuItemPriceRow item={item} className="shrink-0" showBadge={false} />
                     </div>
                     <div className="space-y-3 p-3">
                       {variants.length > 0 ? (
@@ -2545,8 +2546,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {searchedItems.map((item) => {
                 const categoryDisplayLabel = formatCategoryLabel(categories, item.category_id);
-                const discount = Number(item.discount_percentage);
-                const hasDiscount = discount > 0;
                 const linkedGroupsCount = (item.linked_modifier_groups?.length ?? 0) || 0;
                 const linkedOptionsCount =
                   item.linked_modifier_groups?.reduce((sum, g) => sum + (g.options?.length ?? 0), 0) ?? 0;
@@ -2654,17 +2653,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           />
                         </div>
                         <div className="flex items-center gap-1 mb-1">
-                          {hasDiscount ? (
-                            <>
-                              <span className="text-sm font-bold text-orange-600">₹{item.selling_price}</span>
-                              <span className="text-xs font-medium text-gray-500 line-through">₹{item.base_price}</span>
-                              <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-bold">
-                                {discount}% OFF
-                              </span>
-                            </>
-                          ) : (
-                            <span className="text-sm font-bold text-orange-600">₹{item.selling_price}</span>
-                          )}
+                          <MenuItemPriceRow item={item} />
                         </div>
                         {item.item_description && (
                           <p className="text-[11px] text-gray-600 line-clamp-2 mb-1.5 flex-grow leading-tight">
@@ -2836,7 +2825,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                               })()}
                             </div>
                             <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                              <div className="text-sm font-bold text-orange-600">₹{item.selling_price}</div>
+                              <MenuItemPriceRow item={item} showBadge={false} />
                               <MenuItemStockToggle
                                 inStock={menuOos.isItemInStock(item)}
                                 disabled={menuOos.oosBusy}

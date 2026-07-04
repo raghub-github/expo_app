@@ -3,7 +3,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { View, Text, Modal, Pressable, StyleSheet } from "react-native";
+import { View, Modal, Pressable, StyleSheet } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -33,7 +34,7 @@ function RadioRow({
 }) {
   return (
     <Pressable style={styles.optionRow} onPress={onPress} accessibilityRole="radio" accessibilityState={{ selected }}>
-      <Text style={styles.optionLabel}>{label}</Text>
+      <CheckoutText style={styles.optionLabel}>{label}</CheckoutText>
       <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
         {selected ? <View style={styles.radioInner} /> : null}
       </View>
@@ -54,7 +55,7 @@ export function DonateWithBottomSheet({ visible, value, onClose, onSave }: Donat
       <View style={styles.root}>
         <Pressable style={styles.dim} onPress={onClose} accessibilityLabel="Close" />
         <View style={[styles.card, { paddingBottom: Math.max(insets.bottom, 14) + 8 }]}>
-          <Text style={styles.title}>Donate with</Text>
+          <CheckoutText style={styles.title}>Donate with</CheckoutText>
 
           <RadioRow
             label="Every Order"
@@ -76,7 +77,7 @@ export function DonateWithBottomSheet({ visible, value, onClose, onSave }: Donat
             }}
             accessibilityRole="button"
           >
-            <Text style={styles.saveBtnText}>Save</Text>
+            <CheckoutText style={styles.saveBtnText}>Save</CheckoutText>
           </Pressable>
         </View>
       </View>

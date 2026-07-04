@@ -18,7 +18,7 @@ module.exports = {
       ...appJson.expo.splash,
       image: "./assets/images/splash-logo.png",
       resizeMode: "contain",
-      backgroundColor: "#FFFFFF",
+      backgroundColor: "#14b8a6",
     },
     ios: {
       ...appJson.expo.ios,

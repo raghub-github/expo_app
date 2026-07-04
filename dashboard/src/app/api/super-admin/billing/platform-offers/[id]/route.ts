@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
 import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
-import { deletePlatformOffer, listPlatformOffers, updatePlatformOffer } from "@/lib/db/operations/billing-advanced";
+import { deletePlatformOffer, formatPlatformOfferDbError, getPlatformOfferById, updatePlatformOffer } from "@/lib/db/operations/billing-advanced";
 
 export const runtime = "nodejs";
 
@@ -76,8 +76,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: "Validation failed", details: parsed.error.flatten() }, { status: 400 });
   }
   try {
-    const existing = await listPlatformOffers();
-    const row0 = existing.find((o) => o.id === id);
+    const row0 = await getPlatformOfferById(id);
     if (!row0) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const cond =
       parsed.data.conditions !== undefined
@@ -109,8 +108,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
             : null,
       target_scope: parsed.data.target_scope ?? row0.target_scope,
       geo_level: parsed.data.geo_level !== undefined ? parsed.data.geo_level : row0.geo_level,
-      geo_ids: parsed.data.geo_ids ?? (Array.isArray(row0.geo_ids) ? row0.geo_ids : []),
-      merchant_ids: parsed.data.merchant_ids ?? (Array.isArray(row0.merchant_ids) ? row0.merchant_ids : []),
+      geo_ids: parsed.data.geo_ids ?? parseJsonIds(row0.geo_ids),
+      merchant_ids: parsed.data.merchant_ids ?? parseJsonIds(row0.merchant_ids),
       customer_segment: parsed.data.customer_segment ?? row0.customer_segment,
       min_order_amount:
         parsed.data.min_order_amount !== undefined
@@ -179,9 +178,30 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (!offer) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ offer });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Failed";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    const msg = formatPlatformOfferDbError(e);
+    const status =
+      msg.includes("date/time") ||
+      msg.includes("must be on or after") ||
+      msg.includes("Invalid date")
+        ? 400
+        : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
+}
+
+function parseJsonIds(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (!t) return [];
+    try {
+      const parsed = JSON.parse(t) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {

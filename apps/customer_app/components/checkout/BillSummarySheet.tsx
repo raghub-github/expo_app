@@ -6,7 +6,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import {
   View,
-  Text,
   Modal,
   Pressable,
   ScrollView,
@@ -14,6 +13,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons } from "@expo/vector-icons";
 import type { BillingLine, CalculateBillResponse } from "@/services/billing.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -61,17 +61,17 @@ function BillSavingsBanner({
     <View style={styles.savingsBannerOuter}>
       <SavingsScallopWave />
       <View style={styles.savingsBanner}>
-        <Text style={styles.savingsText}>
+        <CheckoutText style={styles.savingsText}>
           🥳 You saved ₹{total}
           {subWaived > 0 ? (
             <>
               , including ₹{subWaived} with{" "}
-              <Text style={styles.savingsBrand}>{planName}</Text>
+              <CheckoutText style={styles.savingsBrand}>{planName}</CheckoutText>
             </>
           ) : (
             " on this order"
           )}
-        </Text>
+        </CheckoutText>
       </View>
     </View>
   );
@@ -97,10 +97,10 @@ function BillInfoModal({
       <View style={styles.infoBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.infoCard}>
-          <Text style={styles.infoTitle}>{title}</Text>
-          <Text style={styles.infoBody}>{body}</Text>
+          <CheckoutText style={styles.infoTitle}>{title}</CheckoutText>
+          <CheckoutText style={styles.infoBody}>{body}</CheckoutText>
           <Pressable onPress={onClose} style={styles.infoOkBtn} hitSlop={8}>
-            <Text style={styles.infoOkText}>OKAY</Text>
+            <CheckoutText style={styles.infoOkText}>OKAY</CheckoutText>
           </Pressable>
         </View>
       </View>
@@ -130,9 +130,9 @@ function BillLineRow({
   dashedUnderline?: boolean;
 }) {
   const labelText = (
-    <Text style={[dashedUnderline ? styles.dashedLabelText : styles.plainLabelText, labelAccent && styles.discountLabel]}>
+    <CheckoutText style={[dashedUnderline ? styles.dashedLabelText : styles.plainLabelText, labelAccent && styles.discountLabel]}>
       {label}
-    </Text>
+    </CheckoutText>
   );
 
   const labelBlock = dashedUnderline ? (
@@ -151,9 +151,9 @@ function BillLineRow({
         ) : (
           labelBlock
         )}
-        {subtext ? <Text style={styles.lineSubtext}>{subtext}</Text> : null}
+        {subtext ? <CheckoutText style={styles.lineSubtext}>{subtext}</CheckoutText> : null}
       </View>
-      {valueNode ?? <Text style={[styles.lineValue, valueStyle]}>{value}</Text>}
+      {valueNode ?? <CheckoutText style={[styles.lineValue, valueStyle]}>{value}</CheckoutText>}
     </View>
   );
 }
@@ -169,12 +169,12 @@ function DeliveryFeeValue({
   if (waived) {
     return (
       <View style={styles.deliveryValueCluster}>
-        <Text style={styles.strikeValue}>{fmt(originalInr)}</Text>
-        <Text style={styles.waivedValue}>{fmt(0)}</Text>
+        <CheckoutText style={styles.strikeValue}>{fmt(originalInr)}</CheckoutText>
+        <CheckoutText style={styles.waivedValue}>{fmt(0)}</CheckoutText>
       </View>
     );
   }
-  return <Text style={styles.lineValue}>{fmt(currentInr)}</Text>;
+  return <CheckoutText style={styles.lineValue}>{fmt(currentInr)}</CheckoutText>;
 }
 
 function DeliveryFeeBreakdownModal({
@@ -207,20 +207,20 @@ function DeliveryFeeBreakdownModal({
         <View style={styles.breakdownCard}>
           <View style={styles.breakdownLine}>
             <View style={styles.breakdownLineLeft}>
-              <Text style={styles.breakdownTitle}>Base fee for {kmLabel}</Text>
-              {deliverySubtext ? <Text style={styles.breakdownSub}>{deliverySubtext}</Text> : null}
+              <CheckoutText style={styles.breakdownTitle}>Base fee for {kmLabel}</CheckoutText>
+              {deliverySubtext ? <CheckoutText style={styles.breakdownSub}>{deliverySubtext}</CheckoutText> : null}
             </View>
-            <Text style={styles.breakdownAmount}>{fmt(baseFeeInr)}</Text>
+            <CheckoutText style={styles.breakdownAmount}>{fmt(baseFeeInr)}</CheckoutText>
           </View>
 
           {smallOrderInr > 0.005 ? (
             <>
               <View style={styles.breakdownDivider} />
               <View style={styles.breakdownLine}>
-                <Text style={styles.breakdownTitle}>Small order fee</Text>
+                <CheckoutText style={styles.breakdownTitle}>Small order fee</CheckoutText>
                 <View style={styles.deliveryValueCluster}>
-                  <Text style={styles.strikeValue}>{fmt(smallOrderInr)}</Text>
-                  <Text style={styles.waivedValue}>{fmt(0)}</Text>
+                  <CheckoutText style={styles.strikeValue}>{fmt(smallOrderInr)}</CheckoutText>
+                  <CheckoutText style={styles.waivedValue}>{fmt(0)}</CheckoutText>
                 </View>
               </View>
             </>
@@ -230,24 +230,24 @@ function DeliveryFeeBreakdownModal({
             <>
               <View style={styles.breakdownDivider} />
               <View style={styles.breakdownLine}>
-                <Text style={[styles.breakdownTitle, styles.brandText]}>
+                <CheckoutText style={[styles.breakdownTitle, styles.brandText]}>
                   Free delivery with {planName}
-                </Text>
-                <Text style={[styles.breakdownAmount, styles.brandText]}>
+                </CheckoutText>
+                <CheckoutText style={[styles.breakdownAmount, styles.brandText]}>
                   − {fmt(subscriptionWaivedInr)}
-                </Text>
+                </CheckoutText>
               </View>
             </>
           ) : null}
 
           <View style={styles.breakdownDivider} />
           <View style={styles.breakdownLine}>
-            <Text style={styles.breakdownNetLabel}>Delivery partner fee</Text>
-            <Text style={styles.breakdownNetAmount}>{fmt(currentDeliveryInr)}</Text>
+            <CheckoutText style={styles.breakdownNetLabel}>Delivery partner fee</CheckoutText>
+            <CheckoutText style={styles.breakdownNetAmount}>{fmt(currentDeliveryInr)}</CheckoutText>
           </View>
 
           <Pressable onPress={onClose} style={styles.infoOkBtn} hitSlop={8}>
-            <Text style={styles.infoOkText}>OKAY</Text>
+            <CheckoutText style={styles.infoOkText}>OKAY</CheckoutText>
           </Pressable>
         </View>
       </View>
@@ -420,7 +420,7 @@ export function BillSummarySheet({
               contentContainerStyle={styles.scrollContent}
               bounces
             >
-              <Text style={styles.sheetTitle}>Bill Summary</Text>
+              <CheckoutText style={styles.sheetTitle}>Bill Summary</CheckoutText>
 
               {serverBill ? (
                 <>
@@ -430,8 +430,8 @@ export function BillSummarySheet({
                     valueNode={
                       showItemTotalStrike ? (
                         <View style={styles.deliveryValueCluster}>
-                          <Text style={styles.strikeValue}>{fmt(serverBill.itemTotal)}</Text>
-                          <Text style={styles.lineValue}>{fmt(serverBill.itemsNetAfterDiscounts)}</Text>
+                          <CheckoutText style={styles.strikeValue}>{fmt(serverBill.itemTotal)}</CheckoutText>
+                          <CheckoutText style={styles.lineValue}>{fmt(serverBill.itemsNetAfterDiscounts)}</CheckoutText>
                         </View>
                       ) : undefined
                     }
@@ -546,10 +546,10 @@ export function BillSummarySheet({
                   ) : null}
 
                   <View style={styles.toPayRow}>
-                    <Text style={styles.toPayLabel}>To pay</Text>
-                    <Text style={styles.toPayValue}>
+                    <CheckoutText style={styles.toPayLabel}>To pay</CheckoutText>
+                    <CheckoutText style={styles.toPayValue}>
                       {fmt(hasCheckoutAdjustments ? toPayAfterWallet : serverBill.finalAmount)}
-                    </Text>
+                    </CheckoutText>
                   </View>
 
                   {showSavingsBanner ? (
@@ -580,11 +580,11 @@ export function BillSummarySheet({
                   />
                 </>
               ) : (
-                <Text style={styles.emptyText}>
+                <CheckoutText style={styles.emptyText}>
                   {billingError
                     ? "Could not load bill from server. Check your connection and try again."
                     : "Calculating bill on server…"}
-                </Text>
+                </CheckoutText>
               )}
             </ScrollView>
           </View>

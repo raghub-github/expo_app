@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutGrid,
   Pencil,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { usePermissions } from "@/hooks/usePermissions";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   USER_APP_CATEGORY_STORE_TYPES,
   parseUserAppCategoryStoreType,
@@ -43,12 +45,64 @@ type FormState = {
 
 type StatusFilter = "all" | UserAppCategoryStatus;
 
+type CategoriesBootstrap = {
+  items: UserAppCategoryRow[];
+  allTab: { label: string; imageUrl: string | null };
+};
+
+const BOOTSTRAP_TIMEOUT_MS = 20_000;
+
+async function fetchUserAppCategoriesBootstrap(
+  storeType: UserAppCategoryStoreType
+): Promise<CategoriesBootstrap> {
+  const qs = new URLSearchParams({ storeType });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), BOOTSTRAP_TIMEOUT_MS);
+  try {
+    const res = await fetch(`/api/admin/user-app-categories/bootstrap?${qs.toString()}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(typeof data.error === "string" ? data.error : "Failed to load categories");
+    }
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      allTab: {
+        label: data.allTab?.label?.trim() || "All",
+        imageUrl: data.allTab?.imageUrl?.trim() || null,
+      },
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function CategoriesTableSkeleton() {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white w-full shadow-sm">
+      <div className="animate-pulse p-4 space-y-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-4">
+            <div className="h-8 w-8 rounded-full bg-gray-200 shrink-0" />
+            <div className="h-4 flex-1 max-w-[180px] rounded bg-gray-200" />
+            <div className="h-4 w-12 rounded bg-gray-100" />
+            <div className="h-4 w-14 rounded bg-gray-100" />
+            <div className="h-5 w-9 rounded-full bg-gray-200" />
+            <div className="h-7 w-24 rounded bg-gray-100 ml-auto" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function CustomerAppCategoriesPage() {
   const router = useRouter();
   const { isSuperAdmin, loading: permLoading } = usePermissions();
   const [storeType, setStoreType] = useState<UserAppCategoryStoreType>("FOOD");
   const [items, setItems] = useState<UserAppCategoryRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -62,51 +116,73 @@ export default function CustomerAppCategoriesPage() {
   const [rowBusyId, setRowBusyId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [allTabLabel, setAllTabLabel] = useState("All");
+  const [allTabImageUrl, setAllTabImageUrl] = useState<string | null>(null);
+  const [allTabSaving, setAllTabSaving] = useState(false);
+  const [allTabUploading, setAllTabUploading] = useState(false);
 
-  const load = useCallback(async (opts?: { silent?: boolean }) => {
-    const silent = opts?.silent === true;
-    if (!silent) {
-      setLoading(true);
+  const {
+    data: bootstrapData,
+    isLoading: bootstrapLoading,
+    isFetching: bootstrapFetching,
+    error: bootstrapError,
+    refetch: refetchBootstrap,
+  } = useQuery({
+    queryKey: queryKeys.admin.userAppCategories(storeType),
+    queryFn: () => fetchUserAppCategoriesBootstrap(storeType),
+    enabled: !permLoading && isSuperAdmin,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    placeholderData: (previousData) => previousData,
+    retry: 1,
+  });
+
+  const loading = bootstrapLoading && !bootstrapData;
+  const listFetching = bootstrapFetching && !!bootstrapData;
+
+  useEffect(() => {
+    if (bootstrapData?.items) {
+      setItems(bootstrapData.items);
     }
-    setError(null);
-    try {
-      const qs = new URLSearchParams({
-        storeType,
-        includeInactive: "1",
-      });
-      const res = await fetch(`/api/admin/user-app-categories?${qs.toString()}`, {
-        credentials: "include",
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Failed to load");
-        if (!silent) {
-          setItems([]);
-        }
-        return;
-      }
-      setItems(data.items || []);
-    } catch {
-      setError("Failed to load");
-      if (!silent) {
-        setItems([]);
-      }
-    } finally {
-      if (!silent) {
-        setLoading(false);
-      }
+  }, [bootstrapData?.items]);
+
+  useEffect(() => {
+    if (bootstrapData?.allTab) {
+      setAllTabLabel(bootstrapData.allTab.label);
+      setAllTabImageUrl(bootstrapData.allTab.imageUrl);
     }
-  }, [storeType]);
+  }, [bootstrapData?.allTab]);
+
+  useEffect(() => {
+    if (bootstrapError) {
+      setError(
+        bootstrapError instanceof Error ? bootstrapError.message : "Failed to load categories"
+      );
+      return;
+    }
+    if (bootstrapData) {
+      setError(null);
+    }
+  }, [bootstrapError, bootstrapData]);
+
+  const reloadCategories = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setError(null);
+      const result = await refetchBootstrap();
+      if (result.error) {
+        setError(
+          result.error instanceof Error ? result.error.message : "Failed to load categories"
+        );
+      }
+    },
+    [refetchBootstrap]
+  );
 
   useEffect(() => {
     if (!permLoading && !isSuperAdmin) {
       router.push("/dashboard");
     }
   }, [permLoading, isSuperAdmin, router]);
-
-  useEffect(() => {
-    if (isSuperAdmin) load();
-  }, [isSuperAdmin, load]);
 
   useEffect(() => {
     setModalOpen(false);
@@ -195,7 +271,7 @@ export default function CustomerAppCategoriesPage() {
       if (item?.id === row.id) {
         setItems((prev) => prev.map((i) => (i.id === row.id ? item : i)));
       } else {
-        await load({ silent: true });
+        await reloadCategories({ silent: true });
       }
     } catch {
       setError("Could not update status");
@@ -222,7 +298,7 @@ export default function CustomerAppCategoriesPage() {
         return;
       }
       setInfo(`“${row.name}” was removed.`);
-      await load({ silent: true });
+      await reloadCategories({ silent: true });
     } catch {
       setError("Could not remove");
     } finally {
@@ -255,7 +331,7 @@ export default function CustomerAppCategoriesPage() {
         if (inputEl) inputEl.value = String(row.display_order);
         return;
       }
-      await load({ silent: true });
+      await reloadCategories({ silent: true });
     } catch {
       setError("Could not update order");
       if (inputEl) inputEl.value = String(row.display_order);
@@ -353,6 +429,64 @@ export default function CustomerAppCategoriesPage() {
     }
   };
 
+  const saveAllTabMeta = async (patch: { label?: string; imageUrl?: string | null }) => {
+    setAllTabSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/admin/user-app-categories/meta", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          store_type: storeType,
+          label: patch.label ?? allTabLabel,
+          image_url: patch.imageUrl === undefined ? allTabImageUrl : patch.imageUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Could not save All tab");
+        return;
+      }
+      setAllTabLabel(data.allTab?.label?.trim() || "All");
+      setAllTabImageUrl(data.allTab?.imageUrl?.trim() || null);
+      setInfo("All tab updated.");
+    } catch {
+      setError("Could not save All tab");
+    } finally {
+      setAllTabSaving(false);
+    }
+  };
+
+  const onPickAllTabImage = async (file: File | null) => {
+    if (!file) return;
+    setAllTabUploading(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.set("file", file);
+      fd.set("storeType", storeType);
+      if (allTabImageUrl?.trim()) {
+        fd.set("currentImageUrl", allTabImageUrl.trim());
+      }
+      const res = await fetch("/api/admin/user-app-categories/upload-image", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Upload failed");
+        return;
+      }
+      await saveAllTabMeta({ imageUrl: data.url ?? null });
+    } catch {
+      setError("Upload failed");
+    } finally {
+      setAllTabUploading(false);
+    }
+  };
+
   const save = async () => {
     const name = form.name.trim();
     if (!name) {
@@ -439,10 +573,10 @@ export default function CustomerAppCategoriesPage() {
             return [...prev, savedItem!];
           });
         } else {
-          await load({ silent: true });
+          await reloadCategories({ silent: true });
         }
       } else {
-        await load({ silent: true });
+        await reloadCategories({ silent: true });
       }
     } catch {
       setError("Save failed");
@@ -567,10 +701,87 @@ export default function CustomerAppCategoriesPage() {
         <div className="text-xs text-cyan-900 bg-cyan-50 border border-cyan-100 rounded-md px-3 py-2">{info}</div>
       )}
 
-      {loading ? (
-        <div className="py-10 flex justify-center text-gray-400">
-          <Loader2 className="h-6 w-6 animate-spin text-cyan-600" />
+      <div className="rounded-lg border border-cyan-100 bg-cyan-50/40 p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">All tab (fixed first tile)</h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Shown first in category tabs on grid-first food home. Image appears for every user.
+            </p>
+          </div>
+          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-800 ring-1 ring-cyan-200">
+            Top tile
+          </span>
         </div>
+        <div className="mt-3 flex flex-wrap items-end gap-4">
+          <div>
+            <input
+              id="uac-all-tab-thumb"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              className="sr-only"
+              disabled={allTabUploading || allTabSaving}
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                void onPickAllTabImage(f);
+                e.target.value = "";
+              }}
+            />
+            <label
+              htmlFor="uac-all-tab-thumb"
+              className={`relative inline-flex cursor-pointer rounded-full ${
+                allTabUploading ? "pointer-events-none opacity-60" : ""
+              }`}
+            >
+              {allTabImageUrl ? (
+                <span className="relative inline-block">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    key={allTabImageUrl}
+                    src={allTabImageUrl}
+                    alt=""
+                    className="h-12 w-12 rounded-full border-2 border-cyan-500 object-cover bg-white"
+                  />
+                  {allTabUploading ? (
+                    <span className="absolute inset-0 flex items-center justify-center rounded-full bg-white/60">
+                      <Loader2 className="h-4 w-4 animate-spin text-cyan-600" />
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                <div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-dashed border-cyan-300 bg-white text-cyan-600">
+                  {allTabUploading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ImageIcon className="h-5 w-5" />
+                  )}
+                </div>
+              )}
+            </label>
+          </div>
+          <label className="min-w-[140px] flex-1 max-w-xs">
+            <span className="text-xs font-medium text-gray-700">Label</span>
+            <input
+              type="text"
+              value={allTabLabel}
+              onChange={(e) => setAllTabLabel(e.target.value)}
+              maxLength={24}
+              className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs min-h-[32px] focus:ring-1 focus:ring-cyan-500"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={allTabSaving || allTabUploading}
+            onClick={() => void saveAllTabMeta({ label: allTabLabel.trim() || "All" })}
+            className="inline-flex items-center justify-center rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700 disabled:opacity-50 min-h-[32px]"
+          >
+            {allTabSaving ? "Saving…" : "Save All tab"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <CategoriesTableSkeleton />
       ) : items.length === 0 ? (
         <p className="text-sm text-gray-500 py-6">
           No categories for <strong>{storeType}</strong>. Use <strong>Add category</strong>.
@@ -590,7 +801,12 @@ export default function CustomerAppCategoriesPage() {
           </button>
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white w-full shadow-sm">
+        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white w-full shadow-sm relative">
+          {listFetching ? (
+            <div className="absolute top-2 right-2 z-10">
+              <Loader2 className="h-4 w-4 animate-spin text-cyan-600" />
+            </div>
+          ) : null}
           <table className="w-full min-w-[720px] text-xs border-separate border-spacing-x-4 border-spacing-y-0 table-fixed">
             <colgroup>
               <col style={{ width: "8%" }} />

@@ -6,8 +6,11 @@ type AppAssetsState = {
   assets: Record<string, AppAssetItem>;
   loaded: boolean;
   loading: boolean;
+  /** True after home-critical CMS images are on disk cache. */
+  homeImagesPrefetched: boolean;
   setAssets: (assets: Record<string, AppAssetItem>) => void;
   setLoading: (loading: boolean) => void;
+  setHomeImagesPrefetched: (done: boolean) => void;
   markLoadFailed: () => void;
 };
 
@@ -24,10 +27,12 @@ export const useAppAssetsStore = create<AppAssetsState>((set) => ({
   assets: {},
   loaded: false,
   loading: false,
+  homeImagesPrefetched: false,
   setAssets: (assets) =>
     set({ assets: normalizeAssets(assets), loaded: true, loading: false }),
   setLoading: (loading) => set({ loading }),
-  markLoadFailed: () => set({ loading: false }),
+  setHomeImagesPrefetched: (done) => set({ homeImagesPrefetched: done }),
+  markLoadFailed: () => set({ loading: false, homeImagesPrefetched: true }),
 }));
 
 export function getAppAssetUrl(key: string): string | null {

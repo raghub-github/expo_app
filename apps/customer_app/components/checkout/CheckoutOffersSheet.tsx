@@ -4,7 +4,6 @@
 
 import {
   View,
-  Text,
   Modal,
   Pressable,
   ScrollView,
@@ -12,7 +11,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  useWindowDimensions,
 } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import type { CheckoutOffersResponse } from "@/services/billing.service";
@@ -101,34 +102,34 @@ function OfferRow({
         </View>
       ) : (
         <View style={styles.pctCircle}>
-          <Text style={styles.pctText}>%</Text>
+          <CheckoutText style={styles.pctText}>%</CheckoutText>
         </View>
       )}
       <View style={styles.offerTextCol}>
-        <Text style={[styles.offerTitle, locked && styles.offerTitleMuted]} numberOfLines={2}>
+        <CheckoutText style={[styles.offerTitle, locked && styles.offerTitleMuted]} numberOfLines={2}>
           {title}
-        </Text>
+        </CheckoutText>
         {locked && lockReason ? (
-          <Text style={styles.offerLockReason} numberOfLines={2}>
+          <CheckoutText style={styles.offerLockReason} numberOfLines={2}>
             {lockReason}
-          </Text>
+          </CheckoutText>
         ) : subtitle ? (
-          <Text style={styles.offerSub} numberOfLines={2}>
+          <CheckoutText style={styles.offerSub} numberOfLines={2}>
             {subtitle}
-          </Text>
+          </CheckoutText>
         ) : null}
         {couponCode ? (
           <View style={styles.couponCodeBox}>
-            <Text style={styles.couponCodeText}>{couponCode}</Text>
+            <CheckoutText style={styles.couponCodeText}>{couponCode}</CheckoutText>
           </View>
         ) : null}
         {applied && savings != null && savings > 0 ? (
-          <Text style={styles.offerSaved}>You save ₹{Math.round(savings)}</Text>
+          <CheckoutText style={styles.offerSaved}>You save ₹{Math.round(savings)}</CheckoutText>
         ) : null}
       </View>
       {applied && onRemove ? (
         <TouchableOpacity onPress={onRemove} hitSlop={8} activeOpacity={0.7}>
-          <Text style={styles.removeBtn}>Remove</Text>
+          <CheckoutText style={styles.removeBtn}>Remove</CheckoutText>
         </TouchableOpacity>
       ) : locked && onUnlockWithGatiCash ? (
         <TouchableOpacity
@@ -136,13 +137,13 @@ function OfferRow({
           onPress={onUnlockWithGatiCash}
           activeOpacity={0.85}
         >
-          <Text style={[styles.gatiCashUnlockText, gatiCashPending && styles.gatiCashUnlockTextPending]}>
+          <CheckoutText style={[styles.gatiCashUnlockText, gatiCashPending && styles.gatiCashUnlockTextPending]}>
             {gatiCashPending ? "ADDED" : "GATCASH"}
-          </Text>
+          </CheckoutText>
         </TouchableOpacity>
       ) : !locked && onApply ? (
         <TouchableOpacity style={styles.applyBtn} onPress={onApply} activeOpacity={0.85}>
-          <Text style={styles.applyBtnText}>APPLY</Text>
+          <CheckoutText style={styles.applyBtnText}>APPLY</CheckoutText>
         </TouchableOpacity>
       ) : null}
     </View>
@@ -203,11 +204,22 @@ export function CheckoutOffersSheet({
   const subscriptionSavings = subscriptionBenefits.reduce((s, d) => s + d.amount, 0);
   const promoSavings = appliedDiscounts.reduce((s, d) => s + d.amount, 0);
   const totalSavings = subscriptionSavings + promoSavings;
+  const { height: windowHeight } = useWindowDimensions();
+  const sheetMaxHeight = Math.round(windowHeight * 0.86);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={styles.overlay} onPress={onClose}>
-        <View style={styles.sheetAnchor} pointerEvents="box-none">
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent
+      presentationStyle="overFullScreen"
+    >
+      <View style={styles.root}>
+        <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button" />
+
+        <View style={[styles.sheetAnchor, { maxHeight: sheetMaxHeight }]}>
           <TouchableOpacity
             style={styles.floatingClose}
             onPress={onClose}
@@ -221,24 +233,21 @@ export function CheckoutOffersSheet({
             </View>
           </TouchableOpacity>
 
-          <Pressable
-            style={[styles.sheet, { paddingBottom: bottomInset + 12 }]}
-            onPress={() => {}}
-          >
+          <View style={[styles.sheet, { maxHeight: sheetMaxHeight, paddingBottom: bottomInset + 12 }]}>
             <View style={styles.handle} />
 
             <LinearGradient colors={["#DBEAFE", "#EFF6FF", "#FFFFFF"]} style={styles.sheetHero}>
               <View style={styles.heroTopRow}>
                 <View style={styles.heroIconBadge}>
-                  <Text style={styles.heroIconPct}>%</Text>
+                  <CheckoutText style={styles.heroIconPct}>%</CheckoutText>
                 </View>
                 <View style={styles.heroTextCol}>
-                  <Text style={styles.sheetTitle}>Coupons & offers</Text>
-                  <Text style={styles.sheetSub}>Save more on this order</Text>
+                  <CheckoutText style={styles.sheetTitle}>Coupons & offers</CheckoutText>
+                  <CheckoutText style={styles.sheetSub}>Save more on this order</CheckoutText>
                 </View>
                 {totalSavings > 0 ? (
                   <View style={styles.heroSavingsPill}>
-                    <Text style={styles.heroSavingsText}>−₹{Math.round(totalSavings)}</Text>
+                    <CheckoutText style={styles.heroSavingsText}>−₹{Math.round(totalSavings)}</CheckoutText>
                   </View>
                 ) : null}
               </View>
@@ -260,30 +269,33 @@ export function CheckoutOffersSheet({
                   }}
                   activeOpacity={0.9}
                 >
-                  <Text style={styles.codeApplyText}>Apply</Text>
+                  <CheckoutText style={styles.codeApplyText}>Apply</CheckoutText>
                 </TouchableOpacity>
               </View>
-              {couponError ? <Text style={styles.codeError}>{couponError}</Text> : null}
+              {couponError ? <CheckoutText style={styles.codeError}>{couponError}</CheckoutText> : null}
             </LinearGradient>
 
             <ScrollView
               style={styles.list}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              bounces
             >
               {loading ? (
                 <View style={styles.loadingWrap}>
                   <ActivityIndicator color={CX.emerald} size="small" />
-                  <Text style={styles.loadingText}>Finding best offers…</Text>
+                  <CheckoutText style={styles.loadingText}>Finding best offers…</CheckoutText>
                 </View>
               ) : error ? (
-                <Text style={styles.errText}>Could not load offers. Try again.</Text>
+                <CheckoutText style={styles.errText}>Could not load offers. Try again.</CheckoutText>
               ) : (
                 <>
                   {subscriptionBenefits.length > 0 ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>MEMBER BENEFITS</Text>
-                      <Text style={styles.sectionHint}>Included with your plan · stacks with coupons</Text>
+                      <CheckoutText style={styles.sectionLabel}>MEMBER BENEFITS</CheckoutText>
+                      <CheckoutText style={styles.sectionHint}>Included with your plan · stacks with coupons</CheckoutText>
                       {subscriptionBenefits.map((d, i) => (
                         <OfferRow
                           key={`sub-benefit-${i}`}
@@ -298,7 +310,7 @@ export function CheckoutOffersSheet({
 
                   {hasAppliedPromo ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>APPLIED ON THIS ORDER</Text>
+                      <CheckoutText style={styles.sectionLabel}>APPLIED ON THIS ORDER</CheckoutText>
                       {appliedCouponCode ? (
                         <OfferRow
                           title={`'${appliedCouponCode}'`}
@@ -345,17 +357,17 @@ export function CheckoutOffersSheet({
                         />
                       ) : null}
                       <TouchableOpacity onPress={onRemoveAllOffers} style={styles.clearAllBtn}>
-                        <Text style={styles.clearAllText}>Remove all offers</Text>
+                        <CheckoutText style={styles.clearAllText}>Remove all offers</CheckoutText>
                       </TouchableOpacity>
                     </View>
                   ) : null}
 
                   {(data?.platformOffers.length ?? 0) > 0 ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>PLATFORM OFFERS</Text>
-                      <Text style={styles.sectionHint}>
+                      <CheckoutText style={styles.sectionLabel}>PLATFORM OFFERS</CheckoutText>
+                      <CheckoutText style={styles.sectionHint}>
                         One platform or store offer · stacks with membership benefits
-                      </Text>
+                      </CheckoutText>
                       {data!.platformOffers.map((o) => {
                         const isApplied = appliedPlatformOfferId === o.id;
                         return (
@@ -375,10 +387,10 @@ export function CheckoutOffersSheet({
 
                   {(data?.platformOffersIneligible?.length ?? 0) > 0 ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>UNLOCK MORE SAVINGS</Text>
-                      <Text style={styles.sectionHint}>
+                      <CheckoutText style={styles.sectionLabel}>UNLOCK MORE SAVINGS</CheckoutText>
+                      <CheckoutText style={styles.sectionHint}>
                         Locked offers — unlock with GatiCash or add more items to cart
-                      </Text>
+                      </CheckoutText>
                       {data!.platformOffersIneligible!.map((o) => {
                         const unlockable = isOfferGatiCashUnlockable(o.reason);
                         const offerKey =
@@ -420,12 +432,12 @@ export function CheckoutOffersSheet({
 
                   {(data?.merchantOffers.length ?? 0) > 0 ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>STORE OFFERS</Text>
-                      <Text style={styles.sectionHint}>
+                      <CheckoutText style={styles.sectionLabel}>STORE OFFERS</CheckoutText>
+                      <CheckoutText style={styles.sectionHint}>
                         {data!.merchantOffers.some((o) => o.autoApply === false)
                           ? "Tap APPLY when eligible · auto offers apply at checkout"
                           : "Auto-applied when eligible"}
-                      </Text>
+                      </CheckoutText>
                       {data!.merchantOffers.map((o) => {
                         const isApplied = appliedMerchantOfferId === o.id;
                         const manual = o.autoApply === false || Boolean(o.requiresCouponCode);
@@ -451,7 +463,7 @@ export function CheckoutOffersSheet({
 
                   {(data?.merchantOffersIneligible?.length ?? 0) > 0 ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>STORE OFFERS — UNLOCK</Text>
+                      <CheckoutText style={styles.sectionLabel}>STORE OFFERS — UNLOCK</CheckoutText>
                       {data!.merchantOffersIneligible!.map((o) => {
                         const unlockable = isOfferGatiCashUnlockable(o.reason, o.lockReason);
                         const offerKey =
@@ -494,7 +506,7 @@ export function CheckoutOffersSheet({
 
                   {(data?.coupons.length ?? 0) > 0 ? (
                     <View style={styles.section}>
-                      <Text style={styles.sectionLabel}>COUPON CODES</Text>
+                      <CheckoutText style={styles.sectionLabel}>COUPON CODES</CheckoutText>
                       {data!.coupons.map((c) => {
                         const isApplied = appliedCouponCode?.toUpperCase() === c.code.toUpperCase();
                         return (
@@ -519,27 +531,29 @@ export function CheckoutOffersSheet({
                   (data?.platformOffers.length ?? 0) === 0 &&
                   (data?.platformOffersIneligible?.length ?? 0) === 0 &&
                   (data?.merchantOffersIneligible?.length ?? 0) === 0 ? (
-                    <Text style={styles.empty}>No offers for this address right now.</Text>
+                    <CheckoutText style={styles.empty}>No offers for this address right now.</CheckoutText>
                   ) : null}
                 </>
               )}
             </ScrollView>
-          </Pressable>
+          </View>
         </View>
-      </Pressable>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: {
+  root: {
     flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.5)",
     justifyContent: "flex-end",
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.5)",
   },
   sheetAnchor: {
     position: "relative",
-    maxHeight: "86%",
     width: "100%",
     alignSelf: "stretch",
     alignItems: "stretch",
@@ -573,6 +587,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderTopWidth: 1,
     borderColor: "#E0E7FF",
+    flexShrink: 1,
   },
   handle: {
     alignSelf: "center",
@@ -634,8 +649,8 @@ const styles = StyleSheet.create({
   },
   codeApplyText: { color: "#fff", fontWeight: "700", fontSize: 14 },
   codeError: { fontSize: 11, color: CX.errorRed, marginTop: 6 },
-  list: { flexGrow: 0 },
-  listContent: { paddingHorizontal: 14, paddingBottom: 8 },
+  list: { flex: 1, flexShrink: 1 },
+  listContent: { paddingHorizontal: 14, paddingBottom: 16 },
   loadingWrap: { paddingVertical: 24, alignItems: "center", gap: 8 },
   loadingText: { fontSize: 13, color: "#6B7280" },
   errText: { fontSize: 13, color: CX.errorRed, paddingVertical: 16, textAlign: "center" },

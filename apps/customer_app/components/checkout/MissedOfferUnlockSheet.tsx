@@ -2,7 +2,8 @@
  * Bottom sheet — unlock a missed offer via GatiCash wallet or add more items.
  */
 
-import { View, Text, Modal, Pressable, StyleSheet, Platform } from "react-native";
+import { View, Modal, Pressable, StyleSheet, Platform } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeInDown } from "react-native-reanimated";
@@ -80,7 +81,7 @@ export function MissedOfferUnlockSheet({
               <View style={styles.handle} />
 
               {offer.addItemsHint && !pending ? (
-                <Text style={styles.hintTop}>{offer.addItemsHint}</Text>
+                <CheckoutText style={styles.hintTop}>{offer.addItemsHint}</CheckoutText>
               ) : null}
 
               <View style={styles.heroRow}>
@@ -88,22 +89,22 @@ export function MissedOfferUnlockSheet({
                   {isFreeDelivery ? (
                     <MaterialCommunityIcons name="motorbike" size={26} color={BRAND_DARK} />
                   ) : (
-                    <Text style={styles.heroPct}>%</Text>
+                    <CheckoutText style={styles.heroPct}>%</CheckoutText>
                   )}
                 </View>
                 <View style={styles.heroTextCol}>
-                  <Text style={styles.heroTitle}>{offer.offerTitle}</Text>
-                  <Text style={styles.savingsLine}>
+                  <CheckoutText style={styles.heroTitle}>{offer.offerTitle}</CheckoutText>
+                  <CheckoutText style={styles.savingsLine}>
                     Add ₹{formatInr(offer.amountInr)} · save ₹{formatInr(offer.offerSavingsInr)} on this order
-                  </Text>
+                  </CheckoutText>
                 </View>
               </View>
 
-              <Text style={styles.prompt}>
+              <CheckoutText style={styles.prompt}>
                 {pending
                   ? "Offer unlocked on this order"
                   : "Choose how you want to unlock this offer"}
-              </Text>
+              </CheckoutText>
             </LinearGradient>
 
             <View style={styles.optionsBlock}>
@@ -115,15 +116,15 @@ export function MissedOfferUnlockSheet({
                   <MaterialCommunityIcons name="wallet-plus-outline" size={22} color={BRAND_DARK} />
                 </View>
                 <View style={styles.optionTextCol}>
-                  <Text style={styles.optionTitle}>Add money to GatiCash wallet</Text>
-                  <Text style={styles.optionSub}>
+                  <CheckoutText style={styles.optionTitle}>Add money to GatiCash wallet</CheckoutText>
+                  <CheckoutText style={styles.optionSub}>
                     {pending
                       ? `−₹${formatInr(offer.offerSavingsInr)} on this bill · ₹${formatInr(offer.amountInr)} to wallet after order`
                       : `Add ₹${formatInr(offer.amountInr)} to GatiCash · save ₹${formatInr(offer.offerSavingsInr)} on this order`}
-                  </Text>
+                  </CheckoutText>
                 </View>
                 {pending ? (
-                  <Text style={styles.removeLink}>Remove</Text>
+                  <CheckoutText style={styles.removeLink}>Remove</CheckoutText>
                 ) : (
                   <Ionicons name="chevron-forward" size={20} color={BRAND} />
                 )}
@@ -134,10 +135,10 @@ export function MissedOfferUnlockSheet({
                   <MaterialCommunityIcons name="cart-plus" size={22} color="#334155" />
                 </View>
                 <View style={styles.optionTextCol}>
-                  <Text style={styles.optionTitle}>Add more items</Text>
-                  <Text style={styles.optionSub}>
+                  <CheckoutText style={styles.optionTitle}>Add more items</CheckoutText>
+                  <CheckoutText style={styles.optionSub}>
                     Go back to the menu and add items to unlock {offer.offerTitle}
-                  </Text>
+                  </CheckoutText>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
               </Pressable>

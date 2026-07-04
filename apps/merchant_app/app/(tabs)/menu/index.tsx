@@ -42,6 +42,8 @@ import {
   updateCombo,
   fetchMenuItem,
   fetchMenuItems,
+  fetchMenuImageUploadStatus,
+  type MenuImageUploadStatus,
   patchComboOutOfStock,
   patchItemOutOfStock,
   patchCategoryOutOfStock,
@@ -807,6 +809,7 @@ export default function MenuScreen() {
     previewUri: string;
     visible: boolean;
   } | null>(null);
+  const [imagePlan, setImagePlan] = useState<MenuImageUploadStatus | null>(null);
   const [categoryMenuTarget, setCategoryMenuTarget] = useState<{
     categoryId: number;
     displayName: string;
@@ -854,6 +857,24 @@ export default function MenuScreen() {
       }
     })();
   }, [viewMode]);
+
+  useEffect(() => {
+    if (!storeId || !token) {
+      setImagePlan(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchMenuImageUploadStatus(storeId, token)
+      .then((status) => {
+        if (!cancelled) setImagePlan(status);
+      })
+      .catch(() => {
+        if (!cancelled) setImagePlan(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, token]);
 
   const { data: categories = [], refetch: refetchCategories, isRefetching: categoriesRefetching } = useMenuCategories(storeId, token);
   const selectedCategory = selectedCategoryId != null ? categories.find((c) => c.id === selectedCategoryId) : null;
@@ -1800,6 +1821,19 @@ export default function MenuScreen() {
       return;
     }
     if (photoUploadByItemId[item.id]) return;
+    if (imagePlan && !imagePlan.imageUploadAllowed) {
+      Alert.alert("Not in plan", "Image uploads are not included in your current plan. Upgrade to add images.");
+      return;
+    }
+    if (imagePlan?.imageLimitReached && !itemHasCatalogPhoto(item)) {
+      Alert.alert(
+        "Limit exceeded",
+        imagePlan.maxImageUploads != null
+          ? `Image limit reached (${imagePlan.maxImageUploads}/${imagePlan.maxImageUploads}). Upgrade your plan to add more.`
+          : "Image upload limit reached for your plan."
+      );
+      return;
+    }
     if (itemHasCatalogPhoto(item)) {
       if (storeId && token) {
         void prefetchAuthImage(item.item_image_url, token);
@@ -1809,7 +1843,7 @@ export default function MenuScreen() {
       return;
     }
     setItemUploadSheet(item);
-  }, [photoUploadByItemId, storeId, token]);
+  }, [photoUploadByItemId, storeId, token, imagePlan]);
 
   const catalogPhotoUploadCallbacks = useMemo<CatalogPhotoUploadCallbacks>(
     () => ({
@@ -2957,14 +2991,27 @@ export default function MenuScreen() {
         item={itemPhotoSheet}
         storeId={storeId}
         token={token}
+        imageLimitReached={imagePlan?.imageLimitReached ?? false}
         onClose={() => setItemPhotoSheet(null)}
         onUpdated={() => {
           void refetchCatalog();
+          if (storeId && token) {
+            void fetchMenuImageUploadStatus(storeId, token).then(setImagePlan).catch(() => {});
+          }
         }}
         uploadCallbacks={catalogPhotoUploadCallbacks}
         onRequestUploadOptions={() => {
           const current = itemPhotoSheet;
           if (!current) return;
+          if (imagePlan?.imageLimitReached) {
+            Alert.alert(
+              "Limit exceeded",
+              imagePlan.maxImageUploads != null
+                ? `Image limit reached (${imagePlan.maxImageUploads}/${imagePlan.maxImageUploads}). Upgrade your plan to add more.`
+                : "Image upload limit reached for your plan."
+            );
+            return;
+          }
           setItemPhotoSheet(null);
           InteractionManager.runAfterInteractions(() => {
             setItemUploadSheet(current);
@@ -2977,9 +3024,13 @@ export default function MenuScreen() {
         item={itemUploadSheet}
         storeId={storeId}
         token={token}
+        imageLimitReached={imagePlan?.imageLimitReached ?? false}
         onClose={() => setItemUploadSheet(null)}
         onUploaded={() => {
           void refetchCatalog();
+          if (storeId && token) {
+            void fetchMenuImageUploadStatus(storeId, token).then(setImagePlan).catch(() => {});
+          }
         }}
         uploadCallbacks={catalogPhotoUploadCallbacks}
       />

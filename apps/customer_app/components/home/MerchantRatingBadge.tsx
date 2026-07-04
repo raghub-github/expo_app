@@ -1,17 +1,12 @@
 /**
- * GatiMitra-style rating pill — tap toggles star left (By X+) ↔ right (For you).
+ * GatiMitra-style rating pill — tap "By X+" opens rating explainer sheet.
  */
 
-import { useMemo, useState } from "react";
-import { Pressable, View, Text, StyleSheet } from "react-native";
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
+import { useMemo } from "react";
+import { Pressable, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ratingBadgeColors, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
+import { StoreText } from "@/components/store/StoreText";
 
 type Props = {
   rating: number | null | undefined;
@@ -21,6 +16,7 @@ type Props = {
   variant?: "overlay" | "inline";
   compact?: boolean;
   cutout?: boolean;
+  onReviewHintPress?: () => void;
 };
 
 const HINT_TRACK_H = 14;
@@ -43,12 +39,10 @@ export function MerchantRatingBadge({
   variant = "inline",
   compact = false,
   cutout = false,
+  onReviewHintPress,
 }: Props) {
-  const [forYou, setForYou] = useState(false);
-  const toggleProgress = useSharedValue(0);
-  const hintProgress = useSharedValue(0);
-
-  const hasRating = rating != null && Number(rating) >= 0;
+  const hasRating =
+    rating != null && Number.isFinite(Number(rating)) && Number(rating) > 0;
   const ratingValue = hasRating ? Number(rating).toFixed(1) : null;
   const colors = ratingBadgeColors(hasRating ? Number(rating) : null);
   const isLowRating = colors.low;
@@ -62,152 +56,83 @@ export function MerchantRatingBadge({
 
   const showHintTrack =
     !compact && !!byLabel && (showReviewHint || variant === "overlay");
-  const useTogglePill = showHintTrack;
-  const canInteract = !!byLabel && (showHintTrack || compact);
   const isXs = size === "xs";
   const isSm = size === "sm" || isXs;
   const isOverlay = variant === "overlay";
   const pillW = isSm ? PILL_W_SM : PILL_W_MD;
   const pillH = isSm ? PILL_H_SM : PILL_H_MD;
   const starSize = isSm ? 8 : 9;
-  const starTravel = pillW - STAR_BUBBLE - (isSm ? 8 : 10);
-
-  const onPress = () => {
-    if (!canInteract) return;
-
-    const next = !forYou;
-    setForYou(next);
-
-    if (useTogglePill) {
-      toggleProgress.value = withTiming(next ? 1 : 0, {
-        duration: 260,
-        easing: Easing.inOut(Easing.cubic),
-      });
-      hintProgress.value = withTiming(next ? 1 : 0, {
-        duration: 260,
-        easing: Easing.inOut(Easing.cubic),
-      });
-    }
-  };
-
-  const starSlideStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: 4 + toggleProgress.value * starTravel }],
-  }));
-
-  const ratingShiftStyle = useAnimatedStyle(() => ({
-    paddingLeft: (1 - toggleProgress.value) * (STAR_BUBBLE + 5),
-    paddingRight: toggleProgress.value * (STAR_BUBBLE + 5),
-  }));
-
-  const hintSliderStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: -hintProgress.value * HINT_TRACK_H }],
-  }));
-
-  const byHintStyle = useAnimatedStyle(() => ({
-    opacity: 1 - hintProgress.value * 0.4,
-  }));
-
-  const forYouHintStyle = useAnimatedStyle(() => ({
-    opacity: 0.5 + hintProgress.value * 0.5,
-  }));
 
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={!canInteract}
-      hitSlop={8}
-      accessibilityRole={canInteract ? "button" : "text"}
-      accessibilityState={{ selected: forYou }}
-      accessibilityLabel={
-        forYou
-          ? `Rating ${ratingValue ?? "new"}, for you`
-          : `Rating ${ratingValue ?? "new"}${byLabel ? `, ${byLabel}` : ""}`
-      }
-      style={({ pressed }) => [
+    <View
+      style={[
         showHintTrack ? (isOverlay ? styles.colOverlay : styles.col) : styles.colStatic,
         isOverlay ? styles.overlayWrap : undefined,
-        pressed && canInteract ? styles.pressed : undefined,
       ]}
     >
-      {useTogglePill ? (
-        <View
+      <View
+        style={[
+          showHintTrack ? styles.togglePill : styles.pill,
+          isSm && (showHintTrack ? styles.togglePillSm : styles.pillSm),
+          isXs && !showHintTrack && styles.pillXs,
+          showHintTrack
+            ? { width: pillW, height: pillH, backgroundColor: hasRating ? colors.bg : RATING_PILL_GREEN }
+            : { backgroundColor: hasRating ? colors.bg : RATING_PILL_GREEN },
+          compact && styles.pillCompact,
+          cutout && styles.pillCutout,
+        ]}
+      >
+        {!showHintTrack && hasRating ? (
+          <Ionicons name="star" size={isXs ? 9 : isSm ? 10 : 11} color={onPillText} />
+        ) : null}
+        <StoreText
           style={[
-            styles.togglePill,
-            isSm && styles.togglePillSm,
-            { width: pillW, height: pillH, backgroundColor: hasRating ? colors.bg : RATING_PILL_GREEN },
+            showHintTrack ? styles.toggleRating : styles.text,
+            isSm && styles.textSm,
+            isXs && !showHintTrack && styles.textXs,
+            { color: onPillText },
           ]}
+          bold
+          numberOfLines={1}
         >
-          <Animated.Text
-            style={[
-              styles.toggleRating,
-              isSm && styles.textSm,
-              ratingShiftStyle,
-              { color: onPillText },
-            ]}
-            numberOfLines={1}
-          >
-            {ratingValue ?? "New"}
-          </Animated.Text>
-          <Animated.View
+          {ratingValue ?? "New"}
+        </StoreText>
+        {showHintTrack ? (
+          <View
             style={[
               styles.starBubble,
               isSm && styles.starBubbleSm,
-              starSlideStyle,
               {
+                right: isSm ? 4 : 5,
                 top: (pillH - (isSm ? 13 : STAR_BUBBLE)) / 2,
                 borderColor: isLowRating ? "rgba(113,63,18,0.55)" : "rgba(255,255,255,0.9)",
               },
             ]}
           >
             <Ionicons name="star" size={starSize} color={onPillText} />
-          </Animated.View>
-        </View>
-      ) : (
-        <View
-          style={[
-            styles.pill,
-            isSm && styles.pillSm,
-            isXs && styles.pillXs,
-            { backgroundColor: hasRating ? colors.bg : RATING_PILL_GREEN },
-            compact && styles.pillCompact,
-            cutout && styles.pillCutout,
-          ]}
-        >
-          {hasRating ? (
-            <Ionicons name="star" size={isXs ? 9 : isSm ? 10 : 11} color={onPillText} />
-          ) : null}
-          <Text
-            style={[
-              styles.text,
-              isSm && styles.textSm,
-              isXs && styles.textXs,
-              { color: onPillText },
-            ]}
-          >
-            {ratingValue ?? "New"}
-          </Text>
-        </View>
-      )}
+          </View>
+        ) : null}
+      </View>
 
       {showHintTrack ? (
-        <View style={[styles.hintClip, { width: pillW }]}>
-          <Animated.View style={hintSliderStyle}>
-            <Animated.Text
-              style={[styles.reviewHint, byHintStyle]}
-              numberOfLines={1}
-            >
-              {byLabel}
-            </Animated.Text>
-            <Animated.Text
-              style={[styles.reviewHint, styles.reviewHintForYou, forYouHintStyle]}
-              numberOfLines={1}
-            >
-              For you
-            </Animated.Text>
-          </Animated.View>
-        </View>
+        <Pressable
+          onPress={onReviewHintPress}
+          disabled={!onReviewHintPress}
+          hitSlop={8}
+          accessibilityRole={onReviewHintPress ? "button" : "text"}
+          accessibilityLabel={`${byLabel}, learn how ratings are calculated`}
+          style={({ pressed }) => [
+            styles.hintPress,
+            { width: pillW },
+            pressed && onReviewHintPress ? styles.pressed : undefined,
+          ]}
+        >
+          <StoreText style={styles.reviewHint} bold numberOfLines={1}>
+            {byLabel}
+          </StoreText>
+        </Pressable>
       ) : null}
-    </Pressable>
+    </View>
   );
 }
 
@@ -225,7 +150,7 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   pressed: {
-    opacity: 0.92,
+    opacity: 0.72,
   },
   togglePill: {
     borderRadius: 8,
@@ -238,13 +163,11 @@ const styles = StyleSheet.create({
   },
   toggleRating: {
     fontSize: 12,
-    fontWeight: "700",
     color: "#fff",
     textAlign: "center",
   },
   starBubble: {
     position: "absolute",
-    left: 0,
     width: STAR_BUBBLE,
     height: STAR_BUBBLE,
     borderRadius: STAR_BUBBLE / 2,
@@ -299,7 +222,6 @@ const styles = StyleSheet.create({
   },
   text: {
     fontSize: 12,
-    fontWeight: "700",
     color: "#fff",
   },
   textSm: {
@@ -308,22 +230,16 @@ const styles = StyleSheet.create({
   textXs: {
     fontSize: 10,
   },
-  hintClip: {
-    height: HINT_TRACK_H,
-    overflow: "hidden",
-    marginTop: 3,
+  hintPress: {
+    marginTop: 10,
     alignSelf: "flex-end",
   },
   reviewHint: {
     height: HINT_TRACK_H,
     lineHeight: HINT_TRACK_H,
     fontSize: 10,
-    fontWeight: "500",
     color: "#9CA3AF",
     textAlign: "right",
-  },
-  reviewHintForYou: {
-    color: "#16A34A",
-    fontWeight: "600",
+    textDecorationLine: "underline",
   },
 });

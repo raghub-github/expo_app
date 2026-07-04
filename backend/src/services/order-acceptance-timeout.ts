@@ -5,8 +5,11 @@ import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.js";
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "../lib/apply-merchant-cancellation-ledger.js";
+import { emitEvent } from "../modules/notifications/eventBus.js";
 
 const AUTO_CANCEL_REASON = "Auto Cancelled";
+
+/** Unaccepted food orders past server deadline — cancelled by backend cron (app/site may be closed). */
 
 type TimeoutLog = {
   info: (o: object, msg?: string) => void;
@@ -37,6 +40,12 @@ const EXPIRED_ACCEPTANCE_PREDICATE = `
   )
 `;
 
+const UNACCEPTED_FOOD_WHERE = `
+  upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
+  AND f.cancelled_at IS NULL
+  AND f.accepted_at IS NULL
+`;
+
 async function fetchExpiredAcceptanceTargets(
   sql: Sql,
   options: { merchantStoreId?: number; limit?: number } = {}
@@ -62,8 +71,7 @@ async function fetchExpiredAcceptanceTargets(
         LEFT JOIN merchant_stores s ON s.id = f.merchant_store_id
         LEFT JOIN cfg ON cfg.store_type = COALESCE(s.store_type::text, 'GENERAL')
         WHERE f.merchant_store_id = $1
-          AND upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
-          AND f.cancelled_at IS NULL
+          AND ${UNACCEPTED_FOOD_WHERE}
           AND (${EXPIRED_ACCEPTANCE_PREDICATE})
         ORDER BY f.created_at ASC
         LIMIT $2
@@ -88,8 +96,7 @@ async function fetchExpiredAcceptanceTargets(
           updated_at = NOW()
         FROM targets t
         WHERE f.id = t.food_id
-          AND upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
-          AND f.cancelled_at IS NULL
+          AND ${UNACCEPTED_FOOD_WHERE}
         RETURNING f.order_id AS core_id, f.id AS food_id, f.merchant_store_id
       ),
       upd_core AS (
@@ -127,8 +134,7 @@ async function fetchExpiredAcceptanceTargets(
       FROM orders_food f
       LEFT JOIN merchant_stores s ON s.id = f.merchant_store_id
       LEFT JOIN cfg ON cfg.store_type = COALESCE(s.store_type::text, 'GENERAL')
-      WHERE upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
-        AND f.cancelled_at IS NULL
+      WHERE ${UNACCEPTED_FOOD_WHERE}
         AND (${EXPIRED_ACCEPTANCE_PREDICATE})
       ORDER BY f.created_at ASC
       LIMIT $1
@@ -153,8 +159,7 @@ async function fetchExpiredAcceptanceTargets(
         updated_at = NOW()
       FROM targets t
       WHERE f.id = t.food_id
-        AND upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
-        AND f.cancelled_at IS NULL
+        AND ${UNACCEPTED_FOOD_WHERE}
       RETURNING f.order_id AS core_id, f.id AS food_id, f.merchant_store_id
     ),
     upd_core AS (
@@ -266,6 +271,42 @@ async function finalizeCancelledRow(
       );
     } catch (ledgerErr) {
       log.error({ err: ledgerErr, coreId }, "order_acceptance_timeout_ledger_failed");
+    }
+    try {
+      const ownerRows = (await sql`
+        SELECT
+          oc.order_id,
+          oc.formatted_order_id,
+          c.customer_id AS customer_user_id,
+          s.user_id AS merchant_user_id,
+          s.store_display_name AS store_name
+        FROM orders_core oc
+        LEFT JOIN customers c ON c.id = oc.customer_id
+        LEFT JOIN merchant_stores s ON s.id = ${storeId}
+        WHERE oc.id = ${coreId}
+        LIMIT 1
+      `) as Array<{
+        order_id: string | null;
+        formatted_order_id: string | null;
+        customer_user_id: string | null;
+        merchant_user_id: string | null;
+        store_name: string | null;
+      }>;
+      const owner = ownerRows[0];
+      const orderIdText = String(owner?.order_id ?? coreId);
+      emitEvent("order.status_changed", {
+        orderId: orderIdText,
+        orderShortId: owner?.formatted_order_id ?? orderIdText,
+        fromStatus: "CREATED",
+        toStatus: "CANCELLED",
+        customerId: owner?.customer_user_id ?? null,
+        merchantUserId: owner?.merchant_user_id ?? null,
+        merchantStoreId: storeId,
+        merchantName: owner?.store_name ?? null,
+        reason: AUTO_CANCEL_REASON,
+      });
+    } catch {
+      /* notification fan-out is best-effort */
     }
   } catch (tlErr) {
     log.error({ err: tlErr, coreId }, "order_acceptance_timeout_timeline_failed");

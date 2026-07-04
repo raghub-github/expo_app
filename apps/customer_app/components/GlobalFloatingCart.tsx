@@ -1,10 +1,8 @@
 /**
  * Food floating cart + multi-order tracking dock.
- * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
- * Hidden on main Home tab (/(tabs)/index) — use Food tab or merchant page for cart access.
- * Hidden on /orders/[id] (order detail — no floating cart or track pill; tracking is on-screen).
- * Hidden on Profile and Orders tabs (order list / account — no floating track pill).
- * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
+ * Cart visible only on food browse: /home, /home/merchant/*, /search, /home/category/*, etc.
+ * Hidden on Home tab (/(tabs)/index), Profile, Orders, checkout, and other non-food routes.
+ * Order tracking dock: food browse + /orders when user has active deliveries.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -46,10 +44,12 @@ import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
 import { customerTabBarOffset } from "@/components/CustomerTabBar";
-import { resolveFloatingCartBottomOffset } from "@/constants/layout";
+import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT } from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
+import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
+import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 
 const CHECKOUT_PATH = "/checkout";
 
@@ -59,20 +59,6 @@ const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
 /** Bottom sheet primary accent (GatiMitra-style; brand red token). */
 const SHEET_BRAND_RED = GatiMitraColors.closedRed;
 
-/** Show on main tab screens (Home, Food, Orders, Profile). */
-function useIsOnMainTabs(): boolean {
-  const segments = useSegments() as string[];
-  return segments[0] === "(tabs)";
-}
-
-/** Home tab only — floating cart is hidden here; food/browse keeps the cart bar. */
-function useIsOnHomeTab(): boolean {
-  const segments = useSegments() as string[];
-  if (segments[0] !== "(tabs)") return false;
-  const tab = segments[1];
-  return tab === "index" || tab == null;
-}
-
 /** Show on: /home, /home/merchant/*, /home/category/*, /search. */
 function useIsFoodServicePage(): boolean {
   const pathname = usePathname();
@@ -81,7 +67,7 @@ function useIsFoodServicePage(): boolean {
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
   if (p.startsWith("/checkout") || p.startsWith("/profile") || p.startsWith("/wallet")) return false;
-  if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category")) return true;
+  if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category") || p.startsWith("/home/meals-under-price")) return true;
   if (p.startsWith("/home/service") || p.startsWith("/home/shop")) return false;
   if (p === "/search") return true;
   if (p === "/" || p.startsWith("/(tabs)")) return false;
@@ -127,7 +113,22 @@ function useHideFloatingOrderTrackingPill(): boolean {
 /** Hide floating cart on order detail / live tracking — map + status already on screen. */
 function useHideFloatingCart(): boolean {
   const segments = useSegments() as string[];
-  return segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0;
+  const pathname = usePathname();
+  if (segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0) {
+    return true;
+  }
+  // Meals-under-price uses per-card "View cart" → checkout sheet; no dock pill.
+  if (typeof pathname === "string" && pathname.startsWith("/home/meals-under-price")) {
+    return true;
+  }
+  // Merchant menu renders its own Zomato-style Continue dock — never the global pill.
+  if (typeof pathname === "string" && /^\/home\/merchant\/[^/]+/.test(pathname)) {
+    return true;
+  }
+  if (segments[0] === "home" && segments[1] === "merchant" && segments.length >= 3) {
+    return true;
+  }
+  return false;
 }
 
 /** True when current route is restaurant detail and it's the same as cart merchant */
@@ -156,67 +157,6 @@ function FloatingOrderTrackingPillWithUnread({
   );
 }
 
-/** Home-tab cart pill — same white-bar layout as active-order tracking pill. */
-function FloatingCartPill({
-  merchantName,
-  itemCount,
-  onPress,
-  disabled,
-  closedTitle,
-  closedSub,
-}: {
-  merchantName: string | null;
-  itemCount: number;
-  onPress: () => void;
-  disabled?: boolean;
-  closedTitle?: string;
-  closedSub?: string;
-}) {
-  const itemLabel = itemCount === 1 ? "1 item" : `${itemCount} items`;
-  return (
-    <TouchableOpacity
-      activeOpacity={disabled ? 1 : 0.92}
-      onPress={onPress}
-      disabled={disabled}
-      style={styles.dockCartTouchable}
-    >
-      <View style={[styles.dockCartShell, disabled && styles.dockCartShellDisabled]}>
-        <View style={styles.dockCartIconWrap}>
-          <Ionicons name="cart-outline" size={24} color="#111827" />
-        </View>
-        <View style={styles.dockCartCenter}>
-          <Text style={styles.dockCartTitle} numberOfLines={1}>
-            {merchantName?.trim() || "Your cart"}
-          </Text>
-          <View style={styles.dockCartSubRow}>
-            <Text style={styles.dockCartSub} numberOfLines={1}>
-              {disabled ? closedSub ?? "Cart unavailable" : `${itemLabel} · View cart`}
-            </Text>
-            {!disabled ? (
-              <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.warmOrange} />
-            ) : null}
-          </View>
-        </View>
-        {disabled ? (
-          <View style={styles.dockCartCtaMuted}>
-            <Text style={styles.dockCartCtaMutedText}>{closedTitle ?? "Closed"}</Text>
-          </View>
-        ) : (
-          <LinearGradient
-            colors={[GatiMitraColors.deepMintStart, GatiMitraColors.primaryMint]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.dockCartCta}
-          >
-            <Text style={styles.dockCartCtaTop}>open</Text>
-            <Text style={styles.dockCartCtaBottom}>Cart</Text>
-          </LinearGradient>
-        )}
-      </View>
-    </TouchableOpacity>
-  );
-}
-
 export function GlobalFloatingCart() {
   const insets = useAppSafeAreaInsets();
   const { bottom: rawBottom } = useSafeAreaInsets();
@@ -226,11 +166,11 @@ export function GlobalFloatingCart() {
   const session = useAuthStore((s) => s.session);
   const segments = useSegments() as string[];
   const isFoodServicePage = useIsFoodServicePage();
-  const isOnMainTabs = useIsOnMainTabs();
-  const isOnHomeTab = useIsOnHomeTab();
   const isOnOrdersArea = useIsOnOrdersArea();
   const hideFloatingOrderTrackingPill = useHideFloatingOrderTrackingPill();
   const hideFloatingCart = useHideFloatingCart();
+  const suppressMealsUnderFloating = useMealsUnderPriceCartUiStore((s) => s.suppressFloatingCart);
+  const checkoutSheetVisible = useCheckoutSheetStore((s) => s.visible);
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
@@ -340,13 +280,21 @@ export function GlobalFloatingCart() {
   const hasActiveOrder = trackingOrders.length > 0;
   /** Hide track pill on order sub-routes — tracking UI is already on-screen or irrelevant. */
   const showActiveOrderTracking = hasActiveOrder && !hideFloatingOrderTrackingPill;
-  /** Cart + tracking (or multiple orders): one pill per page, swipe to switch. */
+  /** Cart bar only on food-service routes — never on Profile / Orders / Home tabs. */
+  const showFloatingFoodCart =
+    hasCart &&
+    !hideFloatingCart &&
+    !suppressMealsUnderFloating &&
+    !checkoutSheetVisible &&
+    isFoodServicePage;
+  /** Paged dock when tracking + (cart on food page or multiple orders). */
   const showScrollDock =
-    showActiveOrderTracking && (hasCart || trackingOrders.length > 1);
+    showActiveOrderTracking &&
+    ((hasCart && isFoodServicePage) || trackingOrders.length > 1);
   const { width: windowWidth } = useWindowDimensions();
   const dockSideInset = 16;
   const dockPageWidth = Math.max(280, windowWidth - dockSideInset);
-  const dockPageCount = trackingOrders.length + (hasCart ? 1 : 0);
+  const dockPageCount = trackingOrders.length + (showFloatingFoodCart ? 1 : 0);
   const [dockPageIndex, setDockPageIndex] = useState(0);
 
   useEffect(() => {
@@ -403,35 +351,20 @@ export function GlobalFloatingCart() {
   };
 
   const visible =
-    (hasCart &&
-      !hideFloatingCart &&
-      !isOnHomeTab &&
-      (isFoodServicePage || isOnOrdersArea || isOnMainTabs)) ||
-    (showActiveOrderTracking && (isFoodServicePage || isOnOrdersArea || isOnMainTabs));
+    showFloatingFoodCart ||
+    (showActiveOrderTracking && (isFoodServicePage || isOnOrdersArea));
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
-  const bottomOffset = resolveFloatingCartBottomOffset(rawBottom, {
-    aboveTabBar: inTabs,
-    tabBarOffset: inTabs ? customerTabBarOffset(rawBottom) : undefined,
-  });
+  const bottomOffset =
+    resolveFloatingCartBottomOffset(rawBottom, {
+      aboveTabBar: inTabs,
+      tabBarOffset: inTabs ? customerTabBarOffset(rawBottom) : undefined,
+    }) + (isFoodServicePage ? FLOATING_CART_UI_LIFT : 0);
 
   const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
   const compact = isCartCompact;
   const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
-  /** Main tab home uses the compact pill; food/browse keeps the full cart bar in every state. */
-  const useTabHomeCartPill = isOnMainTabs && !isFoodServicePage;
-
-  const cartPillNode = (
-    <FloatingCartPill
-      merchantName={merchantName}
-      itemCount={totalCount}
-      onPress={handleCartPress}
-      disabled={isCartStoreClosed}
-      closedTitle={isCartStoreClosed ? cartClosedCta.title : undefined}
-      closedSub={isCartStoreClosed ? cartClosedCta.sub : undefined}
-    />
-  );
 
   const cartBarNode = (
     <View
@@ -545,7 +478,7 @@ export function GlobalFloatingCart() {
     </View>
   );
 
-  const cartContentNode = useTabHomeCartPill ? cartPillNode : cartBarNode;
+  const cartContentNode = showFloatingFoodCart ? cartBarNode : null;
 
   const onDockScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
@@ -585,7 +518,7 @@ export function GlobalFloatingCart() {
                   />
                 </View>
               ))}
-              {hasCart ? (
+              {showFloatingFoodCart ? (
                 <View style={[styles.dockPage, { width: dockPageWidth }]}>
                   {cartContentNode}
                 </View>
@@ -603,7 +536,7 @@ export function GlobalFloatingCart() {
             ) : null}
           </View>
         </Animated.View>
-        {!useTabHomeCartPill ? (
+        {showFloatingFoodCart ? (
           <AllCartsSheetModal
             visible={allCartsSheetVisible}
             onClose={() => setAllCartsSheetVisible(false)}
@@ -648,42 +581,42 @@ export function GlobalFloatingCart() {
     );
   }
 
+  if (!showFloatingFoodCart) return null;
+
   return (
     <>
       <Animated.View
         entering={slideUpEntering}
-        style={[styles.wrap, useTabHomeCartPill && styles.dockWrap, { bottom: bottomOffset }]}
+        style={[styles.wrap, { bottom: bottomOffset }]}
         pointerEvents="box-none"
       >
         {cartContentNode}
       </Animated.View>
 
-      {!useTabHomeCartPill ? (
-        <AllCartsSheetModal
-          visible={allCartsSheetVisible}
-          onClose={() => setAllCartsSheetVisible(false)}
-          merchantName={merchantName}
-          merchantId={merchantId}
-          cartSlotCount={cartSlotCount}
-          thumbUri={resolvedThumbUri}
-          itemLabel={itemLabel}
-          onViewMenu={() => {
-            setAllCartsSheetVisible(false);
-            handleViewMenuPress();
-          }}
-          isStoreClosed={isCartStoreClosed}
-          closedCta={cartClosedCta}
-          cartOpenSoon={cartOpenSoon}
-          onViewCart={() => {
-            setAllCartsSheetVisible(false);
-            handleCartPress();
-          }}
-          onRemoveCart={() => {
-            setAllCartsSheetVisible(false);
-            clearCart();
-          }}
-        />
-      ) : null}
+      <AllCartsSheetModal
+        visible={allCartsSheetVisible}
+        onClose={() => setAllCartsSheetVisible(false)}
+        merchantName={merchantName}
+        merchantId={merchantId}
+        cartSlotCount={cartSlotCount}
+        thumbUri={resolvedThumbUri}
+        itemLabel={itemLabel}
+        onViewMenu={() => {
+          setAllCartsSheetVisible(false);
+          handleViewMenuPress();
+        }}
+        isStoreClosed={isCartStoreClosed}
+        closedCta={cartClosedCta}
+        cartOpenSoon={cartOpenSoon}
+        onViewCart={() => {
+          setAllCartsSheetVisible(false);
+          handleCartPress();
+        }}
+        onRemoveCart={() => {
+          setAllCartsSheetVisible(false);
+          clearCart();
+        }}
+      />
     </>
   );
 }

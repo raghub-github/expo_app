@@ -1,11 +1,14 @@
-import React, { useCallback, useMemo } from "react";
-import { View, Text, StyleSheet, Platform } from "react-native";
-import { FlashList, type FlashListRef, type ListRenderItemInfo } from "@shopify/flash-list";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
+import { View, Text, StyleSheet, Platform, ScrollView } from "react-native";
 import Animated, { type ScrollHandlerProcessed } from "react-native-reanimated";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { TouchableOpacity } from "react-native";
-import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
 import { StorePastOrdersSection } from "@/components/store/StorePastOrdersSection";
@@ -13,36 +16,35 @@ import { StoreComboSection } from "@/components/store/StoreComboSection";
 import { StoreSectionHeader } from "@/components/store/StoreSectionHeader";
 import { StoreFooterSection } from "@/components/store/StoreFooterSection";
 import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
-import { MenuListSkeleton } from "@/components/ShimmerSkeleton";
+import { StoreMenuPairingSection } from "@/components/store/StoreMenuPairingSection";
+import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { StoreTheme } from "@/constants/storeTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import {
-  FLASH_LIST_CONFIG,
-  HEADER_IMAGE_HEIGHT,
-  SCREEN_WIDTH_EXPORT,
-} from "../constants/layout";
-import {
-  getFlashItemType,
-  splitFlashListRows,
-} from "../lib/buildFlashListData";
 import type { MerchantFlashListItem } from "../types";
 import type { ComboPair } from "@/components/store/StoreComboSection";
 import type { MenuItem, MerchantSummary } from "@/services/merchant.service";
+import { MENU_ITEM_ROW_HEIGHT, MENU_LOADING_FILL_MIN_HEIGHT, MERCHANT_HEADER_TOP_GUTTER } from "../constants/layout";
+import { MerchantHeroBannerRow } from "./MerchantHeroBannerRow";
+import {
+  MerchantHeroTopBarContent,
+  type MerchantHeroTopBarActions,
+} from "./MerchantHeroTopBar";
 
-const AnimatedFlashList = Animated.createAnimatedComponent(
-  FlashList<MerchantFlashListItem>
-) as typeof FlashList<MerchantFlashListItem>;
+const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
+
+/** Imperative scroll API — same surface as FlashList scroll helpers. */
+export type MerchantScrollListHandle = {
+  scrollToOffset: (params: { offset: number; animated?: boolean }) => void;
+  scrollToIndex: (params: { index: number; animated?: boolean; viewOffset?: number }) => void;
+  /** Abort in-flight scrollToIndex retries after the user drags. */
+  cancelPendingScroll: () => void;
+};
 
 export type MerchantDetailFlashListProps = {
-  listRef: React.RefObject<FlashListRef<MerchantFlashListItem> | null>;
   data: MerchantFlashListItem[];
+  heroUri: string | null;
   scrollHandler: ScrollHandlerProcessed;
   contentContainerStyle?: object;
-  heroBannerStyle: object;
-  heroOverlayOpacityStyle: object;
-  infoOpacityStyle: object;
-  merchantBannerHeroUri: string | null;
-  merchantGalleryBannerUris: string[];
   merchantLogoUri: string | null;
   merchant: MerchantSummary;
   merchantId: string;
@@ -51,13 +53,12 @@ export type MerchantDetailFlashListProps = {
   scheduledSlotLabel: string | null;
   offerTickerTexts: string[];
   visibleOffersCount: number;
+  /** Keep offer strip height reserved while offers warm from cache/network. */
+  reserveOfferRow?: boolean;
   onInfoPress: () => void;
   onOffersPress: () => void;
   onSchedulePress: () => void;
-  onHeroBack: () => void;
-  onHeroSearch: () => void;
-  onHeroGroupOrder: () => void;
-  onHeroOptions: () => void;
+  onRatingHintPress?: () => void;
   filter: StoreFilterId;
   onFilterChange: (id: StoreFilterId) => void;
   onOpenFilters: () => void;
@@ -74,25 +75,23 @@ export type MerchantDetailFlashListProps = {
   highlightedMenuItemKey: string | null;
   highlyReorderedIds: Set<string>;
   bookmarkMenuItemIdSet: Set<number>;
-  goesWithNameByItemId: Record<string, string>;
   onBookmark: (item: MenuItem) => void;
   onShare: (item: MenuItem) => void;
   resolveMenuItemPk: (item: MenuItem) => number | null;
+  showHeroActions: boolean;
+  heroActions: MerchantHeroTopBarActions;
+  onListLayout?: () => void;
 };
 
-export const MerchantDetailFlashList = React.memo(function MerchantDetailFlashList(
-  props: MerchantDetailFlashListProps
-) {
+export const MerchantDetailFlashList = forwardRef<
+  MerchantScrollListHandle,
+  MerchantDetailFlashListProps
+>(function MerchantDetailFlashList(props, ref) {
   const {
-    listRef,
     data,
+    heroUri,
     scrollHandler,
     contentContainerStyle,
-    heroBannerStyle,
-    heroOverlayOpacityStyle,
-    infoOpacityStyle,
-    merchantBannerHeroUri,
-    merchantGalleryBannerUris,
     merchantLogoUri,
     merchant,
     merchantId,
@@ -101,13 +100,11 @@ export const MerchantDetailFlashList = React.memo(function MerchantDetailFlashLi
     scheduledSlotLabel,
     offerTickerTexts,
     visibleOffersCount,
+    reserveOfferRow = false,
     onInfoPress,
     onOffersPress,
     onSchedulePress,
-    onHeroBack,
-    onHeroSearch,
-    onHeroGroupOrder,
-    onHeroOptions,
+    onRatingHintPress,
     filter,
     onFilterChange,
     onOpenFilters,
@@ -124,341 +121,323 @@ export const MerchantDetailFlashList = React.memo(function MerchantDetailFlashLi
     highlightedMenuItemKey,
     highlyReorderedIds,
     bookmarkMenuItemIdSet,
-    goesWithNameByItemId,
     onBookmark,
     onShare,
     resolveMenuItemPk,
+    showHeroActions,
+    heroActions,
+    onListLayout,
   } = props;
 
-  const { headerRows, listRows } = useMemo(() => splitFlashListRows(data), [data]);
+  const scrollRef = useRef<ScrollView>(null);
+  const rowHeightsRef = useRef<Map<string, number>>(new Map());
+  const rowOffsetsRef = useRef<Map<string, number>>(new Map());
+  const scrollGenerationRef = useRef(0);
+  const rebuildScheduledRef = useRef(false);
 
-  const keyExtractor = useCallback((item: MerchantFlashListItem) => item.key, []);
+  const dataLayoutKey = useMemo(() => data.map((row) => row.key).join("\0"), [data]);
 
-  const getItemType = useCallback((item: MerchantFlashListItem) => getFlashItemType(item), []);
+  useEffect(() => {
+    rowHeightsRef.current.clear();
+    rowOffsetsRef.current.clear();
+  }, [dataLayoutKey]);
 
-  const renderFlashRow = useCallback(
-    (item: MerchantFlashListItem) => {
-      switch (item.type) {
-        case "hero":
-          return (
-            <View style={styles.headerImageWrap}>
-              <Animated.View style={[styles.heroBannerInner, heroBannerStyle]}>
-                <StoreBannerCarousel
-                  bannerUri={merchantBannerHeroUri}
-                  galleryUris={merchantGalleryBannerUris}
-                  width={SCREEN_WIDTH_EXPORT}
-                  height={HEADER_IMAGE_HEIGHT}
-                  initialBannerHoldMs={4000}
-                  slideIntervalMs={5200}
-                  slideDurationMs={750}
-                  showDots={false}
-                />
-              </Animated.View>
-              <LinearGradient
-                colors={["rgba(0,0,0,0.15)", "rgba(0,0,0,0.45)"]}
-                style={StyleSheet.absoluteFill}
-                pointerEvents="none"
-              />
-              <Animated.View
-                style={[StyleSheet.absoluteFill, styles.heroNavOverlay, heroOverlayOpacityStyle]}
-                pointerEvents="box-none"
-              >
-                <View style={styles.headerIcons} pointerEvents="box-none">
-                  <TouchableOpacity onPress={onHeroBack} style={styles.heroCircleBtnDark} hitSlop={8}>
-                    <Ionicons name="chevron-back" size={22} color="#fff" />
-                  </TouchableOpacity>
-                  <View style={styles.headerIconsRight}>
-                    <TouchableOpacity style={styles.heroSearchPill} onPress={onHeroSearch} hitSlop={8}>
-                      <Ionicons name="search" size={16} color="#fff" />
-                      <Text style={styles.heroSearchPillText}>Search</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.heroCircleBtnDark} onPress={onHeroGroupOrder} hitSlop={8}>
-                      <Ionicons name="people-outline" size={18} color="#fff" />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.heroCircleBtnDark} onPress={onHeroOptions} hitSlop={8}>
-                      <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </Animated.View>
-            </View>
-          );
+  const rebuildRowOffsets = useCallback(() => {
+    rebuildScheduledRef.current = false;
+    let offset = 0;
+    for (const row of data) {
+      rowOffsetsRef.current.set(row.key, offset);
+      offset += rowHeightsRef.current.get(row.key) ?? 0;
+    }
+  }, [data]);
 
-        case "info":
-          return (
-            <Animated.View style={infoOpacityStyle}>
-              <StoreInfoCard
-                name={merchant.name}
-                logoUrl={merchantLogoUri}
-                avgRating={merchant.avgRating}
-                totalReviews={merchant.totalReviews}
-                distanceKm={distanceKm}
-                areaLabel={
-                  (merchant as { city?: string; address?: string }).city ??
-                  (merchant as { city?: string; address?: string }).address ??
-                  undefined
-                }
-                etaLabel={storeEtaLabel}
-                scheduledLabel={scheduledSlotLabel}
-                offerTexts={offerTickerTexts}
-                offerCount={visibleOffersCount}
-                isFrequentlyReordered={(merchant.completedOrderCount ?? 0) > 50}
-                onInfoPress={onInfoPress}
-                onOffersPress={onOffersPress}
-                onSchedulePress={onSchedulePress}
-              />
-            </Animated.View>
-          );
+  const scheduleRebuildRowOffsets = useCallback(() => {
+    if (rebuildScheduledRef.current) return;
+    rebuildScheduledRef.current = true;
+    requestAnimationFrame(rebuildRowOffsets);
+  }, [rebuildRowOffsets]);
 
-        case "closed_banner":
-          return (
-            <View style={styles.closedBanner}>
-              <View style={styles.closedBannerIconWrap}>
-                <Ionicons name="time-outline" size={18} color="#fff" />
-              </View>
-              <Text style={styles.closedBannerText}>{item.message}</Text>
-            </View>
-          );
+  const cancelPendingScroll = useCallback(() => {
+    scrollGenerationRef.current += 1;
+  }, []);
 
-        case "filter_bar":
-          return (
-            <View style={styles.filterBarInList}>
-              <StoreFilterBar
-                active={filter}
-                onChange={onFilterChange}
-                onOpenFilters={onOpenFilters}
-                showHighlyReordered={showHighlyReordered}
-                filtersActive={filtersActive}
-              />
-            </View>
-          );
+  useImperativeHandle(
+    ref,
+    () => ({
+      cancelPendingScroll,
+      scrollToOffset: ({ offset, animated = true }) => {
+        cancelPendingScroll();
+        scrollRef.current?.scrollTo({ y: offset, animated });
+      },
+      scrollToIndex: ({ index, animated = true, viewOffset = 0 }) => {
+        const generation = ++scrollGenerationRef.current;
+        const attempt = (retriesLeft: number) => {
+          if (generation !== scrollGenerationRef.current) return;
+          const row = data[index];
+          if (!row) return;
+          const y = rowOffsetsRef.current.get(row.key);
+          if (y != null) {
+            scrollRef.current?.scrollTo({ y: Math.max(0, y - viewOffset), animated });
+            return;
+          }
+          if (retriesLeft > 0) {
+            requestAnimationFrame(() => attempt(retriesLeft - 1));
+          }
+        };
+        attempt(6);
+      },
+    }),
+    [cancelPendingScroll, data]
+  );
 
-        case "past_orders":
-          return (
-            <StorePastOrdersSection
-              items={item.items}
-              getQty={getQty}
-              onAdd={onAdd}
-              onIncrement={onIncrement}
-              onDecrement={onDecrement}
-              isStoreClosed={isStoreClosed}
-            />
-          );
-
-        case "combo_section":
-          return (
-            <StoreComboSection
-              combos={item.combos}
-              onAddCombo={onAddCombo}
-              isStoreClosed={isStoreClosed}
-            />
-          );
-
-        case "section_lead":
-          return (
-            <StoreSectionHeader
-              title={item.title}
-              couponLink={item.showCouponLink}
-              onCouponPress={onCouponPress}
-            />
-          );
-
-        case "section_header":
-          return (
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionHeaderText}>{item.title}</Text>
-            </View>
-          );
-
-        case "menu_item": {
-          const row = item.item;
-          const menuItemPk = resolveMenuItemPk(row);
-          return (
-            <View collapsable={false}>
-              <StoreMenuItemRow
-                item={row}
-                merchantId={merchantId}
-                goesWithName={goesWithNameByItemId[row.id] ?? null}
-                onAdd={onAdd}
-                onIncrement={onIncrement}
-                onDecrement={onDecrement}
-                isStoreClosed={isStoreClosed}
-                showDivider={!item.isLastInSection}
-                isHighlyReordered={highlyReorderedIds.has(row.id)}
-                isBookmarked={menuItemPk != null && bookmarkMenuItemIdSet.has(menuItemPk)}
-                highlighted={
-                  highlightedMenuItemKey != null &&
-                  (row.id === highlightedMenuItemKey ||
-                    (row.menuItemId != null && String(row.menuItemId) === highlightedMenuItemKey))
-                }
-                onBookmark={onBookmark}
-                onShare={onShare}
-              />
-            </View>
-          );
-        }
-
-        case "footer":
-          return (
-            <View style={styles.footerListGap}>
-              <StoreFooterSection similarMerchants={similarMerchants} />
-            </View>
-          );
-
-        case "empty_menu":
-          return (
-            <View style={styles.emptyMenu}>
-              <Text style={styles.emptyMenuText}>No items match the selected filters.</Text>
-            </View>
-          );
-
-        case "menu_skeleton":
-          return <MenuListSkeleton count={1} />;
-
-        default:
-          return null;
-      }
+  const recordRowLayout = useCallback(
+    (key: string, height: number) => {
+      if (height <= 0) return;
+      if (rowHeightsRef.current.has(key)) return;
+      rowHeightsRef.current.set(key, height);
+      scheduleRebuildRowOffsets();
     },
-    [
-      heroBannerStyle,
-      heroOverlayOpacityStyle,
-      infoOpacityStyle,
-      merchantBannerHeroUri,
-      merchantGalleryBannerUris,
-      merchantLogoUri,
-      merchant,
-      distanceKm,
-      storeEtaLabel,
-      scheduledSlotLabel,
-      offerTickerTexts,
-      visibleOffersCount,
-      onInfoPress,
-      onOffersPress,
-      onSchedulePress,
-      onHeroBack,
-      onHeroSearch,
-      onHeroGroupOrder,
-      onHeroOptions,
-      filter,
-      onFilterChange,
-      onOpenFilters,
-      showHighlyReordered,
-      filtersActive,
-      getQty,
-      onAdd,
-      onIncrement,
-      onDecrement,
-      isStoreClosed,
-      onAddCombo,
-      onCouponPress,
-      similarMerchants,
-      highlightedMenuItemKey,
-      highlyReorderedIds,
-      bookmarkMenuItemIdSet,
-      goesWithNameByItemId,
-      onBookmark,
-      onShare,
-      resolveMenuItemPk,
-      merchantId,
-    ]
+    [scheduleRebuildRowOffsets]
   );
 
-  const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<MerchantFlashListItem>) => renderFlashRow(item),
-    [renderFlashRow]
-  );
-
-  const ListHeader = useCallback(
-    () => (
-      <View collapsable={false} style={styles.listHeader}>
-        {headerRows.map((row) => (
-          <View key={row.key} collapsable={false}>
-            {renderFlashRow(row)}
+  const renderRow = (item: MerchantFlashListItem) => {
+    switch (item.type) {
+      case "hero":
+        return (
+          <View style={styles.heroCell} collapsable={false}>
+            <MerchantHeroBannerRow uri={heroUri} merchantId={merchantId} />
+            {showHeroActions ? (
+              <View
+                style={[styles.heroActionsOverlay, { paddingTop: MERCHANT_HEADER_TOP_GUTTER }]}
+                pointerEvents="box-none"
+                collapsable={false}
+              >
+                <MerchantHeroTopBarContent {...heroActions} />
+              </View>
+            ) : null}
           </View>
-        ))}
-      </View>
-    ),
-    [headerRows, renderFlashRow]
-  );
+        );
+
+      case "info":
+        return (
+          <StoreInfoCard
+            name={merchant.name}
+            logoUrl={merchantLogoUri}
+            avgRating={merchant.avgRating}
+            totalReviews={merchant.totalReviews}
+            distanceKm={distanceKm}
+            areaLabel={
+              (merchant as { city?: string; address?: string }).city ??
+              (merchant as { city?: string; address?: string }).address ??
+              undefined
+            }
+            etaLabel={storeEtaLabel}
+            scheduledLabel={scheduledSlotLabel}
+            offerTexts={offerTickerTexts}
+            offerCount={visibleOffersCount}
+            reserveOfferRow={reserveOfferRow}
+            isFrequentlyReordered={(merchant.completedOrderCount ?? 0) > 50}
+            onInfoPress={onInfoPress}
+            onOffersPress={onOffersPress}
+            onSchedulePress={onSchedulePress}
+            onRatingHintPress={onRatingHintPress}
+          />
+        );
+
+      case "closed_banner":
+        return (
+          <View style={styles.closedBanner}>
+            <View style={styles.closedBannerIconWrap}>
+              <Ionicons name="time-outline" size={18} color="#fff" />
+            </View>
+            <Text style={styles.closedBannerText}>{item.message}</Text>
+          </View>
+        );
+
+      case "filter_bar":
+        return (
+          <StoreFilterBar
+            active={filter}
+            onChange={onFilterChange}
+            onOpenFilters={onOpenFilters}
+            showHighlyReordered={showHighlyReordered}
+            filtersActive={filtersActive}
+          />
+        );
+
+      case "past_orders":
+        return (
+          <StorePastOrdersSection
+            items={item.items}
+            getQty={getQty}
+            onAdd={onAdd}
+            onIncrement={onIncrement}
+            onDecrement={onDecrement}
+            isStoreClosed={isStoreClosed}
+          />
+        );
+
+      case "combo_section":
+        return (
+          <StoreComboSection
+            combos={item.combos}
+            onAddCombo={onAddCombo}
+            isStoreClosed={isStoreClosed}
+          />
+        );
+
+      case "section_lead":
+        return (
+          <StoreSectionHeader
+            title={item.title}
+            couponLink={item.showCouponLink}
+            onCouponPress={onCouponPress}
+          />
+        );
+
+      case "section_header":
+        return (
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionHeaderText}>{item.title}</Text>
+          </View>
+        );
+
+      case "menu_item": {
+        const menuItem = item.item;
+        const menuItemPk = resolveMenuItemPk(menuItem);
+        return (
+          <StoreMenuItemRow
+            item={menuItem}
+            merchantId={merchantId}
+            goesWithName={null}
+            onAdd={onAdd}
+            onIncrement={onIncrement}
+            onDecrement={onDecrement}
+            isStoreClosed={isStoreClosed}
+            showDivider={item.showDivider}
+            isHighlyReordered={highlyReorderedIds.has(menuItem.id)}
+            isBookmarked={menuItemPk != null && bookmarkMenuItemIdSet.has(menuItemPk)}
+            highlighted={
+              highlightedMenuItemKey != null &&
+              (menuItem.id === highlightedMenuItemKey ||
+                (menuItem.menuItemId != null &&
+                  String(menuItem.menuItemId) === highlightedMenuItemKey))
+            }
+            onBookmark={onBookmark}
+            onShare={onShare}
+          />
+        );
+      }
+
+      case "pairing_strip":
+        return (
+          <StoreMenuPairingSection
+            companions={item.companions}
+            merchantId={merchantId}
+            onAdd={onAdd}
+            onIncrement={onIncrement}
+            onDecrement={onDecrement}
+            isStoreClosed={isStoreClosed}
+            showDivider
+          />
+        );
+
+      case "footer":
+        return <StoreFooterSection similarMerchants={similarMerchants} />;
+
+      case "empty_menu":
+        return (
+          <View style={styles.emptyMenu}>
+            <Text style={styles.emptyMenuText}>No items match the selected filters.</Text>
+          </View>
+        );
+
+      case "menu_skeleton":
+        return <MerchantMenuLoadingSkeleton merchantId={merchantId} variant="inline" />;
+
+      case "menu_loading":
+        return (
+          <View style={[styles.menuLoading, { minHeight: MENU_LOADING_FILL_MIN_HEIGHT }]}>
+            <MerchantMenuLoadingSkeleton merchantId={merchantId} variant="inline" />
+          </View>
+        );
+
+      default:
+        return null;
+    }
+  };
 
   return (
-    <AnimatedFlashList
-      ref={listRef}
-      style={styles.list}
-      data={listRows}
-      renderItem={renderItem}
-      keyExtractor={keyExtractor}
-      getItemType={getItemType}
-      ListHeaderComponent={ListHeader}
-      estimatedItemSize={FLASH_LIST_CONFIG.estimatedItemSize}
-      drawDistance={FLASH_LIST_CONFIG.drawDistance}
-      removeClippedSubviews={FLASH_LIST_CONFIG.removeClippedSubviews}
-      contentContainerStyle={contentContainerStyle}
-      onScroll={scrollHandler as never}
-      scrollEventThrottle={16}
-      keyboardShouldPersistTaps="always"
-      showsVerticalScrollIndicator
-      {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
-    />
+    <View
+      style={styles.listHost}
+      onLayout={() => {
+        onListLayout?.();
+      }}
+    >
+      <AnimatedScrollView
+        ref={scrollRef}
+        style={styles.list}
+        contentContainerStyle={[styles.listContent, contentContainerStyle]}
+        onScroll={scrollHandler as never}
+        scrollEventThrottle={16}
+        keyboardShouldPersistTaps="always"
+        showsVerticalScrollIndicator
+        removeClippedSubviews={false}
+        bounces
+        {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
+      >
+        {data.map((item) => (
+          <View
+            key={item.key}
+            collapsable={false}
+            style={[
+              styles.rowShell,
+              item.type === "menu_item" ? { minHeight: MENU_ITEM_ROW_HEIGHT } : null,
+            ]}
+            onLayout={(event) => {
+              recordRowLayout(item.key, event.nativeEvent.layout.height);
+            }}
+          >
+            {renderRow(item)}
+          </View>
+        ))}
+      </AnimatedScrollView>
+    </View>
   );
 });
 
 const styles = StyleSheet.create({
+  listHost: {
+    flex: 1,
+    zIndex: 0,
+    backgroundColor: StoreTheme.background,
+  },
   list: {
     flex: 1,
+    zIndex: 0,
     backgroundColor: StoreTheme.background,
   },
-  listHeader: {
+  /** No flexGrow — content height = rendered rows only (prevents white overscroll gaps). */
+  listContent: {
+    backgroundColor: StoreTheme.background,
+    paddingBottom: 8,
+  },
+  rowShell: {
     backgroundColor: StoreTheme.background,
   },
-  headerImageWrap: {
-    height: HEADER_IMAGE_HEIGHT,
-    width: SCREEN_WIDTH_EXPORT,
-    overflow: "hidden",
+  heroCell: {
+    position: "relative",
+    backgroundColor: StoreTheme.background,
   },
-  heroBannerInner: {
-    width: SCREEN_WIDTH_EXPORT,
-    height: HEADER_IMAGE_HEIGHT,
-  },
-  heroNavOverlay: {
+  heroActionsOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    paddingHorizontal: 12,
     zIndex: 4,
+    justifyContent: "flex-start",
   },
-  headerIcons: {
-    position: "absolute",
-    top: 8,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 12,
-  },
-  headerIconsRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  heroCircleBtnDark: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: StoreTheme.headerBtnBg,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heroSearchPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: StoreTheme.headerBtnBg,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 18,
-  },
-  heroSearchPillText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#fff",
+  menuLoading: {
+    backgroundColor: StoreTheme.background,
+    paddingTop: 4,
   },
   closedBanner: {
     flexDirection: "row",
@@ -486,9 +465,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#fff",
   },
-  filterBarInList: {
-    backgroundColor: StoreTheme.background,
-  },
   sectionHeader: {
     paddingHorizontal: 16,
     paddingTop: 14,
@@ -500,12 +476,10 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: StoreTheme.textPrimary,
   },
-  footerListGap: {
-    paddingTop: 8,
-  },
   emptyMenu: {
     padding: 24,
     alignItems: "center",
+    backgroundColor: StoreTheme.background,
   },
   emptyMenuText: {
     fontSize: 14,

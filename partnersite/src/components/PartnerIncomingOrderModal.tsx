@@ -49,7 +49,7 @@ import {
   broadcastIncomingOrderAlert,
   subscribeIncomingOrderAlert,
 } from '@/lib/partner-incoming-order-broadcast';
-import { partnerNewOrdersHref } from '@/lib/partner-orders-routes';
+import { partnerPreparingOrdersHref } from '@/lib/partner-orders-routes';
 
 const PREP_STEP_MINUTES = 5;
 /** Max line items in accept popup; rest via +N more → sidesheet. */
@@ -512,7 +512,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       if (pending == null || pending <= 0) return;
 
       const res = await fetch(
-        `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=${FALLBACK_SCAN_LIMIT}`
+        `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=${FALLBACK_SCAN_LIMIT}&skip_compensation=1`
       );
       const text = await res.text();
       let data: { orders?: OrdersFoodRow[] } = {};
@@ -902,7 +902,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       if (closeAfter) {
         close();
         if (status === 'ACCEPTED') {
-          router.push(partnerNewOrdersHref(pathname, storeId));
+          router.push(partnerPreparingOrdersHref(pathname, storeId));
         }
       }
     } catch (e) {

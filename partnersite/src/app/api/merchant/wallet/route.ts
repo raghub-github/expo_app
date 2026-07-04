@@ -31,8 +31,10 @@ async function resolveStoreInternalId(db: ReturnType<typeof getDb>, storeId: str
  */
 export async function GET(req: NextRequest) {
   try {
-    return await withRouteTimeout('merchant.wallet.get', 45_000, async () => {
+    return await withRouteTimeout('merchant.wallet.get', 15_000, async () => {
     const storeId = req.nextUrl.searchParams.get('storeId') ?? req.nextUrl.searchParams.get('store_id');
+    const reconcile = req.nextUrl.searchParams.get('reconcile') === '1';
+    const lite = req.nextUrl.searchParams.get('lite') !== '0';
     if (!storeId?.trim()) {
       return NextResponse.json({ error: 'storeId is required' }, { status: 400 });
     }
@@ -43,25 +45,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    // Heal missing ORDER_EARNING rows for orders delivered outside merchant PATCH (e.g. dashboard agent).
-    // Time-boxed: the backfill iterates ledger rows and can hang for minutes on
-    // large stores. If it doesn't finish in 10s we skip and continue with the
-    // rest of the wallet summary, so the route returns fast. A real backfill
-    // still runs periodically via the scheduled worker.
-    try {
-      const backfillWithTimeout = Promise.race([
-        (async () => {
-          await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
-          await backfillMissingCancelledOrderLedger(db, merchantStoreId);
-        })(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('backfill_timeout_10s')), 10_000),
-        ),
-      ]);
-      await backfillWithTimeout;
-    } catch (backfillErr) {
-      console.warn('[merchant/wallet] backfill skipped/failed:', (backfillErr as Error).message);
-    }
+    // Backfill runs in the background — never block the read path (scheduled worker also heals drift).
+    void (async () => {
+      try {
+        await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
+        await backfillMissingCancelledOrderLedger(db, merchantStoreId);
+      } catch (backfillErr) {
+        console.warn('[merchant/wallet] backfill skipped/failed:', (backfillErr as Error).message);
+      }
+    })();
 
     // V2 select includes locked_balance + lifetime columns. Older prod DBs may
     // not have those columns yet — Postgres returns code 42703 (undefined_column)
@@ -75,7 +67,8 @@ export async function GET(req: NextRequest) {
         .select(`
           id, available_balance, pending_balance, hold_balance, reserve_balance,
           locked_balance, pending_settlement, lifetime_credit, lifetime_debit,
-          total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
+          total_earned, total_withdrawn, total_penalty, total_commission_deducted, status,
+          settlement_paused
         `)
         .eq('merchant_store_id', merchantStoreId)
         .single();
@@ -123,6 +116,7 @@ export async function GET(req: NextRequest) {
     let total_penalty = 0;
     let total_commission_deducted = 0;
     let status = 'ACTIVE';
+    let settlement_paused = false;
 
     if (wallet) {
       walletId = wallet.id as number;
@@ -138,6 +132,7 @@ export async function GET(req: NextRequest) {
       total_penalty = Number(wallet.total_penalty ?? 0);
       total_commission_deducted = Number(wallet.total_commission_deducted ?? 0);
       status = (wallet.status as string) ?? 'ACTIVE';
+      settlement_paused = Boolean(wallet.settlement_paused);
     } else {
       const { data: newId, error: rpcError } = await db.rpc('get_or_create_merchant_wallet', {
         p_merchant_store_id: merchantStoreId,
@@ -160,50 +155,53 @@ export async function GET(req: NextRequest) {
         total_penalty = Number(newWallet.total_penalty ?? 0);
         total_commission_deducted = Number(newWallet.total_commission_deducted ?? 0);
         status = (newWallet.status as string) ?? 'ACTIVE';
+        settlement_paused = Boolean(newWallet.settlement_paused);
       }
     }
 
-    const storedAvailableBeforeLedger = available_balance;
+    if (reconcile) {
+      const storedAvailableBeforeLedger = available_balance;
 
-    const { data: balanceLedgerRows } = await db
-      .from('merchant_wallet_ledger')
-      .select('id, balance_type, balance_after, amount, direction, created_at, metadata')
-      .eq('wallet_id', walletId)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .limit(5000);
+      const { data: balanceLedgerRows } = await db
+        .from('merchant_wallet_ledger')
+        .select('id, balance_type, balance_after, amount, direction, created_at, metadata')
+        .eq('wallet_id', walletId)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .limit(5000);
 
-    const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
-      (balanceLedgerRows ?? []).map((row) => ({
-        id: row.id as number,
-        balance_type: row.balance_type as string | null,
-        balance_after: row.balance_after != null ? Number(row.balance_after) : null,
-        amount: row.amount != null ? Number(row.amount) : null,
-        direction: row.direction as string | null,
-        created_at: row.created_at as string,
-        metadata: row.metadata as Record<string, unknown> | null,
-      }))
-    );
+      const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
+        (balanceLedgerRows ?? []).map((row) => ({
+          id: row.id as number,
+          balance_type: row.balance_type as string | null,
+          balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+          amount: row.amount != null ? Number(row.amount) : null,
+          direction: row.direction as string | null,
+          created_at: row.created_at as string,
+          metadata: row.metadata as Record<string, unknown> | null,
+        }))
+      );
 
-    if ((balanceLedgerRows ?? []).length > 0) {
-      available_balance = ledgerRunningBalance;
-    }
-    locked_balance = 0;
+      if ((balanceLedgerRows ?? []).length > 0) {
+        available_balance = ledgerRunningBalance;
+      }
+      locked_balance = 0;
 
-    if (
-      (balanceLedgerRows ?? []).length > 0 &&
-      Math.abs(storedAvailableBeforeLedger - ledgerRunningBalance) >= 0.01
-    ) {
-      try {
-        const { client: sql } = await import('@/lib/drizzle');
-        await sql`
-          UPDATE merchant_wallet
-          SET available_balance = ${ledgerRunningBalance},
-              updated_at = NOW()
-          WHERE id = ${walletId}
-        `;
-      } catch (syncErr) {
-        console.warn('[merchant/wallet] sync available from ledger:', syncErr);
+      if (
+        (balanceLedgerRows ?? []).length > 0 &&
+        Math.abs(storedAvailableBeforeLedger - ledgerRunningBalance) >= 0.01
+      ) {
+        try {
+          const { client: sql } = await import('@/lib/drizzle');
+          await sql`
+            UPDATE merchant_wallet
+            SET available_balance = ${ledgerRunningBalance},
+                updated_at = NOW()
+            WHERE id = ${walletId}
+          `;
+        } catch (syncErr) {
+          console.warn('[merchant/wallet] sync available from ledger:', syncErr);
+        }
       }
     }
 
@@ -214,7 +212,12 @@ export async function GET(req: NextRequest) {
     const yesterdayStart = new Date(todayStart);
     yesterdayStart.setUTCDate(yesterdayStart.getUTCDate() - 1);
 
-    const { data: ledgerRows } = await db
+    let today_earning = 0;
+    let yesterday_earning = 0;
+    let pending_withdrawal_total = 0;
+    let in_process_withdrawal_total = 0;
+
+    const earningsPromise = db
       .from('merchant_wallet_ledger')
       .select('amount, created_at')
       .eq('wallet_id', walletId)
@@ -223,8 +226,19 @@ export async function GET(req: NextRequest) {
       .gte('created_at', yesterdayStart.toISOString())
       .lt('created_at', todayEnd.toISOString());
 
-    let today_earning = 0;
-    let yesterday_earning = 0;
+    const payoutsPromise = lite
+      ? Promise.resolve({ data: null as { net_payout_amount: unknown; status: unknown }[] | null })
+      : db
+          .from('merchant_payout_requests')
+          .select('net_payout_amount, status')
+          .eq('wallet_id', walletId)
+          .in('status', ['PENDING', 'APPROVED', 'PROCESSING']);
+
+    const [{ data: ledgerRows }, { data: payoutRows }] = await Promise.all([
+      earningsPromise,
+      payoutsPromise,
+    ]);
+
     (ledgerRows || []).forEach((row) => {
       const amt = Number(row.amount ?? 0);
       const at = row.created_at ? new Date(row.created_at as string) : null;
@@ -233,46 +247,26 @@ export async function GET(req: NextRequest) {
       else if (at >= yesterdayStart && at < todayStart) yesterday_earning += amt;
     });
 
-    let pending_withdrawal_total = 0;
-    let in_process_withdrawal_total = 0;
-    try {
-      const { data: payoutRows } = await db
-        .from('merchant_payout_requests')
-        .select('net_payout_amount, status')
-        .eq('wallet_id', walletId)
-        .in('status', ['PENDING', 'APPROVED', 'PROCESSING']);
-      (payoutRows || []).forEach((row) => {
+    if (!lite && payoutRows) {
+      payoutRows.forEach((row) => {
         const amt = Number(row.net_payout_amount ?? 0);
         const st = String(row.status ?? '').toUpperCase();
         if (st === 'PENDING') pending_withdrawal_total += amt;
         else if (st === 'APPROVED' || st === 'PROCESSING') in_process_withdrawal_total += amt;
       });
-    } catch {
-      // Table may not exist or RLS may block
-    }
-
-    let settlement_paused = false;
-    try {
-      const { data: sp } = await db
-        .from('merchant_wallet')
-        .select('settlement_paused')
-        .eq('id', walletId)
-        .single();
-      settlement_paused = Boolean(sp?.settlement_paused);
-    } catch {
-      /* pre-0239 */
     }
 
     const withdrawable_balance = roundMoney(available_balance);
     const total_balance = roundMoney(available_balance + hold_balance + pending_balance);
 
-    if (total_earned <= 0) {
+    if (!lite && total_earned <= 0) {
       const { data: earningRows } = await db
         .from('merchant_wallet_ledger')
         .select('amount')
         .eq('wallet_id', walletId)
         .eq('direction', 'CREDIT')
-        .eq('category', 'ORDER_EARNING');
+        .eq('category', 'ORDER_EARNING')
+        .limit(5000);
       total_earned = roundMoney(
         (earningRows ?? []).reduce((s, row) => s + Number(row.amount ?? 0), 0)
       );

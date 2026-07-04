@@ -12,6 +12,14 @@ export function gridFirstCategoryBlockHeight(circle: number): number {
 /** Gold subscription strip approximate height when visible. */
 export const GRID_FIRST_GOLD_STRIP_H = 72;
 
+/** Filter chips row height incl. bottom padding. */
+export const GRID_FIRST_FILTER_ROW_H = 52;
+
+/** In-flow filter begins appearing after this scroll offset (px). */
+export const GRID_FIRST_FILTER_SHOW_SCROLL_Y = 8;
+
+const STICK_HANDOFF_PX = 10;
+
 export type GridFirstStickyMetrics = {
   topInset: number;
   heroHeight: number;
@@ -19,6 +27,8 @@ export type GridFirstStickyMetrics = {
   categoryBlockY: number;
   categoryBlockHeight: number;
   searchRowHeight: number;
+  filterBlockY: number;
+  filterBlockHeight: number;
 };
 
 export function defaultGridFirstStickyMetrics(
@@ -27,13 +37,16 @@ export function defaultGridFirstStickyMetrics(
   categoryCircle = 50
 ): GridFirstStickyMetrics {
   const categoryBlockHeight = gridFirstCategoryBlockHeight(categoryCircle);
+  const categoryBlockY = heroHeight + GRID_FIRST_GOLD_STRIP_H;
   return {
     topInset,
     heroHeight,
     goldStripHeight: GRID_FIRST_GOLD_STRIP_H,
-    categoryBlockY: heroHeight + GRID_FIRST_GOLD_STRIP_H,
+    categoryBlockY,
     categoryBlockHeight,
     searchRowHeight: GRID_FIRST_SEARCH_ROW_H,
+    filterBlockY: categoryBlockY + categoryBlockHeight,
+    filterBlockHeight: GRID_FIRST_FILTER_ROW_H,
   };
 }
 
@@ -59,3 +72,19 @@ export function gridFirstStickySearchTop(m: GridFirstStickyMetrics): number {
 export function gridFirstStickyCategoryTop(m: GridFirstStickyMetrics): number {
   return m.topInset + m.searchRowHeight;
 }
+
+/** Screen Y for the sticky filter row top edge. */
+export function gridFirstStickyFilterTop(m: GridFirstStickyMetrics): number {
+  return gridFirstStickyCategoryTop(m) + m.categoryBlockHeight;
+}
+
+/** Scroll offset when the in-flow filter row should pin below sticky search + category. */
+export function gridFirstFilterStickScrollY(m: GridFirstStickyMetrics): number {
+  const stickyTop = gridFirstStickyFilterTop(m);
+  return Math.max(
+    gridFirstCategoryStickScrollY(m),
+    m.filterBlockY - stickyTop
+  );
+}
+
+export { STICK_HANDOFF_PX as GRID_FIRST_STICK_HANDOFF_PX };

@@ -18,16 +18,7 @@ export async function GET(request: NextRequest) {
     }
     const { user } = auth;
 
-    const email = user.email;
-    if (!email) {
-      return NextResponse.json(
-        { success: false, error: "No email in session" },
-        { status: 400 }
-      );
-    }
-
-    // Get user permissions
-    const userPerms = await getUserPermissions(user.id, email);
+    const userPerms = await getUserPermissions(user.id, user.email);
 
     if (!userPerms) {
       const response = NextResponse.json({
@@ -112,16 +103,7 @@ export async function POST(request: NextRequest) {
     }
     const { user } = auth;
 
-    const email = user.email;
-    if (!email) {
-      return NextResponse.json(
-        { success: false, error: "No email in session" },
-        { status: 400 }
-      );
-    }
-
-    // Check page access
-    const canAccess = await canAccessPage(user.id, email, pagePath);
+    const canAccess = await canAccessPage(user.id, user.email ?? "", pagePath);
 
     return NextResponse.json({
       success: true,

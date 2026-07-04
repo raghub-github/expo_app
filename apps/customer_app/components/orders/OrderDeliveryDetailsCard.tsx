@@ -3,6 +3,7 @@
  */
 
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -66,12 +67,12 @@ function DetailRow({
         ) : null}
       </View>
       <View style={styles.textWrap}>
-        <Text style={styles.rowTitle}>{title}</Text>
+        <CheckoutText style={styles.rowTitle}>{title}</CheckoutText>
         {subtitleNode ??
           (subtitle ? (
-            <Text style={styles.rowSub} numberOfLines={3}>
+            <CheckoutText style={styles.rowSub} numberOfLines={3}>
               {subtitle}
-            </Text>
+            </CheckoutText>
           ) : null)}
       </View>
       {onEdit ? (
@@ -115,7 +116,7 @@ export function OrderDeliveryDetailsCard({
     <View style={styles.card}>
       {showPeachBanner ? (
         <View style={styles.peachBanner}>
-          <Text style={styles.banner}>All your delivery details in one place 👇</Text>
+          <CheckoutText style={styles.banner}>All your delivery details in one place 👇</CheckoutText>
         </View>
       ) : null}
 
@@ -156,16 +157,16 @@ export function OrderDeliveryDetailsCard({
                 <View style={styles.instructionListInline}>
                   {instructionItems.map((item, index) => (
                     <View key={item} style={styles.instructionInlineItem}>
-                      {index > 0 ? <Text style={styles.instructionSep}>•</Text> : null}
+                      {index > 0 ? <CheckoutText style={styles.instructionSep}>•</CheckoutText> : null}
                       <Ionicons name="checkmark-circle" size={14} color={ACCENT} />
-                      <Text style={styles.instructionChipText} numberOfLines={1}>
+                      <CheckoutText style={styles.instructionChipText} numberOfLines={1}>
                         {item}
-                      </Text>
+                      </CheckoutText>
                     </View>
                   ))}
                 </View>
               ) : (
-                <Text style={styles.instructionPlaceholder}>Tap Edit to add instructions</Text>
+                <CheckoutText style={styles.instructionPlaceholder}>Tap Edit to add instructions</CheckoutText>
               )
             }
             onEdit={onEditInstructions}
@@ -186,7 +187,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
     overflow: "hidden",
-    ...GatiMitraColors.elevationShadow,
   },
   peachBanner: {
     backgroundColor: PEACH_BANNER,

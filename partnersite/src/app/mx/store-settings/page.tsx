@@ -27,10 +27,8 @@ import {
   buildStoreSettingsBreadcrumbs,
 } from '@/lib/store-settings-tabs'
 import {
-  markPlanEnforceRan,
+  fetchAndCachePlanUsage,
   readCachedPlanUsage,
-  shouldRunPlanEnforce,
-  writeCachedPlanUsage,
 } from '@/lib/plan-usage-cache'
 import {
   panelFieldsFromStoreOpsGet,
@@ -243,6 +241,13 @@ function StoreSettingsContent() {
   const addressSearchRef = useRef<HTMLDivElement>(null)
   /** Snapshot of address when last loaded or saved; used to enable Save only when something changed */
   const initialAddressRef = useRef<{ full_address: string; landmark: string; city: string; state: string; postal_code: string; latitude: string; longitude: string } | null>(null)
+  const initialDeliverySettingsRef = useRef<{
+    gatimitraDeliveryEnabled: boolean
+    selfDeliveryEnabled: boolean
+    deliveryRadiusKm: number
+    deliveryChargePerKm: string
+  } | null>(null)
+  const initialPackagingChargeRef = useRef<string>('')
 
   // Plans & Subscription state
   const [plans, setPlans] = useState<any[]>([])
@@ -645,6 +650,12 @@ function StoreSettingsContent() {
           }
           const radius = typeof s.delivery_radius_km === 'number' && !isNaN(s.delivery_radius_km) ? s.delivery_radius_km : 5
           setDeliveryRadiusKm(radius)
+          if (initialDeliverySettingsRef.current) {
+            initialDeliverySettingsRef.current = {
+              ...initialDeliverySettingsRef.current,
+              deliveryRadiusKm: radius,
+            }
+          }
         }
       } catch (error) {
         console.error('Error loading store:', error)
@@ -742,13 +753,27 @@ function StoreSettingsContent() {
 
         setGatimitraDeliveryEnabled(data.platform_delivery !== false)
         setSelfDeliveryEnabled(data.self_delivery === true)
+        const loadedRadius =
+          typeof data.delivery_radius_km === 'number' && !isNaN(data.delivery_radius_km)
+            ? data.delivery_radius_km
+            : 5
         if (typeof data.delivery_radius_km === 'number' && !isNaN(data.delivery_radius_km)) {
           setDeliveryRadiusKm(data.delivery_radius_km)
         }
+        const loadedPerKm =
+          data.delivery_charge_per_km != null && !isNaN(Number(data.delivery_charge_per_km))
+            ? String(data.delivery_charge_per_km)
+            : ''
         if (data.delivery_charge_per_km != null && !isNaN(Number(data.delivery_charge_per_km))) {
           setDeliveryChargePerKm(String(data.delivery_charge_per_km))
         } else {
           setDeliveryChargePerKm('')
+        }
+        initialDeliverySettingsRef.current = {
+          gatimitraDeliveryEnabled: data.platform_delivery !== false,
+          selfDeliveryEnabled: data.self_delivery === true,
+          deliveryRadiusKm: loadedRadius,
+          deliveryChargePerKm: loadedPerKm,
         }
         if (data.delivery_charge_per_km_last_updated_at != null) {
           setDeliveryChargePerKmLastUpdatedAt(data.delivery_charge_per_km_last_updated_at)
@@ -763,8 +788,10 @@ function StoreSettingsContent() {
         }
         if (data.packaging_charge_amount != null && !isNaN(Number(data.packaging_charge_amount))) {
           setPackagingChargeAmount(String(data.packaging_charge_amount))
+          initialPackagingChargeRef.current = String(data.packaging_charge_amount)
         } else {
           setPackagingChargeAmount('')
+          initialPackagingChargeRef.current = ''
         }
         if (data.packaging_charge_last_updated_at != null) {
           setPackagingChargeLastUpdatedAt(data.packaging_charge_last_updated_at)
@@ -821,6 +848,21 @@ function StoreSettingsContent() {
       (longitude || '').trim() !== (init.longitude || '').trim()
     )
   }, [fullAddress, addressLandmark, storeAddress, addressState, addressPostalCode, latitude, longitude])
+
+  const hasDeliveryChanges = useMemo(() => {
+    const init = initialDeliverySettingsRef.current
+    if (!init) return false
+    return (
+      gatimitraDeliveryEnabled !== init.gatimitraDeliveryEnabled ||
+      selfDeliveryEnabled !== init.selfDeliveryEnabled ||
+      deliveryRadiusKm !== init.deliveryRadiusKm ||
+      deliveryChargePerKm.trim() !== init.deliveryChargePerKm.trim()
+    )
+  }, [gatimitraDeliveryEnabled, selfDeliveryEnabled, deliveryRadiusKm, deliveryChargePerKm])
+
+  const hasPackagingChanges = useMemo(() => {
+    return packagingChargeAmount.trim() !== initialPackagingChargeRef.current.trim()
+  }, [packagingChargeAmount])
 
   /** Customer-facing store page on gatimitra.com (public `store_id`, e.g. GMMC1025). */
   const gatimitraCustomerStoreUrl = useMemo(() => {
@@ -1213,63 +1255,58 @@ function StoreSettingsContent() {
   }, [storeId])
 
   // Hydrate plan usage from session cache when store changes (avoids loading flash on tab revisit).
-  useEffect(() => {
+  const applyPlanUsageToState = useCallback(
+    (usage: {
+      totalItems: number
+      unlockedItems: number
+      lockedItems: number
+      lockedCategories: number
+      planLockingSupported: boolean
+    }) => {
+      setPlanUsage({
+        totalItems: usage.totalItems,
+        unlockedItems: usage.unlockedItems,
+        lockedItems: usage.lockedItems,
+        lockedCategories: usage.lockedCategories,
+        planLockingSupported: usage.planLockingSupported,
+      })
+      if (Number.isFinite(usage.totalItems)) {
+        setCurrentMenuItemsCount(usage.totalItems)
+      }
+    },
+    []
+  )
+
+  useLayoutEffect(() => {
     if (!storeId) return
     const cached = readCachedPlanUsage(storeId)
-    if (!cached) return
-    setPlanUsage({
-      totalItems: cached.totalItems,
-      unlockedItems: cached.unlockedItems,
-      lockedItems: cached.lockedItems,
-      lockedCategories: cached.lockedCategories,
-      planLockingSupported: cached.planLockingSupported,
-    })
-    setCurrentMenuItemsCount(cached.totalItems)
-  }, [storeId])
+    if (cached) applyPlanUsageToState(cached)
+  }, [storeId, applyPlanUsageToState])
 
-  // Enforce plan locks + refresh usage for Menu & Capacity (cached; no spinner on revisit).
+  // Warm plan usage as soon as store settings loads (not only on Menu & Capacity tab).
   useEffect(() => {
-    if (!storeId || activeTab !== 'menu-capacity') return
+    if (!storeId) return
     let cancelled = false
     const hadCache = Boolean(readCachedPlanUsage(storeId))
+
     const loadPlanUsage = async () => {
       if (!hadCache) setPlanUsageLoading(true)
       try {
-        if (shouldRunPlanEnforce(storeId)) {
-          await fetch(`/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(storeId)}`, {
-            method: 'POST',
-          })
-          markPlanEnforceRan(storeId)
-        }
-        const res = await fetch(
-          `/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(storeId)}`
-        )
-        if (!res.ok || cancelled) return
-        const data = await res.json()
-        if (!data?.usage || cancelled) return
-        const next = {
-          totalItems: Number(data.usage.totalItems ?? 0),
-          unlockedItems: Number(data.usage.unlockedItems ?? 0),
-          lockedItems: Number(data.usage.lockedItems ?? 0),
-          lockedCategories: Number(data.usage.lockedCategories ?? 0),
-          planLockingSupported: data.usage.planLockingSupported !== false,
-        }
-        setPlanUsage(next)
-        writeCachedPlanUsage(storeId, next)
-        if (Number.isFinite(next.totalItems)) {
-          setCurrentMenuItemsCount(next.totalItems)
-        }
+        const usage = await fetchAndCachePlanUsage(storeId)
+        if (cancelled || !usage) return
+        applyPlanUsageToState(usage)
       } catch (error) {
         console.error('Error loading plan usage:', error)
       } finally {
         if (!cancelled) setPlanUsageLoading(false)
       }
     }
-    loadPlanUsage()
+
+    void loadPlanUsage()
     return () => {
       cancelled = true
     }
-  }, [storeId, activeTab])
+  }, [storeId, applyPlanUsageToState])
 
   // Load self-delivery riders when Delivery tab is active (delivery includes riders)
   useEffect(() => {
@@ -1531,6 +1568,7 @@ function StoreSettingsContent() {
       }
       toast.success('✅ Packaging charge saved. You can edit it again after 30 days.')
       setPackagingChargeLastUpdatedAt(new Date().toISOString())
+      initialPackagingChargeRef.current = String(amount)
       setCanEditPackagingCharge(false)
       setNextPackagingEditableAt(data.next_editable_at || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
     } finally {
@@ -1607,6 +1645,12 @@ function StoreSettingsContent() {
           setNextDeliveryChargeEditableAt(data.next_editable_at || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
         }
         toast.success('✅ Delivery settings saved successfully!')
+        initialDeliverySettingsRef.current = {
+          gatimitraDeliveryEnabled,
+          selfDeliveryEnabled,
+          deliveryRadiusKm,
+          deliveryChargePerKm: deliveryChargePerKm.trim(),
+        }
         return
       }
       if (activeTab === 'address' && storeId) {
@@ -3595,8 +3639,6 @@ function StoreSettingsContent() {
                 imageUploadAllowed={imageUploadAllowed}
                 planUsage={planUsage}
                 planUsageLoading={planUsageLoading}
-                isSaving={isSaving}
-                onSave={handleSaveSettings}
                 onUpgradePlan={() => setActiveTab('plans')}
               />
             )}
@@ -3608,7 +3650,7 @@ function StoreSettingsContent() {
                     <h3 className="text-base font-bold text-gray-900 sm:text-lg">Delivery Settings</h3>
                     <button
                       onClick={handleSaveSettings}
-                      disabled={isSaving}
+                      disabled={isSaving || !hasDeliveryChanges}
                       className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2 sm:text-sm"
                     >
                       <Save size={14} />
@@ -3616,13 +3658,13 @@ function StoreSettingsContent() {
                     </button>
                   </div>
 
-                  <div className="flex items-stretch gap-2 overflow-x-auto pb-0.5 hide-scrollbar">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     <div
-                      className={`flex min-w-[148px] shrink-0 items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+                      className={`flex min-h-[52px] items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
                         gatimitraDeliveryEnabled ? 'border-purple-200 bg-purple-50' : 'border-gray-200 bg-gray-50/80'
                       }`}
                     >
-                      <p className="truncate text-sm font-semibold text-gray-900">GatiMitra Delivery</p>
+                      <p className="text-sm font-semibold text-gray-900">GatiMitra Delivery</p>
                       <label className="relative inline-flex shrink-0 cursor-pointer items-center">
                         <input
                           type="checkbox"
@@ -3638,11 +3680,11 @@ function StoreSettingsContent() {
                     </div>
 
                     <div
-                      className={`flex min-w-[148px] shrink-0 items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+                      className={`flex min-h-[52px] items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
                         selfDeliveryEnabled ? 'border-orange-200 bg-orange-50' : 'border-gray-200 bg-gray-50/80'
                       }`}
                     >
-                      <p className="truncate text-sm font-semibold text-gray-900">Self Delivery</p>
+                      <p className="text-sm font-semibold text-gray-900">Self Delivery</p>
                       <label className="relative inline-flex shrink-0 cursor-pointer items-center">
                         <input
                           type="checkbox"
@@ -3661,38 +3703,45 @@ function StoreSettingsContent() {
                       </label>
                     </div>
 
-                    <div className="flex shrink-0 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
-                      <label className="whitespace-nowrap text-xs font-semibold text-gray-700">Radius</label>
-                      <input
-                        type="number"
-                        value={deliveryRadiusKm}
-                        onChange={(e) => setDeliveryRadiusKm(parseInt(e.target.value, 10) || 5)}
-                        min={1}
-                        max={50}
-                        className="w-14 rounded-md border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-orange-500"
-                      />
-                      <span className="text-xs text-gray-500">km</span>
+                    <div className="flex min-h-[52px] flex-col justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3">
+                      <label className="text-xs font-semibold text-gray-700">Radius</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={deliveryRadiusKm}
+                          onChange={(e) => setDeliveryRadiusKm(parseInt(e.target.value, 10) || 5)}
+                          min={1}
+                          max={50}
+                          className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-orange-500"
+                        />
+                        <span className="shrink-0 text-sm font-medium text-gray-500">km</span>
+                      </div>
                     </div>
 
                     <div
-                      className="flex min-w-[120px] shrink-0 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2"
+                      className="flex min-h-[52px] min-w-0 flex-col justify-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3"
                       title="₹10–₹15 per km for self delivery. Editable once in 30 days."
                     >
-                      <label className="shrink-0 whitespace-nowrap text-xs font-semibold text-gray-700">₹/km</label>
-                      <input
-                        type="number"
-                        min={10}
-                        max={15}
-                        step="0.01"
-                        value={deliveryChargePerKm}
-                        onChange={(e) => setDeliveryChargePerKm(e.target.value)}
-                        disabled={!canEditDeliveryChargePerKm}
-                        placeholder="10–15"
-                        className="w-16 rounded-md border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-orange-500 disabled:cursor-not-allowed disabled:bg-gray-100"
-                      />
-                      <span className="hidden truncate text-[10px] text-gray-500 xl:inline">
-                        {canEditDeliveryChargePerKm ? '10–15 · edit 1×/30d' : 'Locked 30d'}
-                      </span>
+                      <div className="flex items-center gap-3">
+                        <label className="shrink-0 text-sm font-semibold text-gray-900">₹/km</label>
+                        <input
+                          type="number"
+                          min={10}
+                          max={15}
+                          step="0.01"
+                          value={deliveryChargePerKm}
+                          onChange={(e) => setDeliveryChargePerKm(e.target.value)}
+                          disabled={!canEditDeliveryChargePerKm}
+                          placeholder="10–15"
+                          className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-orange-500 disabled:cursor-not-allowed disabled:bg-gray-100"
+                        />
+                      </div>
+                      <p className="text-sm font-medium text-gray-700">₹10 – ₹15 per km</p>
+                      <p className="text-xs leading-relaxed text-gray-500">
+                        {canEditDeliveryChargePerKm
+                          ? 'Allowed range is ₹10 to ₹15 per km. You can change this rate once every 30 days.'
+                          : 'This rate is locked for 30 days after your last update.'}
+                      </p>
                     </div>
                   </div>
 
@@ -3710,7 +3759,7 @@ function StoreSettingsContent() {
                     <h3 className="text-lg font-bold text-gray-900">Packaging Charge</h3>
                     <button
                       onClick={handleSavePackaging}
-                      disabled={isSaving || !canEditPackagingCharge}
+                      disabled={isSaving || !canEditPackagingCharge || !hasPackagingChanges}
                       title={!canEditPackagingCharge && nextPackagingEditableAt ? `Editable again from ${new Date(nextPackagingEditableAt).toLocaleDateString('en-IN')}` : undefined}
                       className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                     >
@@ -3748,138 +3797,137 @@ function StoreSettingsContent() {
                       )}
                     </div>
                   </div>
-                </div>
 
-                {/* Self-Delivery Riders (same page) */}
-                <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
-                  <h3 className="text-lg font-bold text-gray-900 mb-2">Self-Delivery Riders</h3>
-                  <p className="text-sm text-gray-600 mb-4">Add and manage riders for self delivery. Edit and delete are disabled when a rider has an active order.</p>
-                  <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3">
-                    <p className="text-sm font-semibold text-gray-800">{riderEditId !== null ? 'Edit rider' : 'Add new rider'}</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <input
-                        type="text"
-                        placeholder="Rider name *"
-                        value={riderForm.rider_name}
-                        onChange={(e) => setRiderForm((f) => ({ ...f, rider_name: e.target.value }))}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Mobile *"
-                        value={riderForm.rider_mobile}
-                        onChange={(e) => setRiderForm((f) => ({ ...f, rider_mobile: e.target.value }))}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Email (optional)"
-                        value={riderForm.rider_email}
-                        onChange={(e) => setRiderForm((f) => ({ ...f, rider_email: e.target.value }))}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Vehicle number (optional)"
-                        value={riderForm.vehicle_number}
-                        onChange={(e) => setRiderForm((f) => ({ ...f, vehicle_number: e.target.value }))}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => saveRider(riderEditId)}
-                        disabled={riderSaving}
-                        className="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 disabled:opacity-50"
-                      >
-                        {riderSaving ? 'Saving...' : riderEditId !== null ? 'Update rider' : 'Add rider'}
-                      </button>
-                      {riderEditId !== null && (
-                        <button
-                          type="button"
-                          onClick={() => { setRiderEditId(null); setRiderForm({ rider_name: '', rider_mobile: '', rider_email: '', vehicle_number: '' }); }}
-                          className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {ridersLoading ? (
-                    <p className="text-sm text-gray-500">Loading riders…</p>
-                  ) : riders.length === 0 ? (
-                    <p className="text-sm text-gray-500">No riders added yet. Add one above.</p>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-gray-200 text-left">
-                            <th className="py-2 pr-4 font-semibold text-gray-700">ID</th>
-                            <th className="py-2 pr-4 font-semibold text-gray-700">Name</th>
-                            <th className="py-2 pr-4 font-semibold text-gray-700">Mobile</th>
-                            <th className="py-2 pr-4 font-semibold text-gray-700">Email</th>
-                            <th className="py-2 pr-4 font-semibold text-gray-700">Status</th>
-                            <th className="py-2 text-right font-semibold text-gray-700">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {riders.map((r) => (
-                            <tr key={r.id} className="border-b border-gray-100">
-                              <td className="py-2 pr-4 font-mono text-gray-600">{r.id}</td>
-                              <td className="py-2 pr-4 font-medium">{r.rider_name}</td>
-                              <td className="py-2 pr-4">{r.rider_mobile}</td>
-                              <td className="py-2 pr-4 text-gray-600">{r.rider_email || '—'}</td>
-                              <td className="py-2 pr-4">
-                                {r.has_active_orders ? <span className="text-amber-600 font-medium">Active order</span> : <span className="text-gray-500">—</span>}
-                              </td>
-                              <td className="py-2 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => { setRiderEditId(r.id); setRiderForm({ rider_name: r.rider_name, rider_mobile: r.rider_mobile, rider_email: r.rider_email || '', vehicle_number: r.vehicle_number || '' }); }}
-                                  disabled={r.has_active_orders}
-                                  className="mr-2 text-orange-600 hover:text-orange-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRiderDeleteId(r.id)}
-                                  disabled={r.has_active_orders}
-                                  className="text-red-600 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
-                                >
-                                  Delete
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                  {riderDeleteId !== null && (
-                    <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center justify-between gap-4">
-                      <span className="text-sm text-gray-800">Delete this rider?</span>
+                  <div className="mt-8 border-t border-gray-200 pt-6">
+                    <h4 className="text-base font-bold text-gray-900 mb-2">Self-Delivery Riders</h4>
+                    <p className="text-sm text-gray-600 mb-4">Add and manage riders for self delivery. Edit and delete are disabled when a rider has an active order.</p>
+                    <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3">
+                      <p className="text-sm font-semibold text-gray-800">{riderEditId !== null ? 'Edit rider' : 'Add new rider'}</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <input
+                          type="text"
+                          placeholder="Rider name *"
+                          value={riderForm.rider_name}
+                          onChange={(e) => setRiderForm((f) => ({ ...f, rider_name: e.target.value }))}
+                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Mobile *"
+                          value={riderForm.rider_mobile}
+                          onChange={(e) => setRiderForm((f) => ({ ...f, rider_mobile: e.target.value }))}
+                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Email (optional)"
+                          value={riderForm.rider_email}
+                          onChange={(e) => setRiderForm((f) => ({ ...f, rider_email: e.target.value }))}
+                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Vehicle number (optional)"
+                          value={riderForm.vehicle_number}
+                          onChange={(e) => setRiderForm((f) => ({ ...f, vehicle_number: e.target.value }))}
+                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                      </div>
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={() => deleteRider(riderDeleteId)}
-                          disabled={riderDeleting}
-                          className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+                          onClick={() => saveRider(riderEditId)}
+                          disabled={riderSaving}
+                          className="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 disabled:opacity-50"
                         >
-                          {riderDeleting ? 'Deleting...' : 'Yes, delete'}
+                          {riderSaving ? 'Saving...' : riderEditId !== null ? 'Update rider' : 'Add rider'}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setRiderDeleteId(null)}
-                          disabled={riderDeleting}
-                          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-medium"
-                        >
-                          Cancel
-                        </button>
+                        {riderEditId !== null && (
+                          <button
+                            type="button"
+                            onClick={() => { setRiderEditId(null); setRiderForm({ rider_name: '', rider_mobile: '', rider_email: '', vehicle_number: '' }); }}
+                            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                        )}
                       </div>
                     </div>
-                  )}
+                    {ridersLoading ? (
+                      <p className="text-sm text-gray-500">Loading riders…</p>
+                    ) : riders.length === 0 ? (
+                      <p className="text-sm text-gray-500">No riders added yet. Add one above.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 text-left">
+                              <th className="py-2 pr-4 font-semibold text-gray-700">ID</th>
+                              <th className="py-2 pr-4 font-semibold text-gray-700">Name</th>
+                              <th className="py-2 pr-4 font-semibold text-gray-700">Mobile</th>
+                              <th className="py-2 pr-4 font-semibold text-gray-700">Email</th>
+                              <th className="py-2 pr-4 font-semibold text-gray-700">Status</th>
+                              <th className="py-2 text-right font-semibold text-gray-700">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {riders.map((r) => (
+                              <tr key={r.id} className="border-b border-gray-100">
+                                <td className="py-2 pr-4 font-mono text-gray-600">{r.id}</td>
+                                <td className="py-2 pr-4 font-medium">{r.rider_name}</td>
+                                <td className="py-2 pr-4">{r.rider_mobile}</td>
+                                <td className="py-2 pr-4 text-gray-600">{r.rider_email || '—'}</td>
+                                <td className="py-2 pr-4">
+                                  {r.has_active_orders ? <span className="text-amber-600 font-medium">Active order</span> : <span className="text-gray-500">—</span>}
+                                </td>
+                                <td className="py-2 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => { setRiderEditId(r.id); setRiderForm({ rider_name: r.rider_name, rider_mobile: r.rider_mobile, rider_email: r.rider_email || '', vehicle_number: r.vehicle_number || '' }); }}
+                                    disabled={r.has_active_orders}
+                                    className="mr-2 text-orange-600 hover:text-orange-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRiderDeleteId(r.id)}
+                                    disabled={r.has_active_orders}
+                                    className="text-red-600 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {riderDeleteId !== null && (
+                      <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center justify-between gap-4">
+                        <span className="text-sm text-gray-800">Delete this rider?</span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => deleteRider(riderDeleteId)}
+                            disabled={riderDeleting}
+                            className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+                          >
+                            {riderDeleting ? 'Deleting...' : 'Yes, delete'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRiderDeleteId(null)}
+                            disabled={riderDeleting}
+                            className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-medium"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}

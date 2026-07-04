@@ -72,12 +72,9 @@ export function mapOpenMeteoForecast(
   const windSpeedKmh = msToKmh(num(current.wind_speed_10m));
   const windGustKmh = msToKmh(num(current.wind_gusts_10m));
   const isThunderstorm = weatherCode >= 95;
-  const rainDetected =
-    rainMm > 0 ||
-    precipitationMm >= thresholds.lightRainThresholdMm ||
-    (weatherCode >= 51 && weatherCode <= 67) ||
-    (weatherCode >= 80 && weatherCode <= 82) ||
-    isThunderstorm;
+  const hasMeasurableRain =
+    rainMm > 0 || precipitationMm >= thresholds.lightRainThresholdMm;
+  const rainDetected = hasMeasurableRain || isThunderstorm;
 
   const rainIntensityMm = Math.max(rainMm, precipitationMm, snowfallCm > 0 ? 0.5 : 0);
 
@@ -85,6 +82,7 @@ export function mapOpenMeteoForecast(
     rainIntensityMm,
     windSpeedKmh,
     isThunderstorm,
+    rainDetected,
     thresholds,
   });
 

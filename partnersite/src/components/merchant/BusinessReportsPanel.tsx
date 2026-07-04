@@ -61,21 +61,23 @@ type Props = {
   storeId: string | null;
   periodPreset?: string;
   subview: "table" | "chart";
+  /** When false, skip network fetch (e.g. reports tab not visible). */
+  enabled?: boolean;
 };
 
-export function BusinessReportsPanel({ storeId, periodPreset = "this_week", subview }: Props) {
+export function BusinessReportsPanel({
+  storeId,
+  periodPreset = "this_week",
+  subview,
+  enabled = true,
+}: Props) {
   const period = mapInsightsDatePreset(periodPreset);
 
-  const [data, setData] = React.useState<GrowthBusinessInsights | null>(() =>
-    storeId ? readBusinessInsightsCache(storeId, period) : null
-  );
+  const [data, setData] = React.useState<GrowthBusinessInsights | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!storeId) {
-      setData(null);
-      return;
-    }
+    if (!storeId || !enabled) return;
     const cached = readBusinessInsightsCache(storeId, period);
     if (cached) setData(cached);
 
@@ -83,7 +85,7 @@ export function BusinessReportsPanel({ storeId, periodPreset = "this_week", subv
     setError(null);
     void fetch(
       `/api/merchant/growth/business-insights?storeId=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`,
-      { cache: "no-store" }
+      { credentials: "include" },
     )
       .then(async (res) => {
         if (!res.ok) {
@@ -106,7 +108,7 @@ export function BusinessReportsPanel({ storeId, periodPreset = "this_week", subv
     return () => {
       cancelled = true;
     };
-  }, [storeId, period]);
+  }, [storeId, period, enabled]);
 
   if (!storeId) return null;
 

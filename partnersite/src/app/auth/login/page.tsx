@@ -1,15 +1,15 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, Suspense, useRef, useCallback } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { signInWithGoogle, requestPhoneOTP, verifyPhoneOTP } from '@/lib/auth/supabase-client';
 import { clearSupabaseClientSession } from '@/lib/auth/clear-auth-storage';
 import { getOrCreateDeviceId } from '@/lib/auth/device-id-client';
 import { ENABLE_PHONE_OTP_LOGIN } from '@/lib/auth/phone-otp-config';
-import { LoginCard } from './components/LoginCard';
+import { LoginPageShell } from './components/LoginPageShell';
+import { LoginFormHeader } from './components/LoginFormHeader';
 import { LoginToggle, type LoginTab } from './components/LoginToggle';
 import { GoogleLoginButton } from './components/GoogleLoginButton';
 import { PhoneLoginForm } from './components/PhoneLoginForm';
@@ -211,6 +211,7 @@ function LoginPageContent() {
     if (!p) return;
     setError('');
     setOtp('');
+    lastVerifiedOtpRef.current = '';
     setLoading(true);
     try {
       const checkRes = await fetch(`/api/auth/check-existing?phone=${encodeURIComponent(p)}`);
@@ -233,173 +234,132 @@ function LoginPageContent() {
     }
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    const p = normalizePhone(phone);
-    const digits = otp.replace(/\D/g, '').slice(0, 6);
-    if (!p || digits.length < 6) {
-      setError('Enter the 6-digit OTP you received.');
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await verifyPhoneOTP(p, digits);
-      if (!result.success) {
-        setError(result.error || 'Invalid or expired OTP.');
-        return;
+  const verifyInFlightRef = useRef(false);
+  const lastVerifiedOtpRef = useRef('');
+
+  const runVerifyOtp = useCallback(
+    async (otpValue: string) => {
+      const p = normalizePhone(phone);
+      const digits = otpValue.replace(/\D/g, '').slice(0, 6);
+      if (!p || digits.length < 6) return;
+      if (verifyInFlightRef.current) return;
+      if (lastVerifiedOtpRef.current === digits) return;
+
+      lastVerifiedOtpRef.current = digits;
+      verifyInFlightRef.current = true;
+      setError('');
+      setLoading(true);
+      try {
+        const result = await verifyPhoneOTP(p, digits);
+        if (!result.success) {
+          lastVerifiedOtpRef.current = '';
+          setError(result.error || 'Invalid or expired OTP.');
+          return;
+        }
+        if (!result.data?.session?.access_token || !result.data?.session?.refresh_token) {
+          lastVerifiedOtpRef.current = '';
+          setError('Session could not be created. Try again.');
+          return;
+        }
+        await setSessionAndRedirect(
+          result.data.session.access_token,
+          result.data.session.refresh_token
+        );
+      } catch (err) {
+        lastVerifiedOtpRef.current = '';
+        setError(err instanceof Error ? err.message : 'Verification failed.');
+      } finally {
+        setLoading(false);
+        verifyInFlightRef.current = false;
       }
-      if (!result.data?.session?.access_token || !result.data?.session?.refresh_token) {
-        setError('Session could not be created. Try again.');
-        return;
-      }
-      await setSessionAndRedirect(
-        result.data.session.access_token,
-        result.data.session.refresh_token
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Verification failed.');
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [phone]
+  );
+
+  const handleOtpComplete = useCallback(
+    (completedOtp: string) => {
+      void runVerifyOtp(completedOtp);
+    },
+    [runVerifyOtp]
+  );
 
   const handleChangeNumber = () => {
     setOtpSent(false);
     setOtp('');
     setError('');
     setResendCooldown(0);
+    lastVerifiedOtpRef.current = '';
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 sm:p-6 relative overflow-hidden">
-      <div
-        className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-orange-50/40"
-        aria-hidden
-      />
-      <div
-        className="absolute inset-0 opacity-[0.02]"
-        style={{
-          backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%230f172a' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
-        }}
-        aria-hidden
-      />
-      <div
-        className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-gradient-to-b from-orange-100/30 to-transparent rounded-full blur-3xl pointer-events-none"
-        aria-hidden
-      />
+    <LoginPageShell>
+      <LoginFormHeader />
 
-      <div className="relative w-full flex justify-center">
-        <LoginCard>
-          <div className="pt-8 pb-2 px-6 sm:px-8 text-center">
-            <div className="flex justify-center mb-5">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white border border-slate-200/80 shadow-sm overflow-hidden">
-                <Image
-                  src="/onlylogo.png"
-                  alt="GatiMitra"
-                  width={64}
-                  height={64}
-                  className="h-12 w-12 object-contain"
-                />
-              </div>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-              Merchant Login
-            </h1>
-            <p className="text-slate-500 text-sm mt-1">
-              Sign in with Google or use phone OTP
-            </p>
+      <div className="mt-8 max-w-sm mx-auto">
+        {registered === '1' && (
+          <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-emerald-800 text-sm font-medium">
+            Registration successful. Sign in below.
           </div>
+        )}
 
-          <div className="px-6 sm:px-8 pb-8 pt-4">
-            {registered === '1' && (
-              <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-emerald-800 text-sm font-medium">
-                Registration successful. Sign in below.
-              </div>
-            )}
+        {error && (
+          <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200/80 text-red-800 text-sm">
+            {error}
+          </div>
+        )}
 
-            {error && (
-              <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200/80 text-red-800 text-sm">
-                {error}
-              </div>
-            )}
+        <LoginToggle value={tab} onChange={setTab} disabled={loading || googleLoading} />
 
-            <LoginToggle
-              value={tab}
-              onChange={setTab}
-              disabled={loading || googleLoading}
+        <div className="mt-6">
+          {tab === 'google' && (
+            <GoogleLoginButton
+              onClick={handleGoogleLogin}
+              disabled={loading}
+              loading={googleLoading}
+              primary
             />
+          )}
+          {tab === 'phone' && (
+            <PhoneLoginForm
+              phone={phone}
+              onPhoneChange={setPhone}
+              otp={otp}
+              onOtpChange={setOtp}
+              otpSent={otpSent}
+              loading={loading}
+              resendCooldown={resendCooldown}
+              onSendOtp={handleSendOtp}
+              onOtpComplete={handleOtpComplete}
+              onResendOtp={handleResendOtp}
+              onChangeNumber={handleChangeNumber}
+              phoneOtpEnabled={ENABLE_PHONE_OTP_LOGIN}
+            />
+          )}
+        </div>
 
-            {/* Content area: no min-height so card height adjusts automatically with toggle/content */}
-            <div className="mt-6">
-              {tab === 'google' && (
-                <GoogleLoginButton
-                  onClick={handleGoogleLogin}
-                  disabled={loading}
-                  loading={googleLoading}
-                  primary
-                />
-              )}
-              {tab === 'phone' && (
-                <PhoneLoginForm
-                  phone={phone}
-                  onPhoneChange={setPhone}
-                  otp={otp}
-                  onOtpChange={setOtp}
-                  otpSent={otpSent}
-                  loading={loading}
-                  resendCooldown={resendCooldown}
-                  onSendOtp={handleSendOtp}
-                  onVerifyOtp={handleVerifyOtp}
-                  onResendOtp={handleResendOtp}
-                  onChangeNumber={handleChangeNumber}
-                  phoneOtpEnabled={ENABLE_PHONE_OTP_LOGIN}
-                />
-              )}
-            </div>
-
-            <p className="mt-6 text-center text-sm text-slate-600">
-              Not registered?{' '}
-              <Link
-                href="/auth/register"
-                className="font-medium text-orange-600 hover:text-orange-700 hover:underline"
-              >
-                Register first
-              </Link>
-            </p>
-            <p className="mt-2 text-center text-sm text-slate-500">
-              <Link href="/auth" className="text-slate-500 hover:text-slate-700 hover:underline">
-                Back to home
-              </Link>
-            </p>
-          </div>
-        </LoginCard>
+        <p className="mt-8 text-center text-sm text-slate-600 lg:hidden">
+          Don&apos;t have an account?{' '}
+          <Link
+            href="/auth/register"
+            className="font-semibold text-orange-600 hover:text-orange-700 hover:underline"
+          >
+            Sign Up
+          </Link>
+        </p>
       </div>
-    </div>
+    </LoginPageShell>
   );
 }
 
 function LoginPageFallback() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-orange-50/20 to-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-8">
-        <div className="text-center mb-6">
-          <div className="inline-flex p-3 mb-4">
-            <Image
-              src="/onlylogo.png"
-              alt="GatiMitra"
-              width={48}
-              height={48}
-              className="h-12 w-auto object-contain"
-            />
-          </div>
-          <h1 className="text-2xl font-bold text-slate-900">Merchant Login</h1>
-        </div>
-        <div className="flex justify-center py-8">
-          <Loader2 className="h-8 w-8 animate-spin text-orange-500" />
-        </div>
+    <LoginPageShell>
+      <LoginFormHeader />
+      <div className="text-center py-12 max-w-sm mx-auto">
+        <Loader2 className="h-8 w-8 animate-spin text-orange-500 mx-auto" />
+        <p className="mt-4 text-sm text-slate-500">Loading login…</p>
       </div>
-    </div>
+    </LoginPageShell>
   );
 }
 

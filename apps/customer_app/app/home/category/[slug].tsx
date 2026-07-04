@@ -23,7 +23,7 @@ import {
   type ImageStyle,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -32,7 +32,12 @@ import { type UserAppCategoryItem } from "@/services/userAppCategory.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
-import { BrandingFooter } from "@/components/BrandingFooter";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
+import {
+  markFoodHomeListScrollActive,
+  markFoodHomeListScrollEnded,
+} from "@/lib/foodHomeScrollGuard";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
@@ -71,7 +76,7 @@ const BG = "#F8F8F8";
 const SHADOW = { shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3 };
 
 type BrowseCategoryChip =
-  | { kind: "all"; id: "all"; name: string }
+  | { kind: "all"; id: "all"; name: string; remoteUri?: string | null }
   | { kind: "item"; id: string; name: string; remoteUri: string | null }
   | { kind: "seeAll"; id: "see-all"; name: string };
 
@@ -248,6 +253,13 @@ const SHEET_IMG_SIZE = Math.round(SHEET_TILE - 6);
 export default function CategoryBrowseScreen() {
   const { slug: slugParam } = useLocalSearchParams<{ slug?: string | string[] }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const openMerchantPage = useCallback(
+    (id: string, merchant?: MerchantSummary) => {
+      navigateToMerchant(router, queryClient, id, merchant);
+    },
+    [queryClient, router]
+  );
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const activeCategory = useMemo(() => normalizeCategorySlugParam(slugParam), [slugParam]);
@@ -314,7 +326,7 @@ export default function CategoryBrowseScreen() {
     void hydrateDietaryPreferences();
   }, [hydrateDietaryPreferences]);
 
-  const { data: apiSheetCategories = [], isSuccess: sheetCategoriesReady, isFetching: sheetCategoriesFetching } =
+  const { data: sheetCategoriesResponse, isSuccess: sheetCategoriesReady, isFetching: sheetCategoriesFetching } =
     useQuery({
       queryKey: userAppCategoriesQueryKey(SHEET_STORE_TYPE),
       queryFn: () => fetchUserAppCategoriesWithCache(SHEET_STORE_TYPE),
@@ -324,11 +336,14 @@ export default function CategoryBrowseScreen() {
       placeholderData: (previousData) => previousData,
     });
 
+  const apiSheetCategories = sheetCategoriesResponse?.items ?? [];
+  const sheetCategoryAllTab = sheetCategoriesResponse?.allTab ?? { label: "All", imageUrl: null };
+
   useEffect(() => {
-    if (apiSheetCategories.length > 0) {
-      prefetchUserAppCategoryImages(apiSheetCategories);
+    if (apiSheetCategories.length > 0 || sheetCategoryAllTab.imageUrl) {
+      prefetchUserAppCategoryImages(apiSheetCategories, sheetCategoryAllTab.imageUrl);
     }
-  }, [apiSheetCategories]);
+  }, [apiSheetCategories, sheetCategoryAllTab.imageUrl]);
 
   const cuisinesSheetRows = useMemo(() => {
     if (!sheetCategoriesReady) return [];
@@ -343,7 +358,12 @@ export default function CategoryBrowseScreen() {
 
   /** Top rail: All always first; selected category (if any) second; then the rest. */
   const browseCategoryChips = useMemo((): BrowseCategoryChip[] => {
-    const allChip: BrowseCategoryChip = { kind: "all", id: "all", name: "All" };
+    const allChip: BrowseCategoryChip = {
+      kind: "all",
+      id: "all",
+      name: sheetCategoryAllTab.label?.trim() || "All",
+      remoteUri: sheetCategoryAllTab.imageUrl,
+    };
     if (!sheetCategoriesReady) return [allChip];
     const deduped = dedupeUserAppCategories(apiSheetCategories ?? []);
     const more = deduped.length > RAIL_MAX_CATEGORY_ITEMS;
@@ -377,7 +397,7 @@ export default function CategoryBrowseScreen() {
 
     const ordered: BrowseCategoryChip[] = [allChip, selectedChip, ...othersChips];
     return seeAll ? [...ordered, seeAll] : ordered;
-  }, [sheetCategoriesReady, apiSheetCategories, activeCategory]);
+  }, [sheetCategoriesReady, apiSheetCategories, activeCategory, sheetCategoryAllTab.label, sheetCategoryAllTab.imageUrl]);
 
   const merchants = Array.isArray(data) ? data : [];
   const searchQ = searchQuery.trim().toLowerCase();
@@ -602,6 +622,9 @@ export default function CategoryBrowseScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        onScrollBeginDrag={markFoodHomeListScrollActive}
+        onScrollEndDrag={markFoodHomeListScrollEnded}
+        onMomentumScrollEnd={markFoodHomeListScrollEnded}
       >
         {/* Category chips – horizontal */}
         <ScrollView
@@ -657,11 +680,19 @@ export default function CategoryBrowseScreen() {
                     backgroundColor: allActive ? "rgba(20, 184, 166, 0.06)" : "transparent",
                   }}
                 >
-                  <Ionicons
-                    name="storefront"
-                    size={Math.round(26 * (imgSide / 56))}
-                    color={allActive ? TEAL : TITLE_DARK}
-                  />
+                  {c.remoteUri?.trim() ? (
+                    <UserAppCategoryImage
+                      imageUrl={c.remoteUri}
+                      cacheKey="browse-category-all"
+                      style={{ width: imgSide, height: imgSide }}
+                    />
+                  ) : (
+                    <Ionicons
+                      name="storefront"
+                      size={Math.round(26 * (imgSide / 56))}
+                      color={allActive ? TEAL : TITLE_DARK}
+                    />
+                  )}
                 </View>
               ) : c.kind === "seeAll" ? (
                 <View
@@ -768,6 +799,9 @@ export default function CategoryBrowseScreen() {
               key={p.id}
               style={[styles.pill, p.tag && styles.pillNew]}
               activeOpacity={0.8}
+              onPress={() => {
+                if (p.id === "meals") navigateToMealsUnderPrice(router, queryClient);
+              }}
             >
               {p.tag ? (
                 <View style={styles.pillNewTag}><Text style={styles.pillNewTagText}>{p.tag}</Text></View>
@@ -820,7 +854,7 @@ export default function CategoryBrowseScreen() {
                     deliveryTime={m.deliveryTime}
                     offerBadge="FLAT 50% OFF"
                     imageUrl={merchantCardImageUri(m)}
-                    onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })}
+                    onPress={() => openMerchantPage(m.id, m)}
                   />
                 ))}
               </View>
@@ -841,7 +875,7 @@ export default function CategoryBrowseScreen() {
                   <TouchableOpacity
                     key={m.id}
                     style={styles.featuredCard}
-                    onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })}
+                    onPress={() => openMerchantPage(m.id, m)}
                     activeOpacity={0.9}
                   >
                     <View style={styles.featuredImageWrap}>

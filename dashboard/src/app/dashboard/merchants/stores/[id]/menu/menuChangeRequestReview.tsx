@@ -127,7 +127,7 @@ export function menuItemChangeFieldLabel(key: string): string {
   return labels[key] ?? key.replace(/_/g, " ");
 }
 
-function sortMenuItemChangeKeys(keys: string[]): string[] {
+export function sortMenuItemChangeKeys(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
     const ia = MENU_ITEM_CHANGE_FIELD_ORDER.indexOf(a);
     const ib = MENU_ITEM_CHANGE_FIELD_ORDER.indexOf(b);
@@ -164,15 +164,23 @@ export function ChangeRequestValueBox({
 }) {
   const tone =
     variant === "current"
-      ? "border-slate-200 bg-slate-50/90"
+      ? "border-red-200 bg-red-50 text-red-800"
       : variant === "requested"
-        ? "border-emerald-200/80 bg-emerald-50/50"
-        : "border-gray-200 bg-white";
+        ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+        : "border-gray-200 bg-white text-gray-900";
   const imgUrl = imageUrlFromChangeValue(fieldKey, value);
   if (imgUrl) {
     return (
       <div className={`rounded-lg border ${tone} p-3`}>
-        <div className="relative h-40 w-full max-w-[220px] overflow-hidden rounded-lg border border-gray-200 bg-gray-100">
+        <div
+          className={`relative h-40 w-full max-w-[220px] overflow-hidden rounded-lg border bg-gray-100 ${
+            variant === "current"
+              ? "border-red-200"
+              : variant === "requested"
+                ? "border-emerald-300"
+                : "border-gray-200"
+          }`}
+        >
           <R2Image
             src={imgUrl}
             alt=""
@@ -180,14 +188,14 @@ export function ChangeRequestValueBox({
             fallbackSrc={ITEM_PLACEHOLDER_SVG}
           />
         </div>
-        <p className="mt-2 text-[10px] leading-snug text-gray-500 break-all">{imgUrl}</p>
+        <p className="mt-2 text-[10px] leading-snug opacity-80 break-all">{imgUrl}</p>
       </div>
     );
   }
   if (value !== null && typeof value === "object") {
     return (
       <pre
-        className={`max-h-56 overflow-y-auto rounded-lg border ${tone} p-3 text-[11px] font-mono whitespace-pre-wrap break-words text-gray-800`}
+        className={`max-h-48 overflow-y-auto rounded-lg border ${tone} p-3 text-[11px] font-mono whitespace-pre-wrap break-words`}
       >
         {JSON.stringify(value, null, 2)}
       </pre>
@@ -195,7 +203,7 @@ export function ChangeRequestValueBox({
   }
   return (
     <div
-      className={`min-h-[2.5rem] rounded-lg border ${tone} px-3 py-2 text-sm text-gray-900`}
+      className={`min-h-[2.5rem] rounded-lg border ${tone} px-3 py-2 text-sm font-medium break-words`}
     >
       {formatChangeRequestValue(value)}
     </div>
@@ -293,15 +301,15 @@ export function ChangeRequestFullPayloadPanels({
           >
             <div className="mb-3 text-sm font-bold text-gray-900">{menuItemChangeFieldLabel(key)}</div>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                  Current
+              <div className="min-w-0">
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-red-600">
+                  Old value
                 </div>
                 <ChangeRequestValueBox fieldKey={key} value={currentObj?.[key]} variant="current" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
-                  Requested
+                  New value
                 </div>
                 <ChangeRequestValueBox fieldKey={key} value={requestedObj?.[key]} variant="requested" />
               </div>

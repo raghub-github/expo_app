@@ -2,7 +2,8 @@
  * Pending GatiCash credit from missed-offer unlock — user can remove before placing order.
  */
 
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Pressable, StyleSheet } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -33,22 +34,22 @@ export function CheckoutPendingWalletCreditCard({
         </View>
 
         <View style={styles.body}>
-          <Text style={styles.title}>
+          <CheckoutText style={styles.title}>
             {offerTitle} unlocked · save ₹{formatInr(offerSavingsInr)} today
-          </Text>
-          <Text style={styles.sub}>
+          </CheckoutText>
+          <CheckoutText style={styles.sub}>
             ₹{formatInr(amountInr)} will be added to your GatiCash wallet after order
-          </Text>
+          </CheckoutText>
         </View>
 
         <Pressable style={styles.removeBtn} onPress={onRemove} hitSlop={6}>
-          <Text style={styles.removeBtnText}>REMOVE</Text>
+          <CheckoutText style={styles.removeBtnText}>REMOVE</CheckoutText>
         </Pressable>
       </View>
 
       <View style={styles.keepRow}>
         <Ionicons name="checkmark-circle" size={16} color={BRAND} />
-        <Text style={styles.keepText}>Offer discount applied on this bill · wallet credit after order</Text>
+        <CheckoutText style={styles.keepText}>Offer discount applied on this bill · wallet credit after order</CheckoutText>
       </View>
     </View>
   );

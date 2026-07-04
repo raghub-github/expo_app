@@ -28,7 +28,7 @@ export function useWalletBalance() {
     staleTime: 60_000,
     gcTime: 24 * 60 * 60_000,
     retry: 1,
-    placeholderData: () => readSyncWalletBalance(),
-    initialData: () => readSyncWalletBalance(),
+    placeholderData: () => readSyncWalletBalance() ?? walletBalanceFallback(),
+    initialData: () => readSyncWalletBalance() ?? walletBalanceFallback(),
   });
 }

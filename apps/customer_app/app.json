@@ -10,15 +10,15 @@
     "splash": {
       "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#FFFFFF"
+      "backgroundColor": "#14b8a6"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "androidStatusBar": {
-      "translucent": false,
-      "backgroundColor": "#FFFFFF",
-      "barStyle": "dark-content"
+      "translucent": true,
+      "backgroundColor": "#5eead4",
+      "barStyle": "light-content"
     },
     "ios": {
       "supportsTablet": true,

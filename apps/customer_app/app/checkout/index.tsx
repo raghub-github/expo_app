@@ -8,7 +8,6 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   View,
-  Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -32,7 +31,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { resolveTabBarBottomInset } from "@/constants/layout";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -56,7 +54,7 @@ import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderPa
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { HEADER_PADDING_TOP } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
 import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
@@ -69,11 +67,14 @@ import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
 import { checkoutRouterBack } from "@/lib/safeRouterBack";
+import { useCheckoutPresentation } from "@/lib/checkoutPresentation";
+import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebration";
 import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import { BillSummarySheet } from "@/components/checkout/BillSummarySheet";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
 import { CheckoutMissedOfferWalletCard } from "@/components/checkout/CheckoutMissedOfferWalletCard";
 import { MissedOfferUnlockSheet } from "@/components/checkout/MissedOfferUnlockSheet";
@@ -121,6 +122,10 @@ import {
   formatPlanPriceLine,
 } from "@/services/subscription.service";
 import { hydrateSubscriptionPlansCache, prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
+import {
+  buildCheckoutShareMessage,
+  buildMerchantShareUrl,
+} from "@/lib/merchantShare";
 
 /** Wait before POST /billing/calculate after tip/donation slider moves. */
 const BILLING_INPUT_DEBOUNCE_MS = 400;
@@ -421,7 +426,7 @@ function RestaurantNoteMarquee({ note }: { note: string }) {
       }}
     >
       <RNAnimated.View style={{ flexDirection: "row", transform: [{ translateX }] }}>
-        <Text
+        <CheckoutText
           style={restaurantNoteMarqueeStyles.text}
           onLayout={(e) => {
             textW.current = e.nativeEvent.layout.width;
@@ -429,7 +434,7 @@ function RestaurantNoteMarquee({ note }: { note: string }) {
           numberOfLines={1}
         >
           {note}
-        </Text>
+        </CheckoutText>
       </RNAnimated.View>
     </View>
   );
@@ -463,6 +468,8 @@ const DELIVERY_TOGGLE_BORDER = "rgba(45, 181, 160, 0.38)";
  * Toggle segments use `overflow: hidden` so active fill stays inside rounded corners.
  */
 const CHECKOUT_FOOTER_H_PAD = 24;
+/** Horizontal inset for header, scroll sections, and footer — keeps content off screen edges. */
+const CHECKOUT_PAGE_H_MARGIN = 12;
 const CHECKOUT_FOOTER_TOGGLE_WIDTH = 132;
 const CHECKOUT_FOOTER_GAP = 20;
 /** Extra inset so the CTA does not hug the toggle on the left. */
@@ -478,8 +485,14 @@ const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
 
 export default function CheckoutScreen() {
   const router = useRouter();
+  const { variant: checkoutVariant, onSheetClose } = useCheckoutPresentation();
+  const isCheckoutSheet = checkoutVariant === "sheet";
   const insets = useAppSafeAreaInsets();
   const rawInsets = useSafeAreaInsets();
+  const checkoutHeaderTopPadding = useMemo(() => {
+    const statusBarTopInset = rawInsets.top > 0 ? rawInsets.top : DEFAULT_STATUS_BAR_HEIGHT;
+    return statusBarTopInset + (isCheckoutSheet ? 12 : STATUS_BAR_TO_HEADER_GAP);
+  }, [isCheckoutSheet, rawInsets.top]);
   const footerBottomInset = Math.max(resolveTabBarBottomInset(rawInsets.bottom), 8);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const queryClient = useQueryClient();
@@ -497,8 +510,12 @@ export default function CheckoutScreen() {
 
   const { items, merchantId, merchantName, updateQuantity, clearCart, syncPricesFromMap } = useCartStore();
   const handleCheckoutBack = useCallback(() => {
+    if (isCheckoutSheet && onSheetClose) {
+      onSheetClose();
+      return;
+    }
     checkoutRouterBack(router, merchantId);
-  }, [router, merchantId]);
+  }, [isCheckoutSheet, onSheetClose, router, merchantId]);
   useEnsureStoreLiveStatus(merchantId ?? null);
   const setActiveOrder = useOrderStore((s) => s.setActiveOrder);
   const storeStatus = useStoreStatusStore((s) =>
@@ -659,9 +676,10 @@ export default function CheckoutScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (isCheckoutSheet) return;
       setStatusBarBackground(CHECKOUT_HEADER_BG);
       return () => resetStatusBarBackground();
-    }, [setStatusBarBackground, resetStatusBarBackground])
+    }, [isCheckoutSheet, setStatusBarBackground, resetStatusBarBackground])
   );
 
   useEffect(() => {
@@ -1936,6 +1954,7 @@ export default function CheckoutScreen() {
     cartSubtotal: cartSubtotalForOffers,
     hasAppliedOffer: hasAppliedCheckoutOffer,
     blocked:
+      checkoutVariant === "sheet" ||
       couponSheetVisible ||
       couponCelebrationVisible ||
       missedOfferCelebration != null ||
@@ -2492,6 +2511,9 @@ export default function CheckoutScreen() {
         storeName: merchantName ?? null,
         placedAt: Date.now(),
       });
+      if (isCheckoutSheet) {
+        useCheckoutSheetStore.getState().hide();
+      }
       // CRITICAL: navigate FIRST and defer clearCart into a separate
       // macrotask. React batches every state update inside this callback into
       // ONE render. If clearCart fires in the same batch, the checkout's
@@ -2723,34 +2745,24 @@ export default function CheckoutScreen() {
     }
   }, [simulatedSubmitting, simulatedPaymentOrder, finalizeOrder.isPending]);
 
-  const handleShareLocation = useCallback(async () => {
+  const handleShareCheckout = useCallback(async () => {
+    if (!merchantId) return;
+    const storeName = merchant?.name ?? merchantName ?? "Restaurant";
+    const url = buildMerchantShareUrl(merchantId);
+    const itemNames = items.map((line) => line.name).filter(Boolean);
+    const message = buildCheckoutShareMessage(storeName, url, itemNames);
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        return;
-      }
-      const { coords } = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.BestForNavigation,
-      });
-      const { latitude, longitude } = coords;
-      const mapUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
-      const message = `My current location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n${mapUrl}`;
       await Share.share({
         message,
-        title: "My location",
-        url: mapUrl,
+        url,
+        title: storeName,
       });
     } catch {
-      // ignore
+      // User dismissed share sheet.
     }
-  }, []);
+  }, [merchantId, merchant?.name, merchantName, items]);
 
   const itemsWithImage = useMemo(() => {
-    const lineFor = (cartItem: (typeof items)[0], menuItem: import("@/services/merchant.service").MenuItem | undefined) => {
-      const fromCart = cartItemSubline(cartItem);
-      const fromMenu = menuItem?.description?.trim();
-      return fromCart || fromMenu || null;
-    };
     if (!merchant?.menu) {
       return items.map((i) => ({
         ...i,
@@ -2764,7 +2776,7 @@ export default function CheckoutScreen() {
       return {
         ...cartItem,
         imageUrl: menuItem?.imageUrl ?? null,
-        checkoutSubtext: lineFor(cartItem, menuItem),
+        checkoutSubtext: cartItemSubline(cartItem) || null,
       };
     });
   }, [items, merchant?.menu]);
@@ -3016,12 +3028,12 @@ export default function CheckoutScreen() {
    * Floor chip width so the strip never clips early; gap slightly tight for small phones.
    */
   const upsellChipLayout = useMemo(() => {
-    const scrollHPad = 12 * 2;
-    const outerHPad = 14 * 2;
-    const track = Math.max(220, windowWidth - scrollHPad - outerHPad);
-    const gap = 8;
-    const chipW = Math.max(64, Math.floor((track - 3 * gap) / 3.5));
-    const radius = Math.max(8, Math.min(11, Math.round(chipW * 0.09)));
+    const scrollHPad = CHECKOUT_PAGE_H_MARGIN * 2;
+    const sectionHPad = 16 * 2;
+    const track = Math.max(220, windowWidth - scrollHPad - sectionHPad);
+    const gap = 10;
+    const chipW = Math.max(72, Math.floor((track - 3 * gap) / 3.5));
+    const radius = 10;
     return { chipW, gap, radius };
   }, [windowWidth]);
 
@@ -3040,9 +3052,9 @@ export default function CheckoutScreen() {
   if (cartIsEmpty) {
     return (
       <View style={[styles.center, { paddingBottom: insets.bottom }]}>
-        <Text style={styles.emptyText}>Cart is empty</Text>
+        <CheckoutText style={styles.emptyText}>Cart is empty</CheckoutText>
         <TouchableOpacity onPress={handleCheckoutBack} style={styles.ctaSecondary}>
-          <Text style={styles.ctaSecondaryText}>Back to cart</Text>
+          <CheckoutText style={styles.ctaSecondaryText}>Back to cart</CheckoutText>
         </TouchableOpacity>
       </View>
     );
@@ -3051,31 +3063,40 @@ export default function CheckoutScreen() {
   return (
     <View style={styles.container}>
       {/* GatiMitra-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
-      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP + 4 }]}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: checkoutHeaderTopPadding },
+        ]}
+      >
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={handleCheckoutBack} style={styles.headerBack} hitSlop={12}>
-            <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
-          </TouchableOpacity>
+          {isCheckoutSheet ? (
+            <View style={styles.headerBack} />
+          ) : (
+            <TouchableOpacity onPress={handleCheckoutBack} style={styles.headerBack} hitSlop={12}>
+              <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
+            </TouchableOpacity>
+          )}
           <View style={styles.headerCenter}>
-            <Text style={styles.headerStoreName} numberOfLines={1}>
+            <CheckoutText style={styles.headerStoreName} numberOfLines={1}>
               {merchantName ?? storeFullAddress}
-            </Text>
+            </CheckoutText>
             <TouchableOpacity
               style={styles.headerAddressRow}
               onPress={openCheckoutAddressSheet}
               activeOpacity={0.7}
               hitSlop={6}
             >
-              <Text style={styles.headerEtaText} numberOfLines={1}>
-                <Text style={styles.headerEtaStrong}>{deliveryEta}</Text>
-                <Text style={styles.headerEtaSecondary}>
+              <CheckoutText style={styles.headerEtaText} numberOfLines={1}>
+                <CheckoutText style={styles.headerEtaStrong}>{deliveryEta}</CheckoutText>
+                <CheckoutText style={styles.headerEtaSecondary}>
                   {" "}to {selectedAddress?.label?.toLowerCase() ?? "address"}
-                </Text>
-                <Text style={styles.headerAddressSep}>{"  |  "}</Text>
-                <Text style={styles.headerFullAddressInline} numberOfLines={1}>
+                </CheckoutText>
+                <CheckoutText style={styles.headerAddressSep}>{"  |  "}</CheckoutText>
+                <CheckoutText style={styles.headerFullAddressInline} numberOfLines={1}>
                   {selectedAddress?.fullAddress ?? "Tap to choose address"}
-                </Text>
-              </Text>
+                </CheckoutText>
+              </CheckoutText>
               <Ionicons
                 name="chevron-down"
                 size={14}
@@ -3085,10 +3106,10 @@ export default function CheckoutScreen() {
             </TouchableOpacity>
           </View>
           <TouchableOpacity
-            onPress={handleShareLocation}
+            onPress={() => void handleShareCheckout()}
             style={styles.headerShareIconBtn}
             hitSlop={10}
-            accessibilityLabel="Share location"
+            accessibilityLabel="Share restaurant"
           >
             <Ionicons name="share-social-outline" size={20} color="#1A1A1A" />
           </TouchableOpacity>
@@ -3100,22 +3121,22 @@ export default function CheckoutScreen() {
         <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBannerOuter}>
           <View style={styles.distanceBannerNotch} />
           <View style={styles.distanceBannerCompact}>
-            <Text style={styles.distanceBannerCompactText} numberOfLines={2}>
+            <CheckoutText style={styles.distanceBannerCompactText} numberOfLines={2}>
               Selected address is{" "}
               {(isDeliveryOutOfRange ? uiDistanceKm : currentVsSelectedDistanceKm)?.toFixed(
                 (isDeliveryOutOfRange ? uiDistanceKm ?? 0 : currentVsSelectedDistanceKm ?? 0) >= 10 ? 0 : 1
               )}{" "}
               km away from your location
-            </Text>
+            </CheckoutText>
           </View>
         </Animated.View>
       )}
 
       {checkoutSavingsTotal > 0 ? (
         <View style={styles.checkoutSavingsTag}>
-          <Text style={styles.checkoutSavingsTagText}>
+          <CheckoutText style={styles.checkoutSavingsTagText}>
             🥳 You saved ₹{checkoutSavingsTotal.toFixed(0)} on this order
-          </Text>
+          </CheckoutText>
         </View>
       ) : null}
 
@@ -3133,9 +3154,9 @@ export default function CheckoutScreen() {
       >
         {/* Order summary card — diet icon + lines + mint stepper, utility pills */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION)} style={styles.section}>
-          <View style={styles.card}>
+          <View style={styles.checkoutFullBleedSection}>
             <View style={styles.orderItemsPreview}>
-              {itemsWithImage.map((item, index) => {
+              {itemsWithImage.map((item) => {
                 const sub = item.checkoutSubtext;
                 const lineTotal = item.price * item.quantity;
                 const priceLabel =
@@ -3143,22 +3164,18 @@ export default function CheckoutScreen() {
                     ? `₹${Math.round(lineTotal)}`
                     : `₹${lineTotal.toFixed(2)}`;
                 return (
-                  <View
-                    key={item.menuItemId}
-                    style={[
-                      styles.orderItemRow,
-                      index < itemsWithImage.length - 1 && styles.orderItemRowSpacer,
-                    ]}
-                  >
-                    <DietIndicator isVeg={item.isVeg} />
+                  <View key={item.menuItemId} style={styles.orderItemRow}>
+                    <View style={styles.orderItemDietWrap}>
+                      <DietIndicator isVeg={item.isVeg} />
+                    </View>
                     <View style={styles.orderItemMid}>
-                      <Text style={styles.orderItemName} numberOfLines={2}>
+                      <CheckoutText style={styles.orderItemName} numberOfLines={2}>
                         {item.name}
-                      </Text>
+                      </CheckoutText>
                       {sub ? (
-                        <Text style={styles.orderItemSub} numberOfLines={2}>
+                        <CheckoutText style={styles.orderItemCustom} numberOfLines={2}>
                           {sub}
-                        </Text>
+                        </CheckoutText>
                       ) : null}
                       <TouchableOpacity
                         style={styles.orderItemEditRow}
@@ -3167,8 +3184,13 @@ export default function CheckoutScreen() {
                         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                         accessibilityLabel="Edit item"
                       >
-                        <BiPencilSquareIcon size={13} color={CX.mint} />
-                        <Ionicons name="caret-forward" size={12} color={CX.mint} />
+                        <CheckoutText style={styles.orderItemEditText}>Edit</CheckoutText>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={11}
+                          color={CX.mint}
+                          style={styles.orderItemEditChevron}
+                        />
                       </TouchableOpacity>
                     </View>
                     <View style={styles.orderItemRightCol}>
@@ -3179,61 +3201,62 @@ export default function CheckoutScreen() {
                           hitSlop={6}
                           accessibilityLabel="Decrease quantity"
                         >
-                          <Text style={styles.qtyGlyph}>−</Text>
+                          <CheckoutText style={styles.qtyGlyph}>−</CheckoutText>
                         </TouchableOpacity>
-                        <Text style={styles.qtyValueSmall}>{item.quantity}</Text>
+                        <CheckoutText style={styles.qtyValueSmall}>{item.quantity}</CheckoutText>
                         <TouchableOpacity
                           onPress={() => updateQuantity(item.menuItemId, 1)}
                           style={styles.qtyBtnSmall}
                           hitSlop={6}
                           accessibilityLabel="Increase quantity"
                         >
-                          <Text style={styles.qtyGlyph}>+</Text>
+                          <CheckoutText style={styles.qtyGlyph}>+</CheckoutText>
                         </TouchableOpacity>
                       </View>
-                      <Text style={styles.orderItemLinePrice}>{priceLabel}</Text>
+                      <CheckoutText style={styles.orderItemLinePrice}>{priceLabel}</CheckoutText>
                     </View>
                   </View>
                 );
               })}
             </View>
-            <TouchableOpacity
-              onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: merchantId } })}
-              style={styles.addMoreRow}
-              activeOpacity={0.75}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.checkoutActionRowScroll}
+              contentContainerStyle={styles.checkoutActionRowContent}
             >
-              <Text style={styles.addMorePlus}>+</Text>
-              <Text style={styles.addMoreText}>Add more items</Text>
-            </TouchableOpacity>
-            <View style={styles.checkoutUtilityPillRow}>
+              <TouchableOpacity
+                onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: merchantId } })}
+                style={styles.checkoutActionPill}
+                activeOpacity={0.8}
+              >
+                <CheckoutText style={styles.checkoutActionPillPlus}>+</CheckoutText>
+                <CheckoutText style={styles.checkoutActionPillTextMint}>Add more items</CheckoutText>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={[
-                  styles.checkoutUtilityPill,
-                  restaurantNote.trim().length > 0 && styles.checkoutUtilityPillActive,
+                  styles.checkoutActionPill,
+                  restaurantNote.trim().length > 0 && styles.checkoutActionPillActive,
                 ]}
                 onPress={() => setRestaurantNoteModalVisible(true)}
                 activeOpacity={0.8}
               >
-                <View style={styles.checkoutUtilityPillInner}>
-                  <Ionicons name="document-text-outline" size={13} color={CX.textSecondary} />
-                  <Text style={styles.checkoutUtilityPillText} numberOfLines={1} ellipsizeMode="tail">
-                    Add a note for the restaurant
-                  </Text>
-                </View>
+                <Ionicons name="document-text-outline" size={14} color={CX.textSecondary} />
+                <CheckoutText style={styles.checkoutActionPillText} numberOfLines={1}>
+                  Add a note for the restaurant
+                </CheckoutText>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.checkoutUtilityPill, skipCutlery && styles.checkoutUtilityPillActive]}
+                style={[styles.checkoutActionPill, skipCutlery && styles.checkoutActionPillActive]}
                 onPress={() => setSkipCutlery((v) => !v)}
                 activeOpacity={0.8}
               >
-                <View style={styles.checkoutUtilityPillInner}>
-                  <Ionicons name="restaurant-outline" size={13} color={CX.textSecondary} />
-                  <Text style={styles.checkoutUtilityPillText} numberOfLines={1} ellipsizeMode="tail">
-                    {"Don't send cutlery"}
-                  </Text>
-                </View>
+                <Ionicons name="restaurant-outline" size={14} color={CX.textSecondary} />
+                <CheckoutText style={styles.checkoutActionPillText} numberOfLines={1}>
+                  {"Don't send cutlery"}
+                </CheckoutText>
               </TouchableOpacity>
-            </View>
+            </ScrollView>
             {restaurantNote.trim().length > 0 ? (
               <RestaurantNoteMarquee
                 note={`Note for restaurant: ${restaurantNote.trim()}`}
@@ -3245,7 +3268,7 @@ export default function CheckoutScreen() {
         {/* Complete your meal with — above coupons/subscription; ~3.5 cards visible; names wrap */}
         {completeYourMealItems.length > 0 ? (
           <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(40)} style={styles.section}>
-            <View style={styles.upsellOuterCard}>
+            <View style={styles.checkoutFullBleedSection}>
               <View style={styles.upsellSectionHeader}>
                 <View style={styles.upsellSectionIcon}>
                   <Ionicons name="grid-outline" size={14} color="#9CA3AF" />
@@ -3253,45 +3276,50 @@ export default function CheckoutScreen() {
                     <Ionicons name="add" size={8} color="#9CA3AF" />
                   </View>
                 </View>
-                <Text style={styles.upsellSectionTitle}>Complete your meal with</Text>
+                <CheckoutText style={styles.upsellSectionTitle}>Complete your meal with</CheckoutText>
               </View>
               <View style={styles.upsellScrollWrap}>
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
+                  clipToPadding={false}
                   contentContainerStyle={[
                     styles.upsellScrollContent,
-                    { gap: upsellChipLayout.gap, paddingRight: upsellChipLayout.gap },
+                    { gap: upsellChipLayout.gap, paddingRight: 16 },
                   ]}
                   style={styles.upsellScrollInner}
                 >
                   {completeYourMealItems.map((m) => {
                     const { chipW, radius } = upsellChipLayout;
-                    const imgRadius = { borderTopLeftRadius: radius, borderTopRightRadius: radius };
                     return (
                       <Pressable
                         key={m.id}
                         onPress={() => handleUpsellItemPress(m)}
                         style={({ pressed }) => [
                           styles.upsellCard,
-                          {
-                            width: chipW,
-                            borderRadius: radius,
-                          },
+                          { width: chipW },
                           pressed && styles.upsellCardPressed,
                         ]}
                       >
                         <View
                           style={[
                             styles.upsellImageWrap,
-                            { width: chipW, height: chipW },
-                            imgRadius,
+                            { width: chipW, height: chipW, borderRadius: radius },
                           ]}
                         >
                           {m.imageUrl ? (
-                            <Image source={{ uri: m.imageUrl }} style={styles.upsellImage} />
+                            <Image
+                              source={{ uri: m.imageUrl }}
+                              style={[styles.upsellImage, { borderRadius: radius }]}
+                            />
                           ) : (
-                            <View style={[styles.upsellImagePlaceholder, !m.isVeg && styles.nonVegBg, imgRadius]}>
+                            <View
+                              style={[
+                                styles.upsellImagePlaceholder,
+                                !m.isVeg && styles.nonVegBg,
+                                { borderRadius: radius },
+                              ]}
+                            >
                               <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
                             </View>
                           )}
@@ -3306,8 +3334,9 @@ export default function CheckoutScreen() {
                             <Ionicons name="add" size={18} color={CX.mint} />
                           </View>
                         </View>
-                        <Text style={[styles.upsellName, { width: chipW - 16 }]}>{m.name}</Text>
-                        <Text style={styles.upsellPrice}>₹{m.price}</Text>
+                        <CheckoutText style={[styles.upsellName, { width: chipW }]} numberOfLines={2}>
+                          {m.name}
+                        </CheckoutText>
                       </Pressable>
                     );
                   })}
@@ -3326,13 +3355,13 @@ export default function CheckoutScreen() {
               end={{ x: 0.5, y: 1 }}
               style={styles.offersCardBanner}
             >
-              <Text style={styles.offersCardBannerTitle}>
+              <CheckoutText style={styles.offersCardBannerTitle}>
                 Save extra by applying coupons on every order
-              </Text>
+              </CheckoutText>
               <View style={styles.offersCardBannerIconGlow}>
                 <View style={styles.offersCardBannerIconOuter}>
                   <View style={styles.offersCardBannerIconBox}>
-                    <Text style={styles.offersCardBannerPct}>%</Text>
+                    <CheckoutText style={styles.offersCardBannerPct}>%</CheckoutText>
                   </View>
                 </View>
               </View>
@@ -3350,18 +3379,18 @@ export default function CheckoutScreen() {
                     style={styles.offersSubIcon}
                   />
                   <View style={styles.offersBodyTextCol}>
-                    <Text style={styles.offersSubLineBold}>{gmitraPlusPromoCopy.offersTitle}</Text>
-                    <Text style={styles.offersSubLineMuted} numberOfLines={2}>
+                    <CheckoutText style={styles.offersSubLineBold}>{gmitraPlusPromoCopy.offersTitle}</CheckoutText>
+                    <CheckoutText style={styles.offersSubLineMuted} numberOfLines={2}>
                       {gmitraPlusPromoCopy.offersSub}
-                    </Text>
+                    </CheckoutText>
                     <TouchableOpacity
                       activeOpacity={0.7}
                       hitSlop={8}
                       onPress={() => setGmitraPlusSheetVisible(true)}
                     >
-                      <Text style={[styles.offersLearnMore, { color: subscriptionAccentColor }]}>
+                      <CheckoutText style={[styles.offersLearnMore, { color: subscriptionAccentColor }]}>
                         Learn more {'>'}
-                      </Text>
+                      </CheckoutText>
                     </TouchableOpacity>
                   </View>
                   <View style={styles.offersApplyCol}>
@@ -3375,9 +3404,9 @@ export default function CheckoutScreen() {
                           },
                         ]}
                       >
-                        <Text style={[styles.offersFeaturedBadgeText, { color: subscriptionAccentColor }]}>
+                        <CheckoutText style={[styles.offersFeaturedBadgeText, { color: subscriptionAccentColor }]}>
                           Featured plan
-                        </Text>
+                        </CheckoutText>
                       </View>
                     ) : null}
                     <TouchableOpacity
@@ -3392,7 +3421,7 @@ export default function CheckoutScreen() {
                       onPress={() => setSubscriptionOptIn(!subscriptionOptIn)}
                       activeOpacity={0.85}
                     >
-                      <Text
+                      <CheckoutText
                         style={[
                           styles.offersApplyOutlineText,
                           { color: subscriptionAccentColor },
@@ -3400,7 +3429,7 @@ export default function CheckoutScreen() {
                         ]}
                       >
                         {subscriptionOptIn ? "ADDED" : "APPLY"}
-                      </Text>
+                      </CheckoutText>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -3416,29 +3445,29 @@ export default function CheckoutScreen() {
                 </View>
               ) : (
                 <View style={styles.offersCouponIconCircle}>
-                  <Text style={styles.offersCouponIconPct}>%</Text>
+                  <CheckoutText style={styles.offersCouponIconPct}>%</CheckoutText>
                 </View>
               )}
               <View style={styles.offersBodyTextCol}>
-                <Text style={styles.offersAppliedHeadline} numberOfLines={2}>
+                <CheckoutText style={styles.offersAppliedHeadline} numberOfLines={2}>
                   {offersAppliedHeadline}
-                </Text>
+                </CheckoutText>
                 {offersAppliedSubline ? (
-                  <Text style={styles.offersSubLineMuted} numberOfLines={2}>
+                  <CheckoutText style={styles.offersSubLineMuted} numberOfLines={2}>
                     {offersAppliedSubline}
-                  </Text>
+                  </CheckoutText>
                 ) : null}
                 <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
-                  <Text style={styles.offersLearnMore}>View all coupons ›</Text>
+                  <CheckoutText style={styles.offersLearnMore}>View all coupons ›</CheckoutText>
                 </TouchableOpacity>
               </View>
               {hasMissedOfferUnlocked ? (
                 <TouchableOpacity onPress={handleRemoveMissedOfferWallet} hitSlop={8} activeOpacity={0.7}>
-                  <Text style={styles.offersRemoveRed}>Remove</Text>
+                  <CheckoutText style={styles.offersRemoveRed}>Remove</CheckoutText>
                 </TouchableOpacity>
               ) : hasAppliedCheckoutPromo ? (
                 <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
-                  <Text style={styles.offersRemoveRed}>Remove</Text>
+                  <CheckoutText style={styles.offersRemoveRed}>Remove</CheckoutText>
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
@@ -3449,7 +3478,7 @@ export default function CheckoutScreen() {
                   }}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.offersApplyOutlineText}>APPLY</Text>
+                  <CheckoutText style={styles.offersApplyOutlineText}>APPLY</CheckoutText>
                 </TouchableOpacity>
               )}
             </View>
@@ -3474,20 +3503,20 @@ export default function CheckoutScreen() {
               <View style={styles.deliveryEtaRow}>
                 <Ionicons name="flash" size={18} color={GatiMitraColors.emerald} style={styles.gmEtaFlashIcon} />
                 <View style={styles.gmEtaTextCol}>
-                  <Text style={styles.gmEtaLine}>
-                    Delivery in <Text style={styles.gmEtaBold}>{deliveryEta}</Text>
-                  </Text>
+                  <CheckoutText style={styles.gmEtaLine}>
+                    Delivery in <CheckoutText style={styles.gmEtaBold}>{deliveryEta}</CheckoutText>
+                  </CheckoutText>
                   {deliveryEtaImpactLabel ? (
-                    <Text style={styles.weatherEtaImpact}>{deliveryEtaImpactLabel}</Text>
+                    <CheckoutText style={styles.weatherEtaImpact}>{deliveryEtaImpactLabel}</CheckoutText>
                   ) : null}
                   {scheduledDeliverySummary ? (
-                    <Text style={styles.scheduledSummaryLine} numberOfLines={2}>
+                    <CheckoutText style={styles.scheduledSummaryLine} numberOfLines={2}>
                       {scheduledDeliverySummary}
-                    </Text>
+                    </CheckoutText>
                   ) : null}
-                  <Text style={styles.gmScheduleLine} onPress={() => setScheduleSheetVisible(true)}>
+                  <CheckoutText style={styles.gmScheduleLine} onPress={() => setScheduleSheetVisible(true)}>
                     Want this later? Schedule it
-                  </Text>
+                  </CheckoutText>
                 </View>
               </View>
             </View>
@@ -3507,23 +3536,23 @@ export default function CheckoutScreen() {
                 >
                   <View style={styles.deliveryAddrTitleRow}>
                     <View style={styles.deliveryAddrTitleTextWrap}>
-                      <Text style={styles.deliveryAddrLabel} numberOfLines={1}>
-                        <Text style={styles.deliveryAddrPre}>Delivery at </Text>
-                        <Text style={styles.deliveryAddrName}>
+                      <CheckoutText style={styles.deliveryAddrLabel} numberOfLines={1}>
+                        <CheckoutText style={styles.deliveryAddrPre}>Delivery at </CheckoutText>
+                        <CheckoutText style={styles.deliveryAddrName}>
                           {selectedAddress?.label ?? currentLocationDisplay?.label ?? "—"}
-                        </Text>
-                      </Text>
+                        </CheckoutText>
+                      </CheckoutText>
                     </View>
                   </View>
-                  <Text style={styles.deliveryAddrSub} numberOfLines={2} ellipsizeMode="tail">
+                  <CheckoutText style={styles.deliveryAddrSub} numberOfLines={2} ellipsizeMode="tail">
                     {selectedAddress
                       ? selectedAddress.fullAddress
                       : currentLocationDisplay?.fullAddress ?? "Tap to choose delivery address"}
-                  </Text>
+                  </CheckoutText>
                   {leaveAtDoor ? (
                     <View style={[styles.leaveAtDoorChip, styles.leaveAtDoorChipBelowAddr]}>
                       <Ionicons name="checkmark-circle" size={14} color={GatiMitraColors.emerald} />
-                      <Text style={styles.leaveAtDoorChipText}>Leave at door</Text>
+                      <CheckoutText style={styles.leaveAtDoorChipText}>Leave at door</CheckoutText>
                     </View>
                   ) : null}
                 </Pressable>
@@ -3546,11 +3575,11 @@ export default function CheckoutScreen() {
             >
               <Ionicons name="chatbox-ellipses-outline" size={20} color={GatiMitraColors.textSecondary} />
               <View style={styles.instructionPartnerTextCol}>
-                <Text style={styles.instructionPartnerTitle}>Add instructions for delivery partner</Text>
+                <CheckoutText style={styles.instructionPartnerTitle}>Add instructions for delivery partner</CheckoutText>
                 {partnerInstructionSummary ? (
-                  <Text style={styles.instructionPartnerSummary} numberOfLines={2}>
+                  <CheckoutText style={styles.instructionPartnerSummary} numberOfLines={2}>
                     {partnerInstructionSummary}
-                  </Text>
+                  </CheckoutText>
                 ) : null}
               </View>
               <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
@@ -3566,9 +3595,9 @@ export default function CheckoutScreen() {
                   disabled={!selectedAddress}
                 >
                   <Ionicons name="call-outline" size={20} color={GatiMitraColors.textSecondary} />
-                  <Text style={styles.checkoutReceiverText} numberOfLines={1}>
+                  <CheckoutText style={styles.checkoutReceiverText} numberOfLines={1}>
                     {checkoutReceiverSummary}
-                  </Text>
+                  </CheckoutText>
                   <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
                 </TouchableOpacity>
               </>
@@ -3584,21 +3613,21 @@ export default function CheckoutScreen() {
               <Ionicons name="receipt-outline" size={22} color={GatiMitraColors.textSecondary} />
               <View style={styles.gmBillHeaderContent}>
                 <View style={styles.gmBillTopRow}>
-                  <Text style={styles.gmBillTitle}>Total Bill</Text>
+                  <CheckoutText style={styles.gmBillTitle}>Total Bill</CheckoutText>
                   {!showBillSkeleton ? (
                     <>
                       <View style={styles.gmBillPriceCluster}>
                         {gmStrikethroughTotal != null ? (
-                          <Text style={styles.gmBillStrike}>₹{gmStrikethroughTotal.toFixed(2)}</Text>
+                          <CheckoutText style={styles.gmBillStrike}>₹{gmStrikethroughTotal.toFixed(2)}</CheckoutText>
                         ) : null}
-                        <Text style={styles.gmBillFinal}>
+                        <CheckoutText style={styles.gmBillFinal}>
                           {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
-                        </Text>
+                        </CheckoutText>
                         {checkoutSavingsTotal > 0.005 ? (
                           <View style={styles.gmSavedPill}>
-                            <Text style={styles.gmSavedPillText}>
+                            <CheckoutText style={styles.gmSavedPillText}>
                               You saved ₹{Math.round(checkoutSavingsTotal)}
-                            </Text>
+                            </CheckoutText>
                           </View>
                         ) : null}
                       </View>
@@ -3608,10 +3637,10 @@ export default function CheckoutScreen() {
                     <GMSkeleton style={{ width: 72, height: 18, borderRadius: 4 }} />
                   )}
                 </View>
-                <Text style={styles.gmBillSub}>Incl. taxes and charges</Text>
+                <CheckoutText style={styles.gmBillSub}>Incl. taxes and charges</CheckoutText>
                 {missedOfferWalletPending &&
                 (missedOfferUnlockDiscount > 0.005 || missedOfferWalletPendingAmount > 0.005) ? (
-                  <Text style={styles.gmBillPendingWallet}>
+                  <CheckoutText style={styles.gmBillPendingWallet}>
                     {missedOfferUnlockDiscount > 0.005
                       ? `− ₹${missedOfferUnlockDiscount.toFixed(2)} ${displayMissedOfferWalletComp?.offerTitle ?? "offer"} applied`
                       : ""}
@@ -3621,7 +3650,7 @@ export default function CheckoutScreen() {
                     {missedOfferWalletPendingAmount > 0.005
                       ? `+ ₹${missedOfferWalletPendingAmount.toFixed(2)} GatiCash wallet add`
                       : ""}
-                  </Text>
+                  </CheckoutText>
                 ) : null}
               </View>
             </TouchableOpacity>
@@ -3643,12 +3672,12 @@ export default function CheckoutScreen() {
                   <MaterialCommunityIcons name="crown" size={16} color="#FFFFFF" />
                 </View>
                 <View style={styles.gmGoldTextCol}>
-                  <Text style={[styles.gmGoldTitle, { color: subscriptionAttachTheme.accent }]}>
+                  <CheckoutText style={[styles.gmGoldTitle, { color: subscriptionAttachTheme.accent }]}>
                     {gmitraPlusPromoCopy.attachTitle}
-                  </Text>
-                  <Text style={styles.gmGoldSub} numberOfLines={2}>
+                  </CheckoutText>
+                  <CheckoutText style={styles.gmGoldSub} numberOfLines={2}>
                     {gmitraPlusPromoCopy.attachSub}
-                  </Text>
+                  </CheckoutText>
                 </View>
                 <TouchableOpacity
                   style={[
@@ -3660,7 +3689,7 @@ export default function CheckoutScreen() {
                   onLongPress={() => setGmitraPlusSheetVisible(true)}
                   activeOpacity={0.85}
                 >
-                  <Text
+                  <CheckoutText
                     style={[
                       styles.gmGoldAddBtnText,
                       { color: subscriptionAttachTheme.accent },
@@ -3668,7 +3697,7 @@ export default function CheckoutScreen() {
                     ]}
                   >
                     {subscriptionOptIn ? "Added" : checkoutPlan?.ctaLabel ?? "Add Plus"}
-                  </Text>
+                  </CheckoutText>
                 </TouchableOpacity>
               </View>
             ) : null}
@@ -3681,11 +3710,11 @@ export default function CheckoutScreen() {
 
         {/* Cancellation policy — above footer */}
         <View style={styles.cancellationBlock}>
-          <Text style={styles.cancellationTitle}>CANCELLATION POLICY</Text>
-          <Text style={styles.cancellationText}>
+          <CheckoutText style={styles.cancellationTitle}>CANCELLATION POLICY</CheckoutText>
+          <CheckoutText style={styles.cancellationText}>
             A 100% cancellation fee will be applied if you cancel the order after it is confirmed from your end.{" "}
             See our <LegalLink id="refund-cancellation-policy" />.
-          </Text>
+          </CheckoutText>
         </View>
 
         {/* GatiMitra branding — end of content */}
@@ -3784,8 +3813,8 @@ export default function CheckoutScreen() {
         <View style={styles.paymentSheetOverlay}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setPaymentSheetVisible(false)} />
           <Animated.View entering={FadeIn.duration(200)} style={[styles.paymentSheet, { paddingBottom: insets.bottom + 24 }]}>
-            <Text style={styles.paymentSheetTitle}>Pay using</Text>
-            <Text style={styles.paymentSheetSubtitle}>Razorpay will show your UPI apps, cards & wallets</Text>
+            <CheckoutText style={styles.paymentSheetTitle}>Pay using</CheckoutText>
+            <CheckoutText style={styles.paymentSheetSubtitle}>Razorpay will show your UPI apps, cards & wallets</CheckoutText>
             {PAYMENT_OPTIONS.map((opt) => (
               <TouchableOpacity
                 key={opt.id}
@@ -3795,7 +3824,7 @@ export default function CheckoutScreen() {
                 }}
                 style={[styles.paymentOptionRow, paymentMethod === opt.id && styles.paymentOptionActive]}
               >
-                <Text style={styles.paymentOptionText}>{opt.label}</Text>
+                <CheckoutText style={styles.paymentOptionText}>{opt.label}</CheckoutText>
                 {paymentMethod === opt.id && <Ionicons name="checkmark-circle" size={24} color={GatiMitraColors.emerald} />}
               </TouchableOpacity>
             ))}
@@ -3833,14 +3862,14 @@ export default function CheckoutScreen() {
                 size={18}
                 color={deliveryType === "delivery" ? "#FFFFFF" : "#111111"}
               />
-              <Text
+              <CheckoutText
                 style={[
                   styles.deliveryTypeSegText,
                   deliveryType === "delivery" && styles.deliveryTypeSegTextActive,
                 ]}
               >
                 Delivery
-              </Text>
+              </CheckoutText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -3855,42 +3884,42 @@ export default function CheckoutScreen() {
                 size={18}
                 color={deliveryType === "self_pickup" ? "#FFFFFF" : "#111111"}
               />
-              <Text
+              <CheckoutText
                 style={[
                   styles.deliveryTypeSegText,
                   deliveryType === "self_pickup" && styles.deliveryTypeSegTextActive,
                 ]}
               >
                 Takeaway
-              </Text>
+              </CheckoutText>
             </TouchableOpacity>
             </View>
           </View>
           <View style={styles.footerCtaCol}>
           {isStoreClosed ? (
             <View style={styles.footerCtaSlotDisabled}>
-              <Text style={styles.ctaDisabledText}>Store closed</Text>
+              <CheckoutText style={styles.ctaDisabledText}>Store closed</CheckoutText>
             </View>
           ) : items.length === 0 ? (
             <View style={styles.footerCtaSlotDisabled}>
-              <Text style={styles.ctaDisabledText}>Add items</Text>
+              <CheckoutText style={styles.ctaDisabledText}>Add items</CheckoutText>
             </View>
           ) : deliveryType === "self_pickup" ? (
             <View style={styles.footerCtaSlotDisabled}>
-              <Text style={styles.ctaDisabledText}>Coming Soon</Text>
+              <CheckoutText style={styles.ctaDisabledText}>Coming Soon</CheckoutText>
             </View>
           ) : !canPlaceOrder ? (
             <View style={styles.footerCtaSlotDisabled}>
               <View style={styles.ctaDisabledSplit}>
                 <View style={styles.ctaLeftPart}>
-                  <Text style={styles.ctaDisabledAmount} numberOfLines={1}>
+                  <CheckoutText style={styles.ctaDisabledAmount} numberOfLines={1}>
                     {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
-                  </Text>
-                  <Text style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</Text>
+                  </CheckoutText>
+                  <CheckoutText style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</CheckoutText>
                 </View>
                 <View style={styles.ctaRightPartDisabled}>
-                  <Text style={styles.ctaDisabledLabel} numberOfLines={1}>Place Order</Text>
-                  <Text style={styles.ctaDisabledHint} numberOfLines={1}>
+                  <CheckoutText style={styles.ctaDisabledLabel} numberOfLines={1}>Place Order</CheckoutText>
+                  <CheckoutText style={styles.ctaDisabledHint} numberOfLines={1}>
                     {!selectedAddress
                       ? "Check address"
                       : billingQuery.isError
@@ -3902,7 +3931,7 @@ export default function CheckoutScreen() {
                             : !serverBill
                               ? "Waiting for bill"
                               : "Select payment"}
-                  </Text>
+                  </CheckoutText>
                 </View>
               </View>
             </View>
@@ -3922,10 +3951,10 @@ export default function CheckoutScreen() {
                 style={styles.ctaGradient}
               >
                 <View style={styles.ctaLeftPart}>
-                  <Text style={styles.ctaTotalAmount} numberOfLines={1}>
+                  <CheckoutText style={styles.ctaTotalAmount} numberOfLines={1}>
                     {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
-                  </Text>
-                  <Text style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</Text>
+                  </CheckoutText>
+                  <CheckoutText style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</CheckoutText>
                 </View>
                 <View style={styles.ctaRightPart}>
                   {placeOrder.isPending || finalizeOrder.isPending || razorpayCreating ? (
@@ -3934,7 +3963,7 @@ export default function CheckoutScreen() {
                     </View>
                   ) : (
                     <View style={styles.ctaRightPartRow}>
-                      <Text style={styles.ctaLabel} numberOfLines={1}>Place Order</Text>
+                      <CheckoutText style={styles.ctaLabel} numberOfLines={1}>Place Order</CheckoutText>
                       <Ionicons name="chevron-forward" size={18} color="#fff" />
                     </View>
                   )}
@@ -4004,7 +4033,7 @@ export default function CheckoutScreen() {
           />
           <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
             <View style={styles.noteSheetTitleRow}>
-              <Text style={styles.noteSheetTitle}>Add a note for the restaurant</Text>
+              <CheckoutText style={styles.noteSheetTitle}>Add a note for the restaurant</CheckoutText>
               <TouchableOpacity
                 onPress={() => setRestaurantNoteModalVisible(false)}
                 hitSlop={12}
@@ -4023,23 +4052,23 @@ export default function CheckoutScreen() {
               maxLength={280}
               textAlignVertical="top"
             />
-            <Text style={styles.noteSheetDisclaimer}>
+            <CheckoutText style={styles.noteSheetDisclaimer}>
               {`The restaurant will try its best to follow your requests. However, refunds or cancellations in this regard won't be possible.`}
-            </Text>
+            </CheckoutText>
             <View style={styles.noteSheetFooter}>
               <TouchableOpacity
                 onPress={() => setRestaurantNote("")}
                 style={styles.noteSheetClearBtn}
                 hitSlop={8}
               >
-                <Text style={styles.noteSheetClearText}>Clear</Text>
+                <CheckoutText style={styles.noteSheetClearText}>Clear</CheckoutText>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.noteSheetSaveBtn}
                 onPress={() => setRestaurantNoteModalVisible(false)}
                 activeOpacity={0.9}
               >
-                <Text style={styles.noteSheetSaveBtnText}>Save</Text>
+                <CheckoutText style={styles.noteSheetSaveBtnText}>Save</CheckoutText>
               </TouchableOpacity>
             </View>
           </View>
@@ -4056,7 +4085,7 @@ export default function CheckoutScreen() {
         <View style={styles.noteSheetRoot}>
           <Pressable style={styles.noteSheetDim} onPress={() => setScheduleSheetVisible(false)} />
           <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 20) + 10 }]}>
-            <Text style={styles.scheduleSheetTitle}>Select your delivery time</Text>
+            <CheckoutText style={styles.scheduleSheetTitle}>Select your delivery time</CheckoutText>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -4072,8 +4101,8 @@ export default function CheckoutScreen() {
                     style={styles.scheduleTabHit}
                     hitSlop={4}
                   >
-                    <Text style={[styles.scheduleTabLine1, on && styles.scheduleTabLine1On]}>{tab.line1}</Text>
-                    <Text style={[styles.scheduleTabLine2, on && styles.scheduleTabLine2On]}>{tab.line2}</Text>
+                    <CheckoutText style={[styles.scheduleTabLine1, on && styles.scheduleTabLine1On]}>{tab.line1}</CheckoutText>
+                    <CheckoutText style={[styles.scheduleTabLine2, on && styles.scheduleTabLine2On]}>{tab.line2}</CheckoutText>
                     <View style={[styles.scheduleTabUnderline, on ? styles.scheduleTabUnderlineOn : styles.scheduleTabUnderlineOff]} />
                   </Pressable>
                 );
@@ -4093,7 +4122,7 @@ export default function CheckoutScreen() {
                     onPress={() => setScheduleSlotDraft(slot)}
                     style={[styles.scheduleSlotRow, picked && styles.scheduleSlotRowOn]}
                   >
-                    <Text style={[styles.scheduleSlotText, picked && styles.scheduleSlotTextOn]}>{slot}</Text>
+                    <CheckoutText style={[styles.scheduleSlotText, picked && styles.scheduleSlotTextOn]}>{slot}</CheckoutText>
                   </Pressable>
                 );
               })}
@@ -4115,7 +4144,7 @@ export default function CheckoutScreen() {
                 end={{ x: 1, y: 0 }}
                 style={styles.scheduleConfirmBtn}
               >
-                <Text style={styles.scheduleConfirmBtnText}>Confirm</Text>
+                <CheckoutText style={styles.scheduleConfirmBtnText}>Confirm</CheckoutText>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -4163,7 +4192,7 @@ export default function CheckoutScreen() {
                 <Ionicons name="close" size={22} color="#FFFFFF" />
               </Pressable>
             </View>
-            <Text style={styles.addressSelectSheetTitle}>Select an address</Text>
+            <CheckoutText style={styles.addressSelectSheetTitle}>Select an address</CheckoutText>
 
             <Pressable
               style={styles.addressSelectAddPressable}
@@ -4183,10 +4212,10 @@ export default function CheckoutScreen() {
                   <Ionicons name="add" size={28} color="#FFFFFF" />
                 </View>
                 <View style={styles.addressSelectAddTextCol}>
-                  <Text style={styles.addressSelectAddTitle}>Add Address</Text>
-                  <Text style={styles.addressSelectAddSub} numberOfLines={2}>
+                  <CheckoutText style={styles.addressSelectAddTitle}>Add Address</CheckoutText>
+                  <CheckoutText style={styles.addressSelectAddSub} numberOfLines={2}>
                     Search area or drop a pin on the map
-                  </Text>
+                  </CheckoutText>
                 </View>
                 <View style={styles.addressSelectAddChevronWrap}>
                   <Ionicons name="chevron-forward" size={20} color={CX.mint} />
@@ -4196,16 +4225,16 @@ export default function CheckoutScreen() {
 
             <View style={styles.addressSelectSectionRule} />
 
-            <Text style={styles.addressSelectSectionLabel}>SAVED ADDRESSES</Text>
+            <CheckoutText style={styles.addressSelectSectionLabel}>SAVED ADDRESSES</CheckoutText>
 
             {addressesLoading ? (
               <View style={styles.addressSelectLoading}>
                 <ActivityIndicator size="small" color={CX.mint} />
               </View>
             ) : addresses.length === 0 ? (
-              <Text style={styles.addressSelectEmpty}>
+              <CheckoutText style={styles.addressSelectEmpty}>
                 No saved addresses yet. Tap Add Address to save a delivery location.
-              </Text>
+              </CheckoutText>
             ) : (
               <ScrollView
                 style={[styles.addressSelectScroll, { maxHeight: Math.min(460, windowHeight * 0.58) }]}
@@ -4223,7 +4252,7 @@ export default function CheckoutScreen() {
                       style={[styles.addressSelectCard, isSelected && styles.addressSelectCardSelected]}
                     >
                       {isSelected ? (
-                        <Text style={styles.addressSelectDeliversTo}>DELIVERS TO</Text>
+                        <CheckoutText style={styles.addressSelectDeliversTo}>DELIVERS TO</CheckoutText>
                       ) : null}
                       <Pressable
                         onPress={() => void selectAddressFromCheckoutSheet(addr)}
@@ -4249,24 +4278,24 @@ export default function CheckoutScreen() {
                                 color="#374151"
                               />
                             )}
-                            <Text style={styles.addressSelectDist}>{dist}</Text>
+                            <CheckoutText style={styles.addressSelectDist}>{dist}</CheckoutText>
                           </View>
                           <View style={styles.addressSelectBody}>
-                            <Text style={styles.addressSelectCardTitle} numberOfLines={1}>
+                            <CheckoutText style={styles.addressSelectCardTitle} numberOfLines={1}>
                               {title}
-                            </Text>
+                            </CheckoutText>
                             {addr.contactName && addr.label ? (
-                              <Text style={styles.addressSelectSub} numberOfLines={1}>
+                              <CheckoutText style={styles.addressSelectSub} numberOfLines={1}>
                                 {addr.label}
-                              </Text>
+                              </CheckoutText>
                             ) : null}
-                            <Text style={styles.addressSelectAddr} numberOfLines={4}>
+                            <CheckoutText style={styles.addressSelectAddr} numberOfLines={4}>
                               {addr.fullAddress}
-                            </Text>
+                            </CheckoutText>
                             {addr.contactMobile ? (
-                              <Text style={styles.addressSelectPhone} numberOfLines={1}>
+                              <CheckoutText style={styles.addressSelectPhone} numberOfLines={1}>
                                 Phone number: {addr.contactMobile}
-                              </Text>
+                              </CheckoutText>
                             ) : null}
                           </View>
                         </View>
@@ -4335,7 +4364,7 @@ export default function CheckoutScreen() {
           <Pressable style={styles.noteSheetDim} onPress={() => setReceiverSheetVisible(false)} />
           <View style={[styles.noteSheetCard, styles.receiverSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
             <View style={styles.noteSheetTitleRow}>
-              <Text style={styles.noteSheetTitle}>Update receiver details</Text>
+              <CheckoutText style={styles.noteSheetTitle}>Update receiver details</CheckoutText>
               <TouchableOpacity
                 onPress={() => setReceiverSheetVisible(false)}
                 hitSlop={12}
@@ -4344,12 +4373,12 @@ export default function CheckoutScreen() {
                 <Ionicons name="close" size={26} color="#111827" />
               </TouchableOpacity>
             </View>
-            <Text style={styles.receiverSheetAddr} numberOfLines={3}>
+            <CheckoutText style={styles.receiverSheetAddr} numberOfLines={3}>
               {selectedAddress
                 ? `${selectedAddress.label ? `${selectedAddress.label} — ` : ""}${selectedAddress.fullAddress}`
                 : ""}
-            </Text>
-            <Text style={styles.receiverFieldLabel}>Receiver&apos;s name</Text>
+            </CheckoutText>
+            <CheckoutText style={styles.receiverFieldLabel}>Receiver&apos;s name</CheckoutText>
             <View style={styles.receiverInputRow}>
               <TextInput
                 style={styles.receiverTextInput}
@@ -4368,7 +4397,7 @@ export default function CheckoutScreen() {
                 <Ionicons name="book-outline" size={22} color={CX.mint} />
               </Pressable>
             </View>
-            <Text style={styles.receiverFieldLabel}>Receiver&apos;s mobile number</Text>
+            <CheckoutText style={styles.receiverFieldLabel}>Receiver&apos;s mobile number</CheckoutText>
             <View style={styles.receiverInputRow}>
               <TextInput
                 style={styles.receiverTextInput}
@@ -4398,7 +4427,7 @@ export default function CheckoutScreen() {
                 {updateReceiverContactMutation.isPending ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.receiverSubmitBtnText}>Submit</Text>
+                  <CheckoutText style={styles.receiverSubmitBtnText}>Submit</CheckoutText>
                 )}
               </LinearGradient>
             </TouchableOpacity>
@@ -4448,10 +4477,10 @@ export default function CheckoutScreen() {
               >
                 <View style={styles.communitySheetHeroRow}>
                   <View style={styles.communitySheetHeroText}>
-                    <Text style={styles.communitySheetTitle}>GatiMitra Community Initiative</Text>
-                    <Text style={styles.communitySheetSub}>
+                    <CheckoutText style={styles.communitySheetTitle}>GatiMitra Community Initiative</CheckoutText>
+                    <CheckoutText style={styles.communitySheetSub}>
                       {"We're building a platform that not only delivers orders faster but also aims to create opportunities and support communities in the future."}
-                    </Text>
+                    </CheckoutText>
                   </View>
                   <View style={styles.communitySheetHeroIcons}>
                     <View style={styles.communitySheetIconBubble}>
@@ -4468,28 +4497,28 @@ export default function CheckoutScreen() {
               </LinearGradient>
               <View style={styles.communityImpactDividerRow}>
                 <View style={styles.communityImpactRule} />
-                <Text style={styles.communityImpactDividerLabel}>OUR JOURNEY</Text>
+                <CheckoutText style={styles.communityImpactDividerLabel}>OUR JOURNEY</CheckoutText>
                 <View style={styles.communityImpactRule} />
               </View>
               <View style={styles.communityImpactRow}>
                 <View style={styles.communityImpactCol}>
-                  <Text style={styles.communityImpactEmoji}>🚀</Text>
-                  <Text style={styles.communityImpactLabel}>Startup Phase</Text>
+                  <CheckoutText style={styles.communityImpactEmoji}>🚀</CheckoutText>
+                  <CheckoutText style={styles.communityImpactLabel}>Startup Phase</CheckoutText>
                 </View>
                 <View style={styles.communityImpactCol}>
-                  <Text style={styles.communityImpactEmoji}>🤝</Text>
-                  <Text style={styles.communityImpactLabel}>Community Driven</Text>
+                  <CheckoutText style={styles.communityImpactEmoji}>🤝</CheckoutText>
+                  <CheckoutText style={styles.communityImpactLabel}>Community Driven</CheckoutText>
                 </View>
                 <View style={styles.communityImpactCol}>
-                  <Text style={styles.communityImpactEmoji}>🌱</Text>
-                  <Text style={styles.communityImpactLabel}>Growing Together</Text>
+                  <CheckoutText style={styles.communityImpactEmoji}>🌱</CheckoutText>
+                  <CheckoutText style={styles.communityImpactLabel}>Growing Together</CheckoutText>
                 </View>
               </View>
-              <Text style={styles.communitySheetFinePrint}>
+              <CheckoutText style={styles.communitySheetFinePrint}>
                 {
                   "Optional donations at checkout support verified NGO meal programmes. We'll share more community programmes here as GatiMitra grows."
                 }
-              </Text>
+              </CheckoutText>
             </ScrollView>
             <TouchableOpacity
               activeOpacity={0.92}
@@ -4502,7 +4531,7 @@ export default function CheckoutScreen() {
                 end={{ x: 1, y: 0 }}
                 style={styles.communitySheetCta}
               >
-                <Text style={styles.communitySheetCtaText}>Continue Supporting</Text>
+                <CheckoutText style={styles.communitySheetCtaText}>Continue Supporting</CheckoutText>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -4520,7 +4549,7 @@ export default function CheckoutScreen() {
           <Pressable style={styles.noteSheetDim} onPress={() => setGmitraPlusSheetVisible(false)} />
           <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
             <View style={styles.noteSheetTitleRow}>
-              <Text style={styles.noteSheetTitle}>{subscriptionPlanName}</Text>
+              <CheckoutText style={styles.noteSheetTitle}>{subscriptionPlanName}</CheckoutText>
               <TouchableOpacity
                 onPress={() => setGmitraPlusSheetVisible(false)}
                 hitSlop={12}
@@ -4534,28 +4563,28 @@ export default function CheckoutScreen() {
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              <Text style={styles.gmitraSheetLead}>
+              <CheckoutText style={styles.gmitraSheetLead}>
                 {checkoutPlan?.description ??
                   `${subscriptionPlanName} is a membership that helps you save on every order with better delivery pricing and exclusive offers.`}
-              </Text>
-              <Text style={styles.gmitraSheetSectionTitle}>What you get</Text>
+              </CheckoutText>
+              <CheckoutText style={styles.gmitraSheetSectionTitle}>What you get</CheckoutText>
               {(checkoutPlan?.benefits ?? []).map((benefit) => (
-                <Text key={benefit} style={styles.gmitraSheetBullet}>
+                <CheckoutText key={benefit} style={styles.gmitraSheetBullet}>
                   • {benefit}
-                </Text>
+                </CheckoutText>
               ))}
               {gmitraPlusPromoCopy.freeDeliveryNote ? (
-                <Text style={styles.gmitraSheetBullet}>• {gmitraPlusPromoCopy.freeDeliveryNote}</Text>
+                <CheckoutText style={styles.gmitraSheetBullet}>• {gmitraPlusPromoCopy.freeDeliveryNote}</CheckoutText>
               ) : null}
               {defaultPrice ? (
-                <Text style={styles.gmitraSheetBullet}>
+                <CheckoutText style={styles.gmitraSheetBullet}>
                   • {formatPlanPriceLine(defaultPrice)} (incl. GST)
-                </Text>
+                </CheckoutText>
               ) : null}
-              <Text style={styles.gmitraSheetDisclaimer}>
+              <CheckoutText style={styles.gmitraSheetDisclaimer}>
                 Benefits may vary by city, restaurant, and order value. Add {subscriptionPlanName} to this order with the
                 button below, or tap APPLY next to Learn more on checkout.
-              </Text>
+              </CheckoutText>
             </ScrollView>
             <View style={styles.gmitraSheetFooterRow}>
               <TouchableOpacity
@@ -4563,7 +4592,7 @@ export default function CheckoutScreen() {
                 onPress={() => setGmitraPlusSheetVisible(false)}
                 activeOpacity={0.85}
               >
-                <Text style={styles.gmitraSheetSecondaryBtnText}>Got it</Text>
+                <CheckoutText style={styles.gmitraSheetSecondaryBtnText}>Got it</CheckoutText>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -4578,9 +4607,9 @@ export default function CheckoutScreen() {
                 disabled={subscriptionOptIn}
                 activeOpacity={0.9}
               >
-                <Text style={styles.noteSheetSaveBtnText}>
+                <CheckoutText style={styles.noteSheetSaveBtnText}>
                   {subscriptionOptIn ? "Already added" : checkoutPlan?.ctaLabel ?? `Add ${subscriptionPlanName}`}
-                </Text>
+                </CheckoutText>
               </TouchableOpacity>
             </View>
           </View>
@@ -4597,7 +4626,7 @@ export default function CheckoutScreen() {
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setGstBreakdownModalVisible(false)} />
           <View style={styles.gstModalCard}>
             <View style={styles.gstModalHeader}>
-              <Text style={styles.gstModalTitle}>GST & other charges</Text>
+              <CheckoutText style={styles.gstModalTitle}>GST & other charges</CheckoutText>
               <Pressable
                 onPress={() => setGstBreakdownModalVisible(false)}
                 hitSlop={12}
@@ -4606,25 +4635,25 @@ export default function CheckoutScreen() {
                 <Ionicons name="close" size={24} color={GatiMitraColors.textSecondary} />
               </Pressable>
             </View>
-            <Text style={styles.gstModalSubtitle}>
+            <CheckoutText style={styles.gstModalSubtitle}>
               Every GST and platform charge on this order, broken out one by one.
-            </Text>
+            </CheckoutText>
             <ScrollView style={styles.gstModalScroll} showsVerticalScrollIndicator={false}>
               {gstAndOtherBreakdown?.lines.map((row) => (
                 <View key={row.key} style={styles.gstModalLine}>
                   <View style={styles.gstModalLineLeft}>
-                    <Text style={styles.gstModalLineLabel}>{row.label}</Text>
-                    {row.sub ? <Text style={styles.gstModalLineSub}>{row.sub}</Text> : null}
+                    <CheckoutText style={styles.gstModalLineLabel}>{row.label}</CheckoutText>
+                    {row.sub ? <CheckoutText style={styles.gstModalLineSub}>{row.sub}</CheckoutText> : null}
                   </View>
-                  <Text style={styles.gstModalLineValue}>₹{row.amount.toFixed(2)}</Text>
+                  <CheckoutText style={styles.gstModalLineValue}>₹{row.amount.toFixed(2)}</CheckoutText>
                 </View>
               ))}
               <View style={styles.gstModalDivider} />
               <View style={styles.gstModalLine}>
-                <Text style={styles.gstModalTotalLabel}>Total</Text>
-                <Text style={styles.gstModalTotalValue}>
+                <CheckoutText style={styles.gstModalTotalLabel}>Total</CheckoutText>
+                <CheckoutText style={styles.gstModalTotalValue}>
                   ₹{(gstAndOtherBreakdown?.total ?? 0).toFixed(2)}
-                </Text>
+                </CheckoutText>
               </View>
             </ScrollView>
           </View>
@@ -4693,16 +4722,16 @@ export default function CheckoutScreen() {
               <View style={styles.simulatedPaymentIconWrap}>
                 <Ionicons name="flask-outline" size={28} color={GatiMitraColors.emerald} />
               </View>
-              <Text style={styles.simulatedPaymentTitle}>Test payment</Text>
+              <CheckoutText style={styles.simulatedPaymentTitle}>Test payment</CheckoutText>
               <View style={styles.simulatedPaymentDevBadge}>
-                <Text style={styles.simulatedPaymentDevBadgeText}>Dummy mode</Text>
+                <CheckoutText style={styles.simulatedPaymentDevBadgeText}>Dummy mode</CheckoutText>
               </View>
-              <Text style={styles.simulatedPaymentSubtitle}>
+              <CheckoutText style={styles.simulatedPaymentSubtitle}>
                 Razorpay is bypassed. Pick an outcome to drive the rest of the order flow end-to-end (merchant, rider, notifications all fire on success).
-              </Text>
+              </CheckoutText>
               <View style={styles.simulatedAmountRow}>
-                <Text style={styles.simulatedAmountLabel}>Amount to pay</Text>
-                <Text style={styles.simulatedAmountValue}>₹{(simulatedPaymentOrder.amount / 100).toFixed(2)}</Text>
+                <CheckoutText style={styles.simulatedAmountLabel}>Amount to pay</CheckoutText>
+                <CheckoutText style={styles.simulatedAmountValue}>₹{(simulatedPaymentOrder.amount / 100).toFixed(2)}</CheckoutText>
               </View>
 
               <TouchableOpacity
@@ -4716,7 +4745,7 @@ export default function CheckoutScreen() {
                 ) : (
                   <>
                     <Ionicons name="checkmark-circle" size={18} color="#fff" style={{ marginRight: 8 }} />
-                    <Text style={styles.simulatedConfirmBtnText}>Simulate Success</Text>
+                    <CheckoutText style={styles.simulatedConfirmBtnText}>Simulate Success</CheckoutText>
                   </>
                 )}
               </TouchableOpacity>
@@ -4728,7 +4757,7 @@ export default function CheckoutScreen() {
                 disabled={simulatedSubmitting}
               >
                 <Ionicons name="close-circle" size={18} color="#dc2626" style={{ marginRight: 8 }} />
-                <Text style={styles.simulatedFailBtnText}>Simulate Failure</Text>
+                <CheckoutText style={styles.simulatedFailBtnText}>Simulate Failure</CheckoutText>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -4737,7 +4766,7 @@ export default function CheckoutScreen() {
                 activeOpacity={0.85}
                 disabled={simulatedSubmitting}
               >
-                <Text style={styles.simulatedCancelBtnText}>Cancel</Text>
+                <CheckoutText style={styles.simulatedCancelBtnText}>Cancel</CheckoutText>
               </TouchableOpacity>
             </Animated.View>
           </Pressable>
@@ -4764,7 +4793,7 @@ function GstOtherChargesRow({
   return (
     <View style={styles.billRow}>
       <View style={styles.billRowLabelWithInfo}>
-        <Text style={styles.billLabel}>{label}</Text>
+        <CheckoutText style={styles.billLabel}>{label}</CheckoutText>
         <Pressable
           onPress={onInfoPress}
           hitSlop={10}
@@ -4774,7 +4803,7 @@ function GstOtherChargesRow({
           <Ionicons name="information-circle-outline" size={19} color={GatiMitraColors.textSecondary} />
         </Pressable>
       </View>
-      <Text style={styles.billValue}>{value}</Text>
+      <CheckoutText style={styles.billValue}>{value}</CheckoutText>
     </View>
   );
 }
@@ -4794,8 +4823,8 @@ function BillRow({
 }) {
   return (
     <View style={styles.billRow}>
-      <Text style={[styles.billLabel, strikethrough && styles.billValueStrike]}>{label}</Text>
-      <Text
+      <CheckoutText style={[styles.billLabel, strikethrough && styles.billValueStrike]}>{label}</CheckoutText>
+      <CheckoutText
         style={[
           styles.billValue,
           bold && styles.billValueBold,
@@ -4804,7 +4833,7 @@ function BillRow({
         ]}
       >
         {value}
-      </Text>
+      </CheckoutText>
     </View>
   );
 }
@@ -4841,7 +4870,7 @@ function BillRowExpandable({
     <>
       <View style={styles.billRow}>
         <View style={styles.billRowLabelWithInfo}>
-          <Text style={styles.billLabel}>{label}</Text>
+          <CheckoutText style={styles.billLabel}>{label}</CheckoutText>
           {hasBreakdown ? (
             <Pressable
               onPress={() => setOpen((s) => !s)}
@@ -4857,7 +4886,7 @@ function BillRowExpandable({
             </Pressable>
           ) : null}
         </View>
-        <Text
+        <CheckoutText
           style={[
             styles.billValue,
             bold && styles.billValueBold,
@@ -4865,27 +4894,27 @@ function BillRowExpandable({
           ]}
         >
           {green && total > 0 ? `-₹${total.toFixed(2)}` : `₹${Math.abs(total).toFixed(2)}`}
-        </Text>
+        </CheckoutText>
       </View>
       {open && hasBreakdown && breakdown ? (
         <View style={styles.billBreakdownPanel}>
           <View style={styles.billBreakdownRow}>
-            <Text style={styles.billBreakdownLabel}>Base</Text>
-            <Text style={styles.billBreakdownValue}>₹{breakdown.base.toFixed(2)}</Text>
+            <CheckoutText style={styles.billBreakdownLabel}>Base</CheckoutText>
+            <CheckoutText style={styles.billBreakdownValue}>₹{breakdown.base.toFixed(2)}</CheckoutText>
           </View>
           <View style={styles.billBreakdownRow}>
-            <Text style={styles.billBreakdownLabel}>
+            <CheckoutText style={styles.billBreakdownLabel}>
               GST{breakdown.gstRateLabel ? ` (${breakdown.gstRateLabel})` : ""}
-            </Text>
-            <Text style={styles.billBreakdownValue}>₹{breakdown.gst.toFixed(2)}</Text>
+            </CheckoutText>
+            <CheckoutText style={styles.billBreakdownValue}>₹{breakdown.gst.toFixed(2)}</CheckoutText>
           </View>
           <View style={[styles.billBreakdownRow, styles.billBreakdownTotalRow]}>
-            <Text style={styles.billBreakdownTotalLabel}>Total</Text>
-            <Text style={styles.billBreakdownTotalValue}>
+            <CheckoutText style={styles.billBreakdownTotalLabel}>Total</CheckoutText>
+            <CheckoutText style={styles.billBreakdownTotalValue}>
               ₹{(breakdown.base + breakdown.gst).toFixed(2)}
-            </Text>
+            </CheckoutText>
           </View>
-          {note ? <Text style={styles.billBreakdownNote}>{note}</Text> : null}
+          {note ? <CheckoutText style={styles.billBreakdownNote}>{note}</CheckoutText> : null}
         </View>
       ) : null}
     </>
@@ -4893,7 +4922,7 @@ function BillRowExpandable({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F6F8" },
+  container: { flex: 1, backgroundColor: "#F2F2F2" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   emptyText: { fontSize: 16, color: GatiMitraColors.textSecondary },
   ctaSecondary: { marginTop: SPACING, paddingVertical: 12, paddingHorizontal: 24 },
@@ -4901,7 +4930,7 @@ const styles = StyleSheet.create({
   header: {
     backgroundColor: CHECKOUT_HEADER_BG,
     zIndex: 20,
-    paddingHorizontal: 12,
+    paddingHorizontal: CHECKOUT_PAGE_H_MARGIN,
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8E8E8",
@@ -4910,7 +4939,7 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 4,
+    paddingVertical: 2,
   },
   headerBack: {
     alignSelf: "center",
@@ -4962,6 +4991,7 @@ const styles = StyleSheet.create({
   /** Same height rhythm as distanceBannerCompact — below location warning. */
   checkoutSavingsTag: {
     width: "100%",
+    marginBottom: 0,
     backgroundColor: "#EFF6FF",
     paddingVertical: 8,
     paddingHorizontal: 12,
@@ -4982,7 +5012,7 @@ const styles = StyleSheet.create({
   distanceBannerOuter: {
     width: "100%",
     alignItems: "center",
-    backgroundColor: "#F5F6F8",
+    backgroundColor: "#F2F2F2",
   },
   distanceBannerNotch: {
     width: 0,
@@ -5231,9 +5261,9 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   contactRowText: { flex: 1, fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  scroll: { flex: 1, backgroundColor: "#F5F6F8" },
-  scrollContent: { paddingHorizontal: 12 },
-  section: { marginTop: 0, marginBottom: 10 },
+  scroll: { flex: 1, backgroundColor: "#F2F2F2" },
+  scrollContent: { paddingHorizontal: CHECKOUT_PAGE_H_MARGIN },
+  section: { marginBottom: 8 },
   sectionContrib: { marginBottom: 12 },
   sectionTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 8 },
   sectionTitleSmall: {
@@ -5244,138 +5274,131 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
-  card: {
+  checkoutFullBleedSection: {
+    width: "100%",
     backgroundColor: "#FFFFFF",
     borderRadius: 12,
-    padding: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#EFEFEF",
-    ...GatiMitraColors.elevationShadow,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    overflow: "hidden",
   },
-  orderItemsPreview: { gap: 0 },
+  orderItemsPreview: { gap: 12 },
   orderItemRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingTop: 0,
-    paddingBottom: 0,
-    gap: 8,
+    gap: 10,
   },
-  orderItemRowSpacer: {
-    marginBottom: 12,
+  orderItemDietWrap: {
+    paddingTop: 2,
   },
-  orderItemMid: { flex: 1, minWidth: 0, paddingRight: 4 },
+  orderItemMid: { flex: 1, minWidth: 0, paddingRight: 8 },
   orderItemName: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "700",
-    color: "#222222",
-    lineHeight: 18,
+    color: "#1C1C1C",
+    lineHeight: 20,
   },
-  orderItemSub: {
+  orderItemCustom: {
     fontSize: 12,
     fontWeight: "400",
-    color: "#666666",
-    marginTop: 1,
-    lineHeight: 15,
+    color: "#696969",
+    marginTop: 2,
+    lineHeight: 16,
   },
   orderItemEditRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
-    marginTop: 2,
+    gap: 0,
+    marginTop: 4,
     alignSelf: "flex-start",
   },
   orderItemEditText: { fontSize: 12, fontWeight: "600", color: CX.mint },
+  orderItemEditChevron: { marginLeft: -1, marginTop: 1 },
   orderItemRightCol: {
     alignItems: "flex-end",
     flexShrink: 0,
-    minWidth: 72,
+    minWidth: 88,
   },
   orderItemStepperPill: {
     flexDirection: "row",
     alignItems: "center",
-    minWidth: 72,
+    minWidth: 88,
+    height: 32,
     justifyContent: "space-between",
-    paddingHorizontal: 2,
-    paddingVertical: 2,
-    borderRadius: 5,
+    paddingHorizontal: 6,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: CX.mint,
+    borderColor: CX.mintBorder,
     backgroundColor: CX.mintSoft,
   },
   qtyBtnSmall: {
-    minWidth: 22,
-    height: 22,
+    minWidth: 24,
+    height: 28,
     alignItems: "center",
     justifyContent: "center",
   },
   qtyGlyph: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: "500",
     color: CX.mint,
-    lineHeight: 16,
+    lineHeight: 18,
     textAlign: "center",
   },
   qtyValueSmall: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
-    color: CX.mint,
-    minWidth: 18,
+    color: "#1C1C1C",
+    minWidth: 20,
     textAlign: "center",
   },
   orderItemLinePrice: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
-    color: "#222222",
-    marginTop: 6,
+    color: "#1C1C1C",
+    marginTop: 8,
     textAlign: "right",
   },
-  addMoreRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 0,
-    paddingTop: 8,
-    paddingBottom: 0,
-    gap: 5,
+  checkoutActionRowScroll: {
+    marginTop: 14,
+    marginHorizontal: -16,
   },
-  addMorePlus: { fontSize: 17, fontWeight: "700", color: CX.mint, lineHeight: 20 },
-  addMoreText: { fontSize: 14, fontWeight: "700", color: CX.mint, flexShrink: 1 },
-  checkoutUtilityPillRow: {
+  checkoutActionRowContent: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginTop: 8,
+    paddingHorizontal: 16,
   },
-  checkoutUtilityPill: {
-    flex: 1,
-    minWidth: 0,
+  checkoutActionPill: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    borderRadius: 18,
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: "#E5E7EB",
     backgroundColor: "#FFFFFF",
   },
-  checkoutUtilityPillInner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 5,
-    maxWidth: "100%",
-    paddingHorizontal: 2,
-  },
-  checkoutUtilityPillActive: {
-    borderColor: CX.mint,
+  checkoutActionPillActive: {
+    borderColor: CX.mintBorder,
     backgroundColor: CX.mintSoft,
   },
-  checkoutUtilityPillText: {
-    flexShrink: 1,
-    fontSize: 10,
+  checkoutActionPillPlus: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: CX.mint,
+    lineHeight: 18,
+  },
+  checkoutActionPillTextMint: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: CX.mint,
+  },
+  checkoutActionPillText: {
+    fontSize: 13,
     fontWeight: "500",
-    color: "#666666",
-    textAlign: "left",
-    lineHeight: 14,
+    color: "#444444",
+    flexShrink: 0,
   },
   noteSheetRoot: {
     flex: 1,
@@ -5520,43 +5543,35 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   nonVegBg: { backgroundColor: "#FED7AA" },
-  upsellOuterCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#EFEFEF",
-    ...GatiMitraColors.elevationShadow,
-  },
   upsellSectionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginBottom: 10,
+    gap: 10,
+    marginBottom: 12,
   },
   upsellSectionIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 6,
     backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
   },
-  upsellSectionIconPlus: { position: "absolute", right: 3, bottom: 3 },
+  upsellSectionIconPlus: { position: "absolute", right: 2, bottom: 2 },
   upsellSectionTitle: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "600",
-    color: "#374151",
-    letterSpacing: -0.1,
+    color: "#1C1C1C",
+    letterSpacing: -0.2,
   },
-  upsellScrollWrap: {},
-  upsellScrollInner: { flex: 1, minHeight: 0 },
+  upsellScrollWrap: {
+    marginHorizontal: -16,
+  },
+  upsellScrollInner: { flex: 1, minHeight: 0, overflow: "visible" },
   upsellScrollContent: {
     paddingVertical: 0,
-    paddingLeft: 0,
+    paddingHorizontal: 16,
     flexGrow: 0,
     alignItems: "flex-start",
   },
@@ -5564,17 +5579,10 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     marginRight: 0,
     alignItems: "stretch",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "transparent",
     padding: 0,
-    paddingBottom: 8,
-    borderWidth: 1,
-    borderColor: "#E8E8E8",
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
+    paddingBottom: 4,
+    overflow: "visible",
   },
   upsellCardPressed: { opacity: 0.92 },
   upsellImageWrap: {
@@ -5610,39 +5618,23 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 6,
     bottom: 6,
-    width: 28,
-    height: 28,
-    borderRadius: 5,
-    backgroundColor: "#fff",
+    width: 26,
+    height: 26,
+    borderRadius: 4,
+    backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: CX.mintBorder,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 2,
-    elevation: 2,
+    zIndex: 2,
   },
   upsellName: {
     alignSelf: "stretch",
-    fontSize: 11,
-    fontWeight: "500",
-    color: "#1F2937",
-    marginTop: 6,
-    marginHorizontal: 8,
-    marginBottom: 0,
-    lineHeight: 15,
-    textAlign: "left",
-  },
-  upsellPrice: {
-    alignSelf: "stretch",
     fontSize: 12,
-    fontWeight: "600",
-    color: "#6B7280",
-    marginTop: 4,
-    marginHorizontal: 8,
-    marginBottom: 0,
+    fontWeight: "500",
+    color: "#1C1C1C",
+    marginTop: 8,
+    lineHeight: 16,
     textAlign: "left",
   },
   gmCheckoutCard: {
@@ -7285,16 +7277,16 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: 12,
+    paddingHorizontal: CHECKOUT_PAGE_H_MARGIN,
     paddingTop: 8,
-    backgroundColor: "#F5F6F8",
+    backgroundColor: "#F2F2F2",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     zIndex: 50,
     ...GatiMitraColors.elevationShadow,
   },
   gatiCashWalletBarWrap: {
-    marginHorizontal: -12,
+    marginHorizontal: -CHECKOUT_PAGE_H_MARGIN,
   },
   footerRow: {
     flexDirection: "row",

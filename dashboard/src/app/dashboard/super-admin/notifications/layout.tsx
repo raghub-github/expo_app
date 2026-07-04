@@ -36,10 +36,7 @@ export default function NotificationsLayout({ children }: { children: ReactNode 
     <div className="flex h-full min-h-[calc(100vh-4rem)] bg-slate-50">
       <aside className="w-60 shrink-0 border-r border-slate-200 bg-white py-4">
         <div className="mb-4 px-4">
-          <Link href="/dashboard/super-admin" className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-700">
-            ← Super Admin
-          </Link>
-          <div className="mt-2 flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <span className="grid h-8 w-8 place-items-center rounded-lg bg-teal-600 text-white">
               <Bell className="h-4 w-4" />
             </span>

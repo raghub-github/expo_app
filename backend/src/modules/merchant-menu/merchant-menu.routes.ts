@@ -435,6 +435,17 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
       );
 
       protectedApp.get<{ Params: { storeId: string } }>(
+        "/:storeId/image-upload-status",
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          const { getMenuImageUploadStatus } = await import("./menuImageUploadStatus.js");
+          const status = await getMenuImageUploadStatus(access.storeIdNum);
+          return reply.send(status);
+        }
+      );
+
+      protectedApp.get<{ Params: { storeId: string } }>(
         "/:storeId/cuisines",
         async (req, reply) => {
           const access = await getStore(req, reply, req.params.storeId);

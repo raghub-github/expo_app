@@ -1,6 +1,6 @@
 /**
  * Store hero carousel: banner first → gallery → loop.
- * Fixed hold + linear slide. Swipe left/right on image. Auto-advance when gallery exists.
+ * Horizontal strip (all slides mounted) — no URI swapping during swipe (prevents flicker).
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -47,10 +47,16 @@ export type StoreBannerCarouselProps = {
   onPress?: () => void;
   onPressIn?: () => void;
   onPressOut?: () => void;
-  /** When true, carousel never fires onPress — parent card handles taps. */
   deferTapToParent?: boolean;
-  /** Fired when user swipes horizontally (parent should skip navigation). */
   onSwipeGesture?: () => void;
+  /** Disable Ken Burns on single-slide heroes (store page scroll). */
+  enableKenBurns?: boolean;
+  /** Disable timed slide advance (store page — avoids flicker while scrolling). */
+  enableAutoRotate?: boolean;
+  /** Infinite clone strip for forward loop (list cards with swipe/auto only). */
+  enableInfiniteLoop?: boolean;
+  /** Called when a swipe/drag gesture finishes (used to unblock parent press). */
+  onGestureComplete?: () => void;
 };
 
 export const LIST_CARD_CAROUSEL_HOLD_MS = 3200;
@@ -60,7 +66,7 @@ const DEFAULT_HOLD = LIST_CARD_CAROUSEL_HOLD_MS;
 const DEFAULT_SLIDE = LIST_CARD_CAROUSEL_SLIDE_MS;
 const SWIPE_THRESHOLD = 36;
 
-function BannerImage({
+const BannerImage = React.memo(function BannerImage({
   uri,
   width,
   height,
@@ -70,17 +76,20 @@ function BannerImage({
   height: number;
 }) {
   return (
-    <Image
-      source={{ uri }}
-      style={{ width, height, backgroundColor: GatiMitraColors.mintSoft }}
-      contentFit="cover"
-      cachePolicy="memory-disk"
-      transition={0}
-      recyclingKey={uri}
-      priority="high"
-    />
+    <View style={{ width, height, backgroundColor: GatiMitraColors.mintSoft }}>
+      <Image
+        source={{ uri }}
+        style={{ width, height }}
+        contentFit="cover"
+        cachePolicy="memory-disk"
+        transition={0}
+        recyclingKey={uri}
+        priority="high"
+        allowDownscaling
+      />
+    </View>
   );
-}
+});
 
 function buildSlides(banner: string | null | undefined, gallery: string[]) {
   const seen = new Set<string>();
@@ -150,28 +159,35 @@ export function StoreBannerCarousel({
   onPressOut,
   deferTapToParent = false,
   onSwipeGesture,
+  enableKenBurns = true,
+  enableAutoRotate = true,
+  enableInfiniteLoop,
+  onGestureComplete,
 }: StoreBannerCarouselProps) {
   const resolvedHoldMs = holdMs ?? slideIntervalMs ?? initialBannerHoldMs ?? DEFAULT_HOLD;
   const resolvedSlideMs = slideMs ?? slideDurationMs ?? DEFAULT_SLIDE;
 
   const [activeIndex, setActiveIndex] = useState(0);
-  const [incomingIndex, setIncomingIndex] = useState(0);
 
   const activeIndexRef = useRef(0);
+  const physicalIndexRef = useRef(0);
   const slidesRef = useRef<string[]>([]);
+  const loopSlidesRef = useRef<string[]>([]);
   const isAnimatingRef = useRef(false);
+  const isDraggingRef = useRef(false);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showCarouselRef = useRef(false);
   const holdMsRef = useRef(resolvedHoldMs);
   const slideMsRef = useRef(resolvedSlideMs);
   const didSwipeRef = useRef(false);
+  const widthRef = useRef(width);
 
-  const slideProgress = useSharedValue(0);
-  const slideDir = useSharedValue(1);
+  const translateX = useSharedValue(0);
   const kenBurns = useSharedValue(0);
 
   holdMsRef.current = resolvedHoldMs;
   slideMsRef.current = resolvedSlideMs;
+  widthRef.current = width;
 
   const bannerAbs = useMemo(
     () => toAbsoluteImageUrl(bannerUri) ?? (typeof bannerUri === "string" ? bannerUri.trim() : ""),
@@ -198,10 +214,46 @@ export function StoreBannerCarousel({
     return galleryOnly;
   }, [bannerAbs, galleryOnly, hasGallery]);
 
+  const loopSlides = useMemo(() => {
+    if (slides.length <= 1) return slides;
+    const first = slides[0]!;
+    const last = slides[slides.length - 1]!;
+    return [last, ...slides, first];
+  }, [slides]);
+
   slidesRef.current = slides;
   const dataKey = slides.join("|");
   const showCarousel = slides.length > 1;
+  const useInfiniteLoop =
+    enableInfiniteLoop ?? (showCarousel && (enableSwipe || enableAutoRotate));
+  const stripSlides = useInfiniteLoop ? loopSlides : slides;
+  loopSlidesRef.current = stripSlides;
   showCarouselRef.current = showCarousel;
+
+  const syncTranslateToPhysical = useCallback(
+    (physicalIndex: number, animated: boolean) => {
+      const target = -physicalIndex * widthRef.current;
+      if (animated) {
+        translateX.value = withTiming(target, {
+          duration: slideMsRef.current,
+          easing: Easing.linear,
+        });
+      } else {
+        cancelAnimation(translateX);
+        translateX.value = target;
+      }
+    },
+    [translateX]
+  );
+
+  const resetToLogicalIndex = useCallback(
+    (logicalIndex: number, animated: boolean) => {
+      const physical = useInfiniteLoop ? logicalIndex + 1 : logicalIndex;
+      physicalIndexRef.current = physical;
+      syncTranslateToPhysical(physical, animated);
+    },
+    [syncTranslateToPhysical, useInfiniteLoop]
+  );
 
   useEffect(() => {
     for (const uri of slides) {
@@ -211,14 +263,20 @@ export function StoreBannerCarousel({
 
   useEffect(() => {
     setActiveIndex(0);
-    setIncomingIndex(slides.length > 1 ? 1 : 0);
     activeIndexRef.current = 0;
-    slideProgress.value = 0;
-    slideDir.value = 1;
+    physicalIndexRef.current = useInfiniteLoop ? 1 : 0;
     isAnimatingRef.current = false;
-  }, [dataKey, slideProgress, slideDir, slides.length]);
+    isDraggingRef.current = false;
+    resetToLogicalIndex(0, false);
+  }, [dataKey, resetToLogicalIndex, slides.length, useInfiniteLoop]);
 
   activeIndexRef.current = activeIndex;
+
+  useEffect(() => {
+    if (!isDraggingRef.current && !isAnimatingRef.current) {
+      resetToLogicalIndex(activeIndex, false);
+    }
+  }, [activeIndex, resetToLogicalIndex]);
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current) {
@@ -231,41 +289,69 @@ export function StoreBannerCarousel({
     (next: number) => {
       activeIndexRef.current = next;
       setActiveIndex(next);
-      slideProgress.value = 0;
       isAnimatingRef.current = false;
     },
-    [slideProgress]
+    []
   );
+
+  const applyPhysicalIndex = useCallback((physical: number, logical: number) => {
+    physicalIndexRef.current = physical;
+    commitIndex(logical);
+  }, [commitIndex]);
+
+  const finishGesture = useCallback(() => {
+    onGestureComplete?.();
+  }, [onGestureComplete]);
 
   const runSlide = useCallback(
     (direction: 1 | -1, onComplete?: () => void) => {
-      const len = slidesRef.current.length;
-      if (len <= 1 || isAnimatingRef.current) {
+      const real = slidesRef.current;
+      const len = real.length;
+      const w = widthRef.current;
+      if (len <= 1 || isAnimatingRef.current || isDraggingRef.current) {
         onComplete?.();
         return;
       }
 
       isAnimatingRef.current = true;
-      slideDir.value = direction;
-      const next = (activeIndexRef.current + direction + len) % len;
-      setIncomingIndex(next);
-      slideProgress.value = 0;
-      slideProgress.value = withTiming(
-        1,
+      const nextPhysical = physicalIndexRef.current + direction;
+      const loopLen = loopSlidesRef.current.length;
+      const nextLogical = useInfiniteLoop
+        ? (activeIndexRef.current + direction + len) % len
+        : Math.max(0, Math.min(len - 1, activeIndexRef.current + direction));
+
+      if (!useInfiniteLoop && nextLogical === activeIndexRef.current) {
+        isAnimatingRef.current = false;
+        onComplete?.();
+        return;
+      }
+
+      translateX.value = withTiming(
+        -nextPhysical * w,
         { duration: slideMsRef.current, easing: Easing.linear },
         (finished) => {
-          if (finished) {
-            runOnJS(commitIndex)(next);
-            if (onComplete) runOnJS(onComplete)();
-          } else {
+          if (!finished) {
             runOnJS(() => {
               isAnimatingRef.current = false;
             })();
+            return;
           }
+
+          if (useInfiniteLoop && nextPhysical === loopLen - 1) {
+            translateX.value = -w;
+            runOnJS(applyPhysicalIndex)(1, 0);
+          } else if (useInfiniteLoop && nextPhysical === 0) {
+            translateX.value = -len * w;
+            runOnJS(applyPhysicalIndex)(len, len - 1);
+          } else {
+            runOnJS(applyPhysicalIndex)(nextPhysical, nextLogical);
+          }
+
+          if (onComplete) runOnJS(onComplete)();
         }
       );
     },
-    [commitIndex, slideDir, slideProgress]
+    [applyPhysicalIndex, translateX, useInfiniteLoop]
   );
 
   const startAutoLoop = useCallback(() => {
@@ -277,16 +363,16 @@ export function StoreBannerCarousel({
   }, [clearHoldTimer, runSlide]);
 
   useEffect(() => {
-    if (!showCarousel) {
+    if (!showCarousel || !enableAutoRotate) {
       clearHoldTimer();
       return;
     }
     startAutoLoop();
     return clearHoldTimer;
-  }, [showCarousel, dataKey, clearHoldTimer, startAutoLoop]);
+  }, [showCarousel, enableAutoRotate, dataKey, clearHoldTimer, startAutoLoop]);
 
   useEffect(() => {
-    if (!showCarousel && slides.length === 1) {
+    if (enableKenBurns && !showCarousel && slides.length === 1) {
       kenBurns.value = 0;
       kenBurns.value = withRepeat(
         withSequence(
@@ -303,63 +389,119 @@ export function StoreBannerCarousel({
     }
     cancelAnimation(kenBurns);
     kenBurns.value = 0;
-  }, [showCarousel, slides.length, kenBurns]);
+  }, [enableKenBurns, showCarousel, slides.length, kenBurns]);
 
   const resetAutoAfterGesture = useCallback(() => {
     if (showCarouselRef.current) startAutoLoop();
   }, [startAutoLoop]);
 
+  const shouldCaptureHorizontal = useCallback(
+    (dx: number, dy: number) =>
+      enableSwipe &&
+      showCarouselRef.current &&
+      Math.abs(dx) > 4 &&
+      Math.abs(dx) > Math.abs(dy) * 1.05,
+    [enableSwipe]
+  );
+
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
-        onMoveShouldSetPanResponder: (_, g) =>
-          enableSwipe &&
-          showCarouselRef.current &&
-          Math.abs(g.dx) > 8 &&
-          Math.abs(g.dx) > Math.abs(g.dy) * 1.2,
+        onStartShouldSetPanResponderCapture: () => false,
+        onMoveShouldSetPanResponderCapture: (_, g) => shouldCaptureHorizontal(g.dx, g.dy),
+        onMoveShouldSetPanResponder: (_, g) => shouldCaptureHorizontal(g.dx, g.dy),
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
           didSwipeRef.current = false;
+          isDraggingRef.current = true;
           clearHoldTimer();
+          cancelAnimation(translateX);
+          isAnimatingRef.current = false;
         },
         onPanResponderMove: (_, g) => {
+          const w = widthRef.current;
+          if (slidesRef.current.length <= 1) return;
+
           if (Math.abs(g.dx) > 10) {
             if (!didSwipeRef.current) onSwipeGesture?.();
             didSwipeRef.current = true;
           }
+
+          translateX.value = -physicalIndexRef.current * w + g.dx;
         },
         onPanResponderRelease: (_, g) => {
+          isDraggingRef.current = false;
           const absDx = Math.abs(g.dx);
           const absDy = Math.abs(g.dy);
-          if ((didSwipeRef.current || absDx > SWIPE_THRESHOLD) && absDx > absDy) {
+          const len = slidesRef.current.length;
+          const w = widthRef.current;
+
+          if ((didSwipeRef.current || absDx > SWIPE_THRESHOLD) && absDx > absDy && len > 1) {
             didSwipeRef.current = true;
             onSwipeGesture?.();
-            if (g.dx < 0) {
-              runSlide(1, resetAutoAfterGesture);
+            const dir: 1 | -1 = g.dx < 0 ? 1 : -1;
+            const progress = Math.min(1, absDx / Math.max(w, 1));
+
+            if (progress >= 0.22) {
+              runSlide(dir, () => {
+                resetAutoAfterGesture();
+                finishGesture();
+              });
             } else {
-              runSlide(-1, resetAutoAfterGesture);
+              translateX.value = withTiming(-physicalIndexRef.current * w, {
+                duration: 180,
+                easing: Easing.out(Easing.quad),
+              });
+              resetAutoAfterGesture();
+              finishGesture();
             }
             return;
           }
+
           if (!deferTapToParent && absDx < 10 && absDy < 10 && !didSwipeRef.current) {
             onPress?.();
             onPressOut?.();
+          } else if (absDx > 0) {
+            translateX.value = withTiming(-physicalIndexRef.current * w, {
+              duration: 180,
+              easing: Easing.out(Easing.quad),
+            });
           }
           resetAutoAfterGesture();
+          if (didSwipeRef.current) finishGesture();
         },
         onPanResponderTerminate: () => {
+          isDraggingRef.current = false;
+          const w = widthRef.current;
+          translateX.value = withTiming(-physicalIndexRef.current * w, {
+            duration: 180,
+            easing: Easing.out(Easing.quad),
+          });
           resetAutoAfterGesture();
+          if (didSwipeRef.current) finishGesture();
         },
       }),
-    [enableSwipe, clearHoldTimer, deferTapToParent, onPress, onPressOut, onSwipeGesture, runSlide, resetAutoAfterGesture]
+    [
+      enableSwipe,
+      clearHoldTimer,
+      deferTapToParent,
+      onPress,
+      onPressOut,
+      onSwipeGesture,
+      commitIndex,
+      resetAutoAfterGesture,
+      finishGesture,
+      runSlide,
+      shouldCaptureHorizontal,
+      translateX,
+    ]
   );
 
-  const outgoingStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: -slideDir.value * slideProgress.value * width }],
-  }));
+  const panHandlers = enableSwipe ? panResponder.panHandlers : undefined;
 
-  const incomingStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: slideDir.value * (width - slideProgress.value * width) }],
+  const stripStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
   }));
 
   const singleSlideMotionStyle = useAnimatedStyle(() => {
@@ -420,25 +562,23 @@ export function StoreBannerCarousel({
     );
   }
 
-  const currentUri = slides[activeIndex];
-  const incomingUri = slides[incomingIndex] ?? slides[0];
-
   return (
-    <View style={[{ width, height }, radiusStyle, style]}>
-      <View style={styles.clip} {...(enableSwipe ? panResponder.panHandlers : {})}>
-        <Animated.View style={[styles.slideLayer, outgoingStyle]}>
-          <BannerImage uri={currentUri} width={width} height={height} />
+    <View style={[{ width, height }, radiusStyle, style]} collapsable={false}>
+      <View
+        style={[styles.clip, { width, height }]}
+        {...panHandlers}
+      >
+        <Animated.View
+          style={[
+            styles.strip,
+            { width: width * stripSlides.length, height },
+            stripStyle,
+          ]}
+        >
+          {stripSlides.map((uri, i) => (
+            <BannerImage key={`${uri}-${i}`} uri={uri} width={width} height={height} />
+          ))}
         </Animated.View>
-        <Animated.View style={[styles.slideLayer, incomingStyle]}>
-          <BannerImage uri={incomingUri} width={width} height={height} />
-        </Animated.View>
-        <Image
-          source={{ uri: incomingUri }}
-          style={styles.preload}
-          contentFit="cover"
-          cachePolicy="memory-disk"
-          transition={0}
-        />
       </View>
       {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
       {showDots ? (
@@ -454,20 +594,13 @@ export function StoreBannerCarousel({
 
 const styles = StyleSheet.create({
   clip: {
-    flex: 1,
     overflow: "hidden",
   },
-  slideLayer: {
-    ...StyleSheet.absoluteFillObject,
+  strip: {
+    flexDirection: "row",
   },
   singleSlideMotion: {
     ...StyleSheet.absoluteFillObject,
-  },
-  preload: {
-    position: "absolute",
-    width: 1,
-    height: 1,
-    opacity: 0,
   },
   dim: {
     ...StyleSheet.absoluteFillObject,

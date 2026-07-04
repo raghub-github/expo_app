@@ -3,6 +3,7 @@
  */
 
 import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { DietIndicator } from "@/components/store/DietIndicator";
@@ -84,17 +85,17 @@ export function OrderRestaurantCard({
           {bannerUri ? (
             <Image source={{ uri: bannerUri }} style={styles.restaurantLogoImg} resizeMode="cover" />
           ) : (
-            <Text style={styles.restaurantInitial}>{restaurantName.slice(0, 1).toUpperCase()}</Text>
+            <CheckoutText style={styles.restaurantInitial}>{restaurantName.slice(0, 1).toUpperCase()}</CheckoutText>
           )}
         </View>
         <View style={styles.restaurantInfo}>
-          <Text style={styles.restaurantName} numberOfLines={1}>
+          <CheckoutText style={styles.restaurantName} numberOfLines={1}>
             {restaurantName}
-          </Text>
+          </CheckoutText>
           {!!merchantArea && (
-            <Text style={styles.restaurantArea} numberOfLines={1}>
+            <CheckoutText style={styles.restaurantArea} numberOfLines={1}>
               {merchantArea}
-            </Text>
+            </CheckoutText>
           )}
         </View>
         <TouchableOpacity style={styles.restaurantCallBtn} onPress={onCallRestaurant} activeOpacity={0.85}>
@@ -109,15 +110,15 @@ export function OrderRestaurantCard({
           <Ionicons name="document-text-outline" size={16} color={MUTED} />
         </View>
         <View style={styles.orderRowText}>
-          <Text style={styles.orderIdLabel}>Order #{displayOrderId}</Text>
+          <CheckoutText style={styles.orderIdLabel}>Order #{displayOrderId}</CheckoutText>
           {!itemsExpanded && itemsPreview ? (
             <View style={styles.itemPreviewRow}>
               {items[0]?.vegNonVeg ? (
                 <DietIndicator type={resolveOrderItemDiet(items[0].vegNonVeg) ?? "veg"} />
               ) : null}
-              <Text style={styles.itemPreviewText} numberOfLines={1}>
+              <CheckoutText style={styles.itemPreviewText} numberOfLines={1}>
                 {itemsPreview}
-              </Text>
+              </CheckoutText>
             </View>
           ) : null}
         </View>
@@ -149,9 +150,9 @@ export function OrderRestaurantCard({
                         <DietIndicator type={diet} />
                       </View>
                     )}
-                    <Text style={styles.itemName} numberOfLines={2}>
+                    <CheckoutText style={styles.itemName} numberOfLines={2}>
                       {item.quantity} x {item.name}
-                    </Text>
+                    </CheckoutText>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -173,25 +174,25 @@ export function OrderRestaurantCard({
         <View style={styles.cookingTextWrap}>
           {hasInstructions ? (
             <>
-              <Text style={styles.cookingTitle}>Cooking requests added</Text>
+              <CheckoutText style={styles.cookingTitle}>Cooking requests added</CheckoutText>
               <View style={styles.instructionList}>
                 {merchantInstructionsList.map((item) => (
                   <View key={item} style={styles.instructionChipRow}>
                     <Ionicons name="checkmark-circle" size={14} color={ACCENT} />
-                    <Text style={styles.instructionChipText}>{item}</Text>
+                    <CheckoutText style={styles.instructionChipText}>{item}</CheckoutText>
                   </View>
                 ))}
               </View>
               {canAddCookingRequest ? (
-                <Text style={styles.cookingAddMore}>Tap to add another request</Text>
+                <CheckoutText style={styles.cookingAddMore}>Tap to add another request</CheckoutText>
               ) : null}
             </>
           ) : (
-            <Text
+            <CheckoutText
               style={[styles.cookingPlaceholder, !canAddCookingRequest && styles.cookingPlaceholderDisabled]}
             >
               {canAddCookingRequest ? "Add cooking requests" : "Cooking requests closed for this order"}
-            </Text>
+            </CheckoutText>
           )}
         </View>
         {canAddCookingRequest ? (
@@ -210,7 +211,6 @@ const styles = StyleSheet.create({
     marginTop: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    ...GatiMitraColors.elevationShadow,
   },
   solidDivider: {
     height: StyleSheet.hairlineWidth,

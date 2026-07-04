@@ -38,6 +38,9 @@ export const queryKeys = {
   },
   permissions: () => ["permissions"] as const,
   dashboardAccess: () => ["dashboard-access"] as const,
+  admin: {
+    userAppCategories: (storeType: string) => ["admin", "user-app-categories", storeType] as const,
+  },
   
   // Users
   users: {

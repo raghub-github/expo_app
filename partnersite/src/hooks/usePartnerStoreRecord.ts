@@ -15,6 +15,7 @@ export function usePartnerStoreRecord(storeId: string | null, options?: { enable
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
     placeholderData: keepPreviousData,
+    refetchOnMount: false,
     retry: 1,
   });
 }

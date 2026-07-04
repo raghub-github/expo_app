@@ -55,6 +55,14 @@ function isOnboardingPending(store: ChildStore): boolean {
   return store.current_step < store.total_steps;
 }
 
+const SUBMITTED_REVIEW_STATUSES = new Set(["SUBMITTED", "UNDER_VERIFICATION", "PENDING_VERIFICATION"]);
+
+function isStoreUnderReview(store: ChildStore): boolean {
+  const status = String(store.approval_status || "").toUpperCase();
+  if (SUBMITTED_REVIEW_STATUSES.has(status) && !isOnboardingPending(store)) return true;
+  return status === "UNDER_VERIFICATION" || status === "PENDING_VERIFICATION";
+}
+
 function getStatusBadge(store: ChildStore): { label: string; bg: string; text: string } {
   if (isOnboardingPending(store)) {
     return { label: "Pending", bg: "#22C55E", text: "#FFFFFF" };
@@ -62,9 +70,11 @@ function getStatusBadge(store: ChildStore): { label: string; bg: string; text: s
   const s = String(store.approval_status || "").toUpperCase();
   if (s === "APPROVED") return { label: "Verified", bg: "#DCFCE7", text: "#166534" };
   if (s === "REJECTED") return { label: "Rejected", bg: "#FEE2E2", text: "#991B1B" };
-  if (s === "UNDER_VERIFICATION") return { label: "Under review", bg: "#FEF3C7", text: "#92400E" };
+  if (isStoreUnderReview(store) || SUBMITTED_REVIEW_STATUSES.has(s)) {
+    return { label: "Under review", bg: "#FEF3C7", text: "#92400E" };
+  }
   if (s === "DELISTED") return { label: "Delisted", bg: "#E2E8F0", text: "#475569" };
-  return { label: store.approval_status || "Pending", bg: "#F1F5F9", text: "#475569" };
+  return { label: "Pending", bg: "#F1F5F9", text: "#475569" };
 }
 
 function onboardingUrl(parentId: number, storeId?: string): string {

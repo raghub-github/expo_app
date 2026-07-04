@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { merchantKeys } from '@/lib/query-keys';
 import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
+import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import { warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch';
 
 /**
@@ -12,7 +14,13 @@ import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch';
 export function PartnerShellWarmup() {
   const queryClient = useQueryClient();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const storeId = readPartnerSelectedStoreId();
+    if (storeId) {
+      warmDashboardWalletCache(storeId);
+      warmLivePreviewCache(storeId, 'today');
+    }
+
     void queryClient.prefetchQuery({
       queryKey: merchantKeys.resolveSession(),
       queryFn: async () => {
@@ -24,10 +32,11 @@ export function PartnerShellWarmup() {
       staleTime: 5 * 60 * 1000,
     });
 
-    const storeId = readPartnerSelectedStoreId();
     if (storeId) {
       prefetchPartnerRouteData(queryClient, '/partners/dashboard', storeId);
+      prefetchPartnerRouteData(queryClient, '/partners/payments', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/orders', storeId);
+      prefetchPartnerRouteData(queryClient, '/partners/order-history', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/store-settings?tab=operations', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/profile', storeId);
     }

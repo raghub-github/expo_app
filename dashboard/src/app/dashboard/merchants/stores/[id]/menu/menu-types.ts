@@ -222,3 +222,38 @@ export interface MenuCategory {
   created_at?: string;
   updated_at?: string;
 }
+
+export type MenuItemPriceFields = Pick<
+  MenuItem,
+  "base_price" | "selling_price" | "discount_percentage"
+>;
+
+export function menuItemBasePrice(item: MenuItemPriceFields): number {
+  const n = Number(item.base_price);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function menuItemSellingPrice(item: MenuItemPriceFields): number {
+  const selling = Number(item.selling_price);
+  if (Number.isFinite(selling) && selling > 0) return selling;
+  const base = menuItemBasePrice(item);
+  return base > 0 ? base : 0;
+}
+
+/** True when base (MRP) is higher than selling price — show strike-through. */
+export function menuItemShowStrikePrice(item: MenuItemPriceFields): boolean {
+  const base = menuItemBasePrice(item);
+  const selling = menuItemSellingPrice(item);
+  return base > 0 && selling > 0 && base > selling;
+}
+
+export function menuItemDiscountPercent(item: MenuItemPriceFields): number {
+  const base = menuItemBasePrice(item);
+  const selling = menuItemSellingPrice(item);
+  if (menuItemShowStrikePrice(item)) {
+    return Math.round(((base - selling) / base) * 100);
+  }
+  const pct = Number(item.discount_percentage);
+  return Number.isFinite(pct) && pct > 0 ? Math.round(pct) : 0;
+}
+

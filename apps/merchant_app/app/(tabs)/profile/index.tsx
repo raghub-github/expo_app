@@ -13,6 +13,7 @@ import {
   useWindowDimensions,
   RefreshControl,
   Platform,
+  Linking,
 } from "react-native";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -30,6 +31,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useProfileNav } from "@/context/ProfileNavContext";
 import { getRushStatus } from "@/services/rushApi";
 import { prefetchOperatingHours, prefetchOutlet } from "@/services/outletApi";
+import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 10;
@@ -108,6 +110,7 @@ export default function ProfileScreen() {
   const [rushBadge, setRushBadge] = useState<"OFF" | "ON">("OFF");
   const [refreshing, setRefreshing] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const legalUrls = getPartnerLegalUrls();
 
   // Do not prefetch nested profile routes here: router.prefetch() can dispatch PRELOAD
   // actions that are not always handled by the profile stack navigator.
@@ -359,6 +362,29 @@ export default function ProfileScreen() {
       </Pressable>
 
       <Text style={styles.footer}>GatiMitra Partner • v1.0.0</Text>
+
+      <View style={styles.legalLinks}>
+        <Pressable
+          onPress={() => Linking.openURL(legalUrls.terms).catch(() => {})}
+          style={({ pressed }) => [pressed && styles.pressed]}
+        >
+          <Text style={styles.legalLink}>T & C</Text>
+        </Pressable>
+        <Text style={styles.legalSeparator}>|</Text>
+        <Pressable
+          onPress={() => Linking.openURL(legalUrls.privacyPolicy).catch(() => {})}
+          style={({ pressed }) => [pressed && styles.pressed]}
+        >
+          <Text style={styles.legalLink}>Privacy Policy</Text>
+        </Pressable>
+        <Text style={styles.legalSeparator}>|</Text>
+        <Pressable
+          onPress={() => Linking.openURL(legalUrls.codeOfConduct).catch(() => {})}
+          style={({ pressed }) => [pressed && styles.pressed]}
+        >
+          <Text style={styles.legalLink}>Code of Conduct</Text>
+        </Pressable>
+      </View>
     </ScrollView>
     </>
   );
@@ -550,5 +576,24 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: GatiMitraMerchant.textTertiary,
     marginTop: 18,
+  },
+  legalLinks: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 8,
+  },
+  legalLink: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.primary,
+  },
+  legalSeparator: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
   },
 });

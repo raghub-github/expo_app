@@ -2,7 +2,8 @@
  * Swiggy-style bottom sheet when a coupon/offer unlocks after adding items.
  */
 
-import { View, Text, Modal, Pressable, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, Modal, Pressable, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeInDown } from "react-native-reanimated";
@@ -41,7 +42,7 @@ function ScallopedBadge() {
         />
       ))}
       <View style={styles.badgeCore}>
-        <Text style={styles.badgePct}>%</Text>
+        <CheckoutText style={styles.badgePct}>%</CheckoutText>
       </View>
     </View>
   );
@@ -100,29 +101,29 @@ export function CouponAvailableBottomSheet({
                 <SunburstRays />
                 <ScallopedBadge />
 
-                <Text style={styles.exclusive}>✦ EXCLUSIVELY FOR YOU ✦</Text>
+                <CheckoutText style={styles.exclusive}>✦ EXCLUSIVELY FOR YOU ✦</CheckoutText>
 
-                <Text style={styles.headline}>
+                <CheckoutText style={styles.headline}>
                   {savingsLabel != null ? (
                     <>
-                      Save <Text style={styles.headlineAccent}>₹{savingsLabel}</Text> on this order
+                      Save <CheckoutText style={styles.headlineAccent}>₹{savingsLabel}</CheckoutText> on this order
                     </>
                   ) : (
                     <>
-                      <Text style={styles.headlineAccent}>{prompt.offerTitle}</Text> unlocked for you
+                      <CheckoutText style={styles.headlineAccent}>{prompt.offerTitle}</CheckoutText> unlocked for you
                     </>
                   )}
-                </Text>
+                </CheckoutText>
 
-                <Text style={styles.couponLine}>{prompt.promoLine}</Text>
+                <CheckoutText style={styles.couponLine}>{prompt.promoLine}</CheckoutText>
 
                 {prompt.description ? (
-                  <Text style={styles.summaryLine} numberOfLines={2}>
+                  <CheckoutText style={styles.summaryLine} numberOfLines={2}>
                     {prompt.description}
-                  </Text>
+                  </CheckoutText>
                 ) : null}
 
-                <Text style={styles.hint}>Tap on &apos;APPLY&apos; to avail this</Text>
+                <CheckoutText style={styles.hint}>Tap on &apos;APPLY&apos; to avail this</CheckoutText>
 
                 <TouchableOpacity
                   style={styles.applyBtnWrap}
@@ -135,7 +136,7 @@ export function CouponAvailableBottomSheet({
                     end={{ x: 1, y: 0.5 }}
                     style={styles.applyBtn}
                   >
-                    <Text style={styles.applyBtnText}>APPLY</Text>
+                    <CheckoutText style={styles.applyBtnText}>APPLY</CheckoutText>
                   </LinearGradient>
                 </TouchableOpacity>
               </Animated.View>

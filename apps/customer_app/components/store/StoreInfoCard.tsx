@@ -1,15 +1,16 @@
-import React, { useEffect, useRef, useState } from "react";
+import React from "react";
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   Image,
-  Animated,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
+import { OfferHoldEraseText } from "./OfferHoldEraseText";
+import { StoreOfferBadgeIcon } from "./StoreInnerContinueCartBar";
 
 export type StoreInfoCardProps = {
   name: string;
@@ -24,61 +25,15 @@ export type StoreInfoCardProps = {
   /** Rotating offer lines shown in the offer strip (actual offer text, not store name). */
   offerTexts?: string[];
   offerCount?: number;
+  /** Reserve offer strip space before network offers resolve (prevents layout jump). */
+  reserveOfferRow?: boolean;
   isFrequentlyReordered?: boolean;
   onInfoPress?: () => void;
   onLocationPress?: () => void;
   onSchedulePress?: () => void;
   onOffersPress?: () => void;
+  onRatingHintPress?: () => void;
 };
-
-function OfferTicker({
-  texts,
-  onPress,
-}: {
-  texts: string[];
-  onPress?: () => void;
-}) {
-  const [index, setIndex] = useState(0);
-  const opacity = useRef(new Animated.Value(1)).current;
-  const translateY = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    setIndex(0);
-    opacity.setValue(1);
-    translateY.setValue(0);
-  }, [texts.join("|"), opacity, translateY]);
-
-  useEffect(() => {
-    if (texts.length <= 1) return;
-    const interval = setInterval(() => {
-      Animated.parallel([
-        Animated.timing(opacity, { toValue: 0, duration: 220, useNativeDriver: true }),
-        Animated.timing(translateY, { toValue: -6, duration: 220, useNativeDriver: true }),
-      ]).start(() => {
-        setIndex((i) => (i + 1) % texts.length);
-        translateY.setValue(8);
-        Animated.parallel([
-          Animated.timing(opacity, { toValue: 1, duration: 280, useNativeDriver: true }),
-          Animated.timing(translateY, { toValue: 0, duration: 280, useNativeDriver: true }),
-        ]).start();
-      });
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [texts.length, opacity, translateY]);
-
-  if (texts.length === 0) return null;
-
-  return (
-    <TouchableOpacity style={styles.offerTextWrap} onPress={onPress} activeOpacity={0.7}>
-      <Animated.Text
-        style={[styles.offerText, { opacity, transform: [{ translateY }] }]}
-        numberOfLines={1}
-      >
-        {texts[index]}
-      </Animated.Text>
-    </TouchableOpacity>
-  );
-}
 
 export function StoreInfoCard({
   name,
@@ -90,11 +45,13 @@ export function StoreInfoCard({
   scheduledLabel,
   offerTexts = [],
   offerCount = 0,
+  reserveOfferRow = false,
   isFrequentlyReordered,
   onInfoPress,
   onLocationPress,
   onSchedulePress,
   onOffersPress,
+  onRatingHintPress,
 }: StoreInfoCardProps) {
   const locationText = [
     distanceKm != null ? `${distanceKm.toFixed(1)} km` : null,
@@ -104,6 +61,7 @@ export function StoreInfoCard({
     .join(" · ");
 
   const hasOffers = offerTexts.length > 0 || offerCount > 0;
+  const showOfferRow = hasOffers || reserveOfferRow;
 
   return (
     <View style={styles.card}>
@@ -121,6 +79,7 @@ export function StoreInfoCard({
           totalReviews={totalReviews}
           showReviewHint
           size="md"
+          onReviewHintPress={onRatingHintPress}
         />
       </View>
 
@@ -159,17 +118,24 @@ export function StoreInfoCard({
         </View>
       ) : null}
 
-      {hasOffers ? (
+      {showOfferRow ? (
         <>
           <View style={styles.divider} />
           <View style={styles.offerRow}>
-            <View style={styles.offerIcon}>
-              <Ionicons name="pricetag" size={14} color={StoreTheme.offerBlue} />
-            </View>
-            <OfferTicker texts={offerTexts} onPress={onOffersPress} />
+            <StoreOfferBadgeIcon size={24} />
+            <OfferHoldEraseText
+              texts={offerTexts}
+              onPress={onOffersPress}
+            />
             {offerCount > 0 ? (
               <TouchableOpacity style={styles.offerCountWrap} onPress={onOffersPress} activeOpacity={0.7}>
-                <Text style={styles.offerCount}>{offerCount} offers</Text>
+                <Text style={styles.offerCount}>
+                  {offerCount} {offerCount === 1 ? "offer" : "offers"}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
+              </TouchableOpacity>
+            ) : offerTexts.length > 0 || reserveOfferRow ? (
+              <TouchableOpacity style={styles.offerCountWrap} onPress={onOffersPress} activeOpacity={0.7}>
                 <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
               </TouchableOpacity>
             ) : null}
@@ -288,24 +254,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     minHeight: 28,
-  },
-  offerIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "#EFF6FF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  offerTextWrap: {
-    flex: 1,
-    minWidth: 0,
-    overflow: "hidden",
-  },
-  offerText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: StoreTheme.textPrimary,
   },
   offerCountWrap: {
     flexDirection: "row",

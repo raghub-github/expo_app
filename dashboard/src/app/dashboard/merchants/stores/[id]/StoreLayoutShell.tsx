@@ -42,6 +42,7 @@ function StoreLayoutFallback({
   const pathname = useAppPathname();
   const { store, isLoading } = useStore(storeId);
   const isOrdersPage = pathname.includes("/orders");
+  const isFullHeightScrollPage = isOrdersPage || pathname.includes("/menu");
 
   if (isLoading && !store) {
     return (
@@ -78,7 +79,7 @@ function StoreLayoutFallback({
         <div
           className="flex min-h-0 flex-1 flex-col w-full overflow-hidden"
           style={
-            isOrdersPage
+            isFullHeightScrollPage
               ? undefined
               : {
                   paddingBottom:
@@ -131,6 +132,7 @@ export function StoreLayoutShell({
   };
 
   const isOrdersPage = pathname.includes("/orders");
+  const isFullHeightScrollPage = isOrdersPage || pathname.includes("/menu");
 
   if (!store) {
     return (
@@ -217,7 +219,7 @@ export function StoreLayoutShell({
         <div
           className="flex min-h-0 flex-1 flex-col w-full overflow-hidden"
           style={
-            isOrdersPage
+            isFullHeightScrollPage
               ? undefined
               : {
                   paddingBottom:

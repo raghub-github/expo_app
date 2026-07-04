@@ -34,6 +34,9 @@ import {
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useQueryClient } from '@tanstack/react-query';
+import { merchantKeys } from '@/lib/query-keys';
+import { fetchStoreOperations } from '@/hooks/useMerchantApi';
 import { formatStoreActionSourceLabel } from '@/lib/storeActionSource';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { useMerchantSession } from '@/context/MerchantSessionContext';
@@ -406,6 +409,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const merchantSession = useMerchantSession();
+  const queryClient = useQueryClient();
   const userEmail = merchantSession?.user?.email ?? merchantSession?.user?.phone ?? '';
 
   /** SSR-safe: empty until mount — never treat layout placeholders like "No ID" as store_id. */
@@ -428,6 +432,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const [sheet, setSheet] = useState<PartnerHeaderSheet | null>(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [profileHydrated, setProfileHydrated] = useState(false);
   const [photoActionMenuOpen, setPhotoActionMenuOpen] = useState(false);
   const [localAvatarDataUrl, setLocalAvatarDataUrl] = useState<string | null>(null);
   const [profilePanelPos, setProfilePanelPos] = useState<{
@@ -442,6 +447,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const topbarRef = useRef<HTMLElement | null>(null);
   const [statusTab, setStatusTab] = useState<'manage' | 'schedule' | 'rush'>('manage');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showLogoutAllModal, setShowLogoutAllModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [storeOpen, setStoreOpen] = useState<boolean | null>(null);
   const [autoOpenFromSchedule, setAutoOpenFromSchedule] = useState(true);
@@ -728,12 +734,18 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     };
   }, [restaurantId]);
 
-  const displayName =
+  useEffect(() => {
+    setProfileHydrated(true);
+  }, []);
+
+  const resolvedDisplayName =
     (merchantSession?.user?.name && merchantSession.user.name.trim()) ||
     (ownerName && ownerName.trim()) ||
     (parentName && parentName.trim()) ||
     (userEmail && userEmail.includes('@') ? userEmail.split('@')[0] : userEmail) ||
     'Account';
+
+  const displayName = profileHydrated ? resolvedDisplayName : 'Account';
 
   const sessionAvatarUrl = merchantSession?.user?.avatar_url?.trim() || null;
   const parentBrandLogoRaw = merchantSession?.parent?.store_logo?.trim() || null;
@@ -785,27 +797,24 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const refreshStoreOperations = useCallback(async () => {
     if (!resolvedStoreId) return;
     try {
-      const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(resolvedStoreId)}`);
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data && typeof data.operational_status === 'string') {
-        applyLicenseFieldsFromStoreOps(data as Record<string, unknown>);
+      const data = await queryClient.fetchQuery({
+        queryKey: merchantKeys.storeOperations(resolvedStoreId),
+        queryFn: () => fetchStoreOperations(resolvedStoreId),
+        staleTime: 2 * 60 * 1000,
+      });
+      if (data && typeof data.operational_status === 'string') {
+        applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
         const withinH =
-          typeof (data as { within_operating_hours?: boolean }).within_operating_hours === 'boolean'
-            ? (data as { within_operating_hours: boolean }).within_operating_hours
-            : null;
+          typeof data.within_operating_hours === 'boolean' ? data.within_operating_hours : null;
         const todayClosed =
-          typeof (data as { is_today_scheduled_closed?: boolean }).is_today_scheduled_closed === 'boolean'
-            ? (data as { is_today_scheduled_closed: boolean }).is_today_scheduled_closed
-            : null;
-        const schedulePhaseRaw = (data as { schedule_phase?: string }).schedule_phase;
-        const schedulePhase = typeof schedulePhaseRaw === 'string' ? schedulePhaseRaw : null;
-        const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
+          typeof data.is_today_scheduled_closed === 'boolean' ? data.is_today_scheduled_closed : null;
+        const schedulePhase = typeof data.schedule_phase === 'string' ? data.schedule_phase : null;
+        const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as unknown as Record<string, unknown>);
         clientStoreOpsDebugLog('refreshStoreOperations', {
           storeId: resolvedStoreId,
           operational_status: data.operational_status,
-          last_toggle_type: (data as { last_toggle_type?: string }).last_toggle_type,
-          within_hours_but_restricted: (data as { within_hours_but_restricted?: boolean })
-            .within_hours_but_restricted,
+          last_toggle_type: data.last_toggle_type,
+          within_hours_but_restricted: data.within_hours_but_restricted,
           within_operating_hours: withinH,
           schedule_phase: schedulePhase,
           surface_online: surfOnline,
@@ -832,31 +841,29 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     } catch {
       setStoreOpen(null);
     }
-  }, [resolvedStoreId, applyLicenseFieldsFromStoreOps]);
+  }, [resolvedStoreId, applyLicenseFieldsFromStoreOps, queryClient]);
 
   const refetchStoreOp = useCallback(async (storeId: string): Promise<boolean> => {
     if (!storeId) return false;
     try {
-      const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`);
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data && typeof data.operational_status === 'string') {
+      const data = await queryClient.fetchQuery({
+        queryKey: merchantKeys.storeOperations(storeId),
+        queryFn: () => fetchStoreOperations(storeId),
+        staleTime: 2 * 60 * 1000,
+      });
+      if (data && typeof data.operational_status === 'string') {
         const withinH =
-          typeof (data as { within_operating_hours?: boolean }).within_operating_hours === 'boolean'
-            ? (data as { within_operating_hours: boolean }).within_operating_hours
-            : null;
+          typeof data.within_operating_hours === 'boolean' ? data.within_operating_hours : null;
         const todayClosed =
-          typeof (data as { is_today_scheduled_closed?: boolean }).is_today_scheduled_closed === 'boolean'
-            ? (data as { is_today_scheduled_closed: boolean }).is_today_scheduled_closed
-            : null;
-        const schedulePhaseRaw = (data as { schedule_phase?: string }).schedule_phase;
-        const schedulePhase = typeof schedulePhaseRaw === 'string' ? schedulePhaseRaw : null;
-        const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
+          typeof data.is_today_scheduled_closed === 'boolean' ? data.is_today_scheduled_closed : null;
+        const schedulePhase = typeof data.schedule_phase === 'string' ? data.schedule_phase : null;
+        const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as unknown as Record<string, unknown>);
         clientStoreOpsDebugLog('refetchStoreOp', {
           storeId,
           operational_status: data.operational_status,
-          last_toggle_type: (data as { last_toggle_type?: string }).last_toggle_type,
-          last_toggled_at: (data as { last_toggled_at?: string }).last_toggled_at,
-          restriction_type: (data as { restriction_type?: string }).restriction_type,
+          last_toggle_type: data.last_toggle_type,
+          last_toggled_at: data.last_toggled_at,
+          restriction_type: data.restriction_type,
           within_operating_hours: withinH,
           schedule_phase: schedulePhase,
           surface_online: surfOnline,
@@ -875,7 +882,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           setStoreOpen(row.open);
           setAutoOpenFromSchedule(row.autoOpen);
           setManualLock(row.manualLock);
-          applyLicenseFieldsFromStoreOps(data as Record<string, unknown>);
+          applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
         }
         emitPartnerStoreOperationsRefresh(storeId);
         return true;
@@ -884,7 +891,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       /* ignore */
     }
     return false;
-  }, [resolvedStoreId, applyLicenseFieldsFromStoreOps]);
+  }, [resolvedStoreId, applyLicenseFieldsFromStoreOps, queryClient]);
 
   const tryOpenStoreAfterLicenseCheck = useCallback(
     async (storeId: string, storeName: string) => {
@@ -1225,6 +1232,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       toast.error('Could not sign out everywhere. Try again.');
     } finally {
       setIsLoggingOut(false);
+      setShowLogoutAllModal(false);
       setProfileDropdownOpen(false);
     }
   };
@@ -3069,28 +3077,39 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   className="w-full rounded-xl border-2 border-[#ff5a5f] py-3 text-sm font-semibold text-[#ff5a5f] hover:bg-rose-50"
                   disabled={isLoggingOut}
                   onClick={() => {
-                    if (
-                      typeof window !== 'undefined' &&
-                      !window.confirm('Sign out from all devices? You will need to sign in again on each device.')
-                    ) {
-                      return;
-                    }
-                    void handleLogoutAllDevices();
+                    setProfileDropdownOpen(false);
+                    setPhotoActionMenuOpen(false);
+                    setShowLogoutAllModal(true);
                   }}
                 >
                   Logout from all devices
                 </button>
               </div>
-              <p className="pt-3 text-center text-xs text-gray-400">
-                <a href="https://gatimitra.com" className="hover:underline">
+              <p className="pt-3 text-center text-xs text-gray-500">
+                <a
+                  href="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                >
                   Terms of service
                 </a>
-                <span className="mx-1">|</span>
-                <a href="https://gatimitra.com" className="hover:underline">
+                <span className="mx-1 text-gray-300">|</span>
+                <a
+                  href="/privacy-policy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                >
                   Privacy Policy
                 </a>
-                <span className="mx-1">|</span>
-                <a href="https://gatimitra.com" className="hover:underline">
+                <span className="mx-1 text-gray-300">|</span>
+                <a
+                  href="/coc"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                >
                   Code of Conduct
                 </a>
               </p>
@@ -3160,6 +3179,14 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         onClose={() => setShowLogoutModal(false)}
         onConfirm={handleLogout}
         isLoading={isLoggingOut}
+      />
+
+      <LogoutConfirmModal
+        isOpen={showLogoutAllModal}
+        onClose={() => setShowLogoutAllModal(false)}
+        onConfirm={handleLogoutAllDevices}
+        isLoading={isLoggingOut}
+        variant="all-devices"
       />
 
       {scheduleMassCancelModalOpen &&
