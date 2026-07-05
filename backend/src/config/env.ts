@@ -278,6 +278,15 @@ const EnvSchema = z.object({
     z.boolean()
   ).default(false),
 
+  // -------- Cashfree Secure ID (see verification_provider_configs) --------
+  // The active provider env (sandbox vs production) lives in the DB — these
+  // vars only carry the credential material. Runtime resolves whichever
+  // key pair matches verification_provider_configs.environment.
+  CASHFREE_SANDBOX_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(8).optional()),
+  CASHFREE_SANDBOX_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+  CASHFREE_PROD_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(8).optional()),
+  CASHFREE_PROD_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
   /** Secret for POST /v1/push/send-notification (dashboard / internal). */
   PUSH_NOTIFICATION_ADMIN_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
 

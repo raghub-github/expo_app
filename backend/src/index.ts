@@ -48,6 +48,8 @@ import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
+import { verificationAdminRoutes } from "./modules/verification/routes/admin.routes.js";
+import { cashfreeHeaderWebhookRoutes, cashfreeBodySignedWebhookRoutes } from "./modules/verification/routes/webhook.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
 import { customerSubscriptionModule } from "./modules/subscription/customer-subscription.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
@@ -425,6 +427,15 @@ await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
 await app.register(notificationRoutes);
 await app.register(notificationInternalRoutes, { prefix: "/v1/internal" });
+
+// Verification — Cashfree Secure ID auto/manual/hybrid.
+//   - verificationAdminRoutes → /v1/verification/*  (admin submit + history)
+//   - Two webhook receivers on /api/webhooks/cashfree/{header,body}-signed
+//     to match Cashfree's two coexisting signature schemes (see Phase 2 spec).
+await app.register(verificationAdminRoutes);
+await app.register(cashfreeHeaderWebhookRoutes, { prefix: "/api" });
+await app.register(cashfreeBodySignedWebhookRoutes, { prefix: "/api" });
+
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
