@@ -973,6 +973,39 @@ export async function onboardingRoutes(app: FastifyInstance) {
           .where(eq(riders.id, riderIdInt));
       }
 
+      // Fire-and-forget: kick off any auto verifications that this step
+      // unlocked. Every policy starts on mode='manual' so this is a no-op
+      // until admin flips a slot to auto/hybrid via the policy center.
+      // Errors are logged, never thrown — /save-step still returns 200.
+      void (async () => {
+        try {
+          const { triggerRiderOnboardingVerifications } = await import(
+            "../verification/onboarding-hooks.js"
+          );
+          await triggerRiderOnboardingVerifications(
+            {
+              logger: req.log,
+              riderId: riderIdInt,
+              step: step as
+                | "aadhaar_name" | "dl_rc" | "rental_ev" | "pan_selfie" | "location",
+              hasOwnVehicle: stepData.hasOwnVehicle === true,
+            },
+            {
+              aadhaarNumber: stepData.aadhaarNumber as string | undefined,
+              fullName: stepData.fullName as string | undefined,
+              panNumber: stepData.panNumber as string | undefined,
+              dlNumber: stepData.dlNumber as string | undefined,
+              rcNumber: stepData.rcNumber as string | undefined,
+              // DL sync needs DOB; onboarding step doesn't ship it today —
+              // future onboarding will send it via a new stepData.dob field.
+              dob: stepData.dob as string | undefined,
+            },
+          );
+        } catch (e) {
+          req.log.warn({ err: (e as Error).message }, "rider_auto_verify_hook_failed");
+        }
+      })();
+
       return { success: true };
     },
   );
