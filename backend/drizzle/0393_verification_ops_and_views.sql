@@ -58,8 +58,14 @@ CREATE TABLE IF NOT EXISTS verification_provider_health (
   created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS verification_provider_health_window_uq
-  ON verification_provider_health (provider, COALESCE(document_kind::text,'__all__'), window_start);
+-- Same reason as verification_switches: COALESCE on enum cast is not IMMUTABLE.
+CREATE UNIQUE INDEX IF NOT EXISTS verification_provider_health_window_per_doc_uq
+  ON verification_provider_health (provider, document_kind, window_start)
+  WHERE document_kind IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS verification_provider_health_window_overall_uq
+  ON verification_provider_health (provider, window_start)
+  WHERE document_kind IS NULL;
 
 CREATE INDEX IF NOT EXISTS verification_provider_health_recent_idx
   ON verification_provider_health (provider, window_end DESC);

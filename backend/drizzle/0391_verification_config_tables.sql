@@ -120,9 +120,14 @@ CREATE TABLE IF NOT EXISTS verification_switches (
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Only one active row per slot (provider, document_kind). We treat NULL
--- document_kind as its own slot so a "everything off for cashfree" switch can
--- coexist with per-doc overrides.
-CREATE UNIQUE INDEX IF NOT EXISTS verification_switches_slot_uq
-  ON verification_switches (provider, COALESCE(document_kind::text, '__all__'))
-  WHERE restored_at IS NULL;
+-- Only one active row per slot (provider, document_kind). Split into two
+-- partial-unique indexes because COALESCE on an enum cast isn't IMMUTABLE.
+--   1. per (provider, document_kind) when document_kind IS NOT NULL
+--   2. per (provider) when document_kind IS NULL — the provider-wide switch
+CREATE UNIQUE INDEX IF NOT EXISTS verification_switches_per_doc_uq
+  ON verification_switches (provider, document_kind)
+  WHERE restored_at IS NULL AND document_kind IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS verification_switches_provider_wide_uq
+  ON verification_switches (provider)
+  WHERE restored_at IS NULL AND document_kind IS NULL;
