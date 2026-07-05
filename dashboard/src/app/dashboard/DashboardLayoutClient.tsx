@@ -560,8 +560,11 @@ function DashboardLayoutContent({
   const hasRiderSidebarContent =
     isRiderDashboardLayout && Boolean((searchParams.get("search") || "").trim());
 
-  const effectiveHasRightSidebar =
-    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && !isTicketDetailPage;
+  const hasRightSidebarEligible =
+    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
+
+  /** Ticket detail mounts the properties rail via RightSidebar; list/hub pages use filters/sub-nav instead. */
+  const shouldRenderRightSidebar = hasRightSidebarEligible || isTicketDetailPage;
 
   const showWorkspaceOverlay = isNavigating;
 
@@ -575,15 +578,15 @@ function DashboardLayoutContent({
         ? "lg:ml-56"
         : "lg:ml-16";
 
-  /** Queue workspace: ticket view applies its own `lg:pr-64` for the fixed properties rail — do not add `mr-*` here or space is doubled. */
+  /** Ticket detail + queue workspace: TicketViewClient applies its own `lg:pr-*` — do not add `mr-*` here or space is doubled. */
   const mainLgMarginRight =
-    isTicketsQueueWorkspace
+    isTicketsQueueWorkspace || isTicketDetailPage
       ? ""
-      : effectiveHasRightSidebar && isRightSidebarOpen
+      : hasRightSidebarEligible && isRightSidebarOpen
         ? isFilterSidebarOpen
           ? "lg:mr-[28rem]"
           : "lg:mr-56"
-        : effectiveHasRightSidebar && !isRightSidebarOpen
+        : hasRightSidebarEligible && !isRightSidebarOpen
           ? "lg:mr-16"
           : "";
 
@@ -630,7 +633,7 @@ function DashboardLayoutContent({
                 </div>
               </div>
 
-              {effectiveHasRightSidebar && (
+              {shouldRenderRightSidebar && (
                 <RightSidebar
                   isOpen={isRightSidebarOpen}
                   onToggle={

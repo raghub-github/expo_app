@@ -39,6 +39,10 @@ export type MerchantSummary = {
   avgRating?: number | null;
   /** Total review count for "9.9K+" style display. */
   totalReviews?: number | null;
+  /** Personalized rating when the customer has rated this store before. */
+  forYouRating?: number | null;
+  /** Whether the logged-in customer has submitted a rating for this store. */
+  userHasRatedStore?: boolean;
   /** Store avg prep used for ETA — menu items average when available. */
   avgPreparationTimeMinutes?: number | null;
   /** Next closing time (ISO string or ms) for "Closes in X" countdown. */
@@ -367,6 +371,14 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
       ? Number(totalReviewsRaw)
       : null;
 
+  const forYouRatingRaw = data.forYouRating ?? r.for_you_rating ?? r.forYouRating;
+  const forYouRating =
+    forYouRatingRaw != null && Number.isFinite(Number(forYouRatingRaw))
+      ? Number(forYouRatingRaw)
+      : null;
+  const userHasRatedStoreRaw = data.userHasRatedStore ?? r.user_has_rated_store ?? r.userHasRatedStore;
+  const userHasRatedStore = userHasRatedStoreRaw === true;
+
   return {
     ...data,
     imageUrl: resolvedHero ?? undefined,
@@ -376,6 +388,8 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     menu,
     avgRating,
     totalReviews,
+    forYouRating,
+    userHasRatedStore,
     liveStatus:
       (() => {
         const raw = data.liveStatus ?? r.liveStatus ?? r.live_status;

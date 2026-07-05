@@ -2,7 +2,8 @@
  * Swiggy-style missed-offer card — closest locked offer from Coupons sheet.
  */
 
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Pressable, StyleSheet } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MissedOfferWalletCompensation } from "@/lib/checkout-missed-offer-wallet";
@@ -34,9 +35,9 @@ export function CheckoutMissedOfferWalletCard({
   return (
     <View style={styles.wrap}>
       <View style={styles.badge}>
-        <Text style={styles.badgeText} numberOfLines={1}>
+        <CheckoutText style={styles.badgeText} numberOfLines={1}>
           {pending ? `${offer.offerTitle} unlocked` : `${offer.offerTitle} · closest unlock`}
-        </Text>
+        </CheckoutText>
       </View>
 
       <Pressable style={styles.card} onPress={pending ? undefined : onPressAdd}>
@@ -44,24 +45,24 @@ export function CheckoutMissedOfferWalletCard({
           <View style={styles.copyCol}>
             <View style={styles.lineRow}>
               <MaterialCommunityIcons name="tag-outline" size={16} color={BRAND} />
-              <Text style={styles.headline}>
+              <CheckoutText style={styles.headline}>
                 {pending
                   ? `Save ₹${formatInr(offer.offerSavingsInr)} on this order`
                   : offer.headline}
-              </Text>
+              </CheckoutText>
             </View>
             <View style={styles.lineRow}>
               <MaterialCommunityIcons name="wallet-outline" size={16} color={BRAND} />
-              <Text style={styles.subline}>
+              <CheckoutText style={styles.subline}>
                 {pending
                   ? `₹${formatInr(offer.amountInr)} added to GatiCash after order`
                   : offer.subline}
-              </Text>
+              </CheckoutText>
             </View>
             {!pending && offer.addItemsHint ? (
-              <Text style={styles.hint} numberOfLines={2}>
+              <CheckoutText style={styles.hint} numberOfLines={2}>
                 {offer.addItemsHint}
-              </Text>
+              </CheckoutText>
             ) : null}
           </View>
 
@@ -75,14 +76,14 @@ export function CheckoutMissedOfferWalletCard({
                 }}
                 hitSlop={6}
               >
-                <Text style={styles.removeBtnText}>REMOVE</Text>
+                <CheckoutText style={styles.removeBtnText}>REMOVE</CheckoutText>
               </Pressable>
             ) : (
               <Pressable style={styles.addBtn} onPress={onPressAdd} hitSlop={6}>
-                <Text style={styles.addBtnText}>ADD</Text>
+                <CheckoutText style={styles.addBtnText}>ADD</CheckoutText>
               </Pressable>
             )}
-            <Text style={styles.amount}>₹{formatInr(offer.amountInr)}</Text>
+            <CheckoutText style={styles.amount}>₹{formatInr(offer.amountInr)}</CheckoutText>
           </View>
         </View>
       </Pressable>

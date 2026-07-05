@@ -26,6 +26,9 @@ import {
 } from '@/lib/order-prep-time';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { RiderAssignPendingCard } from '@/components/orders/RiderAssignPendingCard';
+import { useNearbyDispatchRiders } from '@/hooks/useNearbyDispatchRiders';
+import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 
 function ordinalSuffix(n: number): string {
   const v = n % 100;
@@ -205,6 +208,10 @@ export function MerchantPreparingOrderCard({
 
   const riderName = order.rider_details?.name || order.rider_name;
   const riderSelfie = order.rider_details?.selfie_url;
+  const riderAssigned = !!(riderName || order.rider_id || order.rider_phone);
+  const showPendingRider = !riderAssigned;
+  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(order.id, showPendingRider);
+  const hadPastRiderAssign = usePastRidersEligibility(order.id, showPendingRider);
   const etaMins =
     order.eta_seconds != null && Number.isFinite(order.eta_seconds)
       ? Math.max(1, Math.round(Number(order.eta_seconds) / 60))
@@ -408,19 +415,35 @@ export function MerchantPreparingOrderCard({
       </div>
 
       {/* Rider */}
-      <div className="flex items-center gap-3 px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
-        <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[#E8E8E8]">
-          {riderSelfie ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={riderSelfie} alt="" className="h-full w-full object-cover" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-xs font-bold text-[#888888]">
-              {riderName ? riderName.charAt(0).toUpperCase() : '?'}
-            </div>
-          )}
+      {showPendingRider ? (
+        <div onClick={(e) => e.stopPropagation()}>
+          <RiderAssignPendingCard
+            nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}
+            assignSoonMessage={
+              nearbyRiderSummary?.assignSoonMessage ??
+              'Looking for nearby riders, assigning one soon'
+            }
+            radiusKm={nearbyRiderSummary?.radiusKm}
+            statusSubtitle={
+              hadPastRiderAssign ? 'Previous rider was unassigned' : null
+            }
+          />
         </div>
-        <p className="text-sm font-medium text-[#1A1A1A]">{riderLine}</p>
-      </div>
+      ) : (
+        <div className="flex items-center gap-3 px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
+          <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[#E8E8E8]">
+            {riderSelfie ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={riderSelfie} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-xs font-bold text-[#888888]">
+                {riderName ? riderName.charAt(0).toUpperCase() : '?'}
+              </div>
+            )}
+          </div>
+          <p className="text-sm font-medium text-[#1A1A1A]">{riderLine}</p>
+        </div>
+      )}
 
       {/* Order Ready CTA */}
       <div className="px-4 pb-4 pt-0" onClick={(e) => e.stopPropagation()}>

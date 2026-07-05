@@ -1,49 +1,60 @@
 'use client';
 
-import { Bike, Radio } from 'lucide-react';
+import { Bike } from 'lucide-react';
 
 export type RiderAssignPendingCardProps = {
   nearbyCount: number;
   assignSoonMessage: string;
   radiusKm?: number;
+  statusSubtitle?: string | null;
+  theme?: 'light' | 'dark';
   className?: string;
 };
+
+export function formatPendingRiderHeadline(nearbyCount: number, message?: string): string {
+  if (message?.trim()) return message.trim();
+  if (nearbyCount <= 0) return 'Looking for nearby riders, assigning one soon';
+  if (nearbyCount === 1) return '1 rider nearby, assigning one soon';
+  return `${nearbyCount} riders nearby, assigning one soon`;
+}
 
 export function RiderAssignPendingCard({
   nearbyCount,
   assignSoonMessage,
-  radiusKm,
+  statusSubtitle,
+  theme = 'light',
   className = '',
 }: RiderAssignPendingCardProps) {
+  const isDark = theme === 'dark';
+  const headline = formatPendingRiderHeadline(nearbyCount, assignSoonMessage);
+
   return (
     <div
-      className={`flex flex-1 min-h-0 flex-col overflow-hidden rounded-xl border border-dashed border-sky-200 bg-gradient-to-b from-sky-50/90 to-white shadow-sm ${className}`}
+      className={`flex items-start gap-3 border-t border-dashed px-4 py-3 ${
+        isDark ? 'border-white/10' : 'border-gray-200'
+      } ${className}`}
     >
-      <div className="border-b border-sky-100 bg-sky-50/80 px-3 py-1.5">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-sky-700">
-          Delivery partner
+      <Bike
+        className={`mt-0.5 h-5 w-5 shrink-0 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <p
+          className={`text-sm font-bold leading-snug ${
+            isDark ? 'text-white' : 'text-gray-900'
+          }`}
+        >
+          {headline}
         </p>
-      </div>
-
-      <div className="flex flex-1 flex-col items-center justify-center px-4 py-6 text-center">
-        <div className="relative mb-4">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white shadow-md ring-2 ring-sky-100">
-            <Bike className="h-8 w-8 text-sky-600" aria-hidden />
-          </div>
-          <span className="absolute -right-1 -top-1 flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-emerald-500 px-1.5 text-xs font-bold text-white shadow">
-            {nearbyCount > 99 ? '99+' : nearbyCount}
-          </span>
-        </div>
-
-        <p className="text-base font-bold text-gray-900 leading-snug">{assignSoonMessage}</p>
-
-        <p className="mt-2 flex items-center justify-center gap-1.5 text-xs text-gray-500">
-          <Radio size={14} className="text-emerald-500 shrink-0" aria-hidden />
-          {nearbyCount} active rider{nearbyCount === 1 ? '' : 's'} nearby
-          {radiusKm != null && radiusKm > 0 ? (
-            <span className="text-gray-400"> · within {radiusKm} km</span>
-          ) : null}
-        </p>
+        {statusSubtitle ? (
+          <p
+            className={`mt-0.5 text-xs leading-snug ${
+              isDark ? 'text-gray-400' : 'text-gray-500'
+            }`}
+          >
+            {statusSubtitle}
+          </p>
+        ) : null}
       </div>
     </div>
   );

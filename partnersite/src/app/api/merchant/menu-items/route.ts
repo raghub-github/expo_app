@@ -54,10 +54,42 @@ export async function GET(req: NextRequest) {
     const list = items ?? []
     if (list.length === 0) return NextResponse.json([])
 
+    const itemIds = list.map((r: { id: number }) => r.id)
+    const imageMetaByItemId: Record<
+      number,
+      { image_count: number; primary_image_moderation_status: string | null }
+    > = {}
+    if (itemIds.length > 0) {
+      const { data: imageRows } = await supabase
+        .from('merchant_menu_item_images')
+        .select('menu_item_id, moderation_status, is_primary')
+        .in('menu_item_id', itemIds)
+      for (const id of itemIds) {
+        const rows = (imageRows ?? []).filter((r: { menu_item_id: number }) => r.menu_item_id === id)
+        const primary = rows.find((r: { is_primary?: boolean }) => r.is_primary) ?? rows[0]
+        imageMetaByItemId[id] = {
+          image_count: rows.length,
+          primary_image_moderation_status: primary
+            ? String((primary as { moderation_status?: string }).moderation_status ?? 'PENDING').toUpperCase()
+            : null,
+        }
+      }
+    }
+
+    const withImageMeta = (item: Record<string, unknown>) => {
+      const id = Number(item.id)
+      const meta = imageMetaByItemId[id]
+      return {
+        ...item,
+        image_count: meta?.image_count ?? 0,
+        primary_image_moderation_status: meta?.primary_image_moderation_status ?? null,
+      }
+    }
+
     /** Card/list grid only — skip heavy customization joins for faster first paint. */
     if (view === 'list') {
       const lite = list.map((item: Record<string, unknown>) => ({
-        ...item,
+        ...withImageMeta(item),
         customizations: [],
         variants: [],
         linked_modifier_groups: [],
@@ -65,7 +97,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(lite)
     }
 
-    const itemIds = list.map((r: { id: number }) => r.id)
     const [{ data: custRows }, { data: variantRows }, { data: modifierLinks }] = await Promise.all([
       supabase
         .from('merchant_menu_item_customizations')
@@ -169,7 +200,7 @@ export async function GET(req: NextRequest) {
     }
 
     const enriched = list.map((item: any) => ({
-      ...item,
+      ...withImageMeta(item),
       customizations: custByItemId[item.id] ?? [],
       variants: variantsByItemId[item.id] ?? [],
       linked_modifier_groups: linkedByItemId[item.id] ?? [],

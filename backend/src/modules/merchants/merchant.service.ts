@@ -12,6 +12,7 @@ import {
 import { getEnv } from "../../config/env.js";
 import { getRoute, haversineDistanceKm, getMatrixDistances } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { toTimestamptzParam } from "../../lib/sql-timestamps.js";
 import type {
   MerchantMenuItemRow,
   MerchantStoreRow,
@@ -1082,7 +1083,7 @@ export async function getMenuDelta(
   const storePk = Number(store.id);
   const pg = getSql();
   const effectiveInStock = getMenuItemEffectiveInStockExpr(pg);
-  const since = new Date(sinceVersionMs);
+  const since = toTimestamptzParam(sinceVersionMs);
 
   const changedRows = (await pg`
     SELECT
@@ -1132,7 +1133,7 @@ export async function getMenuDelta(
       AND c.store_id = ${storePk}
       AND COALESCE(c.is_deleted, FALSE) = FALSE
     WHERE m.store_id = ${storePk}
-      AND m.updated_at > ${since}
+      AND m.updated_at > ${since}::timestamptz
     ORDER BY m.updated_at ASC
   `) as unknown as (MenuDeltaRow & {
     effective_in_stock?: boolean;

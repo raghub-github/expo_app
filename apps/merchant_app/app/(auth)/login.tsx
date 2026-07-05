@@ -604,12 +604,6 @@ export default function LoginScreen() {
                       />
                     </View>
                   </Pressable>
-                  <Text
-                    style={[styles.helper, phoneKeyboardVisible && styles.helperCompact]}
-                    numberOfLines={phoneKeyboardVisible ? 2 : undefined}
-                  >
-                    We will send a one-time code via SMS. Message & data rates may apply.
-                  </Text>
 
                   {deviceSessionMode && lastExchange ? (
                     <View style={[styles.warnBanner, { marginBottom: 12 }]}>
@@ -1183,12 +1177,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 12,
     lineHeight: 17,
-  },
-  helperCompact: {
-    marginTop: 6,
-    marginBottom: 8,
-    fontSize: 11,
-    lineHeight: 15,
   },
   helperOtpKb: {
     marginTop: 6,

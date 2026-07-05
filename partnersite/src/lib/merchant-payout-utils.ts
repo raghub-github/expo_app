@@ -1,6 +1,13 @@
 import type { LedgerEntry } from "@/lib/wallet-types";
 import { ledgerEntryTimestamp, parsePgTimestamp } from "@/lib/parse-pg-timestamp";
 import { splitCancellationEligibleMessage } from "@/lib/merchantCancellationCompensation";
+import {
+  computeSettlementFromLedgerEntries,
+  isCancellationStoreDebit,
+  mapSettlementApiResponse,
+  mapSettlementToClient,
+  type MerchantPayoutSettlementClient,
+} from "@gatimitra/merchant-payout";
 
 export type PayoutStatus = "PAID" | "PROCESSING" | "FAILED" | "ACCRUING";
 
@@ -43,6 +50,38 @@ function sumEarningsInRange(earnings: LedgerEntry[], from: Date, to: Date): numb
     if (ts == null || ts < fromTs || ts > toTs) return sum;
     return sum + Number(entry.amount ?? 0);
   }, 0);
+}
+
+function ledgerEntryAffectsWalletBalance(entry: LedgerEntry): boolean {
+  const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+  const impact = String(meta?.balance_impact ?? "").toLowerCase();
+  if (impact === "none") return false;
+  if (entry.category === "ORDER_EARNING" && entry.direction === "CREDIT") return true;
+  if (
+    entry.category === "ORDER_ADJUSTMENT" &&
+    entry.direction === "CREDIT" &&
+    impact === "credit"
+  ) {
+    return true;
+  }
+  if (entry.direction === "DEBIT" && isCancellationStoreDebit(entry)) return true;
+  if (entry.direction === "DEBIT" && entry.category === "PENALTY") return true;
+  if (entry.direction === "DEBIT" && entry.category === "COMMISSION_DEDUCTION") return true;
+  return false;
+}
+
+function sumNetWalletMovementInRange(entries: LedgerEntry[], from: Date, to: Date): number {
+  const fromTs = from.getTime();
+  const toTs = to.getTime();
+  let sum = 0;
+  for (const entry of entries) {
+    if (!ledgerEntryAffectsWalletBalance(entry)) continue;
+    const ts = ledgerEntryTimestamp(entry)?.getTime();
+    if (ts == null || ts < fromTs || ts > toTs) continue;
+    if (entry.direction === "CREDIT") sum += Number(entry.amount ?? 0);
+    else if (entry.direction === "DEBIT") sum -= Number(entry.amount ?? 0);
+  }
+  return Math.round(sum * 100) / 100;
 }
 
 function earliestEarningTimestamp(earnings: LedgerEntry[], before?: Date): Date | null {
@@ -92,7 +131,19 @@ export const CAT_LABELS: Record<string, string> = {
   MANUAL_CREDIT: "Manual Credit",
   MANUAL_DEBIT: "Manual Debit",
   ADJUSTMENT: "Adjustment",
+  COMPENSATION_CREDIT: "Compensation Credit",
+  COMPENSATION_RECOVERY: "Compensation Recovery",
 };
+
+export function resolveLedgerCategoryLabel(entry: {
+  category: string;
+  metadata?: Record<string, unknown> | null;
+}): string {
+  const meta = entry.metadata ?? null;
+  const txType = String(meta?.transaction_type ?? "").trim().toUpperCase();
+  if (txType && CAT_LABELS[txType]) return CAT_LABELS[txType];
+  return CAT_LABELS[entry.category] ?? entry.category.replace(/_/g, " ");
+}
 
 export const TX_FILTER_CHIPS: { key: TxFilter; label: string }[] = [
   { key: "all", label: "All" },
@@ -177,8 +228,10 @@ export function buildPayoutCards(ledger: LedgerEntry[]): PayoutCard[] {
 
   cards.push({
     id: "current-cycle",
-    netPayout: sumEarningsInRange(earnings, currentStart, currentEnd),
-    orderCount: countOrdersInRange(earnings, currentStart, currentEnd),
+    netPayout: Math.max(0, sumNetWalletMovementInRange(ledger, currentStart, currentEnd)),
+    orderCount: selectPayoutOrderLedgerEntries(
+      entriesInPayoutPeriod(ledger, currentStart, currentEnd, null),
+    ).length,
     periodStart: currentStart,
     periodEnd: currentEnd,
     payoutDate: null,
@@ -231,45 +284,11 @@ export function entriesInPayoutPeriod(
   });
 }
 
-export type SettlementSummary = {
-  netOrderValue: number;
-  itemSubtotal: number;
-  packagingCharges: number;
-  restaurantDiscounts: number;
-  couponOfferDiscount: number;
-  percentageFlatOfferDiscount: number;
-  comboOfferDiscount: number;
-  freeDeliveryOfferDiscount: number;
-  orderDeductions: number;
-  mechanismFee: number;
-  customerCompensation: number;
-  estimatedPayout: number;
-  orderCount: number;
-  deliveredOrderCount: number;
-  rejectedOrderCount: number;
-};
+export type SettlementSummary = MerchantPayoutSettlementClient;
 
 export type PayoutSettlementSummary = SettlementSummary;
 
-export function mapPayoutSettlementApiResponse(raw: Record<string, unknown>): PayoutSettlementSummary {
-  return {
-    netOrderValue: Number(raw.net_order_value ?? 0),
-    itemSubtotal: Number(raw.item_subtotal ?? 0),
-    packagingCharges: Number(raw.packaging_charges ?? 0),
-    restaurantDiscounts: Number(raw.restaurant_discounts ?? 0),
-    couponOfferDiscount: Number(raw.coupon_offer_discount ?? 0),
-    percentageFlatOfferDiscount: Number(raw.percentage_flat_offer_discount ?? 0),
-    comboOfferDiscount: Number(raw.combo_offer_discount ?? 0),
-    freeDeliveryOfferDiscount: Number(raw.free_delivery_offer_discount ?? 0),
-    orderDeductions: Number(raw.order_deductions ?? 0),
-    mechanismFee: Number(raw.mechanism_fee ?? 0),
-    customerCompensation: Number(raw.customer_compensation ?? 0),
-    estimatedPayout: Number(raw.estimated_payout ?? 0),
-    orderCount: Number(raw.order_count ?? 0),
-    deliveredOrderCount: Number(raw.delivered_order_count ?? 0),
-    rejectedOrderCount: Number(raw.rejected_order_count ?? 0),
-  };
-}
+export const mapPayoutSettlementApiResponse = mapSettlementApiResponse;
 
 function sumMetaAcrossEntries(entries: LedgerEntry[], keys: string[]): number {
   let sum = 0;
@@ -288,55 +307,6 @@ function sumMetaAcrossEntries(entries: LedgerEntry[], keys: string[]): number {
   return sum;
 }
 
-function orderGrossFromEntry(entry: LedgerEntry): number {
-  const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-  const net = Number(entry.amount ?? 0);
-  const commission = Number(entry.commission_amount ?? 0);
-  const gst = Number(entry.gst_amount ?? 0);
-  const tds = Number(entry.tds_amount ?? 0);
-  const grossMeta = ledgerMetaNumber(meta, ["merchant_gross", "order_gross", "gross_revenue"]);
-  return grossMeta > 0 ? grossMeta : net + commission + gst + tds;
-}
-
-function sumNetOrderComponents(orderCredits: LedgerEntry[]): {
-  itemSubtotal: number;
-  packagingCharges: number;
-} {
-  let itemSubtotal = sumMetaAcrossEntries(orderCredits, [
-    "item_subtotal",
-    "item_total",
-    "items_total",
-    "subtotal",
-  ]);
-  let packagingCharges = sumMetaAcrossEntries(orderCredits, [
-    "packaging_charge",
-    "packaging_charges",
-    "packaging",
-  ]);
-
-  if (itemSubtotal <= 0 || packagingCharges <= 0) {
-    let derivedItem = 0;
-    let derivedPackaging = 0;
-    for (const entry of orderCredits) {
-      const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-      const gross = orderGrossFromEntry(entry);
-      const packaging = ledgerMetaNumber(meta, ["packaging_charge", "packaging_charges", "packaging"]);
-      const item = ledgerMetaNumber(meta, ["item_subtotal", "item_total", "items_total", "subtotal"]);
-      derivedPackaging += packaging > 0 ? packaging : 0;
-      derivedItem += item > 0 ? item : Math.max(0, gross - packaging);
-    }
-    if (itemSubtotal <= 0) itemSubtotal = derivedItem;
-    if (packagingCharges <= 0) packagingCharges = derivedPackaging;
-  }
-
-  if (itemSubtotal <= 0 && packagingCharges <= 0 && orderCredits.length > 0) {
-    const credited = orderCredits.reduce((s, e) => s + Number(e.amount ?? 0), 0);
-    itemSubtotal = credited;
-  }
-
-  return { itemSubtotal, packagingCharges };
-}
-
 /** Store offer discount lines for payout section B (GatiMitra merchant_offers types). */
 export const PAYOUT_STORE_OFFER_DISCOUNT_LINES = [
   { key: "couponOfferDiscount" as const, label: "Coupon offers" },
@@ -348,206 +318,52 @@ export const PAYOUT_STORE_OFFER_DISCOUNT_LINES = [
 export const PAYOUT_CUSTOMER_COMPENSATION_LABEL =
   "Customer compensation / cancellation refund";
 
+export const PAYOUT_CANCELLATION_COMPENSATION_LABEL =
+  "Cancellation compensation (merchant credit)";
+
 export const PAYOUT_STORE_OFFERS_SECTION_LABEL = "Store offer discounts (B)";
 
-function sumMerchantOfferDiscounts(orderCredits: LedgerEntry[]): {
-  couponOfferDiscount: number;
-  percentageFlatOfferDiscount: number;
-  comboOfferDiscount: number;
-  freeDeliveryOfferDiscount: number;
+export type SettlementBreakdownLine = {
+  label: string;
+  amount: number;
+  negative?: boolean;
+  green?: boolean;
+};
+
+export function buildSettlementDetailSections(settlement: SettlementSummary): {
+  deductionItems: SettlementBreakdownLine[];
+  creditItems: SettlementBreakdownLine[];
+  estPayoutLabel: string;
 } {
-  const couponOfferDiscount = sumMetaAcrossEntries(orderCredits, [
-    "coupon_offer_discount",
-    "coupon_discount",
-    "promo_discount",
-    "restaurant_discount_promo",
-    "merchant_promo_discount",
-  ]);
-  const percentageFlatOfferDiscount = sumMetaAcrossEntries(orderCredits, [
-    "percentage_flat_offer_discount",
-    "cart_offer_discount",
-    "percentage_discount",
-    "flat_discount",
-    "restaurant_discount_other",
-    "flat_off_discount",
-    "merchant_funded_discount",
-    "restaurant_discount",
-  ]);
-  const comboOfferDiscount = sumMetaAcrossEntries(orderCredits, [
-    "combo_offer_discount",
-    "bogo_discount",
-    "bundle_discount",
-    "free_item_discount",
-    "freebie_discount",
-  ]);
-  const freeDeliveryOfferDiscount = sumMetaAcrossEntries(orderCredits, [
-    "free_delivery_offer_discount",
-    "delivery_charge_discount",
-    "delivery_discount",
-    "merchant_delivery_discount",
-  ]);
-
-  return {
-    couponOfferDiscount,
-    percentageFlatOfferDiscount,
-    comboOfferDiscount,
-    freeDeliveryOfferDiscount,
-  };
-}
-
-function isCancellationStoreDebit(entry: LedgerEntry): boolean {
-  if (entry.direction !== "DEBIT") return false;
-  const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-  const entryType = String(meta?.entry_type ?? "").toLowerCase();
-  const balanceImpact = String(meta?.balance_impact ?? "").toLowerCase();
-  const desc = (entry.description ?? "").toLowerCase();
-
-  if (entryType === "order_cancellation" && balanceImpact === "debit") return true;
-
-  if (
-    entry.category === "ORDER_ADJUSTMENT" &&
-    balanceImpact === "debit" &&
-    (entryType === "order_cancellation" || desc.includes("cancel"))
-  ) {
-    return true;
+  const deductionItems: SettlementBreakdownLine[] = [
+    { label: "Payment mechanism fee", amount: settlement.mechanismFee, negative: true },
+  ];
+  if (settlement.customerCompensation > 0) {
+    deductionItems.push({
+      label: PAYOUT_CUSTOMER_COMPENSATION_LABEL,
+      amount: settlement.customerCompensation,
+      negative: true,
+    });
   }
-
-  if (entry.category === "REFUND_DEBIT" || entry.category === "REFUND_TO_CUSTOMER") {
-    return entryType.includes("cancel") || desc.includes("cancel");
-  }
-
-  return false;
-}
-
-function sumCustomerCompensation(entries: LedgerEntry[]): number {
-  let sum = 0;
-  for (const entry of entries) {
-    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-    const fromMeta = ledgerMetaNumber(meta, [
-      "customer_compensation",
-      "cancellation_refund",
-      "cancellation_refund_amount",
-      "merchant_compensation",
-      "compensation_amount",
-      "compensation",
-    ]);
-    if (fromMeta > 0) {
-      sum += fromMeta;
-      continue;
-    }
-    if (isCancellationStoreDebit(entry)) {
-      sum += Number(entry.amount ?? 0);
-      continue;
-    }
-    if (entry.direction !== "DEBIT") continue;
-    const type = String(meta?.type ?? meta?.entry_type ?? "").toLowerCase();
-    const desc = (entry.description ?? "").toLowerCase();
-    if (
-      entry.category === "PENALTY" &&
-      (type.includes("compensation") || desc.includes("compensation"))
-    ) {
-      sum += Number(entry.amount ?? 0);
-    }
-  }
-  return sum;
-}
-
-function countOrdersByStatus(entries: LedgerEntry[]): {
-  deliveredOrderCount: number;
-  rejectedOrderCount: number;
-} {
-  const orderEntries = selectPayoutOrderLedgerEntries(entries);
-  let deliveredOrderCount = 0;
-  let rejectedOrderCount = 0;
-  for (const entry of orderEntries) {
-    if (resolveOrderFulfillmentStatus(entry) === "rejected") {
-      rejectedOrderCount += 1;
-    } else {
-      deliveredOrderCount += 1;
-    }
-  }
-  return { deliveredOrderCount, rejectedOrderCount };
-}
-
-function ledgerMetaNumber(meta: Record<string, unknown> | null | undefined, keys: string[]): number {
-  if (!meta) return 0;
-  for (const key of keys) {
-    const v = meta[key];
-    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return 0;
-}
-
-function sumMechanismFee(entries: LedgerEntry[]): number {
-  let sum = 0;
-  for (const entry of entries) {
-    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-    const fromMeta = ledgerMetaNumber(meta, [
-      "payment_mechanism_fee",
-      "mechanism_fee",
-      "pg_fee",
-      "payment_mechanism",
-    ]);
-    if (fromMeta > 0) {
-      sum += fromMeta;
-      continue;
-    }
-    if (entry.category === "ORDER_EARNING" && entry.direction === "CREDIT") {
-      sum += Number(entry.commission_amount ?? 0);
-    } else if (entry.category === "COMMISSION_DEDUCTION" && entry.direction === "DEBIT") {
-      sum += Number(entry.amount ?? 0);
-    }
-  }
-  return sum;
+  const creditItems: SettlementBreakdownLine[] =
+    settlement.cancellationCompensation > 0
+      ? [
+          {
+            label: PAYOUT_CANCELLATION_COMPENSATION_LABEL,
+            amount: settlement.cancellationCompensation,
+            green: true,
+          },
+        ]
+      : [];
+  const estPayoutLabel =
+    settlement.cancellationCompensation > 0
+      ? "Est. payout (net earnings − compensation + credits)"
+      : "Est. payout (net earnings − compensation)";
+  return { deductionItems, creditItems, estPayoutLabel };
 }
 
 export function computeSettlement(entries: LedgerEntry[]): SettlementSummary {
-  const orderCredits = entries.filter(
-    (e) => e.category === "ORDER_EARNING" && e.direction === "CREDIT"
-  );
-
-  const { itemSubtotal, packagingCharges } = sumNetOrderComponents(orderCredits);
-  const netOrderValue = itemSubtotal + packagingCharges;
-
-  const {
-    couponOfferDiscount,
-    percentageFlatOfferDiscount,
-    comboOfferDiscount,
-    freeDeliveryOfferDiscount,
-  } = sumMerchantOfferDiscounts(orderCredits);
-  const restaurantDiscounts =
-    couponOfferDiscount +
-    percentageFlatOfferDiscount +
-    comboOfferDiscount +
-    freeDeliveryOfferDiscount;
-
-  const mechanismFee = sumMechanismFee(entries);
-  const customerCompensation = sumCustomerCompensation(entries);
-  const orderDeductions = mechanismFee + customerCompensation;
-
-  const { deliveredOrderCount, rejectedOrderCount } = countOrdersByStatus(entries);
-  const orderCount = deliveredOrderCount + rejectedOrderCount;
-
-  const estimatedPayout = netOrderValue - restaurantDiscounts - orderDeductions;
-
-  return {
-    netOrderValue,
-    itemSubtotal,
-    packagingCharges,
-    restaurantDiscounts,
-    couponOfferDiscount,
-    percentageFlatOfferDiscount,
-    comboOfferDiscount,
-    freeDeliveryOfferDiscount,
-    orderDeductions,
-    mechanismFee,
-    customerCompensation,
-    estimatedPayout,
-    orderCount,
-    deliveredOrderCount,
-    rejectedOrderCount,
-  };
+  return mapSettlementToClient(computeSettlementFromLedgerEntries(entries));
 }
 
 export function statusBadgeStyle(status: PayoutStatus) {

@@ -34,12 +34,12 @@ const summaryCache = new Map<
 
 export function formatAssignSoonMessage(count: number): string {
   if (count <= 0) {
-    return "Looking for nearby riders — we will assign one soon";
+    return "Looking for nearby riders, assigning one soon";
   }
   if (count === 1) {
-    return "1 rider near you — we will assign one soon";
+    return "1 rider nearby, assigning one soon";
   }
-  return `${count} riders near you — we will assign one soon`;
+  return `${count} riders nearby, assigning one soon`;
 }
 
 export async function getNearbyDispatchRiderSummaryForOrderCoreId(

@@ -56,12 +56,18 @@ function parseStoreId(v: unknown): number | null {
 /** Base URL for shareable store links (web + universal link). Opens store in app when installed, else in browser. */
 const DEFAULT_STORE_WEB_BASE = "https://www.gatimitra.com";
 
+/** Partner portal (legal pages, signup webview). Production: partner.gatimitra.com; local dev: partnersite on :3002. */
+const DEFAULT_PARTNER_SITE_BASE = "https://partner.gatimitra.com";
+const DEV_PARTNER_SITE_FALLBACK = "http://localhost:3002";
+
 export function getConfig(): {
   apiBaseUrl: string;
   storeId: number | null;
   googleWebClientId: string | null;
   /** Base URL for shareable store deep links (no trailing slash). */
   storeWebBaseUrl: string;
+  /** Partner portal base URL for legal pages and web flows (no trailing slash). */
+  partnerSiteBaseUrl: string;
   /** Mapbox public token for map and geocoding (Edit Address). */
   mapboxPublicToken: string | null;
   /** Same Supabase project as Auth → Phone / Send SMS hook (optional if using backend-only phone OTP). */
@@ -103,6 +109,14 @@ export function getConfig(): {
     asNonEmptyString(process.env.EXPO_PUBLIC_STORE_WEB_BASE_URL) ??
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.STORE_WEB_BASE_URL as string | undefined;
   const storeWebBaseUrl = asNonEmptyString(storeWebBase) ?? DEFAULT_STORE_WEB_BASE;
+  const partnerSiteFromEnv =
+    asNonEmptyString(process.env.EXPO_PUBLIC_PARTNER_SITE_URL) ??
+    asNonEmptyString(
+      (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.PARTNER_SITE_URL as string,
+    );
+  const partnerSiteBaseUrl =
+    asNonEmptyString(partnerSiteFromEnv) ??
+    (__DEV__ ? DEV_PARTNER_SITE_FALLBACK : DEFAULT_PARTNER_SITE_BASE);
   const mapboxToken =
     asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN) ??
     asNonEmptyString(process.env.MAPBOX_PUBLIC_TOKEN) ??
@@ -133,6 +147,7 @@ export function getConfig(): {
     storeId: parseStoreId(storeIdEnv),
     googleWebClientId,
     storeWebBaseUrl: storeWebBaseUrl.replace(/\/+$/, ""),
+    partnerSiteBaseUrl: partnerSiteBaseUrl.replace(/\/+$/, ""),
     mapboxPublicToken: mapboxToken,
     supabaseUrl,
     supabaseAnonKey,

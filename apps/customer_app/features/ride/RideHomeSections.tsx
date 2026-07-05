@@ -2,19 +2,18 @@
  * Ride home UI sections — promo banner, value props, safety banner (single module for Metro/OneDrive).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Image,
-  ImageBackground,
   NativeSyntheticEvent,
   NativeScrollEvent,
   Dimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { HomeBannerOffer } from "@/services/offers.service";
@@ -23,13 +22,16 @@ import { formatRideOfferSubline } from "@/lib/ride-offers";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
-import type { ImageSourcePropType } from "react-native";
+import { prefetchFoodHomeImageUri } from "@/lib/prefetchGridFirstHeroMedia";
+import { prefetchCriticalRideAssetImagesSync } from "@/lib/rideCriticalAssets";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const CARD_W = SCREEN_W - 36;
 const SLIDE_GAP = 12;
+const SLIDE_STRIDE = CARD_W + SLIDE_GAP;
 const CARD_H = 148;
 const AUTO_MS = 5000;
+const LOOP_SCROLL_MS = 420;
 
 const OFFER_ASSET_KEYS = [CX.ride.banner, CX.home.promoRideOffer1, CX.home.promoRideOffer2] as const;
 
@@ -125,20 +127,20 @@ function PromoSlideCard({
 
   return (
     <TouchableOpacity activeOpacity={0.92} onPress={onBookNow} style={promoStyles.cardOuter}>
-      {bgUrl ? (
-        <ImageBackground
-          source={{ uri: bgUrl }}
-          style={[promoStyles.card, { height: CARD_H }]}
-          imageStyle={promoStyles.cardImage}
-          resizeMode="cover"
-        >
-          {content}
-        </ImageBackground>
-      ) : (
-        <View style={[promoStyles.card, { height: CARD_H, backgroundColor: "#ECFDF5" }]}>
-          {content}
-        </View>
-      )}
+      <View style={[promoStyles.card, { height: CARD_H }, !bgUrl && promoStyles.cardFallback]}>
+        {bgUrl ? (
+          <Image
+            source={{ uri: bgUrl }}
+            style={StyleSheet.absoluteFillObject}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            priority="high"
+            transition={0}
+            recyclingKey={slide.assetKey}
+          />
+        ) : null}
+        {content}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -146,6 +148,9 @@ function PromoSlideCard({
 export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const activeIndexRef = useRef(0);
+  const loopResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const assets = useAppAssetsStore((s) => s.assets);
 
   const slides = useMemo(() => {
     const platform = offers.filter((o) => o.kind === "platform").slice(0, 10);
@@ -153,7 +158,42 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
     return DEFAULT_SLIDES;
   }, [offers]);
 
+  const loopSlides = useMemo(() => {
+    if (slides.length <= 1) return slides;
+    const first = slides[0];
+    return [...slides, { ...first, id: `${first.id}-loop-clone` }];
+  }, [slides]);
+
+  useLayoutEffect(() => {
+    prefetchCriticalRideAssetImagesSync(assets);
+    for (const slide of slides) {
+      const uri = getAppAssetUrl(slide.assetKey);
+      if (uri) prefetchFoodHomeImageUri(uri);
+    }
+  }, [assets, slides]);
+
   useEffect(() => {
+    return () => {
+      if (loopResetTimerRef.current) clearTimeout(loopResetTimerRef.current);
+    };
+  }, []);
+
+  const resetLoopToStart = useCallback(() => {
+    activeIndexRef.current = 0;
+    scrollRef.current?.scrollTo({ x: 0, animated: false });
+    setActiveIndex(0);
+  }, []);
+
+  const scheduleLoopReset = useCallback(() => {
+    if (loopResetTimerRef.current) clearTimeout(loopResetTimerRef.current);
+    loopResetTimerRef.current = setTimeout(() => {
+      loopResetTimerRef.current = null;
+      resetLoopToStart();
+    }, LOOP_SCROLL_MS);
+  }, [resetLoopToStart]);
+
+  useEffect(() => {
+    activeIndexRef.current = 0;
     setActiveIndex(0);
     scrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [slides.length]);
@@ -161,41 +201,61 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
   useEffect(() => {
     if (slides.length < 2) return;
     const timer = setInterval(() => {
-      setActiveIndex((prev) => {
-        const next = (prev + 1) % slides.length;
+      const current = activeIndexRef.current >= slides.length ? 0 : activeIndexRef.current;
+      const next = current + 1;
+
+      if (next >= slides.length) {
         scrollRef.current?.scrollTo({
-          x: next * (CARD_W + SLIDE_GAP),
+          x: slides.length * SLIDE_STRIDE,
           animated: true,
         });
-        return next;
+        activeIndexRef.current = slides.length;
+        setActiveIndex(slides.length);
+        scheduleLoopReset();
+        return;
+      }
+
+      scrollRef.current?.scrollTo({
+        x: next * SLIDE_STRIDE,
+        animated: true,
       });
+      activeIndexRef.current = next;
+      setActiveIndex(next);
     }, AUTO_MS);
     return () => clearInterval(timer);
-  }, [slides.length]);
+  }, [slides.length, scheduleLoopReset]);
 
-  const onScroll = useCallback(
+  const onMomentumScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const x = e.nativeEvent.contentOffset.x;
-      const idx = Math.round(x / (CARD_W + SLIDE_GAP));
-      setActiveIndex(Math.max(0, Math.min(idx, slides.length - 1)));
+      const idx = Math.round(x / SLIDE_STRIDE);
+      if (idx >= slides.length) {
+        resetLoopToStart();
+        return;
+      }
+      activeIndexRef.current = idx;
+      setActiveIndex(idx);
     },
-    [slides.length]
+    [resetLoopToStart, slides.length]
   );
+
+  const dotIndex = activeIndex >= slides.length ? 0 : activeIndex;
 
   return (
     <View style={promoStyles.wrap}>
       <ScrollView
         ref={scrollRef}
         horizontal
-        scrollEnabled={slides.length > 1}
+        scrollEnabled={false}
+        bounces={false}
         showsHorizontalScrollIndicator={false}
-        snapToInterval={CARD_W + SLIDE_GAP}
+        snapToInterval={SLIDE_STRIDE}
         decelerationRate="fast"
-        onScroll={onScroll}
+        onMomentumScrollEnd={onMomentumScrollEnd}
         scrollEventThrottle={16}
         contentContainerStyle={promoStyles.scrollContent}
       >
-        {slides.map((slide) => (
+        {loopSlides.map((slide) => (
           <View
             key={slide.id}
             style={[promoStyles.cardShadowClip, { width: CARD_W, marginRight: SLIDE_GAP }]}
@@ -209,7 +269,7 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
         {slides.map((s, i) => (
           <View
             key={s.id}
-            style={[promoStyles.dot, i === activeIndex ? promoStyles.dotActive : promoStyles.dotInactive]}
+            style={[promoStyles.dot, i === dotIndex ? promoStyles.dotActive : promoStyles.dotInactive]}
           />
         ))}
       </View>
@@ -240,7 +300,9 @@ const promoStyles = StyleSheet.create({
     borderColor: "rgba(187, 247, 208, 0.8)",
     overflow: "hidden",
   },
-  cardImage: { borderRadius: 20 },
+  cardFallback: {
+    backgroundColor: "#ECFDF5",
+  },
   textCol: { maxWidth: "58%", paddingLeft: 18, paddingRight: 8, paddingVertical: 16, zIndex: 2 },
   title: { fontSize: 22, fontWeight: "800", color: "#111827", letterSpacing: -0.4, lineHeight: 26 },
   titleAccent: { color: GatiMitraColors.deepMintStart },

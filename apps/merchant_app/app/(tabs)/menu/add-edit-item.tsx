@@ -30,7 +30,6 @@ import {
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { useActiveCommission, customerVisibleFromBase } from "@/hooks/useActiveCommission";
 import {
   useMenuCategories,
   useMenuItem,
@@ -57,15 +56,18 @@ import {
   linkModifierGroupToItem,
   unlinkModifierGroupFromItem,
   ensureStoreCuisinesLinkedForItemNames,
+  fetchMenuImageUploadStatus,
   type MenuItemPayload,
   type MenuCategory,
   type CategoryUiConfig,
   type MenuCuisineOption,
   type LinkedModifierGroup,
   type ModifierGroupRow,
+  type MenuImageUploadStatus,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
+import { MenuItemImageLimitBox } from "@/components/menu/MenuItemImageLimitBox";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -270,8 +272,6 @@ export default function AddEditItemScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.store_id ?? null;
-  const numericStoreId = selectedStore?.id ?? null;
-  const { data: activeCommission } = useActiveCommission(numericStoreId);
 
   // ── data loading (backend is source of truth; hooks provide cache) ──
   const { data: categories = [], refetch: refetchCategories } = useMenuCategories(storeId, token);
@@ -330,6 +330,7 @@ export default function AddEditItemScreen() {
   const [images, setImages] = useState<Array<{ id: number; image_url: string; is_primary: boolean; display_order: number }>>([]);
   const [pendingImage, setPendingImage] = useState<{ uri: string; type?: string; name?: string } | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [imagePlan, setImagePlan] = useState<MenuImageUploadStatus | null>(null);
   const [imagePickError, setImagePickError] = useState<string | null>(null);
   const [imageFixUri, setImageFixUri] = useState<string | null>(null);
   const [normalizingImage, setNormalizingImage] = useState(false);
@@ -629,6 +630,24 @@ export default function AddEditItemScreen() {
   }, [storeId, token, isEdit, itemId]);
 
   useEffect(() => {
+    if (!storeId || !token) {
+      setImagePlan(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchMenuImageUploadStatus(storeId, token)
+      .then((status) => {
+        if (!cancelled) setImagePlan(status);
+      })
+      .catch(() => {
+        if (!cancelled) setImagePlan(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, token]);
+
+  useEffect(() => {
     if (!showLinkAddonPicker || !storeId || !token) return;
     let cancelled = false;
     fetchModifierGroups(storeId, token)
@@ -681,6 +700,19 @@ export default function AddEditItemScreen() {
 
   const openImagePicker = useCallback(async () => {
     if (!token || !storeId) return;
+    if (imagePlan && !imagePlan.imageUploadAllowed) {
+      Alert.alert("Not in plan", "Image uploads are not included in your current plan. Upgrade to add images.");
+      return;
+    }
+    if (imagePlan?.imageLimitReached) {
+      Alert.alert(
+        "Limit exceeded",
+        imagePlan.maxImageUploads != null
+          ? `Image limit reached (${imagePlan.maxImageUploads}/${imagePlan.maxImageUploads}). Upgrade your plan to add more.`
+          : "Image upload limit reached for your plan."
+      );
+      return;
+    }
     setImagePickError(null);
     setImageFixUri(null);
     try {
@@ -757,7 +789,7 @@ export default function AddEditItemScreen() {
     } finally {
       setUploadingImage(false);
     }
-  }, [token, storeId, itemId, isEdit]);
+  }, [token, storeId, itemId, isEdit, imagePlan]);
 
   const handleAutoFixImage = useCallback(async () => {
     if (!imageFixUri || !token || !storeId) return;
@@ -1031,6 +1063,24 @@ export default function AddEditItemScreen() {
         ) : null}
 
         {/* ── Image upload (fixed ratio & size); opens gallery in both add and edit mode ── */}
+        {imagePlan && !imagePlan.imageUploadAllowed ? (
+          <View style={[styles.imageUploadArea, styles.imagePlanBlocked]}>
+            <Text style={styles.imagePlanBlockedText}>Images not in plan</Text>
+          </View>
+        ) : imagePlan?.imageLimitReached ? (
+          <MenuItemImageLimitBox
+            status={imagePlan}
+            previewUri={pendingImage?.uri ?? null}
+            remoteImageUrl={images[0]?.image_url ?? itemData?.item_image_url ?? null}
+            token={token}
+            onInfoPress={() =>
+              Alert.alert(
+                "Image limit",
+                "Subscribe to a higher plan for more menu image uploads."
+              )
+            }
+          />
+        ) : (
         <TouchableOpacity
           style={styles.imageUploadArea}
           onPress={openImagePicker}
@@ -1060,9 +1110,16 @@ export default function AddEditItemScreen() {
             </>
           )}
         </TouchableOpacity>
+        )}
         <Text style={styles.imageRequirements}>
           Ratio 1:1 · {ITEM_IMAGE_MIN_WIDTH}–{ITEM_IMAGE_MAX_WIDTH} px (width & height) · max {ITEM_IMAGE_MAX_FILE_SIZE_MB} MB
         </Text>
+        {imagePlan?.maxImageUploads != null && !imagePlan.imageLimitReached ? (
+          <Text style={styles.imagePlanUsage}>
+            {imagePlan.totalUsed}/{imagePlan.maxImageUploads}
+            {imagePlan.imageSlotsLeft != null ? ` · ${imagePlan.imageSlotsLeft} left` : ""}
+          </Text>
+        ) : null}
         {imagePickError ? (
           <View style={styles.imageErrorWrap}>
             <Text style={styles.imageErrorText}>{imagePickError}</Text>
@@ -1772,13 +1829,7 @@ export default function AddEditItemScreen() {
               value={basePrice}
               onChangeText={(v) => {
                 setBasePrice(v);
-                // Keep selling_price computed so the server-side write has a sane cache value.
-                const base = parseFloat(v);
-                if (Number.isFinite(base) && base > 0 && activeCommission) {
-                  setSellingPrice(String(customerVisibleFromBase(base, activeCommission.percent)));
-                } else {
-                  setSellingPrice("");
-                }
+                setSellingPrice(v);
               }}
               placeholder="₹0"
               placeholderTextColor={GatiMitraMerchant.textTertiary}
@@ -1786,33 +1837,6 @@ export default function AddEditItemScreen() {
             />
             <Ionicons name="pencil-outline" size={18} color={GatiMitraMerchant.textTertiary} />
           </View>
-          {(() => {
-            const base = parseFloat(basePrice);
-            if (!Number.isFinite(base) || base <= 0 || !activeCommission) return null;
-            const customer = customerVisibleFromBase(base, activeCommission.percent);
-            return (
-              <View
-                style={{
-                  marginTop: 10,
-                  padding: 10,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(99, 102, 241, 0.08)",
-                  borderWidth: 1,
-                  borderColor: "rgba(99, 102, 241, 0.2)",
-                }}
-              >
-                <Text style={{ fontSize: 12, color: GatiMitraMerchant.textSecondary }}>
-                  Customer will see
-                </Text>
-                <Text style={{ fontSize: 20, fontWeight: "700", color: GatiMitraMerchant.textPrimary }}>
-                  ₹{customer}
-                </Text>
-                <Text style={{ marginTop: 2, fontSize: 11, color: GatiMitraMerchant.textTertiary }}>
-                  Includes {activeCommission.percent}% platform commission ({activeCommission.sourceLabel})
-                </Text>
-              </View>
-            );
-          })()}
         </View>
 
         {/* ── Prep / ETA & packaging (store defaults; editable per item only) ── */}
@@ -2196,6 +2220,24 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textTertiary,
     marginTop: 6,
     marginHorizontal: H_PADDING,
+  },
+  imagePlanUsage: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 4,
+    marginHorizontal: H_PADDING,
+    fontWeight: "600",
+  },
+  imagePlanBlocked: {
+    borderColor: "#FCD34D",
+    backgroundColor: "#FFFBEB",
+  },
+  imagePlanBlockedText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#B45309",
+    textAlign: "center",
+    paddingHorizontal: 12,
   },
   imageErrorWrap: {
     marginTop: 8,

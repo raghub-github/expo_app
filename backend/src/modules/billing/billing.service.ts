@@ -453,6 +453,8 @@ export async function computeBillForOrder(
 
   const billing = executeBillingPipeline(ctx, dataset);
 
+  const deliveryFeeBeforeBenefitsInr = Math.round(Math.max(0, billing.delivery_fee) * 100) / 100;
+
   let adjustedBilling = billing;
   if (input.customerId > 0) {
     const { applyCustomerSubscriptionBillingAdjustments } = await import(
@@ -473,15 +475,36 @@ export async function computeBillForOrder(
   const serviceRadiusKm = quote.service_radius_km;
 
   const rawQuotedFee = quote.delivery_fee as unknown;
-  const deliveryFeeQuotedInr =
+  const routeDeliveryFeeInr =
     typeof rawQuotedFee === "number" && Number.isFinite(rawQuotedFee)
       ? Math.max(0, rawQuotedFee)
       : typeof rawQuotedFee === "string" && String(rawQuotedFee).trim() !== ""
         ? Math.max(0, parseFloat(String(rawQuotedFee)))
         : 0;
 
+  const subscriptionDeliveryWaivedInr = (() => {
+    const marker = adjustedBilling.charges.find(
+      (c) => c.meta?.source === "customer_subscription_delivery_waived_marker"
+    );
+    if (marker && marker.amount > 0.005) {
+      return Math.round(marker.amount * 100) / 100;
+    }
+    const disc = adjustedBilling.discounts.find(
+      (d) => d.meta?.source === "customer_subscription_free_delivery"
+    );
+    return disc && disc.amount > 0.005 ? Math.round(disc.amount * 100) / 100 : 0;
+  })();
+
+  /** Pipeline-computed delivery before membership waivers — single source for UI + persistence. */
+  const deliveryFeeQuotedInr =
+    deliveryFeeBeforeBenefitsInr > 0.005 ? deliveryFeeBeforeBenefitsInr : routeDeliveryFeeInr;
+
   const snapshot = {
     ...adjustedBilling,
+    deliveryFeeBeforeBenefitsInr,
+    ...(subscriptionDeliveryWaivedInr > 0.005
+      ? { deliveryFeeWaivedInr: subscriptionDeliveryWaivedInr }
+      : {}),
     merchantStoreId: resolved.merchantStoreId,
     distanceKm,
     durationMin: quote.duration_min,
@@ -503,7 +526,7 @@ export async function computeBillForOrder(
     unserviceableReason: quote.unserviceable_reason ?? (serviceable ? null : "out_of_range"),
     computedAt: (input.now ?? new Date()).toISOString(),
     deliveryType: input.deliveryType ?? "delivery",
-    /** Store→drop delivery fee from routing/geo before self-pickup waiver (for UI strikethrough). */
+    /** Pre-benefit delivery fee from billing pipeline (matches deliveryFeeBeforeBenefitsInr). */
     deliveryFeeQuotedInr,
   } as Record<string, unknown>;
 

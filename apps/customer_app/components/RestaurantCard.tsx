@@ -17,7 +17,8 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -115,12 +116,12 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
     : [];
 
   const openMerchant = () => {
-    router.push({ pathname: "/home/merchant/[id]", params: { id: merchant.id } });
+    navigateToMerchant(router, queryClient, merchant.id, merchant);
   };
 
   const warmMerchantDetail = useCallback(() => {
-    prefetchMerchantDetail(queryClient, merchant.id);
-  }, [queryClient, merchant.id]);
+    warmMerchantHeroImage(merchant.id, heroUri ?? null);
+  }, [merchant.id, heroUri]);
 
   return (
     <TouchableOpacity

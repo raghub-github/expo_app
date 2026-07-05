@@ -1,0 +1,18 @@
+-- =============================================================================
+-- 0396 — Re-apply purge function with full order-link cleanup (tickets + satellites)
+-- Run AFTER 0393. Safe: CREATE OR REPLACE only.
+--
+-- Fixes:
+--   • unified_tickets must be DELETED before orders_core (not SET NULL via UI delete)
+--   • ORDER_RELATED + RIDE/FOOD tickets linked by metadata/subject
+--   • order_events, notifications, tracking, fraud reports, orders_ride, etc.
+--   • order_rider_assignments_current.order_id is TEXT (v_order_id_texts)
+-- =============================================================================
+
+-- Paste & run the FULL contents of:
+--   backend/drizzle/0393_merchant_store_transactional_reset_v1.sql
+--
+-- Then purge store:
+--   SELECT public.purge_merchant_store_transactional_data('GMMC1025', 77, TRUE);
+--
+-- ⚠ Do NOT delete rows from Table Editor on orders_core — use purge function only.

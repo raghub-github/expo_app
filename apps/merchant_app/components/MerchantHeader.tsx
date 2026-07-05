@@ -119,6 +119,14 @@ function resolveEarningsSubPage(pathname: string | undefined): string | null {
   return null;
 }
 
+/** Catalog item screens render their own minimal header (back + title). */
+function isMenuStandaloneHeaderRoute(pathname: string | undefined): boolean {
+  if (!pathname) return false;
+  return (
+    pathname.includes("/menu/item-details") || pathname.includes("/menu/add-edit-item")
+  );
+}
+
 function MainHeader({
   compact,
   pickerVisible,
@@ -562,6 +570,7 @@ export function MerchantCustomHeader() {
   const pathname = usePathname();
   const router = useRouter();
   const segments = useSegments();
+
   const tab = segments[segments.length - 1] ?? "index";
   const {
     isOnline,
@@ -1011,6 +1020,10 @@ export function MerchantCustomHeader() {
       const who = lastToggledByName || lastToggledById || "Owner";
       lastOpenedLine = `Last: Opened by ${who}${storePublicId ? ` (ID: ${storePublicId})` : ""} · ${timeStr}`;
     }
+  }
+
+  if (isMenuStandaloneHeaderRoute(pathname)) {
+    return null;
   }
 
   return (

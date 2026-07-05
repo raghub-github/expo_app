@@ -6,6 +6,8 @@ import {
   weatherDispatchWeightForSeverity,
   weatherPriorityBoostForSeverity,
 } from "./weather.dispatch.js";
+import { isRainAlertActive, normalizeZoneDisplayName } from "./weather.alerts.js";
+import type { WeatherThresholds } from "./weather.types.js";
 
 export function buildCustomerWeatherPresentation(args: {
   severity: WeatherSeverity;
@@ -22,12 +24,25 @@ export function buildCustomerWeatherPresentation(args: {
   updatedAt: string | null;
   zoneKey?: string | null;
   providerPayload?: Record<string, unknown> | null;
+  isThunderstorm?: boolean;
+  alertThresholds?: WeatherThresholds;
 }): CustomerWeatherContext {
-  const area = (args.areaLabel ?? args.city ?? "your area").trim();
+  const area = normalizeZoneDisplayName(args.areaLabel) ?? normalizeZoneDisplayName(args.city) ?? "your area";
   const { severity } = args;
   const details = extractWeatherPanelDetails(args.providerPayload);
+  const thresholds = args.alertThresholds;
+  const alertActive =
+    thresholds != null
+      ? isRainAlertActive({
+          rainDetected: args.rainDetected,
+          rainIntensityMm: args.rainIntensityMm,
+          weatherSeverity: severity,
+          isThunderstorm: args.isThunderstorm,
+          thresholds,
+        })
+      : args.rainDetected && severity !== "CLEAR";
 
-  if (severity === "CLEAR") {
+  if (severity === "CLEAR" || !alertActive) {
     return {
       severity,
       rainDetected: false,
@@ -131,21 +146,36 @@ export function buildMerchantWeatherPresentation(args: {
   zoneName: string | null;
   etaDelayMinutes: number;
   updatedAt: string | null;
+  rainDetected?: boolean;
+  rainIntensityMm?: number;
+  isThunderstorm?: boolean;
+  alertThresholds?: WeatherThresholds;
 }): MerchantWeatherContext {
-  const area = (args.zoneName ?? args.city ?? "your area").trim();
+  const area = normalizeZoneDisplayName(args.zoneName) ?? normalizeZoneDisplayName(args.city) ?? "your area";
   const hooks = buildFutureHooks(args.severity);
+  const thresholds = args.alertThresholds;
+  const alertActive =
+    thresholds != null
+      ? isRainAlertActive({
+          rainDetected: !!args.rainDetected,
+          rainIntensityMm: args.rainIntensityMm ?? 0,
+          weatherSeverity: args.severity,
+          isThunderstorm: args.isThunderstorm,
+          thresholds,
+        })
+      : !!args.rainDetected && args.severity !== "CLEAR";
 
-  if (args.severity === "CLEAR" || args.severity === "LIGHT_RAIN") {
+  if (!alertActive || args.severity === "CLEAR" || args.severity === "LIGHT_RAIN") {
     return {
-      severity: args.severity,
+      severity: alertActive ? args.severity : "CLEAR",
       weatherCondition: args.weatherCondition,
-      zoneName: args.zoneName,
-      city: args.city,
-      chipLabel: args.severity === "LIGHT_RAIN" ? `🌦 Light rain in ${area}` : null,
+      zoneName: normalizeZoneDisplayName(args.zoneName),
+      city: normalizeZoneDisplayName(args.city),
+      chipLabel: null,
       bannerTitle: null,
       bannerSubtitle: null,
       showBanner: false,
-      etaDelayMinutes: args.etaDelayMinutes,
+      etaDelayMinutes: alertActive ? args.etaDelayMinutes : 0,
       updatedAt: args.updatedAt,
       futureHooks: hooks,
     };
@@ -173,8 +203,8 @@ export function buildMerchantWeatherPresentation(args: {
   return {
     severity: args.severity,
     weatherCondition: args.weatherCondition,
-    zoneName: args.zoneName,
-    city: args.city,
+    zoneName: normalizeZoneDisplayName(args.zoneName),
+    city: normalizeZoneDisplayName(args.city),
     chipLabel: copy?.title ?? null,
     bannerTitle: copy?.title ?? null,
     bannerSubtitle: copy?.subtitle ?? null,

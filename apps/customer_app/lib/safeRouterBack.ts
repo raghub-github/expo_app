@@ -68,6 +68,9 @@ export function resolveAndroidBackFallback(segments: readonly string[]): SafeRou
   }
   if (root === "home") {
     const section = segments[1];
+    if (section === "meals-under-price") {
+      return FOOD_HOME_FALLBACK;
+    }
     if (section === "merchant" || section === "category" || section === "shop") {
       return FOOD_HOME_FALLBACK;
     }

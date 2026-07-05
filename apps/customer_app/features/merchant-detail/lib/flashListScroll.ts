@@ -1,10 +1,11 @@
 import React from "react";
-import type { FlashListRef } from "@shopify/flash-list";
-import type { MerchantFlashListItem } from "../types";
+import type { MerchantScrollListHandle } from "../components/MerchantDetailFlashList";
 import { MENU_SCROLL_STICKY_OFFSET } from "../constants/layout";
 
+export type { MerchantScrollListHandle };
+
 export function scrollFlashListToOffset(
-  ref: React.RefObject<FlashListRef<MerchantFlashListItem> | null>,
+  ref: React.RefObject<MerchantScrollListHandle | null>,
   offset: number,
   animated = true
 ) {
@@ -12,27 +13,22 @@ export function scrollFlashListToOffset(
 }
 
 export function scrollFlashListToFlatIndex(
-  ref: React.RefObject<FlashListRef<MerchantFlashListItem> | null>,
+  ref: React.RefObject<MerchantScrollListHandle | null>,
   flatIndex: number,
-  headerRowCount: number,
-  animated = true
+  animated = true,
+  viewOffset = MENU_SCROLL_STICKY_OFFSET
 ) {
-  const listIndex = flatIndex - headerRowCount;
-  if (listIndex < 0) {
-    scrollFlashListToOffset(ref, 0, animated);
-    return;
-  }
-  scrollFlashListToIndex(ref, listIndex, animated);
+  ref.current?.scrollToIndex({
+    index: flatIndex,
+    animated,
+    viewOffset,
+  });
 }
 
 export function scrollFlashListToIndex(
-  ref: React.RefObject<FlashListRef<MerchantFlashListItem> | null>,
+  ref: React.RefObject<MerchantScrollListHandle | null>,
   index: number,
   animated = true
 ) {
-  ref.current?.scrollToIndex({
-    index,
-    animated,
-    viewOffset: MENU_SCROLL_STICKY_OFFSET,
-  });
+  scrollFlashListToFlatIndex(ref, index, animated);
 }

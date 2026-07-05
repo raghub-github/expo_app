@@ -1,19 +1,14 @@
-import React, { useCallback, useState } from "react";
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  Platform,
-  Vibration,
-} from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { View, StyleSheet } from "react-native";
+import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
+import { StoreText } from "./StoreText";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
+import { StoreMenuAddButton, StoreMenuQtyStepper } from "./StoreMenuCartControls";
+import { getItemDiet, getSellingPrice } from "./storeMenuUtils";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 export type PastOrderItem = {
   menuItem: MenuItem;
@@ -44,6 +39,9 @@ function formatOrderedAgo(iso: string): string {
   return `You ordered ${years} year${years > 1 ? "s" : ""} ago`;
 }
 
+const IMAGE = 96;
+const ACTION_W = 88;
+
 export function StorePastOrderRow({
   item: { menuItem, orderedAt, userRating },
   quantity,
@@ -55,96 +53,108 @@ export function StorePastOrderRow({
   const [imageFailed, setImageFailed] = useState(false);
   const isCustomisable =
     menuItem.hasVariants || menuItem.hasAddons || menuItem.hasCustomizations;
+  const diet = getItemDiet(menuItem);
+  const sellingPrice = getSellingPrice(menuItem);
+  const imageUri = useMemo(
+    () => (menuItem.imageUrl?.trim() ? (toAbsoluteImageUrl(menuItem.imageUrl) ?? menuItem.imageUrl) : null),
+    [menuItem.imageUrl]
+  );
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [imageUri]);
 
   const handleAdd = useCallback(() => {
     if (isStoreClosed) return;
-    if (Platform.OS === "android") Vibration.vibrate(15);
     onAdd(menuItem);
   }, [menuItem, onAdd, isStoreClosed]);
+
+  const handleIncrement = useCallback(() => {
+    if (isStoreClosed) return;
+    onIncrement(menuItem.id, menuItem.menuItemId);
+  }, [isStoreClosed, menuItem.id, menuItem.menuItemId, onIncrement]);
+
+  const handleDecrement = useCallback(() => {
+    if (isStoreClosed) return;
+    onDecrement(menuItem.id, menuItem.menuItemId);
+  }, [isStoreClosed, menuItem.id, menuItem.menuItemId, onDecrement]);
 
   return (
     <View style={styles.row}>
       <View style={styles.imageCol}>
         <View style={styles.imageWrap}>
-          {menuItem.imageUrl && !imageFailed ? (
+          {imageUri && !imageFailed ? (
             <Image
-              source={{ uri: menuItem.imageUrl }}
+              source={{ uri: imageUri }}
               style={styles.image}
-              resizeMode="cover"
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={0}
               onError={() => setImageFailed(true)}
             />
           ) : (
             <MenuItemImagePlaceholder size="sm" />
           )}
-          <View style={styles.dietBadge}>
-            <DietIndicator type={menuItem.isVeg ? "veg" : "nonveg"} />
-          </View>
+        </View>
+        <View style={styles.dietBadge} pointerEvents="none">
+          <DietIndicator type={diet} />
         </View>
       </View>
 
       <View style={styles.infoCol}>
-        <Text style={styles.name} numberOfLines={2}>
+        <StoreText style={styles.name} bold numberOfLines={2}>
           {menuItem.name}
-        </Text>
-        <Text style={styles.price}>₹{menuItem.price}</Text>
-        <Text style={styles.orderedAgo}>{formatOrderedAgo(orderedAt)}</Text>
+        </StoreText>
+        <StoreText style={styles.price} bold>
+          ₹{Math.round(sellingPrice)}
+        </StoreText>
+        <StoreText style={styles.orderedAgo}>{formatOrderedAgo(orderedAt)}</StoreText>
         {userRating != null && userRating > 0 ? (
-          <Text style={styles.rating}>You rated {Math.round(userRating)} ★</Text>
+          <StoreText style={styles.rating}>You rated {Math.round(userRating)} ★</StoreText>
         ) : null}
       </View>
 
       <View style={styles.actionCol}>
         {quantity === 0 ? (
-          <Pressable
+          <StoreMenuAddButton
             onPress={handleAdd}
             disabled={isStoreClosed}
-            style={[styles.addBtn, isStoreClosed && styles.addBtnDisabled]}
-          >
-            <Text style={styles.addBtnText}>{isStoreClosed ? "Closed" : "ADD"}</Text>
-            {!isStoreClosed ? (
-              <Ionicons name="add" size={14} color={StoreTheme.accentMint} />
-            ) : null}
-          </Pressable>
+            style={styles.addControl}
+          />
         ) : (
-          <View style={styles.qtyWrap}>
-            <TouchableOpacity
-              onPress={() => onDecrement(menuItem.id, menuItem.menuItemId)}
-              style={styles.qtyBtn}
-            >
-              <Ionicons name="remove" size={16} color={StoreTheme.accentMint} />
-            </TouchableOpacity>
-            <Text style={styles.qtyText}>{quantity}</Text>
-            <TouchableOpacity
-              onPress={() => onIncrement(menuItem.id, menuItem.menuItemId)}
-              style={styles.qtyBtn}
-            >
-              <Ionicons name="add" size={16} color={StoreTheme.accentMint} />
-            </TouchableOpacity>
-          </View>
+          <StoreMenuQtyStepper
+            quantity={quantity}
+            disabled={isStoreClosed}
+            onIncrement={handleIncrement}
+            onDecrement={handleDecrement}
+            style={styles.addControl}
+          />
         )}
-        {isCustomisable ? <Text style={styles.customisable}>customisable</Text> : null}
+        {isCustomisable ? (
+          <StoreText style={styles.customisable}>customisable</StoreText>
+        ) : null}
       </View>
     </View>
   );
 }
 
-const IMAGE = 72;
-
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     paddingVertical: 14,
     gap: 12,
   },
-  imageCol: {},
+  imageCol: {
+    width: IMAGE,
+    position: "relative",
+  },
   imageWrap: {
     width: IMAGE,
     height: IMAGE,
-    borderRadius: 10,
+    borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#F3F4F6",
-    position: "relative",
   },
   image: {
     width: "100%",
@@ -152,84 +162,51 @@ const styles = StyleSheet.create({
   },
   dietBadge: {
     position: "absolute",
-    top: 4,
-    left: 4,
-    backgroundColor: "#fff",
-    borderRadius: 2,
+    top: 6,
+    left: 6,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 3,
     padding: 1,
   },
   infoCol: {
     flex: 1,
     minWidth: 0,
+    paddingRight: 4,
   },
   name: {
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 17,
     color: StoreTheme.textPrimary,
-    lineHeight: 19,
-    marginBottom: 4,
+    lineHeight: 23,
+    letterSpacing: -0.2,
   },
   price: {
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 18,
     color: StoreTheme.textPrimary,
-    marginBottom: 2,
+    letterSpacing: -0.2,
+    marginTop: 2,
   },
   orderedAgo: {
     fontSize: 12,
     color: "#E57373",
+    marginTop: 3,
   },
   rating: {
-    fontSize: 12,
+    fontSize: 11,
     color: StoreTheme.textSecondary,
     marginTop: 2,
   },
   actionCol: {
-    alignItems: "center",
-    minWidth: 72,
-  },
-  addBtn: {
-    flexDirection: "row",
+    width: ACTION_W,
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: StoreTheme.accentMint,
-    borderRadius: 6,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    minWidth: 72,
   },
-  addBtnDisabled: {
-    borderColor: "#9CA3AF",
-  },
-  addBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: StoreTheme.accentMint,
-  },
-  qtyWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: StoreTheme.accentMint,
-    borderRadius: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    minWidth: 72,
-  },
-  qtyBtn: { padding: 2 },
-  qtyText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: StoreTheme.accentMint,
+  addControl: {
+    width: ACTION_W,
   },
   customisable: {
     fontSize: 10,
     color: StoreTheme.textMuted,
-    marginTop: 6,
+    marginTop: 5,
+    textAlign: "center",
   },
 });

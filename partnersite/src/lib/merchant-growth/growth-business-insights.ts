@@ -93,6 +93,8 @@ async function dayRangeBuckets(
              COALESCE(SUM(food_items_total_value), 0)::numeric AS s
       FROM orders_food
       WHERE merchant_store_id = ${storeId}
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${startStr}::date
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${endStr}::date
       GROUP BY 1
     ) o ON o.d = gs::date
     ORDER BY gs
@@ -122,6 +124,8 @@ async function monthDayBuckets(
              COALESCE(SUM(food_items_total_value), 0)::numeric AS s
       FROM orders_food
       WHERE merchant_store_id = ${storeId}
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${monthStartStr}::date
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${rangeEndStr}::date
       GROUP BY 1
     ) o ON o.d = gs::date
     ORDER BY gs
@@ -156,6 +160,15 @@ async function alltimeMonthSeries(
              COALESCE(SUM(food_items_total_value), 0)::numeric AS s
       FROM orders_food
       WHERE merchant_store_id = ${storeId}
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= (
+          date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::timestamp)
+            - (${seriesStartOffsetMonths} * INTERVAL '1 month')
+        )::date
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date < (
+          date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::timestamp)
+            - (${seriesEndOffsetMonths} * INTERVAL '1 month')
+            + INTERVAL '1 month'
+        )::date
       GROUP BY 1
     ) o ON o.m = gs::date
     ORDER BY gs

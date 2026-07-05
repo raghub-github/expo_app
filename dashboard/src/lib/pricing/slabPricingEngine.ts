@@ -24,7 +24,6 @@ import {
   type DropPayoutBreakdown,
   type CumulativeSegment,
   type RiderPayoutBreakdown,
-  type AppliedSurgeLine,
 } from "@gatimitra/slab-pricing";
 import {
   resolvePreviewSurges,
@@ -32,6 +31,10 @@ import {
   type PreviewSurgeDefinition,
   type PreviewSurgeTimeSlot,
 } from "../geo/riderSurgePreview";
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 
 export type {
   CustomerSlab,
@@ -48,7 +51,9 @@ export type {
 
 export type CustomerPreviewBreakdown = CustomerSlabPrice & { distanceKm: number };
 
-export type RiderPreviewBreakdown = RiderPayoutBreakdown;
+export type RiderPreviewBreakdown = Omit<RiderPayoutBreakdown, "appliedSurges"> & {
+  appliedSurges: AppliedPreviewSurge[];
+};
 
 export type RidePreviewBreakdown =
   | ({ mode: "customer" } & CustomerPreviewBreakdown)
@@ -75,6 +80,7 @@ export function calcSurgeAmount(input: {
   riderHasGmitraMax: boolean;
   surgeWaitMaxOnly: boolean;
   maxTotalSurgeAmount: number | null;
+  baseFareForPct: number;
   definitions: PreviewSurgeDefinition[];
   timeSlots: PreviewSurgeTimeSlot[];
   forceActiveSurgeIds?: number[];
@@ -102,6 +108,7 @@ export function calcSurgeAmount(input: {
     riderHasGmitraMax: input.riderHasGmitraMax,
     surgeWaitMaxOnly: input.surgeWaitMaxOnly,
     maxTotalSurgeAmount: input.maxTotalSurgeAmount,
+    baseFareForPct: input.baseFareForPct,
     forceActiveSurgeIds: input.forceActiveSurgeIds,
     now: input.now,
   });
@@ -124,18 +131,44 @@ export function calcRiderPreviewBreakdown(input: {
 }): RiderPreviewBreakdown | null {
   if (input.pickupSlabs.length === 0 && input.dropSlabs.length === 0) return null;
 
+  const { extrasAllowed } = calcGmitraMaxAdjustment({
+    riderHasGmitraMax: input.riderHasGmitraMax === true,
+    surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
+  });
+
+  const pickup =
+    input.pickupSlabs.length > 0
+      ? calcPickupPayout({
+          pickupKm: input.pickupKm,
+          slabs: input.pickupSlabs,
+          waitingMinutes: input.waitingMinutes,
+          extrasAllowed,
+        })
+      : null;
+
+  const drop =
+    input.dropSlabs.length > 0
+      ? calcDropPayout({ dropKm: input.dropKm, slabs: input.dropSlabs })
+      : null;
+
+  const pickupLegTotal = pickup?.pickupPayout ?? 0;
+  const dropAmount = drop?.dropAmount ?? 0;
+  const waitingAmount = pickup?.waitingAmount ?? 0;
+  const subtotalBeforeSurge = round2(pickupLegTotal + dropAmount + waitingAmount);
+
   const surge = calcSurgeAmount({
     service: input.service,
     vehicleType: input.vehicleType,
     riderHasGmitraMax: input.riderHasGmitraMax === true,
     surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
     maxTotalSurgeAmount: input.maxTotalSurgeAmount ?? null,
+    baseFareForPct: subtotalBeforeSurge,
     definitions: input.surgeDefinitions ?? [],
     timeSlots: input.surgeTimeSlots ?? [],
     forceActiveSurgeIds: input.forceActiveSurgeIds,
   });
 
-  return calcRiderPayoutBreakdown({
+  const base = calcRiderPayoutBreakdown({
     pickupKm: input.pickupKm,
     dropKm: input.dropKm,
     pickupSlabs: input.pickupSlabs,
@@ -143,11 +176,13 @@ export function calcRiderPreviewBreakdown(input: {
     waitingMinutes: input.waitingMinutes,
     riderHasGmitraMax: input.riderHasGmitraMax,
     surgeWaitMaxOnly: input.surgeWaitMaxOnly,
-    appliedSurges: surge.appliedSurges as AppliedSurgeLine[],
+    appliedSurges: surge.appliedSurges,
     rawSurgeTotal: surge.rawSurgeTotal,
     surgeTotal: surge.surgeTotal,
     surgeCapped: surge.surgeCapped,
   });
+  if (!base) return null;
+  return { ...base, appliedSurges: surge.appliedSurges };
 }
 
 export function calcCustomerPreviewBreakdown(input: {

@@ -19,9 +19,8 @@ import {
   InteractionManager,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import type { FlashListRef } from "@shopify/flash-list";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import { useSafeAreaInsets, initialWindowMetrics } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useSharedValue } from "react-native-reanimated";
@@ -34,6 +33,14 @@ import {
 import { formatNextOpenTime, toTimestamp } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
+import {
+  STORE_OFFERS_STALE_MS,
+  buildStoreOffersQueryKey,
+  filterVisibleStoreOffers,
+  getSyncStoreOffers,
+  offerTextsFromStoreOffers,
+  prefetchStoreOffersFromLocationStore,
+} from "@/lib/prefetchStoreOffers";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
@@ -44,10 +51,11 @@ import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
-import { MerchantDetailSkeleton, MenuListSkeleton } from "@/components/ShimmerSkeleton";
+import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import {
   getMerchantDetailPlaceholder,
   prefetchMerchantDetail,
+  findMerchantSummaryInCache,
 } from "@/lib/prefetchMerchantDetail";
 import {
   fetchMerchantByIdWithCache,
@@ -84,14 +92,17 @@ import {
   buildOfferPriceTiers,
   filterMenuItems,
   hasActiveAdvancedFilters,
+  resolvePairingCompanionsForAnchor,
 } from "@/components/store/storeMenuUtils";
-import { MerchantDetailFlashList } from "@/features/merchant-detail/components/MerchantDetailFlashList";
+import {
+  MerchantDetailFlashList,
+  type MerchantScrollListHandle,
+} from "@/features/merchant-detail/components/MerchantDetailFlashList";
 import { MerchantStickyChrome } from "@/features/merchant-detail/components/MerchantStickyChrome";
 import { MerchantFloatingFab } from "@/features/merchant-detail/components/MerchantFloatingFab";
 import {
   buildFlashListData,
   findFlatIndexForScrollTarget,
-  getFlashListHeaderRowCount,
 } from "@/features/merchant-detail/lib/buildFlashListData";
 import {
   attachListRowKeys,
@@ -103,15 +114,18 @@ import {
   scrollFlashListToOffset,
 } from "@/features/merchant-detail/lib/flashListScroll";
 import { useMerchantScrollAnimation } from "@/features/merchant-detail/hooks/useMerchantScrollAnimation";
-import { useMerchantScrollChromeState, COMPACT_SCROLL_THRESHOLD } from "@/features/merchant-detail/hooks/useMerchantScrollChromeState";
+import { useMerchantScrollChromeState } from "@/features/merchant-detail/hooks/useMerchantScrollChromeState";
+import { MERCHANT_FLOATING_UI_LIFT } from "@/constants/layout";
+import { resolveStoreContinueBarHeight, MerchantMenuCartSheet } from "@/components/store/MerchantMenuCartSheet";
+import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 import {
-  CART_BAR_HEIGHT,
   MENU_FAB_HEIGHT,
   MENU_SCROLL_STICKY_OFFSET,
   MERCHANT_HEADER_TOP_GUTTER,
   HEADER_IMAGE_HEIGHT,
   SCREEN_WIDTH_EXPORT,
   FILTER_BAR_HEIGHT,
+  STICKY_SEARCH_ROW_HEIGHT,
 } from "@/features/merchant-detail/constants/layout";
 import type { MerchantFlashListItem, MenuSection } from "@/features/merchant-detail/types";
 import {
@@ -121,19 +135,23 @@ import {
 } from "@/components/store/StoreMenuSheet";
 import { StoreOffersSheet } from "@/components/store/StoreOffersSheet";
 import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
+import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import { orderService } from "@/services/order.service";
 import { billingService } from "@/services/billing.service";
 import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
-import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import {
-  useCouponAvailablePrompt,
-  type CouponAvailablePrompt,
+  formatStoreCartOfferBannerText,
+  resolveBestEligibleCheckoutOffer,
 } from "@/hooks/useCouponAvailablePrompt";
-import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
+import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const MENU_SEARCH_DEBOUNCE_MS = 200;
+
+/** Avoid cart dock jumping when live safe-area insets hydrate after first paint. */
+const CART_DOCK_BOTTOM_INSET_SEED = initialWindowMetrics?.insets.bottom ?? 0;
 
 export default function MerchantDetailScreen() {
   const { id, openCart, focusItemId } = useLocalSearchParams<{
@@ -143,8 +161,13 @@ export default function MerchantDetailScreen() {
   }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const cartDockBottomInset = Math.max(insets.bottom, CART_DOCK_BOTTOM_INSET_SEED);
   const merchantId = id ?? "";
-  const flashListRef = useRef<FlashListRef<MerchantFlashListItem>>(null);
+  const navLoadingMessageIndex = useMerchantNavTransitionStore((s) =>
+    s.merchantId === merchantId ? s.loadingMessageIndex : undefined
+  );
+  const scrollListRef = useRef<MerchantScrollListHandle>(null);
+  const menuScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
   const [filtersSheetVisible, setFiltersSheetVisible] = useState(false);
@@ -160,8 +183,11 @@ export default function MerchantDetailScreen() {
   const focusItemHandledRef = useRef<string | null>(null);
   const pendingMenuNavRef = useRef<StoreMenuSheetSection | null>(null);
   const [highlightedMenuItemKey, setHighlightedMenuItemKey] = useState<string | null>(null);
+  /** Last menu row that received an add — pairing strip renders directly below it. */
+  const [pairingAnchorKey, setPairingAnchorKey] = useState<string | null>(null);
   const [offersSheetVisible, setOffersSheetVisible] = useState(false);
   const [scheduleSheetVisible, setScheduleSheetVisible] = useState(false);
+  const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
   const [scheduledSlotLabel, setScheduledSlotLabel] = useState<string | null>(null);
   const [headerSearchExpanded, setHeaderSearchExpanded] = useState(false);
   const headerSearchExpandedSv = useSharedValue(false);
@@ -172,7 +198,7 @@ export default function MerchantDetailScreen() {
   const openMerchantSearch = useCallback(() => {
     const y = useMerchantScrollStore.getState().scrollY;
     if (y > 48) {
-      scrollFlashListToOffset(flashListRef, 0, true);
+      scrollFlashListToOffset(scrollListRef, 0, true);
     }
     setHeaderSearchExpanded(true);
     const delay = y > 48 ? 340 : 80;
@@ -187,40 +213,62 @@ export default function MerchantDetailScreen() {
   const setScrollY = useMerchantScrollStore((s) => s.setScrollY);
   const savedScrollOffset = useMerchantScrollStore((s) => s.getStoreScrollOffset(merchantId));
   const didRestoreScrollRef = useRef(false);
+  const userMenuScrollStarted = useSharedValue(savedScrollOffset > 0);
 
-  const handleCartCompactChange = useCallback(
-    (compact: boolean) => {
-      setScrollY(compact ? COMPACT_SCROLL_THRESHOLD + 1 : 0);
-    },
-    [setScrollY]
-  );
+  useEffect(() => {
+    userMenuScrollStarted.value = savedScrollOffset > 0;
+    didRestoreScrollRef.current = false;
+  }, [merchantId, savedScrollOffset, userMenuScrollStarted]);
+
+  const cancelScheduledMenuScroll = useCallback(() => {
+    for (const timer of menuScrollTimersRef.current) {
+      clearTimeout(timer);
+    }
+    menuScrollTimersRef.current = [];
+    scrollListRef.current?.cancelPendingScroll();
+  }, []);
+
+  useEffect(() => () => cancelScheduledMenuScroll(), [cancelScheduledMenuScroll]);
 
   const {
     scrollY,
     scrollHandler,
-    heroBannerStyle,
-    heroOverlayOpacityStyle,
-    infoOpacityStyle,
     stickySearchStyle,
     stickySearchBgStyle,
-    stickyFilterStyle,
     fabStyle,
-    stickyFilterTop,
   } = useMerchantScrollAnimation({
     headerSearchExpandedSv,
+    userMenuScrollStarted,
+    onBeginDrag: cancelScheduledMenuScroll,
     onScrollEnd: (y) => {
       setStoreScrollOffset(merchantId, y);
       setScrollY(y);
     },
   });
 
+  const heroBannerHeight = HEADER_IMAGE_HEIGHT;
+
   const {
-    stickyFilterActive,
     stickySearchActive,
+    heroActionsVisible,
   } = useMerchantScrollChromeState({
     scrollY,
-    onCartCompactChange: handleCartCompactChange,
+    userMenuScrollStarted,
+    heroBannerHeight,
   });
+
+  useFocusEffect(
+    useCallback(() => {
+      useScreenChromeStore.setState({
+        statusBarBackground: "#FFFFFF",
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
+      return () => {
+        useScreenChromeStore.getState().resetStatusBarBackground();
+      };
+    }, [])
+  );
 
   const queryClient = useQueryClient();
   useMerchantMenuRealtime(merchantId, queryClient);
@@ -248,7 +296,7 @@ export default function MerchantDetailScreen() {
     return () => task.cancel();
   }, [merchantId]);
 
-  const { data: merchant, isPending, isError, refetch } = useQuery({
+  const { data: merchant, isPending, isFetching, isError, refetch } = useQuery({
     queryKey: MERCHANT_DETAIL_QUERY_KEY(merchantId),
     queryFn: () => fetchMerchantByIdWithCache(merchantId),
     enabled: !!merchantId && !readSyncMerchantMenu(merchantId)?.menu?.length,
@@ -264,7 +312,37 @@ export default function MerchantDetailScreen() {
   });
 
   const hasCachedMenu = (merchant?.menu?.length ?? 0) > 0;
-  const menuPending = !hasCachedMenu && isPending;
+  const menuPending = !hasCachedMenu && (isPending || isFetching);
+
+  const [listLaidOut, setListLaidOut] = useState(false);
+
+  useEffect(() => {
+    setListLaidOut(false);
+  }, [merchantId]);
+
+  useEffect(() => {
+    if (!merchant || menuPending) return;
+    const fallback = setTimeout(() => setListLaidOut(true), 700);
+    return () => clearTimeout(fallback);
+  }, [merchant, menuPending]);
+
+  const handleListLayout = useCallback(() => {
+    setListLaidOut(true);
+  }, []);
+
+  const contentReady = !!merchant && !menuPending && listLaidOut;
+
+  useEffect(() => {
+    if (!contentReady) return;
+    useMerchantNavTransitionStore.getState().hide();
+  }, [contentReady]);
+
+  useEffect(() => {
+    if (!merchantId) return;
+    if ((isError || !merchant) && !isPending && !isFetching) {
+      useMerchantNavTransitionStore.getState().hide();
+    }
+  }, [merchantId, isError, merchant, isPending, isFetching]);
 
   useEffect(() => {
     if (!merchantId) return;
@@ -275,13 +353,14 @@ export default function MerchantDetailScreen() {
     if (!merchantId || !hasCachedMenu || didRestoreScrollRef.current) return;
     if (savedScrollOffset <= 0) return;
     const task = InteractionManager.runAfterInteractions(() => {
-      scrollFlashListToOffset(flashListRef, savedScrollOffset, false);
+      userMenuScrollStarted.value = true;
+      scrollFlashListToOffset(scrollListRef, savedScrollOffset, false);
       scrollY.value = savedScrollOffset;
       setScrollY(savedScrollOffset);
       didRestoreScrollRef.current = true;
     });
     return () => task.cancel();
-  }, [merchantId, hasCachedMenu, savedScrollOffset, scrollY, setScrollY]);
+  }, [merchantId, hasCachedMenu, savedScrollOffset, scrollY, setScrollY, userMenuScrollStarted]);
 
   useEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
@@ -291,6 +370,20 @@ export default function MerchantDetailScreen() {
     });
     return () => task.cancel();
   }, [merchantId, merchant?.menu, queryClient]);
+
+  /** List cards often carry rating before the menu payload resolves — reuse on inner page. */
+  const displayMerchant = useMemo(() => {
+    if (!merchant) return undefined;
+    const summary = findMerchantSummaryInCache(queryClient, merchantId);
+    if (!summary) return merchant;
+    return {
+      ...merchant,
+      avgRating: merchant.avgRating ?? summary.avgRating ?? null,
+      totalReviews: merchant.totalReviews ?? summary.totalReviews ?? null,
+      forYouRating: merchant.forYouRating ?? summary.forYouRating ?? null,
+      userHasRatedStore: merchant.userHasRatedStore ?? summary.userHasRatedStore ?? false,
+    };
+  }, [merchant, merchantId, queryClient]);
 
   /** List screen often has displayImage already; detail payload can miss URLs — reuse for header banner. */
   const listCachedBanner = useMemo(() => {
@@ -441,8 +534,37 @@ export default function MerchantDetailScreen() {
   const city = locationAddress?.city ?? undefined;
   const offerLat = coords?.latitude ?? undefined;
   const offerLng = coords?.longitude ?? undefined;
-  const { data: storeOffersData } = useQuery({
-    queryKey: ["store-offers", merchantId, pincode, state, offerLat, offerLng],
+  const offerGeo = useMemo(
+    () => ({
+      pincode,
+      state,
+      city,
+      lat: offerLat,
+      lng: offerLng,
+    }),
+    [pincode, state, city, offerLat, offerLng]
+  );
+
+  const storeOffersQueryKey = useMemo(
+    () => buildStoreOffersQueryKey(merchantId, offerGeo),
+    [merchantId, offerGeo]
+  );
+
+  const syncStoreOffers = useMemo(
+    () => getSyncStoreOffers(queryClient, merchantId, offerGeo),
+    [queryClient, merchantId, offerGeo]
+  );
+
+  useLayoutEffect(() => {
+    if (!merchantId) return;
+    prefetchStoreOffersFromLocationStore(queryClient, merchantId);
+  }, [merchantId, queryClient]);
+
+  const {
+    data: storeOffersData,
+    isPending: storeOffersPending,
+  } = useQuery({
+    queryKey: storeOffersQueryKey,
     queryFn: () =>
       offersService.getStoreOffers({
         storeId: merchantId,
@@ -454,23 +576,16 @@ export default function MerchantDetailScreen() {
         serviceType: "FOOD",
       }),
     enabled: !!merchantId,
-    staleTime: 3 * 60 * 1000,
+    staleTime: STORE_OFFERS_STALE_MS,
     retry: 1,
+    placeholderData: (previousData) => previousData,
+    initialData: syncStoreOffers,
   });
-  const liveOffers: (MerchantOfferItem | PlatformOfferItem)[] = [
-    ...(storeOffersData?.merchant_offers ?? []),
-    ...(storeOffersData?.platform_offers ?? []),
-  ];
 
-  /** Inner page: full offer list (no free-delivery-only promos in the strip). */
   const visibleOffers = useMemo(
-    () =>
-      liveOffers.filter((o) => {
-        const blob = `${o.label ?? ""} ${o.sub_label ?? ""}`.toLowerCase();
-        return !/\bfree\s*delivery\b/.test(blob) && !/\bfree\s*del\b/.test(blob);
-      }),
-    [liveOffers]
-  );
+    () => filterVisibleStoreOffers(storeOffersData),
+    [storeOffersData]
+  ) as (MerchantOfferItem | PlatformOfferItem)[];
 
   const { data: myOrders = [] } = useQuery({
     queryKey: ["my-orders-store", merchantId],
@@ -521,6 +636,35 @@ export default function MerchantDetailScreen() {
     return out;
   }, [myOrders, merchant?.menu, merchant?.name, merchantId]);
 
+  const ratingInsight = useMemo(() => {
+    const ratingSource = displayMerchant ?? merchant;
+    const storeName = (merchant?.name ?? "").toLowerCase().trim();
+    const storeOrders = myOrders.filter((order) => {
+      return (
+        order.merchantPublicStoreId === merchantId ||
+        (order.merchantStoreId != null && String(order.merchantStoreId) === merchantId) ||
+        (order.merchantName ?? "").toLowerCase().includes(storeName.slice(0, Math.min(8, storeName.length)))
+      );
+    });
+    const ratedOrders = storeOrders.filter(
+      (order) => order.storeRatingSubmitted === true && order.storeRating != null && order.storeRating >= 1
+    );
+    const userHasRatedStore = ratingSource?.userHasRatedStore === true || ratedOrders.length > 0;
+    const forYouRating =
+      ratingSource?.forYouRating ??
+      (ratedOrders[0]?.storeRating != null ? ratedOrders[0]!.storeRating! : null);
+
+    return {
+      userHasRatedStore,
+      forYouRating: userHasRatedStore ? forYouRating : null,
+    };
+  }, [
+    displayMerchant,
+    merchant,
+    merchantId,
+    myOrders,
+  ]);
+
   const { data: orderedTogetherRecs } = useQuery({
     queryKey: ["merchant", merchantId, "ordered-together-recs"],
     queryFn: () => merchantService.getOrderedTogetherRecommendations(merchantId),
@@ -535,23 +679,21 @@ export default function MerchantDetailScreen() {
 
   const coPurchaseByAnchorId = orderedTogetherRecs?.byAnchorItemId ?? {};
 
-  const goesWithNameByItemId = useMemo(() => {
-    const menu = merchant?.menu ?? [];
-    if (!menu.length) return {} as Record<string, string>;
-    const byPublicId = new Map(menu.map((m) => [m.id, m]));
-    const byPk = new Map(menu.filter((m) => m.menuItemId != null).map((m) => [m.menuItemId!, m]));
-    const out: Record<string, string> = {};
-    for (const [anchorId, pairs] of Object.entries(coPurchaseByAnchorId)) {
-      const pair = pairs[0];
-      if (!pair) continue;
-      const companion =
-        byPublicId.get(pair.item2Id) ??
-        byPk.get(pair.item2MenuItemPk) ??
-        menu.find((m) => String(m.menuItemId) === String(pair.item2MenuItemPk));
-      if (companion?.name) out[anchorId] = companion.name;
-    }
-    return out;
-  }, [merchant?.menu, coPurchaseByAnchorId]);
+  const pairingCompanionItems = useMemo(() => {
+    if (!pairingAnchorKey || !merchant?.menu?.length) return [];
+    const menu = merchant.menu;
+    const anchor =
+      menu.find((m) => m.listRowKey === pairingAnchorKey) ??
+      menu.find((m) => m.id === pairingAnchorKey) ??
+      menu.find((m) => m.menuItemId != null && String(m.menuItemId) === pairingAnchorKey);
+    if (!anchor) return [];
+    return resolvePairingCompanionsForAnchor(
+      menu,
+      anchor,
+      coPurchaseByAnchorId,
+      orderedTogetherRecs?.pairs ?? []
+    );
+  }, [merchant?.menu, pairingAnchorKey, coPurchaseByAnchorId, orderedTogetherRecs?.pairs]);
 
   const highlyReorderedIds = useMemo(
     () =>
@@ -593,19 +735,19 @@ export default function MerchantDetailScreen() {
     return raw ? (toAbsoluteImageUrl(raw) ?? raw) : null;
   }, [merchant]);
 
-  const offerTickerTexts = useMemo(() => {
-    const fromApi = visibleOffers
-      .map((o) => {
-        const label = (o.label ?? "").trim();
-        const sub = (o.sub_label ?? "").trim();
-        if (!label) return null;
-        return sub ? `${label} · ${sub}` : label;
-      })
-      .filter((x): x is string => !!x);
-    if (fromApi.length > 0) return fromApi;
-    const fallback = (merchant?.offerText ?? "").trim();
-    return fallback ? [fallback] : [];
-  }, [visibleOffers, merchant?.offerText]);
+  const offerTickerTexts = useMemo(
+    () => offerTextsFromStoreOffers(storeOffersData, merchant?.offerText),
+    [storeOffersData, merchant?.offerText]
+  );
+
+  const reserveOfferRow = useMemo(
+    () =>
+      offerTickerTexts.length > 0 ||
+      Boolean(merchant?.offerText?.trim()) ||
+      Boolean(syncStoreOffers) ||
+      (storeOffersPending && !storeOffersData),
+    [offerTickerTexts.length, merchant?.offerText, syncStoreOffers, storeOffersPending, storeOffersData]
+  );
 
   // Kept for legacy fields (polyline for map) while we migrate to canonical quote.
   void getRoute;
@@ -624,9 +766,10 @@ export default function MerchantDetailScreen() {
   const cartItems = useCartStore((s) => s.items) ?? [];
   const cartMerchantId = useCartStore((s) => s.merchantId);
   const syncCartPrices = useCartStore((s) => s.syncPricesFromMap);
+  const isCartForThisMerchant = merchantCartMatchesRoute(cartMerchantId, merchantId);
 
   const cartSubtotalForOffers = useMemo(() => {
-    if (cartMerchantId !== merchantId) return 0;
+    if (!isCartForThisMerchant) return 0;
     return (cartItems ?? []).reduce((s, i) => {
       const base = cartLineBaseUnitPrice(i);
       const line = base * i.quantity;
@@ -636,7 +779,7 @@ export default function MerchantDetailScreen() {
       );
       return s + line + addonLine;
     }, 0);
-  }, [cartItems, cartMerchantId, merchantId]);
+  }, [cartItems, isCartForThisMerchant]);
 
   const checkoutOffersQuery = useQuery({
     queryKey: [
@@ -660,52 +803,31 @@ export default function MerchantDetailScreen() {
     enabled:
       !!merchantId &&
       !!resolvedDeliveryAddress &&
-      cartMerchantId === merchantId &&
+      isCartForThisMerchant &&
       cartItems.length > 0,
     staleTime: 60 * 1000,
   });
 
-  const setPendingCheckoutOffer = useCheckoutOfferStore((s) => s.setPending);
-
-  const couponAvailablePrompt = useCouponAvailablePrompt({
-    offersData: checkoutOffersQuery.data,
-    offersFetching: checkoutOffersQuery.isFetching,
-    cartSubtotal: cartSubtotalForOffers,
-    hasAppliedOffer: false,
-    blocked: offersSheetVisible || customizationSheetVisible,
-  });
-
-  const handleCouponAvailableApply = useCallback(
-    (p: CouponAvailablePrompt) => {
-      couponAvailablePrompt.dismiss(p.key);
-      if (p.applyType === "coupon") {
-        setPendingCheckoutOffer({
-          type: "coupon",
-          couponCode: p.couponCode,
-          couponLabel: p.description ?? p.couponCode,
-        });
-      } else if (p.applyType === "merchant" && p.merchantOfferId != null) {
-        setPendingCheckoutOffer({
-          type: "merchant",
-          merchantOfferId: p.merchantOfferId,
-          couponCode: p.couponCode,
-          couponLabel: p.merchantOfferTitle ?? p.couponCode,
-        });
-      } else if (p.applyType === "platform" && p.platformOfferId != null) {
-        setPendingCheckoutOffer({
-          type: "platform",
-          platformOfferId: p.platformOfferId,
-        });
-      }
-    },
-    [couponAvailablePrompt, setPendingCheckoutOffer]
-  );
+  const storeCartOfferBannerText = useMemo(() => {
+    if (!isCartForThisMerchant || cartItems.length === 0) return null;
+    const best = resolveBestEligibleCheckoutOffer(
+      checkoutOffersQuery.data,
+      cartSubtotalForOffers
+    );
+    if (!best) return null;
+    return formatStoreCartOfferBannerText(best);
+  }, [
+    isCartForThisMerchant,
+    cartItems.length,
+    checkoutOffersQuery.data,
+    cartSubtotalForOffers,
+  ]);
 
   // Keep the floating-cart total in sync with the live menu — if commission
   // changed since the user added an item, the cart price for those items
   // updates as soon as the menu fetch returns fresh values.
   useEffect(() => {
-    if (!merchant?.menu || cartItems.length === 0 || cartMerchantId !== merchantId) return;
+    if (!merchant?.menu || cartItems.length === 0 || !isCartForThisMerchant) return;
     const priceById: Record<string, number> = {};
     for (const m of merchant.menu) {
       if (typeof m.price === "number" && Number.isFinite(m.price)) {
@@ -714,11 +836,11 @@ export default function MerchantDetailScreen() {
     }
     if (Object.keys(priceById).length > 0) syncCartPrices(priceById);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [merchant?.menu, syncCartPrices, cartMerchantId, merchantId]);
+  }, [merchant?.menu, syncCartPrices, isCartForThisMerchant, cartItems.length]);
 
   const getQty = useCallback(
     (itemId: string, menuItemId?: number) => {
-      if (cartMerchantId !== merchantId) return 0;
+      if (!isCartForThisMerchant) return 0;
       const numId = menuItemId != null ? String(menuItemId) : null;
       return cartItems.reduce((sum, i) => {
         if (i.menuItemId === itemId || i.menuItemId.startsWith(itemId + "_")) return sum + i.quantity;
@@ -726,7 +848,7 @@ export default function MerchantDetailScreen() {
         return sum;
       }, 0);
     },
-    [cartMerchantId, merchantId, cartItems]
+    [isCartForThisMerchant, cartItems]
   );
 
   const handleAddItem = useCallback(
@@ -742,6 +864,7 @@ export default function MerchantDetailScreen() {
         setCustomizationItem(item);
         setCustomizationSheetVisible(true);
       } else {
+        setPairingAnchorKey(item.listRowKey ?? item.id);
         addItem(merchantId, merchant.name, {
           menuItemId: String(item.menuItemId != null ? item.menuItemId : item.id),
           name: item.name,
@@ -859,7 +982,7 @@ export default function MerchantDetailScreen() {
   );
   const getCartLineIdForItem = useCallback(
     (itemId: string, menuItemId?: number): string | null => {
-      if (cartMerchantId !== merchantId) return null;
+      if (!isCartForThisMerchant) return null;
       const numId = menuItemId != null ? String(menuItemId) : null;
       const line = cartItems.find(
         (i) =>
@@ -869,7 +992,7 @@ export default function MerchantDetailScreen() {
       );
       return line?.menuItemId ?? null;
     },
-    [cartMerchantId, merchantId, cartItems]
+    [isCartForThisMerchant, cartItems]
   );
 
   const handleIncrement = useCallback(
@@ -911,11 +1034,11 @@ export default function MerchantDetailScreen() {
   );
 
   function scheduleMenuScroll(run: () => void) {
+    if (userMenuScrollStarted.value) return;
+    cancelScheduledMenuScroll();
     InteractionManager.runAfterInteractions(() => {
+      if (userMenuScrollStarted.value) return;
       run();
-      setTimeout(run, 120);
-      setTimeout(run, 360);
-      setTimeout(run, 640);
     });
   }
 
@@ -941,20 +1064,12 @@ export default function MerchantDetailScreen() {
   const totalInCart = (cartItems ?? []).reduce((n, i) => n + i.quantity, 0);
   const cartTotal = (cartItems ?? []).reduce((n, i) => n + i.price * i.quantity, 0);
 
-  const listContentContainerStyle = useMemo(
-    () => ({
-      paddingBottom:
-        totalInCart > 0
-          ? 56 + MENU_FAB_HEIGHT + 40 + insets.bottom + 14
-          : MENU_FAB_HEIGHT + 88 + insets.bottom,
-    }),
-    [totalInCart, insets.bottom]
-  );
-
   const openOffersSheet = useCallback(() => setOffersSheetVisible(true), []);
   const closeOffersSheet = useCallback(() => setOffersSheetVisible(false), []);
   const openScheduleSheet = useCallback(() => setScheduleSheetVisible(true), []);
   const closeScheduleSheet = useCallback(() => setScheduleSheetVisible(false), []);
+  const openRatingSheet = useCallback(() => setRatingSheetVisible(true), []);
+  const closeRatingSheet = useCallback(() => setRatingSheetVisible(false), []);
   const openOptionsSheet = useCallback(() => setOptionsSheetVisible(true), []);
   const closeOptionsSheet = useCallback(() => setOptionsSheetVisible(false), []);
   const openReportSheet = useCallback(() => {
@@ -983,6 +1098,30 @@ export default function MerchantDetailScreen() {
     liveStatusSnapshot?.liveStatus ?? liveStatusFromStore ?? merchantLiveStatus ?? "CLOSED";
   const isStoreClosedForStatus =
     merchant != null && effectiveLiveStatus === "CLOSED";
+
+  const showStoreContinueBar = isCartForThisMerchant && totalInCart > 0;
+
+  /** Reserve offer strip height immediately so dock never overlaps menu on first paint. */
+  const reserveCartDockOfferStrip = showStoreContinueBar;
+
+  const listContentContainerStyle = useMemo(
+    () => {
+      const continueBarHeight = showStoreContinueBar
+        ? resolveStoreContinueBarHeight(reserveCartDockOfferStrip, cartDockBottomInset)
+        : 0;
+      return {
+        paddingBottom: showStoreContinueBar
+          ? continueBarHeight + MENU_FAB_HEIGHT + 16
+          : MENU_FAB_HEIGHT + 40 + cartDockBottomInset + 14,
+      };
+    },
+    [cartDockBottomInset, showStoreContinueBar, reserveCartDockOfferStrip]
+  );
+
+  const handleStoreCartContinue = useCallback(() => {
+    if (isStoreClosedForStatus) return;
+    router.push("/checkout");
+  }, [isStoreClosedForStatus, router]);
 
   const openStatusLabel = useMemo(
     () =>
@@ -1022,6 +1161,8 @@ export default function MerchantDetailScreen() {
         visibleOffersCount: visibleOffers.length,
         closedBannerMessage,
         menuPending,
+        pairingAnchorKey,
+        pairingCompanionItems,
       }),
     [
       sections,
@@ -1031,12 +1172,9 @@ export default function MerchantDetailScreen() {
       visibleOffers.length,
       closedBannerMessage,
       menuPending,
+      pairingAnchorKey,
+      pairingCompanionItems,
     ]
-  );
-
-  const flashListHeaderRowCount = useMemo(
-    () => getFlashListHeaderRowCount(flashListData),
-    [flashListData]
   );
 
   const scrollToMenuTarget = useCallback(
@@ -1050,10 +1188,10 @@ export default function MerchantDetailScreen() {
       }
 
       scheduleMenuScroll(() => {
-        scrollFlashListToFlatIndex(flashListRef, flatIndex, flashListHeaderRowCount, true);
+        scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, MENU_SCROLL_STICKY_OFFSET);
       });
     },
-    [flashIndexMap, flashListHeaderRowCount]
+    [flashIndexMap]
   );
 
   useEffect(() => {
@@ -1078,32 +1216,28 @@ export default function MerchantDetailScreen() {
     focusItemHandledRef.current = target;
     setHighlightedMenuItemKey(target);
 
+    if (userMenuScrollStarted.value) return;
+
     const scrollToItem = () => {
-      scrollFlashListToFlatIndex(flashListRef, flatIndex, flashListHeaderRowCount, true);
+      if (userMenuScrollStarted.value) return;
+      scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, MENU_SCROLL_STICKY_OFFSET);
     };
 
     const t1 = setTimeout(scrollToItem, 400);
-    const t2 = setTimeout(scrollToItem, 720);
     const clearHighlight = setTimeout(() => setHighlightedMenuItemKey(null), 2600);
 
     return () => {
       clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(clearHighlight);
+      clearHighlight();
     };
-  }, [focusItemId, sections, flashIndexMap, flashListHeaderRowCount]);
+  }, [focusItemId, sections, flashIndexMap, userMenuScrollStarted]);
 
   useEffect(() => {
-    if (openCart !== "1" || !merchantId || cartMerchantId !== merchantId || flashListData.length === 0) {
+    if (openCart !== "1" || !merchantId || !isCartForThisMerchant) {
       return;
     }
-    const footerIndex = flashListData.findIndex((row) => row.type === "footer");
-    if (footerIndex < 0) return;
-    const t = setTimeout(() => {
-      scrollFlashListToFlatIndex(flashListRef, footerIndex, flashListHeaderRowCount, true);
-    }, 600);
-    return () => clearTimeout(t);
-  }, [openCart, merchantId, cartMerchantId, flashListData, flashListHeaderRowCount]);
+    router.push("/checkout");
+  }, [openCart, merchantId, isCartForThisMerchant, router]);
 
   const handleShareRestaurant = useCallback(async () => {
     closeOptionsSheet();
@@ -1270,15 +1404,20 @@ export default function MerchantDetailScreen() {
     );
   }
 
-  if (isPending && !merchant) {
+  const showInitialLoader = !merchant && (isPending || isFetching);
+
+  if (showInitialLoader) {
     return (
       <View style={styles.container}>
-        <MerchantDetailSkeleton menuRowCount={5} />
+        <MerchantMenuLoadingSkeleton
+          merchantId={merchantId}
+          startMessageIndex={navLoadingMessageIndex}
+        />
       </View>
     );
   }
 
-  if ((isError || !merchant) && !isPending) {
+  if ((isError || !merchant) && !isPending && !isFetching) {
     return (
       <View style={styles.centered}>
         <Ionicons name="cloud-offline-outline" size={40} color={GatiMitraColors.textSecondary} />
@@ -1302,10 +1441,15 @@ export default function MerchantDetailScreen() {
   if (!merchant) {
     return (
       <View style={styles.container}>
-        <MerchantDetailSkeleton menuRowCount={5} />
+        <MerchantMenuLoadingSkeleton
+          merchantId={merchantId}
+          startMessageIndex={navLoadingMessageIndex}
+        />
       </View>
     );
   }
+
+  const pageMerchant = displayMerchant ?? merchant;
 
   return (
     <GestureHandlerRootView style={styles.container}>
@@ -1313,22 +1457,12 @@ export default function MerchantDetailScreen() {
         topGutter={MERCHANT_HEADER_TOP_GUTTER}
         stickySearchStyle={stickySearchStyle}
         stickySearchBgStyle={stickySearchBgStyle}
-        stickyFilterStyle={stickyFilterStyle}
-        stickyFilterTop={stickyFilterTop}
         pointerEvents={headerSearchExpanded ? "auto" : "box-none"}
-        filter={filter}
-        onFilterChange={handleFilterChange}
-        onOpenFilters={handleOpenFiltersSheet}
-        showHighlyReordered={showHighlyReorderedChip}
-        filtersActive={filtersActive}
-        stickyFilterActive={stickyFilterActive}
         stickySearchActive={stickySearchActive}
         headerSearchExpanded={headerSearchExpanded}
+        onBack={handleStickyBack}
         searchRow={
           <View style={styles.stickyHeaderRow}>
-            <TouchableOpacity onPress={handleStickyBack} style={styles.heroCircleBtnLight} hitSlop={8}>
-              <Ionicons name="chevron-back" size={22} color={StoreTheme.textPrimary} />
-            </TouchableOpacity>
             {headerSearchExpanded ? (
               <View style={[styles.stickySearchWrap, { flex: 1 }]}>
                 <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
@@ -1382,30 +1516,24 @@ export default function MerchantDetailScreen() {
       />
 
       <MerchantDetailFlashList
-        listRef={flashListRef}
+        ref={scrollListRef}
         data={flashListData}
         scrollHandler={scrollHandler}
         contentContainerStyle={listContentContainerStyle}
-        heroBannerStyle={heroBannerStyle}
-        heroOverlayOpacityStyle={heroOverlayOpacityStyle}
-        infoOpacityStyle={infoOpacityStyle}
-        merchantBannerHeroUri={merchantBannerHeroUri}
-        merchantGalleryBannerUris={merchantGalleryBannerUris}
+        heroUri={merchantBannerHeroUri}
         merchantLogoUri={merchantLogoUri}
-        merchant={merchant}
+        merchant={pageMerchant}
         merchantId={merchantId}
         distanceKm={distanceKm}
         storeEtaLabel={storeEtaLabel}
         scheduledSlotLabel={scheduledSlotLabel}
         offerTickerTexts={offerTickerTexts}
         visibleOffersCount={visibleOffers.length}
+        reserveOfferRow={reserveOfferRow}
         onInfoPress={handleMerchantInfoPress}
         onOffersPress={openOffersSheet}
         onSchedulePress={openScheduleSheet}
-        onHeroBack={handleHeroBack}
-        onHeroSearch={openMerchantSearch}
-        onHeroGroupOrder={handleHeroGroupOrder}
-        onHeroOptions={openOptionsSheet}
+        onRatingHintPress={openRatingSheet}
         filter={filter}
         onFilterChange={handleFilterChange}
         onOpenFilters={handleOpenFiltersSheet}
@@ -1422,23 +1550,27 @@ export default function MerchantDetailScreen() {
         highlightedMenuItemKey={highlightedMenuItemKey}
         highlyReorderedIds={highlyReorderedIds}
         bookmarkMenuItemIdSet={bookmarkMenuItemIdSet}
-        goesWithNameByItemId={goesWithNameByItemId}
         onBookmark={handleBookmarkMenuItem}
         onShare={handleShareMenuItem}
         resolveMenuItemPk={resolveMenuItemPk}
+        showHeroActions={heroActionsVisible}
+        heroActions={{
+          onBack: handleHeroBack,
+          onSearch: openMerchantSearch,
+          onGroupOrder: handleHeroGroupOrder,
+          onOptions: openOptionsSheet,
+        }}
+        onListLayout={handleListLayout}
       />
 
       <MerchantFloatingFab
-        bottom={totalInCart > 0 ? CART_BAR_HEIGHT + 16 + insets.bottom : 24 + insets.bottom / 2}
+        bottom={
+          showStoreContinueBar
+            ? resolveStoreContinueBarHeight(reserveCartDockOfferStrip, cartDockBottomInset) + 14
+            : 36 + cartDockBottomInset / 2 + MERCHANT_FLOATING_UI_LIFT
+        }
         onPress={() => setMenuSheetVisible(true)}
         animatedStyle={fabStyle}
-      />
-      <CouponAvailableBottomSheet
-        visible={couponAvailablePrompt.visible}
-        prompt={couponAvailablePrompt.prompt}
-        bottomInset={insets.bottom}
-        onClose={couponAvailablePrompt.dismiss}
-        onApply={handleCouponAvailableApply}
       />
 
       <StoreOffersSheet
@@ -1463,6 +1595,16 @@ export default function MerchantDetailScreen() {
         onClose={closeScheduleSheet}
         storeName={merchant.name}
         onConfirm={(label) => setScheduledSlotLabel(label)}
+      />
+
+      <MerchantRatingExplainerSheet
+        visible={ratingSheetVisible}
+        onClose={closeRatingSheet}
+        storeName={pageMerchant.name}
+        overallRating={pageMerchant.avgRating ?? null}
+        totalReviews={pageMerchant.totalReviews ?? null}
+        forYouRating={ratingInsight.forYouRating}
+        userHasRatedStore={ratingInsight.userHasRatedStore}
       />
 
       <StoreMenuSheet
@@ -1563,6 +1705,21 @@ export default function MerchantDetailScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {showStoreContinueBar ? (
+        <View style={styles.cartDock} pointerEvents="box-none">
+          <MerchantMenuCartSheet
+            items={cartItems}
+            totalCount={totalInCart}
+            onContinue={handleStoreCartContinue}
+            disabled={isStoreClosedForStatus}
+            isStoreClosed={isStoreClosedForStatus}
+            offerBannerText={storeCartOfferBannerText}
+            bottomInset={cartDockBottomInset}
+            reserveOfferStrip={reserveCartDockOfferStrip}
+          />
+        </View>
+      ) : null}
     </GestureHandlerRootView>
   );
 }
@@ -1639,9 +1796,10 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.searchBg,
     borderRadius: 10,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 0,
     gap: 8,
-    minHeight: 44,
+    height: STICKY_SEARCH_ROW_HEIGHT - 4,
+    minHeight: STICKY_SEARCH_ROW_HEIGHT - 4,
   },
   stickySearchHintText: {
     flex: 1,
@@ -2352,6 +2510,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#fff",
+  },
+  cartDock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 200,
+    elevation: 28,
   },
   cartBar: {
     position: "absolute",

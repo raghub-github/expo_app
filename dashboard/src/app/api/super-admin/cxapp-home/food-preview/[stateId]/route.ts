@@ -7,6 +7,7 @@ import {
   listFoodHomePreviewCategories,
   resolveStatePreviewAnchor,
 } from "@/lib/db/operations/cxapp-food-home-preview";
+import { getUserAppCategoryAllTab } from "@/lib/db/operations/user-app-category-meta";
 import type { FoodHomePreviewPayload } from "@/lib/cxapp-home/food-home-preview-types";
 
 export const runtime = "nodejs";
@@ -23,9 +24,10 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
   }
 
   try {
-    const [anchor, categories, layoutConfig, subscriptionPlanName] = await Promise.all([
+    const [anchor, categories, allTab, layoutConfig, subscriptionPlanName] = await Promise.all([
       resolveStatePreviewAnchor(stateId),
       listFoodHomePreviewCategories(),
+      getUserAppCategoryAllTab("FOOD"),
       getStateFoodHomeLayoutConfig(stateId),
       fetchFeaturedCustomerSubscriptionPlanName(),
     ]);
@@ -43,6 +45,7 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
       layoutKey: layoutConfig.layoutKey,
       gridFirstHeroMedia: layoutConfig.gridFirstHeroMedia,
       categories,
+      allTab,
       offers: backend.offers,
       lovedMerchants: backend.lovedMerchants,
       restaurants: backend.restaurants,
@@ -52,6 +55,12 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
       gridFirstSubscriptionRowEnabled: layoutConfig.gridFirstSubscriptionRow.enabled,
       gridFirstSubscriptionRowText: layoutConfig.gridFirstSubscriptionRow.text,
       gridFirstSubscriptionRowBgColor: layoutConfig.gridFirstSubscriptionRow.backgroundColor,
+      gridFirstUnder250Enabled: layoutConfig.gridFirstUnder250.enabled,
+      gridFirstUnder250MaxPrice: layoutConfig.gridFirstUnder250.maxPrice,
+      gridFirstUnder250Title: layoutConfig.gridFirstUnder250.title,
+      gridFirstUnder250FilterLabel: layoutConfig.gridFirstUnder250.filterLabel,
+      gridFirstUnder250TabImageUrl: layoutConfig.gridFirstUnder250.tabImageUrl,
+      gridFirstUnder250HeroImageUrl: layoutConfig.gridFirstUnder250.heroImageUrl,
     };
 
     return NextResponse.json(payload);

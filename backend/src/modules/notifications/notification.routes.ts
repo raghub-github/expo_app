@@ -13,6 +13,7 @@
  *      POST   /v1/notifications/campaigns                — create draft / schedule / immediate
  *      GET    /v1/notifications/campaigns                — list
  *      POST   /v1/notifications/campaigns/:id/cancel     — cancel scheduled/running
+ *      POST   /v1/notifications/campaigns/:id/resend     — resend stored campaign
  *      POST   /v1/notifications/topics/subscribe         — add tokens to topic
  *      POST   /v1/notifications/topics/unsubscribe       — remove tokens
  *      GET    /v1/notifications/analytics/summary        — dashboard counts
@@ -36,6 +37,7 @@ import { getSql } from "../../db/client.js";
 import {
   send,
   cancel,
+  resendCampaign,
   schedule,
   loadTemplate,
   listTemplates,
@@ -44,7 +46,8 @@ import {
   sendToUser,
 } from "./notificationService.js";
 import { subscribeToTopic, unsubscribeFromTopic } from "./fcmProvider.js";
-import { createCampaign } from "./db.js";
+import { createCampaign, finalizeCampaignSend, markCampaignStarted, getCampaignById } from "./db.js";
+import { resolveTarget } from "./targetResolver.js";
 import type { NotificationRole, TargetFilter, TemplateVariables } from "./types.js";
 
 function isAdminLikeRole(role: string): boolean {
@@ -264,7 +267,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: "missing_required_fields" });
       }
 
-      // Immediate send path
+      // Immediate send path — create as running, send synchronously, then finalize status.
       if (b.status === "running") {
         const tmpl = await loadTemplate(b.templateCode, "en");
         if (!tmpl) return reply.code(404).send({ error: "template_not_found" });
@@ -281,13 +284,25 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           status: "running",
           createdBy: req.auth?.sub ?? null,
         });
-        const result = await send({
-          templateCode: b.templateCode,
-          variables: b.variables,
-          target: b.target,
-          campaignId: campaign.id,
-        });
-        return reply.send({ campaignId: campaign.id, ...result });
+        await markCampaignStarted(campaign.id);
+        try {
+          const result = await send({
+            templateCode: b.templateCode,
+            variables: b.variables,
+            target: b.target,
+            campaignId: campaign.id,
+          });
+          await finalizeCampaignSend(campaign.id, "completed");
+          return reply.send({ campaignId: campaign.id, status: "completed", ...result });
+        } catch (e) {
+          req.log.error({ err: e, campaignId: campaign.id }, "notification_campaign_send_failed");
+          await finalizeCampaignSend(campaign.id, "failed");
+          return reply.code(500).send({
+            error: "send_failed",
+            campaignId: campaign.id,
+            message: (e as Error).message,
+          });
+        }
       }
 
       // Scheduled send path
@@ -331,25 +346,100 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         const offset = Math.max(0, Number(q.offset ?? 0));
         const sql = getSql();
         const rows = await sql`
-          SELECT id, name, description, template_code, status,
-                 sent_count, delivered_count, clicked_count, failed_count,
-                 scheduled_at, started_at, finished_at, created_at, created_by
-          FROM public.notification_campaigns
+          SELECT
+            c.id,
+            c.name,
+            c.description,
+            c.template_code,
+            c.status,
+            COALESCE(stats.sent_count, 0)::int      AS sent_count,
+            COALESCE(stats.delivered_count, 0)::int AS delivered_count,
+            COALESCE(stats.clicked_count, 0)::int   AS clicked_count,
+            COALESCE(stats.failed_count, 0)::int    AS failed_count,
+            c.scheduled_at,
+            c.started_at,
+            c.finished_at,
+            c.created_at,
+            c.created_by
+          FROM public.notification_campaigns c
+          LEFT JOIN LATERAL (
+            SELECT
+              COUNT(*) FILTER (
+                WHERE l.status IN ('queued', 'sent', 'delivered', 'clicked')
+              )::int AS sent_count,
+              COUNT(*) FILTER (
+                WHERE l.status IN ('queued', 'sent', 'delivered', 'clicked')
+              )::int AS delivered_count,
+              COUNT(*) FILTER (WHERE l.status = 'clicked')::int AS clicked_count,
+              COUNT(*) FILTER (WHERE l.status = 'failed')::int AS failed_count
+            FROM public.notification_dispatch_logs l
+            WHERE l.campaign_id = c.id
+          ) stats ON true
           WHERE 1=1
-            ${q.status ? sql`AND status = ${q.status}` : sql``}
-          ORDER BY COALESCE(scheduled_at, created_at) DESC
+            ${q.status ? sql`AND c.status = ${q.status}` : sql``}
+          ORDER BY COALESCE(c.scheduled_at, c.created_at) DESC
           LIMIT ${limit} OFFSET ${offset}
         `;
         return { items: rows };
       },
     );
 
+    admin.get<{ Params: { id: string } }>("/campaigns/:id", async (req, reply) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
+      const campaign = await getCampaignById(id);
+      if (!campaign) return reply.code(404).send({ error: "not_found" });
+      const recipients = await resolveTarget(campaign.target_filter as TargetFilter);
+      const sql = getSql();
+      const [tokenStats] = (await sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM public.expo_push_tokens) AS expo_tokens,
+          (SELECT COUNT(*)::int FROM public.merchant_store_push_tokens) AS merchant_store_tokens
+      `) as unknown as Array<{ expo_tokens: number; merchant_store_tokens: number }>;
+      return reply.send({
+        ...campaign,
+        recipient_estimate: recipients.length,
+        token_stats: tokenStats ?? { expo_tokens: 0, merchant_store_tokens: 0 },
+      });
+    });
+
     // --- campaigns: cancel ---
     admin.post<{ Params: { id: string } }>("/campaigns/:id/cancel", async (req, reply) => {
       const id = Number(req.params.id);
       if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
-      await cancel(id, req.auth?.sub);
-      return reply.code(204).send();
+      const ok = await cancel(id, req.auth?.sub);
+      if (!ok) return reply.code(409).send({ error: "not_cancellable", message: "Campaign is not scheduled or running." });
+      return reply.send({ ok: true, campaignId: id, status: "cancelled" });
+    });
+
+    // --- campaigns: resend (same template / target / variables) ---
+    admin.post<{ Params: { id: string } }>("/campaigns/:id/resend", async (req, reply) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
+      try {
+        const result = await resendCampaign(id);
+        return reply.send(result);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const code = err.statusCode ?? 500;
+        if (code === 404) {
+          return reply.code(404).send({ error: err.message, message: "Campaign not found." });
+        }
+        if (code === 409) {
+          return reply.code(409).send({
+            error: "campaign_busy",
+            message: "Cancel or wait for the campaign to finish before resending.",
+          });
+        }
+        if (code === 400) {
+          return reply.code(400).send({ error: err.message, message: "Campaign has no template." });
+        }
+        req.log.error({ err: e, campaignId: id }, "notification_campaign_resend_failed");
+        return reply.code(500).send({
+          error: "resend_failed",
+          message: err.message ?? "Resend failed.",
+        });
+      }
     });
 
     // --- topics ---

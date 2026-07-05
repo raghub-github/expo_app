@@ -8,7 +8,7 @@
     "dev:webpack": "next dev --webpack -p 3001",
     "clean": "node -e \"const fs=require('fs');const o={recursive:true,force:true,maxRetries:8,retryDelay:150};try{fs.rmSync('.next',o)}catch(e){}try{fs.rmSync('node_modules/.cache',o)}catch(e){}\"",
     "dev:clean": "npm run clean && next dev --webpack -p 3001",
-    "build": "next build --webpack",
+    "build": "npm run clean && next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "test:db": "tsx scripts/test-db-connection.ts",

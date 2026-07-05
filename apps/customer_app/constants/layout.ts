@@ -50,6 +50,12 @@ export function screenManagesBottomNav(segments: readonly string[]): boolean {
   return false;
 }
 
+/** Extra lift for floating cart on food browse / merchant menu (above system nav). */
+export const FLOATING_CART_UI_LIFT = 20;
+
+/** @deprecated Use `FLOATING_CART_UI_LIFT` — kept for merchant menu FAB call sites. */
+export const MERCHANT_FLOATING_UI_LIFT = FLOATING_CART_UI_LIFT;
+
 /** Floating cart / dock — no artificial 48dp gap on Android. */
 export function resolveFloatingCartBottomOffset(
   rawBottom: number,

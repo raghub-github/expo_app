@@ -256,6 +256,7 @@ export function OrderPanel({
   const merchantInstructions = resolveMerchantInstructionsForDisplay(order);
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
   const showPastRidersButton = usePastRidersEligibility(order.id, !!onViewPastRiders);
+  const hadPastRiderAssign = usePastRidersEligibility(order.id, showPendingRiderAssign);
   const showRiderCard =
     riderAssigned ||
     !!riderName ||
@@ -396,9 +397,12 @@ export function OrderPanel({
               nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}
               assignSoonMessage={
                 nearbyRiderSummary?.assignSoonMessage ??
-                'Looking for nearby riders — we will assign one soon'
+                'Looking for nearby riders, assigning one soon'
               }
               radiusKm={nearbyRiderSummary?.radiusKm}
+              statusSubtitle={
+                hadPastRiderAssign ? 'Previous rider was unassigned' : null
+              }
             />
           ) : showRiderCard ? (
             <RiderDeliveryPartnerCard
@@ -621,13 +625,15 @@ export function OrderPanel({
           )}
           {showPendingRiderAssign ? (
             <RiderAssignPendingCard
-              className="mt-6 flex-1 min-h-0"
               nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}
               assignSoonMessage={
                 nearbyRiderSummary?.assignSoonMessage ??
-                'Looking for nearby riders — we will assign one soon'
+                'Looking for nearby riders, assigning one soon'
               }
               radiusKm={nearbyRiderSummary?.radiusKm}
+              statusSubtitle={
+                hadPastRiderAssign ? 'Previous rider was unassigned' : null
+              }
             />
           ) : showRiderCard ? (
             <RiderDeliveryPartnerCard

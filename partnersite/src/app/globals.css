@@ -139,6 +139,16 @@ input:not([disabled]), textarea:not([disabled]), select:not([disabled]) {
 .dashboard-scroll::-webkit-scrollbar {
   display: none;
 }
+
+/* Payments page: lock shell scroll; inner column scrolls (flex-1 + h-0 pattern). */
+.mx-main-scroll:has(.mx-payments-page) {
+  flex: 1 1 0%;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: #f8fafc;
+}
+
 @import "tailwindcss";
 
 :root {
@@ -476,4 +486,10 @@ body.mx-no-page-scroll .mx-main-scroll {
   pointer-events: none;
   transform-origin: center center;
   transition: transform 0.35s ease-out;
+}
+
+@media print {
+  body {
+    background: white !important;
+  }
 }

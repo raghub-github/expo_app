@@ -1,9 +1,9 @@
-import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, View } from "react-native";
+import { TouchableOpacity, Text, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { useAuthStore } from "@/store/authStore";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
+import { walletBalanceFallback } from "@/lib/walletBalanceCache";
 
 const TITLE_DARK = "#1F2937";
 const ICON_CIRCLE_BG = "#F3F4F6";
@@ -25,17 +25,16 @@ type Props = {
   variant?: "default" | "gridFirst";
 };
 
-/** Compact wallet chip — default: icon above amount; gridFirst: horizontal mint pill. */
+/** Compact wallet chip — always shows cached/zero balance; never blocks header on fetch. */
 export function GatiCashHeaderPill({ variant = "default" }: Props) {
   const router = useRouter();
-  const session = useAuthStore((s) => s.session);
-  const hydrated = useAuthStore((s) => s.hydrated);
-
   const balanceQ = useWalletBalance();
 
-  const balance = balanceQ.data?.available_balance ?? balanceQ.data?.balance ?? 0;
+  const balance =
+    balanceQ.data?.available_balance ??
+    balanceQ.data?.balance ??
+    walletBalanceFallback().available_balance;
   const displayAmount = formatPillBalance(balance);
-  const loading = hydrated && !!session && balanceQ.isPending && balanceQ.data == null;
 
   if (variant === "gridFirst") {
     return (
@@ -49,13 +48,9 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
         <View style={styles.gridIconWrap}>
           <Ionicons name="wallet" size={14} color="#FFFFFF" />
         </View>
-        {loading ? (
-          <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-        ) : (
-          <Text style={styles.gridAmount} numberOfLines={1}>
-            ₹{displayAmount}
-          </Text>
-        )}
+        <Text style={styles.gridAmount} numberOfLines={1}>
+          ₹{displayAmount}
+        </Text>
       </TouchableOpacity>
     );
   }
@@ -71,13 +66,9 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
       <View style={styles.iconCircle}>
         <Ionicons name="wallet-outline" size={13} color={TITLE_DARK} />
       </View>
-      {loading ? (
-        <ActivityIndicator size="small" color={GatiMitraColors.splashMint} style={styles.loader} />
-      ) : (
-        <Text style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-          ₹{displayAmount}
-        </Text>
-      )}
+      <Text style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+        ₹{displayAmount}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -147,9 +138,5 @@ const styles = StyleSheet.create({
     lineHeight: 10,
     maxWidth: 32,
     textAlign: "center",
-  },
-  loader: {
-    marginTop: 0,
-    transform: [{ scale: 0.4 }],
   },
 });

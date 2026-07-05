@@ -2,7 +2,8 @@
  * Zomato-style GatiCash wallet toggle on checkout — use wallet balance on this order.
  */
 
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -39,7 +40,7 @@ export function CheckoutGatiCashWalletBar({
     return (
       <View style={styles.bar}>
         <ActivityIndicator size="small" color={BRAND} />
-        <Text style={styles.loadingText}>Loading GatiCash…</Text>
+        <CheckoutText style={styles.loadingText}>Loading GatiCash…</CheckoutText>
       </View>
     );
   }
@@ -61,13 +62,13 @@ export function CheckoutGatiCashWalletBar({
       </Pressable>
 
       <View style={styles.textCol}>
-        <Text style={styles.primaryText}>
+        <CheckoutText style={styles.primaryText}>
           Use ₹{formatInrLabel(checked ? applyAmount : maxApplyAmount)} from GatiCash
-        </Text>
+        </CheckoutText>
         <View style={styles.subRow}>
-          <Text style={styles.balanceText}>Balance: ₹{formatInrLabel(balance)}</Text>
+          <CheckoutText style={styles.balanceText}>Balance: ₹{formatInrLabel(balance)}</CheckoutText>
           <Pressable onPress={() => router.push("/wallet/add-money")} hitSlop={6}>
-            <Text style={styles.addMoneyLink}>Add Money ›</Text>
+            <CheckoutText style={styles.addMoneyLink}>Add Money ›</CheckoutText>
           </Pressable>
         </View>
       </View>

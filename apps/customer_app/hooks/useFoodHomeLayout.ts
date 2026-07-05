@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect } from "expo-router";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import {
   DEFAULT_FOOD_HOME_LAYOUT,
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
+  DEFAULT_GRID_FIRST_UNDER_250,
   parseGridFirstSubscriptionRowBgColor,
   parseGridFirstSubscriptionRowEnabled,
+  parseGridFirstUnder250Enabled,
+  parseGridFirstUnder250ImageUrl,
+  parseGridFirstUnder250MaxPrice,
+  parseGridFirstUnder250Title,
   type FoodHomeLayoutKey,
 } from "@/lib/foodHomeLayout";
 import {
@@ -16,8 +21,13 @@ import {
   FOOD_HOME_LAYOUT_STALE_MS,
   getSyncFoodHomeLayoutFromQueryClient,
   hydrateFoodHomeLayoutForHints,
+  readCachedFoodHomeLayout,
 } from "@/lib/foodHomeLayoutCache";
+import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
+import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
+import { applyGridFirstImmersiveChrome } from "@/lib/gridFirstImmersiveChrome";
 import type { ReverseGeocodeResult } from "@/services/location.service";
+import type { FoodHomeLayoutResult } from "@/services/foodHomeLayout.service";
 
 export function useFoodHomeLayout(
   address: ReverseGeocodeResult | null | undefined,
@@ -43,12 +53,36 @@ export function useFoodHomeLayout(
   const canQuery = !!(hints.pincode || hints.state || (hints.lat != null && hints.lng != null));
   const queryKey = useMemo(() => buildFoodHomeLayoutQueryKey(hints), [hints]);
 
+  const syncCached = canQuery ? getSyncFoodHomeLayoutFromQueryClient(queryClient, hints) : undefined;
+  const [bootLayout, setBootLayout] = useState<FoodHomeLayoutResult | undefined>(() => syncCached);
+
+  useLayoutEffect(() => {
+    if (!canQuery) {
+      setBootLayout(undefined);
+      return;
+    }
+    const memoryHit = getSyncFoodHomeLayoutFromQueryClient(queryClient, hints);
+    if (memoryHit?.layoutKey) {
+      setBootLayout(memoryHit);
+      return;
+    }
+    let cancelled = false;
+    void readCachedFoodHomeLayout(hints).then((cached) => {
+      if (cancelled || !cached?.layoutKey) return;
+      setBootLayout(cached);
+      queryClient.setQueryData(queryKey, (prev) => prev ?? cached);
+      prefetchGridFirstHeroMedia(cached.gridFirstHeroMedia);
+      prefetchMealsUnder250HeroMedia(cached);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, hints, queryClient, queryKey]);
+
   useEffect(() => {
     if (!canQuery) return;
     void hydrateFoodHomeLayoutForHints(queryClient, hints);
   }, [canQuery, queryClient, hints]);
-
-  const syncCached = canQuery ? getSyncFoodHomeLayoutFromQueryClient(queryClient, hints) : undefined;
 
   const query = useQuery({
     queryKey,
@@ -60,8 +94,20 @@ export function useFoodHomeLayout(
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
-    initialData: syncCached,
+    initialData: syncCached ?? bootLayout,
   });
+
+  const effectiveLayout = query.data ?? bootLayout;
+  const layoutReady = !canQuery || effectiveLayout != null || query.isError;
+  const layoutKey: FoodHomeLayoutKey | null = layoutReady
+    ? (effectiveLayout?.layoutKey ?? DEFAULT_FOOD_HOME_LAYOUT)
+    : effectiveLayout?.layoutKey ?? null;
+
+  useLayoutEffect(() => {
+    if (effectiveLayout?.layoutKey === "grid_first") {
+      applyGridFirstImmersiveChrome(true);
+    }
+  }, [effectiveLayout?.layoutKey]);
 
   useFocusEffect(
     useCallback(() => {
@@ -72,24 +118,41 @@ export function useFoodHomeLayout(
     }, [canQuery, queryClient, queryKey])
   );
 
-  const layoutReady = !canQuery || query.data != null || query.isError;
-  const layoutKey: FoodHomeLayoutKey | null = layoutReady
-    ? (query.data?.layoutKey ?? DEFAULT_FOOD_HOME_LAYOUT)
-    : null;
-
   return {
     ...query,
+    data: effectiveLayout,
     layoutKey,
+    cachedLayoutKey: effectiveLayout?.layoutKey ?? null,
     layoutReady,
     canQuery,
-    gridFirstHeroMedia: query.data?.gridFirstHeroMedia ?? [],
+    gridFirstHeroMedia: effectiveLayout?.gridFirstHeroMedia ?? [],
     gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
-      query.data?.gridFirstSubscriptionRowEnabled
+      effectiveLayout?.gridFirstSubscriptionRowEnabled
     ),
     gridFirstSubscriptionRowText:
-      query.data?.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
+      effectiveLayout?.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
     gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
-      query.data?.gridFirstSubscriptionRowBgColor
+      effectiveLayout?.gridFirstSubscriptionRowBgColor
+    ),
+    gridFirstUnder250Enabled: parseGridFirstUnder250Enabled(
+      effectiveLayout?.gridFirstUnder250Enabled
+    ),
+    gridFirstUnder250MaxPrice: parseGridFirstUnder250MaxPrice(
+      effectiveLayout?.gridFirstUnder250MaxPrice
+    ),
+    gridFirstUnder250Title: parseGridFirstUnder250Title(
+      effectiveLayout?.gridFirstUnder250Title,
+      DEFAULT_GRID_FIRST_UNDER_250.title
+    ),
+    gridFirstUnder250FilterLabel: parseGridFirstUnder250Title(
+      effectiveLayout?.gridFirstUnder250FilterLabel,
+      DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+    ),
+    gridFirstUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(
+      effectiveLayout?.gridFirstUnder250TabImageUrl
+    ),
+    gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(
+      effectiveLayout?.gridFirstUnder250HeroImageUrl
     ),
   };
 }

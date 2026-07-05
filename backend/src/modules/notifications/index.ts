@@ -16,6 +16,7 @@ export {
   sendBroadcast,
   schedule,
   cancel,
+  resendCampaign,
   loadTemplate,
   listTemplates,
   previewTemplate,

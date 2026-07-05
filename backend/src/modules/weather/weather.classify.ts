@@ -26,16 +26,17 @@ export function classifyWeatherSeverity(args: {
   rainIntensityMm: number;
   windSpeedKmh: number | null;
   isThunderstorm: boolean;
+  rainDetected?: boolean;
   thresholds: WeatherThresholds;
 }): WeatherSeverity {
-  const { rainIntensityMm, windSpeedKmh, isThunderstorm, thresholds } = args;
-  const wind = windSpeedKmh ?? 0;
+  const { rainIntensityMm, isThunderstorm, thresholds } = args;
+  const rainDetected = args.rainDetected ?? rainIntensityMm >= thresholds.lightRainThresholdMm;
 
-  if (
-    isThunderstorm ||
-    rainIntensityMm >= thresholds.extremeRainThresholdMm ||
-    wind >= thresholds.extremeWindSpeedKmh
-  ) {
+  if (!rainDetected && !isThunderstorm) {
+    return "CLEAR";
+  }
+
+  if (isThunderstorm || rainIntensityMm >= thresholds.extremeRainThresholdMm) {
     return "EXTREME_WEATHER";
   }
   if (rainIntensityMm >= thresholds.heavyRainThresholdMm) return "HEAVY_RAIN";

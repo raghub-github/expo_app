@@ -11,6 +11,11 @@ import { merchantKeys } from '@/lib/query-keys';
 import { mapPayoutSettlementApiResponse } from '@/lib/merchant-payout-utils';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { readDashboardWalletCache, writeDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import { useHydrated } from '@/hooks/useHydrated';
+import {
+  readStoreOperationsCache,
+  writeStoreOperationsCache,
+} from '@/lib/partner-store-operations-cache';
 import type { LedgerEntry } from '@/lib/wallet-types';
 
 export type { LedgerEntry };
@@ -147,8 +152,12 @@ export interface StoreSettingsData {
 }
 
 // ---------- Fetchers ----------
-async function fetchWallet(storeId: string): Promise<WalletSummary> {
-  const res = await fetch(`/api/merchant/wallet?storeId=${encodeURIComponent(storeId)}`);
+async function fetchWallet(storeId: string, options?: { lite?: boolean }): Promise<WalletSummary> {
+  const lite = options?.lite !== false;
+  const res = await fetch(
+    `/api/merchant/wallet?storeId=${encodeURIComponent(storeId)}${lite ? '&lite=1' : '&lite=0'}`,
+    { credentials: 'include' },
+  );
   const data = await res.json();
   if (data.error) throw new Error(data.error);
   return {
@@ -275,6 +284,7 @@ export async function fetchStoreOperations(storeId: string): Promise<StoreOperat
     throw new Error('Network error — could not load store operations');
   }
   if (!res.ok) throw new Error(data.error ?? 'Failed to fetch store operations');
+  writeStoreOperationsCache(storeId, data);
   return data;
 }
 
@@ -307,24 +317,26 @@ async function fetchSelfDeliveryRiders(storeId: string): Promise<SelfDeliveryRid
 // ---------- Hooks ----------
 
 /** Wallet summary; shared cache between dashboard and payments. */
-export function useMerchantWallet(storeId: string | null, options?: { enabled?: boolean }) {
+export function useMerchantWallet(
+  storeId: string | null,
+  options?: { enabled?: boolean; lite?: boolean },
+) {
   const enabled = (options?.enabled ?? true) && !!storeId;
-  const cached =
-    enabled && typeof window !== 'undefined' && storeId
-      ? readDashboardWalletCache(storeId)
-      : null;
+  const lite = options?.lite !== false;
+  const hydrated = useHydrated();
+  const cached = hydrated && enabled && storeId ? readDashboardWalletCache(storeId) : null;
   return useQuery({
-    queryKey: merchantKeys.wallet(storeId ?? ''),
+    queryKey: [...merchantKeys.wallet(storeId ?? ''), lite ? 'lite' : 'full'],
     queryFn: async () => {
-      const data = await fetchWallet(storeId!);
+      const data = await fetchWallet(storeId!, { lite });
       writeDashboardWalletCache(storeId!, data);
       return data;
     },
     enabled,
-    staleTime: 2 * 60 * 1000,
-    gcTime: 15 * 60 * 1000,
-    placeholderData: keepPreviousData,
-    ...(cached ? { initialData: cached } : {}),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    placeholderData: cached ?? keepPreviousData,
+    refetchOnMount: false,
   });
 }
 
@@ -413,14 +425,17 @@ export function useStoreOperations(
   options?: { enabled?: boolean; refetchInterval?: number | false }
 ) {
   const enabled = (options?.enabled ?? true) && !!storeId;
+  const hydrated = useHydrated();
+  const cached = hydrated && enabled && storeId ? readStoreOperationsCache(storeId) : null;
   return useQuery({
     queryKey: merchantKeys.storeOperations(storeId ?? ''),
     queryFn: () => fetchStoreOperations(storeId!),
     enabled,
-    staleTime: 2 * 60 * 1000,
-    gcTime: 15 * 60 * 1000,
-    placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? 30 * 1000,
+    staleTime: 3 * 60 * 1000,
+    gcTime: 20 * 60 * 1000,
+    placeholderData: cached ?? keepPreviousData,
+    refetchOnMount: false,
+    refetchInterval: options?.refetchInterval ?? false,
   });
 }
 

@@ -25,6 +25,10 @@ export function AppAssetImage({
       source={{ uri: url }}
       style={style}
       contentFit={contentFit}
+      cachePolicy="memory-disk"
+      priority="high"
+      transition={0}
+      recyclingKey={assetKey}
       accessibilityLabel={accessibilityLabel}
     />
   );

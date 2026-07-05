@@ -2,52 +2,12 @@ import type { ComboPair } from "@/components/store/StoreComboSection";
 import type { MenuItem } from "@/services/merchant.service";
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import type { MenuSheetScrollTarget } from "@/components/store/StoreMenuSheet";
-import { ESTIMATED_ITEM_SIZES } from "../constants/layout";
 import type {
   MerchantCategoryChip,
   MerchantFlashListItem,
   MenuSection,
   MerchantScrollIndexMap,
 } from "../types";
-
-/** Row types virtualized in the FlashList body (below the non-virtualized header). */
-export const FLASH_LIST_BODY_TYPES = new Set<MerchantFlashListItem["type"]>([
-  "section_header",
-  "menu_item",
-  "menu_skeleton",
-  "empty_menu",
-  "footer",
-]);
-
-export type SplitFlashListRows = {
-  headerRows: MerchantFlashListItem[];
-  listRows: MerchantFlashListItem[];
-  headerRowCount: number;
-};
-
-export function splitFlashListRows(data: MerchantFlashListItem[]): SplitFlashListRows {
-  const splitAt = data.findIndex((row) => FLASH_LIST_BODY_TYPES.has(row.type));
-  if (splitAt < 0) {
-    return { headerRows: data, listRows: [], headerRowCount: data.length };
-  }
-  return {
-    headerRows: data.slice(0, splitAt),
-    listRows: data.slice(splitAt),
-    headerRowCount: splitAt,
-  };
-}
-
-export function getFlashListHeaderRowCount(data: MerchantFlashListItem[]): number {
-  return splitFlashListRows(data).headerRowCount;
-}
-
-export function toFlashListBodyIndex(
-  flatIndex: number,
-  headerRowCount: number
-): number | null {
-  const listIndex = flatIndex - headerRowCount;
-  return listIndex < 0 ? null : listIndex;
-}
 
 export type BuildFlashListInput = {
   sections: MenuSection[];
@@ -57,7 +17,21 @@ export type BuildFlashListInput = {
   visibleOffersCount: number;
   closedBannerMessage: string | null;
   menuPending: boolean;
+  /** Row key / id of the last item added to cart — pairing strip renders below it only. */
+  pairingAnchorKey: string | null;
+  pairingCompanionItems: MenuItem[];
 };
+
+function itemMatchesPairingAnchor(
+  item: MenuSection["data"][number],
+  anchorKey: string
+): boolean {
+  return (
+    item.listRowKey === anchorKey ||
+    item.id === anchorKey ||
+    (item.menuItemId != null && String(item.menuItemId) === anchorKey)
+  );
+}
 
 export type BuildFlashListResult = {
   data: MerchantFlashListItem[];
@@ -90,6 +64,8 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     visibleOffersCount,
     closedBannerMessage,
     menuPending,
+    pairingAnchorKey,
+    pairingCompanionItems,
   } = input;
 
   const data: MerchantFlashListItem[] = [];
@@ -130,41 +106,55 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
   }
 
   if (menuPending) {
-    for (let i = 0; i < 5; i++) {
-      push({ type: "menu_skeleton", key: `skel-${i}` });
-    }
-  } else if (sections.length === 0) {
-    push({ type: "empty_menu", key: "empty_menu" });
+    push({ type: "menu_loading", key: "menu_loading" });
   } else {
-    sections.forEach((sec, sectionIndex) => {
-      const headerKey = `hdr-${sectionIndex}-${sec.title}`;
-      const headerIdx = push({
-        type: "section_header",
-        key: headerKey,
-        title: sec.title,
-        sectionIndex,
-      });
-      sectionByTitle.set(sec.title.trim().toLowerCase(), headerIdx);
-
-      sec.data.forEach((item, itemIndex) => {
-        const rowIdx = push({
-          type: "menu_item",
-          key: item.listRowKey,
-          item,
+    if (sections.length === 0) {
+      push({ type: "empty_menu", key: "empty_menu" });
+    } else {
+      sections.forEach((sec, sectionIndex) => {
+        const headerKey = `hdr-${sectionIndex}-${sec.title}`;
+        const headerIdx = push({
+          type: "section_header",
+          key: headerKey,
+          title: sec.title,
           sectionIndex,
-          itemIndex,
-          isLastInSection: itemIndex === sec.data.length - 1,
         });
-        menuItemByKey.set(item.listRowKey, rowIdx);
-        menuItemByKey.set(item.id, rowIdx);
-        if (item.menuItemId != null) {
-          menuItemByKey.set(String(item.menuItemId), rowIdx);
-        }
-      });
-    });
-  }
+        sectionByTitle.set(sec.title.trim().toLowerCase(), headerIdx);
 
-  push({ type: "footer", key: "footer" });
+        sec.data.forEach((item, itemIndex) => {
+          const showPairing =
+            pairingAnchorKey != null &&
+            pairingCompanionItems.length > 0 &&
+            itemMatchesPairingAnchor(item, pairingAnchorKey);
+          const rowIdx = push({
+            type: "menu_item",
+            key: item.listRowKey,
+            item,
+            sectionIndex,
+            itemIndex,
+            isLastInSection: itemIndex === sec.data.length - 1,
+            showDivider: !showPairing,
+          });
+          menuItemByKey.set(item.listRowKey, rowIdx);
+          menuItemByKey.set(item.id, rowIdx);
+          if (item.menuItemId != null) {
+            menuItemByKey.set(String(item.menuItemId), rowIdx);
+          }
+          if (showPairing) {
+            push({
+              type: "pairing_strip",
+              key: `pairing-${item.listRowKey}`,
+              companions: pairingCompanionItems.map((c) => ({
+                ...c,
+                listRowKey: `${item.listRowKey}::pair::${c.id}`,
+              })),
+            });
+          }
+        });
+      });
+    }
+    push({ type: "footer", key: "footer" });
+  }
 
   return {
     data,
@@ -175,14 +165,6 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
       menuItemByKey,
     },
   };
-}
-
-export function getFlashItemType(item: MerchantFlashListItem): string {
-  return item.type;
-}
-
-export function getFlashItemSize(item: MerchantFlashListItem): number {
-  return ESTIMATED_ITEM_SIZES[item.type] ?? ESTIMATED_ITEM_SIZES.menu_item;
 }
 
 export function findFlatIndexForScrollTarget(

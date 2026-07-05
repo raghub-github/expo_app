@@ -14,7 +14,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
-import { getConfig } from "@/config/env";
+import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { useAppAssetSource } from "@/store/appAssetsStore";
 import { MX } from "@/lib/appAssetKeys";
 
@@ -69,6 +69,8 @@ export default function WelcomeScreen() {
       bounciness: 8,
     }).start();
   };
+
+  const legalUrls = getPartnerLegalUrls();
 
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) }]}>
@@ -130,21 +132,21 @@ export default function WelcomeScreen() {
           <Text style={styles.agreementLine1}>By continuing, you agree to our</Text>
           <View style={styles.agreementLinks}>
             <Pressable
-              onPress={() => Linking.openURL(`${getConfig().storeWebBaseUrl}/terms`).catch(() => {})}
+              onPress={() => Linking.openURL(legalUrls.terms).catch(() => {})}
               style={({ pressed }) => [pressed && styles.agreementLinkPressed]}
             >
               <Text style={styles.agreementLink}>Terms of service</Text>
             </Pressable>
             <Text style={styles.agreementSeparator}>|</Text>
             <Pressable
-              onPress={() => Linking.openURL(`${getConfig().storeWebBaseUrl}/privacy`).catch(() => {})}
+              onPress={() => Linking.openURL(legalUrls.privacyPolicy).catch(() => {})}
               style={({ pressed }) => [pressed && styles.agreementLinkPressed]}
             >
               <Text style={styles.agreementLink}>Privacy Policy</Text>
             </Pressable>
             <Text style={styles.agreementSeparator}>|</Text>
             <Pressable
-              onPress={() => Linking.openURL(`${getConfig().storeWebBaseUrl}/code-of-conduct`).catch(() => {})}
+              onPress={() => Linking.openURL(legalUrls.codeOfConduct).catch(() => {})}
               style={({ pressed }) => [pressed && styles.agreementLinkPressed]}
             >
               <Text style={styles.agreementLink}>Code of Conduct</Text>

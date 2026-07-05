@@ -9,7 +9,7 @@
  * Uses Redis withLock so only ONE backend instance polls at a time.
  */
 import { withLock } from "@gatimitra/redis";
-import { loadDueScheduledCampaigns, updateCampaignCounts, readSetting } from "./db.js";
+import { loadDueScheduledCampaigns, recoverStaleRunningCampaigns, updateCampaignCounts, finalizeCampaignSend, readSetting } from "./db.js";
 import { send } from "./notificationService.js";
 import type { TargetFilter, TemplateVariables } from "./types.js";
 
@@ -19,6 +19,11 @@ let timer: NodeJS.Timeout | null = null;
 
 async function pollOnce(): Promise<void> {
   await withLock(LOCK_KEY, LOCK_TTL_MS, async () => {
+    const recovered = await recoverStaleRunningCampaigns();
+    if (recovered > 0) {
+      console.info(`[notifications] recovered ${recovered} stale running campaign(s)`);
+    }
+
     const due = await loadDueScheduledCampaigns(50);
     if (due.length === 0) return;
 
@@ -36,15 +41,13 @@ async function pollOnce(): Promise<void> {
           target,
           campaignId: campaign.id,
         });
-        await updateCampaignCounts(campaign.id, {
-          status: "completed",
-          finishedAt: new Date().toISOString(),
-          delivered: result.queued,
-          failed: result.failedSync,
-        });
+        await finalizeCampaignSend(campaign.id, "completed");
+        if (result.queued === 0 && result.failedSync === 0 && result.skipped === 0) {
+          console.info(`[notifications] scheduled campaign cid=${campaign.id} completed with 0 recipients`);
+        }
       } catch (e) {
         console.error(`[notifications] scheduled send failed cid=${campaign.id}`, (e as Error).message);
-        await updateCampaignCounts(campaign.id, { status: "failed", finishedAt: new Date().toISOString() });
+        await finalizeCampaignSend(campaign.id, "failed");
       }
     }
   });

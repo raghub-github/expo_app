@@ -1,10 +1,10 @@
 /**
  * 2025 Premium Discovery Card – edge-to-edge image (220px), bookmark, offer badge,
- * gradient overlay, rating capsule, cuisine • distance • time. Micro-interactions: scale 0.97 on tap.
+ * gradient overlay, rating capsule, cuisine • distance • time.
  * Data: merchant_stores (banner_url / logo_url), real distance, rating from API only.
  */
 
-import React, { useCallback, useState, useEffect, useMemo, useRef } from "react";
+import React, { useCallback, useState, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,19 +12,15 @@ import {
   Pressable,
   StyleSheet,
   Dimensions,
-  Platform,
   ActivityIndicator,
 } from "react-native";
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from "react-native-reanimated";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { Image } from "expo-image";
 import { useQueryClient } from "@tanstack/react-query";
-import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
+import { navigateToMerchant, showMerchantNavShutter } from "@/lib/navigateToMerchant";
+import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
+import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations } from "@/hooks/useStoreBookmarks";
@@ -120,8 +116,6 @@ function GMRestaurantCardV2Inner({
   const { syncBookmark } = useStoreBookmarkMutations();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
-  const scale = useSharedValue(1);
-  const blockNavRef = useRef(false);
 
   const liveStatus = useMerchantLiveStatus(merchant);
   const isOpen = liveStatus === "OPEN";
@@ -131,6 +125,10 @@ function GMRestaurantCardV2Inner({
   }, [initialSaved, merchant.id]);
 
   const bannerUri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
+
+  useEffect(() => {
+    warmMerchantHeroImage(merchant.id, bannerUri);
+  }, [merchant.id, bannerUri]);
 
   const galleryUris = useMemo(() => resolveMerchantCarouselGalleryUris(merchant), [merchant]);
 
@@ -162,58 +160,49 @@ function GMRestaurantCardV2Inner({
   );
 
   const openMerchant = useCallback(() => {
-    if (blockNavRef.current) {
-      blockNavRef.current = false;
-      return;
-    }
-    router.push({ pathname: "/home/merchant/[id]", params: { id: merchant.id } });
-  }, [merchant.id, router]);
+    navigateToMerchant(router, queryClient, merchant.id, merchant);
+  }, [merchant, queryClient, router]);
+
+  const cardPress = useScrollSafePress(openMerchant, {
+    onPressIn: () => {
+      warmMerchantHeroImage(merchant.id, bannerUri);
+      showMerchantNavShutter(merchant.id);
+    },
+  });
 
   const onCarouselSwipe = useCallback(() => {
-    blockNavRef.current = true;
-  }, []);
+    cardPress.blockPress();
+  }, [cardPress]);
 
-  const animatedCardStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
-  const onPressIn = () => {
-    prefetchMerchantDetail(queryClient, merchant.id);
-    scale.value = withSpring(0.97, { damping: 18, stiffness: 260 });
-  };
-  const onPressOut = () => {
-    scale.value = withSpring(1, { damping: 18, stiffness: 260 });
-  };
+  const onCarouselGestureComplete = useCallback(() => {
+    cardPress.releasePressBlock(320);
+  }, [cardPress]);
 
   return (
-    <Animated.View style={[styles.card, { marginBottom: bottomSpacing }, animatedCardStyle]}>
-      <Pressable
-        onPress={openMerchant}
-        onPressIn={onPressIn}
-        onPressOut={onPressOut}
-        style={styles.cardPress}
-      >
-        <View style={styles.imageWrap} pointerEvents="box-none">
-          <StoreBannerCarousel
-            bannerUri={bannerUri}
-            galleryUris={galleryUris}
-            width={CARD_WIDTH}
-            height={IMAGE_HEIGHT}
-            borderRadius={CARD_RADIUS}
-            holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
-            slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
-            dimmed={!isOpen}
-            showDots={galleryUris.length > 0}
-            hidePlaceholderIcon
-            enableSwipe
-            deferTapToParent
-            onSwipeGesture={onCarouselSwipe}
-          />
-          <LinearGradient
-            colors={["rgba(0,0,0,0.5)", "transparent", "transparent"]}
-            style={styles.gradientOverlay}
-            pointerEvents="none"
-          />
+    <Pressable
+      style={[styles.card, { marginBottom: bottomSpacing }]}
+      onPress={cardPress.onPress}
+      onPressIn={cardPress.onPressIn}
+      onPressOut={cardPress.onPressOut}
+      onTouchMove={cardPress.onTouchMove}
+    >
+      <View style={styles.imageWrap} collapsable={false}>
+        <StoreBannerCarousel
+          bannerUri={bannerUri}
+          galleryUris={galleryUris}
+          width={CARD_WIDTH}
+          height={IMAGE_HEIGHT}
+          borderRadius={CARD_RADIUS}
+          holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
+          slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
+          dimmed={!isOpen}
+          showDots={galleryUris.length > 0}
+          hidePlaceholderIcon
+          enableSwipe
+          deferTapToParent
+          onSwipeGesture={onCarouselSwipe}
+          onGestureComplete={onCarouselGestureComplete}
+        />
           {!isOpen ? <View style={styles.closedOverlay} pointerEvents="none" /> : null}
           <TouchableOpacity
             onPress={toggleBookmark}
@@ -243,9 +232,9 @@ function GMRestaurantCardV2Inner({
             nextOpenAt={merchant.nextOpenAt}
             nextCloseAt={merchant.nextCloseAt}
           />
-        </View>
+      </View>
 
-        <View style={[styles.content, !isOpen && styles.contentClosed]} pointerEvents="box-none">
+      <View style={[styles.content, !isOpen && styles.contentClosed]} pointerEvents="box-none">
           <View style={styles.titleRow}>
             <Text style={styles.name} numberOfLines={1}>
               {merchant.name}
@@ -265,8 +254,7 @@ function GMRestaurantCardV2Inner({
           />
           <MerchantOfferRow offerText={merchant.offerText} />
         </View>
-      </Pressable>
-    </Animated.View>
+    </Pressable>
   );
 }
 
@@ -329,11 +317,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.2)",
     alignItems: "center",
     justifyContent: "center",
-  },
-  gradientOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    borderTopLeftRadius: CARD_RADIUS,
-    borderTopRightRadius: CARD_RADIUS,
   },
   bookmarkBtn: {
     position: "absolute",

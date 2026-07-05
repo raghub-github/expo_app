@@ -10,112 +10,73 @@ export type NearbyDispatchRiderSummary = {
 
 type Props = {
   summary: NearbyDispatchRiderSummary | null;
+  statusSubtitle?: string | null;
 };
 
-export function RiderAssignPendingCard({ summary }: Props) {
+export function formatPendingRiderHeadline(nearbyCount: number, message?: string): string {
+  if (message?.trim()) return message.trim();
+  if (nearbyCount <= 0) return "Looking for nearby riders, assigning one soon";
+  if (nearbyCount === 1) return "1 rider nearby, assigning one soon";
+  return `${nearbyCount} riders nearby, assigning one soon`;
+}
+
+export function RiderAssignPendingCard({ summary, statusSubtitle }: Props) {
   const nearbyCount = summary?.nearbyCount ?? 0;
-  const assignSoonMessage =
-    summary?.assignSoonMessage ?? "Looking for nearby riders — we will assign one soon";
-  const radiusKm = summary?.radiusKm;
+  const headline = formatPendingRiderHeadline(nearbyCount, summary?.assignSoonMessage);
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.header}>Delivery partner</Text>
+    <View style={styles.row}>
+      <View style={styles.iconWrap}>
+        <Ionicons name="bicycle" size={18} color="#888888" />
+      </View>
       <View style={styles.body}>
-        <View style={styles.iconWrap}>
-          <View style={styles.iconCircle}>
-            <Ionicons name="bicycle" size={28} color="#0284C7" />
-          </View>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{nearbyCount > 99 ? "99+" : nearbyCount}</Text>
-          </View>
-        </View>
-        <Text style={styles.title}>{assignSoonMessage}</Text>
-        <View style={styles.metaRow}>
-          <Ionicons name="radio-outline" size={14} color="#10B981" />
-          <Text style={styles.metaText}>
-            {nearbyCount} active rider{nearbyCount === 1 ? "" : "s"} nearby
-            {radiusKm != null && radiusKm > 0 ? ` · within ${radiusKm} km` : ""}
+        <Text style={styles.headline} numberOfLines={2}>
+          {headline}
+        </Text>
+        {statusSubtitle ? (
+          <Text style={styles.subtitle} numberOfLines={2}>
+            {statusSubtitle}
           </Text>
-        </View>
+        ) : null}
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    marginTop: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderStyle: "dashed",
-    borderColor: "#BAE6FD",
-    backgroundColor: "#F0F9FF",
-    overflow: "hidden",
-  },
-  header: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    color: "#0369A1",
-    backgroundColor: "#E0F2FE",
-  },
-  body: {
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 18,
+  row: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraMerchant.border,
   },
   iconWrap: {
-    position: "relative",
-    marginBottom: 12,
-  },
-  iconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#FFFFFF",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#E8E8E8",
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#E0F2FE",
+    marginTop: 1,
   },
-  badge: {
-    position: "absolute",
-    top: -4,
-    right: -8,
-    minWidth: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "#10B981",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 6,
+  body: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
-  badgeText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  title: {
-    fontSize: 15,
+  headline: {
+    fontSize: 13,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-    textAlign: "center",
-    lineHeight: 21,
+    lineHeight: 18,
   },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginTop: 8,
-  },
-  metaText: {
+  subtitle: {
     fontSize: 12,
+    fontWeight: "500",
     color: GatiMitraMerchant.textSecondary,
-    textAlign: "center",
-    flexShrink: 1,
+    lineHeight: 16,
   },
 });

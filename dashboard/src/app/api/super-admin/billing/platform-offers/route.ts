@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
 import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
-import { insertPlatformOffer, listPlatformOffers } from "@/lib/db/operations/billing-advanced";
+import { insertPlatformOffer, listPlatformOffers, formatPlatformOfferDbError } from "@/lib/db/operations/billing-advanced";
 
 export const runtime = "nodejs";
 
@@ -96,7 +96,13 @@ export async function POST(req: NextRequest) {
     const offer = await insertPlatformOffer(parsed.data);
     return NextResponse.json({ offer });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Failed";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    const msg = formatPlatformOfferDbError(e);
+    const status =
+      msg.includes("date/time") ||
+      msg.includes("must be on or after") ||
+      msg.includes("Invalid date")
+        ? 400
+        : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
 }

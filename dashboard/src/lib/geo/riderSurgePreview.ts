@@ -1,22 +1,20 @@
 /**
- * Client-side surge resolution (mirrors backend riderSurge.service.ts).
+ * Client-side surge resolution — mirrors backend stateSurge.service.ts.
  */
 
 export type PreviewSurgeDefinition = {
   id: number;
   name: string;
-  kind: "peak_hour" | "rain" | "festival" | "custom";
-  fixedAmount: number;
+  surgeType: "fixed" | "percentage";
+  /** Configured amount — ₹ for fixed, % for percentage. */
+  amount: number;
   priority: number;
   isEnabled: boolean;
   gmitraMaxOnly: boolean;
   appliesFood: boolean;
   appliesParcel: boolean;
   appliesRide: boolean;
-  vehicle2Wheeler: boolean;
-  vehicle3Wheeler: boolean;
-  vehicle4WheelerAc: boolean;
-  vehicle4WheelerNonAc: boolean;
+  vehicleType: string;
   manualActive: boolean;
 };
 
@@ -32,7 +30,8 @@ export type PreviewSurgeTimeSlot = {
 export type AppliedPreviewSurge = {
   surgeId: number;
   name: string;
-  kind: PreviewSurgeDefinition["kind"];
+  surgeType: "fixed" | "percentage";
+  configAmount: number;
   amount: number;
 };
 
@@ -56,6 +55,15 @@ function isTimeInSlot(now: Date, slot: PreviewSurgeTimeSlot): boolean {
   return nowMin >= start || nowMin < end;
 }
 
+function pricingVehicleMatchesScope(
+  pricingVehicle: string | null | undefined,
+  scope: string
+): boolean {
+  const vt = pricingVehicle ?? "2_wheeler";
+  if (scope === "all") return true;
+  return vt === scope;
+}
+
 export function resolvePreviewSurges(args: {
   definitions: PreviewSurgeDefinition[];
   timeSlots: PreviewSurgeTimeSlot[];
@@ -64,6 +72,7 @@ export function resolvePreviewSurges(args: {
   riderHasGmitraMax: boolean;
   surgeWaitMaxOnly: boolean;
   maxTotalSurgeAmount: number | null;
+  baseFareForPct: number;
   now?: Date;
   forceActiveSurgeIds?: number[];
 }): {
@@ -74,6 +83,7 @@ export function resolvePreviewSurges(args: {
 } {
   const now = args.now ?? new Date();
   const forceIds = args.forceActiveSurgeIds ? new Set(args.forceActiveSurgeIds) : undefined;
+
   if (args.surgeWaitMaxOnly && !args.riderHasGmitraMax) {
     return { appliedSurges: [], rawSurgeTotal: 0, surgeTotal: 0, surgeCapped: false };
   }
@@ -95,30 +105,41 @@ export function resolvePreviewSurges(args: {
     if (args.service === "ride" && !def.appliesRide) continue;
 
     if (args.service === "ride") {
-      const vt = args.vehicleType ?? "2_wheeler";
-      if (vt === "2_wheeler" && !def.vehicle2Wheeler) continue;
-      if (vt === "3_wheeler" && !def.vehicle3Wheeler) continue;
-      if (vt === "4_wheeler_ac" && !def.vehicle4WheelerAc) continue;
-      if (vt === "4_wheeler_non_ac" && !def.vehicle4WheelerNonAc) continue;
-    } else if (!def.vehicle2Wheeler) continue;
+      if (!pricingVehicleMatchesScope(args.vehicleType, def.vehicleType)) continue;
+    } else if (def.vehicleType !== "all" && def.vehicleType !== "2_wheeler") {
+      continue;
+    }
 
     if (def.gmitraMaxOnly && !args.riderHasGmitraMax) continue;
 
+    const slots = slotsBySurge.get(def.id) ?? [];
     let active = forceIds?.has(def.id) === true;
     if (!active) {
-      if (def.kind === "peak_hour") {
-        active = (slotsBySurge.get(def.id) ?? []).some((s) => isTimeInSlot(now, s));
-      } else if (def.kind === "rain" || def.kind === "festival") {
-        active = def.manualActive;
+      if (slots.length > 0) {
+        active = slots.some((s) => isTimeInSlot(now, s));
       } else {
-        active = true;
+        const nameLower = def.name.toLowerCase();
+        const isRainOrFestival =
+          nameLower.includes("rain") || nameLower.includes("festival");
+        active = isRainOrFestival ? def.manualActive : true;
       }
     }
     if (!active) continue;
 
-    const amount = round2(Math.max(0, def.fixedAmount));
-    if (amount <= 0) continue;
-    applied.push({ surgeId: def.id, name: def.name, kind: def.kind, amount });
+    const appliedAmount =
+      def.surgeType === "percentage"
+        ? round2(Math.max(0, args.baseFareForPct) * (def.amount / 100))
+        : round2(Math.max(0, def.amount));
+
+    if (appliedAmount <= 0) continue;
+
+    applied.push({
+      surgeId: def.id,
+      name: def.name,
+      surgeType: def.surgeType,
+      configAmount: def.amount,
+      amount: appliedAmount,
+    });
   }
 
   const rawSurgeTotal = round2(applied.reduce((s, x) => s + x.amount, 0));
@@ -129,5 +150,6 @@ export function resolvePreviewSurges(args: {
     surgeTotal = round2(cap);
     surgeCapped = true;
   }
+
   return { appliedSurges: applied, rawSurgeTotal, surgeTotal, surgeCapped };
 }

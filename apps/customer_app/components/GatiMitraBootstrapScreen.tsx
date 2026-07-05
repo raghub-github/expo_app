@@ -24,10 +24,13 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const GRADIENT_TOP = "#5eead4";
 const GRADIENT_BOTTOM = "#0d9488";
 const DOOR_COLOR = "#0f766e";
+/** Match gradient top so status bar blends with splash (not white strip). */
+const SPLASH_STATUS_BAR = GRADIENT_TOP;
 
 export type GatiMitraBootstrapScreenProps = {
   /**
@@ -65,12 +68,17 @@ export function GatiMitraBootstrapScreen({
   }, []);
 
   useEffect(() => {
-    if (variant !== "root") return;
-    void SystemUI.setBackgroundColorAsync(GRADIENT_BOTTOM);
+    const chrome = useScreenChromeStore.getState();
+    chrome.setBootstrapActive(true);
+    chrome.setStatusBarBackground(SPLASH_STATUS_BAR, "light");
+    chrome.setImmersiveStatusBarChrome(true);
+    void SystemUI.setBackgroundColorAsync(SPLASH_STATUS_BAR);
     return () => {
-      void SystemUI.setBackgroundColorAsync("#FFFFFF").catch(() => {});
+      const reset = useScreenChromeStore.getState();
+      reset.setBootstrapActive(false);
+      reset.resetStatusBarBackground();
     };
-  }, [variant]);
+  }, []);
 
   useEffect(() => {
     if (variant !== "root" || !appReady || exitStartedRef.current) return;
@@ -109,7 +117,7 @@ export function GatiMitraBootstrapScreen({
 
   return (
     <View style={rootStyle} accessibilityLabel="GatiMitra loading">
-      <StatusBar style="light" translucent backgroundColor="transparent" />
+      <StatusBar style="light" backgroundColor={SPLASH_STATUS_BAR} translucent />
       <LinearGradient
         colors={[GRADIENT_TOP, GatiMitraColors.splashMint, GRADIENT_BOTTOM]}
         locations={[0, 0.45, 1]}

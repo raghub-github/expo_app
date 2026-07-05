@@ -3,6 +3,7 @@
  */
 
 import { View, Text, StyleSheet, TouchableOpacity, Image, type StyleProp, type ViewStyle } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import type { ReactNode } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -100,20 +101,20 @@ export function DeliveryPartnerTrackingCard({
           {riderPhotoUri ? (
             <Image source={{ uri: riderPhotoUri }} style={styles.partnerAvatarImg} />
           ) : (
-            <Text style={styles.partnerAvatarText}>{riderName.slice(0, 1).toUpperCase()}</Text>
+            <CheckoutText style={styles.partnerAvatarText}>{riderName.slice(0, 1).toUpperCase()}</CheckoutText>
           )}
         </View>
         <View style={styles.partnerInfo}>
-          <Text style={styles.partnerName} numberOfLines={1}>
+          <CheckoutText style={styles.partnerName} numberOfLines={1}>
             {riderName}
-          </Text>
-          <Text style={styles.partnerSub}>
+          </CheckoutText>
+          <CheckoutText style={styles.partnerSub}>
             {formatRiderDeliveredSubtitle(deliveredOrdersCount, partnerKind)}
-          </Text>
+          </CheckoutText>
         </View>
         {riderRating ? (
           <View style={styles.ratingPill}>
-            <Text style={styles.ratingText}>{riderRating} ★</Text>
+            <CheckoutText style={styles.ratingText}>{riderRating} ★</CheckoutText>
           </View>
         ) : null}
       </View>
@@ -124,7 +125,7 @@ export function DeliveryPartnerTrackingCard({
             <Ionicons name="chatbubble-ellipses" size={18} color={ZOMATO_RED} />
             <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.messageUnreadBadge} />
           </View>
-          <Text style={styles.messageBarText}>{messageLabel}</Text>
+          <CheckoutText style={styles.messageBarText}>{messageLabel}</CheckoutText>
           <Ionicons name="chevron-forward" size={16} color="#C4C4C4" />
         </TouchableOpacity>
         <TouchableOpacity style={styles.callCircle} onPress={onCall} activeOpacity={0.85}>
@@ -135,20 +136,20 @@ export function DeliveryPartnerTrackingCard({
       {existingTipAmount > 0 ? (
         <>
           <DashedDivider />
-          <Text style={styles.tipNote}>
+          <CheckoutText style={styles.tipNote}>
             {isDelivered
               ? `You tipped ₹${existingTipAmount.toFixed(0)}. 100% goes to ${riderFirstName} directly.`
               : `You tipped ₹${existingTipAmount.toFixed(0)}. 100% goes to ${riderFirstName} after delivery.`}
-          </Text>
+          </CheckoutText>
         </>
       ) : (
         <>
           <DashedDivider />
-          <Text style={styles.tipNote}>
+          <CheckoutText style={styles.tipNote}>
             {isDelivered
               ? `Thank ${riderFirstName} by leaving a tip. 100% of the amount will go to them directly`
               : `Thank ${riderFirstName} by leaving a tip. 100% of the amount will go to them after delivery`}
-          </Text>
+          </CheckoutText>
           <View style={styles.tipChipRow}>
             {FOOD_TIP_PRESETS.map((amount) => (
               <TouchableOpacity
@@ -157,11 +158,11 @@ export function DeliveryPartnerTrackingCard({
                 onPress={onTipPreset}
                 activeOpacity={0.85}
               >
-                <Text style={styles.tipChipBtnText}>₹{amount}</Text>
+                <CheckoutText style={styles.tipChipBtnText}>₹{amount}</CheckoutText>
               </TouchableOpacity>
             ))}
             <TouchableOpacity style={styles.tipChipBtn} onPress={onTipPreset} activeOpacity={0.85}>
-              <Text style={styles.tipChipBtnText}>Other</Text>
+              <CheckoutText style={styles.tipChipBtnText}>Other</CheckoutText>
             </TouchableOpacity>
           </View>
         </>
@@ -177,14 +178,15 @@ export function DeliveryPartnerTrackingCard({
       {isDelivered && onCustomerUniformFeedback ? (
         <>
           <DashedDivider />
-          <Text style={styles.uniformQuestion}>
-            Was Delivery partner in Gatimitra Uniform?
-            {customerUniformFeedback === true ? (
-              <Text style={styles.uniformAnswer}> Yes</Text>
-            ) : customerUniformFeedback === false ? (
-              <Text style={styles.uniformAnswer}> No</Text>
-            ) : null}
-          </Text>
+          <CheckoutText style={styles.uniformQuestion}>
+            {`Was Delivery partner in Gatimitra Uniform?${
+              customerUniformFeedback === true
+                ? " Yes"
+                : customerUniformFeedback === false
+                  ? " No"
+                  : ""
+            }`}
+          </CheckoutText>
           {customerUniformFeedback == null ? (
             <View style={styles.uniformBtnRow}>
               <TouchableOpacity
@@ -196,7 +198,7 @@ export function DeliveryPartnerTrackingCard({
                 activeOpacity={0.85}
                 disabled={uniformFeedbackDisabled}
               >
-                <Text style={styles.uniformBtnText}>YES</Text>
+                <CheckoutText style={styles.uniformBtnText}>YES</CheckoutText>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -207,7 +209,7 @@ export function DeliveryPartnerTrackingCard({
                 activeOpacity={0.85}
                 disabled={uniformFeedbackDisabled}
               >
-                <Text style={styles.uniformBtnText}>NO</Text>
+                <CheckoutText style={styles.uniformBtnText}>NO</CheckoutText>
               </TouchableOpacity>
             </View>
           ) : null}
@@ -223,7 +225,7 @@ export function DeliveryPartnerTrackingCard({
         disabled={!onSafetyPress}
       >
         <Ionicons name="shield-checkmark-outline" size={18} color={MUTED} />
-        <Text style={styles.safetyText}>Learn about delivery partner safety</Text>
+        <CheckoutText style={styles.safetyText}>Learn about delivery partner safety</CheckoutText>
         <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />
       </TouchableOpacity>
     </View>
@@ -238,7 +240,6 @@ const styles = StyleSheet.create({
     marginTop: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    ...GatiMitraColors.elevationShadow,
   },
   partnerHeader: {
     flexDirection: "row",

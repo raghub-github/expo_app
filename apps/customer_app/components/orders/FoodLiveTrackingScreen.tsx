@@ -10,11 +10,11 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  Share,
   Linking,
   Alert,
   Dimensions,
 } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -24,7 +24,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import type { OrderDetail, OrderTrackingResponse } from "@/services/order.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
@@ -33,6 +33,7 @@ import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBann
 import { useOrderStore } from "@/store/orderStore";
 import { OrderItemCustomizationModal } from "@/components/orders/OrderItemCustomizationModal";
 import { FoodOrderCancelSheet } from "@/components/orders/FoodOrderCancelSheet";
+import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { DeliveryPartnerSafetyBottomSheet } from "@/components/orders/DeliveryPartnerSafetyBottomSheet";
 import { DeliveryPartnerTrackingCard } from "@/components/orders/DeliveryPartnerTrackingCard";
 import { FoodOrderTipSheet } from "@/components/orders/FoodOrderTipSheet";
@@ -60,6 +61,7 @@ import {
 } from "@/lib/order-item-customization-display";
 import { OrderDeliveryDetailsCard } from "@/components/orders/OrderDeliveryDetailsCard";
 import { OrderRestaurantCard } from "@/components/orders/OrderRestaurantCard";
+import { OrderBillBreakdownSheet } from "@/components/orders/OrderBillBreakdownSheet";
 import { CookingRequestBottomSheet } from "@/components/orders/CookingRequestBottomSheet";
 import { DeliveryPartnerInstructionSheet } from "@/components/address/DeliveryPartnerInstructionSheet";
 import {
@@ -155,11 +157,11 @@ function ChevronRow({
         <Ionicons name={icon} size={18} color={iconColor} />
       </View>
       <View style={styles.chevronTextWrap}>
-        <Text style={styles.chevronTitle}>{title}</Text>
+        <CheckoutText style={styles.chevronTitle}>{title}</CheckoutText>
         {subtitle ? (
-          <Text style={styles.chevronSub} numberOfLines={2}>
+          <CheckoutText style={styles.chevronSub} numberOfLines={2}>
             {subtitle}
-          </Text>
+          </CheckoutText>
         ) : null}
       </View>
       {trailing ?? <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />}
@@ -179,13 +181,13 @@ function DeliveryOtpBanner({ otp }: { otp: string }) {
       <View style={styles.otpRow}>
         <View style={styles.otpLeft}>
           <Ionicons name="shield-checkmark-outline" size={17} color={MINT_DARK} />
-          <Text style={styles.otpLabel} numberOfLines={1}>
+          <CheckoutText style={styles.otpLabel} numberOfLines={1}>
             Delivery OTP
-          </Text>
+          </CheckoutText>
         </View>
-        <Text style={styles.otpValue} numberOfLines={1}>
+        <CheckoutText style={styles.otpValue} numberOfLines={1}>
           {otp}
-        </Text>
+        </CheckoutText>
       </View>
     </View>
   );
@@ -228,6 +230,8 @@ export function FoodLiveTrackingScreen({
   const [cookingSheetVisible, setCookingSheetVisible] = useState(false);
   const [deliveryInstructionSheetVisible, setDeliveryInstructionSheetVisible] = useState(false);
   const [safetySheetVisible, setSafetySheetVisible] = useState(false);
+  const [billSheetVisible, setBillSheetVisible] = useState(false);
+  const [shareSheetVisible, setShareSheetVisible] = useState(false);
   const { deliveryInstructionsList, merchantInstructionsList } =
     useStableOrderInstructionLists(order);
   const [deliveryEditLocked, setDeliveryEditLocked] = useState({
@@ -287,6 +291,10 @@ export function FoodLiveTrackingScreen({
     order.totalAmount ?? null,
     order.tipAmount ?? null
   );
+  const billItemTotalFallback = useMemo(
+    () => items.reduce((sum, item) => sum + (item.lineTotal ?? item.price * item.quantity), 0),
+    [items]
+  );
   const deliveryDetails = useMemo(
     () => buildOrderDeliveryDetailsView({ ...order, deliveryInstructionsList }),
     [order, deliveryInstructionsList]
@@ -336,6 +344,7 @@ export function FoodLiveTrackingScreen({
   });
 
   const prevMapPhaseRef = useRef(mapPhase);
+  const prevHighlightDropRef = useRef(highlightDropZone);
 
   const pickupPoint = useMemo(
     () => ({ latitude: pickupLat, longitude: pickupLng }),
@@ -370,6 +379,13 @@ export function FoodLiveTrackingScreen({
       setMapRefitNonce((n) => n + 1);
     }
   }, [mapPhase]);
+
+  useEffect(() => {
+    if (highlightDropZone && !prevHighlightDropRef.current) {
+      setMapRefitNonce((n) => n + 1);
+    }
+    prevHighlightDropRef.current = highlightDropZone;
+  }, [highlightDropZone]);
 
   useEffect(() => {
     const t = setTimeout(() => setMapReady(true), 120);
@@ -448,15 +464,9 @@ export function FoodLiveTrackingScreen({
     return phone.length === 10 ? `+91${phone}` : phone.startsWith("+") ? phone : `+${phone}`;
   }, [order.rider?.phone]);
 
-  const handleShare = useCallback(async () => {
-    try {
-      await Share.share({
-        message: `Track my GatiMitra order from ${restaurantName}. Order #${displayOrderId}.`,
-      });
-    } catch {
-      /* dismissed */
-    }
-  }, [restaurantName, displayOrderId]);
+  const handleShare = useCallback(() => {
+    setShareSheetVisible(true);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -602,6 +612,8 @@ export function FoodLiveTrackingScreen({
     order.rider?.rating != null && Number.isFinite(order.rider.rating)
       ? order.rider.rating.toFixed(1)
       : null;
+  const headerTopPadding =
+    (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT) + STATUS_BAR_TO_HEADER_GAP;
 
   return (
     <View style={styles.screen}>
@@ -611,26 +623,26 @@ export function FoodLiveTrackingScreen({
         colors={[HEADER_GREEN, HEADER_GREEN]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 0 }}
-        style={[styles.heroHeader, { paddingTop: STATUS_BAR_TO_HEADER_GAP }]}
+        style={[styles.heroHeader, { paddingTop: headerTopPadding }]}
       >
         <View style={styles.heroTopRow}>
           <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.heroSideBtnLeft}>
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </TouchableOpacity>
-          <Text style={styles.heroRestaurant} numberOfLines={1}>
+          <CheckoutText style={styles.heroRestaurant} numberOfLines={1}>
             {restaurantName}
-          </Text>
+          </CheckoutText>
           <TouchableOpacity onPress={handleShare} hitSlop={12} style={styles.heroSideBtnRight}>
-            <MaterialCommunityIcons name="arrow-top-right" size={22} color="#fff" />
+            <Ionicons name="share-social-outline" size={22} color="#fff" />
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.heroHeadline}>{headline}</Text>
+        <CheckoutText style={styles.heroHeadline}>{headline}</CheckoutText>
 
         <View style={styles.etaPillRow}>
           <View style={styles.etaPillInner}>
             <View style={[styles.etaPill, styles.etaPillChipBase]}>
-              <Text style={styles.etaPillText}>{etaPillText}</Text>
+              <CheckoutText style={styles.etaPillText}>{etaPillText}</CheckoutText>
             </View>
             <TouchableOpacity
               style={[styles.etaRefreshBtn, styles.etaPillChipBase]}
@@ -640,12 +652,12 @@ export function FoodLiveTrackingScreen({
               {refreshingEta ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <MaterialCommunityIcons name="refresh" size={17} color="#fff" />
+                <Ionicons name="refresh" size={18} color="#fff" />
               )}
             </TouchableOpacity>
           </View>
           {refreshAckVisible ? (
-            <Text style={styles.refreshAckText}>Just refreshed now</Text>
+            <CheckoutText style={styles.refreshAckText}>Just refreshed now</CheckoutText>
           ) : null}
         </View>
       </LinearGradient>
@@ -757,11 +769,16 @@ export function FoodLiveTrackingScreen({
         />
 
         <SectionCard>
-          <View style={styles.billCompactRow}>
+          <TouchableOpacity
+            style={styles.billCompactRow}
+            onPress={() => setBillSheetVisible(true)}
+            activeOpacity={0.85}
+          >
             <Ionicons name="wallet-outline" size={18} color={MUTED} />
-            <Text style={styles.billCompactLabel}>Paid via {paymentMethodLabel}</Text>
-            <Text style={styles.billCompactValue}>{formatMoney(bill.paid)}</Text>
-          </View>
+            <CheckoutText style={styles.billCompactLabel}>Paid via {paymentMethodLabel}</CheckoutText>
+            <CheckoutText style={styles.billCompactValue}>{formatMoney(bill.paid)}</CheckoutText>
+            <Ionicons name="chevron-forward" size={16} color="#C4C4C4" />
+          </TouchableOpacity>
         </SectionCard>
 
         <SectionCard>
@@ -831,6 +848,20 @@ export function FoodLiveTrackingScreen({
       <DeliveryPartnerSafetyBottomSheet
         visible={safetySheetVisible}
         onClose={() => setSafetySheetVisible(false)}
+      />
+
+      <OrderBillBreakdownSheet
+        visible={billSheetVisible}
+        onClose={() => setBillSheetVisible(false)}
+        bill={bill}
+        paymentMethodLabel={paymentMethodLabel}
+        itemTotalFallback={billItemTotalFallback}
+      />
+
+      <RideTripShareSheet
+        visible={shareSheetVisible}
+        orderId={order.orderId}
+        onClose={() => setShareSheetVisible(false)}
       />
 
       <AlternateContactFlow
@@ -985,7 +1016,6 @@ const styles = StyleSheet.create({
     marginTop: 12,
     borderWidth: 1,
     borderColor: BORDER,
-    ...GatiMitraColors.elevationShadow,
   },
   dashedDividerWrap: { marginVertical: 10, overflow: "hidden" },
   dashedDivider: { fontSize: 10, color: "#E5E7EB", letterSpacing: 1 },

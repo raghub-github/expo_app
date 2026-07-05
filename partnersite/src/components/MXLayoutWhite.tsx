@@ -53,7 +53,7 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
   const collapsed = isSmallScreen ? true : effectiveCollapsed;
   return (
     <PartnerShellHeaderProvider>
-      <div className="flex flex-col bg-white h-screen overflow-hidden">
+      <div className="flex flex-col bg-white h-dvh min-h-0 overflow-hidden">
         <Suspense fallback={null}>
         {!isRight && (
           <MXPartnerTopBar

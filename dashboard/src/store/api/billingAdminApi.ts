@@ -664,6 +664,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
         if (res?.error) throw new Error(res.error);
         return (res.offers ?? []).map((o) => ({
           ...o,
+          id: Number(o.id),
           offer_audience: String(o.offer_audience ?? "CUSTOMER").toUpperCase(),
         }));
       },
@@ -674,7 +675,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
       query: (body) => ({ url: "/super-admin/billing/platform-offers", method: "POST", body }),
       transformResponse: (res: { offer?: BillingAdminPlatformOfferRow; error?: string }) => {
         if (!res?.offer) throw new Error(res?.error ?? errMsg(res));
-        return res.offer;
+        return { ...res.offer, id: Number(res.offer.id) };
       },
       invalidatesTags: [billingTags.platformOffers],
     }),
@@ -690,7 +691,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
       }),
       transformResponse: (res: { offer?: BillingAdminPlatformOfferRow; error?: string }) => {
         if (!res?.offer) throw new Error(res?.error ?? errMsg(res));
-        return res.offer;
+        return { ...res.offer, id: Number(res.offer.id) };
       },
       invalidatesTags: [billingTags.platformOffers],
     }),

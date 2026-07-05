@@ -44,12 +44,12 @@ import { UI_STRINGS, useLocalStoreStatusEngineStore } from '@/lib/localStoreStat
 import { formatCloseReasonForCard } from '@/lib/formatCloseReasonForCard'
 import { formatStoreActionSourceLabel } from '@/lib/storeActionSource'
 
-import { PageSkeletonDashboard } from '@/components/PageSkeleton';
 import { MerchantMarketInsightsCard } from '@/components/merchant/MerchantMarketInsightsCard';
 import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
 import { LivePreviewInsightsPanel, mapInsightsDatePreset } from '@/components/merchant/LivePreviewInsightsPanel';
 import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel';
-import { prefetchGrowthInsights } from '@/lib/merchant-growth/growth-insights-cache';
+import { prefetchBusinessInsights, warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
+import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
 import { createClient } from '@/lib/supabase/client';
 import { useMerchantWallet, useSelfDeliveryRiders, useStoreOperations } from '@/hooks/useMerchantApi';
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
@@ -172,11 +172,10 @@ function DashboardContent() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [clientReady, setClientReady] = useState(false)
   const [store, setStore] = useState<MerchantStore | null>(null)
   const [storeId, setStoreId] = useState<string | null>(null)
-  const queriesEnabled = clientReady && !!storeId
-  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId, {
+  const queriesEnabled = !!storeId
+  const { data: storeRecord } = usePartnerStoreRecord(storeId, {
     enabled: queriesEnabled,
   })
   const { approvedStores } = useApprovedPartnerStores()
@@ -188,9 +187,6 @@ function DashboardContent() {
       })),
     [approvedStores]
   )
-  const showPageSkeleton =
-    !clientReady || (queriesEnabled && storeQueryLoading && !storeRecord)
-  
   // Store Status & Delivery Mode — card follows GET /api/store-operations (same effective OPEN as dashboard); engine for modals + persistence.
   const engine = useLocalStoreStatusEngineStore()
   const [storeOpsPainted, setStoreOpsPainted] = useState(false)
@@ -438,13 +434,15 @@ function DashboardContent() {
 
   const { data: walletData, isPending: walletPending } = useMerchantWallet(storeId, {
     enabled: queriesEnabled,
+    lite: true,
   })
+  const walletSnapshot = walletPending ? null : walletData ?? null
   const walletAvailableBalance =
-    walletData?.withdrawable_balance ??
-    Number(walletData?.available_balance ?? 0)
-  const walletTodayEarning = walletData?.today_earning ?? 0
-  const walletYesterdayEarning = walletData?.yesterday_earning ?? 0
-  const walletPendingBalance = walletData?.pending_balance ?? 0
+    walletSnapshot?.withdrawable_balance ??
+    Number(walletSnapshot?.available_balance ?? 0)
+  const walletTodayEarning = walletSnapshot?.today_earning ?? 0
+  const walletYesterdayEarning = walletSnapshot?.yesterday_earning ?? 0
+  const walletPendingBalance = walletSnapshot?.pending_balance ?? 0
 
   const [showPlanExpiredWarning, setShowPlanExpiredWarning] = useState(false)
   const [expiredPlanMeta, setExpiredPlanMeta] = useState<{
@@ -550,7 +548,6 @@ function DashboardContent() {
 
   // Resolve store id after mount (localStorage is client-only — keeps SSR/client HTML in sync).
   useEffect(() => {
-    setClientReady(true)
     const id = resolveStoreIdFromClient(searchParams?.get('storeId'))
     setStoreId(id)
     if (id) {
@@ -561,8 +558,15 @@ function DashboardContent() {
 
   useEffect(() => {
     if (!storeId) return
-    prefetchGrowthInsights(storeId, mapInsightsDatePreset(appliedDatePreset), mapInsightsDatePreset(appliedDatePreset))
+    warmDashboardWalletCache(storeId)
+    warmLivePreviewCache(storeId, mapInsightsDatePreset(appliedDatePreset))
   }, [storeId, appliedDatePreset])
+
+  useEffect(() => {
+    if (!storeId || insightsTab !== 'reports') return
+    const period = mapInsightsDatePreset(appliedDatePreset)
+    void prefetchBusinessInsights(storeId, period === 'today' ? 'week' : period)
+  }, [storeId, appliedDatePreset, insightsTab])
 
   useEffect(() => {
     if (!storeId) return
@@ -675,12 +679,6 @@ function DashboardContent() {
     if (!storeId) return
     await refetchStoreOperations()
   }, [storeId, refetchStoreOperations])
-
-  useEffect(() => {
-    if (!storeId) return
-    const period = mapInsightsDatePreset(appliedDatePreset)
-    prefetchGrowthInsights(storeId, period, period === 'today' ? 'week' : period)
-  }, [storeId, appliedDatePreset])
 
   // Header / schedule sheet updates store-operations fetch there first — mirror here without reload.
   useEffect(() => {
@@ -1313,10 +1311,6 @@ function DashboardContent() {
         restaurantName={store?.store_name || 'Dashboard'}
         restaurantId={storeId || ''}
       >
-        {showPageSkeleton ? (
-          <PageSkeletonDashboard />
-        ) : (
-          <>
         <PartnerPageHeader title="Dashboard" subtitle="GatiMitra · Operations command center" />
         <MerchantWeatherBanner storeId={storeId} />
         <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
@@ -1337,7 +1331,7 @@ function DashboardContent() {
                       </div>
                     </div>
                     <div className="flex-1 flex flex-col justify-center min-h-0">
-                      {walletPending && !walletData ? (
+                      {!walletSnapshot ? (
                         <div className="grid grid-cols-2 gap-2.5">
                           {[1, 2, 3, 4].map((i) => (
                             <div key={i} className="h-9 rounded-md bg-slate-200/50 animate-pulse" />
@@ -1831,30 +1825,28 @@ function DashboardContent() {
                   </div>
                 )}
 
-                <div className={insightsTab !== 'live' ? 'hidden' : undefined}>
+                {insightsTab === 'live' ? (
                   <LivePreviewInsightsPanel
                     storeId={storeId}
                     periodPreset={appliedDatePreset}
                     userInsightsHref="/mx/user-insights"
                     paymentsHref="/mx/payments"
                   />
-                </div>
+                ) : null}
 
-                <div className={insightsTab !== 'reports' ? 'hidden' : undefined}>
+                {insightsTab === 'reports' ? (
                   <BusinessReportsPanel
                     storeId={storeId}
                     periodPreset={appliedDatePreset}
                     subview={reportsSubview}
+                    enabled
                   />
-                </div>
+                ) : null}
 
               </div>
             </div>
           </div>
         </div>
-          </>
-        )}
-
       </MXLayoutWhite>
 
       {storeId ? (

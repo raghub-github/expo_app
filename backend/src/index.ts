@@ -629,7 +629,7 @@ try {
   // Wire domain events → notification templates.
   registerDomainEventHandlers();
 
-  const orderAcceptanceIntervalMs = 15_000;
+  const orderAcceptanceIntervalMs = 10_000;
   const runAcceptanceTickLocked = () =>
     withLock("tick:acceptance-timeout", 25_000, () => runOrderAcceptanceTimeoutTick(app.log))
       .then((result) => {
@@ -643,7 +643,7 @@ try {
       .catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
   await runAcceptanceTickLocked();
   orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
-  app.log.info({ intervalSeconds: 15 }, "order acceptance timeout tick started (auto-cancel + server auto-accept)");
+  app.log.info({ intervalSeconds: 10 }, "order acceptance timeout tick started (auto-cancel + server auto-accept)");
 
   // Order auto-accept tick — every 10 s; lock TTL 20 s.
   // Added in MRC merge: server-side auto-accept of new orders when the

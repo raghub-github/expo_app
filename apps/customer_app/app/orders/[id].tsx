@@ -992,11 +992,18 @@ export default function OrderDetailsScreen() {
             {(bill.deliveryFeeOriginal != null || bill.deliveryFee > 0.005) && (
               <View style={styles.billRow}>
                 <Text style={styles.billLabel}>Delivery partner fee</Text>
-                {bill.deliveryFee <= 0.005 && bill.deliveryFeeOriginal != null ? (
-                  <View style={styles.freeDeliveryWrap}>
-                    <Text style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</Text>
-                    <Text style={styles.freeText}>FREE</Text>
-                  </View>
+                {bill.deliveryFeeOriginal != null ? (
+                  bill.deliveryDisplayFree || bill.deliveryFee <= 0.005 ? (
+                    <View style={styles.freeDeliveryWrap}>
+                      <Text style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</Text>
+                      <Text style={styles.freeText}>FREE</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.freeDeliveryWrap}>
+                      <Text style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</Text>
+                      <Text style={styles.billValue}>{formatMoney(bill.deliveryFee)}</Text>
+                    </View>
+                  )
                 ) : (
                   <Text style={styles.billValue}>{formatMoney(bill.deliveryFee)}</Text>
                 )}
@@ -1058,14 +1065,21 @@ export default function OrderDetailsScreen() {
               <Text style={styles.billGrandValue}>{formatMoney(bill.grandTotal)}</Text>
             </View>
 
-            {bill.couponDiscount > 0.005 && (
-              <View style={styles.billRow}>
-                <Text style={styles.couponLabel}>
-                  Coupon applied{bill.couponCode ? ` - ${bill.couponCode}` : ""}
-                </Text>
-                <Text style={styles.couponValue}>- {formatMoney(bill.couponDiscount)}</Text>
-              </View>
-            )}
+            {bill.discountLines.length > 0
+              ? bill.discountLines.map((line, idx) => (
+                  <View key={`disc-${line.code ?? line.label}-${idx}`} style={styles.billRow}>
+                    <Text style={styles.couponLabel}>{line.label}</Text>
+                    <Text style={styles.couponValue}>- {formatMoney(line.amount)}</Text>
+                  </View>
+                ))
+              : bill.couponDiscount > 0.005 && (
+                  <View style={styles.billRow}>
+                    <Text style={styles.couponLabel}>
+                      Coupon applied{bill.couponCode ? ` - ${bill.couponCode}` : ""}
+                    </Text>
+                    <Text style={styles.couponValue}>- {formatMoney(bill.couponDiscount)}</Text>
+                  </View>
+                )}
 
             {bill.gatiCashApplied > 0.005 && (
               <View style={styles.billRow}>

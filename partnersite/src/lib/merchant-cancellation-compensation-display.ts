@@ -8,6 +8,7 @@ import type { ResolvedMerchantCompensation } from "@/lib/merchant-cancellation-c
 
 export type MerchantCancellationCompensationDisplay = {
   engine_enabled: boolean;
+  admin_override?: boolean;
   compensation_pct: number;
   merchant_keeps_amount: number;
   net_order_value: number;
@@ -263,12 +264,78 @@ export async function resolveOrderCancellationCompensationDisplay(
   }
 ): Promise<MerchantCancellationCompensationDisplay | null> {
   try {
+    const overrideDisplay = await loadAdminOverrideCompensationDisplay(sql, args.orderCoreId, {
+      cancelledByType: args.cancelledByType,
+      cancelledByLabel: args.cancelledByLabel,
+      rejectedReason: args.rejectedReason,
+      netOrderValue: args.netOrderValue,
+    });
+    if (overrideDisplay) return overrideDisplay;
+
     const plan = await planMerchantCancellationLedger(sql, args.orderCoreId, null, {
       cancelledByType: args.cancelledByType,
       cancelledByLabel: args.cancelledByLabel,
       rejectedReason: args.rejectedReason,
     });
     return plan.display;
+  } catch {
+    return null;
+  }
+}
+
+async function loadAdminOverrideCompensationDisplay(
+  sql: postgres.Sql,
+  orderCoreId: number,
+  args: {
+    cancelledByType: string | null;
+    cancelledByLabel: string | null;
+    rejectedReason: string | null;
+    netOrderValue: number;
+  },
+): Promise<MerchantCancellationCompensationDisplay | null> {
+  try {
+    const rows = await sql<
+      { metadata: Record<string, unknown> | null; amount: string | number; direction: string }[]
+    >`
+      SELECT metadata, amount, direction
+      FROM merchant_wallet_ledger
+      WHERE (metadata->>'orders_core_id')::bigint = ${orderCoreId}
+        AND COALESCE(metadata->>'entry_type', '') = 'order_cancellation'
+        AND (metadata->>'admin_override')::boolean IS TRUE
+      ORDER BY created_at DESC
+      LIMIT 5
+    `;
+    const row = rows.find((r) => r.metadata?.admin_override === true) ?? rows[0];
+    if (!row?.metadata || row.metadata.admin_override !== true) return null;
+
+    const meta = row.metadata;
+    const pct = round2(Number(meta.compensation_pct ?? 0));
+    const keepsRaw = Number(meta.merchant_keeps_amount ?? 0);
+    const keeps =
+      keepsRaw > 0
+        ? round2(keepsRaw)
+        : row.direction === "CREDIT"
+          ? round2(Number(row.amount ?? 0))
+          : 0;
+    const brand = resolveCancelledByBrand(args.cancelledByType, args.cancelledByLabel);
+    const reasonDetail = (args.rejectedReason ?? "").trim() || "Order cancelled";
+
+    return {
+      engine_enabled: false,
+      admin_override: true,
+      compensation_pct: pct,
+      merchant_keeps_amount: keeps,
+      net_order_value: round2(Number(meta.net_order_value ?? args.netOrderValue)),
+      cancelled_by_brand: brand,
+      reason_detail: reasonDetail,
+      eligible_message: "",
+      show_policy_link: false,
+      policy_modal_title: "",
+      scenario_code: "ADMIN_OVERRIDE",
+      exclusion_code: null,
+      applied_policy_title: "Admin adjustment",
+      applied_policy_description: String(meta.reason ?? "").trim(),
+    };
   } catch {
     return null;
   }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useCallback, useEffect } from 'react';
+import React, { useRef, useCallback } from 'react';
 
 const LENGTH = 6;
 
@@ -35,10 +35,6 @@ export function OTPInputComponent({
     const i = Math.max(0, Math.min(index, LENGTH - 1));
     inputRefs.current[i]?.focus();
   }, []);
-
-  useEffect(() => {
-    if (value.length === LENGTH && onComplete) onComplete(value);
-  }, [value, onComplete]);
 
   const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Backspace' && !digits[index] && index > 0) {
@@ -95,7 +91,7 @@ export function OTPInputComponent({
           onPaste={handlePaste}
           onKeyDown={(e) => handleKeyDown(index, e)}
           onInput={(e) => handleInput(index, e)}
-          className="w-10 h-12 sm:w-12 sm:h-14 text-center text-lg sm:text-xl font-semibold rounded-xl border-2 border-slate-200 bg-slate-50/50 text-slate-900 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-400 focus:bg-white disabled:opacity-50"
+          className="w-10 h-12 sm:w-11 sm:h-[3.25rem] text-center text-lg font-semibold rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-400 disabled:opacity-50"
           aria-label={`Digit ${index + 1} of 6`}
         />
       ))}

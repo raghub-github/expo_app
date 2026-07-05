@@ -112,7 +112,9 @@ export async function wsTicketRoutes(app: FastifyInstance) {
               const trimmed = zk.trim();
               if (!ZONE_KEY_RE.test(trimmed)) continue;
               const cached = await getCachedZoneWeatherContext(trimmed);
-              if (cached) zoneWeather[trimmed] = cached;
+              if (cached?.showBanner && cached.rainDetected) {
+                zoneWeather[trimmed] = cached;
+              }
             }
           }
 

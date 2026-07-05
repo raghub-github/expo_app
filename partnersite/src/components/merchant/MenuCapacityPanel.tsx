@@ -9,7 +9,6 @@ import {
   Image as ImageIcon,
   Lightbulb,
   Lock,
-  Save,
   SlidersHorizontal,
   Store,
 } from 'lucide-react';
@@ -30,8 +29,6 @@ export type MenuCapacityPanelProps = {
   imageUploadAllowed: boolean;
   planUsage: PlanUsageSnapshot | null;
   planUsageLoading?: boolean;
-  isSaving: boolean;
-  onSave: () => void;
   onUpgradePlan: () => void;
 };
 
@@ -77,20 +74,22 @@ function CapacityCard({
   footerNote?: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm">
-      <div className="flex items-start justify-between gap-4 p-5">
-        <div className="flex min-w-0 flex-1 items-center gap-4">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm">
+      <div className="p-5">
+        <div className="flex items-start gap-4">
           <PanelIcon className={iconClassName}>{icon}</PanelIcon>
-          <div className="min-w-0">
-            <p className="font-semibold text-gray-900">{title}</p>
-            <p className="mt-0.5 text-sm leading-snug text-gray-500">{description}</p>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-semibold leading-snug text-gray-900">{title}</p>
+              <span
+                className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold sm:px-3 sm:text-sm ${countClassName}`}
+              >
+                {countLabel}
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-snug text-gray-500">{description}</p>
           </div>
         </div>
-        <span
-          className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ${countClassName}`}
-        >
-          {countLabel}
-        </span>
       </div>
       {progressPercent != null ? (
         <div className="px-5 pb-5">
@@ -110,7 +109,16 @@ function CapacityCard({
             </p>
           ) : null}
         </div>
-      ) : null}
+      ) : limitReached && limitMessage ? (
+        <div className="mt-auto px-5 pb-5">
+          <p className="flex items-center gap-1 text-xs font-medium text-red-600">
+            <Lock size={12} aria-hidden />
+            {limitMessage}
+          </p>
+        </div>
+      ) : (
+        <div className="pb-5" aria-hidden />
+      )}
     </div>
   );
 }
@@ -139,8 +147,12 @@ function StoreImpactBanner({
         : 0;
   const liveItems = unlockedItems > 0 ? unlockedItems : Math.max(0, totalItems - effectiveLocked);
 
+  const canShowImpactDetails =
+    planUsage != null ||
+    (maxMenuItems != null && maxMenuItems > 0 && currentMenuItemsCount >= maxMenuItems);
+
   const showBanner =
-    menuLimitReached || effectiveLocked > 0 || (planUsageLoading && !planUsage);
+    menuLimitReached || effectiveLocked > 0 || (planUsageLoading && !canShowImpactDetails);
 
   if (!showBanner) return null;
 
@@ -152,7 +164,7 @@ function StoreImpactBanner({
         </PanelIcon>
         <div className="min-w-0 flex-1">
           <p className="font-semibold text-gray-900">What happens on your store</p>
-          {planUsageLoading && !planUsage ? (
+          {planUsageLoading && !canShowImpactDetails ? (
             <p className="mt-1 text-sm text-gray-600">Checking plan limits…</p>
           ) : (
             <ul className="mt-3 space-y-3 text-sm text-gray-800">
@@ -227,8 +239,6 @@ export function MenuCapacityPanel({
   imageUploadAllowed,
   planUsage,
   planUsageLoading = false,
-  isSaving,
-  onSave,
   onUpgradePlan,
 }: MenuCapacityPanelProps) {
   const unlockedItems = planUsage?.unlockedItems ?? currentMenuItemsCount;
@@ -247,37 +257,43 @@ export function MenuCapacityPanel({
       ? Math.min((currentCuisinesCount / maxCuisines) * 100, 100)
       : null;
 
-  const menuCountLabel =
-    lockedItems > 0
-      ? `${unlockedItems} live / ${currentMenuItemsCount} total`
-      : `${currentMenuItemsCount} / ${maxMenuItems ?? '∞'}`;
+  const menuCountLabel = `${currentMenuItemsCount} / ${maxMenuItems ?? '∞'}`;
 
   return (
     <div className="rounded-xl bg-[#F9FAFB] p-5 sm:p-6">
-      <div className="mb-5 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-4">
-          <PanelIcon className="bg-emerald-50 text-emerald-700">
-            <SlidersHorizontal size={20} strokeWidth={2} />
-          </PanelIcon>
-          <div className="min-w-0">
-            <h3 className="text-lg font-bold text-gray-900 sm:text-xl">Menu &amp; Capacity Controls</h3>
-            <p className="mt-1 max-w-2xl text-sm leading-relaxed text-gray-500">
-              Manage your menu items, cuisines and media capacity limits.
-            </p>
-          </div>
+      <div className="mb-5 flex min-w-0 items-start gap-4 sm:mb-6">
+        <PanelIcon className="bg-emerald-50 text-emerald-700">
+          <SlidersHorizontal size={20} strokeWidth={2} />
+        </PanelIcon>
+        <div className="min-w-0">
+          <h3 className="text-lg font-bold text-gray-900 sm:text-xl">Menu &amp; Capacity Controls</h3>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-gray-500">
+            Manage your menu items, cuisines and media capacity limits.
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={isSaving}
-          className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Save size={16} strokeWidth={2.25} />
-          {isSaving ? 'Saving…' : 'Save Changes'}
-        </button>
       </div>
 
       <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2.5 sm:px-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+              <Lightbulb size={16} strokeWidth={2} />
+            </div>
+            <p className="min-w-0 truncate text-sm text-gray-700">
+              <span className="font-semibold text-gray-900">Need more capacity?</span>
+              <span className="hidden text-gray-600 sm:inline"> — Upgrade your plan to increase limits for menu items, cuisines and more.</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onUpgradePlan}
+            className="inline-flex shrink-0 items-center justify-center gap-1 rounded-md border border-emerald-600 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 sm:text-sm sm:px-3.5 sm:py-2"
+          >
+            Upgrade Plan
+            <span aria-hidden>↗</span>
+          </button>
+        </div>
+
         <StoreImpactBanner
           planUsage={planUsage}
           maxMenuItems={maxMenuItems}
@@ -286,6 +302,7 @@ export function MenuCapacityPanel({
           planUsageLoading={planUsageLoading}
         />
 
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <CapacityCard
           icon={<FileText size={20} strokeWidth={2} />}
           iconClassName="bg-emerald-50 text-emerald-700"
@@ -325,50 +342,24 @@ export function MenuCapacityPanel({
           limitMessage="Limit reached. Upgrade plan to add more cuisines."
         />
 
-        <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
-            <PanelIcon className="bg-orange-50 text-orange-600">
-              <ImageIcon size={20} strokeWidth={2} />
-            </PanelIcon>
-            <div className="min-w-0">
-              <p className="font-semibold text-gray-900">Image Uploads</p>
-              <p className="mt-0.5 text-sm leading-snug text-gray-500">
-                Upload images for your menu items.
-              </p>
-            </div>
-          </div>
-          {imageUploadAllowed ? (
-            <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
-              ✓ Enabled
-            </span>
-          ) : (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-sm font-semibold text-gray-600">
-              <Lock size={14} aria-hidden />
-              Locked
-            </span>
-          )}
-        </div>
-
-        <div className="flex flex-col gap-4 rounded-xl border border-emerald-100 bg-emerald-50/60 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-4">
-            <PanelIcon className="bg-emerald-100 text-emerald-700">
-              <Lightbulb size={20} strokeWidth={2} />
-            </PanelIcon>
-            <div className="min-w-0">
-              <p className="font-semibold text-gray-900">Need more capacity?</p>
-              <p className="mt-0.5 text-sm leading-snug text-gray-600">
-                Upgrade your plan to increase limits for menu items, cuisines and more.
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onUpgradePlan}
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 self-start rounded-lg border border-emerald-600 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 sm:self-center"
-          >
-            Upgrade Plan
-            <span aria-hidden>↗</span>
-          </button>
+        <CapacityCard
+          icon={<ImageIcon size={20} strokeWidth={2} />}
+          iconClassName="bg-orange-50 text-orange-600"
+          title="Image Uploads"
+          description="Upload images for your menu items."
+          countLabel={imageUploadAllowed ? '✓ Enabled' : 'Locked'}
+          countClassName={
+            imageUploadAllowed
+              ? 'bg-emerald-50 text-emerald-700'
+              : 'bg-gray-100 text-gray-600'
+          }
+          progressPercent={null}
+          progressClassName=""
+          limitReached={!imageUploadAllowed}
+          limitMessage={
+            imageUploadAllowed ? undefined : 'Upgrade plan to enable image uploads.'
+          }
+        />
         </div>
       </div>
     </div>

@@ -33,7 +33,7 @@ import Animated, {
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -145,7 +145,7 @@ export default function SearchScreen() {
     void hydrateDietaryPreferences();
   }, [hydrateDietaryPreferences]);
 
-  const { data: apiMindCategories = [], isPending: mindCategoriesPending } = useQuery({
+  const { data: mindCategoriesResponse, isPending: mindCategoriesPending } = useQuery({
     queryKey: userAppCategoriesQueryKey(SEARCH_CATEGORY_STORE_TYPE),
     queryFn: () => fetchUserAppCategoriesWithCache(SEARCH_CATEGORY_STORE_TYPE),
     ...USER_APP_CATEGORIES_QUERY_OPTIONS,
@@ -154,11 +154,13 @@ export default function SearchScreen() {
     placeholderData: (previousData) => previousData,
   });
 
+  const apiMindCategories = mindCategoriesResponse?.items ?? [];
+
   React.useEffect(() => {
-    if (apiMindCategories.length > 0) {
-      prefetchUserAppCategoryImages(apiMindCategories);
+    if (apiMindCategories.length > 0 || mindCategoriesResponse?.allTab?.imageUrl) {
+      prefetchUserAppCategoryImages(apiMindCategories, mindCategoriesResponse?.allTab?.imageUrl);
     }
-  }, [apiMindCategories]);
+  }, [apiMindCategories, mindCategoriesResponse?.allTab?.imageUrl]);
 
   const mindGridData = useMemo((): MindGridRow[] => {
     const deduped = dedupeUserAppCategories(apiMindCategories ?? []);
@@ -205,15 +207,13 @@ export default function SearchScreen() {
   const handleDishPress = (dish: SearchDish) => {
     addRecentSearch(query.trim());
     if (dish.storeId) {
-      prefetchMerchantDetail(queryClient, dish.storeId);
-      router.push({ pathname: "/home/merchant/[id]", params: { id: dish.storeId } });
+      navigateToMerchant(router, queryClient, dish.storeId);
     }
   };
 
   const handleRestaurantPress = (id: string) => {
     addRecentSearch(query.trim());
-    prefetchMerchantDetail(queryClient, id);
-    router.push({ pathname: "/home/merchant/[id]", params: { id } });
+    navigateToMerchant(router, queryClient, id);
   };
 
   return (

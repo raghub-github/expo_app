@@ -1,8 +1,9 @@
 "use client";
 
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
-import { ChevronLeft, Upload, Trash2, Loader2 } from "lucide-react";
-import { buildContractText, buildStructuredContract, escapePdfText, sanitizeTextForPdf, type ContractData } from "./agreement";
+import { ChevronRight, Upload, Trash2, Loader2 } from "lucide-react";
+import { buildContractText, buildStructuredContract, escapePdfText, sanitizeTextForPdf, drawPdfWrappedTable, type ContractData } from "./agreement";
+import { parseMxContractTemplate } from "@/lib/mx-contract-template";
 import {
   getOnboardingR2Path,
   getOnboardingDocumentPath,
@@ -112,6 +113,11 @@ export default function SignatureStepPage({
     : (typeof (step1 as any)?.store_contact_person === "string" && (step1 as any).store_contact_person.trim()) ? (step1 as any).store_contact_person.trim()
     : resolvedOwnerNameForText;
 
+  const contractTemplate = useMemo(
+    () => parseMxContractTemplate(agreementTemplate?.content_markdown || defaultAgreementText),
+    [agreementTemplate?.content_markdown, defaultAgreementText]
+  );
+
   const contractTextResolved = useMemo(() => {
     if (contractTextForPdf && contractTextForPdf.trim()) return contractTextForPdf;
     const data = {
@@ -135,8 +141,8 @@ export default function SignatureStepPage({
           }
         : undefined,
     };
-    return buildContractText(data, defaultAgreementText);
-  }, [contractTextForPdf, step1, step2, documents, parentInfo, defaultAgreementText, resolvedOwnerNameForText, resolvedContactPersonForText]);
+    return buildContractText(data, contractTemplate);
+  }, [contractTextForPdf, step1, step2, documents, parentInfo, contractTemplate, resolvedOwnerNameForText, resolvedContactPersonForText]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -315,8 +321,7 @@ export default function SignatureStepPage({
   const generatePdfBlob = useCallback(async (): Promise<{ blob: Blob; filename: string } | null> => {
     if (!signatureDataUrl) return null;
     try {
-      const termsBody = agreementTemplate?.content_markdown || defaultAgreementText;
-      const structured = buildStructuredContract(contractDataForPdf, termsBody);
+      const structured = buildStructuredContract(contractDataForPdf, contractTemplate);
       const { jsPDF } = await import("jspdf");
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       const pageW = doc.internal.pageSize.getWidth();
@@ -448,70 +453,46 @@ export default function SignatureStepPage({
       doc.setFont("helvetica", "normal");
       doc.text(escapePdfText(sanitizeTextForPdf(structured.annexureA.description)), margin, y);
       y += lineH + 2;
-      const aHeaders = structured.annexureA.table.headers;
-      const aRows = structured.annexureA.table.rows;
-      const aColCount = aHeaders.length;
-      const aColW = (pageW - margin * 2) / aColCount;
-      const aRowH = 8;
-      doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
-      let x = margin;
-      aHeaders.forEach((h) => {
-        doc.rect(x, y - 4, aColW, aRowH);
-        doc.text(h, x + 2, y + 0.5);
-        x += aColW;
-      });
-      y += aRowH;
-      doc.setFont("helvetica", "normal");
-      aRows.forEach((row) => {
-        checkNewPage(aRowH);
-        x = margin;
-        row.forEach((cell) => {
-          doc.rect(x, y - 4, aColW, aRowH);
-          const safe = sanitizeTextForPdf(cell);
-          const text = doc.splitTextToSize(safe, aColW - 4);
-          doc.text(escapePdfText(text[0] || "—"), x + 2, y + 0.5);
-          x += aColW;
-        });
-        y += aRowH;
+      y = drawPdfWrappedTable(doc, {
+        x: margin,
+        y,
+        tableW: pageW - margin * 2,
+        pageH,
+        margin,
+        headers: structured.annexureA.table.headers,
+        rows: structured.annexureA.table.rows,
+        onNewPage: () => doc.addPage(),
       });
       y += 4;
 
       checkNewPage(headH + 15);
       doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
       doc.text(`Annexure B - ${structured.annexureB.isUPI ? 'UPI Details' : 'Bank Details'}`, margin, y);
       y += headH;
       const bHeaders = structured.annexureB.headers as string[];
       const bRows = structured.annexureB.rows;
-      const bColCount = bHeaders.length;
-      const bColW = (pageW - margin * 2) / bColCount;
-      const bRowH = 7;
-      doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
-      x = margin;
-      bHeaders.forEach((h) => {
-        doc.rect(x, y - 4, bColW, bRowH);
-        doc.text(h, x + 2, y + 0.5);
-        x += bColW;
-      });
-      y += bRowH;
-      doc.setFont("helvetica", "normal");
-      bRows.forEach((row) => {
-        checkNewPage(bRowH);
-        x = margin;
-        row.forEach((cell) => {
-          doc.rect(x, y - 4, bColW, bRowH);
-          const safe = sanitizeTextForPdf(cell);
-          const text = doc.splitTextToSize(safe, bColW - 4);
-          doc.text(escapePdfText(text[0] || "—"), x + 2, y + 0.5);
-          x += bColW;
+      if (bRows.length > 0) {
+        y = drawPdfWrappedTable(doc, {
+          x: margin,
+          y,
+          tableW: pageW - margin * 2,
+          pageH,
+          margin,
+          headers: [...bHeaders],
+          rows: bRows,
+          onNewPage: () => doc.addPage(),
+          minRowH: 7,
         });
-        y += bRowH;
-      });
-      if (bRows.length === 0) {
-        doc.rect(margin, y - 4, pageW - margin * 2, bRowH);
+      } else {
+        const emptyRowH = 7;
+        checkNewPage(emptyRowH);
+        doc.setFont("helvetica", "normal");
+        doc.rect(margin, y - 4, pageW - margin * 2, emptyRowH);
         doc.text("To be provided or as per application.", margin + 2, y + 0.5);
-        y += bRowH;
+        y += emptyRowH;
       }
       y += 4;
 
@@ -545,7 +526,7 @@ export default function SignatureStepPage({
       console.error("PDF generation failed:", err);
       throw new Error("Could not generate PDF. Please try again.");
     }
-  }, [signatureDataUrl, signerName, step1, step2, documents, parentInfo, agreementTemplate?.content_markdown, defaultAgreementText, contractDataForPdf, logoUrlProp]);
+  }, [signatureDataUrl, signerName, step1, step2, documents, parentInfo, contractTemplate, contractDataForPdf, logoUrlProp]);
 
   const downloadPdf = useCallback(async () => {
     const pdfData = await generatePdfBlob();
@@ -864,52 +845,55 @@ export default function SignatureStepPage({
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 to-white flex flex-col">
-      <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-2 py-2 sm:px-4 sm:py-3 shrink-0">
-        <div className="max-w-2xl mx-auto">
-          <h1 className="text-base sm:text-lg font-bold text-slate-900 truncate">Digital Signature</h1>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0 max-w-2xl w-full mx-auto px-2 sm:px-4 py-3 sm:py-4 pb-40 sm:pb-44 flex flex-col overflow-y-auto">
+    <div className="h-full min-h-0 w-full flex flex-col bg-gradient-to-br from-slate-50 via-white to-indigo-50/30">
+      <div className="flex-1 min-h-0 flex flex-col max-w-2xl w-full mx-auto px-2 sm:px-3 md:px-4 pt-3 sm:pt-4 pb-2 sm:pb-3 overflow-y-auto hide-scrollbar">
         {error && (
-          <div className="rounded-lg sm:rounded-xl bg-red-50 border border-red-200 text-red-800 px-3 py-2 sm:px-4 sm:py-3 text-xs sm:text-sm shrink-0">
+          <div className="rounded-lg sm:rounded-xl bg-red-50 border border-red-200 text-red-800 px-3 py-2 sm:px-4 sm:py-3 text-xs sm:text-sm shrink-0 mb-3">
             {error}
           </div>
         )}
 
-        <div className="bg-white rounded-xl sm:rounded-2xl border border-slate-200 p-3 sm:p-6 space-y-3 sm:space-y-4 flex-1 min-h-0">
-          <p className="text-xs sm:text-sm text-slate-600">
+        <article className="bg-white rounded-lg sm:rounded-xl border border-slate-200 shadow-sm p-3 sm:p-5 md:p-6 space-y-3 sm:space-y-4">
+          <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
             Sign in the box below using your mouse (desktop) or finger (mobile). Your signature will be attached to the contract.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
-            <input
-              type="text"
-              value={signerName}
-              onChange={(e) => setSignerName(e.target.value)}
-              placeholder="Signer full name"
-              className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-            <input
-              type="email"
-              value={signerEmail}
-              onChange={(e) => setSignerEmail(e.target.value)}
-              placeholder="Signer email"
-              className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-            <input
-              type="text"
-              value={signerPhone}
-              onChange={(e) => setSignerPhone(e.target.value)}
-              placeholder="Signer phone"
-              className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            />
+            <div>
+              <label className="block text-[10px] sm:text-xs font-medium text-slate-500 mb-1">Name</label>
+              <input
+                type="text"
+                value={signerName}
+                onChange={(e) => setSignerName(e.target.value)}
+                placeholder="Signer full name"
+                className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] sm:text-xs font-medium text-slate-500 mb-1">Email</label>
+              <input
+                type="email"
+                value={signerEmail}
+                onChange={(e) => setSignerEmail(e.target.value)}
+                placeholder="Signer email"
+                className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] sm:text-xs font-medium text-slate-500 mb-1">Phone Number</label>
+              <input
+                type="text"
+                value={signerPhone}
+                onChange={(e) => setSignerPhone(e.target.value)}
+                placeholder="Signer phone"
+                className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </div>
           </div>
 
-          <div ref={containerRef} className="relative w-full rounded-lg sm:rounded-xl border-2 border-dashed border-slate-300 bg-white overflow-hidden touch-none select-none" style={{ minHeight: 120, height: "clamp(120px, 35vmin, 200px)", touchAction: "none" }}>
+          <div ref={containerRef} className="relative w-full rounded-lg sm:rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 overflow-hidden touch-none select-none" style={{ minHeight: 140, height: "clamp(140px, 32vmin, 220px)", touchAction: "none" }}>
             <canvas
               ref={canvasRef}
-              className="absolute inset-0 w-full h-full cursor-crosshair"
+              className="absolute inset-0 w-full h-full cursor-crosshair bg-white"
               style={{ width: "100%", height: "100%" }}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
@@ -921,77 +905,83 @@ export default function SignatureStepPage({
             />
           </div>
           <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-slate-500">Draw your signature above</p>
+            <p className="text-[10px] sm:text-xs text-slate-500">Draw your signature above</p>
             <button
               type="button"
               onClick={clearSignature}
               className="flex items-center gap-1 text-xs sm:text-sm text-rose-600 hover:text-rose-700 shrink-0"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               Clear
             </button>
           </div>
-        </div>
+        </article>
       </div>
 
-      {/* Checkboxes + Navigation - Fixed bottom so always visible on all screens */}
-      <div className="fixed bottom-0 left-14 sm:left-[13rem] md:left-56 lg:left-60 right-0 z-20 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-3 sm:py-4 pb-6 sm:pb-4">
-        <div className="max-w-2xl mx-auto px-2 sm:px-4 space-y-3">
-          <div className="space-y-2">
-            <label className="flex items-start gap-2 cursor-pointer w-full">
+      {/* Checkboxes + navigation — in-flow footer (no viewport overlap) */}
+      <div
+        className="flex-none shrink-0 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.08)] py-2 sm:py-2.5 px-2 sm:px-3"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 10px)' }}
+      >
+        <div className="max-w-2xl mx-auto space-y-1.5 sm:space-y-2">
+          <div className="space-y-1.5 sm:space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer group w-full">
               <input
                 type="checkbox"
                 checked={agreedToContract}
                 onChange={(e) => setAgreedToContract(e.target.checked)}
-                className="mt-0.5 h-4 w-4 min-w-[1rem] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0"
+                className="mt-0.5 h-3.5 w-3.5 sm:h-4 sm:w-4 min-w-[0.875rem] sm:min-w-[1rem] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0"
                 aria-label="I confirm this digital signature is mine"
               />
-              <span className="text-xs sm:text-sm text-slate-700">I have read the contract details and confirm this digital signature is mine.</span>
+              <span className="text-[10px] sm:text-xs text-slate-700 group-hover:text-slate-900 leading-relaxed">
+                I have read the contract details and confirm this digital signature is mine.
+              </span>
             </label>
-            <label className="flex items-start gap-2 cursor-pointer w-full">
+            <label className="flex items-start gap-2 cursor-pointer group w-full">
               <input
                 type="checkbox"
                 checked={agreedToTerms}
                 onChange={(e) => setAgreedToTerms(e.target.checked)}
-                className="mt-0.5 h-4 w-4 min-w-[1rem] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0"
+                className="mt-0.5 h-3.5 w-3.5 sm:h-4 sm:w-4 min-w-[0.875rem] sm:min-w-[1rem] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0"
                 aria-label="I agree to Terms and Conditions"
               />
-              <span className="text-xs sm:text-sm text-slate-700">I agree to the Terms and Conditions and platform policies.</span>
+              <span className="text-[10px] sm:text-xs text-slate-700 group-hover:text-slate-900 leading-relaxed">
+                I agree to the Terms and Conditions and platform policies.
+              </span>
             </label>
           </div>
-          <div className="flex items-center justify-between gap-2 sm:gap-3">
+          <div className="flex items-center justify-between gap-2">
             <button
               type="button"
               onClick={onBack}
               disabled={actionLoading || submitting}
-              className="flex items-center gap-1.5 px-3 py-2 sm:px-5 sm:py-2.5 border border-slate-300 text-slate-700 rounded-lg sm:rounded-xl hover:bg-slate-50 font-medium text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 font-medium text-xs sm:text-sm px-3 py-1.5 sm:px-4 sm:py-2 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {actionLoading ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 animate-spin" /> : <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />}
+              {actionLoading ? <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 animate-spin" /> : <ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 rotate-180" />}
               Previous
             </button>
             <button
               type="button"
               onClick={handleSubmit}
               disabled={submitting || !canSubmit || actionLoading}
-              className="flex-1 min-w-0 max-w-xs px-4 py-2.5 sm:px-6 sm:py-3 bg-indigo-600 text-white font-semibold text-sm sm:text-base rounded-lg sm:rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="px-4 py-2 sm:px-6 sm:py-2.5 bg-indigo-600 text-white font-semibold text-xs sm:text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 sm:gap-2 shadow-md shadow-indigo-200 transition"
             >
               {submitting ? (
                 <>
-                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
+                  <Loader2 className="w-3.5 h-3.5 sm:w-4 animate-spin shrink-0" />
                   <span className="truncate">Submitting...</span>
                 </>
               ) : (
                 <>
-                  <Upload className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
+                  <Upload className="w-3.5 h-3.5 sm:w-4 shrink-0" />
                   <span className="truncate sm:hidden">Submit</span>
-                  <span className="truncate hidden sm:inline">Submit Application & Download PDF</span>
+                  <span className="truncate hidden sm:inline">Submit Application &amp; Download PDF</span>
                 </>
               )}
             </button>
           </div>
         </div>
       </div>
-
     </div>
   );
 }

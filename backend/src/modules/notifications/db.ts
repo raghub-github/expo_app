@@ -169,6 +169,48 @@ export type CampaignInsert = {
   createdBy?: string | null;
 };
 
+export type CampaignRow = {
+  id: number;
+  name: string;
+  description: string | null;
+  template_code: string | null;
+  override_title: string | null;
+  override_body: string | null;
+  override_image: string | null;
+  override_deep_link: string | null;
+  target_filter: Record<string, unknown>;
+  variables: Record<string, unknown>;
+  status: string;
+  scheduled_at: string | null;
+};
+
+export async function getCampaignById(campaignId: number): Promise<CampaignRow | null> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT id, name, description, template_code,
+           override_title, override_body, override_image, override_deep_link,
+           target_filter, variables, status, scheduled_at
+    FROM public.notification_campaigns
+    WHERE id = ${campaignId}
+    LIMIT 1
+  `) as unknown as CampaignRow[];
+  return rows[0] ?? null;
+}
+
+/** Reset a finished campaign so send() can run again on the same row. */
+export async function prepareCampaignResend(campaignId: number): Promise<void> {
+  const sql = getSql();
+  await sql`
+    UPDATE public.notification_campaigns
+    SET status = 'running',
+        started_at = now(),
+        finished_at = NULL,
+        cancelled_at = NULL,
+        cancelled_by = NULL
+    WHERE id = ${campaignId}
+  `;
+}
+
 export async function createCampaign(c: CampaignInsert): Promise<{ id: number }> {
   const sql = getSql();
   // Send jsonb columns as pre-stringified text with an explicit `::jsonb` cast.
@@ -202,7 +244,15 @@ export async function createCampaign(c: CampaignInsert): Promise<{ id: number }>
 
 export async function updateCampaignCounts(
   campaignId: number,
-  patch: { sent?: number; delivered?: number; clicked?: number; failed?: number; status?: string; finishedAt?: string },
+  patch: {
+    sent?: number;
+    delivered?: number;
+    clicked?: number;
+    failed?: number;
+    status?: string;
+    finishedAt?: string;
+    startedAt?: string;
+  },
 ): Promise<void> {
   const sql = getSql();
   await sql`
@@ -213,9 +263,75 @@ export async function updateCampaignCounts(
       clicked_count   = clicked_count   + COALESCE(${patch.clicked ?? 0}, 0),
       failed_count    = failed_count    + COALESCE(${patch.failed ?? 0}, 0),
       status          = COALESCE(${patch.status ?? null}, status),
+      started_at      = COALESCE(${patch.startedAt ?? null}, started_at),
       finished_at     = COALESCE(${patch.finishedAt ?? null}, finished_at)
     WHERE id = ${campaignId}
   `;
+}
+
+/** Recompute campaign KPI columns from notification_dispatch_logs (source of truth). */
+export async function syncCampaignCountsFromLogs(campaignId: number): Promise<void> {
+  const sql = getSql();
+  await sql`
+    UPDATE public.notification_campaigns c
+    SET
+      sent_count = COALESCE(stats.sent_count, 0),
+      delivered_count = COALESCE(stats.delivered_count, 0),
+      clicked_count = COALESCE(stats.clicked_count, 0),
+      failed_count = COALESCE(stats.failed_count, 0)
+    FROM (
+      SELECT
+        COUNT(*) FILTER (
+          WHERE status IN ('queued', 'sent', 'delivered', 'clicked')
+        )::int AS sent_count,
+        COUNT(*) FILTER (
+          WHERE status IN ('queued', 'sent', 'delivered', 'clicked')
+        )::int AS delivered_count,
+        COUNT(*) FILTER (WHERE status = 'clicked')::int AS clicked_count,
+        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count
+      FROM public.notification_dispatch_logs
+      WHERE campaign_id = ${campaignId}
+    ) stats
+    WHERE c.id = ${campaignId}
+  `;
+}
+
+/** Mark an immediate-send campaign as started (idempotent). */
+export async function markCampaignStarted(campaignId: number): Promise<void> {
+  await updateCampaignCounts(campaignId, { startedAt: new Date().toISOString() });
+}
+
+/** Transition a campaign out of `running` after send() finishes (counts are rolled up separately). */
+export async function finalizeCampaignSend(
+  campaignId: number,
+  status: "completed" | "failed" | "cancelled",
+): Promise<void> {
+  await syncCampaignCountsFromLogs(campaignId);
+  await updateCampaignCounts(campaignId, {
+    status,
+    finishedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Recover immediate-send campaigns left stuck in `running` when an older code path
+ * never flipped status after send() returned.
+ */
+export async function recoverStaleRunningCampaigns(): Promise<number> {
+  const sql = getSql();
+  const rows = (await sql`
+    UPDATE public.notification_campaigns
+    SET status = 'completed', finished_at = COALESCE(finished_at, now())
+    WHERE status = 'running'
+      AND scheduled_at IS NULL
+      AND finished_at IS NULL
+      AND created_at < now() - interval '2 minutes'
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+  for (const row of rows) {
+    await syncCampaignCountsFromLogs(row.id);
+  }
+  return rows.length;
 }
 
 export async function loadDueScheduledCampaigns(limit: number = 50): Promise<Array<{ id: number; target_filter: Record<string, unknown>; variables: Record<string, unknown>; template_code: string | null; override_title: string | null; override_body: string | null; override_image: string | null; override_deep_link: string | null }>> {

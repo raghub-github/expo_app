@@ -42,6 +42,7 @@ export function OrderCancellationBanner({ order, variant = 'detail' }: Props) {
   }
 
   const compensation = order.cancellation_compensation;
+  const isAdminOverride = compensation?.admin_override === true;
   const { headline, detail } = merchantCancellationDisplay({
     rejected_reason: order.rejected_reason,
     cancelled_by_label: order.cancelled_by_label,
@@ -91,7 +92,7 @@ export function OrderCancellationBanner({ order, variant = 'detail' }: Props) {
         </>
       )}
 
-      {!isCompact && parts.policySentence ? (
+      {!isCompact && parts.policySentence && !isAdminOverride ? (
         <p className="mt-1.5 text-sm leading-relaxed text-slate-200">{parts.policySentence}</p>
       ) : null}
 
@@ -101,7 +102,7 @@ export function OrderCancellationBanner({ order, variant = 'detail' }: Props) {
         </p>
       ) : null}
 
-      {!isCompact && compensation?.show_policy_link ? (
+      {!isCompact && compensation?.show_policy_link && !isAdminOverride ? (
         <button
           type="button"
           onClick={() => setPolicyOpen(true)}

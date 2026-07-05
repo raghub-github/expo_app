@@ -14,6 +14,7 @@ import {
   listNearbyStoresByRoadDistance,
 } from "./merchant.service.js";
 import { listUserAppCategories } from "./userAppCategory.service.js";
+import { listFoodItemsUnderPrice, listFoodItemsUnderPriceGrouped } from "./foodHomeItemsUnderPrice.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
 import {
@@ -21,7 +22,7 @@ import {
   customerOperationalFromStoreRow,
 } from "../../lib/store-surface-online.js";
 import { getPrimaryOfferHeadlinesForStores } from "./merchant-offer-headline.js";
-import { getStoreRatingsForStores } from "./merchant-store-ratings.js";
+import { getStoreRatingsForStores, getStorePersonalizedRating } from "./merchant-store-ratings.js";
 import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
 import { getCompletedOrderCountsForStores } from "./merchant-store-order-stats.js";
 import {
@@ -34,6 +35,8 @@ import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import type { MerchantMenuItemRow } from "./merchant.types.js";
 import { getSupabase } from "../../lib/supabase.js";
+import { auth } from "../../plugins/auth.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 
 function toFiniteInt(v: unknown): number | undefined {
   if (v == null || v === "") return undefined;
@@ -125,6 +128,8 @@ const userAppCategoriesQuerySchema = z.object({
 });
 
 export async function merchantRoutes(app: FastifyInstance) {
+  await app.register(auth, { required: false });
+
   app.get(
     "/stores/nearby",
     {
@@ -783,6 +788,8 @@ export async function merchantRoutes(app: FastifyInstance) {
             cuisines: z.array(z.string()).optional(),
             avgRating: z.number().nullable().optional(),
             totalReviews: z.number().nullable().optional(),
+            forYouRating: z.number().nullable().optional(),
+            userHasRatedStore: z.boolean().optional(),
             liveStatus: z.enum(["OPEN", "CLOSED"]).optional(),
             nextOpenAt: z.string().nullable().optional(),
             nextCloseAt: z.string().nullable().optional(),
@@ -815,6 +822,16 @@ export async function merchantRoutes(app: FastifyInstance) {
           ? await getStoreRatingsForStores([storeInternalId])
           : new Map();
       const rating = ratingSummaries.get(storeInternalId);
+      let forYouRating: number | null = null;
+      let userHasRatedStore = false;
+      if (request.auth?.role === "customer") {
+        const customerPk = await resolveCustomerPkForRequest(request.auth, request);
+        if (customerPk != null && Number.isFinite(storeInternalId) && storeInternalId > 0) {
+          const personalized = await getStorePersonalizedRating(storeInternalId, customerPk);
+          forYouRating = personalized.forYouRating;
+          userHasRatedStore = personalized.userHasRatedStore;
+        }
+      }
       const bannerImages: string[] = [];
       const gallery = store.gallery_images ?? [];
       if (Array.isArray(gallery) && gallery.length > 0) bannerImages.push(...gallery.filter(Boolean));
@@ -867,6 +884,8 @@ export async function merchantRoutes(app: FastifyInstance) {
         cuisines: store.cuisine_types ?? undefined,
         avgRating: rating?.avgRating ?? null,
         totalReviews: rating?.totalReviews ?? null,
+        forYouRating,
+        userHasRatedStore,
         nextOpenAt: sched?.nextOpenAt ?? null,
         nextCloseAt: sched?.nextCloseAt ?? null,
         menuVersion: versionInfo?.menuVersion,
@@ -958,14 +977,122 @@ export async function merchantRoutes(app: FastifyInstance) {
                 status: z.string(),
               })
             ),
+            allTab: z.object({
+              label: z.string(),
+              imageUrl: z.string().nullable(),
+            }),
           }),
         },
       },
     },
     async (request, reply) => {
       const q = request.query as z.infer<typeof userAppCategoriesQuerySchema>;
-      const items = await listUserAppCategories({ storeType: q.store_type });
+      const result = await listUserAppCategories({ storeType: q.store_type });
+      return reply.send(result);
+    }
+  );
+
+  const itemsUnderPriceQuerySchema = z.object({
+    lat: z.coerce.number().min(-90).max(90),
+    lng: z.coerce.number().min(-180).max(180),
+    max_price: z.coerce.number().min(1).max(5000).optional(),
+    limit: z.coerce.number().min(1).max(24).optional(),
+    veg: z.coerce.boolean().optional(),
+  });
+
+  app.get(
+    "/food-home/items-under-price",
+    {
+      schema: {
+        querystring: itemsUnderPriceQuerySchema,
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                itemId: z.string(),
+                menuItemPk: z.number(),
+                name: z.string(),
+                imageUrl: z.string().nullable(),
+                price: z.number(),
+                basePrice: z.number().nullable(),
+                discountPercentage: z.number().nullable(),
+                storePublicId: z.string(),
+                storeName: z.string(),
+                isVeg: z.boolean(),
+                isPopular: z.boolean(),
+                itemTags: z.array(z.string()),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof itemsUnderPriceQuerySchema>;
+      const items = await listFoodItemsUnderPrice({
+        lat: q.lat,
+        lng: q.lng,
+        maxPrice: q.max_price ?? 250,
+        limit: q.limit,
+        vegOnly: q.veg === true,
+      });
       return reply.send({ items });
+    }
+  );
+
+  const itemsUnderPriceGroupedQuerySchema = itemsUnderPriceQuerySchema.extend({
+    max_stores: z.coerce.number().min(1).max(20).optional(),
+    items_per_store: z.coerce.number().min(1).max(10).optional(),
+  });
+
+  app.get(
+    "/food-home/items-under-price/grouped",
+    {
+      schema: {
+        querystring: itemsUnderPriceGroupedQuerySchema,
+        response: {
+          200: z.object({
+            stores: z.array(
+              z.object({
+                storePublicId: z.string(),
+                storeName: z.string(),
+                avgRating: z.number().nullable(),
+                totalReviews: z.number().nullable(),
+                deliveryTime: z.string().nullable(),
+                distanceKm: z.number().nullable(),
+                items: z.array(
+                  z.object({
+                    itemId: z.string(),
+                    menuItemPk: z.number(),
+                    name: z.string(),
+                    imageUrl: z.string().nullable(),
+                    price: z.number(),
+                    basePrice: z.number().nullable(),
+                    discountPercentage: z.number().nullable(),
+                    storePublicId: z.string(),
+                    storeName: z.string(),
+                    isVeg: z.boolean(),
+                    isPopular: z.boolean(),
+                    itemTags: z.array(z.string()),
+                  })
+                ),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof itemsUnderPriceGroupedQuerySchema>;
+      const stores = await listFoodItemsUnderPriceGrouped({
+        lat: q.lat,
+        lng: q.lng,
+        maxPrice: q.max_price ?? 250,
+        vegOnly: q.veg === true,
+        maxStores: q.max_stores,
+        itemsPerStore: q.items_per_store,
+      });
+      return reply.send({ stores });
     }
   );
 }

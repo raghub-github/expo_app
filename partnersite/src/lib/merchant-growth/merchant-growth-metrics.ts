@@ -26,7 +26,7 @@ export async function sumMerchantLedgerEarningsIst(
   return num((rows[0] as { total?: unknown } | undefined)?.total);
 }
 
-/** Count orders with a real "Delivered" timeline event today (IST), not merely created/placed today. */
+/** Count delivered orders in an IST date range (fast path on orders_food). */
 export async function countMerchantDeliveredOrdersIst(
   sql: Sql,
   storeId: number,
@@ -34,21 +34,6 @@ export async function countMerchantDeliveredOrdersIst(
   endYmd: string
 ): Promise<number> {
   try {
-    const rows = await sql`
-      SELECT COUNT(DISTINCT f.id)::int AS total_orders
-      FROM orders_food f
-      INNER JOIN orders_core c ON c.id = f.order_id
-      INNER JOIN order_timelines t ON t.order_id = c.id
-      WHERE f.merchant_store_id = ${storeId}
-        AND upper(COALESCE(f.order_status::text, '')) = 'DELIVERED'
-        AND f.delivered_at IS NOT NULL
-        AND f.accepted_at IS NOT NULL
-        AND lower(trim(t.status)) = 'delivered'
-        AND (t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date >= ${startYmd}::date
-        AND (t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date <= ${endYmd}::date
-    `;
-    return Number((rows[0] as { total_orders?: number } | undefined)?.total_orders) || 0;
-  } catch {
     const rows = await sql`
       SELECT COUNT(*)::int AS total_orders
       FROM orders_food
@@ -60,5 +45,7 @@ export async function countMerchantDeliveredOrdersIst(
         AND (delivered_at AT TIME ZONE 'Asia/Kolkata')::date <= ${endYmd}::date
     `;
     return Number((rows[0] as { total_orders?: number } | undefined)?.total_orders) || 0;
+  } catch {
+    return 0;
   }
 }

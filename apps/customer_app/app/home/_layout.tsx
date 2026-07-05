@@ -7,6 +7,7 @@ export default function HomeLayout() {
       <AndroidBackHandler />
       <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="meals-under-price" options={{ statusBarTranslucent: true }} />
       <Stack.Screen name="category/[slug]" />
       <Stack.Screen name="service/[slug]" />
       <Stack.Screen name="service/ride" />
@@ -15,7 +16,14 @@ export default function HomeLayout() {
       <Stack.Screen name="service/ride-book" />
       <Stack.Screen name="service/ride-confirm-pickup" />
       <Stack.Screen name="service/ride-searching" />
-      <Stack.Screen name="merchant/[id]" />
+      <Stack.Screen
+        name="merchant/[id]"
+        options={{
+          animation: "none",
+          statusBarTranslucent: false,
+          contentStyle: { backgroundColor: "#FFFFFF" },
+        }}
+      />
       <Stack.Screen name="shop" />
     </Stack>
     </>

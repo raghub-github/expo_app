@@ -84,3 +84,25 @@ test("mapOpenMeteoForecast detects heavy rain", () => {
   assert.equal(mapped!.rainDetected, true);
   assert.equal(mapped!.weatherSeverity, "HEAVY_RAIN");
 });
+
+test("mapOpenMeteoForecast ignores wind-only extreme without rain", () => {
+  const raw = {
+    current: {
+      temperature_2m: 28,
+      weather_code: 0,
+      rain: 0,
+      precipitation: 0,
+      relative_humidity_2m: 50,
+      wind_speed_10m: 20,
+      wind_gusts_10m: 25,
+      is_day: 1,
+    },
+    daily: { sunrise: [], sunset: [] },
+    hourly: { precipitation_probability: [0] },
+  };
+
+  const mapped = mapOpenMeteoForecast(raw, thresholds);
+  assert.ok(mapped);
+  assert.equal(mapped!.rainDetected, false);
+  assert.equal(mapped!.weatherSeverity, "CLEAR");
+});

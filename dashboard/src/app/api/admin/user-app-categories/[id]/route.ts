@@ -2,10 +2,7 @@
  * PATCH /api/admin/user-app-categories/[id] — super admin
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
-import { isSuperAdmin } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { requireSuperAdminApi } from "@/lib/admin/require-super-admin-api";
 import { updateUserAppCategory, deleteUserAppCategory } from "@/lib/db/operations/user-app-categories";
 import {
   parseUserAppCategoryStoreType,
@@ -15,39 +12,12 @@ import {
 
 export const runtime = "nodejs";
 
-async function requireSuperAdminResponse() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError || !user) {
-    if (userError && isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
-      return NextResponse.json(
-        { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-        { status: 401 }
-      );
-    }
-    return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-  }
-  const systemUser = await getSystemUserByEmail(user.email!);
-  if (!systemUser) {
-    return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
-  }
-  const ok = await isSuperAdmin(user.id, user.email!);
-  if (!ok) {
-    return NextResponse.json({ success: false, error: "Super admin only" }, { status: 403 });
-  }
-  return null;
-}
-
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const gate = await requireSuperAdminResponse();
-  if (gate) return gate;
+  const gate = await requireSuperAdminApi();
+  if (!gate.ok) return gate.response;
   try {
     const { id: idStr } = await params;
     const id = parseInt(idStr, 10);
@@ -106,8 +76,8 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const gate = await requireSuperAdminResponse();
-  if (gate) return gate;
+  const gate = await requireSuperAdminApi();
+  if (!gate.ok) return gate.response;
   try {
     const { id: idStr } = await params;
     const id = parseInt(idStr, 10);
