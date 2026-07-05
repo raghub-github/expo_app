@@ -260,4 +260,133 @@ export async function persistOutcome(
       contentType: art.contentType ?? null,
     });
   }
+
+  // Emit kyc.decision on terminal outcomes so the notification bus can push
+  // the correct template to the user. Reject / verify only — non-terminal
+  // statuses (initiated, pending_provider, awaiting_consent, …) don't ring.
+  if (outcome.status === "verified" || outcome.status === "rejected") {
+    await emitKycDecisionForRequest(requestId, outcome.status, outcome.documentKind, outcome.statusReason);
+    await projectOutcomeToDocuments(requestId, outcome);
+  }
+}
+
+/**
+ * Mirror the terminal auto-verify result onto the pre-existing document
+ * projection tables so the rider app's KYC status pill (and the merchant
+ * onboarding UI) reflect the Cashfree decision without a separate query.
+ *
+ * The projection columns rider_documents.verified / verification_status are
+ * what the /v1/rider/me/documents endpoint returns, so writing here is what
+ * makes the pill flip from "Under review" → "Verified".
+ */
+async function projectOutcomeToDocuments(
+  requestId: number,
+  outcome: NormalizedVerification,
+): Promise<void> {
+  const sql = getSql();
+  try {
+    const row = (await sql`
+      SELECT subject_type::text AS subject_type, subject_id, provider_reference, verification_id
+        FROM public.verification_requests WHERE id = ${requestId}
+    `) as unknown as Array<{
+      subject_type: string; subject_id: number;
+      provider_reference: string | null; verification_id: string;
+    }>;
+    if (row.length === 0) return;
+    const r = row[0]!;
+    if (r.subject_type !== "rider") return; // merchant projection uses a separate table + owner
+
+    // Map verification_document_kind → rider_documents.doc_type. Composite
+    // docs (aadhaar_front/back, dl_front/back) match both sides; we UPDATE
+    // any row of the matching type for the rider.
+    const docKindToDocTypes: Record<string, string[]> = {
+      pan: ["pan"],
+      aadhaar: ["aadhaar", "aadhaar_front", "aadhaar_back"],
+      driving_licence: ["dl", "dl_front", "dl_back"],
+      vehicle_rc: ["rc"],
+      bank_account: ["bank_proof"],
+    };
+    const targetTypes = docKindToDocTypes[outcome.documentKind];
+    if (!targetTypes) return;
+
+    const verified = outcome.status === "verified";
+    const verificationStatus = verified ? "auto_verified" : "rejected";
+    const summary: Record<string, unknown> = {
+      verifiedData: outcome.verifiedData ?? null,
+      provider: outcome.provider,
+      confidence: outcome.confidence,
+    };
+
+    await sql`
+      UPDATE public.rider_documents
+         SET verified = ${verified},
+             verification_status = ${verificationStatus}::document_verification_status,
+             rejected_reason = ${verified ? null : outcome.statusReason},
+             verified_at = ${verified ? new Date().toISOString() : null},
+             last_verification_id = ${r.verification_id},
+             last_provider_reference = ${r.provider_reference},
+             extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
+             updated_at = NOW()
+       WHERE rider_id = ${r.subject_id}
+         AND doc_type::text = ANY(${targetTypes})
+    `;
+  } catch (e) {
+    console.warn("[verification.projectOutcomeToDocuments] failed:", (e as Error).message);
+  }
+}
+
+/**
+ * Resolve subject_type + subject_id → user_id (firebase uid) and fire
+ * `kyc.decision` on the notification bus. Safe swallow — a lookup miss
+ * shouldn't nuke the verification write.
+ */
+async function emitKycDecisionForRequest(
+  requestId: number,
+  status: "verified" | "rejected",
+  documentKind: string,
+  reason: string | null,
+): Promise<void> {
+  const sql = getSql();
+  try {
+    const row = (await sql`
+      SELECT r.subject_type::text AS subject_type, r.subject_id
+        FROM public.verification_requests r WHERE r.id = ${requestId}
+    `) as unknown as Array<{ subject_type: string; subject_id: number }>;
+    if (row.length === 0) return;
+    const s = row[0]!;
+
+    let userId: string | null = null;
+    let role: "rider" | "merchant" | null = null;
+    if (s.subject_type === "rider") {
+      // Riders don't have a user_id column — the notification system keys off
+      // the mobile that the rider app registered its expo push token against.
+      const u = (await sql`SELECT mobile FROM public.riders WHERE id = ${s.subject_id}`) as unknown as Array<{ mobile: string | null }>;
+      userId = u[0]?.mobile ?? null;
+      role = "rider";
+    } else if (s.subject_type === "merchant_store") {
+      // Same pattern as targetResolver.userIdsForStore — go through merchant_parents.
+      const u = (await sql`
+        SELECT p.supabase_user_id AS user_id
+          FROM public.merchant_stores s
+          INNER JOIN public.merchant_parents p ON p.id = s.parent_id
+         WHERE s.id = ${s.subject_id} AND p.supabase_user_id IS NOT NULL
+      `) as unknown as Array<{ user_id: string | null }>;
+      userId = u[0]?.user_id ?? null;
+      role = "merchant";
+    }
+    if (!userId || !role) return;
+
+    // Lazy import — the notifications module isn't a dependency of the
+    // verification module and we don't want a circular import at boot.
+    const { emitEvent } = await import("../notifications/eventBus.js");
+    emitEvent("kyc.decision", {
+      userId,
+      role,
+      docType: documentKind,
+      decision: status === "verified" ? "APPROVED" : "REJECTED",
+      reason: reason ?? undefined,
+    });
+  } catch (e) {
+    console.warn("[verification.emitKycDecision] failed:", (e as Error).message);
+  }
 }

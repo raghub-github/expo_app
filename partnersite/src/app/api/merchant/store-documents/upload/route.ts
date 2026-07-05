@@ -9,6 +9,7 @@ import {
 import { recordLicenceRenewalUpload } from '@/lib/merchantLicenceHistory';
 import { syncMerchantLicenseCompliance } from '@/lib/syncMerchantLicenseCompliance';
 import { toStoredDocumentUrl, uploadWithKey } from '@/lib/r2';
+import { triggerMerchantAutoVerify } from '@/lib/verification-hook';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -247,6 +248,15 @@ export async function POST(req: NextRequest) {
     }
 
     await syncMerchantLicenseCompliance(db, access.storeIdNum);
+
+    // Auto-verify hook (fire-and-forget). Backend policy defaults to 'manual'
+    // so this is a no-op until super-admin flips the switch for a doc kind.
+    void triggerMerchantAutoVerify({
+      storeId: access.storeIdNum,
+      documentPrefix: prefix as MerchantDocumentPrefix,
+      documentNumber: docNumber,
+      ownerName: null,
+    });
 
     return NextResponse.json({
       success: true,

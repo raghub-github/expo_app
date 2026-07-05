@@ -640,6 +640,27 @@ try {
   // Wire domain events → notification templates.
   registerDomainEventHandlers();
 
+  // Verification background workers — R2 mirror + retry queue.
+  // Skip locked; running multiple backend replicas is safe.
+  const verificationTickMs = 60_000; // 1 min — small enough for the 24h S3 URL expiry pressure
+  setInterval(async () => {
+    try {
+      const { runR2MirrorTick } = await import("./modules/verification/workers/r2-mirror.js");
+      const r = await runR2MirrorTick(app.log, 20);
+      if (r.scanned > 0) app.log.info(r, "verification_r2_mirror_tick");
+    } catch (e) {
+      app.log.warn({ err: (e as Error).message }, "verification_r2_mirror_tick_error");
+    }
+    try {
+      const { runRetryQueueTick } = await import("./modules/verification/workers/retry-queue.js");
+      const r = await runRetryQueueTick(app.log, 10);
+      if (r.scanned > 0) app.log.info(r, "verification_retry_tick");
+    } catch (e) {
+      app.log.warn({ err: (e as Error).message }, "verification_retry_tick_error");
+    }
+  }, verificationTickMs);
+  app.log.info({ intervalMs: verificationTickMs }, "verification workers started");
+
   const orderAcceptanceIntervalMs = 15_000;
   const runAcceptanceTickLocked = () =>
     withLock("tick:acceptance-timeout", 25_000, () => runOrderAcceptanceTimeoutTick(app.log))
