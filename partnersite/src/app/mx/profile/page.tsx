@@ -655,20 +655,11 @@ export default function ProfilePage() {
 
   /* ===== REFRESH BANK ACCOUNTS WHEN STORE CHANGES ===== */
   useEffect(() => {
-    if (!store?.id) {
-      console.log('Store ID not available for bank accounts refresh');
-      return;
-    }
-    console.log('Refreshing bank accounts for store ID:', store.id);
+    if (!store?.id) return;
     import("@/lib/database").then(async (mod) => {
       try {
         const banks = await mod.fetchStoreBankAccounts(store.id);
-        const bankAccountsArray = Array.isArray(banks) ? banks : [];
-        console.log('Refreshed bank accounts:', bankAccountsArray.length, 'accounts');
-        if (bankAccountsArray.length > 0) {
-          console.log('Updating bank accounts state with:', JSON.stringify(bankAccountsArray, null, 2));
-        }
-        setBankAccounts(bankAccountsArray);
+        setBankAccounts(Array.isArray(banks) ? banks : []);
       } catch (error) {
         console.error('Error refreshing bank accounts:', error);
         setBankAccounts([]);
@@ -1737,12 +1728,10 @@ export default function ProfilePage() {
                             <button
                               onClick={async () => {
                                 if (!store?.id) return;
-                                console.log('Manual refresh triggered for store ID:', store.id);
                                 try {
                                   const mod = await import("@/lib/database");
                                   const banks = await mod.fetchStoreBankAccounts(store.id);
                                   const bankAccountsArray = Array.isArray(banks) ? banks : [];
-                                  console.log('Manual refresh result:', bankAccountsArray.length, 'accounts');
                                   setBankAccounts(bankAccountsArray);
                                   if (bankAccountsArray.length > 0) {
                                     toast.success(`Loaded ${bankAccountsArray.length} bank account(s)`);
