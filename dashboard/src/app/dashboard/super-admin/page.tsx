@@ -118,21 +118,6 @@ const VerificationSetupIcon = dynamic(async () => {
   return (props: { className?: string }) => <ShieldCheck {...props} />;
 });
 
-const VerificationAnalyticsIcon = dynamic(async () => {
-  const { BarChart3 } = await import("lucide-react");
-  return (props: { className?: string }) => <BarChart3 {...props} />;
-});
-
-const RiderVerificationQueueIcon = dynamic(async () => {
-  const { UserCheck } = await import("lucide-react");
-  return (props: { className?: string }) => <UserCheck {...props} />;
-});
-
-const MerchantVerificationQueueIcon = dynamic(async () => {
-  const { Store } = await import("lucide-react");
-  return (props: { className?: string }) => <Store {...props} />;
-});
-
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -301,41 +286,16 @@ const adminOptions: AdminOption[] = [
   },
 
   // Document verification (Cashfree auto + manual fallback + agent workflow).
-  // Policy Center is the primary control (switches individual docs / apps
-  // between manual and auto). Analytics is the reporting dashboard. The two
-  // agent queues live inside Policy Center's header nav but are surfaced
-  // here too so agents can bookmark them directly.
+  // Single entry-point into the verification hub — inside, the four sub-tools
+  // are laid out as their own cards: Policy Center, Analytics, Rider queue,
+  // Merchant queue.
   {
-    name: "Verification setup",
-    href: "/dashboard/super-admin/verification/policies",
+    name: "Verification",
+    href: "/dashboard/super-admin/verification",
     Icon: VerificationSetupIcon,
-    description: "Switch each document between auto (Cashfree) and manual — per doc, per app, or all at once. Kill-switches too.",
+    description: "Auto/manual policy controls, verification analytics, and rider + merchant agent queues.",
     color: "text-emerald-700",
     bgColor: "bg-emerald-50 hover:bg-emerald-100",
-  },
-  {
-    name: "Verification analytics",
-    href: "/dashboard/super-admin/verification/analytics",
-    Icon: VerificationAnalyticsIcon,
-    description: "Verification requests by rider / merchant / doc kind — success, failure, manual review, avg latency.",
-    color: "text-indigo-700",
-    bgColor: "bg-indigo-50 hover:bg-indigo-100",
-  },
-  {
-    name: "Rider verification queue",
-    href: "/dashboard/super-admin/verification/rider-queue",
-    Icon: RiderVerificationQueueIcon,
-    description: "Riders whose documents need agent review — take, verify, or reject with notes.",
-    color: "text-sky-700",
-    bgColor: "bg-sky-50 hover:bg-sky-100",
-  },
-  {
-    name: "Merchant verification queue",
-    href: "/dashboard/super-admin/verification/merchant-queue",
-    Icon: MerchantVerificationQueueIcon,
-    description: "Merchants whose onboarding documents need agent review.",
-    color: "text-amber-700",
-    bgColor: "bg-amber-50 hover:bg-amber-100",
   },
 ];
 
