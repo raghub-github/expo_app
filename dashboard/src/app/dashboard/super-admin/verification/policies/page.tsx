@@ -8,7 +8,7 @@ type Policy = {
   id: number;
   subject_type: string;
   document_kind: string;
-  mode: "manual" | "auto_optional" | "auto_required" | "hybrid";
+  mode: "auto" | "manual" | "hybrid" | "disabled";
 };
 
 type Switch = {
@@ -19,7 +19,7 @@ type Switch = {
   reason: string | null;
 };
 
-const MODES: Policy["mode"][] = ["manual", "auto_optional", "auto_required", "hybrid"];
+const MODES: Policy["mode"][] = ["auto", "manual", "hybrid", "disabled"];
 const STATES: Switch["state"][] = ["enabled", "disabled", "read_only", "shadow"];
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -27,19 +27,19 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 /** Human-friendly mode name for the pill. */
 function modeLabel(m: Policy["mode"]): string {
   switch (m) {
+    case "auto": return "Auto";
     case "manual": return "Manual";
-    case "auto_optional": return "Auto (optional)";
-    case "auto_required": return "Auto (required)";
     case "hybrid": return "Hybrid";
+    case "disabled": return "Disabled";
   }
 }
 
 function modePillClass(m: Policy["mode"]): string {
   switch (m) {
+    case "auto": return "bg-emerald-50 text-emerald-700";
     case "manual": return "bg-slate-100 text-slate-700";
-    case "auto_optional": return "bg-sky-50 text-sky-700";
-    case "auto_required": return "bg-emerald-50 text-emerald-700";
     case "hybrid": return "bg-violet-50 text-violet-700";
+    case "disabled": return "bg-rose-50 text-rose-700";
   }
 }
 
@@ -104,12 +104,17 @@ export default function VerificationPolicyCenterPage() {
         <ShieldCheck className="h-3.5 w-3.5" /> Verification
       </div>
       <h1 className="text-2xl font-semibold text-slate-900">Policy Center</h1>
+      <div className="mt-1 flex gap-3 text-xs text-slate-500">
+        <a href="/dashboard/super-admin/verification/analytics" className="text-teal-700 hover:underline">Analytics ↗</a>
+        <a href="/dashboard/super-admin/verification/rider-queue" className="text-teal-700 hover:underline">Rider queue ↗</a>
+        <a href="/dashboard/super-admin/verification/merchant-queue" className="text-teal-700 hover:underline">Merchant queue ↗</a>
+      </div>
       <p className="mt-1 max-w-3xl text-sm text-slate-500">
-        Control how each document type is verified. <b>Manual</b> is safe fallback — the agent
-        checks by hand. <b>Auto (required)</b> lets Cashfree decide; failures stop onboarding.{" "}
-        <b>Auto (optional)</b> lets Cashfree try, but a failure falls back to manual review.{" "}
-        <b>Hybrid</b> auto-verifies then routes low-confidence hits to an agent. Kill-switches
-        below cut Cashfree traffic instantly if the provider goes bad.
+        Control how each document type is verified. <b>Manual</b> is the safe fallback — an
+        agent checks by hand. <b>Auto</b> sends the doc to Cashfree; a failure falls back to a
+        manual review row for the agent queue. <b>Hybrid</b> auto-verifies then routes
+        low-confidence hits to an agent. <b>Disabled</b> stops accepting this doc entirely.
+        Kill-switches below cut all Cashfree traffic instantly if the provider goes bad.
       </p>
 
       {error ? (

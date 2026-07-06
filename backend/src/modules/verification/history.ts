@@ -294,42 +294,94 @@ async function projectOutcomeToDocuments(
     }>;
     if (row.length === 0) return;
     const r = row[0]!;
-    if (r.subject_type !== "rider") return; // merchant projection uses a separate table + owner
-
-    // Map verification_document_kind → rider_documents.doc_type. Composite
-    // docs (aadhaar_front/back, dl_front/back) match both sides; we UPDATE
-    // any row of the matching type for the rider.
-    const docKindToDocTypes: Record<string, string[]> = {
-      pan: ["pan"],
-      aadhaar: ["aadhaar", "aadhaar_front", "aadhaar_back"],
-      driving_licence: ["dl", "dl_front", "dl_back"],
-      vehicle_rc: ["rc"],
-      bank_account: ["bank_proof"],
-    };
-    const targetTypes = docKindToDocTypes[outcome.documentKind];
-    if (!targetTypes) return;
-
     const verified = outcome.status === "verified";
-    const verificationStatus = verified ? "auto_verified" : "rejected";
     const summary: Record<string, unknown> = {
       verifiedData: outcome.verifiedData ?? null,
       provider: outcome.provider,
       confidence: outcome.confidence,
     };
 
-    await sql`
-      UPDATE public.rider_documents
-         SET verified = ${verified},
-             verification_status = ${verificationStatus}::document_verification_status,
-             rejected_reason = ${verified ? null : outcome.statusReason},
-             verified_at = ${verified ? new Date().toISOString() : null},
-             last_verification_id = ${r.verification_id},
-             last_provider_reference = ${r.provider_reference},
-             extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
-             updated_at = NOW()
-       WHERE rider_id = ${r.subject_id}
-         AND doc_type::text = ANY(${targetTypes})
-    `;
+    if (r.subject_type === "rider") {
+      // rider_documents: one row per doc_type. Composite docs (aadhaar_front/back,
+      // dl_front/back) match both sides; we UPDATE any row of the matching type.
+      const docKindToDocTypes: Record<string, string[]> = {
+        pan: ["pan"],
+        aadhaar: ["aadhaar", "aadhaar_front", "aadhaar_back"],
+        driving_licence: ["dl", "dl_front", "dl_back"],
+        vehicle_rc: ["rc"],
+        bank_account: ["bank_proof"],
+      };
+      const targetTypes = docKindToDocTypes[outcome.documentKind];
+      if (!targetTypes) return;
+      const verificationStatus = verified ? "auto_verified" : "rejected";
+      await sql`
+        UPDATE public.rider_documents
+           SET verified = ${verified},
+               verification_status = ${verificationStatus}::document_verification_status,
+               rejected_reason = ${verified ? null : outcome.statusReason},
+               verified_at = ${verified ? new Date().toISOString() : null},
+               last_verification_id = ${r.verification_id},
+               last_provider_reference = ${r.provider_reference},
+               extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
+               updated_at = NOW()
+         WHERE rider_id = ${r.subject_id}
+           AND doc_type::text = ANY(${targetTypes})
+      `;
+      return;
+    }
+
+    if (r.subject_type === "merchant_store") {
+      // merchant_store_documents is WIDE — one row per store with per-doc columns
+      // (pan_is_verified, gst_is_verified, etc.). Map verification_document_kind
+      // → column prefix, then flip that prefix's is_verified + verified_at.
+      const docKindToMerchantPrefix: Record<string, string> = {
+        pan: "pan",
+        gstin: "gst",
+        aadhaar: "aadhaar",
+      };
+      const prefix = docKindToMerchantPrefix[outcome.documentKind];
+      if (!prefix) return;
+      // Dynamic column names are pool-safe with sql.unsafe for identifiers; but
+      // to stay on the ORM-tagged path we write three explicit branches. Adding
+      // a new prefix means one more branch here — intentional friction so the
+      // wide-column projection stays visible.
+      if (prefix === "pan") {
+        await sql`
+          UPDATE public.merchant_store_documents
+             SET pan_is_verified = ${verified},
+                 pan_verified_at = ${verified ? new Date().toISOString() : null},
+                 pan_rejection_reason = ${verified ? null : outcome.statusReason},
+                 last_verification_id = ${r.verification_id},
+                 last_provider_reference = ${r.provider_reference},
+                 extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
+                 updated_at = NOW()
+           WHERE store_id = ${r.subject_id}
+        `;
+      } else if (prefix === "gst") {
+        await sql`
+          UPDATE public.merchant_store_documents
+             SET gst_is_verified = ${verified},
+                 gst_verified_at = ${verified ? new Date().toISOString() : null},
+                 gst_rejection_reason = ${verified ? null : outcome.statusReason},
+                 last_verification_id = ${r.verification_id},
+                 last_provider_reference = ${r.provider_reference},
+                 extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
+                 updated_at = NOW()
+           WHERE store_id = ${r.subject_id}
+        `;
+      } else if (prefix === "aadhaar") {
+        await sql`
+          UPDATE public.merchant_store_documents
+             SET aadhaar_is_verified = ${verified},
+                 aadhaar_verified_at = ${verified ? new Date().toISOString() : null},
+                 last_verification_id = ${r.verification_id},
+                 last_provider_reference = ${r.provider_reference},
+                 extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
+                 updated_at = NOW()
+           WHERE store_id = ${r.subject_id}
+        `;
+      }
+    }
   } catch (e) {
     console.warn("[verification.projectOutcomeToDocuments] failed:", (e as Error).message);
   }

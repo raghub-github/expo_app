@@ -62,7 +62,7 @@ type Actor = { actorId: number; ip?: string | null; ua?: string | null };
 /** Update a single policy's mode, capturing the before/after snapshot. */
 export async function updatePolicyMode(
   policyId: number,
-  newMode: "manual" | "auto_optional" | "auto_required" | "hybrid",
+  newMode: "auto" | "manual" | "hybrid" | "disabled",
   actor: Actor,
   reason: string | null,
 ): Promise<PolicyRow> {
@@ -74,9 +74,15 @@ export async function updatePolicyMode(
   if (before.length === 0) throw new Error("policy_not_found");
   const prev = before[0]!;
 
+  // DB CHECK constraint: mode != 'manual' requires provider IS NOT NULL.
+  // Default to cashfree when flipping into an auto-adjacent mode; clear provider
+  // when flipping back to manual (safe default, matches seed).
+  const providerForMode =
+    newMode === "manual" ? null : "cashfree";
   const updated = (await sql`
     UPDATE public.verification_policies
        SET mode = ${newMode}::verification_policy_mode,
+           provider = ${providerForMode}::verification_provider_kind,
            updated_at = NOW()
      WHERE id = ${policyId}
      RETURNING id, subject_type::text, document_kind::text, mode::text,
@@ -101,7 +107,7 @@ export async function updatePolicyMode(
 /** Bulk apply a mode to many policies at once. Used by the "all docs" / "app-wide" quick actions. */
 export async function bulkUpdatePolicyMode(
   filter: { subjectType?: string; documentKinds?: string[] },
-  newMode: "manual" | "auto_optional" | "auto_required" | "hybrid",
+  newMode: "auto" | "manual" | "hybrid" | "disabled",
   actor: Actor,
   reason: string | null,
 ): Promise<number> {
@@ -118,7 +124,9 @@ export async function bulkUpdatePolicyMode(
   for (const r of rows) {
     await sql`
       UPDATE public.verification_policies
-         SET mode = ${newMode}::verification_policy_mode, updated_at = NOW()
+         SET mode = ${newMode}::verification_policy_mode,
+             provider = ${newMode === "manual" ? null : "cashfree"}::verification_provider_kind,
+             updated_at = NOW()
        WHERE id = ${r.id}
     `;
     await sql`

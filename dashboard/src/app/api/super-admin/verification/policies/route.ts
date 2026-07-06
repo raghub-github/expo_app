@@ -13,7 +13,7 @@ import {
 
 export const runtime = "nodejs";
 
-const MODES = ["manual", "auto_optional", "auto_required", "hybrid"] as const;
+const MODES = ["auto", "manual", "hybrid", "disabled"] as const;
 const STATES = ["enabled", "disabled", "read_only", "shadow"] as const;
 
 const singlePolicySchema = z.object({

@@ -90,7 +90,7 @@ export default function VerificationQueuePage(props: {
             <tr>
               <th className="px-4 py-2">Subject</th>
               <th className="px-4 py-2">Document</th>
-              <th className="px-4 py-2">Verification ID</th>
+              <th className="px-4 py-2">Source</th>
               <th className="px-4 py-2">Reason</th>
               <th className="px-4 py-2">Waiting</th>
               <th className="px-4 py-2 text-right">Actions</th>
@@ -105,7 +105,14 @@ export default function VerificationQueuePage(props: {
                   </a>
                 </td>
                 <td className="px-4 py-2.5 font-mono text-slate-800">{r.document_kind}</td>
-                <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{r.verification_id.slice(0, 24)}…</td>
+                <td className="px-4 py-2.5">
+                  {r.reason === "policy_requires_review" ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700">Manual</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">Auto → review</span>
+                  )}
+                  <div className="mt-0.5 font-mono text-[10px] text-slate-400">{r.provider}</div>
+                </td>
                 <td className="px-4 py-2.5">
                   <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">{r.reason}</span>
                 </td>

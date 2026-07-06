@@ -699,6 +699,7 @@ export async function riderRoutes(app: FastifyInstance) {
                 icon: z.string(),
                 required: z.boolean(),
                 status: z.enum(["verified", "pending", "rejected", "not_uploaded"]),
+                verificationMethod: z.enum(["auto", "manual", "pending"]).nullable(),
                 uploaded: z.boolean(),
                 docNumber: z.string().nullable(),
                 rejectedReason: z.string().nullable(),
