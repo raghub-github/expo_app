@@ -1,3 +1,7 @@
+"use client";
+
+// See rider-queue/page.tsx for why "use client" is required here — the
+// detailHref function prop cannot cross the server→client boundary.
 import VerificationQueuePage from "../queue-page";
 
 export default function Page() {

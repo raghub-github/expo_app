@@ -1,3 +1,9 @@
+"use client";
+
+// Marked "use client" because we pass a function prop (detailHref) into the
+// shared VerificationQueuePage component. Function props can't cross the
+// server→client boundary — Server Components fails with "An error occurred
+// in the Server Components render" if this file omits the directive.
 import VerificationQueuePage from "../queue-page";
 
 export default function Page() {
