@@ -34,6 +34,9 @@ COPY packages/queue/package.json             ./packages/queue/package.json
 COPY packages/redis/package.json             ./packages/redis/package.json
 COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 COPY packages/store-status/package.json      ./packages/store-status/package.json
+# @gatimitra/merchant-payout is consumed by backend/src/lib/merchant-payout-*.
+# Depends on @gatimitra/contracts (already listed above).
+COPY packages/merchant-payout/package.json   ./packages/merchant-payout/package.json
 # shared-config is a config-only workspace (no source, no build step) — but
 # event-contracts/logger/queue/redis all have
 #   "extends": "@gatimitra/shared-config/tsconfig.node.json"
@@ -73,6 +76,7 @@ COPY packages/queue           ./packages/queue
 COPY packages/redis           ./packages/redis
 COPY packages/slab-pricing    ./packages/slab-pricing
 COPY packages/store-status    ./packages/store-status
+COPY packages/merchant-payout ./packages/merchant-payout
 # shared-config carries the tsconfig.*.json files the 4 packages above extend.
 # No build step here (no source) — it's a config-only workspace.
 COPY packages/shared-config   ./packages/shared-config
@@ -96,6 +100,7 @@ COPY packages/shared-config   ./packages/shared-config
 # the `COPY` block above AND to the `deps` stage.
 RUN npm run build \
       --workspace=@gatimitra/contracts \
+      --workspace=@gatimitra/merchant-payout \
       --workspace=@gatimitra/redis \
       --workspace=@gatimitra/event-contracts \
       --workspace=@gatimitra/financial-rules \
