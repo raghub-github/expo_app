@@ -71,6 +71,33 @@ async function findStoreOwnedBySessionUser(
   return { id, parent_id }
 }
 
+/**
+ * Super-admins (and support / admin roles) can view any store, so they must
+ * bypass the "does this merchant own this store" check that gates real
+ * merchants. Falls through to the merchant path if the user isn't in
+ * system_users at all.
+ */
+async function findSystemUserOverride(
+  userEmail: string | null,
+): Promise<boolean> {
+  if (!userEmail?.trim()) return false
+  try {
+    const rows = await pgClient`
+      SELECT primary_role, status
+      FROM system_users
+      WHERE lower(email) = ${userEmail.trim().toLowerCase()}
+      LIMIT 1
+    `
+    const row = rows[0] as { primary_role: string | null; status: string | null } | undefined
+    if (!row) return false
+    if ((row.status ?? '').toUpperCase() !== 'ACTIVE') return false
+    const role = (row.primary_role ?? '').toUpperCase()
+    return role === 'SUPER_ADMIN' || role === 'ADMIN' || role === 'SUPPORT' || role === 'MANAGER'
+  } catch {
+    return false
+  }
+}
+
 export async function assertStoreAccess(storeIdParam: string | null): Promise<AssertStoreResult> {
   if (!storeIdParam || String(storeIdParam).trim() === '') {
     return { ok: false, error: 'storeId required', status: 400 }
@@ -83,6 +110,18 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
   const { data: { user }, error: userError } = await supabaseServer.auth.getUser()
   if (userError || !user) {
     return { ok: false, error: 'Not authenticated', status: 401 }
+  }
+
+  // Super-admins / admins / support / managers can browse any store — resolve
+  // the internal id directly.
+  if (await findSystemUserOverride(user.email ?? null)) {
+    const { data: storeRow } = await getSupabase()
+      .from('merchant_stores')
+      .select('id')
+      .eq('store_id', String(storeIdParam).trim())
+      .maybeSingle()
+    if (storeRow?.id) return { ok: true, storeIdNum: Number(storeRow.id) }
+    return { ok: false, error: 'Store not found', status: 404 }
   }
 
   const validation = await validateMerchantFromSession({

@@ -1719,12 +1719,11 @@ export const fetchStoreDocuments = async (storeId: number) => {
 // Fetch bank accounts for a store
 export const fetchStoreBankAccounts = async (storeId: number) => {
   try {
-    console.log('Fetching bank accounts for store_id (internal id):', storeId);
     if (!storeId || isNaN(storeId)) {
       console.error('Invalid store_id:', storeId);
       return [];
     }
-    
+
     // First try with is_active filter
     let query = supabase
       .from('merchant_store_bank_accounts')
@@ -1732,19 +1731,16 @@ export const fetchStoreBankAccounts = async (storeId: number) => {
       .eq('store_id', storeId)
       .order('is_primary', { ascending: false })
       .order('created_at', { ascending: false });
-    
+
     const { data, error } = await query;
-    
+
     if (error) {
       console.error('Error fetching bank accounts:', error);
-      console.error('Error details:', JSON.stringify(error, null, 2));
       return [];
     }
-    
+
     // Filter active accounts in memory (more reliable)
     const activeAccounts = (data || []).filter(acc => acc.is_active !== false);
-    
-    console.log(`Bank accounts fetched: ${data?.length || 0} total, ${activeAccounts.length} active`, activeAccounts);
     return activeAccounts.length > 0 ? activeAccounts : (data || []);
   } catch (err) {
     console.error('Exception fetching bank accounts:', err);
@@ -1761,7 +1757,6 @@ export const fetchStoreCounts = async (fromDate?: string, toDate?: string) => {
   if (toDate) query = query.lte('created_at', toDate + 'T23:59:59');
 
   const { data, error } = await query;
-  console.log('Raw store data:', data); // Debug output
   if (error) {
     console.error('Error fetching store counts:', error);
     return { total: 0, pending: 0, verified: 0, rejected: 0, suspended: 0, blocked: 0 };

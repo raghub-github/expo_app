@@ -89,6 +89,26 @@ function StatusBadge({ status }: { status: RiderKycDocStatus }) {
   );
 }
 
+/**
+ * Small pill showing whether a decision came from Cashfree (auto) or an
+ * agent (manual). Shown next to StatusBadge when the doc has a decision.
+ * Hidden for pending / not_uploaded to keep the row uncluttered.
+ */
+function MethodBadge({ method }: { method: "auto" | "manual" | "pending" | null }) {
+  if (!method || method === "pending") return null;
+  const isAuto = method === "auto";
+  const bg = isAuto ? "#EEF2FF" : "#F0F9FF";
+  const text = isAuto ? "#4338CA" : "#0369A1";
+  const border = isAuto ? "#C7D2FE" : "#BAE6FD";
+  const icon: IoniconName = isAuto ? "flash-outline" : "person-outline";
+  return (
+    <View style={[styles.methodBadge, { backgroundColor: bg, borderColor: border }]}>
+      <Ionicons name={icon} size={11} color={text} />
+      <Text style={[styles.methodBadgeText, { color: text }]}>{isAuto ? "Auto" : "Manual"}</Text>
+    </View>
+  );
+}
+
 function DocumentRow({ doc }: { doc: RiderKycDocumentItem }) {
   const { t } = useTranslation();
   const iconName = resolveIcon(doc.icon);
@@ -112,7 +132,10 @@ function DocumentRow({ doc }: { doc: RiderKycDocumentItem }) {
             </Text>
           ) : null}
         </View>
-        <StatusBadge status={doc.status} />
+        <View style={styles.badgeStack}>
+          <StatusBadge status={doc.status} />
+          <MethodBadge method={doc.verificationMethod} />
+        </View>
       </View>
 
       {doc.rejectedReason ? (
@@ -439,6 +462,23 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     fontSize: 11,
+    fontWeight: "700",
+  },
+  badgeStack: {
+    alignItems: "flex-end",
+    gap: 4,
+  },
+  methodBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  methodBadgeText: {
+    fontSize: 10,
     fontWeight: "700",
   },
   rejectedReason: {

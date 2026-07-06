@@ -5116,3 +5116,358 @@ export const expoPushNotificationLogs = pgTable("expo_push_notification_logs", {
   detail: jsonb("detail"),
 });
 
+// ============================================================================
+// VERIFICATION (Cashfree Secure ID auto/manual/hybrid) — migrations 0390-0395
+//
+// See backend/drizzle/0390_verification_enums.sql for the pgEnum values these
+// mirror. Drizzle enums must list every value in the same order — any future
+// ALTER TYPE ADD VALUE has to be reflected here too.
+// ============================================================================
+
+export const verificationStatusKindEnum = pgEnum("verification_status_kind", [
+  "draft", "initiated", "otp_sent", "otp_verified",
+  "provider_processing", "webhook_received", "manual_review",
+  "verified", "rejected", "consent_denied", "expired", "timeout", "failed",
+  "duplicate", "fraud_suspected", "provider_down", "fallback_manual",
+  "overridden", "cancelled",
+]);
+
+export const verificationDocumentKindEnum = pgEnum("verification_document_kind", [
+  "pan", "pan_360", "aadhaar_digilocker",
+  "driving_licence", "vehicle_rc", "passport",
+  "ifsc", "bank_account", "reverse_penny_drop", "upi_penny_drop",
+  "gstin", "cin",
+  "face_liveness", "face_match", "name_match",
+]);
+
+export const verificationProviderKindEnum = pgEnum("verification_provider_kind", [
+  "cashfree", "razorpay", "manual",
+]);
+
+export const verificationActorKindEnum = pgEnum("verification_actor_kind", [
+  "provider", "webhook", "admin", "system", "rider", "merchant",
+]);
+
+export const verificationEventKindEnum = pgEnum("verification_event_kind", [
+  "submit", "provider_response", "webhook_apply", "poll_result",
+  "retry_scheduled", "retry_started", "artifact_mirror",
+  "auto_approve", "manual_review_queued", "manual_review_resolved",
+  "override", "fallback_to_manual", "projection_applied", "cancelled",
+]);
+
+export const verificationPolicyModeEnum = pgEnum("verification_policy_mode", [
+  "auto", "manual", "hybrid", "disabled",
+]);
+
+export const verificationSwitchStateEnum = pgEnum("verification_switch_state", [
+  "enabled", "disabled", "force_manual", "force_hybrid",
+]);
+
+export const verificationRetryStatusEnum = pgEnum("verification_retry_status", [
+  "pending", "in_flight", "exhausted", "succeeded", "cancelled",
+]);
+
+export const verificationManualReviewStateEnum = pgEnum("verification_manual_review_state", [
+  "queued", "in_review", "approved", "rejected", "reassigned", "cancelled",
+]);
+
+export const verificationSubjectKindEnum = pgEnum("verification_subject_kind", [
+  "rider", "merchant_store", "rider_document", "merchant_document",
+]);
+
+// ── Configuration layer ────────────────────────────────────────────────────
+
+export const verificationProviderConfigs = pgTable(
+  "verification_provider_configs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    provider: verificationProviderKindEnum("provider").notNull(),
+    environment: text("environment").notNull(),
+    baseUrl: text("base_url").notNull(),
+    credentialRef: text("credential_ref").notNull(),
+    webhookSecretRef: text("webhook_secret_ref"),
+    apiVersion: text("api_version"),
+    timeoutMs: integer("timeout_ms").notNull().default(15000),
+    rateLimitTpm: integer("rate_limit_tpm").notNull().default(100),
+    enabledProducts: jsonb("enabled_products").notNull().default({}),
+    isActive: boolean("is_active").notNull().default(true),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    envUq: uniqueIndex("verification_provider_configs_env_uq").on(t.provider, t.environment),
+  }),
+);
+
+export const verificationPolicies = pgTable(
+  "verification_policies",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    subjectType: verificationSubjectKindEnum("subject_type").notNull(),
+    documentKind: verificationDocumentKindEnum("document_kind").notNull(),
+    mode: verificationPolicyModeEnum("mode").notNull().default("manual"),
+    provider: verificationProviderKindEnum("provider"),
+    autoApprove: boolean("auto_approve").notNull().default(true),
+    confidenceThreshold: numeric("confidence_threshold", { precision: 4, scale: 3 }),
+    retryLimit: integer("retry_limit").notNull().default(2),
+    retryBackoffSeconds: integer("retry_backoff_seconds").notNull().default(30),
+    timeoutMs: integer("timeout_ms").notNull().default(15000),
+    fallbackToManual: boolean("fallback_to_manual").notNull().default(true),
+    subjectFilter: jsonb("subject_filter").notNull().default({}),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    createdBy: integer("created_by"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    lookupIdx: index("verification_policies_lookup_idx").on(t.subjectType, t.documentKind, t.effectiveFrom),
+  }),
+);
+
+export const verificationPolicyVersions = pgTable(
+  "verification_policy_versions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    policyId: bigint("policy_id", { mode: "number" }).notNull().references(() => verificationPolicies.id, { onDelete: "restrict" }),
+    versionNumber: integer("version_number").notNull(),
+    policySnapshot: jsonb("policy_snapshot").notNull(),
+    changedBy: integer("changed_by"),
+    changeReason: text("change_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    policyIdx: index("verification_policy_versions_policy_idx").on(t.policyId, t.versionNumber),
+  }),
+);
+
+export const verificationSwitches = pgTable(
+  "verification_switches",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    provider: verificationProviderKindEnum("provider").notNull(),
+    documentKind: verificationDocumentKindEnum("document_kind"),
+    state: verificationSwitchStateEnum("state").notNull().default("enabled"),
+    reason: text("reason"),
+    trippedBy: text("tripped_by"),
+    trippedAt: timestamp("tripped_at", { withTimezone: true }),
+    restoredAt: timestamp("restored_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+// ── Operational core ───────────────────────────────────────────────────────
+
+export const verificationRequests = pgTable(
+  "verification_requests",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    verificationId: text("verification_id").notNull(),
+    parentRequestId: bigint("parent_request_id", { mode: "number" }),
+    attemptNumber: integer("attempt_number").notNull().default(1),
+    provider: verificationProviderKindEnum("provider").notNull(),
+    providerConfigId: bigint("provider_config_id", { mode: "number" }).references(() => verificationProviderConfigs.id, { onDelete: "set null" }),
+    documentKind: verificationDocumentKindEnum("document_kind").notNull(),
+    subjectType: verificationSubjectKindEnum("subject_type").notNull(),
+    subjectId: bigint("subject_id", { mode: "number" }).notNull(),
+    riderDocumentId: bigint("rider_document_id", { mode: "number" }),
+    merchantDocumentId: bigint("merchant_document_id", { mode: "number" }),
+    policySnapshotId: bigint("policy_snapshot_id", { mode: "number" }).references(() => verificationPolicyVersions.id, { onDelete: "set null" }),
+    status: verificationStatusKindEnum("status").notNull().default("draft"),
+    statusReason: text("status_reason"),
+    businessIdentifier: text("business_identifier"),
+    confidence: numeric("confidence", { precision: 4, scale: 3 }),
+    httpStatus: integer("http_status"),
+    durationMs: integer("duration_ms"),
+    providerReference: text("provider_reference"),
+    providerDedupeBehaviour: text("provider_dedupe_behaviour").notNull().default("enforces_409"),
+    createdBy: integer("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    verificationIdUq: uniqueIndex("verification_requests_verification_id_uq").on(t.verificationId),
+    subjectIdx: index("verification_requests_subject_idx").on(t.subjectType, t.subjectId, t.documentKind, t.createdAt),
+    statusIdx: index("verification_requests_status_idx").on(t.status, t.createdAt),
+  }),
+);
+
+export const verificationProviderPayloads = pgTable(
+  "verification_provider_payloads",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    requestId: bigint("request_id", { mode: "number" }).notNull().references(() => verificationRequests.id, { onDelete: "cascade" }),
+    direction: text("direction").notNull(),
+    httpStatus: integer("http_status"),
+    headers: jsonb("headers").notNull().default({}),
+    body: jsonb("body").notNull().default({}),
+    bodySha256: text("body_sha256"),
+    r2Key: text("r2_key"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index("verification_provider_payloads_request_idx").on(t.requestId, t.createdAt),
+  }),
+);
+
+export const verificationWebhooks = pgTable(
+  "verification_webhooks",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    provider: verificationProviderKindEnum("provider").notNull(),
+    providerEventId: text("provider_event_id"),
+    eventType: text("event_type").notNull(),
+    verificationId: text("verification_id").notNull(),
+    signatureScheme: text("signature_scheme").notNull(),
+    signatureValid: boolean("signature_valid").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    eventTime: timestamp("event_time", { withTimezone: true }),
+    payloadRef: bigint("payload_ref", { mode: "number" }).references(() => verificationProviderPayloads.id, { onDelete: "set null" }),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    appliedEventId: bigint("applied_event_id", { mode: "number" }),
+  },
+  (t) => ({
+    correlationIdx: index("verification_webhooks_correlation_idx").on(t.verificationId, t.receivedAt),
+  }),
+);
+
+export const verificationEvents = pgTable(
+  "verification_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    requestId: bigint("request_id", { mode: "number" }).notNull().references(() => verificationRequests.id, { onDelete: "cascade" }),
+    eventKind: verificationEventKindEnum("event_kind").notNull(),
+    fromStatus: verificationStatusKindEnum("from_status"),
+    toStatus: verificationStatusKindEnum("to_status").notNull(),
+    actorType: verificationActorKindEnum("actor_type").notNull(),
+    actorId: integer("actor_id"),
+    payloadRef: bigint("payload_ref", { mode: "number" }).references(() => verificationProviderPayloads.id, { onDelete: "set null" }),
+    webhookRef: bigint("webhook_ref", { mode: "number" }).references(() => verificationWebhooks.id, { onDelete: "set null" }),
+    details: jsonb("details").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index("verification_events_request_idx").on(t.requestId, t.createdAt),
+    statusIdx: index("verification_events_status_idx").on(t.toStatus, t.createdAt),
+  }),
+);
+
+export const verificationFiles = pgTable(
+  "verification_files",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    requestId: bigint("request_id", { mode: "number" }).notNull().references(() => verificationRequests.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    source: text("source").notNull(),
+    providerUrl: text("provider_url"),
+    providerUrlExpiresAt: timestamp("provider_url_expires_at", { withTimezone: true }),
+    r2Key: text("r2_key"),
+    r2MirroredAt: timestamp("r2_mirrored_at", { withTimezone: true }),
+    bytes: bigint("bytes", { mode: "number" }),
+    contentType: text("content_type"),
+    sha256: text("sha256"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index("verification_files_request_idx").on(t.requestId),
+  }),
+);
+
+export const verificationDocuments = pgTable(
+  "verification_documents",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    requestId: bigint("request_id", { mode: "number" }).notNull().references(() => verificationRequests.id, { onDelete: "cascade" }),
+    riderDocumentId: bigint("rider_document_id", { mode: "number" }),
+    merchantDocumentId: bigint("merchant_document_id", { mode: "number" }),
+    appliedToProjectionAt: timestamp("applied_to_projection_at", { withTimezone: true }),
+    projectionSnapshot: jsonb("projection_snapshot").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestUq: uniqueIndex("verification_documents_request_uq").on(t.requestId),
+  }),
+);
+
+// ── Ops layer ──────────────────────────────────────────────────────────────
+
+export const verificationRetryQueue = pgTable(
+  "verification_retry_queue",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    requestId: bigint("request_id", { mode: "number" }).notNull().references(() => verificationRequests.id, { onDelete: "cascade" }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastError: text("last_error"),
+    status: verificationRetryStatusEnum("status").notNull().default("pending"),
+    lockedBy: text("locked_by"),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+export const verificationProviderHealth = pgTable(
+  "verification_provider_health",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    provider: verificationProviderKindEnum("provider").notNull(),
+    documentKind: verificationDocumentKindEnum("document_kind"),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    windowEnd: timestamp("window_end", { withTimezone: true }).notNull(),
+    totalRequests: integer("total_requests").notNull().default(0),
+    successCount: integer("success_count").notNull().default(0),
+    failureCount: integer("failure_count").notNull().default(0),
+    p50Ms: integer("p50_ms"),
+    p95Ms: integer("p95_ms"),
+    p99Ms: integer("p99_ms"),
+    avgConfidence: numeric("avg_confidence", { precision: 4, scale: 3 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+export const verificationManualReviews = pgTable(
+  "verification_manual_reviews",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    requestId: bigint("request_id", { mode: "number" }).notNull().references(() => verificationRequests.id, { onDelete: "cascade" }),
+    reason: text("reason").notNull(),
+    assignedTo: integer("assigned_to"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }),
+    state: verificationManualReviewStateEnum("state").notNull().default("queued"),
+    notes: text("notes"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: integer("resolved_by"),
+    resolutionDecision: verificationStatusKindEnum("resolution_decision"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    queueIdx: index("verification_manual_reviews_queue_idx").on(t.state, t.createdAt),
+  }),
+);
+
+export const verificationAuditLogs = pgTable(
+  "verification_audit_logs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    actorId: integer("actor_id").notNull(),
+    action: text("action").notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetId: bigint("target_id", { mode: "number" }).notNull(),
+    beforeSnapshot: jsonb("before_snapshot"),
+    afterSnapshot: jsonb("after_snapshot"),
+    reason: text("reason"),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    actorIdx: index("verification_audit_logs_actor_idx").on(t.actorId, t.createdAt),
+    targetIdx: index("verification_audit_logs_target_idx").on(t.targetKind, t.targetId, t.createdAt),
+  }),
+);
+

@@ -4,12 +4,16 @@ import { riderDocumentFiles, riderDocuments } from "../db/schema.js";
 
 export type RiderKycDocStatus = "verified" | "pending" | "rejected" | "not_uploaded";
 
+/** How the verification was decided. Drives the small pill next to the doc. */
+export type RiderKycVerificationMethod = "auto" | "manual" | "pending" | null;
+
 export type RiderKycDocumentItem = {
   docKey: string;
   label: string;
   icon: string;
   required: boolean;
   status: RiderKycDocStatus;
+  verificationMethod: RiderKycVerificationMethod;
   uploaded: boolean;
   docNumber: string | null;
   rejectedReason: string | null;
@@ -20,6 +24,20 @@ export type RiderKycDocumentItem = {
     rejectedReason: string | null;
   }>;
 };
+
+/**
+ * Read the projection column set by history.projectOutcomeToDocuments()
+ * to decide auto vs manual. Any status prefixed 'auto_' → auto; the older
+ * 'approved' / 'pending' come from the manual/agent flow.
+ */
+function methodFromStatus(verificationStatus: string | null, status: RiderKycDocStatus): RiderKycVerificationMethod {
+  if (status === "not_uploaded") return null;
+  if (verificationStatus === "auto_verified") return "auto";
+  if (verificationStatus === "auto_rejected") return "auto";
+  if (verificationStatus === "approved" || verificationStatus === "rejected") return "manual";
+  if (status === "verified" || status === "rejected") return "manual";
+  return "pending";
+}
 
 type SideVerificationMap = Partial<
   Record<"front" | "back", { verified?: boolean; verificationStatus?: string; rejectedReason?: string | null }>
@@ -300,6 +318,7 @@ export async function getRiderKycDocumentsForApp(riderId: number): Promise<{
       icon: entry.icon,
       required: entry.required,
       status,
+      verificationMethod: methodFromStatus(parentRow?.verificationStatus ?? null, status),
       uploaded,
       docNumber,
       rejectedReason,

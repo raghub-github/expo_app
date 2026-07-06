@@ -6,6 +6,7 @@ import { getJson } from "@/src/services/http";
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
 export type RiderKycDocStatus = "verified" | "pending" | "rejected" | "not_uploaded";
+export type RiderKycVerificationMethod = "auto" | "manual" | "pending" | null;
 
 export type RiderKycDocumentItem = {
   docKey: string;
@@ -13,6 +14,8 @@ export type RiderKycDocumentItem = {
   icon: string;
   required: boolean;
   status: RiderKycDocStatus;
+  /** How the doc was verified: Cashfree auto vs agent manual vs still pending. */
+  verificationMethod: RiderKycVerificationMethod;
   uploaded: boolean;
   docNumber: string | null;
   rejectedReason: string | null;

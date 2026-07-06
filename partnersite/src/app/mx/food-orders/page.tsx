@@ -605,7 +605,6 @@ function OrdersPageContent() {
       const data = await res.json();
       if (res.ok) {
         if (Array.isArray(data.orders)) {
-          console.log(`[FoodOrders] Loaded ${data.orders.length} orders for store ${storeId}`);
           setOrders(data.orders);
           queryClient.setQueryData(merchantKeys.foodOrders(storeId), data.orders);
         } else {

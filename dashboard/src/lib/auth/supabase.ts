@@ -219,15 +219,16 @@ export async function signInWithGoogle(
       return { success: false, error: "This function must be called from the client" };
     }
 
-    // const baseUrl = window.location.origin;
-    // Use absolute URL for redirectTo - Supabase requires this
-    // IMPORTANT: Remove query params from redirect URL - Supabase doesn't allow them
-    // We'll store the next destination in sessionStorage instead
-    // const redirectUrl = redirectTo || `${baseUrl}/auth/callback`;
-    const baseUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      "https://control.gatimitra.com";
-
+    // Use the browser's current origin so localhost dev doesn't get
+    // punted to prod after Google OAuth. The env-var-based baseUrl only
+    // works when NEXT_PUBLIC_APP_URL is actually set for the current
+    // deploy — locally it isn't, so we'd fall through to production and
+    // the callback would land on control.gatimitra.com/auth/callback
+    // instead of localhost:3000/auth/callback.
+    //
+    // For this to work, add http://localhost:3000/** (and any other
+    // dev origins) to Supabase Auth → URL Configuration → Redirect URLs.
+    const baseUrl = window.location.origin;
     const redirectUrl = redirectTo || `${baseUrl}/auth/callback`;
 
     // Store the destination in sessionStorage before redirect

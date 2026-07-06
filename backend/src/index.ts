@@ -48,6 +48,8 @@ import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
+import { verificationAdminRoutes } from "./modules/verification/routes/admin.routes.js";
+import { cashfreeHeaderWebhookRoutes, cashfreeBodySignedWebhookRoutes } from "./modules/verification/routes/webhook.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
 import { customerSubscriptionModule } from "./modules/subscription/customer-subscription.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
@@ -425,6 +427,15 @@ await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
 await app.register(notificationRoutes);
 await app.register(notificationInternalRoutes, { prefix: "/v1/internal" });
+
+// Verification — Cashfree Secure ID auto/manual/hybrid.
+//   - verificationAdminRoutes → /v1/verification/*  (admin submit + history)
+//   - Two webhook receivers on /api/webhooks/cashfree/{header,body}-signed
+//     to match Cashfree's two coexisting signature schemes (see Phase 2 spec).
+await app.register(verificationAdminRoutes);
+await app.register(cashfreeHeaderWebhookRoutes, { prefix: "/api" });
+await app.register(cashfreeBodySignedWebhookRoutes, { prefix: "/api" });
+
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
@@ -628,6 +639,27 @@ try {
 
   // Wire domain events → notification templates.
   registerDomainEventHandlers();
+
+  // Verification background workers — R2 mirror + retry queue.
+  // Skip locked; running multiple backend replicas is safe.
+  const verificationTickMs = 60_000; // 1 min — small enough for the 24h S3 URL expiry pressure
+  setInterval(async () => {
+    try {
+      const { runR2MirrorTick } = await import("./modules/verification/workers/r2-mirror.js");
+      const r = await runR2MirrorTick(app.log, 20);
+      if (r.scanned > 0) app.log.info(r, "verification_r2_mirror_tick");
+    } catch (e) {
+      app.log.warn({ err: (e as Error).message }, "verification_r2_mirror_tick_error");
+    }
+    try {
+      const { runRetryQueueTick } = await import("./modules/verification/workers/retry-queue.js");
+      const r = await runRetryQueueTick(app.log, 10);
+      if (r.scanned > 0) app.log.info(r, "verification_retry_tick");
+    } catch (e) {
+      app.log.warn({ err: (e as Error).message }, "verification_retry_tick_error");
+    }
+  }, verificationTickMs);
+  app.log.info({ intervalMs: verificationTickMs }, "verification workers started");
 
   const orderAcceptanceIntervalMs = 10_000;
   const runAcceptanceTickLocked = () =>
