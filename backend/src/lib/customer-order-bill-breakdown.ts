@@ -2,11 +2,18 @@
  * Parse billing_snapshot for order summary receipt (mirrors customer app orderBillBreakdown).
  */
 
+export type OrderBillDiscountLine = {
+  label: string;
+  amount: number;
+  code: string | null;
+};
+
 export type OrderBillBreakdown = {
   itemTotal: number;
   gstAndPackaging: number;
   deliveryFee: number;
   deliveryFeeOriginal: number | null;
+  deliveryDisplayFree: boolean;
   platformFee: number;
   donation: number;
   tipAmount: number;
@@ -19,16 +26,22 @@ export type OrderBillBreakdown = {
   grandTotal: number;
   couponCode: string | null;
   couponDiscount: number;
+  discountLines: OrderBillDiscountLine[];
   gatiCashApplied: number;
   missedOfferDiscount: number;
   missedOfferWalletAdd: number;
   paid: number;
+  totalSavings: number;
 };
 
 function num(v: unknown): number {
   if (v == null) return 0;
   const x = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(x) ? x : 0;
+}
+
+function roundBill(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 function pickSubscriptionFromCharges(snapshot: Record<string, unknown>): {
@@ -82,8 +95,45 @@ function sumDiscountLines(snapshot: Record<string, unknown>): number {
   const discounts = Array.isArray(snapshot.discounts) ? snapshot.discounts : [];
   return discounts.reduce((sum, raw) => {
     if (!raw || typeof raw !== "object") return sum;
-    return sum + Math.abs(num((raw as { amount?: unknown }).amount));
+    const line = raw as { amount?: unknown; hidden?: boolean };
+    if (line.hidden) return sum;
+    return sum + Math.abs(num(line.amount));
   }, 0);
+}
+
+function extractVisibleDiscountLines(snapshot: Record<string, unknown>): OrderBillDiscountLine[] {
+  const discounts = Array.isArray(snapshot.discounts) ? snapshot.discounts : [];
+  const lines: OrderBillDiscountLine[] = [];
+
+  for (const raw of discounts) {
+    if (!raw || typeof raw !== "object") continue;
+    const line = raw as {
+      amount?: unknown;
+      label?: unknown;
+      hidden?: boolean;
+      meta?: Record<string, unknown>;
+    };
+    if (line.hidden) continue;
+    if (line.meta?.source === "customer_subscription_delivery_waived_marker") continue;
+
+    const amount = Math.abs(num(line.amount));
+    if (amount <= 0.005) continue;
+
+    const label = String(line.label ?? "Discount").trim() || "Discount";
+    const meta = line.meta ?? {};
+    const code =
+      (typeof meta.couponCode === "string" && meta.couponCode.trim()) ||
+      (typeof meta.code === "string" && meta.code.trim()) ||
+      null;
+
+    lines.push({
+      label,
+      amount,
+      code: code ? code.toUpperCase() : null,
+    });
+  }
+
+  return lines;
 }
 
 function extractCouponFromDiscounts(snapshot: Record<string, unknown>): {
@@ -95,7 +145,8 @@ function extractCouponFromDiscounts(snapshot: Record<string, unknown>): {
   let amount = 0;
   for (const raw of discounts) {
     if (!raw || typeof raw !== "object") continue;
-    const line = raw as { amount?: unknown; label?: unknown; meta?: Record<string, unknown> };
+    const line = raw as { amount?: unknown; label?: unknown; hidden?: boolean; meta?: Record<string, unknown> };
+    if (line.hidden) continue;
     const label = String(line.label ?? "").trim();
     const meta = line.meta ?? {};
     const metaCode =
@@ -120,6 +171,75 @@ function extractCouponFromDiscounts(snapshot: Record<string, unknown>): {
   return { code, amount };
 }
 
+function pickSubscriptionDeliveryWaived(snapshot: Record<string, unknown>): number {
+  const stored = num(snapshot.deliveryFeeWaivedInr);
+  if (stored > 0.005) return stored;
+
+  const charges = Array.isArray(snapshot.charges) ? snapshot.charges : [];
+  for (const raw of charges) {
+    if (!raw || typeof raw !== "object") continue;
+    const c = raw as { amount?: unknown; meta?: Record<string, unknown> };
+    if (c.meta?.source === "customer_subscription_delivery_waived_marker") {
+      return Math.abs(num(c.amount));
+    }
+  }
+
+  const discounts = Array.isArray(snapshot.discounts) ? snapshot.discounts : [];
+  for (const raw of discounts) {
+    if (!raw || typeof raw !== "object") continue;
+    const line = raw as { amount?: unknown; hidden?: boolean; meta?: Record<string, unknown> };
+    if (line.hidden) continue;
+    if (line.meta?.source === "customer_subscription_free_delivery") {
+      return Math.abs(num(line.amount));
+    }
+  }
+
+  return 0;
+}
+
+function resolveDeliveryDisplay(snapshot: Record<string, unknown>): {
+  deliveryFee: number;
+  deliveryFeeOriginal: number | null;
+  deliveryDisplayFree: boolean;
+} {
+  const rawDeliveryFee = num(snapshot.delivery_fee);
+  const beforeBenefits =
+    num(snapshot.deliveryFeeBeforeBenefitsInr) > 0.005
+      ? num(snapshot.deliveryFeeBeforeBenefitsInr)
+      : num(snapshot.deliveryFeeQuotedInr);
+  const subscriptionWaived = pickSubscriptionDeliveryWaived(snapshot);
+
+  if (subscriptionWaived > 0.005) {
+    return {
+      deliveryFee: 0,
+      deliveryFeeOriginal: subscriptionWaived,
+      deliveryDisplayFree: true,
+    };
+  }
+
+  if (beforeBenefits > rawDeliveryFee + 0.005) {
+    return {
+      deliveryFee: rawDeliveryFee,
+      deliveryFeeOriginal: beforeBenefits,
+      deliveryDisplayFree: rawDeliveryFee <= 0.005,
+    };
+  }
+
+  if (rawDeliveryFee <= 0.005 && beforeBenefits > 0.005) {
+    return {
+      deliveryFee: 0,
+      deliveryFeeOriginal: beforeBenefits,
+      deliveryDisplayFree: true,
+    };
+  }
+
+  return {
+    deliveryFee: rawDeliveryFee,
+    deliveryFeeOriginal: null,
+    deliveryDisplayFree: false,
+  };
+}
+
 export function parseOrderBillFromSnapshot(
   snapshot: Record<string, unknown> | null | undefined,
   fallbackTotal: number | null | undefined,
@@ -131,14 +251,11 @@ export function parseOrderBillFromSnapshot(
   const taxTotal = num(snap.tax_total);
   const gstAndPackaging = packagingFee + taxTotal;
 
-  const deliveryFee = num(snap.delivery_fee);
-  const deliveryFeeQuoted = num(snap.deliveryFeeQuotedInr);
-  const deliveryFeeOriginal =
-    deliveryFeeQuoted > deliveryFee + 0.005
-      ? deliveryFeeQuoted
-      : deliveryFee > 0.005
-        ? deliveryFee
-        : null;
+  const {
+    deliveryFee,
+    deliveryFeeOriginal,
+    deliveryDisplayFree,
+  } = resolveDeliveryDisplay(snap);
 
   const platformFee = num(snap.platform_fee);
   const donation = num(snap.donation_amount);
@@ -159,13 +276,13 @@ export function parseOrderBillFromSnapshot(
   const missedOfferWalletAdd = num(checkoutAdj?.missedOfferWalletAdd);
 
   const paid = num(snap.final_amount) || fallbackTotal || 0;
-  const baseFinalAmount = num(snap.baseFinalAmount);
 
   const discountTotal = num(snap.discount_total);
   const discountFromLines = sumDiscountLines(snap);
   const totalDiscount =
     discountTotal > 0.005 ? discountTotal : discountFromLines > 0.005 ? discountFromLines : 0;
 
+  const discountLines = extractVisibleDiscountLines(snap);
   const { code: couponCode, amount: couponFromLines } = extractCouponFromDiscounts(snap);
   const couponDiscount =
     couponFromLines > 0.005
@@ -176,32 +293,29 @@ export function parseOrderBillFromSnapshot(
           ? totalDiscount
           : 0;
 
-  const deliveryForGrand = deliveryFeeOriginal ?? deliveryFee;
-  const componentGrand =
-    itemTotal +
-    gstAndPackaging +
-    deliveryForGrand +
-    platformFee +
-    donation +
-    tipAmount +
-    surgeFee +
-    smallOrderFee +
-    convenienceFee +
-    miscFee +
-    subscriptionFee;
+  const grandTotal = roundBill(
+    Math.max(
+      0,
+      paid -
+        tipAmount -
+        donation +
+        totalDiscount +
+        gatiCashApplied +
+        missedOfferDiscount -
+        missedOfferWalletAdd
+    )
+  );
 
-  const grandTotal =
-    baseFinalAmount > 0.005
-      ? baseFinalAmount
-      : componentGrand > 0.005
-        ? componentGrand
-        : paid + couponDiscount + gatiCashApplied + missedOfferDiscount - missedOfferWalletAdd;
+  const totalSavings = roundBill(
+    Math.max(0, totalDiscount + gatiCashApplied + missedOfferDiscount)
+  );
 
   return {
     itemTotal,
     gstAndPackaging,
     deliveryFee,
     deliveryFeeOriginal,
+    deliveryDisplayFree,
     platformFee,
     donation,
     tipAmount,
@@ -214,9 +328,11 @@ export function parseOrderBillFromSnapshot(
     grandTotal,
     couponCode,
     couponDiscount,
+    discountLines,
     gatiCashApplied,
     missedOfferDiscount,
     missedOfferWalletAdd,
     paid,
+    totalSavings,
   };
 }

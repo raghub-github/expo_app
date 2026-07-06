@@ -5,12 +5,12 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   View,
-  Text,
   Modal,
   Pressable,
   StyleSheet,
   useWindowDimensions,
 } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
@@ -173,8 +173,8 @@ function RewardChip({
   return (
     <Animated.View entering={FadeInUp.delay(delay).duration(320)} style={[styles.chip, { borderColor: accent }]}>
       <View style={[styles.chipIconWrap, { backgroundColor: `${accent}18` }]}>{icon}</View>
-      <Text style={styles.chipLabel}>{label}</Text>
-      <Text style={[styles.chipValue, { color: accent }]}>{value}</Text>
+      <CheckoutText style={styles.chipLabel}>{label}</CheckoutText>
+      <CheckoutText style={[styles.chipValue, { color: accent }]}>{value}</CheckoutText>
     </Animated.View>
   );
 }
@@ -221,15 +221,15 @@ export function MissedOfferWalletCelebration({
         <Animated.View entering={FadeIn.duration(220)} style={styles.card}>
           <SuccessHero />
 
-          <Animated.Text entering={FadeInDown.delay(100).duration(300)} style={styles.congrats}>
-            CONGRATULATIONS!
-          </Animated.Text>
+          <Animated.View entering={FadeInDown.delay(100).duration(300)}>
+            <CheckoutText style={styles.congrats}>CONGRATULATIONS!</CheckoutText>
+          </Animated.View>
 
           <Animated.View entering={FadeInDown.delay(160).duration(320)} style={styles.titlePill}>
             <MaterialCommunityIcons name="tag-check" size={16} color={BRAND_DARK} />
-            <Text style={styles.titlePillText} numberOfLines={2}>
+            <CheckoutText style={styles.titlePillText} numberOfLines={2}>
               {title} unlocked
-            </Text>
+            </CheckoutText>
           </Animated.View>
 
           <View style={styles.chipsRow}>
@@ -249,9 +249,11 @@ export function MissedOfferWalletCelebration({
             />
           </View>
 
-          <Animated.Text entering={FadeIn.delay(340).duration(280)} style={styles.footerNote}>
-            ₹{wallet} credited to wallet after you place this order
-          </Animated.Text>
+          <Animated.View entering={FadeIn.delay(340).duration(280)}>
+            <CheckoutText style={styles.footerNote}>
+              ₹{wallet} credited to wallet after you place this order
+            </CheckoutText>
+          </Animated.View>
         </Animated.View>
       </View>
     </Modal>

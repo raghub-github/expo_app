@@ -1,5 +1,5 @@
 import type { Sql } from "postgres";
-import { buildGrowthBusinessInsights } from "./growth-business-insights";
+import { getCachedGrowthBusinessInsights } from "./cached-growth-insights";
 
 export type InsightMetric = {
   value: number;
@@ -72,11 +72,18 @@ function metricFromSeries(
   };
 }
 
+function istTodayYmd(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+}
+
+function addIstDays(ymd: string, delta: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + delta, 12, 0, 0));
+  return dt.toISOString().slice(0, 10);
+}
+
 async function istToday(sql: Sql): Promise<string> {
-  const rows = await sql`
-    SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date::text AS d
-  `;
-  return String((rows[0] as { d: string }).d).slice(0, 10);
+  return istTodayYmd();
 }
 
 async function periodBounds(
@@ -85,10 +92,8 @@ async function periodBounds(
 ): Promise<{ start: string; end: string; compareStart: string; compareEnd: string }> {
   const today = await istToday(sql);
   if (period === "yesterday") {
-    const y = await sql`SELECT (${today}::date - 1)::text AS d`;
-    const yStr = String((y[0] as { d: string }).d).slice(0, 10);
-    const db = await sql`SELECT (${yStr}::date - 1)::text AS d`;
-    const dbStr = String((db[0] as { d: string }).d).slice(0, 10);
+    const yStr = addIstDays(today, -1);
+    const dbStr = addIstDays(yStr, -1);
     return { start: yStr, end: yStr, compareStart: dbStr, compareEnd: dbStr };
   }
   if (period === "week") {
@@ -130,8 +135,7 @@ async function periodBounds(
   if (period === "alltime") {
     return { start: "1970-01-01", end: today, compareStart: "1970-01-01", compareEnd: today };
   }
-  const y = await sql`SELECT (${today}::date - 1)::text AS d`;
-  const yStr = String((y[0] as { d: string }).d).slice(0, 10);
+  const yStr = addIstDays(today, -1);
   return { start: today, end: today, compareStart: yStr, compareEnd: yStr };
 }
 
@@ -148,6 +152,8 @@ async function dailyOrderCounts(
       SELECT (created_at AT TIME ZONE 'Asia/Kolkata')::date AS d, COUNT(*)::int AS c
       FROM orders_food
       WHERE merchant_store_id = ${storeId}
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
       GROUP BY 1
     ) o ON o.d = gs::date
     ORDER BY gs
@@ -175,6 +181,89 @@ async function dailyRatingAvg(
   `;
   const vals = (rows as unknown as Array<{ v: unknown }>).map((r) => num(r.v));
   return vals.length <= 10 ? vals : vals.slice(-10);
+}
+
+type FunnelTotals = { placed: number; accepted: number; preparing: number; delivered: number };
+
+/** Single scan for current + compare funnel (half the round-trips). */
+async function orderFunnelTotalsBoth(
+  sql: Sql,
+  storeId: number,
+  start: string,
+  end: string,
+  compareStart: string,
+  compareEnd: string,
+): Promise<{ current: FunnelTotals; compare: FunnelTotals }> {
+  const rows = await sql`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+      )::int AS cur_placed,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+          AND accepted_at IS NOT NULL
+      )::int AS cur_accepted,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+          AND (
+            prepared_at IS NOT NULL
+            OR upper(COALESCE(order_status, '')) IN (
+              'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED'
+            )
+          )
+      )::int AS cur_preparing,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+          AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+      )::int AS cur_delivered,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+      )::int AS cmp_placed,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+          AND accepted_at IS NOT NULL
+      )::int AS cmp_accepted,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+          AND (
+            prepared_at IS NOT NULL
+            OR upper(COALESCE(order_status, '')) IN (
+              'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED'
+            )
+          )
+      )::int AS cmp_preparing,
+      COUNT(*) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+          AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+      )::int AS cmp_delivered
+    FROM orders_food
+    WHERE merchant_store_id = ${storeId}
+      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= LEAST(${start}::date, ${compareStart}::date)
+      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= GREATEST(${end}::date, ${compareEnd}::date)
+  `;
+  const r = rows[0] as Record<string, number>;
+  return {
+    current: {
+      placed: Number(r.cur_placed) || 0,
+      accepted: Number(r.cur_accepted) || 0,
+      preparing: Number(r.cur_preparing) || 0,
+      delivered: Number(r.cur_delivered) || 0,
+    },
+    compare: {
+      placed: Number(r.cmp_placed) || 0,
+      accepted: Number(r.cmp_accepted) || 0,
+      preparing: Number(r.cmp_preparing) || 0,
+      delivered: Number(r.cmp_delivered) || 0,
+    },
+  };
 }
 
 async function orderFunnelTotals(
@@ -205,6 +294,141 @@ async function orderFunnelTotals(
     accepted: Number(r.accepted) || 0,
     preparing: Number(r.preparing) || 0,
     delivered: Number(r.delivered) || 0,
+  };
+}
+
+async function badOrderRatesBoth(
+  sql: Sql,
+  storeId: number,
+  start: string,
+  end: string,
+  compareStart: string,
+  compareEnd: string,
+  options?: { includePoorRated?: boolean },
+): Promise<{
+  current: { rejected_pct: number; delayed_pct: number; poor_rated_pct: number; total: number };
+  compare: { rejected_pct: number; delayed_pct: number; poor_rated_pct: number; total: number };
+}> {
+  let curTotal = 0;
+  let curRejected = 0;
+  let curDelayed = 0;
+  let curDelivered = 0;
+  let cmpTotal = 0;
+  let cmpRejected = 0;
+  let cmpDelayed = 0;
+  let cmpDelivered = 0;
+
+  try {
+    const rows = await sql`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+        )::int AS cur_total,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+            AND upper(COALESCE(order_status, '')) IN ('CANCELLED', 'REJECTED')
+        )::int AS cur_rejected,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+            AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+            AND delivered_at IS NOT NULL
+            AND accepted_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (delivered_at - accepted_at)) / 60.0
+              > COALESCE(preparation_time_minutes, 30) + 35
+        )::int AS cur_delayed,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+            AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+        )::int AS cur_delivered,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+        )::int AS cmp_total,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+            AND upper(COALESCE(order_status, '')) IN ('CANCELLED', 'REJECTED')
+        )::int AS cmp_rejected,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+            AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+            AND delivered_at IS NOT NULL
+            AND accepted_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (delivered_at - accepted_at)) / 60.0
+              > COALESCE(preparation_time_minutes, 30) + 35
+        )::int AS cmp_delayed,
+        COUNT(*) FILTER (
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+            AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+            AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+        )::int AS cmp_delivered
+      FROM orders_food
+      WHERE merchant_store_id = ${storeId}
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= LEAST(${start}::date, ${compareStart}::date)
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= GREATEST(${end}::date, ${compareEnd}::date)
+    `;
+    const r = rows[0] as Record<string, number>;
+    curTotal = Number(r.cur_total) || 0;
+    curRejected = Number(r.cur_rejected) || 0;
+    curDelayed = Number(r.cur_delayed) || 0;
+    curDelivered = Number(r.cur_delivered) || 0;
+    cmpTotal = Number(r.cmp_total) || 0;
+    cmpRejected = Number(r.cmp_rejected) || 0;
+    cmpDelayed = Number(r.cmp_delayed) || 0;
+    cmpDelivered = Number(r.cmp_delivered) || 0;
+  } catch {
+    /* orders_food columns may differ on older DBs */
+  }
+
+  let curPoor = 0;
+  let cmpPoor = 0;
+  if (options?.includePoorRated !== false) {
+    try {
+      const pr = await sql`
+        SELECT
+          COUNT(DISTINCT r.order_id) FILTER (
+            WHERE (r.created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+              AND (r.created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+          )::int AS cur_c,
+          COUNT(DISTINCT r.order_id) FILTER (
+            WHERE (r.created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+              AND (r.created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+          )::int AS cmp_c
+        FROM merchant_store_ratings r
+        INNER JOIN orders_food f ON f.order_id = r.order_id
+        WHERE r.store_id = ${storeId}
+          AND r.rating <= 2
+          AND f.merchant_store_id = ${storeId}
+          AND (r.created_at AT TIME ZONE 'Asia/Kolkata')::date >= LEAST(${start}::date, ${compareStart}::date)
+          AND (r.created_at AT TIME ZONE 'Asia/Kolkata')::date <= GREATEST(${end}::date, ${compareEnd}::date)
+      `;
+      const row = pr[0] as { cur_c: number; cmp_c: number };
+      curPoor = Number(row.cur_c) || 0;
+      cmpPoor = Number(row.cmp_c) || 0;
+    } catch {
+      curPoor = 0;
+      cmpPoor = 0;
+    }
+  }
+
+  return {
+    current: {
+      total: curTotal,
+      rejected_pct: pctRate(curRejected, curTotal),
+      delayed_pct: pctRate(curDelayed, Math.max(curDelivered, 1)),
+      poor_rated_pct: pctRate(curPoor, Math.max(curDelivered, 1)),
+    },
+    compare: {
+      total: cmpTotal,
+      rejected_pct: pctRate(cmpRejected, cmpTotal),
+      delayed_pct: pctRate(cmpDelayed, Math.max(cmpDelivered, 1)),
+      poor_rated_pct: pctRate(cmpPoor, Math.max(cmpDelivered, 1)),
+    },
   };
 }
 
@@ -275,6 +499,37 @@ async function badOrderRates(
   };
 }
 
+async function lostSalesBoth(
+  sql: Sql,
+  storeId: number,
+  start: string,
+  end: string,
+  compareStart: string,
+  compareEnd: string,
+): Promise<{ current: number; compare: number }> {
+  const rows = await sql`
+    SELECT
+      COALESCE(SUM(food_items_total_value) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+      ), 0)::numeric AS cur_v,
+      COALESCE(SUM(food_items_total_value) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+      ), 0)::numeric AS cmp_v
+    FROM orders_food
+    WHERE merchant_store_id = ${storeId}
+      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= LEAST(${start}::date, ${compareStart}::date)
+      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= GREATEST(${end}::date, ${compareEnd}::date)
+      AND (
+        upper(COALESCE(order_status, '')) IN ('CANCELLED', 'REJECTED', 'RTO')
+        OR (rejected_reason IS NOT NULL AND trim(rejected_reason) <> '')
+      )
+  `;
+  const r = rows[0] as { cur_v: unknown; cmp_v: unknown };
+  return { current: num(r.cur_v), compare: num(r.cmp_v) };
+}
+
 async function lostSalesTotal(sql: Sql, storeId: number, start: string, end: string): Promise<number> {
   const rows = await sql`
     SELECT COALESCE(SUM(food_items_total_value), 0)::numeric AS v
@@ -288,6 +543,36 @@ async function lostSalesTotal(sql: Sql, storeId: number, start: string, end: str
       )
   `;
   return num((rows[0] as { v: unknown }).v);
+}
+
+async function avgRatingBoth(
+  sql: Sql,
+  storeId: number,
+  start: string,
+  end: string,
+  compareStart: string,
+  compareEnd: string,
+): Promise<{ current: number; compare: number }> {
+  const rows = await sql`
+    SELECT
+      COALESCE(AVG(rating) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+      ), 0)::numeric AS cur_avg,
+      COALESCE(AVG(rating) FILTER (
+        WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${compareStart}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${compareEnd}::date
+      ), 0)::numeric AS cmp_avg
+    FROM merchant_store_ratings
+    WHERE store_id = ${storeId}
+      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= LEAST(${start}::date, ${compareStart}::date)
+      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= GREATEST(${end}::date, ${compareEnd}::date)
+  `;
+  const r = rows[0] as { cur_avg: unknown; cmp_avg: unknown };
+  return {
+    current: Math.round(num(r.cur_avg) * 100) / 100,
+    compare: Math.round(num(r.cmp_avg) * 100) / 100,
+  };
 }
 
 async function avgRating(sql: Sql, storeId: number, start: string, end: string): Promise<number> {
@@ -378,98 +663,152 @@ async function userSegmentCounts(
   start: string,
   end: string
 ): Promise<{ new_users: number; repeat_users: number; lapsed_users: number }> {
-  const rows = await sql`
-    WITH period_orders AS (
-      SELECT DISTINCT of.customer_id, of.created_at
-      FROM orders_food of
-      WHERE of.merchant_store_id = ${storeId}
-        AND of.customer_id IS NOT NULL
-        AND upper(COALESCE(of.order_status, '')) = 'DELIVERED'
-        AND (of.created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
-        AND (of.created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
-    ),
-    segmented AS (
+  try {
+    const rows = await sql`
+      WITH cust AS (
+        SELECT
+          customer_id,
+          MAX((created_at AT TIME ZONE 'Asia/Kolkata')::date) FILTER (
+            WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date < ${start}::date
+          ) AS last_prior
+        FROM orders_food
+        WHERE merchant_store_id = ${storeId}
+          AND customer_id IS NOT NULL
+          AND upper(COALESCE(order_status, '')) = 'DELIVERED'
+        GROUP BY customer_id
+        HAVING BOOL_OR(
+          (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${start}::date
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${end}::date
+        )
+      )
       SELECT
-        po.customer_id,
-        CASE
-          WHEN prev.last_prior IS NULL THEN 'new'
-          WHEN EXTRACT(EPOCH FROM (po.created_at - prev.last_prior)) / 86400.0 <= 60 THEN 'repeat'
-          WHEN EXTRACT(EPOCH FROM (po.created_at - prev.last_prior)) / 86400.0 <= 90 THEN 'lapsed'
-          ELSE 'new'
-        END AS segment
-      FROM period_orders po
-      LEFT JOIN LATERAL (
-        SELECT MAX(p.created_at) AS last_prior
-        FROM orders_food p
-        WHERE p.merchant_store_id = ${storeId}
-          AND p.customer_id = po.customer_id
-          AND p.created_at < po.created_at
-          AND upper(COALESCE(p.order_status, '')) = 'DELIVERED'
-      ) prev ON TRUE
-    )
-    SELECT segment, COUNT(DISTINCT customer_id)::int AS cnt
-    FROM segmented
-    GROUP BY segment
-  `;
-  let new_users = 0;
-  let repeat_users = 0;
-  let lapsed_users = 0;
-  for (const r of rows as unknown as Array<{ segment: string; cnt: number }>) {
-    const c = Number(r.cnt) || 0;
-    if (r.segment === "repeat") repeat_users += c;
-    else if (r.segment === "lapsed") lapsed_users += c;
-    else new_users += c;
+        COUNT(*) FILTER (WHERE last_prior IS NULL)::int AS new_users,
+        COUNT(*) FILTER (
+          WHERE last_prior IS NOT NULL AND (${start}::date - last_prior) <= 60
+        )::int AS repeat_users,
+        COUNT(*) FILTER (
+          WHERE last_prior IS NOT NULL
+            AND (${start}::date - last_prior) > 60
+            AND (${start}::date - last_prior) <= 90
+        )::int AS lapsed_users
+      FROM cust
+    `;
+    const r = rows[0] as { new_users: number; repeat_users: number; lapsed_users: number };
+    return {
+      new_users: Number(r.new_users) || 0,
+      repeat_users: Number(r.repeat_users) || 0,
+      lapsed_users: Number(r.lapsed_users) || 0,
+    };
+  } catch {
+    return { new_users: 0, repeat_users: 0, lapsed_users: 0 };
   }
-  return { new_users, repeat_users, lapsed_users };
 }
 
 export async function buildLivePreviewInsights(
   sql: Sql,
   storeId: number,
-  period: string
+  period: string,
+  options?: { lite?: boolean },
 ): Promise<LivePreviewInsights> {
-  const bounds = await periodBounds(sql, period);
-  const business = await buildGrowthBusinessInsights(sql, storeId, period);
+  const lite = options?.lite !== false;
+  const [bounds, business] = await Promise.all([
+    periodBounds(sql, period),
+    getCachedGrowthBusinessInsights(sql, storeId, period),
+  ]);
 
   const salesSpark = business.buckets.map((b) => b.sales);
   const ordersSpark = business.buckets.map((b) => b.orders);
   const aovSpark = business.buckets.map((b) =>
-    b.orders > 0 ? Math.round(b.sales / b.orders) : 0
+    b.orders > 0 ? Math.round(b.sales / b.orders) : 0,
   );
 
-  const [
-    funnelCur,
-    funnelCmp,
-    badCur,
-    badCmp,
-    lostCur,
-    lostCmp,
-    ratingCur,
-    ratingCmp,
-    complaintsCur,
-    complaintsCmp,
-    onlineCur,
-    onlineCmp,
-    segCur,
-    segCmp,
-  ] = await Promise.all([
-    orderFunnelTotals(sql, storeId, bounds.start, bounds.end),
-    orderFunnelTotals(sql, storeId, bounds.compareStart, bounds.compareEnd),
-    badOrderRates(sql, storeId, bounds.start, bounds.end),
-    badOrderRates(sql, storeId, bounds.compareStart, bounds.compareEnd),
-    lostSalesTotal(sql, storeId, bounds.start, bounds.end),
-    lostSalesTotal(sql, storeId, bounds.compareStart, bounds.compareEnd),
-    avgRating(sql, storeId, bounds.start, bounds.end),
-    avgRating(sql, storeId, bounds.compareStart, bounds.compareEnd),
-    complaintCount(sql, storeId, bounds.start, bounds.end),
-    complaintCount(sql, storeId, bounds.compareStart, bounds.compareEnd),
-    onlinePctEstimate(sql, storeId, bounds.start, bounds.end),
-    onlinePctEstimate(sql, storeId, bounds.compareStart, bounds.compareEnd),
-    userSegmentCounts(sql, storeId, bounds.start, bounds.end),
-    userSegmentCounts(sql, storeId, bounds.compareStart, bounds.compareEnd),
+  const corePromise = Promise.all([
+    orderFunnelTotalsBoth(sql, storeId, bounds.start, bounds.end, bounds.compareStart, bounds.compareEnd),
+    badOrderRatesBoth(
+      sql,
+      storeId,
+      bounds.start,
+      bounds.end,
+      bounds.compareStart,
+      bounds.compareEnd,
+      { includePoorRated: !lite },
+    ),
+    lostSalesBoth(sql, storeId, bounds.start, bounds.end, bounds.compareStart, bounds.compareEnd),
+    avgRatingBoth(sql, storeId, bounds.start, bounds.end, bounds.compareStart, bounds.compareEnd),
+    dailyOrderCounts(sql, storeId, bounds.start, bounds.end),
   ]);
 
-  const ratingSpark = await dailyRatingAvg(sql, storeId, bounds.start, bounds.end);
+  const emptySegments = { new_users: 0, repeat_users: 0, lapsed_users: 0 };
+
+  const [
+    { current: funnelCur, compare: funnelCmp },
+    { current: badCur, compare: badCmp },
+    { current: lostCur, compare: lostCmp },
+    { current: ratingCur, compare: ratingCmp },
+    funnelImpressionsSpark,
+    segCur,
+    segCmp,
+    onlineCur,
+    onlineCmp,
+    complaintsCur,
+    complaintsCmp,
+    ratingSpark,
+  ] = lite
+    ? await (async () => {
+        const [funnel, bad, lost, rating, impressionsSpark] = await corePromise;
+        return [
+          funnel,
+          bad,
+          lost,
+          rating,
+          impressionsSpark,
+          emptySegments,
+          emptySegments,
+          0,
+          0,
+          0,
+          0,
+          [rating.current],
+        ];
+      })()
+    : await (async () => {
+        const [
+          coreBundle,
+          segments,
+          online,
+          complaints,
+          ratingSeries,
+        ] = await Promise.all([
+          corePromise.then(([f, b, l, r, s]) => ({ funnel: f, bad: b, lost: l, rating: r, spark: s })),
+          Promise.all([
+            userSegmentCounts(sql, storeId, bounds.start, bounds.end),
+            userSegmentCounts(sql, storeId, bounds.compareStart, bounds.compareEnd),
+          ]),
+          Promise.all([
+            onlinePctEstimate(sql, storeId, bounds.start, bounds.end),
+            onlinePctEstimate(sql, storeId, bounds.compareStart, bounds.compareEnd),
+          ]),
+          Promise.all([
+            complaintCount(sql, storeId, bounds.start, bounds.end),
+            complaintCount(sql, storeId, bounds.compareStart, bounds.compareEnd),
+          ]),
+          dailyRatingAvg(sql, storeId, bounds.start, bounds.end),
+        ]);
+        return [
+          coreBundle.funnel,
+          coreBundle.bad,
+          coreBundle.lost,
+          coreBundle.rating,
+          coreBundle.spark,
+          segments[0],
+          segments[1],
+          online[0],
+          online[1],
+          complaints[0],
+          complaints[1],
+          ratingSeries,
+        ];
+      })();
 
   const impressionsCur = funnelCur.placed;
   const impressionsCmp = funnelCmp.placed;
@@ -479,8 +818,6 @@ export async function buildLivePreviewInsights(
   const mtcCmp = pctRate(funnelCmp.preparing, funnelCmp.accepted);
   const ctoCur = pctRate(funnelCur.delivered, funnelCur.placed);
   const ctoCmp = pctRate(funnelCmp.delivered, funnelCmp.placed);
-
-  const funnelImpressionsSpark = await dailyOrderCounts(sql, storeId, bounds.start, bounds.end);
 
   return {
     period,

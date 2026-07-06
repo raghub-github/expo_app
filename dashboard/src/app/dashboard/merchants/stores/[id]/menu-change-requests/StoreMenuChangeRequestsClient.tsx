@@ -20,6 +20,7 @@ import {
   ChangeRequestValueBox,
   menuItemChangeFieldLabel,
   parseChangeRequestJson,
+  sortMenuItemChangeKeys,
 } from "../menu/menuChangeRequestReview";
 import { MenuItemPhotoCustomerPreview } from "@/components/merchant/MenuItemPhotoCustomerPreview";
 
@@ -89,6 +90,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
   const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
   const [changeRequests, setChangeRequests] = useState<Record<string, unknown>[]>([]);
   const [crDetailModal, setCrDetailModal] = useState<Record<string, unknown> | null>(null);
+  const [crShowAllFields, setCrShowAllFields] = useState(false);
   const [crRejectReason, setCrRejectReason] = useState("");
   const [reviewSummary, setReviewSummary] = useState<MenuReviewQueueSummary | null>(null);
   const [photoReviewItem, setPhotoReviewItem] = useState<MenuItem | null>(null);
@@ -327,10 +329,22 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     } else if (rt === "CREATE") {
       for (const k of Object.keys(crParsedRequested ?? {})) keys.add(k);
     }
-    const changed = Array.from(keys).filter((k) => crChangedKeys.has(k));
-    const rest = Array.from(keys).filter((k) => !crChangedKeys.has(k)).sort((a, b) => a.localeCompare(b));
-    return [...changed, ...rest];
-  }, [crDetailModal, crParsedCurrent, crParsedRequested, crChangedKeys]);
+    return sortMenuItemChangeKeys(Array.from(keys));
+  }, [crDetailModal, crParsedCurrent, crParsedRequested]);
+
+  const crEditedKeysOnly = useMemo(
+    () => crAllKeys.filter((k) => crChangedKeys.has(k)),
+    [crAllKeys, crChangedKeys]
+  );
+
+  const crDisplayKeys = useMemo(() => {
+    if (!crDetailModal) return [];
+    const rt = String(crDetailModal.request_type ?? "");
+    if (rt === "UPDATE") {
+      return crShowAllFields ? crAllKeys : crEditedKeysOnly;
+    }
+    return crAllKeys;
+  }, [crDetailModal, crShowAllFields, crAllKeys, crEditedKeysOnly]);
 
   const handleApprovePhoto = async (item: MenuItem) => {
     setPhotoActionLoading("APPROVE");
@@ -601,7 +615,11 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                       <td className="py-3 px-4">
                         <button
                           type="button"
-                          onClick={() => setCrDetailModal(r)}
+                          onClick={() => {
+                            setCrRejectReason("");
+                            setCrShowAllFields(false);
+                            setCrDetailModal(r);
+                          }}
                           className="cursor-pointer font-semibold text-left text-blue-700 hover:text-blue-900 hover:underline underline-offset-2"
                         >
                           {String(r.item_name ?? "—")}
@@ -622,28 +640,39 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                         {r.created_at ? new Date(String(r.created_at)).toLocaleString() : "—"}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        {r.status === "PENDING" ? (
-                          <div className="inline-flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleRejectCr(Number(r.id))}
-                              disabled={crActionLoadingId === Number(r.id)}
-                              className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                            >
-                              {crActionLoadingId === Number(r.id) ? "…" : "Reject"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleApproveCr(Number(r.id))}
-                              disabled={crActionLoadingId === Number(r.id)}
-                              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                            >
-                              {crActionLoadingId === Number(r.id) ? "…" : "Approve"}
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-gray-500">—</span>
-                        )}
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCrRejectReason("");
+                              setCrShowAllFields(false);
+                              setCrDetailModal(r);
+                            }}
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50"
+                          >
+                            Review
+                          </button>
+                          {r.status === "PENDING" ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleRejectCr(Number(r.id))}
+                                disabled={crActionLoadingId === Number(r.id)}
+                                className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                              >
+                                {crActionLoadingId === Number(r.id) ? "…" : "Reject"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleApproveCr(Number(r.id))}
+                                disabled={crActionLoadingId === Number(r.id)}
+                                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                              >
+                                {crActionLoadingId === Number(r.id) ? "…" : "Approve"}
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -659,63 +688,110 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
         typeof document !== "undefined" &&
         createPortal(
           <div
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md p-3 sm:p-4"
             onClick={() => setCrDetailModal(null)}
             aria-hidden={false}
           >
-            <div onClick={(e) => e.stopPropagation()}>
-              <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-2 md:mx-0 border border-gray-100">
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
-                  <div className="min-w-0">
-                    <h2 className="text-base font-bold text-gray-900 truncate">
-                      {String(crDetailModal.item_name ?? "Menu item")}
-                    </h2>
-                    <p className="text-xs text-gray-500 truncate">
-                      {String(crDetailModal.request_type ?? "UPDATE")} • {String(crDetailModal.status ?? "")}
-                      {crDetailModal.menu_item_public_id ? ` • ${String(crDetailModal.menu_item_public_id)}` : ""}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setCrDetailModal(null)}
-                    className="p-1.5 hover:bg-gray-100 rounded-lg"
-                    aria-label="Close"
-                  >
-                    <X className="h-4 w-4 text-gray-600" />
-                  </button>
+            <div
+              className="flex max-h-[min(92vh,880px)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-gray-100 bg-white shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="shrink-0 flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                <div className="min-w-0 pr-3">
+                  <h2 className="truncate text-base font-bold text-gray-900">
+                    {String(crDetailModal.item_name ?? "Menu item")}
+                  </h2>
+                  <p className="truncate text-xs text-gray-500">
+                    {String(crDetailModal.request_type ?? "UPDATE")} • {String(crDetailModal.status ?? "")}
+                    {crDetailModal.menu_item_public_id ? ` • ${String(crDetailModal.menu_item_public_id)}` : ""}
+                  </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setCrDetailModal(null)}
+                  className="shrink-0 rounded-lg p-1.5 hover:bg-gray-100"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4 text-gray-600" />
+                </button>
+              </div>
 
-                <div className="flex border-b border-gray-200">
-                  <button
-                    type="button"
-                    className="px-3 py-2 text-xs font-medium border-b-2 border-orange-500 text-orange-600"
-                  >
-                    Item & pricing
-                  </button>
-                  <button
-                    type="button"
-                    disabled
-                    className="px-3 py-2 text-xs font-medium border-b-2 border-transparent text-gray-500 opacity-40 cursor-not-allowed"
-                    title="Only item & pricing fields are reviewed here"
-                  >
-                    Customizations & variants
-                  </button>
-                </div>
+              <div className="shrink-0 flex border-b border-gray-200 px-1">
+                <button
+                  type="button"
+                  className="border-b-2 border-orange-500 px-3 py-2 text-xs font-medium text-orange-600"
+                >
+                  Item & pricing
+                </button>
+                <button
+                  type="button"
+                  disabled
+                  className="cursor-not-allowed border-b-2 border-transparent px-3 py-2 text-xs font-medium text-gray-500 opacity-40"
+                  title="Only item & pricing fields are reviewed here"
+                >
+                  Customizations & variants
+                </button>
+              </div>
 
-                <div className="px-4 py-3 max-h-[70vh] overflow-y-auto">
-                  {crDetailModal.reason != null && String(crDetailModal.reason).trim() !== "" ? (
-                    <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
-                      <div className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-1">
-                        Merchant reason
-                      </div>
-                      <p className="text-sm text-gray-800 whitespace-pre-wrap">{String(crDetailModal.reason)}</p>
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                {crDetailModal.reason != null && String(crDetailModal.reason).trim() !== "" ? (
+                  <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
+                    <div className="mb-1 text-xs font-bold uppercase tracking-wide text-amber-700">
+                      Merchant reason
                     </div>
-                  ) : null}
+                    <p className="whitespace-pre-wrap text-sm text-gray-800">{String(crDetailModal.reason)}</p>
+                  </div>
+                ) : null}
 
+                {String(crDetailModal.request_type ?? "") === "UPDATE" && crEditedKeysOnly.length > 0 ? (
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-3 text-xs font-semibold">
+                      <span className="text-gray-700">
+                        {crEditedKeysOnly.length} field{crEditedKeysOnly.length === 1 ? "" : "s"} changed
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-red-700">
+                        <span className="h-2.5 w-2.5 rounded-sm border border-red-300 bg-red-100" />
+                        Old value
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-emerald-700">
+                        <span className="h-2.5 w-2.5 rounded-sm border border-emerald-300 bg-emerald-100" />
+                        New value
+                      </span>
+                    </div>
+                    {crAllKeys.length > crEditedKeysOnly.length ? (
+                      <button
+                        type="button"
+                        onClick={() => setCrShowAllFields((v) => !v)}
+                        className="text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline"
+                      >
+                        {crShowAllFields
+                          ? "Show changed fields only"
+                          : `Show all fields (${crAllKeys.length - crEditedKeysOnly.length} unchanged)`}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {crDisplayKeys.length === 0 ? (
                   <div className="space-y-3">
-                    {crAllKeys.map((key) => {
+                    {changeRequestDetailDiff?.intro ? (
+                      <p className="text-sm text-gray-600">{changeRequestDetailDiff.intro}</p>
+                    ) : (
+                      <p className="text-sm text-gray-600">No field-level differences detected.</p>
+                    )}
+                    {crCanShowFullPayloadPanels ? (
+                      <ChangeRequestFullPayloadPanels
+                        requestType={String(crDetailModal.request_type ?? "")}
+                        currentObj={crParsedCurrent}
+                        requestedObj={crParsedRequested}
+                        highlightKeys={crChangedKeys}
+                      />
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {crDisplayKeys.map((key) => {
                       const edited = crChangedKeys.has(key);
-                      const fade = edited ? "" : "opacity-50";
                       const currentVal =
                         String(crDetailModal.request_type ?? "") === "CREATE"
                           ? undefined
@@ -727,28 +803,32 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                       return (
                         <div
                           key={key}
-                          className={`rounded-xl border ${edited ? "border-emerald-200 ring-2 ring-emerald-100" : "border-gray-200"} bg-white p-3 shadow-sm transition ${fade}`}
+                          className={`rounded-xl border bg-white p-3 shadow-sm transition ${
+                            edited
+                              ? "border-emerald-200 ring-1 ring-emerald-100"
+                              : "border-gray-200 opacity-40"
+                          }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <label className="text-xs font-medium text-gray-600">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <label className="text-sm font-semibold text-gray-900">
                               {menuItemChangeFieldLabel(key)}
                             </label>
                             {edited ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                Edited
+                              <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                                Changed
                               </span>
                             ) : null}
                           </div>
-                          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <div>
-                              <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500 mb-1">
-                                Current
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div className="min-w-0">
+                              <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-red-600">
+                                Old value
                               </div>
                               <ChangeRequestValueBox fieldKey={key} value={currentVal} variant="current" />
                             </div>
-                            <div>
-                              <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500 mb-1">
-                                Requested
+                            <div className="min-w-0">
+                              <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+                                New value
                               </div>
                               <ChangeRequestValueBox fieldKey={key} value={requestedVal} variant="requested" />
                             </div>
@@ -757,28 +837,29 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                       );
                     })}
                   </div>
-                </div>
+                )}
+              </div>
 
-                {String(crDetailModal.status) === "PENDING" ? (
-                  <div className="px-4 py-3 border-t border-gray-100 space-y-3">
-                    <div>
-                      <label className="block text-xs font-bold text-gray-700 mb-1">
-                        Rejection reason (required if rejecting)
-                      </label>
-                      <textarea
-                        value={crRejectReason}
-                        onChange={(e) => setCrRejectReason(e.target.value)}
-                        rows={2}
-                        placeholder="Why is this change request being rejected?"
-                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 resize-y"
-                      />
-                    </div>
-                    <div className="flex items-center justify-end gap-2">
+              {String(crDetailModal.status) === "PENDING" ? (
+                <div className="shrink-0 space-y-3 border-t border-gray-100 bg-white px-4 py-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-gray-700">
+                      Rejection reason (required if rejecting)
+                    </label>
+                    <textarea
+                      value={crRejectReason}
+                      onChange={(e) => setCrRejectReason(e.target.value)}
+                      rows={2}
+                      placeholder="Why is this change request being rejected?"
+                      className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => handleRejectCr(Number(crDetailModal.id))}
                       disabled={crActionLoadingId === Number(crDetailModal.id)}
-                      className="px-3 py-2 rounded-lg text-sm font-medium text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-50"
+                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
                     >
                       {crActionLoadingId === Number(crDetailModal.id) ? "…" : "Reject request"}
                     </button>
@@ -786,24 +867,23 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                       type="button"
                       onClick={() => handleApproveCr(Number(crDetailModal.id))}
                       disabled={crActionLoadingId === Number(crDetailModal.id)}
-                      className="px-3 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                      className="rounded-lg bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                     >
                       {crActionLoadingId === Number(crDetailModal.id) ? "…" : "Approve request"}
                     </button>
-                    </div>
                   </div>
-                ) : (
-                  <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setCrDetailModal(null)}
-                      className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-100"
-                    >
-                      Close
-                    </button>
-                  </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="shrink-0 flex items-center justify-end border-t border-gray-100 px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => setCrDetailModal(null)}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
             </div>
           </div>,
           document.body

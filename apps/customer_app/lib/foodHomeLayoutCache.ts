@@ -4,8 +4,13 @@ import { STORAGE_KEYS } from "@/constants";
 import type { FoodHomeLayoutKey } from "@/lib/foodHomeLayout";
 import {
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
+  DEFAULT_GRID_FIRST_UNDER_250,
   parseGridFirstSubscriptionRowBgColor,
   parseGridFirstSubscriptionRowEnabled,
+  parseGridFirstUnder250Enabled,
+  parseGridFirstUnder250ImageUrl,
+  parseGridFirstUnder250MaxPrice,
+  parseGridFirstUnder250Title,
 } from "@/lib/foodHomeLayout";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import {
@@ -13,6 +18,8 @@ import {
   type FoodHomeLayoutResult,
 } from "@/services/foodHomeLayout.service";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
+import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
+import { applyGridFirstImmersiveChrome } from "@/lib/gridFirstImmersiveChrome";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 
 export const FOOD_HOME_LAYOUT_STALE_MS = 5 * 60 * 1000;
@@ -72,25 +79,41 @@ export function buildFoodHomeLayoutQueryKey(hints: GeoHints) {
   return ["food-home-layout", hints.pincode, hints.state, hints.lat, hints.lng] as const;
 }
 
+function normalizeCachedFoodHomeLayout(entry: CachedFoodHomeLayoutEntry): FoodHomeLayoutResult {
+  return {
+    layoutKey: entry.layoutKey,
+    stateId: entry.stateId,
+    stateName: entry.stateName,
+    gridFirstHeroMedia: entry.gridFirstHeroMedia ?? [],
+    gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
+      entry.gridFirstSubscriptionRowEnabled
+    ),
+    gridFirstSubscriptionRowText:
+      entry.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
+    gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
+      entry.gridFirstSubscriptionRowBgColor
+    ),
+    gridFirstUnder250Enabled: parseGridFirstUnder250Enabled(entry.gridFirstUnder250Enabled),
+    gridFirstUnder250MaxPrice: parseGridFirstUnder250MaxPrice(entry.gridFirstUnder250MaxPrice),
+    gridFirstUnder250Title: parseGridFirstUnder250Title(
+      entry.gridFirstUnder250Title,
+      DEFAULT_GRID_FIRST_UNDER_250.title
+    ),
+    gridFirstUnder250FilterLabel: parseGridFirstUnder250Title(
+      entry.gridFirstUnder250FilterLabel,
+      DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+    ),
+    gridFirstUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(entry.gridFirstUnder250TabImageUrl),
+    gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(entry.gridFirstUnder250HeroImageUrl),
+  };
+}
+
 export async function readCachedFoodHomeLayout(
   hints: GeoHints
 ): Promise<FoodHomeLayoutResult | undefined> {
   const memoryHit = readMemoryEntry(hints);
   if (memoryHit) {
-      return {
-        layoutKey: memoryHit.layoutKey,
-        stateId: memoryHit.stateId,
-        stateName: memoryHit.stateName,
-        gridFirstHeroMedia: memoryHit.gridFirstHeroMedia ?? [],
-        gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
-          memoryHit.gridFirstSubscriptionRowEnabled
-        ),
-        gridFirstSubscriptionRowText:
-          memoryHit.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
-        gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
-          memoryHit.gridFirstSubscriptionRowBgColor
-        ),
-      };
+    return normalizeCachedFoodHomeLayout(memoryHit);
   }
 
   const blob = await readPersistedBlob();
@@ -98,24 +121,25 @@ export async function readCachedFoodHomeLayout(
     const hit = blob[key];
     if (hit?.layoutKey) {
       memoryByKey.set(key, hit);
-      return {
-        layoutKey: hit.layoutKey,
-        stateId: hit.stateId,
-        stateName: hit.stateName,
-        gridFirstHeroMedia: hit.gridFirstHeroMedia ?? [],
-        gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
-          hit.gridFirstSubscriptionRowEnabled
-        ),
-        gridFirstSubscriptionRowText:
-          hit.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
-        gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
-          hit.gridFirstSubscriptionRowBgColor
-        ),
-      };
+      return normalizeCachedFoodHomeLayout(hit);
     }
   }
   return undefined;
 }
+
+/** Warm layout + hero media from disk before first home paint. */
+export async function hydrateFoodHomeLayoutMemoryFromStorage(): Promise<void> {
+  const blob = await readPersistedBlob();
+  for (const [key, entry] of Object.entries(blob)) {
+    if (!entry?.layoutKey) continue;
+    memoryByKey.set(key, entry);
+    prefetchGridFirstHeroMedia(entry.gridFirstHeroMedia);
+    prefetchMealsUnder250HeroMedia(entry);
+    if (entry.layoutKey === "grid_first") applyGridFirstImmersiveChrome(true);
+  }
+}
+
+void hydrateFoodHomeLayoutMemoryFromStorage();
 
 export async function writeCachedFoodHomeLayout(
   hints: GeoHints,
@@ -143,6 +167,8 @@ export async function fetchFoodHomeLayoutWithCache(
     ...(hints.lat != null && hints.lng != null ? { lat: hints.lat, lng: hints.lng } : {}),
   });
   prefetchGridFirstHeroMedia(result.gridFirstHeroMedia);
+  prefetchMealsUnder250HeroMedia(result);
+  if (result.layoutKey === "grid_first") applyGridFirstImmersiveChrome(true);
   await writeCachedFoodHomeLayout(hints, result);
   return result;
 }
@@ -158,6 +184,8 @@ export async function hydrateFoodHomeLayoutForHints(
   const cached = await readCachedFoodHomeLayout(hints);
   if (cached?.layoutKey) {
     prefetchGridFirstHeroMedia(cached.gridFirstHeroMedia);
+    prefetchMealsUnder250HeroMedia(cached);
+    if (cached.layoutKey === "grid_first") applyGridFirstImmersiveChrome(true);
     queryClient.setQueryData(queryKey, cached);
   }
   return cached;
@@ -215,20 +243,7 @@ export function getSyncFoodHomeLayoutFromQueryClient(
   if (fromQuery?.layoutKey) return fromQuery;
   const fromMemory = readMemoryEntry(hints);
   if (!fromMemory?.layoutKey) return undefined;
-  return {
-    layoutKey: fromMemory.layoutKey,
-    stateId: fromMemory.stateId,
-    stateName: fromMemory.stateName,
-    gridFirstHeroMedia: fromMemory.gridFirstHeroMedia ?? [],
-    gridFirstSubscriptionRowEnabled: parseGridFirstSubscriptionRowEnabled(
-      fromMemory.gridFirstSubscriptionRowEnabled
-    ),
-    gridFirstSubscriptionRowText:
-      fromMemory.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
-    gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
-      fromMemory.gridFirstSubscriptionRowBgColor
-    ),
-  };
+  return normalizeCachedFoodHomeLayout(fromMemory);
 }
 
 export type { FoodHomeLayoutKey };

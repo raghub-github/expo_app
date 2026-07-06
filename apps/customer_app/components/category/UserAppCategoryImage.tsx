@@ -42,6 +42,7 @@ export function UserAppCategoryImage({
         contentFit={contentFit}
         cachePolicy="memory-disk"
         recyclingKey={cacheKey ?? uri}
+        priority="high"
         transition={0}
         onError={() => setFailed(true)}
       />

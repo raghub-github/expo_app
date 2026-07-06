@@ -1,10 +1,13 @@
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
+import { StoreText } from "./StoreText";
 import { StorePastOrderRow, type PastOrderItem } from "./StorePastOrderRow";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 export type StorePastOrdersSectionProps = {
   items: PastOrderItem[];
@@ -19,15 +22,20 @@ function StackedThumbnails({ items }: { items: PastOrderItem[] }) {
   const thumbs = items.slice(0, 2);
   return (
     <View style={styles.thumbStack}>
-      {thumbs.map((po, idx) => (
-        <View key={po.menuItem.id} style={[styles.thumbWrap, idx > 0 && styles.thumbOverlap]}>
-          {po.menuItem.imageUrl ? (
-            <Image source={{ uri: po.menuItem.imageUrl }} style={styles.thumbImage} resizeMode="cover" />
-          ) : (
-            <MenuItemImagePlaceholder size="xs" />
-          )}
-        </View>
-      ))}
+      {thumbs.map((po, idx) => {
+        const uri = po.menuItem.imageUrl?.trim()
+          ? (toAbsoluteImageUrl(po.menuItem.imageUrl) ?? po.menuItem.imageUrl)
+          : null;
+        return (
+          <View key={po.menuItem.id} style={[styles.thumbWrap, idx > 0 && styles.thumbOverlap]}>
+            {uri ? (
+              <Image source={{ uri }} style={styles.thumbImage} contentFit="cover" />
+            ) : (
+              <MenuItemImagePlaceholder size="xs" />
+            )}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -53,8 +61,10 @@ export function StorePastOrdersSection({
     <View style={styles.section}>
       <TouchableOpacity style={styles.header} onPress={() => setExpanded((v) => !v)} activeOpacity={0.8}>
         <View style={styles.headerText}>
-          <Text style={styles.title}>Your Orders and Collections</Text>
-          <Text style={styles.sub}>Past customisations are pre-selected</Text>
+          <StoreText style={styles.title} bold>
+            Your Orders and Collections
+          </StoreText>
+          <StoreText style={styles.sub}>Past customisations are pre-selected</StoreText>
         </View>
         <Ionicons
           name={expanded ? "chevron-up" : "chevron-down"}
@@ -79,9 +89,9 @@ export function StorePastOrdersSection({
           {!showAll && hiddenCount > 0 ? (
             <TouchableOpacity style={styles.seeMore} onPress={() => setShowAll(true)} activeOpacity={0.8}>
               <StackedThumbnails items={hiddenItems} />
-              <Text style={styles.seeMoreText}>
+              <StoreText style={styles.seeMoreText} bold>
                 See {hiddenCount} more item{hiddenCount > 1 ? "s" : ""}
-              </Text>
+              </StoreText>
               <Ionicons name="chevron-down" size={16} color={StoreTheme.accentMintDark} />
             </TouchableOpacity>
           ) : null}
@@ -95,8 +105,8 @@ const styles = StyleSheet.create({
   section: {
     backgroundColor: StoreTheme.background,
     paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 6,
+    paddingTop: 8,
+    paddingBottom: 4,
     borderBottomWidth: 8,
     borderBottomColor: "#F3F4F6",
   },
@@ -104,34 +114,34 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
   headerText: {
     flex: 1,
+    paddingRight: 12,
   },
   title: {
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 17,
     color: StoreTheme.textPrimary,
+    letterSpacing: -0.2,
   },
   sub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
-    marginTop: 3,
+    marginTop: 4,
   },
-  list: {},
+  list: {
+    paddingBottom: 4,
+  },
   seeMore: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    paddingVertical: 14,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: StoreTheme.border,
+    paddingVertical: 16,
   },
   seeMoreText: {
     fontSize: 14,
-    fontWeight: "600",
     color: StoreTheme.accentMintDark,
   },
   thumbStack: {
@@ -139,9 +149,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   thumbWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     overflow: "hidden",
     borderWidth: 2,
     borderColor: "#fff",

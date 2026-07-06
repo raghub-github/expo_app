@@ -35,8 +35,16 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
 import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
-import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
-import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
+import { navigateToMerchant, showMerchantNavShutter } from "@/lib/navigateToMerchant";
+import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
+import {
+  markFoodHomeListScrollActive,
+  markFoodHomeListScrollEnded,
+} from "@/lib/foodHomeScrollGuard";
+import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
+import type { MerchantSummary } from "@/services/merchant.service";
+import { prefetchGridFirstHeroMedia, prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedia";
+import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import { addressService } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress, matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
@@ -56,18 +64,23 @@ import {
   RestaurantListSkeleton,
 } from "@/components/ShimmerSkeleton";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
-import { FoodHomeHeroCarousel, gridFirstSkySectionHeight } from "@/components/home/FoodHomeHeroCarousel";
+import { FoodHomeHeroCarousel, gridFirstSkySectionHeight, GRID_FIRST_SKY_TOP } from "@/components/home/FoodHomeHeroCarousel";
 import { FoodHomeGoldStrip } from "@/components/home/FoodHomeGoldStrip";
 import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
 import { FoodHomeGridFirstStickyChrome } from "@/components/home/FoodHomeGridFirstStickyChrome";
+import { FoodHomeFilterRow } from "@/components/home/FoodHomeFilterRow";
 import {
   defaultGridFirstStickyMetrics,
+  GRID_FIRST_FILTER_ROW_H,
+  GRID_FIRST_FILTER_SHOW_SCROLL_Y,
+  GRID_FIRST_STICK_HANDOFF_PX,
   gridFirstCategoryBlockHeight,
   gridFirstCategoryStickScrollY,
+  gridFirstFilterStickScrollY,
   gridFirstSearchStickScrollY,
   type GridFirstStickyMetrics,
 } from "@/lib/gridFirstStickyLayout";
-import { FoodHomeCategoryTabs } from "@/components/home/FoodHomeCategoryTabs";
+import { FoodHomeCategoryTabs, computeGridFirstCategoryTabMetrics } from "@/components/home/FoodHomeCategoryTabs";
 import { MerchantGridCard } from "@/components/home/MerchantGridCard";
 import { pickLovedByCustomersMerchants } from "@/lib/lovedByCustomers";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
@@ -76,6 +89,7 @@ import {
   getUserAppCategoriesCachedAt,
   prefetchUserAppCategoryImages,
   readSyncUserAppCategories,
+  seedUserAppCategoriesQueryIfCached,
   USER_APP_CATEGORIES_QUERY_OPTIONS,
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
@@ -90,11 +104,16 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   filterAndSortMerchants,
   merchantListingStoreCountLabel,
+  openRestaurantsDeliveringLabel,
   resolveMerchantLiveStatus,
 } from "@/lib/merchantListing";
 import { useFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
+import { DEFAULT_FOOD_HOME_LAYOUT, DEFAULT_GRID_FIRST_UNDER_250 } from "@/lib/foodHomeLayout";
+import { fetchFoodItemsUnderPriceGrouped } from "@/services/foodHomeItemsUnderPrice.service";
+import { Image } from "expo-image";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { FoodHomeCategoryChips } from "@/components/home/FoodHomeCategoryVariants";
 import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
 
@@ -159,12 +178,10 @@ type CategoryRailLayout = {
 };
 
 /** Sizes the rail so N columns fit in the first viewport without clipping. */
-function computeCategoryRailMetrics(windowWidth: number, insetRight: number): CategoryRailLayout {
+function computeCategoryRailMetrics(windowWidth: number, horizontalSafeInset = 0): CategoryRailLayout {
+  const pagePad = PAGE_PAD + Math.max(0, horizontalSafeInset);
   const n = CATEGORY_RAIL_TARGET_COLUMNS;
-  const usable = Math.max(
-    0,
-    windowWidth - PAGE_PAD - Math.max(4, insetRight) - 2
-  );
+  const usable = Math.max(0, windowWidth - pagePad * 2);
   let columnGap = 37;
   let itemW = (usable - (n - 1) * columnGap) / n;
   if (itemW < 52) {
@@ -177,7 +194,7 @@ function computeCategoryRailMetrics(windowWidth: number, insetRight: number): Ca
   }
   itemW = Math.floor(Math.max(48, itemW));
   const circle = Math.min(52, Math.max(44, Math.round(itemW - 6)));
-  const imgSize = Math.round(circle * 0.88);
+  const imgSize = circle;
   return { itemW, columnGap, circle, imgSize };
 }
 
@@ -187,11 +204,16 @@ export default function FoodMerchantsScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const openMerchantPage = useCallback(
-    (id: string) => {
-      prefetchMerchantDetail(queryClient, id);
-      router.push({ pathname: "/home/merchant/[id]", params: { id } });
+    (id: string, merchant?: MerchantSummary) => {
+      navigateToMerchant(router, queryClient, id, merchant);
     },
     [queryClient, router]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      useMerchantNavTransitionStore.getState().hide();
+    }, [])
   );
   const {
     address,
@@ -276,17 +298,27 @@ export default function FoodMerchantsScreen() {
   const { bookmarkSet, refetch: refetchBookmarks } = useStoreBookmarks();
   const {
     layoutKey: foodHomeLayoutKeyRaw,
+    cachedLayoutKey,
     layoutReady,
     canQuery: layoutCanQuery,
     gridFirstHeroMedia,
     gridFirstSubscriptionRowEnabled,
     gridFirstSubscriptionRowText,
     gridFirstSubscriptionRowBgColor,
+    gridFirstUnder250Enabled,
+    gridFirstUnder250FilterLabel,
+    gridFirstUnder250TabImageUrl,
+    gridFirstUnder250HeroImageUrl,
+    gridFirstUnder250MaxPrice,
   } = useFoodHomeLayout(address, merchantsAnchorCoords);
 
-  useEffect(() => {
-    if (gridFirstHeroMedia.length > 0) prefetchGridFirstHeroMedia(gridFirstHeroMedia);
-  }, [gridFirstHeroMedia]);
+  useLayoutEffect(() => {
+    seedUserAppCategoriesQueryIfCached(queryClient, HOME_CATEGORY_STORE_TYPE);
+    const cachedCategories = readSyncUserAppCategories(HOME_CATEGORY_STORE_TYPE);
+    if (cachedCategories) {
+      prefetchUserAppCategoryImages(cachedCategories.items ?? [], cachedCategories.allTab?.imageUrl);
+    }
+  }, [queryClient]);
 
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
@@ -320,8 +352,9 @@ export default function FoodMerchantsScreen() {
       }),
     // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
-    staleTime: 0,
+    staleTime: 60_000,
     gcTime: 5 * 60 * 1000,
+    placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
 
@@ -351,12 +384,28 @@ export default function FoodMerchantsScreen() {
 
   const homeFeaturedOffers = featuredOffersData?.offers ?? [];
 
+  useLayoutEffect(() => {
+    if (gridFirstHeroMedia.length > 0) prefetchGridFirstHeroMedia(gridFirstHeroMedia);
+    if (homeFeaturedOffers.length > 0) prefetchFeaturedOfferHeroImages(homeFeaturedOffers);
+    if (gridFirstUnder250TabImageUrl || gridFirstUnder250HeroImageUrl) {
+      prefetchMealsUnder250HeroMedia({
+        gridFirstUnder250TabImageUrl,
+        gridFirstUnder250HeroImageUrl,
+      });
+    }
+  }, [
+    gridFirstHeroMedia,
+    homeFeaturedOffers,
+    gridFirstUnder250TabImageUrl,
+    gridFirstUnder250HeroImageUrl,
+  ]);
+
   useEffect(() => {
     void hydrateDietaryPreferences();
   }, [hydrateDietaryPreferences]);
 
   const {
-    data: apiHomeCategories = [],
+    data: homeCategoriesResponse,
     isPending: homeCategoriesPending,
     refetch: refetchHomeCategories,
   } = useQuery({
@@ -368,11 +417,14 @@ export default function FoodMerchantsScreen() {
     placeholderData: (previousData) => previousData,
   });
 
-  useEffect(() => {
-    if (apiHomeCategories.length > 0) {
-      prefetchUserAppCategoryImages(apiHomeCategories);
+  const apiHomeCategories = homeCategoriesResponse?.items ?? [];
+  const categoryAllTab = homeCategoriesResponse?.allTab ?? { label: "All", imageUrl: null };
+
+  useLayoutEffect(() => {
+    if (apiHomeCategories.length > 0 || categoryAllTab.imageUrl) {
+      prefetchUserAppCategoryImages(apiHomeCategories, categoryAllTab.imageUrl);
     }
-  }, [apiHomeCategories]);
+  }, [apiHomeCategories, categoryAllTab.imageUrl]);
 
   const homeCategoryRailItems = useMemo(() => {
     const deduped = dedupeUserAppCategories(apiHomeCategories ?? []);
@@ -384,8 +436,7 @@ export default function FoodMerchantsScreen() {
     }));
   }, [apiHomeCategories]);
 
-  const categoryRailBootstrapping =
-    homeCategoryRailItems.length === 0 && homeCategoriesPending;
+  const categoryRailBootstrapping = false;
 
   const homeCategoryRailColumns = useMemo(
     () => chunkIntoPairs(homeCategoryRailItems),
@@ -393,8 +444,17 @@ export default function FoodMerchantsScreen() {
   );
 
   const categoryRailLayout = useMemo(
-    () => computeCategoryRailMetrics(windowWidth, insets.right),
-    [windowWidth, insets.right]
+    () => computeCategoryRailMetrics(windowWidth, Math.max(insets.left, insets.right)),
+    [windowWidth, insets.left, insets.right]
+  );
+
+  const gridFirstCategoryTabLayout = useMemo(
+    () =>
+      computeGridFirstCategoryTabMetrics(
+        windowWidth,
+        Math.max(insets.left, insets.right)
+      ),
+    [windowWidth, insets.left, insets.right]
   );
 
   /** Offer carousel — same UI as home tab; merchant banner image or default art. */
@@ -475,6 +535,11 @@ export default function FoodMerchantsScreen() {
     [filteredAndSortedMerchants, statusMap, openNow]
   );
 
+  const openRestaurantCountLabel = useMemo(
+    () => openRestaurantsDeliveringLabel(merchants, statusMap),
+    [merchants, statusMap]
+  );
+
   const handleBack = () => foodHomeRouterBack(router);
   const handleSearch = () => router.push("/search");
   const handleLocationPress = () => router.push("/location");
@@ -483,6 +548,53 @@ export default function FoodMerchantsScreen() {
     setGridFirstCategoryTabId(id);
     router.push(`/home/category/${slug}`);
   }, [router]);
+  const handleMealsUnderPricePress = useCallback(() => {
+    navigateToMealsUnderPrice(router, queryClient);
+  }, [router, queryClient]);
+  const showMealsUnderPriceChip =
+    layoutReady &&
+    (foodHomeLayoutKeyRaw ?? "classic") === "grid_first" &&
+    gridFirstUnder250Enabled &&
+    gridFirstUnder250FilterLabel.trim().length > 0;
+
+  useEffect(() => {
+    if (!showMealsUnderPriceChip) return;
+    if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords.longitude == null) return;
+    const maxPrice = gridFirstUnder250MaxPrice || DEFAULT_GRID_FIRST_UNDER_250.maxPrice;
+    void queryClient.prefetchQuery({
+      queryKey: [
+        "meals-under-price-grouped",
+        merchantsAnchorCoords.latitude,
+        merchantsAnchorCoords.longitude,
+        maxPrice,
+        vegOnly,
+      ],
+      queryFn: () =>
+        fetchFoodItemsUnderPriceGrouped({
+          lat: merchantsAnchorCoords.latitude,
+          lng: merchantsAnchorCoords.longitude,
+          maxPrice,
+          vegOnly,
+          maxStores: 15,
+          itemsPerStore: 6,
+        }),
+      staleTime: 60_000,
+    });
+    for (const raw of [gridFirstUnder250TabImageUrl, gridFirstUnder250HeroImageUrl]) {
+      if (!raw?.trim()) continue;
+      const uri = toAbsoluteImageUrl(raw) ?? raw;
+      void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+    }
+  }, [
+    showMealsUnderPriceChip,
+    merchantsAnchorCoords?.latitude,
+    merchantsAnchorCoords?.longitude,
+    gridFirstUnder250MaxPrice,
+    gridFirstUnder250TabImageUrl,
+    gridFirstUnder250HeroImageUrl,
+    vegOnly,
+    queryClient,
+  ]);
 
   const gridFirstCategoryTabsEl = useMemo(() => {
     if (categoryRailBootstrapping) {
@@ -509,15 +621,29 @@ export default function FoodMerchantsScreen() {
         onSelect={handleCategorySelect}
         activeId={gridFirstCategoryTabId}
         onActiveIdChange={setGridFirstCategoryTabId}
-        layout={categoryRailLayout}
+        allTabLabel={categoryAllTab.label}
+        allTabImageUrl={categoryAllTab.imageUrl}
+        showUnderPriceTab={showMealsUnderPriceChip}
+        underPriceLabel={gridFirstUnder250FilterLabel}
+        underPriceMaxPrice={gridFirstUnder250MaxPrice}
+        underPriceImageUrl={gridFirstUnder250TabImageUrl}
+        onUnderPricePress={handleMealsUnderPricePress}
+        layout={gridFirstCategoryTabLayout}
       />
     );
   }, [
     categoryRailBootstrapping,
     homeCategoryRailItems,
-    categoryRailLayout,
+    gridFirstCategoryTabLayout,
     gridFirstCategoryTabId,
     handleCategorySelect,
+    handleMealsUnderPricePress,
+    showMealsUnderPriceChip,
+    gridFirstUnder250FilterLabel,
+    gridFirstUnder250TabImageUrl,
+    gridFirstUnder250MaxPrice,
+    categoryAllTab.label,
+    categoryAllTab.imageUrl,
   ]);
 
   const classicCategoryRailEl = useMemo(() => {
@@ -549,10 +675,7 @@ export default function FoodMerchantsScreen() {
           styles.categoryRailScrollContent,
           {
             gap: categoryRailLayout.columnGap,
-            paddingRight:
-              PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
-            paddingEnd:
-              PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
+            paddingHorizontal: PAGE_PAD + Math.max(insets.left, insets.right),
           },
         ]}
       >
@@ -631,6 +754,16 @@ export default function FoodMerchantsScreen() {
     if (noPackagingCharges) n += 1;
     return n;
   }, [deliveryFilter, selectedCuisines, filterHasOffers, noPackagingCharges]);
+
+  const handleGridFirstSortToggle = useCallback(() => {
+    setSortBy((s) => (s === "distance" ? "default" : "distance"));
+  }, []);
+
+  const handleClassicSortToggle = useCallback(() => {
+    setSortBy((s) =>
+      s === "default" ? "rating" : s === "rating" ? "distance" : "default"
+    );
+  }, []);
   const onRefresh = async () => {
     setRefreshing(true);
     try {
@@ -770,11 +903,57 @@ export default function FoodMerchantsScreen() {
     queryClient,
   ]);
 
-  const resolvedFoodHomeLayoutKey = foodHomeLayoutKeyRaw ?? "classic";
-  const isGridFirstLayout = layoutReady && resolvedFoodHomeLayoutKey === "grid_first";
+  const resolvedFoodHomeLayoutKey =
+    foodHomeLayoutKeyRaw ?? cachedLayoutKey ?? (layoutReady ? DEFAULT_FOOD_HOME_LAYOUT : "classic");
+  const isGridFirstLayout = resolvedFoodHomeLayoutKey === "grid_first";
   const showGridFirstSubscriptionRow =
     gridFirstSubscriptionRowEnabled && gridFirstSubscriptionRowText.trim().length > 0;
-  const useGridFirstCategoryTabs = isGridFirstLayout && showGridFirstSubscriptionRow;
+  const useGridFirstCategoryTabs = isGridFirstLayout;
+
+  const filterRowProps = useMemo(
+    () => ({
+      storeCountLabel,
+      hasActiveFilters,
+      sortBy,
+      openNow,
+      noPackagingCharges,
+      showMealsUnderPriceChip: showMealsUnderPriceChip,
+      mealsUnderPriceLabel: gridFirstUnder250FilterLabel,
+      onOpenFilters: () => setFilterSheetVisible(true),
+      onToggleSort: isGridFirstLayout ? handleGridFirstSortToggle : handleClassicSortToggle,
+      onToggleOpenNow: () => setOpenNow((v) => !v),
+      onToggleNoPackagingCharges: () => setNoPackagingCharges((v) => !v),
+      onMealsUnderPricePress: handleMealsUnderPricePress,
+    }),
+    [
+      storeCountLabel,
+      hasActiveFilters,
+      sortBy,
+      openNow,
+      noPackagingCharges,
+      showMealsUnderPriceChip,
+      gridFirstUnder250FilterLabel,
+      handleMealsUnderPricePress,
+      isGridFirstLayout,
+      handleGridFirstSortToggle,
+      handleClassicSortToggle,
+    ]
+  );
+
+  const gridFirstFilterRowEl = useMemo(
+    () => <FoodHomeFilterRow variant="grid_first" compact {...filterRowProps} />,
+    [filterRowProps]
+  );
+
+  const gridFirstStickyFilterRowEl = useMemo(
+    () => <FoodHomeFilterRow variant="grid_first" compact {...filterRowProps} />,
+    [filterRowProps]
+  );
+
+  const classicFilterRowEl = useMemo(
+    () => <FoodHomeFilterRow variant="classic" {...filterRowProps} />,
+    [filterRowProps]
+  );
   const classicCategoryRailMinHeight =
     categoryRailLayout.circle * 2 + RAIL_ROW_GAP + 38;
   const setImmersiveStatusBarChrome = useScreenChromeStore((s) => s.setImmersiveStatusBarChrome);
@@ -784,13 +963,10 @@ export default function FoodMerchantsScreen() {
   isGridFirstLayoutRef.current = isGridFirstLayout;
 
   const syncGridFirstStickyStatusBar = useCallback(
-    (searchSticky: boolean) => {
+    (_searchSticky: boolean) => {
       if (!isGridFirstLayoutRef.current) return;
-      if (searchSticky) {
-        setStatusBarBackground("#FFFFFF", "dark");
-      } else {
-        setStatusBarBackground("transparent", "dark");
-      }
+      // Keep translucent at top so hero media stays visible under the status bar.
+      setStatusBarBackground("transparent", "dark");
     },
     [setStatusBarBackground]
   );
@@ -822,12 +998,19 @@ export default function FoodMerchantsScreen() {
         return;
       }
       setImmersiveStatusBarChrome(true);
+      setStatusBarBackground("transparent", "dark");
       return () => {
         setImmersiveStatusBarChrome(false);
         useScreenChromeStore.getState().resetStatusBarBackground();
       };
     }, [isGridFirstLayout, hasStoresInArea, setImmersiveStatusBarChrome, setStatusBarBackground])
   );
+
+  useLayoutEffect(() => {
+    if (!isGridFirstLayout || !hasStoresInArea) return;
+    setImmersiveStatusBarChrome(true);
+    setStatusBarBackground("transparent", "dark");
+  }, [isGridFirstLayout, hasStoresInArea, setImmersiveStatusBarChrome, setStatusBarBackground]);
 
   const isNonServiceableScreen =
     layoutCanQuery && layoutReady && !hasStoresInArea && !showSkeleton && !vegOnly;
@@ -848,6 +1031,10 @@ export default function FoodMerchantsScreen() {
   const [gridFirstCategoryLayout, setGridFirstCategoryLayout] = useState({
     y: 0,
     height: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
+  });
+  const [gridFirstFilterLayout, setGridFirstFilterLayout] = useState({
+    y: 0,
+    height: GRID_FIRST_FILTER_ROW_H,
   });
 
   useEffect(() => {
@@ -878,12 +1065,21 @@ export default function FoodMerchantsScreen() {
           ? gridFirstCategoryLayout.y
           : gridFirstSkyHeight + goldStripHeight,
       categoryBlockHeight: gridFirstCategoryLayout.height || fallbackCategoryHeight,
+      filterBlockY:
+        gridFirstFilterLayout.y > 0
+          ? gridFirstFilterLayout.y
+          : (gridFirstCategoryLayout.y > 0
+              ? gridFirstCategoryLayout.y
+              : gridFirstSkyHeight + goldStripHeight) +
+            (gridFirstCategoryLayout.height || fallbackCategoryHeight),
+      filterBlockHeight: gridFirstFilterLayout.height || GRID_FIRST_FILTER_ROW_H,
     };
   }, [
     statusBarTopInset,
     gridFirstSkyHeight,
     gridFirstGoldStripH,
     gridFirstCategoryLayout,
+    gridFirstFilterLayout,
     categoryRailLayout.circle,
     showGridFirstSubscriptionRow,
     useGridFirstCategoryTabs,
@@ -898,15 +1094,28 @@ export default function FoodMerchantsScreen() {
     () => gridFirstCategoryStickScrollY(gridFirstStickyMetrics),
     [gridFirstStickyMetrics]
   );
+  const gridFirstFilterStickAt = useMemo(
+    () => gridFirstFilterStickScrollY(gridFirstStickyMetrics),
+    [gridFirstStickyMetrics]
+  );
 
   const gridFirstScrollY = useSharedValue(0);
-  const gridFirstSearchStickAtSv = useSharedValue(0);
-  const gridFirstCategoryStickAtSv = useSharedValue(0);
+  const gridFirstSearchStickAtSv = useSharedValue(gridFirstSearchStickAt);
+  const gridFirstCategoryStickAtSv = useSharedValue(gridFirstCategoryStickAt);
+  const gridFirstFilterStickAtSv = useSharedValue(gridFirstFilterStickAt);
 
   useEffect(() => {
     gridFirstSearchStickAtSv.value = gridFirstSearchStickAt;
     gridFirstCategoryStickAtSv.value = gridFirstCategoryStickAt;
-  }, [gridFirstSearchStickAt, gridFirstCategoryStickAt, gridFirstSearchStickAtSv, gridFirstCategoryStickAtSv]);
+    gridFirstFilterStickAtSv.value = gridFirstFilterStickAt;
+  }, [
+    gridFirstSearchStickAt,
+    gridFirstCategoryStickAt,
+    gridFirstFilterStickAt,
+    gridFirstSearchStickAtSv,
+    gridFirstCategoryStickAtSv,
+    gridFirstFilterStickAtSv,
+  ]);
 
   const onGridFirstScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -915,17 +1124,83 @@ export default function FoodMerchantsScreen() {
     [gridFirstScrollY]
   );
 
+  const onFoodHomeListScrollBegin = useCallback(() => {
+    markFoodHomeListScrollActive();
+  }, []);
+
+  const onFoodHomeListScrollEnd = useCallback(() => {
+    markFoodHomeListScrollEnded();
+  }, []);
+
   const gridFirstCategoryFlowStyle = useAnimatedStyle(() => ({
     opacity: interpolate(
       gridFirstScrollY.value,
       [
-        gridFirstCategoryStickAtSv.value - 10,
-        gridFirstCategoryStickAtSv.value + 10,
+        gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX,
+        gridFirstCategoryStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX,
       ],
       [1, 0],
       Extrapolation.CLAMP
     ),
   }));
+
+  const gridFirstFilterFlowStyle = useAnimatedStyle(() => {
+    const y = gridFirstScrollY.value;
+    const stickyAt = gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX;
+    const handoffAt = gridFirstFilterStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX;
+
+    if (y < GRID_FIRST_FILTER_SHOW_SCROLL_Y) {
+      return {
+        opacity: 0,
+        maxHeight: 0,
+        marginBottom: 0,
+        overflow: "hidden" as const,
+        transform: [{ translateY: -8 }],
+      };
+    }
+
+    // Sticky overlay owns the filter while the header is pinned.
+    if (y >= stickyAt && y < handoffAt - GRID_FIRST_STICK_HANDOFF_PX) {
+      return {
+        opacity: 0,
+        maxHeight: 0,
+        marginBottom: 0,
+        overflow: "hidden" as const,
+        transform: [{ translateY: 0 }],
+      };
+    }
+
+    if (y < handoffAt - GRID_FIRST_STICK_HANDOFF_PX) {
+      const progress = interpolate(
+        y,
+        [GRID_FIRST_FILTER_SHOW_SCROLL_Y, GRID_FIRST_FILTER_SHOW_SCROLL_Y + GRID_FIRST_STICK_HANDOFF_PX],
+        [0, 1],
+        Extrapolation.CLAMP
+      );
+      return {
+        opacity: progress,
+        maxHeight: GRID_FIRST_FILTER_ROW_H + 12,
+        marginBottom: SECTION_GAP_SM * progress,
+        overflow: "hidden" as const,
+        transform: [{ translateY: interpolate(progress, [0, 1], [-8, 0], Extrapolation.CLAMP) }],
+      };
+    }
+
+    const progress = interpolate(
+      y,
+      [handoffAt - GRID_FIRST_STICK_HANDOFF_PX, handoffAt + GRID_FIRST_STICK_HANDOFF_PX],
+      [0, 1],
+      Extrapolation.CLAMP
+    );
+
+    return {
+      opacity: progress,
+      maxHeight: GRID_FIRST_FILTER_ROW_H + 12,
+      marginBottom: SECTION_GAP_SM * progress,
+      overflow: "hidden" as const,
+      transform: [{ translateY: interpolate(progress, [0, 1], [-6, 0], Extrapolation.CLAMP) }],
+    };
+  });
 
   useAnimatedReaction(
     () => gridFirstScrollY.value >= gridFirstSearchStickAtSv.value - 10,
@@ -990,11 +1265,11 @@ export default function FoodMerchantsScreen() {
   // Single scroll: header in flow, then content (categories → filters → list). Sticky rail inside content area only.
   return (
     <View style={styles.container}>
-      <StatusBar
-        style="dark"
-        translucent={isGridFirstLayout}
-        backgroundColor={isGridFirstLayout ? "transparent" : undefined}
-      />
+      {isGridFirstLayout ? (
+        <StatusBar style="dark" translucent backgroundColor="transparent" />
+      ) : (
+        <StatusBar style="dark" />
+      )}
 
       {!isGridFirstLayout ? (
         <GMHeader
@@ -1019,28 +1294,19 @@ export default function FoodMerchantsScreen() {
           showsVerticalScrollIndicator={false}
           onScroll={isGridFirstLayout ? onGridFirstScroll : undefined}
           scrollEventThrottle={isGridFirstLayout ? 16 : undefined}
+          onScrollBeginDrag={onFoodHomeListScrollBegin}
+          onScrollEndDrag={onFoodHomeListScrollEnd}
+          onMomentumScrollEnd={onFoodHomeListScrollEnd}
           refreshControl={
             <RefreshControl
-              refreshing={refreshing || (isFetching && !isLoading)}
+              refreshing={refreshing}
               onRefresh={onRefresh}
               tintColor={GatiMitraColors.primaryMint}
               colors={[GatiMitraColors.primaryMint]}
             />
           }
         >
-          <View
-            style={
-              isGridFirstLayout
-                ? [
-                    styles.gridFirstSkyBlock,
-                    // Pull hero under root spacer only while spacer is still shown.
-                    // When immersive chrome hides the spacer, negative margin would push header into status bar.
-                    !hideStatusBarSpacer && { marginTop: -statusBarTopInset },
-                    !showGridFirstSubscriptionRow && styles.gridFirstSkyBlockRoundedBottom,
-                  ]
-                : styles.offersSection
-            }
-          >
+          <View style={isGridFirstLayout ? styles.gridFirstSkyBlock : styles.offersSection}>
             {isGridFirstLayout ? (
               <View style={[styles.gridFirstSkyInner, { height: gridFirstSkyHeight }]}>
                 <FoodHomeHeroCarousel
@@ -1051,11 +1317,14 @@ export default function FoodMerchantsScreen() {
                   topInset={statusBarTopInset}
                 />
                 <View
-                  style={[styles.gridFirstHeaderOverlay, { paddingTop: statusBarTopInset }]}
+                  style={[
+                    styles.gridFirstHeaderOverlay,
+                    { paddingTop: statusBarTopInset + STATUS_BAR_TO_HEADER_GAP },
+                  ]}
                   pointerEvents="box-none"
                 >
                   <FoodHomeGridFirstHeader
-                    topInset={STATUS_BAR_TO_HEADER_GAP}
+                    topInset={0}
                     locationPrimary={gridFirstLocationLabels.primary}
                     locationSecondary={gridFirstLocationLabels.secondary}
                     onLocationPress={handleLocationPress}
@@ -1153,107 +1422,24 @@ export default function FoodMerchantsScreen() {
           </>
           )}
 
-          {/* Dynamic filter bar – Open Now (default on) + Sort + Filters + store count */}
-          <View style={[styles.section, styles.filterBar]}>
-            <View style={styles.filterBarChipsRow}>
-              {foodHomeLayoutKey === "grid_first" ? (
-                <>
-                  <TouchableOpacity
-                    style={[styles.filterChip, hasActiveFilters && styles.filterChipActive]}
-                    onPress={() => setFilterSheetVisible(true)}
-                  >
-                    <Ionicons
-                      name="options-outline"
-                      size={16}
-                      color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
-                    />
-                    <Text style={[styles.filterChipText, hasActiveFilters && styles.filterChipTextActive]}>
-                      Filters
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.filterChip, sortBy === "distance" && styles.filterChipNearFast]}
-                    onPress={() => setSortBy((s) => (s === "distance" ? "default" : "distance"))}
-                  >
-                    <Ionicons
-                      name="flash"
-                      size={16}
-                      color={sortBy === "distance" ? "#15803D" : "#16A34A"}
-                    />
-                    <Text
-                      style={[
-                        styles.filterChipText,
-                        sortBy === "distance" && styles.filterChipTextNearFast,
-                      ]}
-                    >
-                      Near & Fast
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.filterChip, noPackagingCharges && styles.filterChipActive]}
-                    onPress={() => setNoPackagingCharges((v) => !v)}
-                    activeOpacity={0.85}
-                  >
-                    <Text
-                      style={[
-                        styles.filterChipText,
-                        noPackagingCharges && styles.filterChipTextActive,
-                      ]}
-                    >
-                      No packaging charges
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <>
-                  <TouchableOpacity
-                    style={[styles.filterChip, openNow && styles.filterChipActive]}
-                    onPress={() => setOpenNow((v) => !v)}
-                  >
-                    <Ionicons
-                      name="storefront-outline"
-                      size={18}
-                      color={openNow ? "#fff" : GatiMitraColors.primaryMint}
-                    />
-                    <Text style={[styles.filterChipText, openNow && styles.filterChipTextActive]}>
-                      Open Now
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.filterChip, sortBy !== "default" && styles.filterChipActive]}
-                    onPress={() =>
-                      setSortBy((s) =>
-                        s === "default" ? "rating" : s === "rating" ? "distance" : "default"
-                      )
-                    }
-                  >
-                    <Ionicons
-                      name="swap-vertical"
-                      size={18}
-                      color={sortBy !== "default" ? "#fff" : GatiMitraColors.textPrimaryNew}
-                    />
-                    <Text style={[styles.filterChipText, sortBy !== "default" && styles.filterChipTextActive]}>
-                      {sortBy === "default" ? "Sort" : sortBy === "rating" ? "Rating" : "Distance"}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.filterChip, hasActiveFilters && styles.filterChipActive]}
-                    onPress={() => setFilterSheetVisible(true)}
-                  >
-                    <Ionicons
-                      name="options-outline"
-                      size={18}
-                      color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
-                    />
-                    <Text style={[styles.filterChipText, hasActiveFilters && styles.filterChipTextActive]}>
-                      Filters
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              )}
+          {/* Dynamic filter bar – hidden at top on grid-first; sticky overlay reveals on scroll */}
+          {isGridFirstLayout ? (
+            <Animated.View
+              style={[styles.section, styles.filterBar, gridFirstFilterFlowStyle]}
+              onLayout={(e) => {
+                const { y, height } = e.nativeEvent.layout;
+                if (height > 0) {
+                  setGridFirstFilterLayout({ y, height });
+                }
+              }}
+            >
+              {gridFirstFilterRowEl}
+            </Animated.View>
+          ) : (
+            <View style={[styles.section, styles.filterBar]}>
+              {classicFilterRowEl}
             </View>
-            <Text style={styles.filterStoreCount}>{storeCountLabel}</Text>
-          </View>
+          )}
 
           {/* Loved by Customers — layout-specific presentation */}
           {(showSkeleton || lovedByCustomers.length > 0) && (showLovedGrid || showLovedHorizontal) ? (
@@ -1274,7 +1460,8 @@ export default function FoodMerchantsScreen() {
                       key={`loved-${m.id}`}
                       merchant={m}
                       weatherDelayMinutes={weatherDelayMinutes}
-                      onPress={() => openMerchantPage(m.id)}
+                      onPressIn={() => showMerchantNavShutter(m.id)}
+                      onPress={() => openMerchantPage(m.id, m)}
                     />
                   ))}
                 </View>
@@ -1285,6 +1472,9 @@ export default function FoodMerchantsScreen() {
           {/* All nearby restaurants (includes loved stores) */}
           <View style={[styles.section, styles.restaurantSection]}>
             <Text style={styles.sectionHeading}>RESTAURANTS NEAR YOU</Text>
+            {!showSkeleton ? (
+              <Text style={styles.restaurantOpenCount}>{openRestaurantCountLabel}</Text>
+            ) : null}
             {showSkeleton ? (
               <RestaurantListSkeleton count={3} cardWidth={restaurantCardWidth} />
             ) : filteredAndSortedMerchants.length === 0 ? (
@@ -1325,11 +1515,14 @@ export default function FoodMerchantsScreen() {
             metrics={gridFirstStickyMetrics}
             searchStickAt={gridFirstSearchStickAtSv}
             categoryStickAt={gridFirstCategoryStickAtSv}
+            filterStickAt={gridFirstFilterStickAtSv}
             onSearchPress={handleSearch}
             vegOnly={vegOnly}
             onVegChange={setVegOnly}
             categories={useGridFirstCategoryTabs ? gridFirstCategoryTabsEl : null}
+            filters={gridFirstStickyFilterRowEl}
             enableCategorySticky={useGridFirstCategoryTabs}
+            enableFilterSticky
           />
         ) : null}
       </View>
@@ -1497,13 +1690,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     overflow: "hidden",
   },
-  gridFirstSkyBlockRoundedBottom: {
-    borderBottomLeftRadius: 7,
-    borderBottomRightRadius: 7,
-  },
   gridFirstSkyInner: {
     position: "relative",
     overflow: "hidden",
+    backgroundColor: "#F3E8D4",
   },
   gridFirstHeaderOverlay: {
     position: "absolute",
@@ -1511,7 +1701,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 10,
-    elevation: 12,
+    backgroundColor: "transparent",
   },
   nonServiceableContainer: {
     backgroundColor: NON_SERVICEABLE_STATUS_BAR_BG,
@@ -1598,12 +1788,11 @@ const styles = StyleSheet.create({
     marginBottom: SECTION_GAP_SM,
   },
   categoryRailScrollContent: {
-    paddingLeft: PAGE_PAD,
     flexDirection: "row",
     alignItems: "flex-start",
   },
   categoryRailScrollTrail: {
-    width: PAGE_PAD,
+    width: 0,
     flexShrink: 0,
   },
   categoryRailColumn: {
@@ -1652,12 +1841,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(0, 0, 0, 0.06)",
   },
+  filterBarChipsScroll: {
+    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+  },
   filterBarChipsRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    paddingRight: 4,
   },
   filterStoreCount: {
+    flexShrink: 0,
     fontSize: 13,
     fontWeight: "600",
     color: GatiMitraColors.textSecondary,
@@ -1715,8 +1911,17 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     color: GatiMitraColors.textSecondary,
     marginTop: 0,
-    marginBottom: 10,
+    marginBottom: 4,
     paddingHorizontal: 16,
+    textTransform: "uppercase",
+  },
+  restaurantOpenCount: {
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+    color: "#64748B",
+    paddingHorizontal: 16,
+    marginBottom: 12,
     textTransform: "uppercase",
   },
   sectionTitle: {

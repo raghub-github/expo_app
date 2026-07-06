@@ -103,7 +103,7 @@ export async function restoreAndPrefetchLocationWeather(
 
   const options = locationWeatherQueryOptions(params);
   if (!options.enabled) return;
-  void queryClient.prefetchQuery({
+  await queryClient.prefetchQuery({
     ...options,
     staleTime: restored ? staleTimeForWeather(restored) : CLEAR_STALE_MS,
   });

@@ -1,5 +1,6 @@
 import { getSql } from "@/lib/db/client";
 import { listUserAppCategories } from "@/lib/db/operations/user-app-categories";
+import { getUserAppCategoryAllTab } from "@/lib/db/operations/user-app-category-meta";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import type {
   FoodHomePreviewCategory,

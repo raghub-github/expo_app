@@ -11,11 +11,19 @@ function clampStoreDeliveryRadiusKm(v: number): number {
 import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import axios from 'axios';
-import { Loader2, Menu, X, HelpCircle, CheckCircle2 } from 'lucide-react';
+import { Loader2, Menu, X, HelpCircle, CheckCircle2, Download } from 'lucide-react';
 import MerchantHelpTicket from '@/components/MerchantHelpTicket';
 import { createClient } from '@/lib/supabase/client';
 import { useSearchParams } from 'next/navigation';
 import { verificationStepToPartnerStep } from '@/lib/onboarding/verification-step-map';
+import {
+  clearOnboardingResume,
+  readOnboardingResume,
+  syncOnboardingUrl,
+  writeOnboardingResume,
+} from '@/lib/onboarding/resume-session';
+import { isStoreOnboardingSubmitted } from '@/lib/onboarding/store-onboarding-status';
+import { MERCHANT_AGREEMENT_UNAVAILABLE_MESSAGE } from '@/lib/merchant-agreement-template-constants';
 import {
   menuReferenceEntryStatusesFromRejectionDetail,
   resolvePartnerMenuImageVerificationTag,
@@ -27,7 +35,6 @@ import PreviewPage from './preview';
 import OnboardingPlansPage from './plans';
 import AgreementContractPage from './agreement';
 import SignatureStepPage from './signature';
-import { MERCHANT_PARTNERSHIP_TERMS } from './terms-and-conditions';
 import {
   getOnboardingR2Path,
   getOnboardingDocumentPath,
@@ -395,6 +402,9 @@ const StoreRegistrationForm = () => {
   const [contractTextForSignature, setContractTextForSignature] = useState<string>('');
   const [agreementReadConfirmed, setAgreementReadConfirmed] = useState(false);
   const [agreementTemplate, setAgreementTemplate] = useState<{ id?: number; template_key: string; title: string; version: string; content_markdown: string; pdf_url: string | null } | null>(null);
+  const [agreementTemplateLoading, setAgreementTemplateLoading] = useState(false);
+  const [agreementTemplateError, setAgreementTemplateError] = useState<string | null>(null);
+  const agreementDownloadRef = useRef<(() => void) | null>(null);
 
   const buildPostLoginVerificationSubmittedUrl = useCallback(() => {
     const sid = (selectedStorePublicId || currentStoreId || draftStorePublicId || '').trim();
@@ -795,10 +805,44 @@ const StoreRegistrationForm = () => {
   useEffect(() => {
     const hydrateProgress = async () => {
       try {
-        const storeId = forceNewOnboarding ? '' : (selectedStorePublicId || '');
+        const parentKey = (parentIdParam || '').trim();
+        const sessionResume = parentKey ? readOnboardingResume(parentKey) : null;
+        const storeId = selectedStorePublicId || sessionResume?.storePublicId || '';
+
+        const redirectIfOnboardingAlreadyClosed = async (storePublicId: string): Promise<boolean> => {
+          if (!storePublicId || urlWantsVerificationFix) return false;
+          try {
+            const statusRes = await fetch(
+              `/api/store-status-by-id?store_id=${encodeURIComponent(storePublicId)}`,
+              { credentials: 'include' }
+            );
+            if (!statusRes.ok) return false;
+            const statusJson = await statusRes.json();
+            const st = statusJson?.store;
+            if (!st) return false;
+            const approval = String(st.approval_status || '').toUpperCase();
+            const submitted = isStoreOnboardingSubmitted(st);
+            const progressCompleted = statusJson?.progress?.registration_status === 'COMPLETED';
+            if (!submitted && !progressCompleted) return false;
+            if (approval === 'REJECTED') return false;
+            if (approval === 'APPROVED') {
+              window.location.href = `/partners/dashboard?storeId=${encodeURIComponent(storePublicId)}`;
+              return true;
+            }
+            window.location.href = `/partners/all-stores?highlight_store=${encodeURIComponent(storePublicId)}`;
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
+        if (storeId) {
+          const redirected = await redirectIfOnboardingAlreadyClosed(storeId);
+          if (redirected) return;
+        }
+
         const progressParams = new URLSearchParams();
-        if (forceNewOnboarding) progressParams.set('forceNew', '1');
-        else if (storeId) progressParams.set('storePublicId', storeId);
+        if (storeId) progressParams.set('storePublicId', storeId);
         const url = `/api/auth/register-store-progress?${progressParams.toString()}`;
         const res = await fetch(url);
         const payload = await res.json();
@@ -812,6 +856,14 @@ const StoreRegistrationForm = () => {
             return;
           }
           console.error('Failed to load progress:', payload.error);
+          if (sessionResume && !urlWantsVerificationFix) {
+            setStepStateOnly(sessionResume.step);
+            if (sessionResume.storePublicId) {
+              setCurrentStoreId(sessionResume.storePublicId);
+              setDraftStorePublicId(sessionResume.storePublicId);
+              syncOnboardingUrl(sessionResume.storePublicId);
+            }
+          }
           stepRestoredRef.current = true;
           setProgressHydrated(true);
           return;
@@ -819,7 +871,33 @@ const StoreRegistrationForm = () => {
 
         const progress = res.ok && payload?.success ? payload?.progress : null;
 
+        if (!progress && payload?.storeOnboardingClosed && storeId && !urlWantsVerificationFix) {
+          const approval = String(payload?.store?.approval_status || '').toUpperCase();
+          if (approval === 'APPROVED') {
+            window.location.href = `/partners/dashboard?storeId=${encodeURIComponent(storeId)}`;
+            return;
+          }
+          if (approval !== 'REJECTED') {
+            window.location.href = `/partners/all-stores?highlight_store=${encodeURIComponent(storeId)}`;
+            return;
+          }
+        }
+
         if (progress) {
+          const stepStore = (progress.form_data as { step_store?: { storePublicId?: string; storeDbId?: number } })?.step_store;
+          const resolvedStorePublicId =
+            (typeof stepStore?.storePublicId === 'string' && stepStore.storePublicId.trim()) ||
+            storeId ||
+            null;
+          if (resolvedStorePublicId) {
+            setCurrentStoreId(resolvedStorePublicId);
+            setDraftStorePublicId(resolvedStorePublicId);
+            syncOnboardingUrl(resolvedStorePublicId);
+          }
+          if (stepStore?.storeDbId) {
+            setDraftStoreDbId(Number(stepStore.storeDbId));
+          }
+
           // IMPORTANT: Restore step FIRST before hydrating form data to prevent race conditions
           if (Number.isFinite(Number(progress.current_step))) {
             const restoredStep = Math.min(Math.max(Number(progress.current_step), 1), 9);
@@ -828,14 +906,40 @@ const StoreRegistrationForm = () => {
               setStepStateOnly(restoredStep);
             }
             stepRestoredRef.current = true; // Mark restored BEFORE hydration
+          } else if (sessionResume && !urlWantsVerificationFix) {
+            setStepStateOnly(sessionResume.step);
+            stepRestoredRef.current = true;
           }
           
           hydrateFormFromProgress(progress);
+
+          if (parentKey) {
+            const restoredStep = Number.isFinite(Number(progress.current_step))
+              ? Math.min(Math.max(Number(progress.current_step), 1), 9)
+              : sessionResume?.step ?? 1;
+            writeOnboardingResume({
+              parentKey,
+              step: restoredStep,
+              storePublicId: resolvedStorePublicId,
+              updatedAt: Date.now(),
+            });
+          }
+
           setProgressHydrated(true);
           return;
         }
-        
-        stepRestoredRef.current = true;
+
+        if (sessionResume && !urlWantsVerificationFix) {
+          setStepStateOnly(sessionResume.step);
+          if (sessionResume.storePublicId) {
+            setCurrentStoreId(sessionResume.storePublicId);
+            setDraftStorePublicId(sessionResume.storePublicId);
+            syncOnboardingUrl(sessionResume.storePublicId);
+          }
+          stepRestoredRef.current = true;
+        } else {
+          stepRestoredRef.current = true;
+        }
 
         if (selectedStorePublicId) {
           // Load all store data from database
@@ -861,6 +965,8 @@ const StoreRegistrationForm = () => {
               longitude,
               landmark,
               current_onboarding_step,
+              onboarding_completed,
+              approval_status,
               cuisine_types,
               avg_preparation_time_minutes,
               min_order_amount,
@@ -875,6 +981,18 @@ const StoreRegistrationForm = () => {
             .maybeSingle();
 
           if (existingStore) {
+            if (!urlWantsVerificationFix && isStoreOnboardingSubmitted(existingStore)) {
+              const approval = String(existingStore.approval_status || '').toUpperCase();
+              if (approval === 'APPROVED') {
+                window.location.href = `/partners/dashboard?storeId=${encodeURIComponent(existingStore.store_id)}`;
+                return;
+              }
+              if (approval !== 'REJECTED') {
+                window.location.href = `/partners/all-stores?highlight_store=${encodeURIComponent(existingStore.store_id)}`;
+                return;
+              }
+            }
+
             setDraftStoreDbId(existingStore.id);
             setDraftStorePublicId(existingStore.store_id);
             
@@ -1155,8 +1273,8 @@ const StoreRegistrationForm = () => {
     };
 
     hydrateProgress();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intended: run on mount and when store/forceNew change only
-  }, [forceNewOnboarding, selectedStorePublicId, urlWantsVerificationFix]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intended: run on mount and when store/parent change only
+  }, [forceNewOnboarding, selectedStorePublicId, urlWantsVerificationFix, parentIdParam]);
 
   useEffect(() => {
     if (!urlWantsVerificationFix) {
@@ -1222,20 +1340,44 @@ const StoreRegistrationForm = () => {
   }, [progressHydrated, urlWantsVerificationFix, selectedStorePublicId]);
 
   useEffect(() => {
+    if (!progressHydrated || !parentIdParam?.trim()) return;
+    const parentKey = parentIdParam.trim();
+    const storePublicId = currentStoreId || draftStorePublicId || null;
+    writeOnboardingResume({
+      parentKey,
+      step,
+      storePublicId,
+      updatedAt: Date.now(),
+    });
+    if (storePublicId) syncOnboardingUrl(storePublicId);
+  }, [step, progressHydrated, parentIdParam, currentStoreId, draftStorePublicId]);
+
+  useEffect(() => {
     if (step < 6) return;
     let cancelled = false;
     const fetchTemplate = async () => {
+      setAgreementTemplateLoading(true);
+      setAgreementTemplateError(null);
       try {
         const params = new URLSearchParams();
         if (formData?.store_type) params.set("storeType", formData.store_type);
         if (formData?.city) params.set("city", formData.city);
         const res = await fetch(`/api/auth/merchant-agreement-template?${params.toString()}`);
         const payload = await res.json();
-        if (!cancelled && res.ok && payload?.success && payload?.template) {
-          setAgreementTemplate(payload.template);
+        if (cancelled) return;
+        if (!res.ok || !payload?.success || !payload?.template?.content_markdown) {
+          setAgreementTemplate(null);
+          setAgreementTemplateError(payload?.error || MERCHANT_AGREEMENT_UNAVAILABLE_MESSAGE);
+          return;
         }
+        setAgreementTemplate(payload.template);
       } catch {
-        // keep null, use default terms
+        if (!cancelled) {
+          setAgreementTemplate(null);
+          setAgreementTemplateError("Agreement could not be loaded. Please check your connection and try again.");
+        }
+      } finally {
+        if (!cancelled) setAgreementTemplateLoading(false);
       }
     };
     fetchTemplate();
@@ -2558,6 +2700,7 @@ const StoreRegistrationForm = () => {
           if (stepStore?.storePublicId && stepStore.storePublicId !== currentStoreId) {
             setCurrentStoreId(stepStore.storePublicId);
             setDraftStorePublicId(stepStore.storePublicId);
+            syncOnboardingUrl(stepStore.storePublicId);
           }
           if (stepStore?.storeDbId && stepStore.storeDbId !== draftStoreDbId) {
             setDraftStoreDbId(stepStore.storeDbId);
@@ -2649,6 +2792,7 @@ const StoreRegistrationForm = () => {
         if (stepStore?.storePublicId && stepStore.storePublicId !== currentStoreId) {
           setCurrentStoreId(stepStore.storePublicId);
           setDraftStorePublicId(stepStore.storePublicId);
+          syncOnboardingUrl(stepStore.storePublicId);
         }
         if (stepStore?.storeDbId && stepStore.storeDbId !== draftStoreDbId) {
           setDraftStoreDbId(stepStore.storeDbId);
@@ -3247,21 +3391,13 @@ const StoreRegistrationForm = () => {
   const handleRegistrationSuccess = async (storeId: string) => {
     setGeneratedStoreId(storeId);
     setShowSuccess(true);
-    // Update progress in background without blocking UI
-    try {
-      await saveProgress({ 
-        currentStep: 9, 
-        nextStep: 9, 
-        markStepComplete: true, 
-        formDataPatch: { final: { submitted: true, storeId } } 
-      });
-    } catch (err) {
-      console.error('Background progress update failed (non-critical):', err);
-      // Don't show error to user as registration is already successful
-    }
+    if (parentIdParam?.trim()) clearOnboardingResume(parentIdParam.trim());
+    // /api/register-store already sets onboarding_completed, SUBMITTED, and marks progress COMPLETED.
+    // Do not call saveProgress here — it previously re-ran upsertStoreDraft and reset the store to DRAFT.
   };
 
   const handleRegisterNewStore = () => {
+    if (parentIdParam?.trim()) clearOnboardingResume(parentIdParam.trim());
     setVerificationLock(null);
     setMenuStep3RejectionDetail(null);
     setFormData({
@@ -3552,12 +3688,71 @@ const StoreRegistrationForm = () => {
   return (
     <div className="h-screen max-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col overflow-hidden">
       {/* Fixed Header - never scrolls; fixed so it never shifts on scroll */}
-      <header className="fixed top-0 left-0 right-0 flex-none bg-white border-b border-slate-200 px-3 sm:px-6 py-2 sm:py-2.5 shadow-sm z-30">
+      <header className={`fixed top-0 left-0 right-0 flex-none bg-white border-b border-slate-200 shadow-sm z-30 ${step === 8 || step === 9 ? "" : "px-3 sm:px-6"} py-2 sm:py-2.5`}>
+        {step === 8 || step === 9 ? (
+          <div className="flex items-center min-h-[44px] sm:min-h-[48px]">
+            <div className="w-14 sm:w-52 md:w-56 lg:w-60 shrink-0 flex items-center justify-center px-2 sm:px-3">
+              <img src="/logo.png" alt="GatiMitra" className="h-8 sm:h-9 w-auto object-contain" />
+            </div>
+            <div className="relative flex flex-1 min-w-0 items-center px-2 sm:px-4 md:px-6">
+              {step === 8 ? (
+                <div className="w-full max-w-6xl mx-auto px-2 sm:px-3 md:px-4 min-w-0 pr-28 sm:pr-56">
+                  <h1 className="text-sm sm:text-base font-bold text-slate-900 truncate">Partner Agreement &amp; Contract</h1>
+                  <p className="text-[10px] sm:text-xs text-slate-600 truncate">
+                    {agreementTemplate?.title || "Merchant Partner Agreement"}
+                    {agreementTemplate?.version ? ` — Version ${agreementTemplate.version}` : ""}
+                  </p>
+                </div>
+              ) : (
+                <div className="w-full max-w-2xl mx-auto px-2 sm:px-3 min-w-0 pr-24 sm:pr-40 text-center">
+                  <h1 className="text-sm sm:text-base font-bold text-slate-900">Digital Signature</h1>
+                  <p className="text-[10px] sm:text-xs text-slate-600">Sign to finalize and submit your store application</p>
+                </div>
+              )}
+              <div className="absolute right-2 sm:right-4 md:right-6 top-1/2 -translate-y-1/2 flex items-center gap-2 sm:gap-3 shrink-0">
+                {step === 8 && agreementTemplate?.content_markdown ? (
+                  <button
+                    type="button"
+                    onClick={() => agreementDownloadRef.current?.()}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-xs sm:text-sm font-medium transition-colors shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    <span className="hidden sm:inline">Download PDF</span>
+                    <span className="sm:hidden">PDF</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => { window.location.href = '/partners/all-stores'; }}
+                  className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-indigo-100"
+                >
+                  ← All Stores
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutConfirm(true)}
+                  className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900"
+                >
+                  Logout
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMobileMenu(true)}
+                  className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 shadow-sm"
+                  aria-label="Open menu"
+                >
+                  <Menu className="w-6 h-6 shrink-0" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className="flex items-center justify-between gap-2">
           {/* Left: logo; on mobile PID below logo, on desktop title + parent */}
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
             <img src="/logo.png" alt="GatiMitra" className="h-8 sm:h-9 w-auto object-contain shrink-0" />
             <div className="min-w-0 flex-1">
+                <>
               {/* Desktop up to lg: title + parent in header; on lg+ they move to sidebar */}
               <div className="hidden sm:block lg:hidden">
                 <h1 className="text-base font-bold text-slate-800 truncate">Register New Store</h1>
@@ -3577,6 +3772,7 @@ const StoreRegistrationForm = () => {
                   )}
                 </div>
               )}
+                </>
             </div>
           </div>
           {/* Right: mobile = Burger only; desktop = All Stores + Logout (Help is in sidebar) */}
@@ -3606,6 +3802,7 @@ const StoreRegistrationForm = () => {
             </button>
           </div>
         </div>
+        )}
       </header>
 
       {/* Mobile/tablet burger menu overlay */}
@@ -3911,7 +4108,13 @@ const StoreRegistrationForm = () => {
       {/* Scrollable content container - ONLY this div scrolls; compact padding to reduce scroll need */}
       <div
         ref={mainScrollRef}
-        className={`flex-1 min-h-0 min-w-0 pb-24 sm:pb-28 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar ${step >= 7 && step <= 9 ? "pt-0 px-2 sm:px-4 md:px-6" : "p-2 sm:p-3 md:px-5"}`}
+        className={`flex-1 min-h-0 min-w-0 overflow-x-hidden overscroll-contain hide-scrollbar ${
+          step === 8 || step === 9
+            ? "overflow-hidden pb-0 pt-0 px-2 sm:px-4 md:px-6 flex flex-col"
+            : step >= 7 && step <= 9
+              ? "pb-24 sm:pb-28 overflow-y-auto pt-0 px-2 sm:px-4 md:px-6"
+              : "pb-24 sm:pb-28 overflow-y-auto p-2 sm:p-3 md:px-5"
+        }`}
       >
         {/* Step 1: Basic Store Information - form module exactly centered with proper gap from header and bottom */}
         {step === 1 && (
@@ -4736,14 +4939,51 @@ const StoreRegistrationForm = () => {
 
         {/* Step 8: Agreement contract */}
         {step === 8 && (
-          <div className="w-full h-full">
+          <div className="w-full flex-1 min-h-0 flex flex-col">
+            {agreementTemplateLoading ? (
+              <div className="flex min-h-[50vh] items-center justify-center text-slate-600 text-sm">
+                Loading partner agreement…
+              </div>
+            ) : agreementTemplateError || !agreementTemplate?.content_markdown ? (
+              <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-sm text-amber-900">
+                <p className="font-semibold">Agreement unavailable</p>
+                <p className="mt-2">{agreementTemplateError || MERCHANT_AGREEMENT_UNAVAILABLE_MESSAGE}</p>
+                <button
+                  type="button"
+                  className="mt-4 rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-medium"
+                  onClick={() => {
+                    setAgreementTemplateError(null);
+                    setAgreementTemplateLoading(true);
+                    void fetch(`/api/auth/merchant-agreement-template`)
+                      .then((r) => r.json())
+                      .then((payload) => {
+                        if (payload?.success && payload?.template) {
+                          setAgreementTemplate(payload.template);
+                          setAgreementTemplateError(null);
+                        } else {
+                          setAgreementTemplateError(payload?.error || "Retry failed");
+                        }
+                      })
+                      .catch(() => setAgreementTemplateError("Retry failed"))
+                      .finally(() => setAgreementTemplateLoading(false));
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
             <AgreementContractPage
               step1={formData}
               step2={formData}
               documents={documents}
               parentInfo={parentInfo}
-              termsContent={agreementTemplate?.content_markdown || MERCHANT_PARTNERSHIP_TERMS}
+              termsContent={agreementTemplate.content_markdown}
+              templateTitle={agreementTemplate.title}
+              templateVersion={agreementTemplate.version}
               logoUrl={typeof process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL === "string" && process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL ? process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL : "/logo.png"}
+              onDownloadReady={(fn) => {
+                agreementDownloadRef.current = fn;
+              }}
               onBack={async () => {
                 if (verificationLock?.partnerStep === 8) {
                   showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
@@ -4785,12 +5025,13 @@ const StoreRegistrationForm = () => {
               }}
               actionLoading={actionLoading}
             />
+            )}
           </div>
         )}
 
         {/* Step 9: Digital signature & submit */}
         {step === 9 && (
-          <div className="w-full h-full">
+          <div className="w-full flex-1 min-h-0 flex flex-col">
             <SignatureStepPage
               step1={{
                 ...formData,
@@ -4815,7 +5056,7 @@ const StoreRegistrationForm = () => {
               }}
               parentInfo={parentInfo}
               agreementTemplate={agreementTemplate}
-              defaultAgreementText={agreementTemplate?.content_markdown || MERCHANT_PARTNERSHIP_TERMS}
+              defaultAgreementText={agreementTemplate?.content_markdown ?? ""}
               contractTextForPdf={contractTextForSignature}
               agreementReadConfirmed={agreementReadConfirmed}
               logoUrl={typeof process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL === "string" && process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL ? process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL : "/logo.png"}

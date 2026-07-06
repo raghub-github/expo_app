@@ -118,6 +118,48 @@ export async function GET() {
     const rejectionByStore =
       storeIds.length > 0 ? await fetchVerificationRejectionsByStoreIds(db, storeIds) : {};
 
+    const storesMutable = [...(stores ?? [])];
+    for (const store of storesMutable) {
+      if (!store.id || store.onboarding_completed === true) continue;
+      const { data: completedProgress } = await db
+        .from("merchant_store_registration_progress")
+        .select("completed_at")
+        .eq("store_id", store.id)
+        .eq("registration_status", "COMPLETED")
+        .order("completed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const hasCompletedProgress = !!completedProgress;
+      let hasAgreement = false;
+      if (!hasCompletedProgress) {
+        const { data: agreementRow } = await db
+          .from("merchant_store_agreement_acceptances")
+          .select("id")
+          .eq("store_id", store.id)
+          .limit(1)
+          .maybeSingle();
+        hasAgreement = !!agreementRow;
+      }
+      if (!hasCompletedProgress && !hasAgreement) continue;
+
+      const repairApproval =
+        String(store.approval_status || "").toUpperCase() === "DRAFT" ? "SUBMITTED" : store.approval_status;
+      const repairedAt = completedProgress?.completed_at || new Date().toISOString();
+      await db
+        .from("merchant_stores")
+        .update({
+          onboarding_completed: true,
+          onboarding_completed_at: repairedAt,
+          approval_status: repairApproval,
+          current_onboarding_step: 9,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", store.id);
+      store.onboarding_completed = true;
+      store.approval_status = repairApproval;
+      store.current_onboarding_step = 9;
+    }
+
     const { data: progress, error: progressError } = await db
       .from("merchant_store_registration_progress")
       .select("*")
@@ -135,7 +177,7 @@ export async function GET() {
       );
     }
 
-    const storeList = (stores ?? []).map((s) => ({
+    const storeList = storesMutable.map((s) => ({
       ...s,
       payment_status: (s.id != null ? (paymentByStoreId[s.id] ?? "pending") : "pending") as "pending" | "completed",
       verification_step_rejections:
@@ -144,6 +186,11 @@ export async function GET() {
     const verifiedStores = storeList.filter((s) => s.approval_status === "APPROVED");
     const hasDraftStore = storeList.some((s) => (s.approval_status || "").toUpperCase() === "DRAFT");
     const hasIncompleteStore = storeList.some((s) => {
+      if (s.onboarding_completed === true) return false;
+      const approval = String(s.approval_status || "").toUpperCase();
+      if (["SUBMITTED", "UNDER_VERIFICATION", "PENDING_VERIFICATION", "APPROVED"].includes(approval)) {
+        return false;
+      }
       const step = s.current_onboarding_step;
       return typeof step === "number" && step < 9;
     });

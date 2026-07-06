@@ -6,6 +6,9 @@
 import "react-native-gesture-handler";
 import "../global.css";
 import { Stack, useRouter, useSegments } from "expo-router";
+import { useFonts } from "expo-font";
+import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
+import { Poppins_600SemiBold, Poppins_700Bold } from "@expo-google-fonts/poppins";
 import * as SplashScreen from "expo-splash-screen";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
@@ -23,6 +26,8 @@ import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
+import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
 import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
@@ -56,6 +61,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl } from "@/config/env";
 import { ensureMapboxSearchReady } from "@/services/location.service";
 import { restoreAndPrefetchLocationWeather } from "@/hooks/useLocationWeather";
+import { prefetchHomeScreenData } from "@/lib/prefetchHomeScreenData";
+import { useAppAssetsStore } from "@/store/appAssetsStore";
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
@@ -117,16 +124,21 @@ const queryClient = new QueryClient({
 });
 
 export default function RootLayout() {
-  /**
-   * Do not call `useFonts({})` with an empty map — on some Expo/RN builds `fontsLoaded`
-   * never flips true, so the app stays on the bootstrap screen forever.
-   * When you add real fonts, use `useFonts({ MyFont: require('...') })` and gate on that.
-   */
-  const fontsLoaded = true;
+  const [fontsLoaded] = useFonts({
+    Lora_400Regular,
+    Lora_700Bold,
+    Poppins_600SemiBold,
+    Poppins_700Bold,
+  });
   const [splashExited, setSplashExited] = useState(false);
+  const [homeDataPrefetched, setHomeDataPrefetched] = useState(false);
+  const [startupTimedOut, setStartupTimedOut] = useState(false);
 
   const hydrated = useAuthStore((s) => s.hydrated);
+  const session = useAuthStore((s) => s.session);
   const cartHydrated = useCartStore((s) => s.hydrated);
+  const assetsLoaded = useAppAssetsStore((s) => s.loaded);
+  const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
   const hydrateAuth = useAuthStore((s) => s.hydrate);
   const hydrateCart = useCartStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
@@ -135,6 +147,11 @@ export default function RootLayout() {
   const hydrateLocation = useLocationStore((s) => s.hydrate);
 
   const ready = fontsLoaded && hydrated && cartHydrated;
+  const homeStartupReady =
+    !session ||
+    startupTimedOut ||
+    (homeImagesPrefetched && homeDataPrefetched);
+  const appReady = ready && homeStartupReady;
 
   const handleSplashExitComplete = useCallback(() => {
     setSplashExited(true);
@@ -147,6 +164,39 @@ export default function RootLayout() {
     hydrateLanguage();
     void hydrateLocation();
   }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation]);
+
+  useEffect(() => {
+    if (!ready || !session) {
+      setHomeDataPrefetched(!session);
+      return;
+    }
+    let cancelled = false;
+    setHomeDataPrefetched(false);
+    void prefetchHomeScreenData(queryClient).finally(() => {
+      if (!cancelled) setHomeDataPrefetched(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, session]);
+
+  useEffect(() => {
+    if (!ready || !session) {
+      setStartupTimedOut(false);
+      return;
+    }
+    const timeout = setTimeout(() => setStartupTimedOut(true), 7_000);
+    return () => clearTimeout(timeout);
+  }, [ready, session]);
+
+  useEffect(() => {
+    if (!ready || session) return;
+    if (assetsLoaded || homeImagesPrefetched) return;
+    const timeout = setTimeout(() => {
+      useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+    }, 5_000);
+    return () => clearTimeout(timeout);
+  }, [ready, session, assetsLoaded, homeImagesPrefetched]);
 
   useEffect(() => {
     if (hydrated && useAuthStore.getState().session) {
@@ -189,7 +239,7 @@ export default function RootLayout() {
         <View
           style={{
             flex: 1,
-            backgroundColor: splashExited ? colors.background.light : GatiMitraColors.splashMint,
+            backgroundColor: splashExited ? colors.background.light : SPLASH_CHROME_COLOR,
           }}
         >
           <AppAssetsPrefetch />
@@ -204,7 +254,9 @@ export default function RootLayout() {
               <LocationPermissionResumeCheck />
               <LanguageSync />
               <CustomerSystemChrome />
-              <RootStack onLayoutRootView={onLayoutRootView} />
+              <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
+              <MerchantNavTransitionShutter />
+              <CheckoutBottomSheetHost />
               <GlobalFloatingCart />
               <LocationModalWrapper />
               <PushNotificationBootstrap />
@@ -223,7 +275,7 @@ export default function RootLayout() {
           {!splashExited ? (
             <GatiMitraBootstrapScreen
               variant="root"
-              appReady={ready}
+              appReady={appReady}
               onExitComplete={handleSplashExitComplete}
             />
           ) : null}
@@ -416,43 +468,81 @@ function LocationModalWrapper() {
   );
 }
 
-function StatusBarSystemUISync() {
+const SPLASH_CHROME_COLOR = "#5eead4";
+
+function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boolean }) {
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
+    if (splashChromeActive) {
+      void import("expo-system-ui")
+        .then((SystemUI) => SystemUI.setBackgroundColorAsync(SPLASH_CHROME_COLOR))
+        .catch(() => {});
+      return;
+    }
+    if (statusBarBackground === "transparent") return;
     void import("expo-system-ui")
       .then((SystemUI) => SystemUI.setBackgroundColorAsync(statusBarBackground))
       .catch(() => {});
-  }, [statusBarBackground]);
+  }, [statusBarBackground, splashChromeActive]);
 
   return null;
 }
 
-function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
+function RootStack({
+  onLayoutRootView,
+  splashActive,
+}: {
+  onLayoutRootView: () => void;
+  splashActive: boolean;
+}) {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const inProfileStack = segments[0] === "profile";
   const inLegalStack = segments[0] === "legal";
+  const inCheckoutStack = segments[0] === "checkout";
+  const inOrdersStack = segments[0] === "orders";
   const statusBarHeight =
-    inProfileStack || inLegalStack ? 0 : insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
+    inProfileStack || inLegalStack || inCheckoutStack || inOrdersStack
+      ? 0
+      : insets.top > 0
+        ? insets.top
+        : DEFAULT_STATUS_BAR_HEIGHT;
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
   const statusBarStyle = useScreenChromeStore((s) => s.statusBarStyle);
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
+  const bootstrapActive = useScreenChromeStore((s) => s.bootstrapActive);
+  const splashChromeActive = splashActive || bootstrapActive;
+  const immersiveStatusBar = hideStatusBarSpacer || splashChromeActive;
   const effectiveStatusBarHeight =
-    inProfileStack || inLegalStack || hideStatusBarSpacer ? 0 : statusBarHeight;
+    inProfileStack || inLegalStack || inCheckoutStack || inOrdersStack || hideStatusBarSpacer || splashChromeActive
+      ? 0
+      : statusBarHeight;
   const stackBottomInset = screenManagesBottomNav(segments)
     ? 0
     : resolveBottomSafeInset(insets.bottom);
+  const resolvedStatusBarBackground = splashChromeActive
+    ? SPLASH_CHROME_COLOR
+    : statusBarBackground;
+  const resolvedStatusBarStyle = splashChromeActive ? "light" : statusBarStyle;
 
   return (
     <>
-      <StatusBarSystemUISync />
-      <StatusBar style={statusBarStyle} backgroundColor={statusBarBackground} />
+      <StatusBarSystemUISync splashChromeActive={splashChromeActive} />
+      <StatusBar
+        style={resolvedStatusBarStyle}
+        backgroundColor={
+          immersiveStatusBar && statusBarBackground === "transparent"
+            ? "transparent"
+            : resolvedStatusBarBackground
+        }
+        translucent={immersiveStatusBar}
+      />
       <View
         style={{
           height: effectiveStatusBarHeight,
-          backgroundColor: statusBarBackground,
+          backgroundColor: resolvedStatusBarBackground,
           width: "100%",
         }}
       />
@@ -476,7 +566,13 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
           <Stack.Screen name="location-map" />
           <Stack.Screen name="location-address" />
           <Stack.Screen name="home" />
-          <Stack.Screen name="checkout" />
+          <Stack.Screen
+            name="checkout"
+            options={{
+              presentation: "modal",
+              animation: "slide_from_bottom",
+            }}
+          />
           <Stack.Screen name="group" />
           <Stack.Screen name="orders" />
           <Stack.Screen name="profile" />

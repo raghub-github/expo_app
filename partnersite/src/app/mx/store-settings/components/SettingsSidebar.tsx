@@ -1,7 +1,7 @@
 'use client'
 
 import React from 'react'
-import { Crown, Clock, Power, ChefHat, Package, Smartphone, Bell, Activity } from 'lucide-react'
+import { Crown, Clock, Power, ChefHat, Package, Smartphone, Bell, Activity, Store } from 'lucide-react'
 
 interface SettingsSidebarProps {
   activeTab: string
@@ -21,7 +21,7 @@ export function SettingsSidebar({ activeTab, onTabChange, collapsed = false }: S
     { id: 'pos', label: 'POS Integration', icon: Smartphone },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'audit', label: 'Audit & Activity', icon: Activity },
-    { id: 'gatimitra', label: 'Store on Gatimitra', icon: null },
+    { id: 'gatimitra', label: 'Store on Gatimitra', icon: Store },
   ]
 
   return (

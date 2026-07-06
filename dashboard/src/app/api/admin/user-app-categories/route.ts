@@ -3,10 +3,7 @@
  * POST /api/admin/user-app-categories — create (super admin)
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
-import { isSuperAdmin } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { requireSuperAdminApi } from "@/lib/admin/require-super-admin-api";
 import {
   listUserAppCategories,
   createUserAppCategory,
@@ -20,36 +17,9 @@ import {
 
 export const runtime = "nodejs";
 
-async function requireSuperAdminResponse() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError || !user) {
-    if (userError && isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
-      return NextResponse.json(
-        { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-        { status: 401 }
-      );
-    }
-    return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-  }
-  const systemUser = await getSystemUserByEmail(user.email!);
-  if (!systemUser) {
-    return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
-  }
-  const ok = await isSuperAdmin(user.id, user.email!);
-  if (!ok) {
-    return NextResponse.json({ success: false, error: "Super admin only" }, { status: 403 });
-  }
-  return null;
-}
-
 export async function GET(request: NextRequest) {
-  const gate = await requireSuperAdminResponse();
-  if (gate) return gate;
+  const gate = await requireSuperAdminApi();
+  if (!gate.ok) return gate.response;
   try {
     const rawSt = request.nextUrl.searchParams.get("storeType");
     const storeType =
@@ -69,8 +39,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const gate = await requireSuperAdminResponse();
-  if (gate) return gate;
+  const gate = await requireSuperAdminApi();
+  if (!gate.ok) return gate.response;
   try {
     const body = (await request.json()) as Record<string, unknown>;
     const store_type_raw = body.store_type;

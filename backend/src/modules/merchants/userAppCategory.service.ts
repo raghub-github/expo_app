@@ -1,5 +1,6 @@
 import { getSql } from "../../db/client.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { getUserAppCategoryAllTab } from "../../lib/user-app-category-meta.js";
 
 const ALLOWED_STORE_TYPES = new Set([
   "GENERAL",
@@ -27,10 +28,13 @@ export type UserAppCategoryDto = {
   status: string;
 };
 
-export async function listUserAppCategories(params: { storeType: string }): Promise<UserAppCategoryDto[]> {
+export async function listUserAppCategories(params: { storeType: string }): Promise<{
+  items: UserAppCategoryDto[];
+  allTab: { label: string; imageUrl: string | null };
+}> {
   const st = params.storeType.trim().toUpperCase();
   if (!ALLOWED_STORE_TYPES.has(st)) {
-    return [];
+    return { items: [], allTab: { label: "All", imageUrl: null } };
   }
   const sql = getSql();
   const rows = await sql`
@@ -40,7 +44,7 @@ export async function listUserAppCategories(params: { storeType: string }): Prom
       AND status = 'active'
     ORDER BY display_order ASC, id ASC
   `;
-  return (rows as any[]).map((r) => ({
+  const items = (rows as any[]).map((r) => ({
     id: Number(r.id),
     name: String(r.name),
     imageUrl: toAbsoluteClientMediaUrl(r.image_url),
@@ -48,4 +52,6 @@ export async function listUserAppCategories(params: { storeType: string }): Prom
     storeType: String(r.store_type),
     status: String(r.status),
   }));
+  const allTab = await getUserAppCategoryAllTab(st);
+  return { items, allTab };
 }

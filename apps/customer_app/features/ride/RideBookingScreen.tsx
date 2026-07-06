@@ -2,7 +2,7 @@
  * GatiMitra Ride Booking – reference home layout.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -32,6 +32,8 @@ import { RideHomePromoBanner, RideSafetyBanner } from "./RideHomeSections";
 import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { filterRideBookFeaturedOffers } from "@/lib/ride-offers";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
+import { prefetchCriticalRideAssetImagesSync } from "@/lib/rideCriticalAssets";
+import { useAppAssetsStore } from "@/store/appAssetsStore";
 
 const PAD = 18;
 const DUE_BANNER_H = 64;
@@ -61,6 +63,11 @@ export function RideBookingScreen() {
   const queryClient = useQueryClient();
   const routeParams = useLocalSearchParams<RideRouteParams>();
   const { address, coords, locationHydrated } = useLocationStore();
+  const appAssets = useAppAssetsStore((s) => s.assets);
+
+  useLayoutEffect(() => {
+    prefetchCriticalRideAssetImagesSync(appAssets);
+  }, [appAssets]);
 
   const offerLocationParams = useMemo(() => {
     const pincode = address?.pincode?.trim() || undefined;

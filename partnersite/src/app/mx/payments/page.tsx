@@ -57,7 +57,6 @@ import {
   Phone,
   Copy,
 } from 'lucide-react'
-import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { PaymentsOverviewCharts } from '@/components/payments/PaymentsOverviewCharts'
 import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
@@ -176,7 +175,10 @@ function PgTxnIdCell({ pgId }: { pgId: string | null | undefined }) {
 
 function isCancellationNoCreditEntry(row: LedgerEntry): boolean {
   const meta = row.metadata as Record<string, unknown> | null
-  return meta?.entry_type === 'order_cancellation' && meta?.balance_impact === 'none'
+  if (meta?.entry_type === 'order_cancellation' && meta?.balance_impact === 'none') return true
+  const display = meta?.cancellation_display as { creditAmount?: number } | undefined
+  if (display && Number(display.creditAmount ?? 0) <= 0) return true
+  return false
 }
 
 function formatLedgerRowDescription(row: LedgerEntry): string {
@@ -196,9 +198,18 @@ function PaymentsContent() {
   const searchParams = useSearchParams()
   const pathname = usePathname()
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
-  const [storeId, setStoreId] = useState<string | null>(null)
-  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId)
-  const isLoading = storeQueryLoading && !storeRecord
+  const [storeId, setStoreId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    const params = new URLSearchParams(window.location.search)
+    return (
+      params.get('restaurantId') ??
+      params.get('storeId') ??
+      localStorage.getItem('selectedStoreId') ??
+      localStorage.getItem('selectedRestaurantId') ??
+      DEMO_RESTAURANT_ID
+    )
+  })
+  const { data: storeRecord } = usePartnerStoreRecord(storeId)
   const [showWithdrawal, setShowWithdrawal] = useState(false)
   const [withdrawalAmount, setWithdrawalAmount] = useState('')
   const [isWithdrawing, setIsWithdrawing] = useState(false)
@@ -215,7 +226,7 @@ function PaymentsContent() {
   const [analyticsPeriod, setAnalyticsPeriod] = useState<WalletAnalyticsPeriod>('week')
   const ledgerSectionRef = React.useRef<HTMLDivElement>(null)
 
-  const { data: wallet, isLoading: walletLoading } = useMerchantWallet(storeId)
+  const { data: wallet, isLoading: walletLoading } = useMerchantWallet(storeId, { lite: false })
   const { data: walletAnalytics, isLoading: analyticsLoading } = useMerchantWalletAnalytics(
     storeId,
     analyticsPeriod
@@ -298,23 +309,14 @@ function PaymentsContent() {
   const [payoutDetailsCache, setPayoutDetailsCache] = useState<Record<number, { payout: { id: number; amount: number; net_payout_amount: number; status: string; utr_reference: string | null; pg_transaction_id: string | null; requested_at: string }; bank: { account_holder_name: string; account_number_masked: string | null; bank_name: string; payout_method: string; upi_id: string | null; ifsc_code?: string | null } | null }>>({})
   const [payoutDetailsLoading, setPayoutDetailsLoading] = useState<number | null>(null)
 
-  // Lock document scroll — only the payments content area scrolls (no extra whitespace at bottom).
   useEffect(() => {
-    if (typeof document === 'undefined') return
-    const html = document.documentElement
-    const body = document.body
-    html.classList.add('mx-no-page-scroll')
-    body.classList.add('mx-no-page-scroll')
-    return () => {
-      html.classList.remove('mx-no-page-scroll')
-      body.classList.remove('mx-no-page-scroll')
-    }
-  }, [])
-
-  useEffect(() => {
-    const id = searchParams?.get('restaurantId') ?? searchParams?.get('storeId')
-      ?? (typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') ?? localStorage.getItem('selectedRestaurantId') : null)
-      ?? DEMO_RESTAURANT_ID
+    const id =
+      searchParams?.get('restaurantId') ??
+      searchParams?.get('storeId') ??
+      (typeof window !== 'undefined'
+        ? localStorage.getItem('selectedStoreId') ?? localStorage.getItem('selectedRestaurantId')
+        : null) ??
+      DEMO_RESTAURANT_ID
     setStoreId(id)
   }, [searchParams])
 
@@ -618,20 +620,12 @@ function PaymentsContent() {
     }
   }, [storeId, filterFrom, filterTo, filterDirection, filterCategory])
 
-  if (isLoading) {
-    return (
-      <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || ''}>
-        <PageSkeletonGeneric />
-      </MXLayoutWhite>
-    )
-  }
-
   return (
     <>
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
         <PartnerPageHeader title="Payments & Ledger" subtitle="Wallet balance and full transaction history" />
-        <div className="flex flex-1 min-h-0 flex-col overflow-hidden bg-[#f8fafc] w-full">
-          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain hide-scrollbar">
+        <div className="mx-payments-page flex flex-1 flex-col min-h-0 h-0 w-full bg-[#f8fafc]">
+          <div className="flex-1 min-h-0 h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar bg-[#f8fafc]">
           <div className="bg-white">
             <div className="px-4 sm:px-6 lg:px-8 py-2.5 max-w-7xl mx-auto w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
               <div className="flex items-center gap-2">
@@ -1064,7 +1058,15 @@ function PaymentsContent() {
                                   </button>
                                 ) : null}
                               </td>
-                              <td className="py-3 px-4 font-medium text-gray-900">{formatCategory(row.category)}</td>
+                              <td className="py-3 px-4 font-medium text-gray-900">
+                                {(() => {
+                                  const meta = row.metadata as Record<string, unknown> | null
+                                  const txType = String(meta?.transaction_type ?? '').trim()
+                                  if (txType === 'COMPENSATION_CREDIT') return 'Compensation Credit'
+                                  if (txType === 'COMPENSATION_RECOVERY') return 'Compensation Recovery'
+                                  return formatCategory(row.category)
+                                })()}
+                              </td>
                               <td className="py-3 px-4 text-gray-600 font-mono text-xs">
                                 {row.formatted_order_id ??
                                   (row.reference_type === 'ORDER' && row.reference_id != null

@@ -13,6 +13,9 @@ type ScreenChromeState = {
   statusBarStyle: StatusBarStyle;
   /** When true, root layout omits the status-bar spacer so content can draw behind it. */
   hideStatusBarSpacer: boolean;
+  /** Bootstrap / splash screens — block system chrome overrides and keep mint status bar. */
+  bootstrapActive: boolean;
+  setBootstrapActive: (active: boolean) => void;
   setStatusBarBackground: (color: string, style?: StatusBarStyle) => void;
   resetStatusBarBackground: () => void;
   /** Grid-first food home — immersive hero under status bar while screen is focused. */
@@ -36,6 +39,8 @@ export const useScreenChromeStore = create<ScreenChromeState>((set) => ({
   statusBarBackground: DEFAULT_STATUS_BAR_BG,
   statusBarStyle: DEFAULT_STATUS_BAR_STYLE,
   hideStatusBarSpacer: false,
+  bootstrapActive: false,
+  setBootstrapActive: (active) => set({ bootstrapActive: active }),
   setStatusBarBackground: (color, style = DEFAULT_STATUS_BAR_STYLE) =>
     set({ statusBarBackground: color, statusBarStyle: style }),
   resetStatusBarBackground: () =>
@@ -43,6 +48,7 @@ export const useScreenChromeStore = create<ScreenChromeState>((set) => ({
       statusBarBackground: DEFAULT_STATUS_BAR_BG,
       statusBarStyle: DEFAULT_STATUS_BAR_STYLE,
       hideStatusBarSpacer: false,
+      bootstrapActive: false,
     }),
   setImmersiveStatusBarChrome: (active) => set(applyImmersiveChrome(active)),
   setGridFirstFoodHomeImmersive: (active) => set(applyImmersiveChrome(active)),

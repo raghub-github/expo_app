@@ -1,7 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { ChevronRight, Download, FileText, Loader2 } from "lucide-react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { ChevronRight, Loader2 } from "lucide-react";
+import {
+  getDefaultMxContractTemplate,
+  parseMxContractTemplate,
+  type MxContractTemplateContent,
+} from "@/lib/mx-contract-template";
 
 export interface ContractData {
   storeName: string;
@@ -86,11 +91,92 @@ function pdfSafeText(text: string): string {
   return escapePdfText(sanitizeTextForPdf(text));
 }
 
+type PdfDocLike = {
+  splitTextToSize: (text: string, maxWidth: number) => string[];
+  setFont: (family: string, style?: string) => void;
+  rect: (x: number, y: number, w: number, h: number) => void;
+  text: (text: string, x: number, y: number) => void;
+};
+
+function getPdfTableColWidths(colCount: number, tableW: number): number[] {
+  if (colCount === 3) {
+    return [tableW * 0.26, tableW * 0.24, tableW * 0.5];
+  }
+  return Array.from({ length: colCount }, () => tableW / colCount);
+}
+
+/** Draw a PDF table with wrapped cell text and dynamic row heights (full remarks visible). */
+function drawPdfWrappedTable(
+  doc: PdfDocLike,
+  params: {
+    x: number;
+    y: number;
+    tableW: number;
+    pageH: number;
+    margin: number;
+    headers: string[];
+    rows: string[][];
+    onNewPage: () => void;
+    cellLineH?: number;
+    minRowH?: number;
+    padX?: number;
+  }
+): number {
+  const cellLineH = params.cellLineH ?? 4.2;
+  const minRowH = params.minRowH ?? 8;
+  const padX = params.padX ?? 2;
+  const padTop = 4;
+  const colCount = params.headers.length;
+  const colWidths = getPdfTableColWidths(colCount, params.tableW);
+  let y = params.y;
+
+  const ensureSpace = (need: number) => {
+    if (y + need > params.pageH - params.margin) {
+      params.onNewPage();
+      y = params.margin;
+    }
+  };
+
+  const wrapCell = (value: string, colIdx: number): string[] => {
+    const maxW = colWidths[colIdx]! - padX * 2;
+    const safe = sanitizeTextForPdf(value || "—");
+    return doc.splitTextToSize(safe, Math.max(maxW, 8));
+  };
+
+  const drawRow = (cells: string[], isHeader: boolean): void => {
+    doc.setFont("helvetica", isHeader ? "bold" : "normal");
+    const normalized = Array.from({ length: colCount }, (_, i) => cells[i] ?? "—");
+    const wrapped = normalized.map((cell, i) => wrapCell(cell, i));
+    const maxLines = Math.max(1, ...wrapped.map((lines) => lines.length));
+    const rowH = Math.max(minRowH, padTop + maxLines * cellLineH);
+
+    ensureSpace(rowH);
+    const rowTopY = y;
+
+    let x = params.x;
+    for (let i = 0; i < colCount; i++) {
+      doc.rect(x, rowTopY - padTop, colWidths[i]!, rowH);
+      let textY = rowTopY + 0.5;
+      for (const line of wrapped[i]!) {
+        doc.text(escapePdfText(line), x + padX, textY);
+        textY += cellLineH;
+      }
+      x += colWidths[i]!;
+    }
+    y = rowTopY + rowH;
+  };
+
+  drawRow(params.headers, true);
+  params.rows.forEach((row) => drawRow(row, false));
+  return y;
+}
+
 /** Commission: first month 0%; thereafter 15% + GST (as per commercial terms). */
 export const COMMISSION_FIRST_MONTH_PERCENT = 0;
 export const COMMISSION_FROM_SECOND_MONTH_PERCENT = 15;
 
 export interface StructuredContract {
+  formTitle: string;
   intro: { effectiveDate: string; storeName: string; ownerName: string; address: string; contactPerson: string; phone: string; email: string };
   definitions: { term: string; meaning: string }[];
   sections: { title: string; bullets?: string[]; paragraphs?: string[] }[];
@@ -100,7 +186,10 @@ export interface StructuredContract {
   termsBody: string;
 }
 
-function buildStructuredContract(data: ContractData, termsBody: string): StructuredContract {
+function buildStructuredContract(
+  data: ContractData,
+  template: MxContractTemplateContent = getDefaultMxContractTemplate()
+): StructuredContract {
   const {
     storeName,
     ownerName,
@@ -122,67 +211,9 @@ function buildStructuredContract(data: ContractData, termsBody: string): Structu
     email: sanitizeTextForPdf(email || "—"),
   };
 
-  const definitions: { term: string; meaning: string }[] = [
-    { term: "Platform", meaning: "The food ordering and delivery platform operated by the Company, including its website, mobile applications, and associated services." },
-    { term: "Restaurant Partner", meaning: "The legal entity (restaurant/outlet) that has agreed to list its menu and fulfil Orders through the Platform, as identified in this Form." },
-    { term: "Customer", meaning: "An end-user who places an Order for food and/or beverages through the Platform." },
-    { term: "Order", meaning: "A request placed by a Customer through the Platform for food and/or beverages to be supplied by the Restaurant Partner." },
-    { term: "Order Value", meaning: "The amount payable by the Customer for an Order (including food, beverages, packaging, and applicable taxes), as received by the Platform." },
-    { term: "Charges", meaning: "The commission and other fees payable by the Restaurant Partner to the Platform as set out in Annexure A and the Terms." },
-    { term: "Services", meaning: "The services provided by the Platform to the Restaurant Partner as described in this Form and the Terms." },
-    { term: "Terms", meaning: "The Terms and Conditions for food ordering and delivery services, as amended from time to time, and which are incorporated by reference into this Form." },
-  ];
-
-  const sections = [
-    {
-      title: "I. Services",
-      bullets: [
-        "Order placement and catalog hosting: The Platform provides the order placement mechanism for Customers to place Orders with the Restaurant Partners on a real-time basis and hosts the menu and price lists as provided by the Restaurant Partners.",
-        "Demand generation and marketing: The Platform helps bring new Customers to Restaurant Partners through targeted marketing, discovery, and a seamless food ordering experience.",
-        "Logistics: The Platform enables a reliable delivery ecosystem for fulfilling the Restaurant Partner's Orders.",
-        "Support: A support team is available to help resolve issues for Customers and Restaurant Partners.",
-        "Technology: The Platform builds and supports products including payment and order management infrastructure.",
-      ],
-    },
-    {
-      title: "II. Charges",
-      paragraphs: [
-        "For the Services above, the Restaurant Partner shall pay the applicable Charges as set out in Annexure A and the Terms. All amounts are subject to applicable taxes (including GST). The Platform shall raise tax invoices as per applicable law.",
-      ],
-    },
-    {
-      title: "III. Payment Settlement",
-      paragraphs: [
-        "The Platform shall transfer the Order Value received to the Restaurant Partner, after deduction of Charges, on a weekly basis. Settlement shall be made to the bank account details provided in Annexure B. The payment settlement day for Orders serviced from Monday to Sunday shall be on or before Thursday of the following week. If the settlement day falls on a bank holiday, it shall be the next working day.",
-      ],
-    },
-    {
-      title: "IV. Additional Terms",
-      bullets: [
-        "The Restaurant Partner shall not charge the Customer for anything other than food, beverages, and packaging on the Platform.",
-        "The Restaurant Partner will maintain equal or lower prices for products on the Platform as compared to its direct channels.",
-        "The Restaurant Partner will not send marketing material with Orders that discourages Customers from ordering via the Platform.",
-        "This Form and its annexures, together with the Terms, constitute the entire agreement between the Parties and are legally binding.",
-      ],
-    },
-    {
-      title: "Declaration",
-      paragraphs: [
-        "I/We have read and understood this Form and the Terms. I/We accept and agree to be bound by the Terms. I/We represent and warrant that I/we are duly authorized to sign this Form on behalf of the Restaurant Partner.",
-      ],
-    },
-  ];
-
-  const annexureA = {
-    description: "Commission and charges payable by the Restaurant Partner to the Platform for food ordering and delivery services:",
-    table: {
-      headers: ["Period", "Commission (on Order Value)", "Remarks"],
-      rows: [
-        ["First month from Go-Live", "0%", "No commission for the first calendar month from the date the restaurant goes live on the Platform."],
-        ["From second month onwards", "15% + GST", "Fifteen per cent (15%) of the Order Value plus applicable GST. Subject to commercial terms communicated from time to time."],
-      ],
-    },
-  };
+  const definitions = template.definitions;
+  const sections = template.sections;
+  const annexureA = template.annexureA;
 
   // Determine if UPI or Bank details - only show if actually filled
   const hasUPI = bank?.upi_id && bank.upi_id.trim() !== '';
@@ -224,17 +255,29 @@ function buildStructuredContract(data: ContractData, termsBody: string): Structu
       }
       : { headers: ANNEXURE_B_BANK_HEADERS, rows: [], isUPI: false };
 
-  const certification =
-    "I/We hereby certify that the details provided above are correct, that the bank account is an account legally opened and maintained by me/our organization, and that I/we shall be liable to the maximum extent possible under applicable law in the event any details provided above are found to be incorrect.";
+  const certification = template.certification;
+  const termsBody = template.partnershipPlanTerms;
 
-  return { intro, definitions, sections, annexureA, annexureB, certification, termsBody };
+  return {
+    formTitle: template.formTitle,
+    intro,
+    definitions,
+    sections,
+    annexureA,
+    annexureB,
+    certification,
+    termsBody,
+  };
 }
 
-function buildContractText(data: ContractData, termsBody: string): string {
-  const structured = buildStructuredContract(data, termsBody);
-  const { intro, definitions, sections, annexureA, annexureB, certification } = structured;
+function buildContractText(
+  data: ContractData,
+  template: MxContractTemplateContent = getDefaultMxContractTemplate()
+): string {
+  const structured = buildStructuredContract(data, template);
+  const { formTitle, intro, definitions, sections, annexureA, annexureB, certification, termsBody } = structured;
   const lines: string[] = [
-    "RESTAURANT PARTNER ENROLMENT FORM (\"FORM\") FOR FOOD ORDERING AND DELIVERY SERVICES",
+    formTitle,
     "",
     `Effective Date: ${intro.effectiveDate}`,
     `Restaurant Name: ${intro.storeName}`,
@@ -245,7 +288,7 @@ function buildContractText(data: ContractData, termsBody: string): string {
     `Email ID: ${intro.email}`,
     "",
     "Definitions",
-    ...definitions.map((d) => `${d.term}: ${d.meaning}`),
+    ...definitions.map((d) => `${d.term} - ${d.meaning}`),
     "",
   ];
   sections.forEach((sec) => {
@@ -275,12 +318,17 @@ interface AgreementContractPageProps {
   step2: any;
   documents: any;
   parentInfo: any;
+  /** Raw DB content (JSON or legacy partnership-plan text). */
   termsContent: string;
+  templateTitle?: string;
+  templateVersion?: string;
   /** Optional URL for platform/company logo to embed in the PDF (e.g. from public folder or CDN). */
   logoUrl?: string | null;
   onBack: () => void;
   onContinue: (args: { contractText: string; agreedToRead: boolean }) => void;
   actionLoading?: boolean;
+  /** Registers PDF download handler for the parent shell header. */
+  onDownloadReady?: (download: () => void) => void;
 }
 
 export default function AgreementContractPage({
@@ -293,6 +341,7 @@ export default function AgreementContractPage({
   onBack,
   onContinue,
   actionLoading = false,
+  onDownloadReady,
 }: AgreementContractPageProps) {
   const [agreedToRead, setAgreedToRead] = useState(false);
   const [contractText, setContractText] = useState("");
@@ -330,11 +379,13 @@ export default function AgreementContractPage({
       : undefined,
   };
 
+  const contractTemplate = useMemo(() => parseMxContractTemplate(termsContent), [termsContent]);
+
   useEffect(() => {
-    const s = buildStructuredContract(contractData, termsContent);
+    const s = buildStructuredContract(contractData, contractTemplate);
     setStructured(s);
-    setContractText(buildContractText(contractData, termsContent));
-  }, [step1, step2, documents, parentInfo, termsContent]);
+    setContractText(buildContractText(contractData, contractTemplate));
+  }, [step1, step2, documents, parentInfo, contractTemplate]);
 
   const handleDownloadPdf = useCallback(async () => {
     if (!structured) return;
@@ -384,11 +435,12 @@ export default function AgreementContractPage({
 
       doc.setFontSize(16);
       doc.setFont("helvetica", "bold");
-      doc.text("RESTAURANT PARTNER ENROLMENT FORM", margin, y);
-      y += 6;
-      doc.setFontSize(11);
-      doc.text("(\"FORM\") FOR FOOD ORDERING AND DELIVERY SERVICES", margin, y);
-      y += 8;
+      const titleLines = doc.splitTextToSize(pdfSafeText(structured.formTitle), pageW - margin * 2);
+      titleLines.forEach((line: string) => {
+        doc.text(escapePdfText(line), margin, y);
+        y += 6;
+      });
+      y += 2;
       doc.line(margin, y, pageW - margin, y);
       y += 6;
 
@@ -444,7 +496,7 @@ export default function AgreementContractPage({
       y += headH;
       doc.setFont("helvetica", "normal");
       structured.definitions.forEach((d) => {
-        const defLine = sanitizeTextForPdf(d.term) + ": " + sanitizeTextForPdf(d.meaning);
+        const defLine = sanitizeTextForPdf(d.term) + " - " + sanitizeTextForPdf(d.meaning);
         const wrapped = doc.splitTextToSize(defLine, pageW - margin * 2 - 2);
         wrapped.forEach((line: string) => {
           checkNewPage(smallH);
@@ -492,72 +544,47 @@ export default function AgreementContractPage({
       doc.setFont("helvetica", "normal");
       doc.text(escapePdfText(sanitizeTextForPdf(structured.annexureA.description)), margin, y);
       y += lineH + 2;
-      const aHeaders = structured.annexureA.table.headers;
-      const aRows = structured.annexureA.table.rows;
-      const aColCount = aHeaders.length;
-      const aColW = (pageW - margin * 2) / aColCount;
-      const aRowH = 8;
-      doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
-      let x = margin;
-      aHeaders.forEach((h) => {
-        doc.rect(x, y - 4, aColW, aRowH);
-        doc.text(h, x + 2, y + 0.5);
-        x += aColW;
-      });
-      y += aRowH;
-      doc.setFont("helvetica", "normal");
-      aRows.forEach((row) => {
-        checkNewPage(aRowH);
-        x = margin;
-        row.forEach((cell) => {
-          doc.rect(x, y - 4, aColW, aRowH);
-          const safe = sanitizeTextForPdf(cell);
-          const text = doc.splitTextToSize(safe, aColW - 4);
-          doc.text(escapePdfText(text[0] || "—"), x + 2, y + 0.5);
-          x += aColW;
-        });
-        y += aRowH;
+      y = drawPdfWrappedTable(doc, {
+        x: margin,
+        y,
+        tableW: pageW - margin * 2,
+        pageH,
+        margin,
+        headers: structured.annexureA.table.headers,
+        rows: structured.annexureA.table.rows,
+        onNewPage: () => doc.addPage(),
       });
       y += 4;
 
       checkNewPage(headH + 15);
       doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
       doc.text(`Annexure B - ${structured.annexureB.isUPI ? 'UPI Details' : 'Bank Details'}`, margin, y);
       y += headH;
 
       const tableHeaders = structured.annexureB.headers as string[];
       const tableRows = structured.annexureB.rows;
-      const colCount = tableHeaders.length;
-      const colW = (pageW - margin * 2) / colCount;
-      const rowH = 7;
-
-      doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
-      x = margin;
-      tableHeaders.forEach((h) => {
-        doc.rect(x, y - 4, colW, rowH);
-        doc.text(h, x + 2, y + 0.5);
-        x += colW;
-      });
-      y += rowH;
-      doc.setFont("helvetica", "normal");
-      tableRows.forEach((row) => {
-        checkNewPage(rowH);
-        x = margin;
-        row.forEach((cell) => {
-          doc.rect(x, y - 4, colW, rowH);
-          const safe = sanitizeTextForPdf(cell);
-          const text = doc.splitTextToSize(safe, colW - 4);
-          doc.text(escapePdfText(text[0] || "—"), x + 2, y + 0.5);
-          x += colW;
+      if (tableRows.length > 0) {
+        y = drawPdfWrappedTable(doc, {
+          x: margin,
+          y,
+          tableW: pageW - margin * 2,
+          pageH,
+          margin,
+          headers: [...tableHeaders],
+          rows: tableRows,
+          onNewPage: () => doc.addPage(),
+          minRowH: 7,
         });
-        y += rowH;
-      });
-      if (tableRows.length === 0) {
-        doc.rect(margin, y - 4, pageW - margin * 2, rowH);
+      } else {
+        const emptyRowH = 7;
+        checkNewPage(emptyRowH);
+        doc.setFont("helvetica", "normal");
+        doc.rect(margin, y - 4, pageW - margin * 2, emptyRowH);
         doc.text("To be provided or as per application.", margin + 2, y + 0.5);
-        y += rowH;
+        y += emptyRowH;
       }
       y += 4;
 
@@ -593,48 +620,25 @@ export default function AgreementContractPage({
     }
   }, [structured, contractText, step1?.store_name, logoUrl]);
 
+  useEffect(() => {
+    onDownloadReady?.(() => {
+      void handleDownloadPdf();
+    });
+  }, [handleDownloadPdf, onDownloadReady]);
+
   const canContinue = agreedToRead;
   const displayLogoUrl = (typeof logoUrl === "string" && logoUrl.trim()) ? logoUrl : "/logo.png";
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 flex flex-col">
-      {/* Compact Header with Logo and Download Button */}
-      <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b border-slate-200 px-3 sm:px-4 py-2 sm:py-2.5 shrink-0 shadow-sm">
-        <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <img src={displayLogoUrl} alt="Company" className="h-7 sm:h-8 w-auto object-contain shrink-0" />
-            <FileText className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-600 shrink-0 hidden sm:block" />
-            <div className="min-w-0">
-              <h1 className="text-sm sm:text-base font-bold text-slate-900 truncate">Partner Agreement & Contract</h1>
-              <p className="text-[10px] sm:text-xs text-slate-600 truncate">Merchant Partner Agreement — Version v1</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleDownloadPdf}
-            className="flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-xs sm:text-sm font-medium transition-colors shadow-sm shrink-0"
-          >
-            <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            <span className="hidden sm:inline">Download PDF</span>
-            <span className="sm:hidden">PDF</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0 max-w-4xl w-full mx-auto px-2 sm:px-3 md:px-4 py-2 sm:py-3 flex flex-col">
-
+    <div className="h-full min-h-0 w-full flex flex-col bg-gradient-to-br from-slate-50 via-white to-indigo-50/30">
+      <div className="flex-1 min-h-0 flex flex-col max-w-6xl w-full mx-auto px-2 sm:px-3 md:px-4 pt-3 sm:pt-4 pb-2 sm:pb-3">
         <article className="bg-white rounded-lg sm:rounded-xl border border-slate-200 shadow-sm overflow-hidden flex-1 min-h-0 flex flex-col">
-          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-2.5 sm:p-3 md:p-4 pb-36 sm:pb-40 hide-scrollbar">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-2.5 sm:p-3 md:p-4 hide-scrollbar">
             {structured ? (
-              <div className="space-y-2.5 sm:space-y-3 text-slate-800 text-xs sm:text-sm font-[family-name:var(--font-geist-sans)]">
-                {/* Document header with company logo */}
+              <div className="space-y-2.5 sm:space-y-3 text-slate-800 text-xs sm:text-sm font-[family-name:var(--font-geist-sans)] pb-4">
                 <header className="border-b border-slate-200 pb-4 mb-2 bg-slate-50/80 -mx-2.5 sm:-mx-3 md:-mx-4 px-2.5 sm:px-3 md:px-4 pt-3 rounded-t-lg sm:rounded-t-xl">
-                  <div className="flex items-center gap-3 mb-3">
-                    <img src={displayLogoUrl} alt="GatiMitra" className="h-9 sm:h-10 w-auto object-contain" />
-                    {/* <span className="text-sm sm:text-base font-semibold text-slate-800">GatiMitra</span> */}
-                  </div>
                   <h2 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-wide mb-2">
-                    Restaurant Partner Enrolment Form (&quot;Form&quot;) for Food Ordering and Delivery Services
+                    {structured.formTitle}
                   </h2>
                   <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-[10px] sm:text-xs">
                     <div><dt className="text-slate-500 font-medium">Effective Date</dt><dd className="font-medium text-slate-900">{sanitizeTextForPdf(structured.intro.effectiveDate)}</dd></div>
@@ -649,14 +653,15 @@ export default function AgreementContractPage({
 
                 <section>
                   <h3 className="text-xs sm:text-sm font-bold text-slate-900 mb-1">Definitions</h3>
-                  <dl className="space-y-1 text-[10px] sm:text-xs">
+                  <div className="space-y-1 text-[10px] sm:text-xs">
                     {structured.definitions.map((d, i) => (
-                      <div key={i} className="mb-1">
-                        <dt className="font-semibold text-slate-800">{d.term}</dt>
-                        <dd className="text-slate-600 pl-2 mt-0.5 leading-relaxed">{d.meaning}</dd>
-                      </div>
+                      <p key={i} className="leading-relaxed text-slate-600 mb-1">
+                        <span className="font-semibold text-slate-800 whitespace-nowrap">{d.term}</span>
+                        {" - "}
+                        <span>{d.meaning}</span>
+                      </p>
                     ))}
-                  </dl>
+                  </div>
                 </section>
 
                 {structured.sections.map((sec, idx) => (
@@ -763,12 +768,12 @@ export default function AgreementContractPage({
         </article>
       </div>
 
-      {/* Checkbox + Navigation - Fixed bottom; left offset so sidebar Help button does not overlap */}
+      {/* Checkbox + navigation — in-flow footer (no viewport overlap) */}
       <div
-        className="fixed bottom-0 left-14 sm:left-[13rem] md:left-56 lg:left-60 right-0 z-20 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-2 sm:py-2.5 px-2 sm:px-3"
+        className="flex-none shrink-0 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.08)] py-2 sm:py-2.5 px-2 sm:px-3"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 10px)' }}
       >
-        <div className="max-w-4xl mx-auto space-y-1.5 sm:space-y-2">
+        <div className="max-w-6xl mx-auto space-y-1.5 sm:space-y-2">
           <label className="flex items-start gap-2 cursor-pointer group w-full">
             <input
               type="checkbox"
@@ -807,4 +812,4 @@ export default function AgreementContractPage({
   );
 }
 
-export { buildContractText, buildStructuredContract, decodeHtmlEntities, escapePdfText, sanitizeTextForPdf };
+export { buildContractText, buildStructuredContract, decodeHtmlEntities, escapePdfText, sanitizeTextForPdf, drawPdfWrappedTable };

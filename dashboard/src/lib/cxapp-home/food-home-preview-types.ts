@@ -7,6 +7,11 @@ export type FoodHomePreviewCategory = {
   imageUrl: string | null;
 };
 
+export type FoodHomePreviewAllTab = {
+  label: string;
+  imageUrl: string | null;
+};
+
 export type FoodHomePreviewOffer = {
   id: string;
   kind?: "merchant" | "platform";
@@ -35,6 +40,7 @@ export type FoodHomePreviewPayload = {
   layoutKey: FoodHomeLayoutKey;
   gridFirstHeroMedia: GridFirstHeroMediaItem[];
   categories: FoodHomePreviewCategory[];
+  allTab: FoodHomePreviewAllTab;
   offers: FoodHomePreviewOffer[];
   lovedMerchants: FoodHomePreviewMerchant[];
   restaurants: FoodHomePreviewMerchant[];
@@ -44,4 +50,10 @@ export type FoodHomePreviewPayload = {
   gridFirstSubscriptionRowEnabled: boolean;
   gridFirstSubscriptionRowText: string;
   gridFirstSubscriptionRowBgColor: string;
+  gridFirstUnder250Enabled: boolean;
+  gridFirstUnder250MaxPrice: number;
+  gridFirstUnder250Title: string;
+  gridFirstUnder250FilterLabel: string;
+  gridFirstUnder250TabImageUrl: string | null;
+  gridFirstUnder250HeroImageUrl: string | null;
 };

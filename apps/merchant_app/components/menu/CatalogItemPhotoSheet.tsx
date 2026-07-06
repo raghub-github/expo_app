@@ -39,6 +39,7 @@ type Props = {
   item: MenuItemRow | null;
   storeId: string | null;
   token: string | null;
+  imageLimitReached?: boolean;
   onClose: () => void;
   onUpdated: () => void;
   onRequestUploadOptions?: () => void;
@@ -68,6 +69,7 @@ export function CatalogItemPhotoSheet({
   item,
   storeId,
   token,
+  imageLimitReached = false,
   onClose,
   onUpdated,
   onRequestUploadOptions,
@@ -79,7 +81,7 @@ export function CatalogItemPhotoSheet({
   const { width: screenWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const imageWidth = screenWidth - 32;
-  const imageSize = imageWidth;
+  const imageHeight = Math.min(192, imageWidth);
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<MenuItemDetail | null>(null);
@@ -277,12 +279,16 @@ export function CatalogItemPhotoSheet({
 
   const handleAddPhoto = useCallback(() => {
     if (!item || busy) return;
+    if (imageLimitReached) {
+      Alert.alert("Limit exceeded", "Image upload limit reached for your plan. Upgrade to add more.");
+      return;
+    }
     if (onRequestUploadOptions) {
       onRequestUploadOptions();
       return;
     }
     void runReplacePhotoPicker();
-  }, [item, busy, onRequestUploadOptions, runReplacePhotoPicker]);
+  }, [item, busy, imageLimitReached, onRequestUploadOptions, runReplacePhotoPicker]);
 
   const handleReplacePhotoPress = useCallback(() => {
     if (!item || busy) return;
@@ -350,11 +356,11 @@ export function CatalogItemPhotoSheet({
 
           <View style={styles.sheetBody}>
           {showInitialLoader ? (
-            <View style={[styles.loadingWrap, { minHeight: imageSize }]}>
+            <View style={[styles.loadingWrap, { minHeight: imageHeight }]}>
               <ActivityIndicator color={GatiMitraMerchant.primary} />
             </View>
           ) : images.length === 0 ? (
-            <View style={[styles.emptyWrap, { minHeight: Math.min(imageSize, 240) }]}>
+            <View style={[styles.emptyWrap, { minHeight: imageHeight }]}>
               <Ionicons name="camera-outline" size={40} color={GatiMitraMerchant.textTertiary} />
               <Text style={styles.emptyText}>No photos uploaded yet</Text>
             </View>
@@ -373,11 +379,11 @@ export function CatalogItemPhotoSheet({
                 {images.map((img) => {
                   const slideModeration = normalizeImageModerationStatus(img.moderation_status);
                   return (
-                  <View key={img.image_url || String(img.id)} style={[styles.slide, { width: imageWidth, height: imageSize }]}>
+                  <View key={img.image_url || String(img.id)} style={[styles.slide, { width: imageWidth, height: imageHeight }]}>
                     <AuthProxyImage
                       uri={img.image_url}
                       token={token}
-                      style={{ width: imageWidth, height: imageSize }}
+                      style={{ width: imageWidth, height: imageHeight }}
                       resizeMode="contain"
                     />
                     {img.id > 0 ? (
@@ -410,7 +416,7 @@ export function CatalogItemPhotoSheet({
                 })}
                 {showAddPhotoSlide ? (
                   <TouchableOpacity
-                    style={[styles.slide, styles.addPhotoSlide, { width: imageWidth, height: imageSize }]}
+                    style={[styles.slide, styles.addPhotoSlide, { width: imageWidth, height: imageHeight }]}
                     onPress={handleAddPhoto}
                     disabled={busy}
                     activeOpacity={0.92}

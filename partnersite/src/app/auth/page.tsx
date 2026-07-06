@@ -5,6 +5,7 @@ import { Store, ArrowRight, ChevronDown } from 'lucide-react';
 import { WhyChooseUsSection } from '@/components/onboarding/WhyChooseUsSection';
 import { NeededDocumentsSection } from '@/components/onboarding/NeededDocumentsSection';
 import { FAQSection } from '@/components/onboarding/FAQSection';
+import { PartnerPlatformAgreementNotice } from '@/components/legal/PartnerPlatformAgreementNotice';
 
 const HERO_BG_IMAGE =
   'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1920&q=80';
@@ -83,6 +84,8 @@ export default function AuthHome() {
                 <ArrowRight className="h-4 w-4 shrink-0 text-white/80" />
               </Link>
             </div>
+
+            <PartnerPlatformAgreementNotice variant="dark" className="mb-3 px-1" />
 
             <p className="text-center text-xs sm:text-sm font-semibold text-white/95">
               For Partners – Start selling & delivering through GatiMitra

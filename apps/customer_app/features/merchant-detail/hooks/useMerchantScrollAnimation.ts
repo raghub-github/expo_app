@@ -8,22 +8,21 @@ import {
   runOnJS,
   type SharedValue,
 } from "react-native-reanimated";
-import {
-  HEADER_IMAGE_HEIGHT,
-  HEADER_COLLAPSED_THRESHOLD,
-  STICKY_FILTER_SHOW_Y,
-  FILTER_BAR_HEIGHT,
-  STICKY_SEARCH_ROW_HEIGHT,
-} from "../constants/layout";
+import { HEADER_COLLAPSED_THRESHOLD } from "../constants/layout";
 
 type UseMerchantScrollAnimationOpts = {
   headerSearchExpandedSv: SharedValue<boolean>;
+  userMenuScrollStarted?: SharedValue<boolean>;
   onScrollEnd?: (y: number) => void;
+  /** Cancel pending programmatic scroll when the user takes over. */
+  onBeginDrag?: () => void;
 };
 
 export function useMerchantScrollAnimation({
   headerSearchExpandedSv,
+  userMenuScrollStarted,
   onScrollEnd,
+  onBeginDrag,
 }: UseMerchantScrollAnimationOpts) {
   const scrollY = useSharedValue(0);
 
@@ -34,9 +33,21 @@ export function useMerchantScrollAnimation({
     [onScrollEnd]
   );
 
+  const notifyBeginDrag = useCallback(() => {
+    onBeginDrag?.();
+  }, [onBeginDrag]);
+
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
       scrollY.value = event.contentOffset.y;
+    },
+    onBeginDrag: () => {
+      if (userMenuScrollStarted) {
+        userMenuScrollStarted.value = true;
+      }
+      if (onBeginDrag) {
+        runOnJS(notifyBeginDrag)();
+      }
     },
     onEndDrag: (event) => {
       if (onScrollEnd) {
@@ -48,38 +59,6 @@ export function useMerchantScrollAnimation({
         runOnJS(commitScrollEnd)(event.contentOffset.y);
       }
     },
-  });
-
-  const heroBannerStyle = useAnimatedStyle(() => {
-    const collapse = interpolate(
-      scrollY.value,
-      [0, HEADER_IMAGE_HEIGHT],
-      [0, -HEADER_IMAGE_HEIGHT * 0.35],
-      Extrapolation.CLAMP
-    );
-    const scale = interpolate(
-      scrollY.value,
-      [0, HEADER_IMAGE_HEIGHT],
-      [1, 1.08],
-      Extrapolation.CLAMP
-    );
-    return {
-      transform: [{ translateY: collapse }, { scale }],
-    };
-  });
-
-  const heroOverlayOpacityStyle = useAnimatedStyle(() => {
-    const opacity = interpolate(
-      scrollY.value,
-      [0, HEADER_COLLAPSED_THRESHOLD * 0.6, HEADER_COLLAPSED_THRESHOLD],
-      [1, 0.4, 0],
-      Extrapolation.CLAMP
-    );
-    return { opacity };
-  });
-
-  const infoOpacityStyle = useAnimatedStyle(() => {
-    return { opacity: 1 };
   });
 
   const stickySearchStyle = useAnimatedStyle(() => {
@@ -114,44 +93,16 @@ export function useMerchantScrollAnimation({
     return { opacity };
   });
 
-  const stickyFilterStyle = useAnimatedStyle(() => {
-    const lockY = STICKY_FILTER_SHOW_Y;
-    return {
-      opacity: scrollY.value >= lockY - 8 ? 1 : 0,
-    };
-  });
-
-  const fabStyle = useAnimatedStyle(() => {
-    const opacity = interpolate(
-      scrollY.value,
-      [0, 48, 96],
-      [0.88, 1, 1],
-      Extrapolation.CLAMP
-    );
-    const translateY = interpolate(
-      scrollY.value,
-      [0, 120],
-      [12, 0],
-      Extrapolation.CLAMP
-    );
-    return { opacity, transform: [{ translateY }] };
-  });
-
-  const stickyFilterTop =
-    MERCHANT_HEADER_TOP_GUTTER + STICKY_SEARCH_ROW_HEIGHT + 10;
+  const fabStyle = useAnimatedStyle(() => ({
+    opacity: 1,
+    transform: [{ translateY: 0 }],
+  }));
 
   return {
     scrollY,
     scrollHandler,
-    heroBannerStyle,
-    heroOverlayOpacityStyle,
-    infoOpacityStyle,
     stickySearchStyle,
     stickySearchBgStyle,
-    stickyFilterStyle,
     fabStyle,
-    stickyFilterTop,
   };
 }
-
-const MERCHANT_HEADER_TOP_GUTTER = 0;

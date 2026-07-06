@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CreditCard, Headphones, Loader2, Sparkles, Store, Bike } from "lucide-react";
+import { AlertTriangle, CreditCard, Headphones, Loader2, Sparkles, Store, Bike, FileText } from "lucide-react";
+import { MxAgreementAdminPanel } from "./MxAgreementAdminPanel";
 import { usePermissions } from "@/hooks/usePermissions";
 import type { StoreOnboardingCommissionConfigDTO } from "@/lib/db/operations/store-onboarding-commission-config";
 import type { RiderOnboardingCommissionConfigDTO } from "@/lib/db/operations/rider-onboarding-commission-config";
 
-type Audience = "store" | "rider";
+type Audience = "store" | "rider" | "agreement";
 
 type FormState = {
   planName: string;
@@ -141,6 +142,18 @@ function AudienceToggle({
         <Bike className="h-3.5 w-3.5" />
         Rider
       </button>
+      <button
+        type="button"
+        onClick={() => onChange("agreement")}
+        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+          audience === "agreement"
+            ? "bg-white text-violet-700 shadow-sm"
+            : "text-gray-600 hover:text-gray-900"
+        }`}
+      >
+        <FileText className="h-3.5 w-3.5" />
+        Mx Agreement
+      </button>
     </div>
   );
 }
@@ -270,6 +283,7 @@ export default function StoreOnboardingFeePage() {
   }, [riderForm]);
 
   const isDirty = useMemo(() => {
+    if (audience === "agreement") return false;
     if (audience === "store") {
       if (!form || savedSnapshot === null) return false;
       return serializeFormState(form) !== savedSnapshot;
@@ -283,7 +297,7 @@ export default function StoreOnboardingFeePage() {
   }, [isDirty]);
 
   const save = async () => {
-    if (!isDirty) return;
+    if (!isDirty || audience === "agreement") return;
     setSaving(true);
     setError(null);
     setInfo(null);
@@ -371,7 +385,9 @@ export default function StoreOnboardingFeePage() {
     <div className="w-full min-w-0 max-w-6xl pb-20 text-gray-900">
       <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-gray-600">
-          Configure onboarding fee, GST, and copy for {audience === "store" ? "merchant stores" : "delivery riders"}.
+          {audience === "agreement"
+            ? "Manage the merchant partner agreement shown during store onboarding."
+            : `Configure onboarding fee, GST, and copy for ${audience === "store" ? "merchant stores" : "delivery riders"}.`}
         </p>
         <AudienceToggle audience={audience} onChange={setAudience} />
       </div>
@@ -384,7 +400,9 @@ export default function StoreOnboardingFeePage() {
       ) : null}
       {info ? <p className="mt-2 text-xs font-medium text-emerald-700">{info}</p> : null}
 
-      {loading ? (
+      {audience === "agreement" ? (
+        <MxAgreementAdminPanel />
+      ) : loading ? (
         <div className="flex justify-center py-10 text-gray-400">
           <Loader2 className="h-8 w-8 animate-spin" />
         </div>

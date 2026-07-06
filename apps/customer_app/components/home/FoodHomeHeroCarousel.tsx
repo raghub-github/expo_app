@@ -2,7 +2,7 @@
  * Grid-first layout hero — admin media background + store offer CTA overlay.
  */
 
-import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -21,10 +21,18 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import type { GridFirstHeroMediaItem } from "@/lib/gridFirstHeroMedia";
 import type { HomeBannerOffer } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
+import { CX } from "@/lib/appAssetKeys";
+import { prefetchFoodHomeImageUri } from "@/lib/prefetchGridFirstHeroMedia";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PROMO_AUTO_MS = 5200;
-const SKY_TOP = "#7DD3FC";
+/** Sky / status-bar tint for grid-first hero (keep in sync with home status bar). */
+export const GRID_FIRST_SKY_TOP = "#7DD3FC";
+/** Warm fallback while hero media loads — avoids blue→banner flash under status bar. */
+export const GRID_FIRST_HERO_PLACEHOLDER = "#F3E8D4";
+const SKY_TOP = GRID_FIRST_SKY_TOP;
+const FOOD_PROMO_ASSET_KEYS = [CX.home.promoOffer, CX.home.promoOffer2] as const;
 /** Header row + search — overlay height on hero (excl. status bar). */
 export const GRID_FIRST_HEADER_OVERLAY_H = 122;
 const HERO_VISIBLE_H = 210;
@@ -78,36 +86,69 @@ function merchantOfferCta(offer: HomeBannerOffer): string | null {
   return null;
 }
 
+function defaultPromoHeroUrl(index: number): string | null {
+  const key = FOOD_PROMO_ASSET_KEYS[index % FOOD_PROMO_ASSET_KEYS.length];
+  return getAppAssetUrl(key);
+}
+
+function merchantOfferHeroUrl(offer: HomeBannerOffer): string | null {
+  if (offer.kind !== "merchant") return null;
+  const raw = offer.offer_image_url?.trim();
+  if (!raw) return null;
+  return toAbsoluteImageUrl(raw) ?? raw;
+}
+
 function buildSlides(
   heroMedia: GridFirstHeroMediaItem[],
   offers: HomeBannerOffer[]
 ): Slide[] {
   const merchantOffers = offers.filter((o) => o.kind === "merchant" && o.store_id?.trim());
 
-  const mediaSlides =
-    heroMedia.length > 0
-      ? heroMedia.map((item) => {
-          const raw = item.url?.trim() || null;
-          return {
-            id: item.id,
-            kind: item.kind,
-            mediaUrl: raw ? toAbsoluteImageUrl(raw) ?? raw : null,
-          };
-        })
-      : [{ id: "hero-sky", kind: "image" as const, mediaUrl: null }];
+  const mapWithOffers = (
+    mediaSlides: Array<{ id: string; kind: "image" | "video"; mediaUrl: string | null }>
+  ): Slide[] =>
+    mediaSlides.map((media, index) => {
+      const offer =
+        merchantOffers.length > 0
+          ? merchantOffers[index % merchantOffers.length]
+          : undefined;
+      const cta = offer ? merchantOfferCta(offer) : null;
+      const fallbackUrl =
+        !media.mediaUrl && offer ? merchantOfferHeroUrl(offer) ?? defaultPromoHeroUrl(index) : null;
+      return {
+        ...media,
+        mediaUrl: media.mediaUrl ?? fallbackUrl,
+        cta,
+        storeId: cta && offer?.store_id?.trim() ? offer.store_id.trim() : "",
+      };
+    });
 
-  return mediaSlides.map((media, index) => {
-    const offer =
-      merchantOffers.length > 0
-        ? merchantOffers[index % merchantOffers.length]
-        : undefined;
-    const cta = offer ? merchantOfferCta(offer) : null;
-    return {
-      ...media,
-      cta,
-      storeId: cta && offer?.store_id?.trim() ? offer.store_id.trim() : "",
-    };
-  });
+  if (heroMedia.length > 0) {
+    const mediaSlides = heroMedia.map((item) => {
+      const raw = item.url?.trim() || null;
+      return {
+        id: item.id,
+        kind: item.kind,
+        mediaUrl: raw ? toAbsoluteImageUrl(raw) ?? raw : null,
+      };
+    });
+    return mapWithOffers(mediaSlides);
+  }
+
+  if (merchantOffers.length > 0) {
+    return merchantOffers.slice(0, 6).map((offer, index) => {
+      const cta = merchantOfferCta(offer);
+      return {
+        id: `offer-${offer.id}`,
+        kind: "image" as const,
+        mediaUrl: merchantOfferHeroUrl(offer) ?? defaultPromoHeroUrl(index),
+        cta,
+        storeId: cta && offer.store_id?.trim() ? offer.store_id.trim() : "",
+      };
+    });
+  }
+
+  return mapWithOffers([{ id: "hero-sky", kind: "image" as const, mediaUrl: defaultPromoHeroUrl(0) }]);
 }
 
 type Props = {
@@ -125,6 +166,7 @@ function HeroMediaSlide({
   onImageError,
   isActive,
   onPress,
+  immersive = false,
 }: {
   slide: Slide;
   slideHeight: number;
@@ -132,9 +174,11 @@ function HeroMediaSlide({
   onImageError: () => void;
   isActive: boolean;
   onPress: () => void;
+  immersive?: boolean;
 }) {
   const hasMedia = !!slide.mediaUrl && !imageFailed;
   const hasCta = !!slide.cta?.trim();
+  const placeholderBg = immersive ? GRID_FIRST_HERO_PLACEHOLDER : SKY_TOP;
 
   const content = (
     <>
@@ -160,7 +204,7 @@ function HeroMediaSlide({
           onError={onImageError}
         />
       ) : (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: SKY_TOP }]} />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: placeholderBg }]} />
       )}
 
       {hasCta ? (
@@ -194,6 +238,7 @@ export function FoodHomeHeroCarousel({
   topInset = 0,
 }: Props) {
   const router = useRouter();
+  useAppAssetsStore((s) => s.assets);
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set());
@@ -203,6 +248,18 @@ export function FoodHomeHeroCarousel({
     : 232;
 
   const slides = useMemo(() => buildSlides(heroMedia, offers), [heroMedia, offers]);
+
+  useLayoutEffect(() => {
+    for (const slide of slides) {
+      if (slide.kind === "image" && slide.mediaUrl) {
+        prefetchFoodHomeImageUri(slide.mediaUrl);
+      }
+    }
+    for (const key of FOOD_PROMO_ASSET_KEYS) {
+      const promoUri = getAppAssetUrl(key);
+      if (promoUri) prefetchFoodHomeImageUri(promoUri);
+    }
+  }, [slides]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -233,16 +290,41 @@ export function FoodHomeHeroCarousel({
     }
   };
 
-  if (slides.length === 0) return null;
+  if (slides.length === 0) {
+    if (!immersive) return null;
+    return (
+      <View style={[styles.wrap, { height: slideHeight, backgroundColor: GRID_FIRST_HERO_PLACEHOLDER }]} />
+    );
+  }
+
+  const backdropUri = slides[0]?.kind === "image" ? slides[0].mediaUrl : null;
 
   return (
     <View
       style={[
         styles.wrap,
         embeddedInSky && styles.wrapEmbedded,
-        immersive && { height: slideHeight },
+        immersive && embeddedInSky && styles.wrapImmersiveAbsolute,
+        immersive && !embeddedInSky && { height: slideHeight },
       ]}
     >
+      {immersive ? (
+        backdropUri ? (
+          <Image
+            source={{ uri: backdropUri }}
+            style={StyleSheet.absoluteFillObject}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            priority="high"
+            transition={0}
+            recyclingKey={`backdrop-${backdropUri}`}
+          />
+        ) : (
+          <View
+            style={[StyleSheet.absoluteFillObject, { backgroundColor: GRID_FIRST_HERO_PLACEHOLDER }]}
+          />
+        )
+      ) : null}
       <ScrollView
         ref={scrollRef}
         horizontal
@@ -263,6 +345,7 @@ export function FoodHomeHeroCarousel({
             imageFailed={failedIds.has(slide.id)}
             onImageError={() => setFailedIds((s) => new Set(s).add(slide.id))}
             isActive={index === activeIndex}
+            immersive={immersive}
           />
         ))}
       </ScrollView>
@@ -284,12 +367,15 @@ const styles = StyleSheet.create({
   wrapEmbedded: {
     marginTop: 0,
   },
+  wrapImmersiveAbsolute: {
+    ...StyleSheet.absoluteFillObject,
+  },
   scrollContent: {
     alignItems: "stretch",
   },
   slide: {
     overflow: "hidden",
-    backgroundColor: SKY_TOP,
+    backgroundColor: GRID_FIRST_HERO_PLACEHOLDER,
   },
   ctaWrap: {
     position: "absolute",

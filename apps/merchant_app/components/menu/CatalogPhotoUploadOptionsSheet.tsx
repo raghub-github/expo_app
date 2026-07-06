@@ -26,6 +26,7 @@ type Props = {
   item: MenuItemRow | null;
   storeId: string | null;
   token: string | null;
+  imageLimitReached?: boolean;
   onClose: () => void;
   onUploaded: () => void;
   uploadCallbacks: CatalogPhotoUploadCallbacks;
@@ -36,6 +37,7 @@ export function CatalogPhotoUploadOptionsSheet({
   item,
   storeId,
   token,
+  imageLimitReached = false,
   onClose,
   onUploaded,
   uploadCallbacks,
@@ -60,6 +62,10 @@ export function CatalogPhotoUploadOptionsSheet({
   const handlePick = useCallback(
     async (source: "camera" | "gallery") => {
       if (!item || !storeId || !token || busy) return;
+      if (imageLimitReached) {
+        Alert.alert("Limit exceeded", "Image upload limit reached for your plan. Upgrade to add more.");
+        return;
+      }
       setBusy(true);
       try {
         const file = await pickCatalogPhoto(source);
@@ -76,7 +82,7 @@ export function CatalogPhotoUploadOptionsSheet({
         setBusy(false);
       }
     },
-    [busy, item, onClose, onUploaded, storeId, token, uploadCallbacks],
+    [busy, imageLimitReached, item, onClose, onUploaded, storeId, token, uploadCallbacks],
   );
 
   if (!item) return null;

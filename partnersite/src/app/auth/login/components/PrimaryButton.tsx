@@ -26,12 +26,11 @@ export function PrimaryButton({
       onClick={onClick}
       className={`
         w-full py-3.5 px-4 rounded-xl font-semibold text-sm text-white
-        bg-gradient-to-r from-orange-500 to-amber-500
-        shadow-md shadow-orange-500/25
+        bg-orange-600
         transition-all duration-200 ease-out
-        hover:from-orange-600 hover:to-amber-600 hover:shadow-lg hover:shadow-orange-500/30 hover:-translate-y-0.5
-        active:translate-y-0 active:shadow
-        disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:shadow-md
+        hover:bg-orange-700
+        active:bg-orange-800
+        disabled:opacity-50 disabled:cursor-not-allowed
         focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2
         ${className}
       `.trim()}
@@ -45,7 +44,7 @@ export function PrimaryButton({
           <span>Please wait...</span>
         </span>
       ) : (
-        children
+        <span className="inline-flex items-center justify-center gap-2">{children}</span>
       )}
     </button>
   );

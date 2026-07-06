@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { getItem, setItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
+import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 
 export type CartItemAddon = {
   addonId: string;
@@ -306,6 +307,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   clearCart: () => {
+    useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
     // CRITICAL: keep `hydrated: true`. Spreading `defaultState` would reset
     // hydrated → false, and the root layout's `!cartHydrated` guard would
     // immediately swap the entire app to the teal splash screen — which is

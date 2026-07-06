@@ -14,5 +14,7 @@ coverage
 Thumbs.db
 *.md
 !README.md
+# /coc, /terms, /privacy etc. are prerendered from these — required at build time.
+!src/content/legal/*.md
 .cursor
 .claude

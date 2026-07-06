@@ -205,6 +205,101 @@ test("calcWaitingCharge uses free wait threshold", () => {
   assert.equal(calcWaitingCharge(5, 3, 1), 2);
   assert.equal(calcWaitingCharge(3, 3, 1), 0);
   assert.equal(calcWaitingCharge(2, 3, 1), 0);
+  assert.equal(calcWaitingCharge(10, 5, 1.5), 7.5);
+});
+
+test("rider preview applies fixed surge after subtotal", () => {
+  const rider = calcRiderPreviewBreakdown({
+    pickupKm: 0,
+    dropKm: 12,
+    pickupSlabs: [
+      {
+        id: 1,
+        minKm: 0,
+        maxKm: null,
+        baseFare: 9,
+        pickupPerKm: 7,
+        minCharge: 12,
+        waitingChargePerMin: 1.5,
+        waitingStartAfter: 5,
+        isActive: true,
+        priority: 100,
+      },
+    ],
+    dropSlabs: [{ id: 1, minKm: 0, maxKm: null, dropPerKm: 3, isActive: true, priority: 100 }],
+    waitingMinutes: 5,
+    service: "ride",
+    vehicleType: "2_wheeler",
+    surgeDefinitions: [
+      {
+        id: 1,
+        name: "Peak Hour Surge",
+        surgeType: "fixed",
+        amount: 10,
+        priority: 100,
+        isEnabled: true,
+        gmitraMaxOnly: false,
+        appliesFood: true,
+        appliesParcel: true,
+        appliesRide: true,
+        vehicleType: "all",
+        manualActive: false,
+      },
+    ],
+    surgeTimeSlots: [],
+    forceActiveSurgeIds: [1],
+  });
+  assert.ok(rider);
+  assert.equal(rider!.subtotalBeforeSurge, 48);
+  assert.equal(rider!.surgeTotal, 10);
+  assert.equal(rider!.finalAmount, 58);
+});
+
+test("rider preview applies percentage surge on subtotal", () => {
+  const rider = calcRiderPreviewBreakdown({
+    pickupKm: 0,
+    dropKm: 12,
+    pickupSlabs: [
+      {
+        id: 1,
+        minKm: 0,
+        maxKm: null,
+        baseFare: 9,
+        pickupPerKm: 7,
+        minCharge: 12,
+        waitingChargePerMin: 1.5,
+        waitingStartAfter: 5,
+        isActive: true,
+        priority: 100,
+      },
+    ],
+    dropSlabs: [{ id: 1, minKm: 0, maxKm: null, dropPerKm: 3, isActive: true, priority: 100 }],
+    waitingMinutes: 0,
+    service: "ride",
+    vehicleType: "2_wheeler",
+    surgeDefinitions: [
+      {
+        id: 2,
+        name: "Night Surge",
+        surgeType: "percentage",
+        amount: 10,
+        priority: 100,
+        isEnabled: true,
+        gmitraMaxOnly: false,
+        appliesFood: true,
+        appliesParcel: true,
+        appliesRide: true,
+        vehicleType: "all",
+        manualActive: false,
+      },
+    ],
+    surgeTimeSlots: [],
+    forceActiveSurgeIds: [2],
+  });
+  assert.ok(rider);
+  assert.equal(rider!.subtotalBeforeSurge, 48);
+  assert.equal(rider!.surgeTotal, 4.8);
+  assert.equal(rider!.finalAmount, 52.8);
 });
 
 test("calcCumulativeDistanceCharge sanitizes malformed values", () => {

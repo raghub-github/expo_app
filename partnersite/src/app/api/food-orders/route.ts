@@ -24,6 +24,10 @@ import {
   resolveRiderSelfieFromStored,
 } from '@/lib/rider-selfie-url';
 import { loadMerchantRiderUniformByOrderCoreIds } from '@/lib/merchant-rider-uniform-feedback';
+import {
+  loadCustomerOrderCounts,
+  loadOrderOrdinalsByCoreId,
+} from '@/lib/food-order-customer-stats';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -80,6 +84,11 @@ export async function GET(req: NextRequest) {
     const ordersCoreId =
       ordersCoreIdRaw != null && ordersCoreIdRaw !== '' ? parseInt(ordersCoreIdRaw, 10) : NaN;
     const formattedOrderId = (searchParams.get('formatted_order_id') || '').trim();
+    const isListQuery =
+      !Number.isFinite(ordersFoodId) && !Number.isFinite(ordersCoreId) && !formattedOrderId;
+    const skipCompensation =
+      searchParams.get('skip_compensation') === '1' ||
+      (isListQuery && searchParams.get('include_compensation') !== '1');
 
     if (!storeId) {
       return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
@@ -240,68 +249,23 @@ export async function GET(req: NextRequest) {
 
     const customerOrderCountById = new Map<number, number>();
     const customerPlatformCountById = new Map<number, number>();
-    if (customerIds.length > 0) {
-      await Promise.all(
-        customerIds.map(async (cid) => {
-          try {
-            const [{ count: storeCount }, { count: platformCount }] = await Promise.all([
-              db
-                .from('orders_core')
-                .select('id', { count: 'exact', head: true })
-                .eq('merchant_store_id', store.id)
-                .eq('customer_id', cid),
-              db
-                .from('orders_core')
-                .select('id', { count: 'exact', head: true })
-                .eq('customer_id', cid),
-            ]);
-            customerOrderCountById.set(cid, typeof storeCount === 'number' ? storeCount : 0);
-            customerPlatformCountById.set(cid, typeof platformCount === 'number' ? platformCount : 0);
-          } catch {
-            customerOrderCountById.set(cid, 0);
-            customerPlatformCountById.set(cid, 0);
-          }
-        })
-      );
-    }
+    const storeOrdinalByCoreId = new Map<number, number>();
+    const platformOrdinalByCoreId = new Map<number, number>();
 
-    const storeOrdinalByKey = new Map<string, number>();
-    const platformOrdinalByKey = new Map<string, number>();
-    await Promise.all(
-      coreRows
-        .filter((c) => c.customer_id != null && c.created_at)
-        .map(async (core) => {
-          const cid = Number(core.customer_id);
-          const createdAt = String(core.created_at);
-          const storeKey = `s:${cid}:${createdAt}`;
-          const platformKey = `p:${cid}:${createdAt}`;
-          if (!storeOrdinalByKey.has(storeKey)) {
-            try {
-              const { count } = await db
-                .from('orders_core')
-                .select('id', { count: 'exact', head: true })
-                .eq('merchant_store_id', store.id)
-                .eq('customer_id', cid)
-                .lte('created_at', createdAt);
-              storeOrdinalByKey.set(storeKey, typeof count === 'number' ? count : 0);
-            } catch {
-              storeOrdinalByKey.set(storeKey, 0);
-            }
-          }
-          if (!platformOrdinalByKey.has(platformKey)) {
-            try {
-              const { count } = await db
-                .from('orders_core')
-                .select('id', { count: 'exact', head: true })
-                .eq('customer_id', cid)
-                .lte('created_at', createdAt);
-              platformOrdinalByKey.set(platformKey, typeof count === 'number' ? count : 0);
-            } catch {
-              platformOrdinalByKey.set(platformKey, 0);
-            }
-          }
-        })
-    );
+    if (customerIds.length > 0) {
+      const [{ storeByCustomer, platformByCustomer }, ordinals] = await Promise.all([
+        loadCustomerOrderCounts(store.id, customerIds),
+        loadOrderOrdinalsByCoreId(
+          store.id,
+          coreRows.map((c) => Number(c.id)),
+          customerIds
+        ),
+      ]);
+      for (const [cid, cnt] of storeByCustomer) customerOrderCountById.set(cid, cnt);
+      for (const [cid, cnt] of platformByCustomer) customerPlatformCountById.set(cid, cnt);
+      for (const [id, ord] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(id, ord);
+      for (const [id, ord] of ordinals.platformOrdinalByCoreId) platformOrdinalByCoreId.set(id, ord);
+    }
 
     const orderIdTexts = [
       ...new Set(
@@ -535,13 +499,9 @@ export async function GET(req: NextRequest) {
           customer_platform_order_count:
             custId != null ? customerPlatformCountById.get(custId) ?? null : null,
           customer_store_order_ordinal:
-            custId != null && core.created_at
-              ? storeOrdinalByKey.get(`s:${custId}:${String(core.created_at)}`) ?? null
-              : null,
+            custId != null ? storeOrdinalByCoreId.get(coreId) ?? null : null,
           customer_platform_order_ordinal:
-            custId != null && core.created_at
-              ? platformOrdinalByKey.get(`p:${custId}:${String(core.created_at)}`) ?? null
-              : null,
+            custId != null ? platformOrdinalByCoreId.get(coreId) ?? null : null,
           merchant_rider_in_uniform: uniformByCoreId.get(coreId) ?? null,
           rider_id: riderId,
           rider_name: (riderDetails?.name as string | null) ?? riderNameFromFood ?? null,
@@ -628,7 +588,9 @@ export async function GET(req: NextRequest) {
     );
 
     const ordersEnriched = await enrichOrdersWithCancellationDisplay(db, ordersWithDetails);
-    const ordersWithCompensation = await enrichOrdersWithCancellationCompensation(ordersEnriched);
+    const ordersWithCompensation = skipCompensation
+      ? ordersEnriched.map((o) => ({ ...o, cancellation_compensation: null }))
+      : await enrichOrdersWithCancellationCompensation(ordersEnriched);
 
     console.log(
       `[food-orders GET] ${ordersWithCompensation.length} partner orders (orders_core–centric) for store_id=${storeId}`

@@ -13,20 +13,20 @@ import {
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import {
-  fetchWalletSummary, fetchLedger, createPayoutRequest,
+  fetchWalletSummary, fetchLedger, createPayoutRequest, fetchPayoutSettlement,
   type WalletSummary, type LedgerEntry,
 } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
   buildPayoutCards,
-  CAT_LABELS,
   formatCurrency,
   formatPeriodRange,
   formatShortDate,
   payoutCardToParams,
   resolveLedgerDisplayAmount,
   resolveLedgerDisplayDescription,
+  resolveLedgerCategoryLabel,
   statusBadgeStyle,
   statusLabel,
   TX_FILTER_CHIPS,
@@ -96,6 +96,7 @@ export default function EarningsScreen() {
   const [withdrawing, setWithdrawing] = useState(false);
   const [bankPickerOpen, setBankPickerOpen] = useState(false);
   const [cycleExpanded, setCycleExpanded] = useState(true);
+  const [currentCycleEstPayout, setCurrentCycleEstPayout] = useState<number | null>(null);
 
   const ledgerQuery = useMemo(
     () => (activeTab === "transactions" ? txFilterToLedgerQuery(txFilter) : {}),
@@ -127,6 +128,33 @@ export default function EarningsScreen() {
     () => payoutCards.filter((c) => !c.isCurrentCycle),
     [payoutCards],
   );
+
+  useEffect(() => {
+    if (!storeId || !token || !currentCycleCard) {
+      setCurrentCycleEstPayout(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchPayoutSettlement(
+      storeId,
+      token,
+      currentCycleCard.periodStart,
+      currentCycleCard.periodEnd,
+    )
+      .then((summary) => {
+        if (!cancelled) {
+          setCurrentCycleEstPayout(Math.max(0, summary.estimatedPayout ?? 0));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCurrentCycleEstPayout(Math.max(0, currentCycleCard.netPayout));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, token, currentCycleCard]);
 
   const withdrawableBalance = getWithdrawableBalance(wallet);
   const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance);
@@ -205,6 +233,7 @@ export default function EarningsScreen() {
       currentCycleCard.periodEnd,
     );
     const cycleBadge = statusBadgeStyle(currentCycleCard.status);
+    const displayEstPayout = currentCycleEstPayout ?? currentCycleCard.netPayout;
     return (
       <View style={s.currentCycleWrap}>
         <View style={s.cycleRow}>
@@ -233,13 +262,18 @@ export default function EarningsScreen() {
             style={({ pressed }) => [s.cycleRowLeft, pressed && s.pressed]}
           >
             <Text style={s.payoutAmount}>
-              {formatCurrency(withdrawableBalance)}
+              {formatCurrency(displayEstPayout)}
             </Text>
-            <Text style={s.cycleMetricLabel}>Available balance</Text>
+            <Text style={s.cycleMetricLabel}>Est. payout</Text>
             {cycleExpanded ? (
-              <Text style={s.payoutOrders}>
-                Total orders · {currentCycleCard.orderCount}
-              </Text>
+              <>
+                <Text style={s.payoutOrders}>
+                  Available balance · {formatCurrency(withdrawableBalance)}
+                </Text>
+                <Text style={s.payoutOrders}>
+                  Total orders · {currentCycleCard.orderCount}
+                </Text>
+              </>
             ) : null}
           </Pressable>
           <Pressable
@@ -305,7 +339,7 @@ export default function EarningsScreen() {
     return (
       <View style={s.txRow}>
         <View style={s.txMain}>
-          <Text style={s.txCategory}>{CAT_LABELS[entry.category] ?? entry.category.replace(/_/g, " ")}</Text>
+          <Text style={s.txCategory}>{resolveLedgerCategoryLabel(entry)}</Text>
           {displayDesc ? (
             <Text style={s.txDesc} numberOfLines={3}>{displayDesc}</Text>
           ) : null}

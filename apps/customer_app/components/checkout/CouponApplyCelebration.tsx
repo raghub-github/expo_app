@@ -5,12 +5,12 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   View,
-  Text,
   Modal,
   Pressable,
   StyleSheet,
   useWindowDimensions,
 } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -142,13 +142,13 @@ export function CouponApplyCelebration({
         <Pressable onPress={onDismiss} style={styles.cardPress} accessibilityRole="button">
           <Animated.View entering={FadeIn.duration(220)} style={styles.card}>
             <View style={styles.cardIcon}>
-              <Text style={styles.cardIconPct}>%</Text>
+              <CheckoutText style={styles.cardIconPct}>%</CheckoutText>
             </View>
-            <Text style={styles.cardCodeLine} numberOfLines={2}>
+            <CheckoutText style={styles.cardCodeLine} numberOfLines={2}>
               '{couponCode}' applied
-            </Text>
-            <Text style={styles.cardSaved}>{savedLabel}</Text>
-            <Text style={styles.ctaText}>Woohoo! Thanks</Text>
+            </CheckoutText>
+            <CheckoutText style={styles.cardSaved}>{savedLabel}</CheckoutText>
+            <CheckoutText style={styles.ctaText}>Woohoo! Thanks</CheckoutText>
           </Animated.View>
         </Pressable>
       </View>

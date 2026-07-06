@@ -2,7 +2,8 @@
  * Gratitude Corner — tip + Feeding India (checkout page + bill summary sheet).
  */
 
-import { View, Text, Pressable, StyleSheet, Image, TextInput } from "react-native";
+import { View, Pressable, StyleSheet, Image, TextInput } from "react-native";
+import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -42,7 +43,7 @@ function GratitudeDivider() {
   return (
     <View style={styles.gratitudeDivider}>
       <View style={styles.gratitudeLine} />
-      <Text style={styles.gratitudeLabel}>GRATITUDE CORNER</Text>
+      <CheckoutText style={styles.gratitudeLabel}>GRATITUDE CORNER</CheckoutText>
       <View style={styles.gratitudeLine} />
     </View>
   );
@@ -88,10 +89,10 @@ export function CheckoutGratitudeSections({
       />
       <View style={styles.tipCardInner}>
         <View style={styles.tipTextCol}>
-          <Text style={styles.tipTitle}>Tip your delivery partner</Text>
-          <Text style={styles.tipSub}>
+          <CheckoutText style={styles.tipTitle}>Tip your delivery partner</CheckoutText>
+          <CheckoutText style={styles.tipSub}>
             They&apos;ll get notified instantly. The full tip is sent after delivery
-          </Text>
+          </CheckoutText>
           <View style={styles.tipChipRow}>
             {TIP_CHIP_AMOUNTS.map((amt) => {
               const active = !tipCustomMode && tipValue === amt;
@@ -101,7 +102,7 @@ export function CheckoutGratitudeSections({
                   onPress={() => onTipSelect(active ? 0 : amt)}
                   style={[styles.tipChip, active && styles.tipChipActive]}
                 >
-                  <Text style={[styles.tipChipText, active && styles.tipChipTextActive]}>₹{amt}</Text>
+                  <CheckoutText style={[styles.tipChipText, active && styles.tipChipTextActive]}>₹{amt}</CheckoutText>
                 </Pressable>
               );
             })}
@@ -109,12 +110,12 @@ export function CheckoutGratitudeSections({
               onPress={onTipCustomMode}
               style={[styles.tipChip, tipCustomMode && styles.tipChipActive]}
             >
-              <Text style={[styles.tipChipText, tipCustomMode && styles.tipChipTextActive]}>Other</Text>
+              <CheckoutText style={[styles.tipChipText, tipCustomMode && styles.tipChipTextActive]}>Other</CheckoutText>
             </Pressable>
           </View>
           {tipCustomMode ? (
             <View style={styles.tipCustomRow}>
-              <Text style={styles.tipCustomRupee}>₹</Text>
+              <CheckoutText style={styles.tipCustomRupee}>₹</CheckoutText>
               <TextInput
                 style={styles.tipCustomInput}
                 keyboardType="numeric"
@@ -133,9 +134,9 @@ export function CheckoutGratitudeSections({
       {showTipConfirm ? (
         <View style={styles.gratitudeConfirmRow}>
           <Ionicons name="checkmark-circle" size={18} color={GM.emerald} />
-          <Text style={styles.gratitudeConfirmText}>Amount added to your order</Text>
+          <CheckoutText style={styles.gratitudeConfirmText}>Amount added to your order</CheckoutText>
           <Pressable onPress={() => onTipSelect(0)} hitSlop={10}>
-            <Text style={styles.gratitudeClearText}>Clear</Text>
+            <CheckoutText style={styles.gratitudeClearText}>Clear</CheckoutText>
           </Pressable>
         </View>
       ) : null}
@@ -154,15 +155,15 @@ export function CheckoutGratitudeSections({
         style={styles.feedingHero}
       >
         <View style={styles.feedingHeroText}>
-          <Text style={styles.feedingHeadline} numberOfLines={2}>
-            <Text style={styles.feedingJoin}>Join us at </Text>
-            <Text style={styles.feedingBrand}>feeding</Text>
-            <Text style={styles.feedingHeart}> ❤️</Text>
-            <Text style={styles.feedingBrand}> india</Text>
-          </Text>
-          <Text style={styles.feedingTagline}>
+          <CheckoutText style={styles.feedingHeadline} numberOfLines={2}>
+            <CheckoutText style={styles.feedingJoin}>Join us at </CheckoutText>
+            <CheckoutText style={styles.feedingBrand}>feeding</CheckoutText>
+            <CheckoutText style={styles.feedingHeart}> ❤️</CheckoutText>
+            <CheckoutText style={styles.feedingBrand}> india</CheckoutText>
+          </CheckoutText>
+          <CheckoutText style={styles.feedingTagline}>
             Together, we can fuel young minds to grow, learn, and thrive
-          </Text>
+          </CheckoutText>
         </View>
         {fedImg ? (
           <Image source={fedImg} style={styles.feedingArt} resizeMode="contain" accessibilityLabel="Feeding India" />
@@ -171,9 +172,9 @@ export function CheckoutGratitudeSections({
 
       <Pressable style={styles.feedingDonateRowWrap} onPress={onDonateEveryOrderPress}>
         <View style={styles.feedingDonateRow}>
-          <Text style={styles.feedingDonateLine}>
-            Donate with <Text style={styles.feedingDonateScope}>{scopeLabel}</Text>
-          </Text>
+          <CheckoutText style={styles.feedingDonateLine}>
+            Donate with <CheckoutText style={styles.feedingDonateScope}>{scopeLabel}</CheckoutText>
+          </CheckoutText>
           <Ionicons name="chevron-forward" size={13} color="#111827" style={styles.feedingDonateChevron} />
         </View>
       </Pressable>
@@ -185,14 +186,14 @@ export function CheckoutGratitudeSections({
             <View key={amt} style={styles.feedingPresetWrap}>
               {amt === 15 ? (
                 <View style={styles.mealBadge}>
-                  <Text style={styles.mealBadgeText}>1 MEAL</Text>
+                  <CheckoutText style={styles.mealBadgeText}>1 MEAL</CheckoutText>
                 </View>
               ) : null}
               <Pressable
                 onPress={() => onDonationPresetPress(amt)}
                 style={[styles.feedingPresetBtn, active && styles.feedingPresetBtnActive]}
               >
-                <Text style={[styles.feedingPresetText, active && styles.feedingPresetTextActive]}>₹{amt}</Text>
+                <CheckoutText style={[styles.feedingPresetText, active && styles.feedingPresetTextActive]}>₹{amt}</CheckoutText>
               </Pressable>
             </View>
           );
@@ -204,20 +205,20 @@ export function CheckoutGratitudeSections({
             donationEnabled && donationPreset === "custom" && styles.feedingPresetBtnActive,
           ]}
         >
-          <Text
+          <CheckoutText
             style={[
               styles.feedingPresetText,
               donationEnabled && donationPreset === "custom" && styles.feedingPresetTextActive,
             ]}
           >
             Custom
-          </Text>
+          </CheckoutText>
         </Pressable>
       </View>
 
       {donationEnabled && donationPreset === "custom" ? (
         <View style={styles.feedingCustomRow}>
-          <Text style={styles.tipCustomRupee}>₹</Text>
+          <CheckoutText style={styles.tipCustomRupee}>₹</CheckoutText>
           <TextInput
             style={styles.tipCustomInput}
             keyboardType="numeric"
@@ -232,9 +233,9 @@ export function CheckoutGratitudeSections({
       {donationEnabled && donationValue > 0 ? (
         <View style={styles.gratitudeConfirmRow}>
           <Ionicons name="checkmark-circle" size={18} color={GM.emerald} />
-          <Text style={styles.gratitudeConfirmText}>Amount added to your order</Text>
+          <CheckoutText style={styles.gratitudeConfirmText}>Amount added to your order</CheckoutText>
           <Pressable onPress={onDonationClear} hitSlop={10}>
-            <Text style={styles.gratitudeClearText}>Clear</Text>
+            <CheckoutText style={styles.gratitudeClearText}>Clear</CheckoutText>
           </Pressable>
         </View>
       ) : null}

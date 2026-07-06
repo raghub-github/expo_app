@@ -6,13 +6,11 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  Platform,
-  Vibration,
-  Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
+import { StoreMenuAddButton } from "./StoreMenuCartControls";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 
 export type ComboPair = {
@@ -79,7 +77,6 @@ function ComboCard({
 
   const handleAdd = useCallback(() => {
     if (isStoreClosed) return;
-    if (Platform.OS === "android") Vibration.vibrate(15);
     onAdd();
   }, [onAdd, isStoreClosed]);
 
@@ -107,16 +104,12 @@ function ComboCard({
       </Text>
       <View style={styles.priceAddRow}>
         <Text style={styles.comboPrice}>₹{totalPrice}</Text>
-        <Pressable
+        <StoreMenuAddButton
           onPress={handleAdd}
           disabled={isStoreClosed}
-          style={[styles.addBtn, isStoreClosed && styles.addBtnDisabled]}
-        >
-          <Text style={styles.addBtnText}>{isStoreClosed ? "Closed" : "ADD"}</Text>
-          {!isStoreClosed ? (
-            <Ionicons name="add" size={14} color={StoreTheme.accentMint} />
-          ) : null}
-        </Pressable>
+          style={styles.addBtnWrap}
+          accessibilityLabel={`Add combo to cart`}
+        />
       </View>
     </View>
   );
@@ -231,25 +224,8 @@ const styles = StyleSheet.create({
     color: StoreTheme.textPrimary,
     flex: 1,
   },
-  addBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2,
-    borderWidth: 1,
-    borderColor: StoreTheme.accentMint,
-    borderRadius: 6,
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    backgroundColor: "#fff",
+  addBtnWrap: {
+    flexShrink: 0,
     minWidth: 72,
-  },
-  addBtnDisabled: {
-    borderColor: "#9CA3AF",
-  },
-  addBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: StoreTheme.accentMint,
   },
 });

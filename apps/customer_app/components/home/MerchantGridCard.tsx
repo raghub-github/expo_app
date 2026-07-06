@@ -1,14 +1,21 @@
 /**
  * Compact 3-column grid tile — "Loved by Customers" (Swiggy Recommended-style).
- * Banner only on image (no carousel dots / gallery slide).
+ * Banner carousel on image with manual swipe.
  */
 
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { useEffect, useMemo } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
-import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
+import {
+  resolveMerchantBannerUri,
+  resolveMerchantCarouselBannerUri,
+  resolveMerchantCarouselGalleryUris,
+} from "@/lib/merchantBanner";
+import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
+import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { formatGridOfferBadge, gridDeliveryLabel } from "@/lib/merchantOfferBadge";
 import {
   GridCardImageRatingMask,
@@ -28,30 +35,60 @@ const CARD_RADIUS = 14;
 type MerchantGridCardProps = {
   merchant: MerchantSummary;
   onPress: () => void;
+  onPressIn?: () => void;
   weatherDelayMinutes?: number;
+  /** Override default 3-column tile width (e.g. horizontal loved rail). */
+  width?: number;
 };
 
-export function MerchantGridCard({ merchant, onPress, weatherDelayMinutes = 0 }: MerchantGridCardProps) {
-  const bannerUri = resolveMerchantBannerUri(merchant);
+export function MerchantGridCard({
+  merchant,
+  onPress,
+  onPressIn,
+  weatherDelayMinutes = 0,
+  width = MERCHANT_GRID_CARD_W,
+}: MerchantGridCardProps) {
+  const bannerUri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
+  const galleryUris = useMemo(() => resolveMerchantCarouselGalleryUris(merchant), [merchant]);
+  const fallbackBannerUri = useMemo(() => resolveMerchantBannerUri(merchant), [merchant]);
+  const effectiveBannerUri = bannerUri ?? fallbackBannerUri;
+  const cardPress = useScrollSafePress(onPress, { onPressIn });
+
+  useEffect(() => {
+    warmMerchantHeroImage(merchant.id, effectiveBannerUri ?? galleryUris[0] ?? null);
+  }, [merchant.id, effectiveBannerUri, galleryUris]);
   const offerBadge = formatGridOfferBadge(merchant.offerText);
   const { label: baseDeliveryLabel } = gridDeliveryLabel(merchant, weatherDelayMinutes);
   const deliveryLabel =
     weatherDelayMinutes > 0 ? `${baseDeliveryLabel} · Rain Delay` : baseDeliveryLabel;
-  const imageSize = MERCHANT_GRID_CARD_W;
+  const imageSize = width;
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { width }]}>
       <View style={[styles.imageStage, { width: imageSize }]}>
         <View style={[styles.imageClip, { width: imageSize, height: imageSize }]}>
-          <TouchableOpacity onPress={onPress} activeOpacity={0.92} style={styles.imageTap}>
+          <TouchableOpacity
+            onPress={cardPress.onPress}
+            onPressIn={cardPress.onPressIn}
+            onPressOut={cardPress.onPressOut}
+            onTouchMove={cardPress.onTouchMove}
+            activeOpacity={0.92}
+            style={styles.imageTap}
+          >
             <StoreBannerCarousel
-              bannerUri={bannerUri}
-              galleryUris={[]}
+              bannerUri={effectiveBannerUri}
+              galleryUris={galleryUris}
               width={imageSize}
               height={imageSize}
               borderRadius={CARD_RADIUS}
               hidePlaceholderIcon
-              showDots={false}
+              showDots={galleryUris.length > 0}
+              enableKenBurns={false}
+              enableAutoRotate={galleryUris.length > 0}
+              enableSwipe={galleryUris.length > 0}
+              deferTapToParent
+              onSwipeGesture={cardPress.blockPress}
+              onGestureComplete={() => cardPress.releasePressBlock(320)}
             />
             {offerBadge ? (
               <View style={styles.offerImageTag}>
@@ -70,7 +107,14 @@ export function MerchantGridCard({ merchant, onPress, weatherDelayMinutes = 0 }:
         />
       </View>
 
-      <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={styles.body}>
+      <TouchableOpacity
+        onPress={cardPress.onPress}
+        onPressIn={cardPress.onPressIn}
+        onPressOut={cardPress.onPressOut}
+        onTouchMove={cardPress.onTouchMove}
+        activeOpacity={0.7}
+        style={styles.body}
+      >
         <Text style={styles.name} numberOfLines={1}>
           {merchant.name}
         </Text>
@@ -87,7 +131,6 @@ export function MerchantGridCard({ merchant, onPress, weatherDelayMinutes = 0 }:
 
 const styles = StyleSheet.create({
   card: {
-    width: MERCHANT_GRID_CARD_W,
     marginBottom: 14,
   },
   imageStage: {
@@ -108,7 +151,7 @@ const styles = StyleSheet.create({
     top: 6,
     left: 6,
     right: 6,
-    maxWidth: MERCHANT_GRID_CARD_W - 12,
+    maxWidth: "100%",
     backgroundColor: "rgba(15, 23, 42, 0.82)",
     paddingHorizontal: 6,
     paddingVertical: 3,

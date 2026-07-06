@@ -1,5 +1,20 @@
-import { useState } from "react";
-import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -10,67 +25,232 @@ export type FoodHomeCategoryTabLayout = {
   columnGap: number;
   circle: number;
   imgSize: number;
+  pagePadLeft: number;
+  pagePadRight: number;
+  /** Leftover width after sizing tabs — rendered as trailing space inside the row. */
+  trailingSlack: number;
 };
+
+export const GRID_FIRST_CATEGORY_PAGE_COLUMNS = 5;
+export const GRID_FIRST_CATEGORY_PAGE_PAD = 16;
 
 const DEFAULT_LAYOUT: FoodHomeCategoryTabLayout = {
   itemW: 56,
-  columnGap: 6,
+  columnGap: 8,
   circle: 50,
-  imgSize: 44,
+  imgSize: 50,
+  pagePadLeft: GRID_FIRST_CATEGORY_PAGE_PAD,
+  pagePadRight: GRID_FIRST_CATEGORY_PAGE_PAD,
+  trailingSlack: 0,
 };
+
+/** Exactly 5 tabs visible per page — used for grid-first category rail. */
+export function computeGridFirstCategoryTabMetrics(
+  windowWidth: number,
+  horizontalSafeInset = 0
+): FoodHomeCategoryTabLayout {
+  const gap = 8;
+  const pagePad = GRID_FIRST_CATEGORY_PAGE_PAD + Math.max(0, horizontalSafeInset);
+  const cols = GRID_FIRST_CATEGORY_PAGE_COLUMNS;
+  const inner = Math.max(0, windowWidth - pagePad * 2);
+  const itemW = Math.floor((inner - gap * (cols - 1)) / cols);
+  const used = itemW * cols + gap * (cols - 1);
+  const trailingSlack = Math.max(0, inner - used);
+  const circle = Math.min(56, Math.max(44, itemW - 2));
+  const imgSize = circle;
+  return {
+    itemW,
+    columnGap: gap,
+    circle,
+    imgSize,
+    pagePadLeft: pagePad,
+    pagePadRight: pagePad,
+    trailingSlack,
+  };
+}
+
+type TabEntry =
+  | { kind: "under" }
+  | { kind: "all" }
+  | { kind: "category"; item: FoodHomeCategoryItem };
 
 type Props = {
   items: FoodHomeCategoryItem[];
   onSelect: (id: string, slug: string) => void;
   activeId?: string;
   onActiveIdChange?: (id: string) => void;
-  /** Same metrics as classic home category rail (`computeCategoryRailMetrics`). */
+  allTabLabel?: string;
+  allTabImageUrl?: string | null;
+  showUnderPriceTab?: boolean;
+  underPriceLabel?: string;
+  underPriceMaxPrice?: number;
+  underPriceImageUrl?: string | null;
+  onUnderPricePress?: () => void;
   layout?: FoodHomeCategoryTabLayout;
 };
 
-function CategoryTabCircle({
-  active,
+function CategoryPhoto({
   imageUrl,
   cacheKey,
-  fallbackIcon = "grid-outline",
   layout,
+  fallbackIcon = "restaurant-outline",
 }: {
-  active: boolean;
   imageUrl?: string | null;
   cacheKey?: string;
-  fallbackIcon?: keyof typeof Ionicons.glyphMap;
   layout: FoodHomeCategoryTabLayout;
+  fallbackIcon?: keyof typeof Ionicons.glyphMap;
 }) {
   const { circle, imgSize } = layout;
-  const iconSize = Math.max(18, Math.round(circle * 0.4));
-  const usePhoto = !!(imageUrl?.trim() || cacheKey);
+  const hasImage = !!imageUrl?.trim();
 
   return (
     <View
-      style={[
-        styles.tabThumb,
-        {
-          width: circle,
-          height: circle,
-          borderRadius: circle / 2,
-        },
-        active && styles.tabThumbActive,
-      ]}
+      style={{
+        width: circle,
+        height: circle,
+        marginBottom: 6,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
     >
-      {usePhoto ? (
+      {hasImage ? (
         <UserAppCategoryImage
           imageUrl={imageUrl ?? null}
           cacheKey={cacheKey}
-          style={{ width: imgSize, height: imgSize }}
+          contentFit="cover"
+          style={{ width: imgSize, height: imgSize, borderRadius: imgSize / 2 }}
         />
       ) : (
-        <Ionicons
-          name={fallbackIcon}
-          size={iconSize}
-          color={active ? GatiMitraColors.primaryMint : "#6B7280"}
-        />
+        <View style={[styles.photoFallback, { width: imgSize, height: imgSize, borderRadius: imgSize / 2 }]}>
+          <Ionicons
+            name={fallbackIcon}
+            size={Math.max(20, Math.round(circle * 0.38))}
+            color="#94A3B8"
+          />
+        </View>
       )}
     </View>
+  );
+}
+
+function AnimatedExploreBar({ height }: { height: number }) {
+  const pulse = useSharedValue(1);
+  const chevronX = useSharedValue(0);
+
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withSequence(
+        withTiming(1.05, { duration: 850, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 850, easing: Easing.inOut(Easing.ease) })
+      ),
+      -1,
+      false
+    );
+    chevronX.value = withRepeat(
+      withSequence(
+        withTiming(2.5, { duration: 650, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 650, easing: Easing.inOut(Easing.ease) })
+      ),
+      -1,
+      false
+    );
+  }, [chevronX, pulse]);
+
+  const barStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pulse.value }],
+  }));
+
+  const chevronStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: chevronX.value }],
+  }));
+
+  return (
+    <Animated.View style={[styles.exploreTab, barStyle, { height }]}>
+      <Text style={styles.exploreText}>Explore </Text>
+      <Animated.Text style={[styles.exploreChevron, chevronStyle]}>›</Animated.Text>
+    </Animated.View>
+  );
+}
+
+function MealsUnderExploreCard({
+  width,
+  height,
+  maxPrice,
+  imageUrl,
+  onPress,
+}: {
+  width: number;
+  height: number;
+  maxPrice: number;
+  imageUrl?: string | null;
+  onPress?: () => void;
+}) {
+  const hasImage = !!imageUrl?.trim();
+  const exploreBarH = Math.max(16, Math.round(height * 0.24));
+
+  if (hasImage) {
+    return (
+      <TouchableOpacity
+        style={[styles.tab, styles.tabTransparent, { width, minHeight: height + 9 }]}
+        activeOpacity={0.85}
+        onPress={onPress}
+      >
+        <View
+          style={[
+            styles.mealsCard,
+            styles.mealsCardWithImage,
+            {
+              width,
+              height,
+              borderRadius: Math.max(10, Math.round(width * 0.2)),
+            },
+          ]}
+        >
+          <View style={styles.mealsCardBodyImage}>
+            <UserAppCategoryImage
+              imageUrl={imageUrl ?? null}
+              cacheKey="tab-category-under-price"
+              contentFit="contain"
+              style={{ width, height: height - exploreBarH, backgroundColor: "transparent" }}
+            />
+          </View>
+          <AnimatedExploreBar height={exploreBarH} />
+        </View>
+        <View style={styles.tabUnderlineSpacer} />
+      </TouchableOpacity>
+    );
+  }
+
+  return (
+    <TouchableOpacity
+      style={[styles.tab, { width, minHeight: height + 9 }]}
+      activeOpacity={0.85}
+      onPress={onPress}
+    >
+      <View
+        style={[
+          styles.mealsCard,
+          {
+            width,
+            height,
+            borderRadius: Math.max(10, Math.round(width * 0.2)),
+          },
+        ]}
+      >
+        <View style={styles.mealsCardBody}>
+          <View style={styles.mealsRibbon}>
+            <Text style={styles.mealsRibbonText} numberOfLines={1}>
+              MEALS UNDER
+            </Text>
+          </View>
+          <Text style={styles.mealsPrice} numberOfLines={1}>
+            ₹{maxPrice}
+          </Text>
+        </View>
+        <AnimatedExploreBar height={exploreBarH} />
+      </View>
+      <View style={styles.tabUnderlineSpacer} />
+    </TouchableOpacity>
   );
 }
 
@@ -79,8 +259,17 @@ export function FoodHomeCategoryTabs({
   onSelect,
   activeId: activeIdProp,
   onActiveIdChange,
-  layout = DEFAULT_LAYOUT,
+  allTabLabel = "All",
+  allTabImageUrl,
+  showUnderPriceTab = false,
+  underPriceLabel = "Meals under ₹250",
+  underPriceMaxPrice = 250,
+  underPriceImageUrl,
+  onUnderPricePress,
+  layout: layoutProp,
 }: Props) {
+  const { width: windowWidth } = useWindowDimensions();
+  const layout = layoutProp ?? computeGridFirstCategoryTabMetrics(windowWidth);
   const [internalActiveId, setInternalActiveId] = useState<string>("all");
   const activeId = activeIdProp ?? internalActiveId;
   const setActiveId = (id: string) => {
@@ -88,99 +277,242 @@ export function FoodHomeCategoryTabs({
     onActiveIdChange?.(id);
   };
 
-  const { itemW, columnGap, circle } = layout;
+  const { itemW, columnGap, circle, pagePadLeft, pagePadRight, trailingSlack } = layout;
+  const mealsCardH = Math.round(circle * 1.34);
   const tabMinHeight = circle + 38;
+  const pageWidth = windowWidth;
+  const resolvedMaxPrice = useMemo(() => {
+    if (Number.isFinite(underPriceMaxPrice) && underPriceMaxPrice > 0) {
+      return Math.trunc(underPriceMaxPrice);
+    }
+    const fromLabel = /₹\s*(\d+)/.exec(underPriceLabel)?.[1];
+    const parsed = fromLabel ? Number(fromLabel) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 250;
+  }, [underPriceLabel, underPriceMaxPrice]);
+
+  const entries = useMemo((): TabEntry[] => {
+    const list: TabEntry[] = [];
+    if (showUnderPriceTab) list.push({ kind: "under" });
+    list.push({ kind: "all" });
+    for (const item of items) list.push({ kind: "category", item });
+    return list;
+  }, [items, showUnderPriceTab]);
+
+  const pages = useMemo(() => {
+    const chunks: TabEntry[][] = [];
+    for (let i = 0; i < entries.length; i += GRID_FIRST_CATEGORY_PAGE_COLUMNS) {
+      chunks.push(entries.slice(i, i + GRID_FIRST_CATEGORY_PAGE_COLUMNS));
+    }
+    return chunks.length > 0 ? chunks : [[{ kind: "all" }]];
+  }, [entries]);
+
+  const renderTab = (entry: TabEntry, key: string) => {
+    if (entry.kind === "under") {
+      return (
+        <MealsUnderExploreCard
+          key={key}
+          width={itemW}
+          height={mealsCardH}
+          maxPrice={resolvedMaxPrice}
+          imageUrl={underPriceImageUrl}
+          onPress={onUnderPricePress}
+        />
+      );
+    }
+
+    if (entry.kind === "all") {
+      const active = activeId === "all";
+      return (
+        <TouchableOpacity
+          key={key}
+          style={[styles.tab, { width: itemW, minHeight: tabMinHeight }]}
+          activeOpacity={0.85}
+          onPress={() => setActiveId("all")}
+        >
+          <CategoryPhoto
+            imageUrl={allTabImageUrl}
+            cacheKey="tab-category-all"
+            layout={layout}
+            fallbackIcon="apps-outline"
+          />
+          <Text
+            style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
+            numberOfLines={2}
+          >
+            {allTabLabel}
+          </Text>
+          {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
+        </TouchableOpacity>
+      );
+    }
+
+    const cat = entry.item;
+    const active = activeId === cat.id;
+    return (
+      <TouchableOpacity
+        key={key}
+        style={[styles.tab, { width: itemW, minHeight: tabMinHeight }]}
+        activeOpacity={0.85}
+        onPress={() => {
+          setActiveId(cat.id);
+          onSelect(cat.id, cat.slug);
+        }}
+      >
+        <CategoryPhoto
+          imageUrl={cat.imageUrl}
+          cacheKey={`tab-category-${cat.id}`}
+          layout={layout}
+        />
+        <Text
+          style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
+          numberOfLines={2}
+        >
+          {cat.name}
+        </Text>
+        {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <ScrollView
       horizontal
+      pagingEnabled
       showsHorizontalScrollIndicator={false}
-      contentContainerStyle={[styles.content, { gap: columnGap }]}
+      decelerationRate="fast"
+      snapToAlignment="start"
+      contentContainerStyle={styles.content}
     >
-      <TouchableOpacity
-        style={[styles.tab, { width: itemW, minHeight: tabMinHeight }]}
-        activeOpacity={0.85}
-        onPress={() => setActiveId("all")}
-      >
-        <CategoryTabCircle active={activeId === "all"} fallbackIcon="apps-outline" layout={layout} />
-        <Text
-          style={[styles.tabText, { width: itemW }, activeId === "all" && styles.tabTextActive]}
-          numberOfLines={2}
+      {pages.map((page, pageIndex) => (
+        <View
+          key={`page-${pageIndex}`}
+          style={[
+            styles.page,
+            {
+              width: pageWidth,
+              paddingLeft: pagePadLeft,
+              paddingRight: pagePadRight,
+              gap: columnGap,
+            },
+          ]}
         >
-          All
-        </Text>
-        {activeId === "all" ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
-      </TouchableOpacity>
-
-      {items.map((cat) => {
-        const active = activeId === cat.id;
-        return (
-          <TouchableOpacity
-            key={cat.id}
-            style={[styles.tab, { width: itemW, minHeight: tabMinHeight }]}
-            activeOpacity={0.85}
-            onPress={() => {
-              setActiveId(cat.id);
-              onSelect(cat.id, cat.slug);
-            }}
-          >
-            <CategoryTabCircle
-              active={active}
-              imageUrl={cat.imageUrl}
-              cacheKey={`tab-category-${cat.id}`}
-              layout={layout}
-            />
-            <Text
-              style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
-              numberOfLines={2}
-            >
-              {cat.name}
-            </Text>
-            {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
-          </TouchableOpacity>
-        );
-      })}
+          {page.map((entry, index) =>
+            renderTab(entry, `${pageIndex}-${entry.kind === "category" ? entry.item.id : entry.kind}-${index}`)
+          )}
+          {page.length === GRID_FIRST_CATEGORY_PAGE_COLUMNS && trailingSlack > 0 ? (
+            <View style={{ width: trailingSlack }} />
+          ) : null}
+        </View>
+      ))}
     </ScrollView>
   );
 }
 
-/** Mirrors `categoryRailCircle` in home/index classic layout. */
 const styles = StyleSheet.create({
   content: {
-    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  page: {
+    flexDirection: "row",
     alignItems: "flex-start",
-    paddingTop: 2,
-    paddingBottom: 4,
   },
   tab: {
     alignItems: "center",
   },
-  tabThumb: {
-    backgroundColor: "#FFFFFF",
+  tabTransparent: {
+    backgroundColor: "transparent",
+  },
+  mealsCard: {
+    backgroundColor: "#FFF7ED",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(251, 191, 36, 0.35)",
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  mealsCardWithImage: {
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  mealsCardBody: {
+    flex: 1,
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 6,
-    borderWidth: 2,
-    borderColor: "transparent",
-    ...(Platform.OS === "ios" && {
-      shadowColor: "#000",
-      shadowOffset: { width: 1, height: 2 },
-      shadowOpacity: 0.08,
-      shadowRadius: 4,
-    }),
-    elevation: 3,
   },
-  tabThumbActive: {
-    borderColor: GatiMitraColors.primaryMint,
+  mealsCardBodyImage: {
+    flex: 1,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+  },
+  mealsRibbon: {
+    backgroundColor: "#DC2626",
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    alignItems: "center",
+  },
+  mealsRibbonText: {
+    color: "#FFFFFF",
+    fontSize: 7,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+  mealsPrice: {
+    flex: 1,
+    textAlign: "center",
+    textAlignVertical: "center",
+    color: "#1D4ED8",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+    includeFontPadding: false,
+  },
+  exploreTab: {
+    width: "100%",
+    flexDirection: "row",
+    backgroundColor: GatiMitraColors.primaryMint,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    borderBottomLeftRadius: 10,
+    borderBottomRightRadius: 10,
+  },
+  exploreText: {
+    color: "#FFFFFF",
+    fontSize: 8,
+    fontWeight: "800",
+  },
+  exploreChevron: {
+    color: "#FFFFFF",
+    fontSize: 9,
+    fontWeight: "900",
+  },
+  photoClip: {
+    overflow: "hidden",
+  },
+  photoFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
   },
   tabText: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: "500",
-    color: GatiMitraColors.textPrimaryNew,
+    color: "#64748B",
     textAlign: "center",
   },
   tabTextActive: {
     fontWeight: "700",
+    color: GatiMitraColors.textPrimaryNew,
   },
   tabUnderline: {
     marginTop: 4,

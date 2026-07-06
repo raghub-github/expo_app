@@ -3,6 +3,14 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
   const uri = bikeUri.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
   return `
+      var riderMarkerUri = '${uri}';
+      window.setRiderMarkerIcon = function(nextUri) {
+        if (!nextUri) return;
+        riderMarkerUri = nextUri;
+        var imgs = document.querySelectorAll('.gm-rider-img');
+        for (var i = 0; i < imgs.length; i++) imgs[i].src = riderMarkerUri;
+      };
+
       var markers = { pickup: null, drop: null, rider: null };
       var pickupZoneReady = false;
       var dropZoneReady = false;
@@ -87,7 +95,7 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         if (!markers.rider) {
           var el = document.createElement('div');
           el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
-          el.innerHTML = '<img class="gm-rider-img" src="${uri}" style="width:40px;height:40px;object-fit:contain;transform-origin:center center;" alt="" />';
+          el.innerHTML = '<img class="gm-rider-img" src="' + riderMarkerUri + '" style="width:40px;height:40px;object-fit:contain;transform-origin:center center;" alt="" />';
           markers.rider = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
         } else {
           markers.rider.setLngLat([lng, lat]);
@@ -246,6 +254,27 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         return { lat: state.pickupLat, lng: state.pickupLng };
       }
 
+      function fitMapToZoneCenter(lat, lng, radiusM) {
+        if (lat == null || lng == null) return;
+        var r = Math.max(radiusM || 200, 120);
+        var latRad = lat * Math.PI / 180;
+        var latOffset = (r * 1.65 / 6378137) * (180 / Math.PI);
+        var lngOffset = latOffset / Math.max(0.35, Math.cos(latRad));
+        var bounds = new mapboxgl.LngLatBounds(
+          [lng - lngOffset, lat - latOffset],
+          [lng + lngOffset, lat + latOffset]
+        );
+        var pad = state.mapPadding || { top: 48, bottom: 48, left: 40, right: 40 };
+        map.fitBounds(bounds, {
+          padding: pad,
+          duration: state.refitCamera ? 650 : 900,
+          maxZoom: 16.2,
+          linear: false
+        });
+        state.initialFitDone = true;
+        state.refitCamera = false;
+      }
+
       function fitMapToContent(data) {
         var pts = [];
         function push(lat, lng) {
@@ -259,10 +288,10 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
           data.fullRoute.forEach(function(c) { push(c.latitude, c.longitude); });
         }
         push(data.riderLat, data.riderLng);
-        push(data.pickupLat, data.pickupLng);
+        if (state.mapPhase !== 'rider_to_drop') {
+          push(data.pickupLat, data.pickupLng);
+        }
         push(data.dropLat, data.dropLng);
-        var dest = activeDestination();
-        push(dest.lat, dest.lng);
         if (pts.length < 1) return;
         var bounds = pts.reduce(function(b, c) { return b.extend(c); }, new mapboxgl.LngLatBounds(pts[0], pts[0]));
         var pad = state.mapPadding || { top: 48, bottom: 40, left: 28, right: 28 };
@@ -307,7 +336,11 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         updateZone('drop-zone', 'drop-zone-fill', 'drop-zone-stroke', state.dropLat, state.dropLng, showDrop, state.geofenceRadiusM);
         if (showPickup || showDrop) startPulse();
 
-        setPin('pickup', data.pickupLat, data.pickupLng, 'pickup');
+        if (state.mapPhase === 'rider_to_drop') {
+          setPin('pickup', null, null, 'pickup');
+        } else {
+          setPin('pickup', data.pickupLat, data.pickupLng, 'pickup');
+        }
         setPin('drop', data.dropLat, data.dropLng, 'drop');
         setRiderMarker(data.riderLat, data.riderLng, data.riderHeading);
 
@@ -334,7 +367,13 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         }
 
         if (state.refitCamera || !state.initialFitDone) {
-          fitMapToContent(data);
+          if (showDrop) {
+            fitMapToZoneCenter(state.dropLat, state.dropLng, state.geofenceRadiusM);
+          } else if (showPickup) {
+            fitMapToZoneCenter(state.pickupLat, state.pickupLng, state.geofenceRadiusM);
+          } else {
+            fitMapToContent(data);
+          }
         }
       };
   `;

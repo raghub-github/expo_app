@@ -9,5 +9,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!gate.ok) return gate.response;
   const { id } = await params;
   const { status, body } = await backendFetch(`/v1/notifications/campaigns/${id}/cancel`, { method: "POST" });
-  return NextResponse.json(body, { status });
+  if (status >= 400) {
+    return NextResponse.json(body ?? { error: "cancel_failed" }, { status });
+  }
+  return NextResponse.json(body ?? { ok: true }, { status: 200 });
 }

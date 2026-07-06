@@ -126,8 +126,10 @@ export async function GET(req: NextRequest) {
     const db = getSupabaseAdmin();
     const storePublicId = req.nextUrl.searchParams.get("storePublicId");
     const forceNew = req.nextUrl.searchParams.get("forceNew") === "1";
+    const resetDraft = req.nextUrl.searchParams.get("resetDraft") === "1";
 
-    if (forceNew) {
+    // `new=1` in the URL marks "add store" navigation; only skip saved progress when explicitly reset.
+    if (forceNew && resetDraft) {
       return NextResponse.json({ success: true, progress: null });
     }
 
@@ -144,6 +146,70 @@ export async function GET(req: NextRequest) {
     // Do not fall back to "latest progress for parent" — that returns the wrong store when
     // `.contains` on JSON fails or rows differ only by progress.store_id.
     if (storePublicId) {
+      const { data: closedStore } = await db
+        .from("merchant_stores")
+        .select("id, onboarding_completed, approval_status")
+        .eq("parent_id", parentId)
+        .eq("store_id", storePublicId)
+        .maybeSingle();
+
+      if (closedStore?.onboarding_completed === true) {
+        const approval = String(closedStore.approval_status || "").toUpperCase();
+        if (approval !== "DRAFT" && approval !== "REJECTED") {
+          return NextResponse.json({
+            success: true,
+            progress: null,
+            storeOnboardingClosed: true,
+            store: {
+              storeDbId: closedStore.id,
+              onboarding_completed: true,
+              approval_status: closedStore.approval_status,
+            },
+          });
+        }
+      }
+
+      if (closedStore?.id && closedStore.onboarding_completed !== true) {
+        const { data: completedProgress } = await db
+          .from("merchant_store_registration_progress")
+          .select("registration_status, completed_at")
+          .eq("store_id", closedStore.id)
+          .eq("registration_status", "COMPLETED")
+          .order("completed_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (completedProgress) {
+          const repairApproval =
+            String(closedStore.approval_status || "").toUpperCase() === "DRAFT"
+              ? "SUBMITTED"
+              : closedStore.approval_status;
+          const repairedAt = completedProgress.completed_at || new Date().toISOString();
+          await db
+            .from("merchant_stores")
+            .update({
+              onboarding_completed: true,
+              onboarding_completed_at: repairedAt,
+              approval_status: repairApproval,
+              current_onboarding_step: 9,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", closedStore.id);
+
+          return NextResponse.json({
+            success: true,
+            progress: null,
+            storeOnboardingClosed: true,
+            store: {
+              storeDbId: closedStore.id,
+              onboarding_completed: true,
+              approval_status: repairApproval,
+              repaired: true,
+            },
+          });
+        }
+      }
+
       const byContains = await db
         .from("merchant_store_registration_progress")
         .select("*")
@@ -943,6 +1009,33 @@ export async function PUT(req: NextRequest) {
 
     const clampOnboardingStep = (n: number) =>
       Math.min(Math.max(Math.floor(n), 1), 9);
+
+    const finalSubmitted =
+      typeof mergedFormData?.final === "object" &&
+      mergedFormData.final != null &&
+      (mergedFormData.final as { submitted?: boolean }).submitted === true;
+
+    let storeAlreadySubmitted = false;
+    if (stepStore?.storeDbId && stepStore.storeDbId > 0) {
+      const { data: storeStatusRow } = await db
+        .from("merchant_stores")
+        .select("onboarding_completed, approval_status")
+        .eq("id", stepStore.storeDbId)
+        .maybeSingle();
+      const approval = String(storeStatusRow?.approval_status || "").toUpperCase();
+      storeAlreadySubmitted =
+        storeStatusRow?.onboarding_completed === true ||
+        ["SUBMITTED", "UNDER_VERIFICATION", "PENDING_VERIFICATION", "APPROVED"].includes(approval);
+    }
+
+    // After /api/register-store succeeds, never re-run draft upsert (it resets SUBMITTED → DRAFT).
+    if (finalSubmitted || storeAlreadySubmitted || registrationStatus === "COMPLETED") {
+      return NextResponse.json({
+        success: true,
+        progress: existing ?? null,
+        storeOnboardingClosed: true,
+      });
+    }
 
     let progressStepForPersistence = normalizedNextStep;
     if (preserveProgressPosition) {

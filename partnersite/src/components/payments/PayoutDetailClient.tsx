@@ -25,10 +25,10 @@ import {
 import { parsePgTimestamp } from '@/lib/parse-pg-timestamp';
 import { partnerPayoutHistoryHref } from '@/lib/partner-payments-routes';
 import {
-  PAYOUT_CUSTOMER_COMPENSATION_LABEL,
   PAYOUT_STORE_OFFER_DISCOUNT_LINES,
   PAYOUT_STORE_OFFERS_SECTION_LABEL,
   PAYOUT_ORDER_TYPE_OPTIONS,
+  buildSettlementDetailSections,
   buildOrderPayoutBreakdown,
   MERCHANT_GROSS_REVENUE_LABEL,
   entriesInPayoutPeriod,
@@ -73,6 +73,7 @@ const EMPTY_SETTLEMENT: PayoutSettlementSummary = {
   orderDeductions: 0,
   mechanismFee: 0,
   customerCompensation: 0,
+  cancellationCompensation: 0,
   estimatedPayout: 0,
   orderCount: 0,
   deliveredOrderCount: 0,
@@ -410,7 +411,11 @@ export function PayoutDetailClient({
     [orderBreakdowns, orderTypeFilter],
   );
 
-  const displayHeroPayout = isCurrentCycle ? settlement.estimatedPayout || netPayout : netPayout;
+  const displayHeroPayout = isCurrentCycle
+    ? Math.max(0, settlement.estimatedPayout)
+    : Math.max(0, netPayout);
+
+  const settlementSections = buildSettlementDetailSections(settlement);
 
   const pgTnxId = useMemo(() => {
     if (pgTransactionId?.trim()) return pgTransactionId.trim();
@@ -610,21 +615,18 @@ export function PayoutDetailClient({
                           label="Order level deductions (C)"
                           amount={settlement.orderDeductions}
                           negative
-                          items={[
-                            {
-                              label: 'Payment mechanism fee',
-                              amount: settlement.mechanismFee,
-                              negative: true,
-                            },
-                            {
-                              label: PAYOUT_CUSTOMER_COMPENSATION_LABEL,
-                              amount: settlement.customerCompensation,
-                              negative: true,
-                            },
-                          ]}
+                          items={settlementSections.deductionItems}
                         />
+                        {settlementSections.creditItems.map((item) => (
+                          <SettlementRow
+                            key={item.label}
+                            label={item.label}
+                            amount={item.amount}
+                            green={item.green}
+                          />
+                        ))}
                         <SettlementRow
-                          label="Est. payout (A − B − C)"
+                          label={settlementSections.estPayoutLabel}
                           amount={settlement.estimatedPayout}
                           bold
                           green

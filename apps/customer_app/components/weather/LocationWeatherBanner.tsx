@@ -29,7 +29,8 @@ function displayArea(weather: CustomerWeatherContext): string {
 
 function shouldShow(weather: CustomerWeatherContext | null | undefined): weather is CustomerWeatherContext {
   if (!weather) return false;
-  return weather.showBanner || weather.rainDetected || weather.severity !== "CLEAR";
+  if (!weather.rainDetected) return false;
+  return weather.showBanner === true;
 }
 
 export function LocationWeatherBanner({ weather, onPress }: Props) {

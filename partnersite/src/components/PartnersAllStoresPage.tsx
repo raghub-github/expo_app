@@ -7,6 +7,12 @@ import { Store, Loader2, Plus, LogOut, Leaf } from "lucide-react";
 import LogoutConfirmModal from "@/components/LogoutConfirmModal";
 import NeedHelpBadge from "@/components/NeedHelpBadge";
 import { StoreVerificationRejectionsBadge } from "@/components/partner/StoreVerificationRejectionsBadge";
+import {
+  getStoreOnboardingBadge,
+  isStoreOnboardingSubmitted,
+  storeHasOpenVerificationFix,
+  storeNeedsOnboardingAction,
+} from "@/lib/onboarding/store-onboarding-status";
 import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
 import { normalizeMerchantStoreMediaUrl } from "@/lib/r2";
 
@@ -130,25 +136,9 @@ export function PartnersAllStoresPage() {
     router.push(`/auth/register-store?parent_id=${parentId}&new=1`);
   };
 
-  const isOnboardingPending = (store: StoreItem) => {
-    const status = String(store.approval_status || "").toUpperCase();
-    if (status === "APPROVED") return false;
-    if (store.onboarding_completed === true) return false;
-    if (status === "DRAFT") return true;
-    const step = store.current_onboarding_step;
-    return typeof step === "number" && step < 9;
-  };
+  const isOnboardingPending = (store: StoreItem) => storeNeedsOnboardingAction(store);
 
-  const getStatusBadge = (store: StoreItem) => {
-    if (isOnboardingPending(store)) {
-      return { label: "Pending", className: "bg-emerald-500 text-white" };
-    }
-    const s = (store.approval_status || "").toUpperCase();
-    if (s === "APPROVED") return { label: "Verified", className: "bg-emerald-100 text-emerald-800" };
-    if (s === "REJECTED") return { label: "Rejected", className: "bg-red-100 text-red-800" };
-    if (s === "UNDER_VERIFICATION") return { label: "Under review", className: "bg-amber-100 text-amber-800" };
-    return { label: store.approval_status || "Pending", className: "bg-slate-100 text-slate-700" };
-  };
+  const getStatusBadge = (store: StoreItem) => getStoreOnboardingBadge(store);
 
   const storesOrdered = useMemo(() => {
     const stores = data?.stores ?? [];
@@ -295,12 +285,7 @@ export function PartnersAllStoresPage() {
                     Array.isArray(store.verification_step_rejections) && store.verification_step_rejections.length > 0;
                   const anyResubmitted =
                     hasStepRejections && (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
-                  const canContinueOnboarding =
-                    !isApproved &&
-                    (hasStepRejections ||
-                      String(store.approval_status || "").toUpperCase() === "DRAFT" ||
-                      String(store.approval_status || "").toUpperCase() === "REJECTED" ||
-                      (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
+                  const canContinueOnboarding = storeNeedsOnboardingAction(store);
                   const isHighlighted = !!highlightStorePublicId && store.store_id === highlightStorePublicId;
                   const bannerSrc =
                     !pendingOnboarding && store.banner_url
@@ -312,11 +297,16 @@ export function PartnersAllStoresPage() {
                       goToDashboard(store.store_id);
                       return;
                     }
+                    if (isStoreOnboardingSubmitted(store) && !storeHasOpenVerificationFix(store)) {
+                      return;
+                    }
                     if (canContinueOnboarding && !(anyResubmitted && hasStepRejections)) {
                       goToOnboarding(store.store_id);
                       return;
                     }
-                    goToOnboarding(store.store_id);
+                    if (canContinueOnboarding) {
+                      goToOnboarding(store.store_id);
+                    }
                   };
 
                   return (

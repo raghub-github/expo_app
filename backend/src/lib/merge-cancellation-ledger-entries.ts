@@ -25,7 +25,18 @@ export type MergeableLedgerEntry = {
 type OrderBucket = {
   info?: MergeableLedgerEntry;
   credits: MergeableLedgerEntry[];
+  debits: MergeableLedgerEntry[];
 };
+
+function isCancellationBalanceDebit(entry: MergeableLedgerEntry): boolean {
+  const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+  return (
+    meta.entry_type === "order_cancellation" &&
+    String(meta.balance_impact ?? "").toLowerCase() === "debit" &&
+    String(entry.direction ?? "").toUpperCase() === "DEBIT" &&
+    Number(entry.amount ?? 0) > 0
+  );
+}
 
 function extractFormattedOrderIdFromDescription(
   description: string | null | undefined
@@ -93,14 +104,6 @@ function buildOrderKeyResolver(
 function isCancellationInfoEntry(entry: MergeableLedgerEntry): boolean {
   const meta = (entry.metadata ?? {}) as Record<string, unknown>;
   if (meta.entry_type === "order_cancellation" && meta.balance_impact === "none") return true;
-  if (
-    meta.entry_type === "order_cancellation" &&
-    String(entry.direction ?? "").toUpperCase() === "DEBIT" &&
-    Number(entry.amount ?? 0) > 0 &&
-    !meta.compensation_pct
-  ) {
-    return true;
-  }
   const display = meta.cancellation_display as CancellationLedgerDisplay | undefined;
   if (
     display &&
@@ -137,9 +140,11 @@ function groupCancellationEntries(
     const key = resolveKey(entry);
     if (!key) continue;
 
-    const bucket = groups.get(key) ?? { credits: [] };
+    const bucket = groups.get(key) ?? { credits: [], debits: [] };
     if (isCancellationInfoEntry(entry)) {
       bucket.info = entry;
+    } else if (isCancellationBalanceDebit(entry)) {
+      bucket.debits.push(entry);
     } else if (isCancellationCompensationCredit(entry)) {
       bucket.credits.push(entry);
     }
@@ -286,8 +291,28 @@ export function buildCancellationLedgerDisplayMap(
 export function mergeCancellationLedgerEntries<T extends MergeableLedgerEntry>(
   entries: T[]
 ): { entries: T[]; displayById: Map<number, CancellationLedgerDisplay> } {
-  const groups = groupCancellationEntries(entries);
-  const displayById = buildCancellationLedgerDisplayMap(entries);
+  const repairedOrderCoreIds = new Set<number>();
+  for (const entry of entries) {
+    const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+    if (meta.trigger_source !== "repair_erroneous_cancel_debit") continue;
+    const coreId = Number(meta.orders_core_id);
+    if (Number.isFinite(coreId) && coreId > 0) repairedOrderCoreIds.add(coreId);
+  }
+
+  const visibleEntries = entries.filter((entry) => {
+    const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+    if (meta.reversed_by_repair === true) return false;
+    if (meta.trigger_source === "repair_erroneous_cancel_debit") return false;
+    if (
+      isCancellationBalanceDebit(entry) &&
+      repairedOrderCoreIds.has(Number(meta.orders_core_id))
+    ) {
+      return false;
+    }
+    return true;
+  });
+  const groups = groupCancellationEntries(visibleEntries);
+  const displayById = buildCancellationLedgerDisplayMap(visibleEntries);
   const hiddenIds = new Set<number>();
 
   for (const bucket of groups.values()) {
@@ -297,6 +322,23 @@ export function mergeCancellationLedgerEntries<T extends MergeableLedgerEntry>(
       hiddenIds.add(bucket.info.id);
       for (const extra of bucket.credits) {
         if (extra.id !== credit.id) hiddenIds.add(extra.id);
+      }
+      for (const debit of bucket.debits) {
+        hiddenIds.add(debit.id);
+      }
+      continue;
+    }
+
+    if (bucket.info && bucket.debits.length > 0) {
+      const related = [bucket.info, ...bucket.debits] as MergeableLedgerEntry[];
+      const { originalAmount } = resolveCancellationAmounts(bucket.info, undefined, related);
+      displayById.set(bucket.info.id, {
+        originalAmount: originalAmount || Math.max(0, Number(bucket.info.amount ?? 0)),
+        creditAmount: 0,
+        showCancelledStatus: true,
+      });
+      for (const debit of bucket.debits) {
+        hiddenIds.add(debit.id);
       }
       continue;
     }
@@ -309,7 +351,7 @@ export function mergeCancellationLedgerEntries<T extends MergeableLedgerEntry>(
   }
 
   const byDescOrder = new Map<string, MergeableLedgerEntry[]>();
-  for (const entry of entries) {
+  for (const entry of visibleEntries) {
     const oid = extractFormattedOrderIdFromDescription(entry.description);
     if (!oid) continue;
     if (String(entry.category ?? "").toUpperCase() !== "ORDER_ADJUSTMENT") continue;
@@ -338,7 +380,7 @@ export function mergeCancellationLedgerEntries<T extends MergeableLedgerEntry>(
     });
   }
 
-  const merged = entries
+  const merged = visibleEntries
     .filter((entry) => !hiddenIds.has(entry.id))
     .map((entry) => {
       const display = displayById.get(entry.id);

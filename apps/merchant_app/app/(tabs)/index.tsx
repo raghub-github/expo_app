@@ -363,12 +363,6 @@ export default function DashboardScreen() {
       )}
       <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
       <Text style={styles.dateText}>{formatTodayDate()}</Text>
-      <View style={styles.walletTodayChip}>
-        <Ionicons name="wallet-outline" size={14} color={GatiMitraMerchant.navy} />
-        <Text style={styles.walletTodayChipText}>
-          Wallet balance: {formatCurrency(walletBalance)}
-        </Text>
-      </View>
 
       <View style={styles.section}>
         <View style={styles.kpiRow}>
@@ -526,25 +520,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
     marginBottom: 16,
-  },
-  walletTodayChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    alignSelf: "flex-start",
-    marginTop: -6,
-    marginBottom: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    backgroundColor: "#F8FAFC",
-  },
-  walletTodayChipText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: GatiMitraMerchant.navy,
   },
   section: { marginBottom: SECTION_GAP },
   sectionTitle: {

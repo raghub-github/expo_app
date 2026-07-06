@@ -4,14 +4,14 @@ import { QueryClient } from '@tanstack/react-query';
 
 /**
  * Production-safe QueryClient for cache and memory management.
- * - staleTime: 60s — avoid refetching same data on every mount/navigation.
- * - gcTime (cacheTime): 5 min — unused cache entries are garbage-collected to limit memory.
- * - refetchOnWindowFocus: true — refetch when user returns (with staleTime so not every time).
+ * - staleTime: 2 min — avoid refetching same data on every mount/navigation.
+ * - gcTime (cacheTime): 10 min — unused cache entries are garbage-collected to limit memory.
+ * - refetchOnMount / refetchOnWindowFocus: false — tab switches feel instant when cache is warm.
  * - retry: 1 — one retry on failure; avoids long hangs on bad network.
  * - structuralSharing: true — keeps referential equality when data unchanged (fewer re-renders).
  */
-const STALE_TIME_MS = 60 * 1000;
-const GC_TIME_MS = 5 * 60 * 1000;
+const STALE_TIME_MS = 2 * 60 * 1000;
+const GC_TIME_MS = 10 * 60 * 1000;
 
 export function makeQueryClient() {
   return new QueryClient({
@@ -19,7 +19,8 @@ export function makeQueryClient() {
       queries: {
         staleTime: STALE_TIME_MS,
         gcTime: GC_TIME_MS,
-        refetchOnWindowFocus: true,
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
         retry: (failureCount, error) => {
           if (failureCount >= 1) return false;
           const msg = error instanceof Error ? error.message : String(error ?? "");

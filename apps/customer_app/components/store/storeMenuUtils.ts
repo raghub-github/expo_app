@@ -159,6 +159,61 @@ export function mapAnchorPairsToCompanionItems(
   return out;
 }
 
+/** Side dishes / pairings to show below the anchor item after it is added to cart. */
+export function resolvePairingCompanionsForAnchor(
+  menu: MenuItem[],
+  anchor: MenuItem,
+  byAnchor: Record<string, Array<{
+    item1Id: string;
+    item2Id: string;
+    item1MenuItemPk: number;
+    item2MenuItemPk: number;
+    orderCount: number;
+    source?: "co_purchase" | "popular_fallback";
+  }>>,
+  fallbackPairs: Array<{
+    item1Id: string;
+    item2Id: string;
+    item1MenuItemPk: number;
+    item2MenuItemPk: number;
+    orderCount: number;
+    source?: "co_purchase" | "popular_fallback";
+  }> = []
+): MenuItem[] {
+  if (!menu.length) return [];
+  const anchorKeys = [
+    anchor.id,
+    anchor.menuItemId != null ? String(anchor.menuItemId) : null,
+  ].filter(Boolean) as string[];
+  let pairs = fallbackPairs;
+  for (const key of anchorKeys) {
+    const hit = byAnchor[key];
+    if (hit?.length) {
+      pairs = hit;
+      break;
+    }
+  }
+  if (!pairs.length) {
+    pairs = fallbackPairs.filter(
+      (p) =>
+        p.item1Id === anchor.id ||
+        p.item2Id === anchor.id ||
+        (anchor.menuItemId != null &&
+          (p.item1MenuItemPk === anchor.menuItemId || p.item2MenuItemPk === anchor.menuItemId))
+    );
+  }
+  const mapped = mapAnchorPairsToCompanionItems(menu, anchor.id, pairs);
+  const seen = new Set<string>();
+  const out: MenuItem[] = [];
+  for (const { item } of mapped) {
+    if (item.id === anchor.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 export function buildOfferPriceTiers(menu: MenuItem[]): number[] {
   const prices = new Set<number>();
   for (const item of menu) {

@@ -100,6 +100,10 @@ interface MenuItem {
   store_id?: number;
   is_locked_by_plan?: boolean;
   locked_reason?: string | null;
+  approval_status?: string | null;
+  primary_image_moderation_status?: string | null;
+  image_count?: number | null;
+  rejection_reason?: string | null;
 }
 
 interface Customization {
@@ -191,6 +195,16 @@ import {
 } from '@/lib/database'
 import { MenuItemsGridSkeleton, MenuPageSkeleton } from '@/components/PageSkeleton'
 import { R2Image } from '@/components/R2Image'
+import { CatalogItemPhotoModal } from '@/components/menu/CatalogItemPhotoModal'
+import {
+  CatalogPhotoUploadOptionsModal,
+  type CatalogPhotoUploadCallbacks,
+} from '@/components/menu/CatalogPhotoUploadOptionsModal'
+import {
+  itemHasCatalogPhoto,
+  itemPhotoInReview,
+  itemPhotoRejected,
+} from '@/lib/catalog-photo-helpers'
 import { markPlanEnforceRan, shouldRunPlanEnforce } from '@/lib/plan-usage-cache'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
@@ -718,33 +732,33 @@ function ItemForm(props: ItemFormProps) {
 
   return (
     <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl mx-2 md:mx-0 border border-gray-100 overflow-hidden">
-      <div className="flex min-h-[70vh] max-h-[90vh]">
+      <div className="flex min-h-0 max-h-[85vh]">
         {/* Left: item preview (desktop only) */}
-        <div className="hidden md:flex w-[380px] shrink-0 border-r border-gray-100 bg-gradient-to-b from-gray-50 to-white flex-col items-center justify-between p-4">
+        <div className="hidden md:flex w-[300px] shrink-0 border-r border-gray-100 bg-gradient-to-b from-gray-50 to-white flex-col items-center justify-between p-3">
           <div className="flex-1 w-full flex items-center justify-center">
-            <div className="relative w-[250px] h-[520px] rounded-[2.5rem] bg-black shadow-[0_20px_60px_rgba(0,0,0,0.25)] p-[10px]">
-              <div className="absolute top-[8px] left-1/2 -translate-x-1/2 w-[96px] h-[22px] bg-black rounded-b-2xl" />
-              <div className="h-full w-full rounded-[2.1rem] bg-white overflow-hidden border border-black/10">
-                <div className="px-4 pt-4">
-                  <p className="text-sm font-semibold text-gray-900 truncate">
+            <div className="relative w-[210px] h-[420px] rounded-[2.2rem] bg-black shadow-[0_16px_48px_rgba(0,0,0,0.22)] p-[8px]">
+              <div className="absolute top-[6px] left-1/2 -translate-x-1/2 w-[80px] h-[18px] bg-black rounded-b-2xl" />
+              <div className="h-full w-full rounded-[1.9rem] bg-white overflow-hidden border border-black/10">
+                <div className="px-3 pt-3">
+                  <p className="text-xs font-semibold text-gray-900 truncate">
                     {formData.item_name?.trim() ? formData.item_name : 'Item name'}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                  <p className="mt-0.5 text-[10px] text-gray-500 line-clamp-2">
                     {formData.item_description?.trim() ? formData.item_description : 'Item description'}
                   </p>
                 </div>
-                <div className="px-4 mt-3">
+                <div className="px-3 mt-2">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-bold text-gray-900">
+                    <p className="text-xs font-bold text-gray-900">
                       ₹{String(formData.selling_price || formData.base_price || '').trim() || '—'}
                     </p>
-                    <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
+                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
                       Preview
                     </span>
                   </div>
                 </div>
-                <div className="px-4 mt-3">
-                  <div className="aspect-square w-full rounded-2xl bg-gray-100 overflow-hidden border border-gray-200 flex items-center justify-center">
+                <div className="px-3 mt-2">
+                  <div className="h-28 w-full rounded-xl bg-gray-100 overflow-hidden border border-gray-200 flex items-center justify-center">
                     {imagePreview ? (
                       imagePreview.startsWith('blob:') || imagePreview.startsWith('data:') ? (
                         <img src={imagePreview} alt="" className="h-full w-full object-cover" />
@@ -1788,6 +1802,11 @@ function MenuContent() {
   }>(null);
   const [viewCustModal, setViewCustModal] = useState<{ open: boolean; item: MenuItem | null }>({ open: false, item: null });
   const [viewCustModalTab, setViewCustModalTab] = useState<'customizations' | 'variants'>('customizations');
+  const [itemPhotoModal, setItemPhotoModal] = useState<MenuItem | null>(null);
+  const [itemUploadModal, setItemUploadModal] = useState<MenuItem | null>(null);
+  const [photoUploadByItemId, setPhotoUploadByItemId] = useState<
+    Record<number, { previewUri: string; progress: number }>
+  >({});
 
   // Form states
   const [addForm, setAddForm] = useState({
@@ -1913,6 +1932,12 @@ function MenuContent() {
     planName?: string;
   } | null>(null);
 
+  const imageUsed = storeImageCount?.totalUsed ?? imageUploadStatus?.totalUsed ?? 0;
+  const imageLimit = planLimits?.maxImageUploads ?? null;
+  const imageUploadAllowed = planLimits == null || planLimits.imageUploadAllowed === true;
+  const imageLimitReached = planLimits != null && imageLimit != null && imageUsed >= imageLimit;
+  const imageSlotsLeft = imageLimit != null ? Math.max(0, imageLimit - imageUsed) : null;
+
   interface MenuFileEntry { id: number; url: string; fileName: string; type: 'image' | 'pdf' | 'csv'; verificationStatus: string }
   const [menuFiles, setMenuFiles] = useState<MenuFileEntry[]>([]);
   const [menuUploadMode, setMenuUploadMode] = useState<'csv' | 'image' | 'pdf' | null>(null);
@@ -1942,6 +1967,98 @@ function MenuContent() {
       // keep previous count
     }
   }, [storeId]);
+
+  const refetchMenuItems = React.useCallback(async () => {
+    if (!storeId) return;
+    try {
+      const res = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}&view=list`, {
+        credentials: 'include',
+      });
+      const json = await res.json().catch(() => []);
+      const nextItems = res.ok && Array.isArray(json) ? json : [];
+      setMenuItems(nextItems);
+      queryClient.setQueryData(merchantKeys.menuItems(storeId), nextItems);
+    } catch (e) {
+      console.error('[menu] refetchMenuItems', e);
+    }
+  }, [storeId, queryClient]);
+
+  const catalogPhotoUploadCallbacks = useMemo<CatalogPhotoUploadCallbacks>(
+    () => ({
+      onStart: (itemId, previewUri) => {
+        setPhotoUploadByItemId((prev) => ({
+          ...prev,
+          [itemId]: { previewUri, progress: 0.05 },
+        }));
+      },
+      onProgress: (itemId, progress) => {
+        setPhotoUploadByItemId((prev) => {
+          const cur = prev[itemId];
+          if (!cur) return prev;
+          return { ...prev, [itemId]: { ...cur, progress } };
+        });
+      },
+      onSuccess: (itemId, previewUri, imageUrl) => {
+        setPhotoUploadByItemId((prev) => {
+          const next = { ...prev };
+          delete next[itemId];
+          return next;
+        });
+        setMenuItems((prev) =>
+          prev.map((it) =>
+            it.id === itemId
+              ? {
+                  ...it,
+                  approval_status:
+                    String(it.approval_status ?? '').toUpperCase() === 'APPROVED' ? 'APPROVED' : 'PENDING',
+                  primary_image_moderation_status: 'PENDING',
+                  item_image_url: imageUrl || previewUri,
+                  image_count: Math.max(it.image_count ?? 0, 1),
+                }
+              : it,
+          ),
+        );
+        void refetchMenuItems();
+        void refetchImageCount();
+      },
+      onError: (itemId) => {
+        setPhotoUploadByItemId((prev) => {
+          const next = { ...prev };
+          delete next[itemId];
+          return next;
+        });
+      },
+    }),
+    [refetchMenuItems, refetchImageCount],
+  );
+
+  const handleOpenItemPhoto = useCallback(
+    (item: MenuItem) => {
+      if (isMenuItemLockedByPlan(item)) {
+        toast.error('This item is locked. Upgrade your plan to unlock and edit it.');
+        return;
+      }
+      if (photoUploadByItemId[item.id]) return;
+      if (!imageUploadAllowed) {
+        toast.error('Image uploads are not included in your current plan.');
+        return;
+      }
+      if (imageLimitReached && !itemHasCatalogPhoto(item)) {
+        toast.error(
+          imageLimit != null
+            ? `Image limit reached (${imageLimit}/${imageLimit}). Upgrade your plan to add more.`
+            : 'Image upload limit reached for your plan.',
+        );
+        return;
+      }
+      if (itemHasCatalogPhoto(item)) {
+        setItemPhotoModal(item);
+        return;
+      }
+      setItemUploadModal(item);
+    },
+    [photoUploadByItemId, imageUploadAllowed, imageLimitReached, imageLimit],
+  );
 
   const refetchExistingMenuMedia = React.useCallback(async () => {
     const storeDbId = (store as { id?: number })?.id;
@@ -3877,12 +3994,6 @@ function MenuContent() {
     planLimits.maxMenuItems == null ||
     menuItems.filter((i) => !i.is_deleted).length < planLimits.maxMenuItems;
   const canAddCategory = planLimits == null || planLimits.maxMenuCategories == null || categories.length < planLimits.maxMenuCategories;
-  // Image count from server-side API (accurate); fallback to client status for backward compat
-  const imageUsed = storeImageCount?.totalUsed ?? imageUploadStatus?.totalUsed ?? 0;
-  const imageLimit = planLimits?.maxImageUploads ?? null;
-  const imageUploadAllowed = planLimits == null || planLimits.imageUploadAllowed === true;
-  const imageLimitReached = planLimits != null && imageLimit != null && imageUsed >= imageLimit;
-  const imageSlotsLeft = imageLimit != null ? Math.max(0, imageLimit - imageUsed) : null;
 
   const menuPageSubtitle = useMemo(() => {
     const base = 'Manage your menu items and categories';
@@ -4381,14 +4492,50 @@ function MenuContent() {
                       isLockedByPlan ? 'opacity-60 saturate-[0.35] grayscale' : ''
                     }`}
                   >
-                    <div className={`w-14 h-14 flex-shrink-0 rounded-lg border overflow-hidden ${isLockedByPlan ? 'border-gray-300 bg-gray-200' : 'border-gray-200 bg-gray-100'}`}>
-                      <R2Image
-                        src={item.item_image_url}
-                        alt={item.item_name}
-                        className={`w-full h-full object-cover ${isLockedByPlan ? 'grayscale' : ''}`}
-                        fallbackSrc={ITEM_PLACEHOLDER_SVG}
-                      />
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenItemPhoto(item)}
+                      disabled={isLockedByPlan || !!photoUploadByItemId[item.id]}
+                      className={`relative w-14 h-14 flex-shrink-0 rounded-lg border overflow-hidden ${
+                        isLockedByPlan
+                          ? 'border-gray-300 bg-gray-200 cursor-not-allowed'
+                          : 'border-gray-200 bg-gray-100 cursor-pointer hover:ring-2 hover:ring-orange-300'
+                      }`}
+                      aria-label="Item photo"
+                    >
+                      {photoUploadByItemId[item.id] ? (
+                        <>
+                          <img
+                            src={photoUploadByItemId[item.id].previewUri}
+                            alt=""
+                            className="w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 flex items-end bg-black/30">
+                            <div
+                              className="h-1 bg-orange-500 transition-all"
+                              style={{ width: `${Math.round(photoUploadByItemId[item.id].progress * 100)}%` }}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <R2Image
+                          src={item.item_image_url}
+                          alt={item.item_name}
+                          className={`w-full h-full object-cover ${isLockedByPlan ? 'grayscale' : ''}`}
+                          fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                        />
+                      )}
+                      {!isLockedByPlan && itemPhotoInReview(item) ? (
+                        <span className="absolute bottom-0 left-0 right-0 bg-amber-500/90 px-0.5 py-px text-center text-[8px] font-bold text-white">
+                          Review
+                        </span>
+                      ) : null}
+                      {!isLockedByPlan && itemPhotoRejected(item) ? (
+                        <span className="absolute bottom-0 left-0 right-0 bg-red-600/90 px-0.5 py-px text-center text-[8px] font-bold text-white">
+                          Rejected
+                        </span>
+                      ) : null}
+                    </button>
                     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                       <div className="flex items-start justify-between gap-1 mb-0.5">
                         <div className="flex-1 min-w-0">
@@ -4516,8 +4663,8 @@ function MenuContent() {
                               : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
                           }`}
                         >
-                          <Eye size={10} />
-                          <span className="truncate">View Full Details</span>
+                          <Edit2 size={10} />
+                          <span className="truncate">Edit item</span>
                         </button>
                       </div>
                     </div>
@@ -4995,7 +5142,7 @@ function MenuContent() {
       {/* Edit Item Modal */}
       {showEditModal && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md" onClick={() => setShowEditModal(false)}>
-          <div onClick={e => e.stopPropagation()} className="max-h-[90vh] overflow-y-auto">
+          <div onClick={e => e.stopPropagation()} className="max-h-[92vh] overflow-hidden">
             {(() => {
               const editingItem = menuItems.find((m) => m.item_id === editingId);
               const isEditingLocked = !!(editingItem as any)?.is_locked_by_plan;
@@ -5013,7 +5160,7 @@ function MenuContent() {
             })()}
             <ItemForm
               isEdit={true}
-              readOnly={true}
+              readOnly={!!(menuItems.find((m) => m.item_id === editingId) as MenuItem | undefined)?.is_locked_by_plan}
               formData={editForm}
               setFormData={setEditForm}
               imagePreview={editImagePreview}
@@ -5021,6 +5168,7 @@ function MenuContent() {
               onProcessImage={(file) => processImageFile(file, true)}
               onSaveAndNext={handleEditSaveAndNext}
               onSubmitOptions={handleEditSubmitOptions}
+              onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(true)}
               imageUploadAllowed={imageUploadAllowed}
               imageLimitReached={imageLimitReached}
               imageUsed={imageUsed}
@@ -5091,6 +5239,44 @@ function MenuContent() {
         document.body
       )}
 
+      <CatalogItemPhotoModal
+        open={itemPhotoModal != null}
+        item={itemPhotoModal}
+        storeId={storeId}
+        imageLimitReached={imageLimitReached}
+        onClose={() => setItemPhotoModal(null)}
+        onUpdated={() => {
+          void refetchMenuItems();
+          void refetchImageCount();
+        }}
+        onRequestUploadOptions={() => {
+          const current = itemPhotoModal;
+          if (!current) return;
+          if (imageLimitReached) {
+            toast.error(
+              imageLimit != null
+                ? `Image limit reached (${imageLimit}/${imageLimit}). Upgrade your plan to add more.`
+                : 'Image upload limit reached for your plan.',
+            );
+            return;
+          }
+          setItemPhotoModal(null);
+          setItemUploadModal(current);
+        }}
+      />
+
+      <CatalogPhotoUploadOptionsModal
+        open={itemUploadModal != null}
+        item={itemUploadModal}
+        storeId={storeId}
+        imageLimitReached={imageLimitReached}
+        onClose={() => setItemUploadModal(null)}
+        onUploaded={() => {
+          void refetchMenuItems();
+          void refetchImageCount();
+        }}
+        uploadCallbacks={catalogPhotoUploadCallbacks}
+      />
 
       {showMenuFileSection && typeof document !== 'undefined' && createPortal(
         <div

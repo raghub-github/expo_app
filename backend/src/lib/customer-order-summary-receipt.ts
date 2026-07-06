@@ -237,7 +237,12 @@ export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummary
   if (bill.subscriptionFee > 0.005) {
     summaryLines.push(summaryRow(bill.subscriptionLabel ?? "Membership", bill.subscriptionFee));
   }
-  if (bill.couponDiscount > 0.005) {
+  if (bill.discountLines.length > 0) {
+    for (const line of bill.discountLines) {
+      if (line.amount <= 0.005) continue;
+      summaryLines.push(summaryRow(line.label, -line.amount, { discount: true }));
+    }
+  } else if (bill.couponDiscount > 0.005) {
     const label = bill.couponCode
       ? `Coupon applied — ${bill.couponCode}`
       : "Limited time offer";

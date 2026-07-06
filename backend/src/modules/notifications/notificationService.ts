@@ -28,6 +28,11 @@ import {
   updateCampaignCounts,
   updateLogStatus,
   readSetting,
+  getCampaignById,
+  prepareCampaignResend,
+  markCampaignStarted,
+  finalizeCampaignSend,
+  syncCampaignCountsFromLogs,
   type CreateLogRow,
 } from "./db.js";
 import type {
@@ -358,12 +363,9 @@ export async function send(intent: SendIntent): Promise<SendResult> {
     }
   }
 
-  // 8. Roll up to campaign if any
+  // 8. Roll up to campaign from dispatch logs (absolute sync, not incremental)
   if (intent.campaignId) {
-    await updateCampaignCounts(intent.campaignId, {
-      sent: queued,
-      failed: logRows.length - queued - skipped,
-    });
+    await syncCampaignCountsFromLogs(intent.campaignId);
   }
 
   const took = Date.now() - startedAt;
@@ -439,15 +441,66 @@ export async function schedule(opts: {
   return { campaignId: c.id };
 }
 
-/** Cancel a scheduled or running campaign. */
-export async function cancel(campaignId: number, cancelledBy?: string): Promise<void> {
+/** Re-send an existing campaign using its stored template, target, and variables. */
+export async function resendCampaign(
+  campaignId: number,
+): Promise<SendResult & { campaignId: number; status: "completed" | "failed" }> {
+  const campaign = await getCampaignById(campaignId);
+  if (!campaign) {
+    const err = new Error("campaign_not_found");
+    (err as Error & { statusCode?: number }).statusCode = 404;
+    throw err;
+  }
+  if (!campaign.template_code) {
+    const err = new Error("template_missing");
+    (err as Error & { statusCode?: number }).statusCode = 400;
+    throw err;
+  }
+  if (campaign.status === "scheduled" || campaign.status === "running") {
+    const err = new Error("campaign_busy");
+    (err as Error & { statusCode?: number }).statusCode = 409;
+    throw err;
+  }
+
+  const tmpl = await loadTemplate(campaign.template_code, "en");
+  if (!tmpl) {
+    const err = new Error("template_not_found");
+    (err as Error & { statusCode?: number }).statusCode = 404;
+    throw err;
+  }
+
+  await prepareCampaignResend(campaignId);
+  await markCampaignStarted(campaignId);
+  try {
+    const result = await send({
+      templateCode: campaign.template_code,
+      variables: campaign.variables as TemplateVariables,
+      target: campaign.target_filter as TargetFilter,
+      campaignId,
+    });
+    await finalizeCampaignSend(campaignId, "completed");
+    return { ...result, campaignId, status: "completed" };
+  } catch (e) {
+    await finalizeCampaignSend(campaignId, "failed");
+    throw e;
+  }
+}
+
+/** Cancel a scheduled or running campaign. Returns false when no row matched. */
+export async function cancel(campaignId: number, cancelledBy?: string): Promise<boolean> {
   const { getSql } = await import("../../db/client.js");
   const sql = getSql();
-  await sql`
+  const rows = (await sql`
     UPDATE public.notification_campaigns
-    SET status = 'cancelled', cancelled_at = now(), cancelled_by = ${cancelledBy ?? null}
+    SET
+      status = 'cancelled',
+      cancelled_at = now(),
+      cancelled_by = ${cancelledBy ?? null},
+      finished_at = COALESCE(finished_at, now())
     WHERE id = ${campaignId} AND status IN ('scheduled','running')
-  `;
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+  return rows.length > 0;
 }
 
 /** Mark click — exposed as a separate function so the routes layer can call it. */

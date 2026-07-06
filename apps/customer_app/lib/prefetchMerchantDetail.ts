@@ -14,6 +14,12 @@ import {
 import { syncMerchantMenuInBackground } from "@/lib/merchantMenuSync";
 import { STORE_LIVE_STATUS_QUERY_KEY } from "@/hooks/useStoreDetailLiveStatus";
 import { merchantService } from "@/services/merchant.service";
+import {
+  prefetchMerchantHeroImageUri,
+  warmMerchantHeroImage,
+} from "@/lib/merchantHeroWarmCache";
+import { resolveMerchantCarouselBannerUri } from "@/lib/merchantBanner";
+import { prefetchStoreOffersFromLocationStore } from "@/lib/prefetchStoreOffers";
 
 export {
   MERCHANT_DETAIL_QUERY_KEY,
@@ -79,6 +85,21 @@ export function getMerchantDetailPlaceholder(
   return summary ? merchantSummaryToDetailPlaceholder(summary) : undefined;
 }
 
+function prefetchMerchantHeroImage(merchant: MerchantDetail | MerchantSummary | undefined): void {
+  if (!merchant) return;
+  const fromCarousel = resolveMerchantCarouselBannerUri(merchant);
+  const raw =
+    fromCarousel ??
+    (merchant as MerchantDetail).imageUrl ??
+    merchant.displayImage ??
+    merchant.banner_url ??
+    null;
+  prefetchMerchantHeroImageUri(raw);
+  if ("id" in merchant && merchant.id) {
+    warmMerchantHeroImage(merchant.id, raw);
+  }
+}
+
 /**
  * Warm store page: memory-first instant render.
  * Full menu download only on first visit; revisits use version check + delta.
@@ -97,9 +118,20 @@ export function prefetchMerchantDetail(
     staleTime: 30_000,
   });
 
+  prefetchStoreOffersFromLocationStore(queryClient, merchantId);
+
   const placeholder = getMerchantDetailPlaceholder(queryClient, merchantId);
   if (placeholder && !queryClient.getQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId))) {
     queryClient.setQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId), placeholder);
+  }
+
+  prefetchMerchantHeroImage(
+    placeholder ?? queryClient.getQueryData<MerchantDetail>(MERCHANT_DETAIL_QUERY_KEY(merchantId))
+  );
+
+  const summary = findMerchantSummaryInCache(queryClient, merchantId);
+  if (summary) {
+    warmMerchantHeroImage(merchantId, resolveMerchantCarouselBannerUri(summary));
   }
 
   if (hasMemoryMerchantMenu(merchantId)) {

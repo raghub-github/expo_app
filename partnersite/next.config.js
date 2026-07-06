@@ -27,6 +27,13 @@ const nextConfig = {
     if (!base) return [];
     return [{ source: '/v1/:path*', destination: `${base}/v1/:path*` }];
   },
+  async redirects() {
+    return [
+      { source: '/privacy', destination: '/privacy-policy', permanent: true },
+      { source: '/code-of-conduct', destination: '/coc', permanent: true },
+      { source: '/terms-of-service', destination: '/terms', permanent: true },
+    ];
+  },
 };
 
 module.exports = nextConfig;

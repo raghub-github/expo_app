@@ -1,18 +1,20 @@
 /**
- * Tiny in-memory response cache for the growth insights routes.
- *
- * These routes fan out to 20+ sequential Postgres queries; a single dashboard
- * tab focus fires the query twice (live-preview + business-insights). Without
- * caching the pooler saturates and both routes hit the 30s timeout. A 60s TTL
- * makes tab-focus re-fetches instant while still refreshing "today" quickly.
- *
- * Scope: per-container Node process. That's fine — the routes are read-only
- * summaries and staleness up to 60s is acceptable for dashboard UX.
+ * In-memory cache for growth insight routes (live-preview + business-insights).
+ * Includes single-flight dedup and stale fallback so tab-focus double-fetches and
+ * slow cold queries don't surface 504s to the UI.
  */
 type Entry = { at: number; value: unknown };
 
 const store = new Map<string, Entry>();
-const MAX_ENTRIES = 500; // simple guard so a runaway loop can't leak memory
+const inflight = new Map<string, Promise<unknown>>();
+const MAX_ENTRIES = 500;
+
+export function peekGrowthCache<T>(key: string, maxStaleMs = 10 * 60_000): T | null {
+  const hit = store.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > maxStaleMs) return null;
+  return hit.value as T;
+}
 
 export async function withGrowthCache<T>(
   key: string,
@@ -24,12 +26,29 @@ export async function withGrowthCache<T>(
   if (hit && now - hit.at < ttlMs) {
     return hit.value as T;
   }
-  const value = await compute();
-  if (store.size >= MAX_ENTRIES) {
-    // Drop the oldest entry (Map preserves insertion order).
-    const firstKey = store.keys().next().value;
-    if (firstKey !== undefined) store.delete(firstKey);
+
+  const pending = inflight.get(key);
+  if (pending) {
+    return pending as Promise<T>;
   }
-  store.set(key, { at: now, value });
-  return value;
+
+  const run = (async () => {
+    try {
+      const value = await compute();
+      if (store.size >= MAX_ENTRIES) {
+        const firstKey = store.keys().next().value;
+        if (firstKey !== undefined) store.delete(firstKey);
+      }
+      store.set(key, { at: Date.now(), value });
+      return value;
+    } catch (e) {
+      if (hit) return hit.value as T;
+      throw e;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, run);
+  return run;
 }

@@ -29,7 +29,7 @@ const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
     right: 16,
-    zIndex: 15,
+    zIndex: 30,
   },
   fab: {
     flexDirection: "row",

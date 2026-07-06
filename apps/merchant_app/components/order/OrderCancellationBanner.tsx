@@ -97,8 +97,11 @@ export function OrderCancellationBanner({
     }
   }
 
+  const isAdminOverride = cancellationCompensation?.admin_override === true;
+
   const showPolicyLink =
     !isCompact &&
+    !isAdminOverride &&
     Boolean(cancellationCompensation?.show_policy_link) &&
     storeId != null &&
     storeId > 0 &&
@@ -128,7 +131,7 @@ export function OrderCancellationBanner({
         </>
       )}
 
-      {!isCompact && parts.policySentence ? (
+      {!isCompact && parts.policySentence && !isAdminOverride ? (
         <Text style={styles.policySentence}>{parts.policySentence}</Text>
       ) : null}
 

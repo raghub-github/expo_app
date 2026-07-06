@@ -12,13 +12,13 @@ import {
 } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
-import { fetchLedger, type LedgerEntry } from "@/services/walletApi";
+import { fetchLedger, fetchPayoutSettlement, type LedgerEntry, type PayoutSettlementSummary } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
-  PAYOUT_CUSTOMER_COMPENSATION_LABEL,
   PAYOUT_STORE_OFFER_DISCOUNT_LINES,
   PAYOUT_STORE_OFFERS_SECTION_LABEL,
+  buildSettlementDetailSections,
   buildOrderPayoutBreakdown,
   entriesInPayoutPeriod,
   filterPayoutOrderBreakdowns,
@@ -29,7 +29,6 @@ import {
   selectPayoutOrderLedgerEntries,
   orderSettlementBadge,
   MERCHANT_GROSS_REVENUE_LABEL,
-  computeSettlement,
   type SettlementSummary,
   type OrderPayoutBreakdown,
   type PayoutOrderTypeFilter,
@@ -38,8 +37,6 @@ import {
 import { PayoutOrderTypeFilterSheet } from "@/components/earnings/PayoutOrderTypeFilterSheet";
 import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 import { prefetchCompensationPolicy } from "@/lib/compensationPolicyCache";
-
-type DetailTab = "summary" | "orders";
 
 const EMPTY_SETTLEMENT: SettlementSummary = {
   netOrderValue: 0,
@@ -53,11 +50,35 @@ const EMPTY_SETTLEMENT: SettlementSummary = {
   orderDeductions: 0,
   mechanismFee: 0,
   customerCompensation: 0,
+  cancellationCompensation: 0,
   estimatedPayout: 0,
   orderCount: 0,
   deliveredOrderCount: 0,
   rejectedOrderCount: 0,
 };
+
+type DetailTab = "summary" | "orders";
+
+function toSettlementSummary(raw: PayoutSettlementSummary): SettlementSummary {
+  return {
+    netOrderValue: raw.netOrderValue,
+    itemSubtotal: raw.itemSubtotal,
+    packagingCharges: raw.packagingCharges,
+    restaurantDiscounts: raw.restaurantDiscounts,
+    couponOfferDiscount: raw.couponOfferDiscount,
+    percentageFlatOfferDiscount: raw.percentageFlatOfferDiscount,
+    comboOfferDiscount: raw.comboOfferDiscount,
+    freeDeliveryOfferDiscount: raw.freeDeliveryOfferDiscount,
+    orderDeductions: raw.orderDeductions,
+    mechanismFee: raw.mechanismFee,
+    customerCompensation: raw.customerCompensation,
+    cancellationCompensation: raw.cancellationCompensation,
+    estimatedPayout: raw.estimatedPayout,
+    orderCount: raw.orderCount,
+    deliveredOrderCount: raw.deliveredOrderCount,
+    rejectedOrderCount: raw.rejectedOrderCount,
+  };
+}
 
 function parseParamDate(value: string | undefined): Date | null {
   if (!value?.trim()) return null;
@@ -337,6 +358,7 @@ export default function PayoutDetailScreen() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("summary");
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
+  const [settlement, setSettlement] = useState<SettlementSummary>(EMPTY_SETTLEMENT);
   const [bank, setBank] = useState<BankAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -370,13 +392,17 @@ export default function PayoutDetailScreen() {
       setLoading(true);
       setLoadError(null);
       try {
-        const l = await fetchLedger(storeId, token, {
-          limit: 200,
-          from: periodStart.toISOString(),
-          to: periodEnd.toISOString(),
-        });
+        const [l, settlementRaw] = await Promise.all([
+          fetchLedger(storeId, token, {
+            limit: 200,
+            from: periodStart.toISOString(),
+            to: periodEnd.toISOString(),
+          }),
+          fetchPayoutSettlement(storeId, token, periodStart, periodEnd),
+        ]);
         if (!cancelled) {
           setLedger(l.entries);
+          setSettlement(toSettlementSummary(settlementRaw));
         }
         listBankAccounts(storeId, token)
           .then((banks) => {
@@ -405,14 +431,11 @@ export default function PayoutDetailScreen() {
     [ledger, periodStart, periodEnd, payoutDate],
   );
 
-  const settlement = useMemo<SettlementSummary>(
-    () => (periodEntries.length > 0 ? computeSettlement(periodEntries) : EMPTY_SETTLEMENT),
-    [periodEntries],
-  );
-
   const displayHeroPayout = isCurrentCycle
-    ? Math.max(0, netPayout || settlement.estimatedPayout)
+    ? Math.max(0, settlement.estimatedPayout)
     : Math.max(0, netPayout);
+
+  const settlementSections = buildSettlementDetailSections(settlement);
 
   const orderEntries = useMemo(
     () => selectPayoutOrderLedgerEntries(periodEntries),
@@ -430,15 +453,12 @@ export default function PayoutDetailScreen() {
   );
   const qaOrderBreakdownsNet = useMemo(
     () =>
-      orderBreakdowns.reduce((sum, row) => {
-        if (row.fulfillmentStatus === "rejected") return sum;
-        return sum + row.netReceivable;
-      }, 0),
+      orderBreakdowns.reduce((sum, row) => sum + row.netReceivable, 0),
     [orderBreakdowns],
   );
   const qaSummaryEstPayout = Math.max(
     0,
-    isCurrentCycle ? (netPayout || settlement.estimatedPayout) : settlement.estimatedPayout,
+    isCurrentCycle ? settlement.estimatedPayout : settlement.estimatedPayout,
   );
   const qaDelta = Math.round((qaOrderBreakdownsNet - qaSummaryEstPayout) * 100) / 100;
 
@@ -562,15 +582,20 @@ export default function PayoutDetailScreen() {
                 label="Order level deductions (C)"
                 amount={settlement.orderDeductions}
                 negative
-                items={[
-                  { label: "Payment mechanism fee", amount: settlement.mechanismFee, negative: true },
-                  { label: PAYOUT_CUSTOMER_COMPENSATION_LABEL, amount: settlement.customerCompensation, negative: true },
-                ]}
+                items={settlementSections.deductionItems}
               />
+              {settlementSections.creditItems.map((item) => (
+                <SettlementRow
+                  key={item.label}
+                  label={item.label}
+                  amount={item.amount}
+                  green={item.green}
+                />
+              ))}
               <View style={s.settleDivider} />
               <SettlementRow
-                label="Est. payout (A − B − C)"
-                amount={Math.max(0, isCurrentCycle ? (netPayout || settlement.estimatedPayout) : settlement.estimatedPayout)}
+                label={settlementSections.estPayoutLabel}
+                amount={Math.max(0, displayHeroPayout)}
                 bold
                 green
               />

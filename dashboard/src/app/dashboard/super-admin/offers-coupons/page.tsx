@@ -334,6 +334,17 @@ export default function OffersCouponsPage() {
       return;
     }
 
+    const startTrim = String(offerForm.starts_at ?? "").trim();
+    const endTrim = String(offerForm.ends_at ?? "").trim();
+    if (startTrim && endTrim) {
+      const startMs = new Date(startTrim).getTime();
+      const endMs = new Date(endTrim).getTime();
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs < startMs) {
+        setErr("End date/time must be on or after start date/time.");
+        return;
+      }
+    }
+
     const buyTrim = String(offerForm.buy_qty ?? "").trim();
     const getTrim = String(offerForm.get_qty ?? "").trim();
     let buy_qty: number | null = null;
@@ -1453,7 +1464,7 @@ export default function OffersCouponsPage() {
                           setEditingCouponId(null);
                           setCouponMetaBaseline(null);
                           setCouponForm(emptyCouponForm());
-                          setEditingOfferId(o.id);
+                          setEditingOfferId(Number(o.id));
                           const cond =
                             o.conditions && typeof o.conditions === "object" && !Array.isArray(o.conditions)
                               ? (o.conditions as Record<string, unknown>)

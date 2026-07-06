@@ -64,23 +64,6 @@ function mapDropRows(rows: any[]): DropRow[] {
   return rows.map((s) => dropSlabFromApi(s));
 }
 
-function inferSurgeKind(name: string): PreviewSurgeDefinition["kind"] {
-  const n = name.toLowerCase();
-  if (n.includes("peak")) return "peak_hour";
-  if (n.includes("rain")) return "rain";
-  if (n.includes("festival")) return "festival";
-  return "custom";
-}
-
-function vehicleScopeToFlags(vehicleType: string) {
-  return {
-    vehicle2Wheeler: vehicleType === "all" || vehicleType === "2_wheeler",
-    vehicle3Wheeler: vehicleType === "all" || vehicleType === "3_wheeler",
-    vehicle4WheelerAc: vehicleType === "all" || vehicleType === "4_wheeler_ac",
-    vehicle4WheelerNonAc: vehicleType === "all" || vehicleType === "4_wheeler_non_ac",
-  };
-}
-
 export function RiderPayoutSlabsPanel(props: {
   level: string;
   refId: string;
@@ -177,27 +160,24 @@ export function RiderPayoutSlabsPanel(props: {
         );
         const surgeJson = await surgeRes.json();
         if (!surgeRes.ok) return;
-        const vehicles = vehicleScopeToFlags;
         const stateMax = surgeJson.settings?.maxTotalSurgeAmount;
         setSurgeCatalog({
-          definitions: (surgeJson.surges ?? []).map((s: Record<string, unknown>) => {
-            const vt = String(s.vehicleType ?? "all");
-            const flags = vehicles(vt);
-            return {
-              id: Number(s.id),
-              name: String(s.name),
-              kind: inferSurgeKind(String(s.name)),
-              fixedAmount: s.surgeType === "percentage" ? 0 : Number(s.amount),
-              priority: Number(s.priority ?? 100),
-              isEnabled: s.enabled === true,
-              gmitraMaxOnly: s.maxRidersOnly === true,
-              appliesFood: s.appliesFood !== false,
-              appliesParcel: s.appliesParcel !== false,
-              appliesRide: s.appliesRide !== false,
-              ...flags,
-              manualActive: s.manualActive === true,
-            };
-          }),
+          definitions: (surgeJson.surges ?? []).map((s: Record<string, unknown>) => ({
+            id: Number(s.id),
+            name: String(s.name),
+            surgeType: (String(s.surgeType ?? s.surge_type ?? "fixed") === "percentage"
+              ? "percentage"
+              : "fixed") as PreviewSurgeDefinition["surgeType"],
+            amount: Number(s.amount ?? 0),
+            priority: Number(s.priority ?? 100),
+            isEnabled: s.enabled === true,
+            gmitraMaxOnly: s.maxRidersOnly === true,
+            appliesFood: s.appliesFood !== false,
+            appliesParcel: s.appliesParcel !== false,
+            appliesRide: s.appliesRide !== false,
+            vehicleType: String(s.vehicleType ?? s.vehicle_type ?? "all"),
+            manualActive: s.manualActive === true,
+          })),
           timeSlots: (surgeJson.timeSlots ?? []).map((s: Record<string, unknown>) => ({
             id: Number(s.id),
             surgeId: Number(s.stateSurgeId ?? s.state_surge_id),
@@ -605,7 +585,7 @@ export function RiderPayoutSlabsPanel(props: {
         {previewBreakdown ? (
           <div className="mt-3 grid gap-2 rounded-lg border border-teal-100 bg-white/80 px-3 py-2 text-xs text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
             <div>Base fare: <span className="font-mono font-semibold">₹{previewBreakdown.baseFare.toFixed(2)}</span></div>
-            <div>Pickup: <span className="font-mono font-semibold">₹{previewBreakdown.pickupAmount.toFixed(2)}</span></div>
+            <div>Pickup distance: <span className="font-mono font-semibold">₹{previewBreakdown.pickupAmount.toFixed(2)}</span></div>
             <div>Drop: <span className="font-mono font-semibold">₹{previewBreakdown.dropAmount.toFixed(2)}</span></div>
             <div>Waiting: <span className="font-mono font-semibold">₹{previewBreakdown.waitingAmount.toFixed(2)}</span></div>
             {previewBreakdown.minChargeApplied > 0 ? (
@@ -614,6 +594,25 @@ export function RiderPayoutSlabsPanel(props: {
                 <span className="font-mono font-semibold">₹{previewBreakdown.minChargeApplied.toFixed(2)}</span>
               </div>
             ) : null}
+            <div>
+              Pickup leg total:{" "}
+              <span className="font-mono font-semibold">
+                ₹
+                {(
+                  previewBreakdown.subtotalBeforeSurge -
+                  previewBreakdown.dropAmount -
+                  previewBreakdown.waitingAmount
+                ).toFixed(2)}
+              </span>
+            </div>
+            <div>
+              Subtotal:{" "}
+              <span className="font-mono font-semibold">₹{previewBreakdown.subtotalBeforeSurge.toFixed(2)}</span>
+            </div>
+            <div>
+              Surge total:{" "}
+              <span className="font-mono font-semibold">₹{previewBreakdown.surgeTotal.toFixed(2)}</span>
+            </div>
             <div className="sm:col-span-2 lg:col-span-4">
               Surges:{" "}
               {previewBreakdown.appliedSurges.length === 0 ? (
@@ -621,7 +620,10 @@ export function RiderPayoutSlabsPanel(props: {
               ) : (
                 previewBreakdown.appliedSurges.map((s) => (
                   <span key={s.surgeId} className="mr-2 inline-flex rounded bg-teal-50 px-1.5 py-0.5 font-mono text-teal-900">
-                    {s.name} ₹{s.amount.toFixed(2)}
+                    {s.name}{" "}
+                    {s.surgeType === "percentage"
+                      ? `(${s.configAmount}% → ₹${s.amount.toFixed(2)})`
+                      : `₹${s.amount.toFixed(2)}`}
                   </span>
                 ))
               )}

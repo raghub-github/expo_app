@@ -1,5 +1,6 @@
 export type MerchantCancellationCompensationDisplay = {
   engine_enabled: boolean;
+  admin_override?: boolean;
   compensation_pct: number;
   merchant_keeps_amount: number;
   net_order_value: number;
@@ -216,7 +217,21 @@ export function resolveCancellationMessageParts(args: {
 export function formatAppliedPayoutPolicy(
   comp: MerchantCancellationCompensationDisplay | null | undefined,
 ): string | null {
-  if (!comp?.engine_enabled) return null;
+  if (!comp) return null;
+
+  if (comp.admin_override) {
+    const amount = comp.merchant_keeps_amount;
+    const pct = Math.round(comp.compensation_pct);
+    if (pct <= 0 || amount <= 0) {
+      return 'Payout adjusted by admin — no compensation for this cancellation.';
+    }
+    if (pct >= 100) {
+      return `Payout adjusted by admin — full compensation — you receive ₹${amount.toFixed(2)}.`;
+    }
+    return `Payout adjusted by admin — you receive ₹${amount.toFixed(2)}.`;
+  }
+
+  if (!comp.engine_enabled) return null;
   const pct = Math.round(comp.compensation_pct);
   const title = comp.applied_policy_title?.trim();
   const amount = comp.merchant_keeps_amount;

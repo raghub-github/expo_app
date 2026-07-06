@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { loadSurgeCatalog } from "@/lib/db/operations/rider-surge-admin";
+import {
+  mapRiderSurgeDefinitionToPreview,
+  mapRiderSurgeTimeSlotToPreview,
+} from "@/lib/geo/mapRiderSurgeCatalog";
 import { previewRiderPayoutBreakdown } from "@/lib/geo/riderPayoutPreview";
 
 export const runtime = "nodejs";
@@ -63,6 +67,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const catalog = await loadSurgeCatalog();
+    const surgeDefinitions = catalog.definitions.map(mapRiderSurgeDefinitionToPreview);
+    const surgeTimeSlots = catalog.timeSlots.map(mapRiderSurgeTimeSlotToPreview);
     const breakdown = previewRiderPayoutBreakdown({
       pickupKm: parsed.data.pickupKm,
       dropKm: parsed.data.dropKm,
@@ -72,8 +78,8 @@ export async function POST(req: NextRequest) {
       riderHasGmitraMax: parsed.data.riderHasGmitraMax,
       service: parsed.data.service,
       vehicleType: parsed.data.vehicleType,
-      surgeDefinitions: catalog.definitions,
-      surgeTimeSlots: catalog.timeSlots,
+      surgeDefinitions,
+      surgeTimeSlots,
       surgeWaitMaxOnly: catalog.settings.surgeWaitMaxOnly,
       maxTotalSurgeAmount: catalog.settings.maxTotalSurgeAmount,
       forceActiveSurgeIds: parsed.data.forceActiveSurgeIds,
@@ -82,7 +88,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       breakdown,
       settings: catalog.settings,
-      availableSurges: catalog.definitions,
+      availableSurges: surgeDefinitions,
     });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Preview failed" }, { status: 500 });

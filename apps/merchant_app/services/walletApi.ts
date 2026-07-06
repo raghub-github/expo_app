@@ -7,6 +7,10 @@ import type {
   PayoutQuote,
   PayoutResult,
 } from "@gatimitra/contracts";
+import {
+  mapSettlementApiResponse,
+  type MerchantPayoutSettlementClient,
+} from "@gatimitra/merchant-payout";
 
 const getBase = () => getConfig().apiBaseUrl;
 
@@ -17,43 +21,7 @@ export interface LedgerResponse {
   total: number;
 }
 
-export type PayoutSettlementSummary = {
-  netOrderValue: number;
-  itemSubtotal: number;
-  packagingCharges: number;
-  restaurantDiscounts: number;
-  couponOfferDiscount: number;
-  percentageFlatOfferDiscount: number;
-  comboOfferDiscount: number;
-  freeDeliveryOfferDiscount: number;
-  orderDeductions: number;
-  mechanismFee: number;
-  customerCompensation: number;
-  estimatedPayout: number;
-  orderCount: number;
-  deliveredOrderCount: number;
-  rejectedOrderCount: number;
-};
-
-function mapPayoutSettlement(raw: Record<string, unknown>): PayoutSettlementSummary {
-  return {
-    netOrderValue: Number(raw.net_order_value ?? 0),
-    itemSubtotal: Number(raw.item_subtotal ?? 0),
-    packagingCharges: Number(raw.packaging_charges ?? 0),
-    restaurantDiscounts: Number(raw.restaurant_discounts ?? 0),
-    couponOfferDiscount: Number(raw.coupon_offer_discount ?? 0),
-    percentageFlatOfferDiscount: Number(raw.percentage_flat_offer_discount ?? 0),
-    comboOfferDiscount: Number(raw.combo_offer_discount ?? 0),
-    freeDeliveryOfferDiscount: Number(raw.free_delivery_offer_discount ?? 0),
-    orderDeductions: Number(raw.order_deductions ?? 0),
-    mechanismFee: Number(raw.mechanism_fee ?? 0),
-    customerCompensation: Number(raw.customer_compensation ?? 0),
-    estimatedPayout: Number(raw.estimated_payout ?? 0),
-    orderCount: Number(raw.order_count ?? 0),
-    deliveredOrderCount: Number(raw.delivered_order_count ?? 0),
-    rejectedOrderCount: Number(raw.rejected_order_count ?? 0),
-  };
-}
+export type PayoutSettlementSummary = MerchantPayoutSettlementClient;
 
 export async function fetchWalletSummary(storeId: number, token: string): Promise<WalletSummary> {
   const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet`, token);
@@ -113,7 +81,7 @@ export async function fetchPayoutSettlement(
   }
   const data = await res.json();
   const settlement = (data as { settlement?: Record<string, unknown> }).settlement ?? {};
-  return mapPayoutSettlement(settlement);
+  return mapSettlementApiResponse(settlement);
 }
 
 export async function fetchPayoutQuote(storeId: number, amount: number, token: string): Promise<PayoutQuote> {

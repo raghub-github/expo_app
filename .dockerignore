@@ -73,3 +73,9 @@ temp
 # **/*.md exclusion above. Order matters — must be after both.
 !apps/customer_app/legal
 !apps/customer_app/legal/*.md
+
+# Partnersite prerenders /coc, /terms, /privacy etc. from
+# partnersite/src/content/legal/*.md at `next build` time. Without this
+# override those pages fail with ENOENT during the prerender step.
+!partnersite/src/content/legal
+!partnersite/src/content/legal/*.md

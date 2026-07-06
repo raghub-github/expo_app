@@ -34,6 +34,12 @@ COPY partnersite/package.json ./partnersite/package.json
 COPY packages/financial-rules/package.json ./packages/financial-rules/package.json
 COPY packages/store-status/package.json ./packages/store-status/package.json
 COPY packages/shared-config/package.json ./packages/shared-config/package.json
+# @gatimitra/merchant-payout is imported by partnersite (payout-settlement /
+# payout-utils under /app/mx/payments) and needs @gatimitra/contracts as a
+# build-time dep. Both must be present or `next build` fails with
+# "Can't resolve '@gatimitra/merchant-payout'".
+COPY packages/merchant-payout/package.json ./packages/merchant-payout/package.json
+COPY packages/contracts/package.json ./packages/contracts/package.json
 RUN npm ci --no-audit --no-fund --ignore-scripts
 
 # ────────────────────────────────────────────────────────────────────────
@@ -54,6 +60,8 @@ COPY partnersite              ./partnersite
 COPY packages/financial-rules ./packages/financial-rules
 COPY packages/store-status    ./packages/store-status
 COPY packages/shared-config   ./packages/shared-config
+COPY packages/contracts       ./packages/contracts
+COPY packages/merchant-payout ./packages/merchant-payout
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
@@ -82,7 +90,12 @@ ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTE
 # is `next build --webpack` — webpack on Linux Docker correctly finalizes
 # the standalone output (Turbopack standalone-finalize is the buggy combo).
 # Order matters — shared packages first, then the consuming app.
+# Topological order (leaves first): contracts has no @gatimitra/* deps;
+# merchant-payout depends on contracts; then the two independent packages;
+# gmmportal (partnersite) consumes them all last.
 RUN npm run build \
+      --workspace=@gatimitra/contracts \
+      --workspace=@gatimitra/merchant-payout \
       --workspace=@gatimitra/financial-rules \
       --workspace=@gatimitra/store-status \
       --workspace=gmmportal

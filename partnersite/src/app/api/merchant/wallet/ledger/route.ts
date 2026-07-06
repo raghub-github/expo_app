@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { WALLET_CONSTANTS } from '@/lib/wallet-types';
-import { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } from '@/lib/backfill-merchant-wallet-credits';
+import { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger, repairErroneousZeroCompensationCancellationDebits } from '@/lib/backfill-merchant-wallet-credits';
 import {
   applyWithdrawableBalanceToLedgerEntries,
   buildWithdrawableBalanceByLedgerId,
@@ -46,12 +46,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    try {
-      await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
-      await backfillMissingCancelledOrderLedger(db, merchantStoreId);
-    } catch (backfillErr) {
-      console.warn('[merchant/wallet/ledger] backfill:', backfillErr);
-    }
+    void (async () => {
+      try {
+        await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
+        await backfillMissingCancelledOrderLedger(db, merchantStoreId);
+        await repairErroneousZeroCompensationCancellationDebits(merchantStoreId);
+      } catch (backfillErr) {
+        console.warn('[merchant/wallet/ledger] backfill:', backfillErr);
+      }
+    })();
 
     const { data: wallet } = await db
       .from('merchant_wallet')
@@ -71,14 +74,16 @@ export async function GET(req: NextRequest) {
 
     const walletId = wallet.id as number;
 
-    try {
-      const { repairCancellationLedgerWithdrawableMetadata } = await import(
-        '@/lib/backfill-merchant-wallet-credits'
-      );
-      await repairCancellationLedgerWithdrawableMetadata(db, walletId);
-    } catch (repairErr) {
-      console.warn('[merchant/wallet/ledger] repair withdrawable metadata:', repairErr);
-    }
+    void (async () => {
+      try {
+        const { repairCancellationLedgerWithdrawableMetadata } = await import(
+          '@/lib/backfill-merchant-wallet-credits'
+        );
+        await repairCancellationLedgerWithdrawableMetadata(db, walletId);
+      } catch (repairErr) {
+        console.warn('[merchant/wallet/ledger] repair withdrawable metadata:', repairErr);
+      }
+    })();
     const from = req.nextUrl.searchParams.get('from');
     const to = req.nextUrl.searchParams.get('to');
     const direction = req.nextUrl.searchParams.get('direction');
