@@ -26,13 +26,13 @@ const nextConfig = {
       {
         protocol: 'http',
         hostname: 'localhost',
-        port: '3000',
+        port: '3003',
         pathname: '/api/attachments/**',
       },
       {
         protocol: 'http',
         hostname: '127.0.0.1',
-        port: '3000',
+        port: '3003',
         pathname: '/api/attachments/**',
       },
       { protocol: 'https', hostname: 'images.unsplash.com', pathname: '/**' },
@@ -62,6 +62,13 @@ const nextConfig = {
       { source: '/account-delete', destination: '/account-deletion', permanent: true },
       { source: '/data-deletion-policy.md', destination: '/account-deletion', permanent: true },
       { source: '/data-deletion-policy', destination: '/account-deletion', permanent: true },
+    ]
+  },
+  // Merchant/app share deep links use `/home/merchant/:id` (same as customer app path).
+  // Serve the restaurant page so shared HTTPS links open correctly on the web.
+  async rewrites() {
+    return [
+      { source: '/home/merchant/:id', destination: '/restaurant/:id' },
     ]
   },
   async headers() {

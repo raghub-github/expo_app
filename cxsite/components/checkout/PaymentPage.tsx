@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useCart } from '@/lib/hooks/useCart'
 import { useAppSelector } from '@/lib/hooks'
 import { RazorpayPayment } from '@/components/payment/RazorpayPayment'
+import { useParcelServiceEnabled } from '@/components/common/ParcelServiceControl'
 
 interface CheckoutData {
   restaurantIds?: string[]
@@ -25,6 +26,7 @@ export default function PaymentPage() {
   const searchParams = useSearchParams()
   const { isAuthenticated, user } = useAppSelector(state => state.auth)
   const { getItemsGroupedByRestaurant, clearCartItems } = useCart()
+  const { enabled: parcelEnabled } = useParcelServiceEnabled()
   
   const serviceType = searchParams.get('service') || 'food' // food, person, or parcel
   const [checkoutData, setCheckoutData] = useState<CheckoutData | null>(null)
@@ -66,10 +68,10 @@ export default function PaymentPage() {
       } else if (serviceType === 'person') {
         router.push('/ride')
       } else if (serviceType === 'parcel') {
-        router.push('/parcel')
+        router.push(parcelEnabled ? '/parcel' : '/')
       }
     }
-  }, [router, serviceType])
+  }, [router, serviceType, parcelEnabled])
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -288,7 +290,7 @@ export default function PaymentPage() {
               } else if (serviceType === 'person') {
                 router.push('/ride')
               } else if (serviceType === 'parcel') {
-                router.push('/parcel')
+                router.push(parcelEnabled ? '/parcel' : '/')
               }
             }}
             className="flex items-center gap-2 px-3 py-2 bg-white rounded-lg font-semibold text-sm text-gray-700 hover:bg-gray-100 shadow-sm border border-gray-200 mb-4"

@@ -1,4 +1,5 @@
 import type { LocationState } from '@/components/providers/LocationProvider'
+import { findIndianStateInParts, matchIndianStateName } from '@/lib/indianStates'
 
 function isPincode(value?: string | null): boolean {
   return !!value && /^\d{6}$/.test(value.trim())
@@ -18,8 +19,10 @@ export function extractWebGeoHints(location: LocationState): {
 
   const pincode = parts.find((p) => isPincode(p)) ?? null
 
+  // Prefer a known Indian state (e.g. Bihar) — never treat city/area like "Hisua" as state.
   const state =
-    [...parts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== 'india') ?? null
+    findIndianStateInParts([...parts].reverse()) ??
+    matchIndianStateName(parts[parts.length - 1] ?? null)
 
   const lat =
     location.lat != null && Number.isFinite(location.lat) ? location.lat : null

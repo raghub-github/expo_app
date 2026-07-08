@@ -8,6 +8,7 @@ import { useAppSelector, useAppDispatch } from '@/lib/hooks'
 import AuthModal from '@/components/auth/AuthModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import ParcelServiceControl from '@/components/common/ParcelServiceControl'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService, logout } from '@/lib/slices/authSlice'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
@@ -264,12 +265,13 @@ export default function PersonPage() {
               <span className="text-[#00B4D8] font-bold border-b-2 border-[#00B4D8] pb-1">
                 Ride
               </span>
-              <button
-                onClick={() => handleNavigation('/courier', 'parcel')}
+              <ParcelServiceControl
+                label="Courier"
+                badgePlacement="inline"
                 className="text-gray-700 font-medium hover:text-[#00B4D8] transition-colors"
-              >
-                Courier
-              </button>
+                disabledClassName="cursor-not-allowed opacity-45 hover:text-gray-700"
+                onEnabledClick={() => handleNavigation('/courier', 'parcel')}
+              />
             </nav>
 
             {/* Right Section */}

@@ -1,6 +1,7 @@
 import Header from "@/components/layout/Header";
 import LandingHero from "@/components/home/LandingHero";
-import BrandSections from "@/components/home/BrandSections";
+import LandingFoodPromise from "@/components/home/LandingFoodPromise";
+import LandingAppShowcase from "@/components/home/LandingAppShowcase";
 import Footer from "@/components/layout/Footer";
 
 export default function Home() {
@@ -8,7 +9,8 @@ export default function Home() {
     <main className="landing-page-bg">
       <Header />
       <LandingHero />
-      <BrandSections />
+      <LandingFoodPromise />
+      <LandingAppShowcase />
       <Footer />
     </main>
   );

@@ -44,8 +44,10 @@ export function getDb() {
   if (!url) return null
 
   if (!globalThis.__gatimitra_postgres) {
+    // Dev used max:1 which serialized /api/app-assets behind restaurants/geo and
+    // left logos blank for 30–130s. Allow a few concurrent queries.
     globalThis.__gatimitra_postgres = postgres(url, {
-      max: 1,
+      max: 5,
       prepare: false,
       idle_timeout: 20,
       connect_timeout: 10,
@@ -61,7 +63,7 @@ export function getSql() {
   if (!url) return null
   if (!globalThis.__gatimitra_postgres) {
     globalThis.__gatimitra_postgres = postgres(url, {
-      max: 1,
+      max: 5,
       prepare: false,
       idle_timeout: 20,
       connect_timeout: 10,

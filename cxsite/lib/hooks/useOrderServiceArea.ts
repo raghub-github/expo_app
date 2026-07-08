@@ -28,11 +28,24 @@ export function useOrderServiceArea(): OrderServiceAreaMode {
     fetch(
       `/api/restaurants/availability?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}&radius_km=15`
     )
-      .then((r) => r.json())
-      .then((d) => {
+      .then(async (r) => {
         if (cancelled) return
-        const ok = Boolean(d?.available === true && (d.count ?? 0) > 0)
-        setServiceOk(ok)
+        if (r.ok) {
+          const d = await r.json()
+          const ok = Boolean(d?.available === true && (d.count ?? 0) > 0)
+          setServiceOk(ok)
+          return
+        }
+        const rest = await fetch(
+          `/api/restaurants?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}&radius_km=15`
+        )
+        if (cancelled) return
+        if (!rest.ok) {
+          setServiceOk(true)
+          return
+        }
+        const list = await rest.json()
+        setServiceOk(Array.isArray(list) && list.length > 0)
       })
       .catch(() => {
         if (cancelled) return

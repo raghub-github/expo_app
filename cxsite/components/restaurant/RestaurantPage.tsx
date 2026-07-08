@@ -26,14 +26,17 @@ function RestaurantSkeleton() {
   );
 }
 
-import { useState, useEffect, useRef, useLayoutEffect, useMemo, Fragment } from 'react'
+import { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback, Fragment } from 'react'
 import { Smartphone, X } from 'lucide-react'
 import { createClient } from '@supabase/supabase-js'
-import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import ProtectedImage from '@/components/common/ProtectedImage'
 import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 import { useRouter } from 'next/navigation'
 import { getRestaurantBreadcrumbMiddle } from '@/lib/restaurantDetailLink'
+import {
+  buildMerchantDeepLink,
+  buildMerchantShareMessage,
+} from '@/lib/merchantShare'
 import { useCart } from '@/lib/hooks/useCart'
 import { useCartAnimation, triggerCartAnimation } from '@/components/cart/CartAnimation'
 import CustomizeModal from '@/components/cart/CustomizeModal'
@@ -84,6 +87,17 @@ interface Restaurant {
   operational_status?: string
   avg_rating?: number | null
   total_reviews?: number | null
+  written_reviews?: Array<{
+    id: number
+    rating: number
+    food_rating: number | null
+    review_title: string | null
+    review_text: string
+    merchant_response: string | null
+    merchant_responded_at: string | null
+    is_verified: boolean
+    created_at: string
+  }> | null
   avg_preparation_time_minutes?: number | null
   min_order_amount?: number
   delivery_time_minutes?: number | null
@@ -103,6 +117,12 @@ function formatReviewCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`
   return String(Math.round(n))
+}
+
+function formatReviewDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 /** Zomato-style: open directions from user's current position → destination (no typing). */
@@ -135,6 +155,33 @@ function openGoogleMapsDirections(destLat: number, destLng: number) {
     { enableHighAccuracy: true, timeout: 12000, maximumAge: 120000 }
   )
 }
+
+const FLOATING_PROMO_IMAGE_SRC = '/img/dnscreen.png'
+
+const FLOATING_PROMO_TEXTS: string[][] = [
+  ['Experience the Future', 'with GatiMitra'],
+  ['Fast. Reliable. Affordable.', 'Only on GatiMitra'],
+  ['Food, Rides & More', 'Everything in One App'],
+  ["India's Smart Mobility App", 'Download GatiMitra Now'],
+  ['From Food to Rides', "We've Got You Covered"],
+]
+
+/** Unique enter motion before each tagline (no wipe/clip — avoids PNG layer artifacts). */
+const FLOATING_IMAGE_ANIMS = ['rise', 'zoom', 'tilt', 'drop', 'soft'] as const
+type FloatingImageAnim = (typeof FLOATING_IMAGE_ANIMS)[number]
+
+/** Interleaved reel: image (unique anim) → text → … */
+const FLOATING_PROMO_SLIDES: Array<
+  | { kind: 'image'; src: string; anim: FloatingImageAnim }
+  | { kind: 'text'; lines: string[] }
+> = FLOATING_PROMO_TEXTS.flatMap((lines, idx) => [
+  {
+    kind: 'image' as const,
+    src: FLOATING_PROMO_IMAGE_SRC,
+    anim: FLOATING_IMAGE_ANIMS[idx % FLOATING_IMAGE_ANIMS.length],
+  },
+  { kind: 'text' as const, lines },
+])
 
 // Main component function
 function RestaurantPage({
@@ -172,6 +219,10 @@ function RestaurantPage({
   const [showSkeleton, setShowSkeleton] = useState(true)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
   const [floatingDownloadExpanded, setFloatingDownloadExpanded] = useState(true)
+  /** Teal promo reel index into FLOATING_PROMO_SLIDES (image ↔ text). */
+  const [floatingPromoSlide, setFloatingPromoSlide] = useState(0)
+  /** Typed characters for the active text slide (write / erase). */
+  const [floatingPromoTyped, setFloatingPromoTyped] = useState('')
   const [downloadContextItem, setDownloadContextItem] = useState<string | null>(null)
   const [downloadMode, setDownloadMode] = useState<'phone' | 'email'>('phone')
   const [downloadValue, setDownloadValue] = useState('')
@@ -184,16 +235,15 @@ function RestaurantPage({
   // Refs for scrolling and animations
   const tabsRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
-  const compactHeaderRef = useRef<HTMLDivElement>(null)
   const cartButtonRef = useRef<HTMLButtonElement>(null)
   const menuSectionRef = useRef<HTMLDivElement>(null)
-  const menuStickySentinelRef = useRef<HTMLDivElement>(null)
-  const menuPinnedShellRef = useRef<HTMLDivElement>(null)
   const menuScrollContainerRef = useRef<HTMLDivElement>(null)
   const menuSelectionsHeaderRef = useRef<HTMLDivElement>(null)
+  const menuColumnRef = useRef<HTMLDivElement>(null)
+  const overviewStripRef = useRef<HTMLDivElement>(null)
   const sidebarNavRef = useRef<HTMLElement>(null)
-  const isMenuPanelPinnedRef = useRef(false)
-  const [isMenuPanelPinned, setIsMenuPanelPinned] = useState(false)
+  /** Keep menu column height while filtering so sticky sidebar doesn't jump. */
+  const searchListMinHeightRef = useRef<number | null>(null)
   const photosSectionRef = useRef<HTMLDivElement>(null)
   const reviewsSectionRef = useRef<HTMLDivElement>(null)
   const infoSectionRef = useRef<HTMLDivElement>(null)
@@ -204,24 +254,10 @@ function RestaurantPage({
 
   const TAB_KEYS = ['menu', 'photos', 'reviews', 'info'] as const
 
-  const readMenuStickyTopPx = () => {
-    const compact = compactHeaderRef.current
-    if (!compact) return 16
-    const rect = compact.getBoundingClientRect()
-    if (rect.bottom > 8) {
-      return Math.ceil(rect.bottom) + 12
-    }
-    if (isTabsStickyRef.current && compact.offsetHeight > 0) {
-      return compact.offsetHeight + 12
-    }
-    return 16
-  }
+  const readMenuStickyTopPx = () => 0
 
   const syncMenuStickyTopVar = () => {
-    document.documentElement.style.setProperty(
-      '--gm-restaurant-sticky-top',
-      `${readMenuStickyTopPx()}px`
-    )
+    document.documentElement.style.setProperty('--gm-restaurant-sticky-top', '0px')
   }
 
   // Fetch data: restaurant from API; menu loads in parallel (page renders before menu finishes).
@@ -351,150 +387,139 @@ function RestaurantPage({
     }
   }, [loadingRestaurant])
 
-  // Compact header visibility + sticky offset (sidebar / menu header sit below it)
+  // Keep sticky offset in sync (no fixed header above the main store chrome).
+  // Intentionally omit searchQuery — typing must not reflow sticky math / scroll.
   useLayoutEffect(() => {
-    const syncStickyTop = () => {
-      syncMenuStickyTopVar()
-    }
-
-    const onScroll = () => {
-      const sticky = window.scrollY > 8
-      if (isTabsStickyRef.current !== sticky) {
-        isTabsStickyRef.current = sticky
-        setIsTabsSticky(sticky)
-      }
-      syncStickyTop()
-    }
-
-    onScroll()
-    window.addEventListener('resize', syncStickyTop)
-    window.addEventListener('scroll', onScroll, { passive: true })
-    const compact = compactHeaderRef.current
-    const ro = typeof ResizeObserver !== 'undefined' && compact
-      ? new ResizeObserver(() => syncStickyTop())
-      : null
-    if (compact && ro) ro.observe(compact)
-    const t = window.setTimeout(syncStickyTop, 320)
+    isTabsStickyRef.current = false
+    setIsTabsSticky(false)
+    syncMenuStickyTopVar()
+    const onScrollOrResize = () => syncMenuStickyTopVar()
+    window.addEventListener('resize', onScrollOrResize)
+    window.addEventListener('scroll', onScrollOrResize, { passive: true })
     return () => {
-      window.removeEventListener('resize', syncStickyTop)
-      window.removeEventListener('scroll', onScroll)
-      ro?.disconnect()
-      window.clearTimeout(t)
+      window.removeEventListener('resize', onScrollOrResize)
+      window.removeEventListener('scroll', onScrollOrResize)
     }
-  }, [showSkeleton])
+  }, [showSkeleton, activeTab])
 
   useLayoutEffect(() => {
     syncMenuStickyTopVar()
-  }, [isTabsSticky, activeTab, showSkeleton, searchQuery])
+  }, [isTabsSticky, activeTab, showSkeleton])
 
   useLayoutEffect(() => {
-    const el = menuSelectionsHeaderRef.current
+    const headerEl = menuSelectionsHeaderRef.current
     const sync = () => {
-      const h = el?.offsetHeight ?? 120
-      document.documentElement.style.setProperty('--gm-menu-selections-h', `${h}px`)
+      const headerH = headerEl?.offsetHeight ?? 120
+      document.documentElement.style.setProperty('--gm-overview-strip-h', '0px')
+      document.documentElement.style.setProperty('--gm-menu-selections-h', `${headerH}px`)
     }
     sync()
-    const ro = typeof ResizeObserver !== 'undefined' && el ? new ResizeObserver(sync) : null
-    if (el && ro) ro.observe(el)
+    const ro = typeof ResizeObserver !== 'undefined' && headerEl ? new ResizeObserver(sync) : null
+    if (headerEl && ro) ro.observe(headerEl)
     return () => ro?.disconnect()
-  }, [isMenuPanelPinned, filteredMenuItems.length, searchQuery, activeTab, showSkeleton])
+  }, [activeTab, showSkeleton])
 
-  // Internal menu scroll only after sidebar + Selections header have pinned (lg+)
+  const clearMenuSearch = () => {
+    searchListMinHeightRef.current = null
+    setSearchQuery('')
+  }
+
+  // Floating card teal reel: image hold, then text write → hold → erase → next.
   useEffect(() => {
-    if (activeTab !== 'menu' || showSkeleton) {
-      isMenuPanelPinnedRef.current = false
-      setIsMenuPanelPinned(false)
+    if (!floatingDownloadExpanded) {
+      setFloatingPromoSlide(0)
+      setFloatingPromoTyped('')
       return
     }
 
-    const getStickyTopPx = () => {
-      syncMenuStickyTopVar()
-      return readMenuStickyTopPx()
+    const slide = FLOATING_PROMO_SLIDES[floatingPromoSlide]
+    let cancelled = false
+    const timers: number[] = []
+    const later = (fn: () => void, ms: number) => {
+      timers.push(window.setTimeout(fn, ms))
+    }
+    const goNext = () => {
+      if (cancelled) return
+      setFloatingPromoSlide((s) => (s + 1) % FLOATING_PROMO_SLIDES.length)
     }
 
-    const PIN_HYSTERESIS_PX = 20
-
-    const checkPin = () => {
-      if (window.innerWidth < 1024) {
-        if (isMenuPanelPinnedRef.current) {
-          isMenuPanelPinnedRef.current = false
-          setIsMenuPanelPinned(false)
-        }
-        return
-      }
-
-      const sentinel = menuStickySentinelRef.current
-      if (!sentinel) return
-
-      const topPx = getStickyTopPx()
-      const sentinelTop = sentinel.getBoundingClientRect().top
-      const pinned = isMenuPanelPinnedRef.current
-
-      if (!pinned && sentinelTop <= topPx) {
-        isMenuPanelPinnedRef.current = true
-        setIsMenuPanelPinned(true)
-        requestAnimationFrame(() => {
-          syncMenuStickyTopVar()
-          const s = menuStickySentinelRef.current
-          if (!s) return
-          const liveTop = readMenuStickyTopPx()
-          const drift = s.getBoundingClientRect().top - liveTop
-          if (Math.abs(drift) > 1) {
-            window.scrollBy({ top: drift, behavior: 'auto' })
-          }
-        })
-      } else if (pinned && sentinelTop > topPx + PIN_HYSTERESIS_PX) {
-        isMenuPanelPinnedRef.current = false
-        setIsMenuPanelPinned(false)
+    if (slide.kind === 'image') {
+      setFloatingPromoTyped('')
+      // Enter anim ~1.1s + hold ~2s + slow fade-out ~1.5s
+      later(goNext, 4800)
+      return () => {
+        cancelled = true
+        timers.forEach((t) => window.clearTimeout(t))
       }
     }
 
-    checkPin()
-    window.addEventListener('scroll', checkPin, { passive: true })
-    window.addEventListener('resize', checkPin)
+    const full = slide.lines.join('\n')
+    setFloatingPromoTyped('')
+    let i = 0
+    const TYPE_MS = 55
+    const HOLD_MS = 1600
+    const ERASE_MS = 68
+
+    const erase = () => {
+      if (cancelled) return
+      i -= 1
+      setFloatingPromoTyped(full.slice(0, Math.max(0, i)))
+      if (i > 0) later(erase, ERASE_MS)
+      else later(goNext, 320)
+    }
+
+    const type = () => {
+      if (cancelled) return
+      i += 1
+      setFloatingPromoTyped(full.slice(0, i))
+      if (i < full.length) later(type, TYPE_MS)
+      else later(erase, HOLD_MS)
+    }
+
+    later(type, 350)
+
     return () => {
-      window.removeEventListener('scroll', checkPin)
-      window.removeEventListener('resize', checkPin)
+      cancelled = true
+      timers.forEach((t) => window.clearTimeout(t))
     }
-  }, [activeTab, showSkeleton, isTabsSticky])
+  }, [floatingDownloadExpanded, floatingPromoSlide])
 
-  // Scroll chaining: at list edges, return scroll to the page (hero/gallery) instead of trapping
-  useEffect(() => {
-    if (!isMenuPanelPinned || activeTab !== 'menu' || showSkeleton) return
-
-    const attachScrollChain = (el: HTMLElement | null) => {
-      if (!el) return () => {}
-
-      const onWheel = (e: WheelEvent) => {
-        if (window.innerWidth < 1024) return
-
-        const { scrollTop, scrollHeight, clientHeight } = el
-        if (scrollHeight <= clientHeight + 2) return
-
-        const atTop = scrollTop <= 1
-        const atBottom = scrollTop + clientHeight >= scrollHeight - 1
-        const dy = e.deltaY
-
-        if (atTop && dy < 0) {
-          e.preventDefault()
-          window.scrollBy({ top: dy, behavior: 'auto' })
-        } else if (atBottom && dy > 0) {
-          e.preventDefault()
-          window.scrollBy({ top: -dy, behavior: 'auto' })
-        }
-      }
-
-      el.addEventListener('wheel', onWheel, { passive: false })
-      return () => el.removeEventListener('wheel', onWheel)
+  const handleMenuSearchChange = (value: string) => {
+    // Lock menu column height before first filter shrink (keeps sticky sidebar stable).
+    if (!searchQuery.trim() && value.trim() && menuColumnRef.current) {
+      searchListMinHeightRef.current = menuColumnRef.current.offsetHeight
     }
-
-    const cleanList = attachScrollChain(menuScrollContainerRef.current)
-    const cleanNav = attachScrollChain(sidebarNavRef.current)
-    return () => {
-      cleanList()
-      cleanNav()
+    if (!value.trim()) {
+      searchListMinHeightRef.current = null
     }
-  }, [isMenuPanelPinned, activeTab, showSkeleton, filteredMenuItems.length])
+    setSearchQuery(value)
+  }
+
+  // If the first match sits ABOVE the sticky header (common after list shrinks),
+  // scroll UP only so the row appears. Stop once the last result is already visible
+  // so typing / filtering doesn't yank the page up again.
+  useLayoutEffect(() => {
+    if (activeTab !== 'menu' || !searchQuery.trim()) return
+    if (filteredMenuItems.length === 0) return
+    const header = menuSelectionsHeaderRef.current
+    const list = menuScrollContainerRef.current
+    if (!header || !list) return
+    const rows = list.querySelectorAll('li')
+    if (rows.length === 0) return
+    const firstRow = rows[0]
+    const lastRow = rows[rows.length - 1]
+    const headerBottom = header.getBoundingClientRect().bottom
+    const viewBottom = window.innerHeight
+    const lastRect = lastRow.getBoundingClientRect()
+    // Last item row already in view → ban further scroll-up.
+    if (lastRect.top < viewBottom - 8 && lastRect.bottom > headerBottom + 8) {
+      return
+    }
+    const rowTop = firstRow.getBoundingClientRect().top
+    if (rowTop < headerBottom - 2) {
+      window.scrollBy({ top: rowTop - headerBottom - 12, left: 0, behavior: 'instant' })
+    }
+  }, [searchQuery, filteredMenuItems.length, activeTab])
 
   // State to handle customization modal
   const [customOpen, setCustomOpen] = useState(false)
@@ -791,13 +816,23 @@ function RestaurantPage({
   })()
 
   const shareStore = async () => {
-    const url = typeof window !== 'undefined' ? window.location.href : ''
-    const title = restaurant.restaurant_name
+    // Public store id (e.g. GMMC1025) — same id customer app /home/merchant/[id] expects.
+    const storePublicId =
+      String(restaurant.restaurant_id || restaurantId || '').trim() || restaurantId
+    // HTTPS deep link: {origin}/home/merchant/{id} (merchant app share format).
+    const deepLink = buildMerchantDeepLink(storePublicId)
+    const title = restaurant.restaurant_name || 'GatiMitra'
+    const message = buildMerchantShareMessage(title, deepLink, {
+      cuisines: cuisineChips,
+      rating: restaurant.avg_rating ?? restaurant.rating ?? null,
+      location: restaurant.full_address || restaurant.address || restaurant.location || null,
+    })
     try {
       if (navigator.share) {
-        await navigator.share({ title, url })
+        // text-only: WhatsApp/etc. stay clickable without duplicating url.
+        await navigator.share({ title, text: message })
       } else if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url)
+        await navigator.clipboard.writeText(message)
       }
     } catch {
       /* cancelled or unsupported */
@@ -861,75 +896,7 @@ function RestaurantPage({
         </div>
       )}
 
-      {/* Compact sticky header: title, breadcrumb, menu search, back (vertically centered) */}
-      <div
-        ref={compactHeaderRef}
-        className={`fixed top-0 left-0 right-0 z-[70] bg-white/95 backdrop-blur-md border-b border-neutral-200/90 transition-all duration-300 ${
-          isTabsSticky
-            ? 'translate-y-0 opacity-100 shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12)]'
-            : '-translate-y-full opacity-0 pointer-events-none'
-        }`}
-      >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <p className="text-xs sm:text-sm font-semibold text-text truncate shrink-0 max-w-[min(34%,11rem)] sm:max-w-[13rem] lg:max-w-[15rem]">
-              {restaurant.restaurant_name}
-            </p>
-            {activeTab === 'menu' && (
-              <div className="flex-1 min-w-0 px-0.5 sm:px-1">
-                <div className="relative flex items-center rounded-lg bg-white border border-neutral-200/90 shadow-sm mx-auto max-w-md">
-                  <i className="fas fa-search text-text-light/50 pl-2.5 text-xs shrink-0" aria-hidden />
-                  <input
-                    type="search"
-                    placeholder="Search dishes by name…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full min-w-0 bg-transparent py-1.5 pl-2 pr-8 text-xs placeholder:text-text-light/45 focus:outline-none"
-                    aria-label="Search menu items"
-                  />
-                  {searchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-2 text-text-light/50 hover:text-purple transition-colors p-0.5"
-                      aria-label="Clear search"
-                    >
-                      <i className="fas fa-times text-xs" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-            {activeTab !== 'menu' && <div className="flex-1 min-w-0" aria-hidden />}
-            <button
-              type="button"
-              onClick={() => router.back()}
-              className="inline-flex shrink-0 items-center gap-1.5 h-8 px-3 rounded-full border border-neutral-300/90 bg-white text-[11px] font-semibold text-text hover:border-purple/40 hover:text-purple hover:bg-purple-light/30 transition-colors"
-            >
-              <i className="fas fa-arrow-left text-[10px]" />
-              Back
-            </button>
-          </div>
-          <nav
-            className="mt-1 text-[10px] sm:text-[11px] text-text-light flex flex-wrap items-center gap-1 min-w-0"
-            aria-label="Breadcrumb"
-          >
-            <a href="/order" className="hover:text-purple transition-colors">
-              Home
-            </a>
-            <span className="text-border/80">/</span>
-            <a href={crumbMiddle.href} className="hover:text-purple transition-colors">
-              {crumbMiddle.label}
-            </a>
-            <span className="text-border/80">/</span>
-            <span className="text-text font-medium truncate max-w-[min(100%,200px)]">
-              {restaurant.restaurant_name}
-            </span>
-          </nav>
-        </div>
-      </div>
-
-      {/* Main header scrolls normally */}
+      {/* Main restaurant header (no extra bar above it) */}
       <div className="bg-white border-b border-neutral-200/90">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-2 pb-2 sm:pt-2.5 sm:pb-2">
           <div className="flex sm:hidden items-center justify-between gap-2 mb-2">
@@ -1005,15 +972,22 @@ function RestaurantPage({
                 Back
               </button>
               {restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
-                <div className="rounded-md bg-mint text-white px-2.5 py-1.5 min-w-[5.25rem] sm:min-w-[5.75rem] text-center shadow-sm">
-                  <div className="text-base sm:text-lg font-bold leading-none tabular-nums">{Number(restaurant.avg_rating).toFixed(1)}★</div>
-                  <div className="text-[9px] font-medium opacity-95 mt-0.5 leading-tight">Store rating</div>
-                  <div className="text-[9px] opacity-90 leading-tight">
-                    {formatReviewCount(Number(restaurant.total_reviews ?? 0))} ratings
+                <div className="flex flex-col items-end gap-0.5 px-0.5 text-right">
+                  <div className="inline-flex items-baseline gap-1 leading-none">
+                    <span className="text-2xl font-bold tabular-nums tracking-tight text-text">
+                      {Number(restaurant.avg_rating).toFixed(1)}
+                    </span>
+                    <i className="fas fa-star text-sm text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.55)]" aria-hidden />
                   </div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-text-light/80">
+                    Store rating
+                  </p>
+                  <p className="text-[11px] text-text-light tabular-nums">
+                    {formatReviewCount(Number(restaurant.total_reviews ?? 0))} ratings
+                  </p>
                 </div>
               ) : (
-                <div className="rounded-md border border-border bg-bg px-2.5 py-2 text-center max-w-[9rem]">
+                <div className="max-w-[9rem] text-right">
                   <p className="text-[11px] sm:text-xs font-semibold text-text leading-tight">New on GatiMitra</p>
                   <p className="text-[10px] text-text-light mt-0.5 leading-tight">Ratings after first orders</p>
                 </div>
@@ -1023,15 +997,22 @@ function RestaurantPage({
 
           <div className="sm:hidden flex justify-end mb-2">
             {restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
-              <div className="rounded-md bg-mint text-white px-2.5 py-1.5 min-w-[5.25rem] text-center shadow-sm">
-                <div className="text-base font-bold leading-none tabular-nums">{Number(restaurant.avg_rating).toFixed(1)}★</div>
-                <div className="text-[9px] font-medium opacity-95 mt-0.5 leading-tight">Store rating</div>
-                <div className="text-[9px] opacity-90 leading-tight">
-                  {formatReviewCount(Number(restaurant.total_reviews ?? 0))} ratings
+              <div className="flex flex-col items-end gap-0.5 px-0.5 text-right">
+                <div className="inline-flex items-baseline gap-1 leading-none">
+                  <span className="text-xl font-bold tabular-nums tracking-tight text-text">
+                    {Number(restaurant.avg_rating).toFixed(1)}
+                  </span>
+                  <i className="fas fa-star text-xs text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.55)]" aria-hidden />
                 </div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-text-light/80">
+                  Store rating
+                </p>
+                <p className="text-[11px] text-text-light tabular-nums">
+                  {formatReviewCount(Number(restaurant.total_reviews ?? 0))} ratings
+                </p>
               </div>
             ) : (
-              <div className="rounded-md border border-border bg-bg px-2.5 py-2 text-center max-w-[9rem]">
+              <div className="max-w-[9rem] text-right">
                 <p className="text-[11px] font-semibold text-text leading-tight">New on GatiMitra</p>
                 <p className="text-[10px] text-text-light mt-0.5 leading-tight">Ratings after first orders</p>
               </div>
@@ -1173,21 +1154,24 @@ function RestaurantPage({
             </div>
 
             {activeTab === 'menu' && (
-              <div className="relative w-full lg:w-60 shrink-0">
+              <div className="relative w-full lg:w-60 shrink-0 lg:hidden">
                 <div className="absolute -inset-0.5 rounded-xl bg-gradient-to-r from-mint/20 via-purple/20 to-pink/15 blur-md opacity-50 pointer-events-none" />
                 <div className="relative flex items-center rounded-xl bg-white border border-neutral-200/90 shadow-sm">
                   <i className="fas fa-search text-text-light/50 pl-2.5 text-xs" />
                   <input
-                    type="search"
+                    type="text"
+                    inputMode="search"
+                    enterKeyHint="search"
                     placeholder="Search dishes by name…"
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => handleMenuSearchChange(e.target.value)}
                     className="w-full bg-transparent py-2 pl-2 pr-8 text-xs placeholder:text-text-light/45 focus:outline-none"
+                    aria-label="Search menu items"
                   />
                   {searchQuery && (
                     <button
                       type="button"
-                      onClick={() => setSearchQuery('')}
+                      onClick={clearMenuSearch}
                       className="absolute right-2 text-text-light/50 hover:text-purple transition-colors p-0.5"
                       aria-label="Clear search"
                     >
@@ -1282,78 +1266,68 @@ function RestaurantPage({
         </div>
       </div>
 
-      {/* —— Fluid metrics strip (no cards) —— */}
-      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 mt-1 mb-5">
-        <div className="flex flex-wrap items-center justify-center lg:justify-start gap-y-2 gap-x-0 sm:gap-x-1 py-3 border-b border-border/40">
-          {(restaurant.avg_preparation_time_minutes != null && restaurant.avg_preparation_time_minutes > 0) && (
-            <>
-              <div className="group flex items-center gap-2 px-3 sm:px-4 py-1 rounded-full hover:bg-white/40 transition-colors duration-300">
-                <i className="fas fa-clock text-mint text-sm group-hover:drop-shadow-[0_0_8px_rgba(22,194,165,0.7)] transition-all" />
-                <div>
-                  <p className="text-[9px] uppercase tracking-[0.15em] text-text-light font-semibold">Prep</p>
-                  <p className="text-sm font-semibold text-text tabular-nums leading-tight">{restaurant.avg_preparation_time_minutes} min</p>
+      {/* —— Fluid metrics strip (scrolls with page — not sticky) —— */}
+      <div ref={overviewStripRef} className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 mt-1 mb-5">
+          <div className="flex flex-wrap items-center justify-center lg:justify-start gap-y-2 gap-x-0 sm:gap-x-1 py-3 border-b border-border/40">
+            {(restaurant.avg_preparation_time_minutes != null && restaurant.avg_preparation_time_minutes > 0) && (
+              <>
+                <div className="group flex items-center gap-2 px-3 sm:px-4 py-1 rounded-full hover:bg-white/40 transition-colors duration-300">
+                  <i className="fas fa-clock text-mint text-sm group-hover:drop-shadow-[0_0_8px_rgba(22,194,165,0.7)] transition-all" />
+                  <div>
+                    <p className="text-[9px] uppercase tracking-[0.15em] text-text-light font-semibold">Prep</p>
+                    <p className="text-sm font-semibold text-text tabular-nums leading-tight">{restaurant.avg_preparation_time_minutes} min</p>
+                  </div>
                 </div>
-              </div>
-              <span className="hidden sm:block w-px h-7 bg-gradient-to-b from-transparent via-border to-transparent" aria-hidden />
-            </>
-          )}
-          {restaurant.min_order_amount != null && (
-            <>
-              <div className="group flex items-center gap-2 px-3 sm:px-4 py-1 rounded-full hover:bg-white/40 transition-colors duration-300">
-                <i className="fas fa-basket-shopping text-purple text-sm group-hover:drop-shadow-[0_0_8px_rgba(75,42,212,0.5)] transition-all" />
-                <div>
-                  <p className="text-[9px] uppercase tracking-[0.15em] text-text-light font-semibold">Min order</p>
-                  <p className="text-sm font-semibold text-text tabular-nums leading-tight">₹{Number(restaurant.min_order_amount)}</p>
+                <span className="hidden sm:block w-px h-7 bg-gradient-to-b from-transparent via-border to-transparent" aria-hidden />
+              </>
+            )}
+            {restaurant.min_order_amount != null && (
+              <>
+                <div className="group flex items-center gap-2 px-3 sm:px-4 py-1 rounded-full hover:bg-white/40 transition-colors duration-300">
+                  <i className="fas fa-basket-shopping text-purple text-sm group-hover:drop-shadow-[0_0_8px_rgba(75,42,212,0.5)] transition-all" />
+                  <div>
+                    <p className="text-[9px] uppercase tracking-[0.15em] text-text-light font-semibold">Min order</p>
+                    <p className="text-sm font-semibold text-text tabular-nums leading-tight">₹{Number(restaurant.min_order_amount)}</p>
+                  </div>
                 </div>
+                <span className="hidden sm:block w-px h-7 bg-gradient-to-b from-transparent via-border to-transparent" aria-hidden />
+              </>
+            )}
+            <div className="group flex items-center gap-2 px-3 sm:px-4 py-1 rounded-full hover:bg-white/40 transition-colors duration-300">
+              <i className="fas fa-star text-gold text-sm group-hover:drop-shadow-[0_0_10px_rgba(255,193,7,0.55)] transition-all" />
+              <div>
+                <p className="text-[9px] uppercase tracking-[0.15em] text-text-light font-semibold">Rating</p>
+                {restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
+                  <p className="text-sm font-semibold text-text tabular-nums leading-tight">
+                    {Number(restaurant.avg_rating).toFixed(1)}{' '}
+                    <span className="text-xs font-normal text-text-light">
+                      · {restaurant.total_reviews ?? 0} reviews
+                    </span>
+                  </p>
+                ) : (
+                  <p className="text-sm font-medium text-text-light leading-tight">Awaiting first reviews</p>
+                )}
               </div>
-              <span className="hidden sm:block w-px h-7 bg-gradient-to-b from-transparent via-border to-transparent" aria-hidden />
-            </>
-          )}
-          <div className="group flex items-center gap-2 px-3 sm:px-4 py-1 rounded-full hover:bg-white/40 transition-colors duration-300">
-            <i className="fas fa-star text-gold text-sm group-hover:drop-shadow-[0_0_10px_rgba(255,193,7,0.55)] transition-all" />
-            <div>
-              <p className="text-[9px] uppercase tracking-[0.15em] text-text-light font-semibold">Rating</p>
-              {restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
-                <p className="text-sm font-semibold text-text tabular-nums leading-tight">
-                  {Number(restaurant.avg_rating).toFixed(1)}{' '}
-                  <span className="text-xs font-normal text-text-light">
-                    · {restaurant.total_reviews ?? 0} reviews
-                  </span>
-                </p>
-              ) : (
-                <p className="text-sm font-medium text-text-light leading-tight">Awaiting first reviews</p>
-              )}
             </div>
           </div>
-        </div>
       </div>
 
       {/* —— Main: asymmetric columns —— */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-24 md:pb-16 pt-2">
-        {activeTab === 'menu' && (
-          <div ref={menuStickySentinelRef} className="h-px w-full pointer-events-none" aria-hidden />
-        )}
         <div
-          ref={menuPinnedShellRef}
-          className={`min-w-0 flex flex-col ${
-            activeTab === 'menu' ? 'lg:flex-row lg:gap-10' : 'gap-4'
-          } ${
-            isMenuPanelPinned
-              ? 'lg:sticky lg:top-[var(--gm-restaurant-sticky-top,4rem)] lg:z-[55] lg:items-start'
-              : 'lg:items-start'
+          className={`min-w-0 [overflow-anchor:none] ${
+            activeTab === 'menu'
+              ? 'flex flex-col lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-10 lg:items-start'
+              : 'flex flex-col gap-4'
           }`}
         >
           {activeTab === 'menu' && (
             <aside
               ref={sidebarRef}
-              className={`lg:w-56 shrink-0 flex flex-col lg:space-y-4 space-y-6 ${
-                isMenuPanelPinned
-                  ? 'lg:max-h-[calc(100vh-var(--gm-restaurant-sticky-top,4rem))] lg:min-h-0 lg:overflow-hidden'
-                  : ''
-              }`}
+              className="order-1 lg:order-none shrink-0 flex flex-col space-y-6 lg:sticky lg:top-0 lg:z-50 lg:self-start lg:w-full lg:bg-bg lg:pb-6 lg:pt-4 lg:pr-2 [overflow-anchor:none]"
             >
               <div className="shrink-0">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2">Diet</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2.5">Diet</p>
                 <button
                   type="button"
                   onClick={() => setLocalVegOnly(!localVegOnly)}
@@ -1378,13 +1352,11 @@ function RestaurantPage({
                   </span>
                 </button>
               </div>
-              <div className={`flex flex-col ${isMenuPanelPinned ? 'min-h-0 flex-1 lg:overflow-hidden' : ''}`}>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2 shrink-0">Browse</p>
+              <div className="flex flex-col min-h-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2.5 shrink-0">Browse</p>
                 <nav
                   ref={sidebarNavRef}
-                  className={`flex flex-row lg:flex-col gap-1 overflow-x-auto pb-1 lg:pb-2 -mx-1 px-1 lg:mx-0 lg:px-0 no-scrollbar lg:overflow-x-hidden ${
-                    isMenuPanelPinned ? 'lg:overflow-y-auto lg:flex-1 lg:min-h-0 lg:pr-1' : ''
-                  }`}
+                  className="flex flex-row lg:flex-col gap-1 overflow-x-auto pb-1 lg:pb-2 -mx-1 px-1 lg:mx-0 lg:px-0 no-scrollbar lg:overflow-x-hidden"
                 >
                   {categories.map((cat) => (
                     <button
@@ -1393,7 +1365,7 @@ function RestaurantPage({
                       onClick={() => setSelectedCategory(cat)}
                       className={`shrink-0 text-left px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 border border-transparent ${
                         selectedCategory === cat
-                          ? 'text-purple bg-purple-light/50 border-border/40 shadow-[0_0_20px_-8px_rgba(75,42,212,0.35)]'
+                          ? 'text-purple bg-purple-light/50 border-border/40'
                           : 'text-text-light hover:text-text hover:bg-white/50'
                       }`}
                     >
@@ -1408,7 +1380,7 @@ function RestaurantPage({
           <main
             className={
               activeTab === 'menu'
-                ? 'flex-1 min-w-0'
+                ? 'order-2 lg:order-none relative z-10 min-w-0 flex-1 isolate'
                 : activeTab === 'photos'
                   ? 'w-full min-w-0'
                   : activeTab === 'info'
@@ -1416,11 +1388,11 @@ function RestaurantPage({
                     : 'w-full min-w-0 max-w-3xl mx-auto'
             }
           >
-            <div className="gm-tab-panel min-w-0 w-full">
+            <div className={`${activeTab === 'menu' ? '' : 'gm-tab-panel '}min-w-0 w-full`}>
               {/* Menu Tab – 100% DB-driven: show menu only if exists, else "Menu Not Available" */}
               <div ref={menuSectionRef}>
                 {activeTab === 'menu' && (
-                  <div className="gm-tab-panel">
+                  <div>
                     {loadingMenu ? (
                       <div className="py-12 text-center text-text-light">
                         <span className="inline-flex items-center gap-2">
@@ -1534,47 +1506,83 @@ function RestaurantPage({
                       </div>
                     )}
 
-                    {/* Selections chrome (fixed) + dish list scroll when pinned */}
-                    <div className="w-full">
+                    {/* Menu header sticks with sidebar; dishes scroll with the page (no forced viewport height) */}
+                    <div
+                      ref={menuColumnRef}
+                      className="w-full min-w-0"
+                      style={
+                        searchQuery.trim() && searchListMinHeightRef.current
+                          ? { minHeight: searchListMinHeightRef.current }
+                          : undefined
+                      }
+                    >
                       <div
                         ref={menuSelectionsHeaderRef}
-                        className="shrink-0 border-b border-border/30 bg-bg pb-4 pt-1"
+                        className="sticky top-0 z-30 w-full shrink-0 isolate bg-bg pb-4 pt-4"
                       >
-                        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-                          <div>
-                            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-purple/80 mb-2">Selections</p>
+                        <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                          <div className="min-w-0 shrink-0">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-purple/80 mb-2.5">
+                              Selections
+                            </p>
                             <h2 className="text-3xl sm:text-4xl font-semibold text-text tracking-tight leading-tight">
-                              <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple via-mint to-pink">Menu</span>
+                              <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple via-mint to-pink">
+                                Menu
+                              </span>
                               <span className="text-text-light font-normal text-lg sm:text-xl ml-2 tabular-nums">
                                 {filteredMenuItems.length} dishes
                               </span>
                             </h2>
                           </div>
-                          <p className="text-sm text-text-light shrink-0">
+
+                          <div className="relative flex w-full min-w-0 flex-1 items-center rounded-lg border border-neutral-200/90 bg-white shadow-sm sm:mx-2 sm:max-w-md">
+                            <i
+                              className="fas fa-search shrink-0 pl-3 text-xs text-text-light/50"
+                              aria-hidden
+                            />
+                            <input
+                              type="text"
+                              inputMode="search"
+                              enterKeyHint="search"
+                              placeholder="Search dishes by name…"
+                              value={searchQuery}
+                              onChange={(e) => handleMenuSearchChange(e.target.value)}
+                              className="w-full min-w-0 bg-transparent py-2 pl-2 pr-8 text-sm placeholder:text-text-light/45 focus:outline-none"
+                              aria-label="Search menu items"
+                            />
+                            {searchQuery ? (
+                              <button
+                                type="button"
+                                onClick={clearMenuSearch}
+                                className="absolute right-2 p-0.5 text-text-light/50 transition-colors hover:text-purple"
+                                aria-label="Clear search"
+                              >
+                                <i className="fas fa-times text-xs" />
+                              </button>
+                            ) : null}
+                          </div>
+
+                          <p className="shrink-0 text-sm text-text-light">
                             {searchQuery.trim() ? (
                               <>
                                 Showing{' '}
-                                <span className="text-text font-medium">
-                                  {filteredMenuItems.length} match{filteredMenuItems.length === 1 ? '' : 'es'} for &ldquo;{searchQuery.trim()}&rdquo;
+                                <span className="font-medium text-text">
+                                  {filteredMenuItems.length} match
+                                  {filteredMenuItems.length === 1 ? '' : 'es'} for &ldquo;
+                                  {searchQuery.trim()}&rdquo;
                                 </span>
                               </>
                             ) : (
                               <>
-                                Showing <span className="text-text font-medium">{selectedCategory}</span>
+                                Showing{' '}
+                                <span className="font-medium text-text">{selectedCategory}</span>
                               </>
                             )}
                           </p>
                         </div>
                       </div>
 
-                      <div
-                        ref={menuScrollContainerRef}
-                        className={
-                          isMenuPanelPinned
-                            ? 'lg:overflow-y-auto lg:overscroll-contain lg:pr-1 [scrollbar-gutter:stable] lg:max-h-[calc(100vh-var(--gm-restaurant-sticky-top,4rem)-var(--gm-menu-selections-h,7.5rem)-0.5rem)]'
-                            : ''
-                        }
-                      >
+                      <div ref={menuScrollContainerRef} className="relative z-0 [overflow-anchor:none]">
                         {filteredMenuItems.length > 0 ? (
                           <ul className="divide-y divide-border/25">
                           {filteredMenuItems.map((item) => (
@@ -1616,7 +1624,13 @@ function RestaurantPage({
                                         </span>
                                       )}
                                       {item.offer_price != null && item.offer_price < item.price && (
-                                        <span className="text-[10px] uppercase tracking-wider text-gold font-bold">Offer</span>
+                                        <span className="text-[10px] tracking-wide text-gold font-bold">
+                                          {Math.max(
+                                            1,
+                                            Math.round((1 - Number(item.offer_price) / Number(item.price)) * 100)
+                                          )}
+                                          % Off - Great Deals
+                                        </span>
                                       )}
                                     </div>
                                     {item.category ? (
@@ -1655,7 +1669,7 @@ function RestaurantPage({
                             type="button"
                             onClick={() => {
                               setSelectedCategory('All')
-                              setSearchQuery('')
+                              clearMenuSearch()
                               setLocalVegOnly(false)
                             }}
                             className="text-sm font-semibold text-purple hover:text-mint transition-colors underline underline-offset-4 decoration-border hover:decoration-mint"
@@ -1762,7 +1776,7 @@ function RestaurantPage({
                 )}
               </div>
 
-              {/* Reviews Tab - real rating when available, no dummy content */}
+              {/* Reviews Tab - ratings + written reviews from merchant_store_ratings */}
               <div ref={reviewsSectionRef}>
                 {activeTab === 'reviews' && (
                   <div className="gm-tab-panel max-w-3xl">
@@ -1792,9 +1806,58 @@ function RestaurantPage({
                         ))}
                       </div>
                     )}
-                    <p className="text-text-light text-sm leading-relaxed border-t border-border/25 pt-8">
-                      Individual written reviews will appear here when the service enables them.
-                    </p>
+
+                    {(restaurant.written_reviews?.length ?? 0) > 0 ? (
+                      <ul className="space-y-6 border-t border-border/25 pt-8">
+                        {restaurant.written_reviews!.map((review) => (
+                          <li key={review.id} className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex items-center gap-0.5" aria-label={`${review.rating} out of 5`}>
+                                {[1, 2, 3, 4, 5].map((i) => (
+                                  <i
+                                    key={i}
+                                    className={`fas fa-star text-xs ${i <= review.rating ? 'text-gold' : 'text-border/40'}`}
+                                    aria-hidden
+                                  />
+                                ))}
+                              </div>
+                              {review.is_verified ? (
+                                <span className="text-[10px] font-semibold uppercase tracking-wide text-mint">
+                                  Verified
+                                </span>
+                              ) : null}
+                              {review.created_at ? (
+                                <span className="text-xs text-text-light">{formatReviewDate(review.created_at)}</span>
+                              ) : null}
+                            </div>
+                            {review.review_title ? (
+                              <p className="text-sm font-semibold text-text tracking-tight">{review.review_title}</p>
+                            ) : null}
+                            <p className="text-sm text-text-light leading-relaxed whitespace-pre-wrap">
+                              {review.review_text}
+                            </p>
+                            {review.merchant_response ? (
+                              <div className="mt-2 rounded-lg border border-border/30 bg-white/60 px-3 py-2.5">
+                                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-purple/80 mb-1">
+                                  Restaurant reply
+                                </p>
+                                <p className="text-sm text-text leading-relaxed whitespace-pre-wrap">
+                                  {review.merchant_response}
+                                </p>
+                              </div>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : restaurant.avg_rating != null && restaurant.avg_rating > 0 ? (
+                      <p className="text-text-light text-sm leading-relaxed border-t border-border/25 pt-8">
+                        Customers have rated this store, but no written reviews are available yet.
+                      </p>
+                    ) : (
+                      <p className="text-text-light text-sm leading-relaxed border-t border-border/25 pt-8">
+                        No ratings yet for this store.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -1947,10 +2010,10 @@ function RestaurantPage({
         </div>
       </div>
 
-      {/* Fixed download module (Browse menu position) - menu tab only */}
-      <div className={`${activeTab === 'menu' ? 'hidden md:block' : 'hidden'} fixed bottom-6 right-6 z-40`}>
+      {/* Fixed download module — above sticky overview so its border never cuts the card */}
+      <div className={`${activeTab === 'menu' ? 'hidden md:block' : 'hidden'} fixed bottom-6 right-6 z-[80]`}>
         {floatingDownloadExpanded ? (
-          <div className="relative w-[304px] rounded-2xl overflow-hidden border border-neutral-900/10 bg-[#171a20] text-white shadow-[0_26px_52px_-22px_rgba(0,0,0,0.6)]">
+          <div className="relative w-[320px] rounded-2xl overflow-hidden border border-neutral-900/10 bg-[#171a20] shadow-[0_26px_52px_-22px_rgba(0,0,0,0.65)]">
             <button
               type="button"
               onClick={() => setFloatingDownloadExpanded(false)}
@@ -1959,31 +2022,69 @@ function RestaurantPage({
             >
               <X className="h-4 w-4" strokeWidth={2.5} />
             </button>
-            <div className="grid grid-cols-[1.8fr_0.82fr] min-h-[132px]">
-              <div className="p-5 flex flex-col justify-between">
-                <p className="text-[14px] leading-[1.15] font-semibold tracking-tight pl-8 pt-0.5">
+            <div className="grid grid-cols-[1.65fr_1fr] min-h-[168px] isolate">
+              <div className="relative z-[1] flex flex-col justify-between bg-[#171a20] p-5 pr-3 text-white">
+                <p className="pl-8 pt-0.5 text-[14px] font-semibold leading-[1.35] tracking-tight">
                   For a better experience, please order through our mobile app
                 </p>
                 <button
                   type="button"
                   onClick={() => handleOpenAppDownloadPopup()}
-                  className="mt-3 inline-flex w-fit items-center justify-center rounded-lg bg-white text-neutral-900 text-sm font-semibold px-4 py-2 hover:bg-neutral-100 transition-colors"
+                  className="gm-promo-download-btn mt-3 inline-flex w-fit items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-semibold text-neutral-900 transition-colors hover:bg-neutral-100"
                 >
                   Download the App
                 </button>
               </div>
-              <div className="relative bg-gradient-to-b from-mint to-[#27d8b9] flex items-end justify-center">
-                <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-black/70" />
-                <div className="w-[78%] h-[90%] rounded-t-[16px] border-2 border-black/70 bg-[#2ee7c6] flex items-center justify-center overflow-hidden">
-                  <div className="inline-flex rounded-md bg-black shadow-[0_4px_14px_-6px_rgba(0,0,0,0.55)]">
-                    <GatiMitraLogo
-                      alt="GatiMitra"
-                      width={132}
-                      height={56}
-                      className="w-[84px] h-auto object-contain drop-shadow-[0_2px_5px_rgba(0,0,0,0.65)]"
-                    />
-                  </div>
-                </div>
+
+              <div className="relative flex min-h-[168px] items-center justify-center overflow-hidden bg-[#18d4b3]">
+                {FLOATING_PROMO_SLIDES.map((slide, i) => {
+                  const active = floatingPromoSlide === i
+                  const typedLines =
+                    active && slide.kind === 'text'
+                      ? floatingPromoTyped.split('\n')
+                      : []
+                  return (
+                    <div
+                      key={i}
+                      className={`absolute inset-0 z-[2] flex items-center justify-center px-2 ${
+                        active ? 'gm-promo-slide-in' : 'gm-promo-slide-out'
+                      }`}
+                      aria-hidden={!active}
+                    >
+                      {slide.kind === 'image' ? (
+                        <div
+                          className={`relative flex h-full w-full items-center justify-center ${
+                            active ? `gm-promo-img gm-promo-img--${slide.anim}` : ''
+                          }`}
+                        >
+                          <img
+                            key={active ? `promo-img-${i}-${floatingPromoSlide}` : `promo-img-${i}`}
+                            src={slide.src}
+                            alt=""
+                            className="h-[152px] w-auto max-w-full object-contain drop-shadow-[0_10px_22px_rgba(0,0,0,0.22)]"
+                            loading="eager"
+                            decoding="async"
+                          />
+                        </div>
+                      ) : (
+                        <p className="min-h-[2.6em] w-full text-center text-[11px] font-extrabold leading-[1.25] tracking-wide text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.28)] [font-family:var(--font-montserrat),system-ui,sans-serif]">
+                          {active
+                            ? typedLines.map((line, li) => (
+                                <span key={li} className="block">
+                                  {line}
+                                  {li === typedLines.length - 1 ? (
+                                    <span className="gm-promo-caret" aria-hidden>
+                                      |
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ))
+                            : null}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -2011,27 +2112,23 @@ function RestaurantPage({
               <i className="fas fa-xmark" />
             </button>
 
-            <div className="grid grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)] gap-0">
-              <div className="hidden md:flex items-center justify-center bg-gradient-to-br from-neutral-50 to-white p-8">
-                <div className="relative h-[360px] w-[190px] rounded-[32px] border border-neutral-200 bg-white shadow-[0_16px_45px_-18px_rgba(0,0,0,0.45)]">
-                  <div className="absolute top-2 left-1/2 -translate-x-1/2 w-16 h-1.5 rounded-full bg-neutral-300" />
-                  <div className="absolute inset-3 rounded-[24px] bg-gradient-to-b from-mint to-[#22d0b5] flex items-center justify-center p-3">
-                    <GatiMitraLogo
-                      alt="GatiMitra logo"
-                      width={130}
-                      height={56}
-                      className="w-full h-auto object-contain drop-shadow-[0_3px_8px_rgba(0,0,0,0.35)]"
-                    />
-                  </div>
-                </div>
+            <div className="grid grid-cols-1 md:grid-cols-[340px_minmax(0,1fr)] gap-0 items-stretch">
+              <div className="hidden md:flex self-stretch items-center justify-center bg-[#18d4b3] px-4 py-5 md:px-5 md:py-6 min-h-[480px]">
+                <img
+                  src="/img/dnscreen.png"
+                  alt="GatiMitra app preview"
+                  className="h-full w-full max-h-[460px] max-w-[320px] object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,0.22)]"
+                  loading="eager"
+                  decoding="async"
+                />
               </div>
 
               <div className="p-6 md:p-8">
                 <h3 className="text-3xl font-semibold tracking-tight">Get the GatiMitra App</h3>
                 <p className="mt-3 text-sm text-text-light max-w-xl">
                   {downloadContextItem
-                    ? `To order "${downloadContextItem}", A download link is on the way. Open it on your phone to install the app .`
-                    : 'A download link is on the way. Open it on your phone to install the app .'}
+                    ? `To order "${downloadContextItem}", please use our mobile app for the best experience.`
+                    : 'For a better experience, please order through our mobile app.'}
                 </p>
 
                 <div className="mt-6 flex items-center gap-6 text-sm">
@@ -2149,14 +2246,207 @@ function RestaurantPage({
           }
         }
 
+        /* Image enters (unique per slot) then slow fade — no clip-path (avoids PNG layer seams) */
+        @keyframes gm-promo-img-rise {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 22px, 0) scale(0.94);
+          }
+          22% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+          }
+          68% {
+            opacity: 1;
+            transform: translate3d(0, -2px, 0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, -8px, 0) scale(0.98);
+          }
+        }
+
+        @keyframes gm-promo-img-zoom {
+          0% {
+            opacity: 0;
+            transform: scale(0.78);
+          }
+          24% {
+            opacity: 1;
+            transform: scale(1.03);
+          }
+          40% {
+            transform: scale(1);
+          }
+          68% {
+            opacity: 1;
+            transform: scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(1.06);
+          }
+        }
+
+        @keyframes gm-promo-img-tilt {
+          0% {
+            opacity: 0;
+            transform: rotate(-8deg) scale(0.9) translate3d(-10px, 8px, 0);
+          }
+          26% {
+            opacity: 1;
+            transform: rotate(1.5deg) scale(1.02) translate3d(0, 0, 0);
+          }
+          40% {
+            transform: rotate(0deg) scale(1);
+          }
+          68% {
+            opacity: 1;
+            transform: rotate(0deg) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: rotate(5deg) scale(0.96) translate3d(8px, -4px, 0);
+          }
+        }
+
+        @keyframes gm-promo-img-drop {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, -26px, 0) scale(0.92);
+          }
+          20% {
+            opacity: 1;
+            transform: translate3d(0, 4px, 0) scale(1.02);
+          }
+          32% {
+            transform: translate3d(0, 0, 0) scale(1);
+          }
+          68% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, 12px, 0) scale(0.97);
+          }
+        }
+
+        @keyframes gm-promo-img-soft {
+          0% {
+            opacity: 0;
+            transform: scale(1.08);
+            filter: blur(6px);
+          }
+          28% {
+            opacity: 1;
+            transform: scale(1);
+            filter: blur(0);
+          }
+          68% {
+            opacity: 1;
+            transform: scale(1);
+            filter: blur(0);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(0.96);
+            filter: blur(4px);
+          }
+        }
+
+        .gm-promo-img img {
+          will-change: transform, opacity, filter;
+        }
+
+        .gm-promo-img--rise img {
+          animation: gm-promo-img-rise 4.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        .gm-promo-img--zoom img {
+          animation: gm-promo-img-zoom 4.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        .gm-promo-img--tilt img {
+          animation: gm-promo-img-tilt 4.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        .gm-promo-img--drop img {
+          animation: gm-promo-img-drop 4.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        .gm-promo-img--soft img {
+          animation: gm-promo-img-soft 4.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        @keyframes gm-promo-caret-blink {
+          0%,
+          45% {
+            opacity: 1;
+          }
+          50%,
+          100% {
+            opacity: 0;
+          }
+        }
+
+        .gm-promo-caret {
+          display: inline-block;
+          margin-left: 1px;
+          font-weight: 700;
+          animation: gm-promo-caret-blink 0.9s steps(1) infinite;
+        }
+
+        @keyframes gm-promo-download-pulse {
+          0%,
+          100% {
+            transform: scale(1);
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.35);
+          }
+          40% {
+            transform: scale(1.04);
+            box-shadow: 0 0 0 8px rgba(255, 255, 255, 0);
+          }
+          70% {
+            transform: scale(1.015);
+            box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+          }
+        }
+
+        .gm-promo-download-btn {
+          animation: gm-promo-download-pulse 2.4s ease-in-out infinite;
+          will-change: transform, box-shadow;
+        }
+
+        .gm-promo-download-btn:hover {
+          animation-play-state: paused;
+          transform: scale(1.03);
+        }
+
+        .gm-promo-slide-in {
+          opacity: 1;
+          transform: none;
+          filter: none;
+          pointer-events: auto;
+          transition: opacity 0.45s ease;
+        }
+
+        .gm-promo-slide-out {
+          opacity: 0;
+          transform: none;
+          filter: none;
+          pointer-events: none;
+          transition: opacity 0.35s ease;
+        }
+
+        /* Opacity-only: a lingering transform on .gm-tab-panel breaks position:sticky
+           against the viewport (overlap at end of scroll). */
         @keyframes gm-tab-in {
           from {
             opacity: 0;
-            transform: translateY(10px);
           }
           to {
             opacity: 1;
-            transform: translateY(0);
           }
         }
 

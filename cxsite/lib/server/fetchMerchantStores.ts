@@ -7,6 +7,7 @@ import {
   filterStoreRowsByUserGeo,
   haversineKm,
 } from '@/lib/server/merchantStoreGeo'
+import { attachStoreRatingsToRows } from '@/lib/server/fetchStoreRatings'
 
 const PAN_INDIA_CAP = 500
 const BBOX_DEGREE_APPROX = 0.1
@@ -165,8 +166,8 @@ async function fetchNearbyViaRpc(
   }
 
   const rows = (data ?? []) as Array<Record<string, unknown>>
-  return rows.map((row) =>
-    mapStoreToRestaurant(row, row.distance_km as number | null)
+  return attachStoreRatingsToRows(
+    rows.map((row) => mapStoreToRestaurant(row, row.distance_km as number | null))
   )
 }
 
@@ -194,15 +195,17 @@ async function fetchNearbyViaBbox(
   if (error) throw error
 
   const filtered = filterStoreRowsByUserGeo(data ?? [], userLat, userLon, radiusKm)
-  return filtered.map((row: Record<string, unknown>) => {
-    const lat = Number(row.latitude)
-    const lon = Number(row.longitude)
-    const distance_km =
-      Number.isFinite(lat) && Number.isFinite(lon)
-        ? Math.round(haversineKm(userLat, userLon, lat, lon) * 10) / 10
-        : null
-    return mapStoreToRestaurant(row, distance_km)
-  })
+  return attachStoreRatingsToRows(
+    filtered.map((row: Record<string, unknown>) => {
+      const lat = Number(row.latitude)
+      const lon = Number(row.longitude)
+      const distance_km =
+        Number.isFinite(lat) && Number.isFinite(lon)
+          ? Math.round(haversineKm(userLat, userLon, lat, lon) * 10) / 10
+          : null
+      return mapStoreToRestaurant(row, distance_km)
+    })
+  )
 }
 
 export async function fetchPanIndiaStores(): Promise<WebRestaurantRow[]> {
@@ -216,8 +219,8 @@ export async function fetchPanIndiaStores(): Promise<WebRestaurantRow[]> {
     .limit(PAN_INDIA_CAP)
 
   if (error) throw error
-  return (data ?? []).map((row: Record<string, unknown>) =>
-    mapStoreToRestaurant(row, null)
+  return attachStoreRatingsToRows(
+    (data ?? []).map((row: Record<string, unknown>) => mapStoreToRestaurant(row, null))
   )
 }
 

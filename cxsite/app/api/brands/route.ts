@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
+export const dynamic = 'force-dynamic'
+
 const DEFAULT_RADIUS_KM = 10
 const MAX_RADIUS_KM = 50
 /** ~1 degree lat ≈ 111 km; for 50 km use ~0.45 degree bounding box */
@@ -102,7 +104,7 @@ function mapRowsToBrands(rows: MerchantParentRow[]) {
  */
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
+    const searchParams = request.nextUrl.searchParams
     const latParam = searchParams.get('lat')
     const lonParam = searchParams.get('lon')
     const cityParam = searchParams.get('city')?.trim()

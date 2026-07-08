@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { GATIMITRA_TAGLINE } from '@/lib/brandTagline'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import ParcelServiceControl from '@/components/common/ParcelServiceControl'
 import {
   Home,
   UtensilsCrossed,
@@ -35,14 +36,16 @@ type LinkItem = {
   icon: React.ReactNode;
   text: string;
   href: string;
+  /** When true, render geo-gated Parcel control instead of a normal link. */
+  parcelGated?: boolean;
 };
 
 export default function Footer() {
   const quickLinks: LinkItem[] = [
     { icon: <Home size={14} />, text: "Home", href: "/" },
     { icon: <UtensilsCrossed size={14} />, text: "Food Delivery", href: "/order" },
-    { icon: <Truck size={14} />, text: "Parcel Delivery", href: "/courier" },
-    { icon: <Users size={14} />, text: "Person Delivery", href: "/ride" },
+    { icon: <Truck size={14} />, text: "Parcel Delivery", href: "/courier", parcelGated: true },
+    { icon: <Users size={14} />, text: "Ride and Cab Services", href: "/ride" },
     { icon: <Tag size={14} />, text: "Deals & Offers", href: "/restaurants" },
     { icon: <MapPin size={14} />, text: "Around You", href: "/india/All/Stores" },
   ];
@@ -229,7 +232,7 @@ function FooterColumn({ title, children }: { title: string; children: React.Reac
   );
 }
 
-function FooterLink({ icon, text, href }: LinkItem) {
+function FooterLink({ icon, text, href, parcelGated }: LinkItem) {
   const isExternal = /^https?:\/\//.test(href);
   const className =
     "text-[#b0b0d0] no-underline transition-all flex items-center text-[14px] font-medium hover:text-emerald-400 hover:translate-x-1";
@@ -243,7 +246,15 @@ function FooterLink({ icon, text, href }: LinkItem) {
   );
   return (
     <li>
-      {isExternal ? (
+      {parcelGated ? (
+        <ParcelServiceControl
+          badgePlacement="inline"
+          className={className}
+          disabledClassName="cursor-not-allowed opacity-45 hover:text-[#b0b0d0] hover:translate-x-0"
+        >
+          {content}
+        </ParcelServiceControl>
+      ) : isExternal ? (
         <a href={href} target="_blank" rel="noopener noreferrer" className={className}>
           {content}
         </a>

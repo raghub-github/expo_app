@@ -1,6 +1,6 @@
 'use client'
 
-import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import Image from 'next/image'
 
 interface AppDownloadModalProps {
   isOpen: boolean
@@ -24,27 +24,32 @@ export default function AppDownloadModal({
 
   return (
     <div className="fixed inset-0 z-[1100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl border border-white/20 bg-white shadow-[0_35px_90px_-25px_rgba(0,0,0,0.55)]">
+      <div className="relative w-full max-w-4xl overflow-hidden rounded-2xl border border-white/20 bg-white shadow-[0_35px_90px_-25px_rgba(0,0,0,0.55)]">
         <button
           type="button"
           onClick={onClose}
           aria-label="Close app download popup"
-          className="absolute right-7 top-6 text-gray-500 hover:text-gray-800 transition-colors"
+          className="absolute right-7 top-6 z-10 text-gray-500 hover:text-gray-800 transition-colors"
         >
           <i className="fas fa-times text-lg"></i>
         </button>
 
-        <div className="grid grid-cols-1 md:grid-cols-[240px_minmax(0,1fr)]">
-          <div className="hidden md:flex items-center justify-center bg-gradient-to-b from-[#e8fffa] to-[#f8f9ff] p-6 border-r border-gray-100">
-            <div className="w-[160px] h-[320px] rounded-[28px] border border-gray-200 bg-white shadow-[0_16px_44px_-20px_rgba(0,0,0,0.4)] p-3">
-              <div className="w-16 h-1.5 rounded-full bg-gray-300 mx-auto mb-3"></div>
-              <div className="h-full rounded-[20px] bg-gradient-to-br from-[#16c2a5] to-[#4b2ad4] flex items-center justify-center p-4">
-                <GatiMitraLogo alt="GatiMitra" className="w-full h-auto object-contain" />
-              </div>
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-[360px_minmax(0,1fr)] md:items-stretch">
+          {/* Same image as hero — sized with width/height so nothing gets clipped */}
+          <div className="hidden md:flex items-center justify-center bg-gradient-to-b from-[#e8fffa] to-[#f8f9ff] border-r border-gray-100 p-5">
+            <Image
+              src="/img/ride.png"
+              alt="GatiMitra ride app screens"
+              width={615}
+              height={881}
+              className="h-auto w-full max-h-[480px] object-contain"
+              sizes="360px"
+              unoptimized
+              priority
+            />
           </div>
 
-          <div className="p-6 md:p-8">
+          <div className="flex flex-col justify-center p-6 md:p-8">
             <h3 className="text-3xl font-bold text-gray-900 pr-8">{title}</h3>
             <p className="mt-3 text-sm text-gray-600 leading-relaxed max-w-xl">{description}</p>
 
@@ -82,18 +87,9 @@ export default function AppDownloadModal({
                 </p>
               </div>
             </div>
-
-            <button
-              type="button"
-              onClick={onClose}
-              className="mt-5 text-sm text-gray-600 hover:text-gray-900 transition-colors"
-            >
-              Maybe later
-            </button>
           </div>
         </div>
       </div>
     </div>
   )
 }
-

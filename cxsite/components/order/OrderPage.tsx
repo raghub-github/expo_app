@@ -9,6 +9,7 @@ import { getRestaurantGeoQueryString } from '@/lib/buildRestaurantGeoQuery'
 import CategoriesSection from './CategoriesSection'
 import RestaurantDetailPage from './RestaurantDetailPage'
 import Footer from '@/components/layout/Footer'
+import type { UserAppCategoryTile } from '@/lib/server/fetchUserAppCategories'
 
 export interface CartItem {
   id: string
@@ -19,7 +20,11 @@ export interface CartItem {
   restaurantName: string
 }
 
-export default function OrderPage() {
+export default function OrderPage({
+  initialCategories = [],
+}: {
+  initialCategories?: UserAppCategoryTile[]
+}) {
   const router = useRouter()
   const { location } = useLocationContext()
   const locationCommitted = location.locationCommittedByUser === true
@@ -68,6 +73,7 @@ export default function OrderPage() {
   return (
     <>
       <CategoriesSection
+        initialCategories={initialCategories}
         onViewRestaurants={() => {
           if (!locationCommitted) {
             router.push('/restaurants')

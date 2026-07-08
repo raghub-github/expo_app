@@ -64,9 +64,9 @@ export const metadata: Metadata = {
     description: "India's Lowest Commission Delivery Platform",
   },
   icons: {
-    icon: "/img/fav.png",
-    shortcut: "/img/fav.png",
-    apple: "/img/fav.png",
+    icon: [{ url: "/img/fav.png", type: "image/png", sizes: "512x512" }],
+    shortcut: [{ url: "/img/fav.png", type: "image/png" }],
+    apple: [{ url: "/img/fav.png", type: "image/png", sizes: "180x180" }],
   },
 };
 

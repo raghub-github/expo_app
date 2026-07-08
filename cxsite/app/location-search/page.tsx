@@ -1,8 +1,8 @@
 import type { Metadata } from 'next'
-import Link from 'next/link'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
 import LocationSearchBar from '@/components/location-search/LocationSearchBar'
+import LocationSearchCategories from '@/components/location-search/LocationSearchCategories'
 import { fullPageTitle, pageTitleSegment } from '@/lib/pageTitle'
 import { GATIMITRA_TAGLINE } from '@/lib/brandTagline'
 
@@ -16,33 +16,6 @@ export const metadata: Metadata = {
       'Set your location and discover food delivery, parcel delivery, and ride services near you.',
   },
 }
-
-const categories = [
-  {
-    title: 'Food Delivery',
-    href: '/order',
-    icon: 'fa-utensils',
-    short: 'Order food',
-  },
-  {
-    title: 'Parcel',
-    href: '/courier',
-    icon: 'fa-shipping-fast',
-    short: 'Send parcels',
-  },
-  {
-    title: 'Ride',
-    href: '/ride',
-    icon: 'fa-motorcycle',
-    short: 'Book a ride',
-  },
-  {
-    title: 'Near Me',
-    href: '/restaurants',
-    icon: 'fa-map-marker-alt',
-    short: 'Explore nearby',
-  },
-]
 
 export default function LocationSearchPage() {
   return (
@@ -79,23 +52,7 @@ export default function LocationSearchPage() {
             <LocationSearchBar />
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-            {categories.map((cat) => (
-              <Link
-                key={cat.href}
-                href={cat.href}
-                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-white/90 backdrop-blur shadow-md border border-gray-100 hover:shadow-lg hover:border-purple/20 transition-all"
-              >
-                <div className="w-12 h-12 rounded-xl bg-purple-light flex items-center justify-center mb-3">
-                  <i className={`fas ${cat.icon} text-purple text-xl`} />
-                </div>
-                <span className="font-semibold text-text text-sm md:text-base text-center">
-                  {cat.title}
-                </span>
-                <span className="text-xs text-text-light mt-0.5">{cat.short}</span>
-              </Link>
-            ))}
-          </div>
+          <LocationSearchCategories />
         </div>
       </section>
       <Footer />

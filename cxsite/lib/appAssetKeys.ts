@@ -17,4 +17,12 @@ export const CX = {
     promoRideOffer1: 'home.promo_ride_offer_1',
     promoRideOffer2: 'home.promo_ride_offer_2',
   },
+  ride: {
+    banner: 'ride.banner',
+    bottomBanner: 'ride.bottom_banner',
+    bike: 'ride.bike',
+    auto: 'ride.auto',
+    cab: 'ride.cab',
+    cabPremium: 'ride.cab_premium',
+  },
 } as const

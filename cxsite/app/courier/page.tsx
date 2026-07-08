@@ -1,4 +1,5 @@
 import ParcelServicePage from '@/components/parcel/ParcelServicePage'
+import ParcelServiceGate from '@/components/parcel/ParcelServiceGate'
 import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata = {
@@ -7,6 +8,10 @@ export const metadata = {
 }
 
 export default function Courier() {
-  return <ParcelServicePage />
+  return (
+    <ParcelServiceGate>
+      <ParcelServicePage />
+    </ParcelServiceGate>
+  )
 }
 

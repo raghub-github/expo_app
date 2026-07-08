@@ -4,11 +4,13 @@ import { appStaticAssets } from '@/db/appStaticAssetsTable'
 import { getDb, isCustomersDbConfigured } from '@/lib/db'
 import { resolveAppAssetUrl } from '@/lib/resolveAppAssetUrl'
 import { readUpstreamJson } from '@/lib/server/safeUpstreamJson'
+import { getGatimitraBackendUrl } from '@/lib/server/gatimitraBackendUrl'
 
 export const dynamic = 'force-dynamic'
 
-const BACKEND_URL =
-  process.env.GATIMITRA_BACKEND_API_URL?.replace(/\/$/, '') || 'https://api.gatimitra.com'
+const BACKEND_URL = getGatimitraBackendUrl()
+const UPSTREAM_TIMEOUT_MS = process.env.NODE_ENV === 'production' ? 12_000 : 5_000
+const DB_TIMEOUT_MS = process.env.NODE_ENV === 'production' ? 8_000 : 3_000
 
 type AssetItem = {
   id: string
@@ -20,7 +22,22 @@ type AssetItem = {
   sortOrder: number
 }
 
-function buildPayload(items: AssetItem[]) {
+type Payload = {
+  app: 'customer'
+  assets: Record<string, AssetItem>
+  items: AssetItem[]
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __cxsite_app_assets_cache:
+    | { at: number; payload: Payload }
+    | undefined
+}
+
+const MEMORY_TTL_MS = 60_000
+
+function buildPayload(items: AssetItem[]): Payload {
   const assets: Record<string, AssetItem> = {}
   for (const item of items) {
     const shortKey = item.id.startsWith('customer.')
@@ -28,10 +45,10 @@ function buildPayload(items: AssetItem[]) {
       : item.id
     assets[shortKey] = item
   }
-  return { app: 'customer' as const, assets, items }
+  return { app: 'customer', assets, items }
 }
 
-async function fetchFromDatabase(): Promise<ReturnType<typeof buildPayload> | null> {
+async function fetchFromDatabase(): Promise<Payload | null> {
   if (!isCustomersDbConfigured()) return null
   const db = getDb()
   if (!db) return null
@@ -64,6 +81,7 @@ async function fetchFromDatabase(): Promise<ReturnType<typeof buildPayload> | nu
       }
     })
 
+    if (items.length === 0) return null
     return buildPayload(items)
   } catch (err) {
     console.error('[GET /api/app-assets/customer] DB fallback failed:', err)
@@ -71,11 +89,11 @@ async function fetchFromDatabase(): Promise<ReturnType<typeof buildPayload> | nu
   }
 }
 
-async function fetchFromBackend(): Promise<ReturnType<typeof buildPayload> | null> {
+async function fetchFromBackend(): Promise<Payload | null> {
   try {
     const upstream = await fetch(`${BACKEND_URL}/v1/app-assets/customer`, {
       cache: 'no-store',
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
     if (!upstream.ok) return null
     const data = await readUpstreamJson<{
@@ -83,25 +101,39 @@ async function fetchFromBackend(): Promise<ReturnType<typeof buildPayload> | nul
       assets?: Record<string, AssetItem>
       items?: AssetItem[]
     }>(upstream)
-    if (!data?.assets || !data.items) return null
+    if (!data?.assets || !data.items?.length) return null
     return { app: 'customer', assets: data.assets, items: data.items }
   } catch {
     return null
   }
 }
 
-/** Public — same payload as GET /v1/app-assets/customer (DB first, then backend). */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ])
+}
+
+/** Public — same payload as GET /v1/app-assets/customer (cached, DB+backend race). */
 export async function GET() {
-  const fromDb = await fetchFromDatabase()
-  if (fromDb) {
-    return NextResponse.json(fromDb, {
+  const cached = globalThis.__cxsite_app_assets_cache
+  if (cached && Date.now() - cached.at < MEMORY_TTL_MS) {
+    return NextResponse.json(cached.payload, {
       headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' },
     })
   }
 
-  const fromBackend = await fetchFromBackend()
-  if (fromBackend) {
-    return NextResponse.json(fromBackend, {
+  // Prefer whichever answers first so logos aren't blocked by a saturated DB pool.
+  const [fromDb, fromBackend] = await Promise.all([
+    withTimeout(fetchFromDatabase(), DB_TIMEOUT_MS),
+    fetchFromBackend(),
+  ])
+
+  const payload = fromDb ?? fromBackend
+  if (payload) {
+    globalThis.__cxsite_app_assets_cache = { at: Date.now(), payload }
+    return NextResponse.json(payload, {
       headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' },
     })
   }

@@ -32,12 +32,20 @@ import { getMagicpinPathAfterLocationSelect, mergeLocationNavigationUrl } from '
 import type { LocationItem } from '@/components/location-search/LocationPopup'
 import { useLocationPromptAutoOpen } from '@/lib/hooks/useLocationPromptAutoOpen'
 
+const FOOD_CATEGORIES_CACHE_KEY = 'gatimitra_food_categories_v2'
+const TOP_PICKS_PER_PAGE = 14
+const TOP_PICKS_COLS = 7
+
+type FoodCategoryTile = { id: string; name: string; img: string | null }
+
 interface CategoriesSectionProps {
   onViewRestaurants: () => void
   vegOnly: boolean
   onAddToCart?: (item: CartItem) => void
   /** When user committed location: loading / no restaurants in 10km — controls main body only. */
   serviceAreaMode?: OrderServiceAreaMode
+  /** SSR-seeded Top Picks from `user_app_category` (same as customer app). */
+  initialCategories?: FoodCategoryTile[]
 }
 
 interface PriceCard {
@@ -56,12 +64,6 @@ interface RestaurantWithItems {
   items: Array<{ name: string; price: number; image: string }>
 }
 
-const FOOD_CATEGORIES_CACHE_KEY = 'gatimitra_food_categories_v2'
-const TOP_PICKS_PER_PAGE = 14
-const TOP_PICKS_COLS = 7
-
-type FoodCategoryTile = { id: string; name: string; img: string | null }
-
 function splitTopPicksRows(items: FoodCategoryTile[]): [FoodCategoryTile[], FoodCategoryTile[]] {
   return [items.slice(0, TOP_PICKS_COLS), items.slice(TOP_PICKS_COLS, TOP_PICKS_PER_PAGE)]
 }
@@ -70,10 +72,12 @@ function TopPickCategoryCard({
   category,
   locationQueryString,
   variant = 'desktop',
+  priority = false,
 }: {
   category: FoodCategoryTile
   locationQueryString?: string
   variant?: 'desktop' | 'mobile'
+  priority?: boolean
 }) {
   const [imgBroken, setImgBroken] = useState(false)
   const src = category.img ? resolveAppAssetUrl(category.img) : null
@@ -89,13 +93,16 @@ function TopPickCategoryCard({
       >
         <div className="top-picks-circle">
           {showImage ? (
-            <img
-              src={src!}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              onError={() => setImgBroken(true)}
-            />
+            <div className="top-picks-circle__img">
+              <img
+                src={src!}
+                alt=""
+                loading={priority ? 'eager' : 'lazy'}
+                fetchPriority={priority ? 'high' : 'auto'}
+                decoding="async"
+                onError={() => setImgBroken(true)}
+              />
+            </div>
           ) : (
             <span className="text-2xl font-bold text-[#FF6B6B] select-none sm:text-3xl">
               {firstLetter.toUpperCase()}
@@ -115,13 +122,16 @@ function TopPickCategoryCard({
     >
       <div className="top-picks-circle">
         {showImage ? (
-          <img
-            src={src!}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            onError={() => setImgBroken(true)}
-          />
+          <div className="top-picks-circle__img">
+            <img
+              src={src!}
+              alt=""
+              loading={priority ? 'eager' : 'lazy'}
+              fetchPriority={priority ? 'high' : 'auto'}
+              decoding="async"
+              onError={() => setImgBroken(true)}
+            />
+          </div>
         ) : (
           <span className="text-3xl font-bold text-[#FF6B6B] select-none">
             {firstLetter.toUpperCase()}
@@ -136,9 +146,11 @@ function TopPickCategoryCard({
 function TopPicksPageGrid({
   items,
   locationQueryString,
+  priority = false,
 }: {
   items: FoodCategoryTile[]
   locationQueryString?: string
+  priority?: boolean
 }) {
   const [row1, row2] = splitTopPicksRows(items)
 
@@ -152,6 +164,7 @@ function TopPicksPageGrid({
                 key={category.id}
                 category={category}
                 locationQueryString={locationQueryString}
+                priority={priority}
               />
             ))}
           </div>
@@ -164,6 +177,7 @@ function TopPicksPageGrid({
             category={category}
             locationQueryString={locationQueryString}
             variant="mobile"
+            priority={priority}
           />
         ))}
       </div>
@@ -176,6 +190,7 @@ export default function CategoriesSection({
   vegOnly,
   onAddToCart,
   serviceAreaMode = 'full',
+  initialCategories = [],
 }: CategoriesSectionProps) {
   const router = useRouter()
   const pathname = usePathname()
@@ -210,12 +225,14 @@ export default function CategoriesSection({
         const operationalStatus = String(r?.operational_status ?? '').toUpperCase()
         const isClosed = operationalStatus !== 'OPEN' && operationalStatus !== ''
         if (!id || !name) return null
+        // Top Stores: only stores with rating between 3.5 and 5 (inclusive).
+        if (!Number.isFinite(avgRating) || avgRating < 3.5 || avgRating > 5) return null
         return {
           id,
           name,
           image: image || '/img/placeholder.png',
           deliveryTime: deliveryTime || '25-35 mins',
-          avgRating: Number.isFinite(avgRating) && avgRating > 0 ? avgRating : null,
+          avgRating,
           isClosed,
         }
       })
@@ -224,20 +241,14 @@ export default function CategoriesSection({
       name: string
       image: string
       deliveryTime: string
-      avgRating: number | null
+      avgRating: number
       isClosed: boolean
     }>
 
     const sorted = stores
       .map((store, index) => ({ store, index }))
       .sort((a, b) => {
-        const ar = a.store.avgRating
-        const br = b.store.avgRating
-        // Rated stores first (higher rating first), unrated at the end in original order.
-        if (ar == null && br == null) return a.index - b.index
-        if (ar == null) return 1
-        if (br == null) return -1
-        if (br !== ar) return br - ar
+        if (b.store.avgRating !== a.store.avgRating) return b.store.avgRating - a.store.avgRating
         return a.index - b.index
       })
       .map((x) => x.store)
@@ -256,6 +267,7 @@ export default function CategoriesSection({
           : 'Multi-cuisine'
         const minOrder = Number(r?.min_order_amount ?? 0)
         const deliveryTime = formatMerchantDeliveryTime(r)
+        const avgRating = Number(r?.avg_rating ?? r?.rating)
         const operationalStatus = String(r?.operational_status ?? '').toUpperCase()
         const isClosed = operationalStatus !== 'OPEN' && operationalStatus !== ''
         if (!id || !name) return null
@@ -266,6 +278,7 @@ export default function CategoriesSection({
           cuisines,
           minOrder: Number.isFinite(minOrder) && minOrder > 0 ? Math.round(minOrder) : 0,
           deliveryTime: deliveryTime || '25-35 mins',
+          avgRating: Number.isFinite(avgRating) && avgRating > 0 ? avgRating : null,
           isClosed,
         }
       })
@@ -277,6 +290,7 @@ export default function CategoriesSection({
       cuisines: string
       minOrder: number
       deliveryTime: string
+      avgRating: number | null
       isClosed: boolean
     }>
   }, [restaurantList])
@@ -309,14 +323,18 @@ export default function CategoriesSection({
   const [welcomeDetectError, setWelcomeDetectError] = useState<string | null>(null)
   const locationCommitted = locationState.locationCommittedByUser === true
   const openLocationWelcomeModal = useCallback(() => setShowLocationWelcomeModal(true), [])
-  const { handlePromptDismiss: markLocationPromptDismissed, markSelected: markLocationSelected } =
-    useLocationPromptAutoOpen({
+  const {
+    handlePromptDismiss: markLocationPromptDismissed,
+    markSelected: markLocationSelected,
+    dismissed: locationPromptDismissed,
+  } = useLocationPromptAutoOpen({
       enabled: true,
       hydrated,
       locationCommitted,
       promptOpen: showLocationWelcomeModal,
       openPrompt: openLocationWelcomeModal,
     })
+  const showLocationNudgeBar = hydrated && !locationCommitted && !locationPromptDismissed
   const closeLocationWelcomeModal = useCallback(() => {
     setShowLocationWelcomeModal(false)
     setWelcomeDetectError(null)
@@ -610,59 +628,74 @@ export default function CategoriesSection({
 
   const [foodCategories, setFoodCategories] = useState<
     Array<{ id: string; name: string; img: string | null }>
-  >([])
-  const [categoriesLoading, setCategoriesLoading] = useState(true)
+  >(() => (Array.isArray(initialCategories) ? initialCategories : []))
+  const [categoriesLoading, setCategoriesLoading] = useState(
+    () => !(Array.isArray(initialCategories) && initialCategories.length > 0)
+  )
 
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(FOOD_CATEGORIES_CACHE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw) as Array<{ id: string; name: string; img: string | null }>
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setFoodCategories(parsed)
-          setCategoriesLoading(false)
-          return
-        }
+    const normalize = (
+      data: Array<{ id?: string; name: string; img: string | null }>
+    ) =>
+      data
+        .map((c) => {
+          const name = typeof c.name === 'string' ? c.name.trim() : ''
+          const img =
+            c.img && typeof c.img === 'string' && c.img.trim() ? c.img.trim() : null
+          const id =
+            c.id != null && String(c.id).trim() !== '' ? String(c.id) : name
+          return { id, name, img }
+        })
+        .filter((c) => c.name)
+
+    // Seed SSR list + warm session cache immediately (instant paint).
+    if (Array.isArray(initialCategories) && initialCategories.length > 0) {
+      const seeded = normalize(initialCategories)
+      setFoodCategories(seeded)
+      setCategoriesLoading(false)
+      try {
+        sessionStorage.setItem(FOOD_CATEGORIES_CACHE_KEY, JSON.stringify(seeded))
+      } catch {
+        // ignore
       }
-    } catch {
-      // Ignore cache read errors and fetch from API.
+    } else {
+      try {
+        const raw = sessionStorage.getItem(FOOD_CATEGORIES_CACHE_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw) as Array<{
+            id: string
+            name: string
+            img: string | null
+          }>
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setFoodCategories(parsed)
+            setCategoriesLoading(false)
+          }
+        }
+      } catch {
+        // Ignore cache read errors and fetch from API.
+      }
     }
 
-    setCategoriesLoading(true)
+    // Soft revalidate in background (same DB source as customer app).
     const url = '/api/user-app-categories?store_type=FOOD'
     fetch(url)
       .then((res) => (res.ok ? res.json() : []))
-      .then(
-        (data: Array<{ id?: string; name: string; img: string | null }>) => {
-          if (!Array.isArray(data)) {
-            setFoodCategories([])
-            return
-          }
-          const list = data
-            .map((c) => {
-              const name = typeof c.name === 'string' ? c.name.trim() : ''
-              const img =
-                c.img && typeof c.img === 'string' && c.img.trim()
-                  ? c.img.trim()
-                  : null
-              const id =
-                c.id != null && String(c.id).trim() !== ''
-                  ? String(c.id)
-                  : name
-              return { id, name, img }
-            })
-            .filter((c) => c.name)
-          setFoodCategories(list)
-          try {
-            sessionStorage.setItem(FOOD_CATEGORIES_CACHE_KEY, JSON.stringify(list))
-          } catch {
-            // Ignore cache write failures.
-          }
+      .then((data: Array<{ id?: string; name: string; img: string | null }>) => {
+        if (!Array.isArray(data)) return
+        const list = normalize(data)
+        setFoodCategories(list)
+        try {
+          sessionStorage.setItem(FOOD_CATEGORIES_CACHE_KEY, JSON.stringify(list))
+        } catch {
+          // Ignore cache write failures.
         }
-      )
-      .catch(() => setFoodCategories([]))
+      })
+      .catch(() => {
+        /* keep seeded / cached list */
+      })
       .finally(() => setCategoriesLoading(false))
-  }, [])
+  }, [initialCategories])
 
   const categoryPages = useMemo(() => {
     const pages: FoodCategoryTile[][] = []
@@ -675,18 +708,174 @@ export default function CategoriesSection({
   const totalCategoryPages = categoryPages.length
   const showTopPicksNav = totalCategoryPages > 1
 
-  const handleCategoryPrev = () => {
+  const handleCategoryPrev = useCallback(() => {
     setCategorySlideDir('prev')
     setCategoryPage((prev) => Math.max(0, prev - 1))
-  }
-  const handleCategoryNext = () => {
+  }, [])
+  const handleCategoryNext = useCallback(() => {
     setCategorySlideDir('next')
     setCategoryPage((prev) => Math.min(totalCategoryPages - 1, prev + 1))
-  }
+  }, [totalCategoryPages])
   const handleCategoryDot = (idx: number) => {
     setCategorySlideDir(idx > categoryPage ? 'next' : idx < categoryPage ? 'prev' : null)
     setCategoryPage(idx)
   }
+
+  const categoryTrackRef = useRef<HTMLDivElement>(null)
+  const categoryPageRef = useRef(categoryPage)
+  categoryPageRef.current = categoryPage
+  const [categoryDragging, setCategoryDragging] = useState(false)
+  const categoryDragRef = useRef<{
+    active: boolean
+    startX: number
+    startScroll: number
+    moved: boolean
+  }>({ active: false, startX: 0, startScroll: 0, moved: false })
+  const suppressClickRef = useRef(false)
+  /** Ignore only the next programmatic scrollTo; user scroll always updates dots. */
+  const ignoreScrollSyncUntil = useRef(0)
+  const pageChangeSourceRef = useRef<'ui' | 'scroll'>('ui')
+
+  const scrollCategoryToPage = useCallback((page: number, smooth = true) => {
+    const el = categoryTrackRef.current
+    if (!el) return
+    const width = el.clientWidth
+    if (width <= 0) return
+    ignoreScrollSyncUntil.current = Date.now() + (smooth ? 480 : 80)
+    el.scrollTo({ left: page * width, behavior: smooth ? 'smooth' : 'auto' })
+  }, [])
+
+  // Arrows / dots → scroll track (not when page came from user scroll).
+  useEffect(() => {
+    if (totalCategoryPages <= 1) return
+    if (pageChangeSourceRef.current === 'scroll') {
+      pageChangeSourceRef.current = 'ui'
+      return
+    }
+    scrollCategoryToPage(categoryPage, true)
+  }, [categoryPage, totalCategoryPages, scrollCategoryToPage])
+
+  // Bind scroll/drag after track is in the DOM (re-run when loading finishes).
+  useEffect(() => {
+    if (categoriesLoading || foodCategories.length === 0 || totalCategoryPages <= 1) return
+    const el = categoryTrackRef.current
+    if (!el) return
+
+    const syncPageFromScroll = () => {
+      if (Date.now() < ignoreScrollSyncUntil.current) return
+      const width = el.clientWidth
+      if (width <= 0) return
+      const next = Math.round(el.scrollLeft / width)
+      const clamped = Math.max(0, Math.min(totalCategoryPages - 1, next))
+      if (clamped === categoryPageRef.current) return
+      pageChangeSourceRef.current = 'scroll'
+      setCategoryPage(clamped)
+    }
+
+    let scrollRaf = 0
+    const onScroll = () => {
+      if (scrollRaf) cancelAnimationFrame(scrollRaf)
+      scrollRaf = requestAnimationFrame(syncPageFromScroll)
+    }
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      categoryDragRef.current = {
+        active: true,
+        startX: e.clientX,
+        startScroll: el.scrollLeft,
+        moved: false,
+      }
+      suppressClickRef.current = false
+      try {
+        el.setPointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const onPointerMove = (e: PointerEvent) => {
+      const drag = categoryDragRef.current
+      if (!drag.active) return
+      const dx = e.clientX - drag.startX
+      if (!drag.moved && Math.abs(dx) < 8) return
+      if (!drag.moved) {
+        drag.moved = true
+        suppressClickRef.current = true
+        setCategoryDragging(true)
+      }
+      ignoreScrollSyncUntil.current = 0
+      el.scrollLeft = drag.startScroll - dx
+      e.preventDefault()
+    }
+
+    const endDrag = (e: PointerEvent) => {
+      const drag = categoryDragRef.current
+      if (!drag.active) return
+      drag.active = false
+      setCategoryDragging(false)
+      try {
+        el.releasePointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+      if (!drag.moved) return
+      const width = el.clientWidth
+      if (width <= 0) return
+      const clamped = Math.max(
+        0,
+        Math.min(totalCategoryPages - 1, Math.round(el.scrollLeft / width))
+      )
+      pageChangeSourceRef.current = 'ui'
+      setCategoryPage(clamped)
+      scrollCategoryToPage(clamped, true)
+    }
+
+    const onClickCapture = (e: MouseEvent) => {
+      if (!suppressClickRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
+      suppressClickRef.current = false
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      const dx = e.deltaX
+      const dy = e.deltaY
+      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 1) {
+        ignoreScrollSyncUntil.current = 0
+        return
+      }
+      if (Math.abs(dy) < 1 && !e.shiftKey) return
+      e.preventDefault()
+      ignoreScrollSyncUntil.current = 0
+      el.scrollLeft += dy
+    }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('scrollend', syncPageFromScroll as EventListener)
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', endDrag)
+    el.addEventListener('pointercancel', endDrag)
+    el.addEventListener('click', onClickCapture, true)
+    el.addEventListener('wheel', onWheel, { passive: false })
+
+    // Align track with current page once mounted.
+    scrollCategoryToPage(categoryPageRef.current, false)
+
+    return () => {
+      if (scrollRaf) cancelAnimationFrame(scrollRaf)
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('scrollend', syncPageFromScroll as EventListener)
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointermove', onPointerMove)
+      el.removeEventListener('pointerup', endDrag)
+      el.removeEventListener('pointercancel', endDrag)
+      el.removeEventListener('click', onClickCapture, true)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [categoriesLoading, foodCategories.length, totalCategoryPages, scrollCategoryToPage])
 
   useEffect(() => {
     const maxPage = Math.max(0, Math.ceil(foodCategories.length / TOP_PICKS_PER_PAGE) - 1)
@@ -1058,7 +1247,7 @@ export default function CategoriesSection({
         </div>
       </header>
 
-      {!locationCommitted && (
+      {showLocationNudgeBar && (
         <div className="border-b border-amber-100 bg-amber-50">
           <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-2 px-4 py-1.5 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-1.5 text-xs leading-tight text-amber-950 sm:text-[13px]">
@@ -1069,7 +1258,7 @@ export default function CategoriesSection({
                   : 'Set your delivery location to see nearby stores. Showing restaurants across India until then.'}
               </span>
             </div>
-            <div className="flex shrink-0 gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               {permissionStatus === 'denied' ? (
                 <>
                   <button
@@ -1106,6 +1295,14 @@ export default function CategoriesSection({
                   </button>
                 </>
               )}
+              <button
+                type="button"
+                onClick={markLocationPromptDismissed}
+                aria-label="Dismiss location prompt"
+                className="ml-0.5 flex h-7 w-7 items-center justify-center rounded-full text-amber-800/70 hover:bg-amber-100 hover:text-amber-950 transition-colors"
+              >
+                <i className="fas fa-times text-xs" aria-hidden />
+              </button>
             </div>
           </div>
         </div>
@@ -1134,16 +1331,6 @@ export default function CategoriesSection({
         <OrderNoServiceArea onTryDifferentLocation={() => setShowLocationSheet(true)} />
       ) : (
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 transition-opacity duration-300">
-        {/* Header with Search */}
-        <div className="mb-8 sm:mb-10">
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
-            What would you like to order?
-          </h1>
-          <p className="text-gray-600 text-sm sm:text-base">
-            Choose from our wide variety of delicious cuisines
-          </p>
-        </div>
-
         {/* Top Picks — 7×2 carousel (reference layout) */}
         <div className="top-picks-section mb-10 sm:mb-12">
           <div className="mb-6 flex items-center justify-between gap-4">
@@ -1208,23 +1395,19 @@ export default function CategoriesSection({
             </div>
           ) : (
             <>
-              <div className="overflow-hidden">
-                <div
-                  className="flex transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
-                  style={{ transform: `translate3d(-${categoryPage * 100}%, 0, 0)` }}
-                >
+              <div
+                ref={categoryTrackRef}
+                className={`top-picks-track${categoryDragging ? ' is-dragging' : ''}${
+                  totalCategoryPages > 1 ? ' top-picks-track--scrollable' : ''
+                }`}
+              >
+                <div className="top-picks-track__inner">
                   {categoryPages.map((pageItems, pageIdx) => (
-                    <div
-                      key={`top-picks-page-${pageIdx}`}
-                      className={`min-w-full shrink-0 ${
-                        pageIdx === categoryPage && categorySlideDir
-                          ? `top-picks-slide top-picks-slide-${categorySlideDir}`
-                          : ''
-                      }`}
-                    >
+                    <div key={`top-picks-page-${pageIdx}`} className="top-picks-track__page">
                       <TopPicksPageGrid
                         items={pageItems}
                         locationQueryString={locationQueryString}
+                        priority={pageIdx === 0}
                       />
                     </div>
                   ))}
@@ -1248,19 +1431,19 @@ export default function CategoriesSection({
           )}
         </div>
 
-        {/* Top Stores For You */}
-        <div className="mb-10 sm:mb-12 p-0">
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Top Stores For You</h2>
-            <button
-              type="button"
-              onClick={onViewRestaurants}
-              className="text-sm sm:text-base text-[#FF6B6B] font-semibold hover:text-[#FF5252] transition-colors"
-            >
-              View All →
-            </button>
-          </div>
-          {topStores.length > 0 ? (
+        {/* Top Stores For You — only when 3.5–5 rated stores exist */}
+        {topStores.length > 0 && (
+          <div className="mb-10 sm:mb-12 p-0">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Top Stores For You</h2>
+              <button
+                type="button"
+                onClick={onViewRestaurants}
+                className="text-sm sm:text-base text-[#FF6B6B] font-semibold hover:text-[#FF5252] transition-colors"
+              >
+                View All →
+              </button>
+            </div>
             <div
               className="flex gap-4 sm:gap-6 overflow-x-auto pb-1"
               style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
@@ -1273,23 +1456,25 @@ export default function CategoriesSection({
                     store.isClosed ? 'opacity-55' : 'opacity-100'
                   }`}
                 >
-                  <div className="mx-auto w-24 h-24 sm:w-28 sm:h-28 rounded-[12px] overflow-hidden">
+                  <div className="relative mx-auto w-24 h-24 sm:w-28 sm:h-28 rounded-[12px] overflow-hidden">
                     <img
                       src={store.image}
                       alt={store.name}
                       loading="lazy"
                       className="w-full h-full object-cover"
                     />
+                    <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-md bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-gray-900 shadow-sm">
+                      {store.avgRating.toFixed(1)}
+                      <i className="fas fa-star text-[8px] text-amber-400" aria-hidden />
+                    </span>
                   </div>
                   <p className="mt-2 text-sm font-medium text-gray-900 truncate">{store.name}</p>
                   <p className="text-xs text-gray-500">{store.isClosed ? 'Closed' : store.deliveryTime}</p>
                 </Link>
               ))}
             </div>
-          ) : (
-            <div className="text-sm text-gray-500 py-2">Stores will appear here shortly.</div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Stores in selected location */}
         {locationStores.length > 0 && (
@@ -1313,6 +1498,12 @@ export default function CategoriesSection({
                       loading="lazy"
                       className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
+                    {store.avgRating != null ? (
+                      <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-white/95 px-2 py-1 text-xs font-bold text-gray-900 shadow-sm">
+                        {store.avgRating.toFixed(1)}
+                        <i className="fas fa-star text-[10px] text-amber-400" aria-hidden />
+                      </span>
+                    ) : null}
                   </div>
                   <div className="p-3">
                     <div className="flex items-center justify-between gap-2">
