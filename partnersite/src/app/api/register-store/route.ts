@@ -985,6 +985,15 @@ export async function POST(req: NextRequest) {
           .from('merchant_store_documents')
           .upsert([docRow], { onConflict: 'store_id' });
         if (docError) throw new Error(docError.message);
+
+        // Auto-verify PAN / GSTIN / bank through the backend (Cashfree) per
+        // the super-admin policy modes. Fire-and-forget — never blocks submit.
+        try {
+          const { triggerMerchantStoreVerifications } = await import('@/lib/merchant-verification-trigger');
+          void triggerMerchantStoreVerifications({ storeInternalId: storeData.id });
+        } catch (e) {
+          console.warn('[register-store] verification trigger failed to start:', e);
+        }
       }
     }
 

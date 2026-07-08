@@ -1406,7 +1406,7 @@ export async function PUT(req: NextRequest) {
       const { data: existingDocRow } = await db
         .from("merchant_store_documents")
         .select(
-          "pan_document_url, aadhaar_document_url, aadhaar_document_metadata, gst_document_url, fssai_document_url, drug_license_document_url, pharmacist_certificate_document_url, pharmacy_council_registration_document_url, trade_license_document_url, shop_establishment_document_url, udyam_document_url, other_document_url, pan_rejection_reason, gst_rejection_reason, aadhaar_rejection_reason, fssai_rejection_reason, drug_license_rejection_reason, pharmacist_certificate_rejection_reason, pharmacy_council_registration_rejection_reason, trade_license_rejection_reason, shop_establishment_rejection_reason, udyam_rejection_reason, other_rejection_reason, step4_resubmission_flags, step4_rejection_details"
+          "pan_document_number, pan_holder_name, gst_document_number, pan_document_url, aadhaar_document_url, aadhaar_document_metadata, gst_document_url, fssai_document_url, drug_license_document_url, pharmacist_certificate_document_url, pharmacy_council_registration_document_url, trade_license_document_url, shop_establishment_document_url, udyam_document_url, other_document_url, pan_rejection_reason, gst_rejection_reason, aadhaar_rejection_reason, fssai_rejection_reason, drug_license_rejection_reason, pharmacist_certificate_rejection_reason, pharmacy_council_registration_rejection_reason, trade_license_rejection_reason, shop_establishment_rejection_reason, udyam_rejection_reason, other_rejection_reason, step4_resubmission_flags, step4_rejection_details"
         )
         .eq("store_id", stepStore.storeDbId)
         .single();
@@ -1630,12 +1630,18 @@ export async function PUT(req: NextRequest) {
         bank.upi_id &&
         bank.upi_qr_screenshot_url;
 
+      /** Prior primary bank details — used to skip re-verification when unchanged. */
+      let priorBankKey: string | null = null;
+
       if (hasBankDetails && payoutMethod === "bank") {
         try {
           const { data: existingBankRows } = await db
             .from("merchant_store_bank_accounts")
-            .select("bank_proof_file_url, upi_qr_screenshot_url")
+            .select("bank_proof_file_url, upi_qr_screenshot_url, account_number, ifsc_code")
             .eq("store_id", stepStore.storeDbId);
+          priorBankKey = existingBankRows?.[0]
+            ? `${String(existingBankRows[0].account_number ?? "")}|${String(existingBankRows[0].ifsc_code ?? "")}`
+            : null;
           const newProofKey = bank.bank_proof_file_url
             ? (extractR2KeyFromUrl(bank.bank_proof_file_url) || (bank.bank_proof_file_url.includes("://") ? null : bank.bank_proof_file_url.replace(/^\/+/, "")))
             : null;
@@ -1728,6 +1734,34 @@ export async function PUT(req: NextRequest) {
         } catch (upiErr) {
           console.warn("[register-store-progress] upi insert skipped:", upiErr);
         }
+      }
+
+      // Auto-verify changed doc numbers through the backend (Cashfree) per the
+      // super-admin policy modes. Only fires for docs whose number actually
+      // changed in this save, so autosave doesn't spam the provider.
+      try {
+        const changed: Array<"pan" | "gstin" | "bank"> = [];
+        const newPan = String(docRow.pan_document_number ?? "").trim().toUpperCase();
+        const oldPan = String(existing?.pan_document_number ?? "").trim().toUpperCase();
+        const newPanName = String(docRow.pan_holder_name ?? "").trim();
+        const oldPanName = String(existing?.pan_holder_name ?? "").trim();
+        if (newPan && (newPan !== oldPan || newPanName !== oldPanName)) changed.push("pan");
+
+        const newGst = String(docRow.gst_document_number ?? "").trim().toUpperCase();
+        const oldGst = String(existing?.gst_document_number ?? "").trim().toUpperCase();
+        if (newGst && newGst !== oldGst) changed.push("gstin");
+
+        if (hasBankDetails && payoutMethod === "bank") {
+          const newBankKey = `${String(bank.account_number ?? "")}|${String(bank.ifsc_code ?? "")}`;
+          if (newBankKey !== priorBankKey) changed.push("bank");
+        }
+
+        if (changed.length > 0) {
+          const { triggerMerchantStoreVerifications } = await import("@/lib/merchant-verification-trigger");
+          void triggerMerchantStoreVerifications({ storeInternalId: stepStore.storeDbId, only: changed });
+        }
+      } catch (verifyErr) {
+        console.warn("[register-store-progress] verification trigger failed to start:", verifyErr);
       }
     }
 

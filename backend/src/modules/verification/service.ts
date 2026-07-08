@@ -51,7 +51,7 @@ export type SubmitCommonArgs = {
 
 export type SubmitOutcome =
   | { kind: "auto"; result: NormalizedVerification; requestId: number; policy: EffectivePolicy }
-  | { kind: "manual"; reason: string; policy: EffectivePolicy };
+  | { kind: "manual"; reason: string; policy: EffectivePolicy; detail?: string };
 
 /** Every per-doc-kind method below wraps `runProviderCall` with the right adapter. */
 type ProviderCallFn = (verificationId: string, cfg: { timeoutMs: number }) => Promise<{
@@ -162,9 +162,9 @@ async function runProviderCall(
       // Fallback-to-manual: caller keeps the projection untouched and lets the
       // agent finish the doc through the existing manual workflow.
       if (policy.fallbackToManual && isRetryableCategory(e.category) === false) {
-        return { kind: "manual", reason: `provider_error_${e.category}`, policy };
+        return { kind: "manual", reason: `provider_error_${e.category}`, policy, detail: e.message };
       }
-      return { kind: "manual", reason: `provider_error_${e.category}`, policy };
+      return { kind: "manual", reason: `provider_error_${e.category}`, policy, detail: e.message };
     }
     throw e;
   }

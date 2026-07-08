@@ -86,7 +86,7 @@ function Sparkline({ points, color = "#059669" }: { points: number[]; color?: st
 export default function VerificationAnalyticsPage() {
   const [subjectType, setSubjectType] = useState<"rider" | "merchant_store" | "">("");
   const [documentKind, setDocumentKind] = useState<string>("");
-  const [provider, setProvider] = useState<"cashfree" | "razorpay" | "">("");
+  const [provider, setProvider] = useState<"cashfree" | "">("");
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
 
@@ -153,12 +153,11 @@ export default function VerificationAnalyticsPage() {
             <label className="mb-1 block text-xs font-medium text-slate-600">Provider</label>
             <select
               value={provider}
-              onChange={(e) => setProvider(e.target.value as "cashfree" | "razorpay" | "")}
+              onChange={(e) => setProvider(e.target.value as "cashfree" | "")}
               className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm"
             >
               <option value="">All</option>
               <option value="cashfree">Cashfree</option>
-              <option value="razorpay">Razorpay</option>
             </select>
           </div>
           <div>

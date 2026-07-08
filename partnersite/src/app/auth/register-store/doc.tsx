@@ -553,6 +553,155 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     },
   });
 
+  // ── Electronic verification (Cashfree via backend policy engine) ─────────
+  // Per-document verification modes set in the super-admin Policy Center:
+  //   manual  → classic upload flow (agents review by hand)
+  //   auto    → number-only; if verification fails the user is BLOCKED (retry later)
+  //   hybrid  → number-only; if verification fails, fall back to uploading the doc
+  type DocVerifyState = {
+    state: 'idle' | 'verifying' | 'verified' | 'failed' | 'manual';
+    details?: Record<string, unknown>;
+    error?: string;
+  };
+  const [docModes, setDocModes] = useState<Record<string, string>>({});
+  const [panVerify, setPanVerify] = useState<DocVerifyState>({ state: 'idle' });
+  const [gstVerify, setGstVerify] = useState<DocVerifyState>({ state: 'idle' });
+  const [aadhaarVerify, setAadhaarVerify] = useState<DocVerifyState & { pending?: boolean }>({ state: 'idle' });
+  const aadhaarPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [storePublicId, setStorePublicId] = useState('');
+
+  useEffect(() => {
+    try {
+      setStorePublicId(new URLSearchParams(window.location.search).get('store_id') || '');
+    } catch { /* SSR guard */ }
+    fetch('/api/onboarding/verification-modes')
+      .then((r) => r.json())
+      .then((d) => { if (d?.modes) setDocModes(d.modes as Record<string, string>); })
+      .catch(() => {});
+  }, []);
+
+  const panMode = (docModes['pan'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
+  const gstMode = (docModes['gstin'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
+  const aadhaarMode = (docModes['aadhaar_digilocker'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
+  /** Electronic path active for this doc kind? */
+  const isElectronic = (m: string) => m === 'auto' || m === 'hybrid';
+  /** Upload area allowed right now for a doc, given its mode + verify state. */
+  const uploadAllowedFor = (mode: string, vs: DocVerifyState) => {
+    if (!isElectronic(mode)) return true;                    // manual/disabled → classic upload
+    if (vs.state === 'manual') return true;                  // engine queued it for agents → evidence upload
+    if (mode === 'hybrid' && vs.state === 'failed') return true; // hybrid fallback
+    return false;                                            // auto path, or not attempted/verified yet
+  };
+
+  /** Reset verify state when the underlying number changes. */
+  useEffect(() => { setPanVerify({ state: 'idle' }); }, [documents.pan_number, documents.pan_holder_name]);
+  useEffect(() => { setGstVerify({ state: 'idle' }); }, [documents.gst_number]);
+
+  const verifyDocNow = async (kind: 'pan' | 'gstin' | 'aadhaar') => {
+    const setter = kind === 'pan' ? setPanVerify : kind === 'gstin' ? setGstVerify : setAadhaarVerify;
+    setter({ state: 'verifying' });
+    try {
+      const body: Record<string, unknown> =
+        kind === 'pan'
+          ? {
+              storeId: storePublicId,
+              docKind: 'pan',
+              pan: (documents.pan_number || '').trim().toUpperCase(),
+              // Optional hint — server falls back to store owner name when absent.
+              name: (documents.pan_holder_name || '').trim() || undefined,
+            }
+          : kind === 'gstin'
+            ? { storeId: storePublicId, docKind: 'gstin', gstin: (documents.gst_number || '').trim().toUpperCase() }
+            : { storeId: storePublicId, docKind: 'aadhaar', redirectUrl: typeof window !== 'undefined' ? window.location.href : undefined };
+      const res = await fetch('/api/onboarding/verify-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.outcome === 'verified') {
+        setter({ state: 'verified', details: (data.verifiedData as Record<string, unknown>) || {} });
+        if (kind === 'pan') {
+          const registered = (data.verifiedData as { registered_name?: string } | undefined)?.registered_name;
+          if (registered) {
+            setDocuments((prev) => ({ ...prev, pan_holder_name: registered }));
+          }
+        }
+      } else if (data?.outcome === 'digilocker' && data?.url) {
+        // Aadhaar via DigiLocker consent — open the consent page and poll for
+        // the webhook-delivered result.
+        window.open(String(data.url), '_blank', 'noopener');
+        setAadhaarVerify({ state: 'verifying', pending: true });
+        startAadhaarPolling();
+      } else if (data?.outcome === 'manual') {
+        setter({ state: 'manual' });
+      } else {
+        setter({ state: 'failed', error: String(data?.error || 'Verification failed.') });
+      }
+    } catch {
+      setter({ state: 'failed', error: 'Could not reach the verification service.' });
+    }
+  };
+
+  const startAadhaarPolling = () => {
+    if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+    const startedAt = Date.now();
+    aadhaarPollRef.current = setInterval(async () => {
+      // Give up after 3 minutes — the merchant can retry.
+      if (Date.now() - startedAt > 3 * 60_000) {
+        if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+        setAadhaarVerify({ state: 'failed', error: 'DigiLocker verification timed out. Please try again.' });
+        return;
+      }
+      try {
+        const res = await fetch(
+          `/api/onboarding/verify-document/status?storeId=${encodeURIComponent(storePublicId)}&docKind=aadhaar`,
+          { credentials: 'include' },
+        );
+        const d = await res.json().catch(() => ({}));
+        if (d?.verified) {
+          if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+          setAadhaarVerify({ state: 'verified', details: (d.verifiedData as Record<string, unknown>) || {} });
+        } else if (d?.status === 'rejected' || d?.status === 'failed') {
+          if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+          setAadhaarVerify({ state: 'failed', error: String(d?.statusReason || 'DigiLocker verification failed.') });
+        }
+      } catch { /* keep polling */ }
+    }, 5_000);
+  };
+
+  useEffect(() => () => {
+    if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+  }, []);
+
+  /** Human-readable fetched details from the provider (registered name etc.). */
+  const verifiedDetailRows = (details?: Record<string, unknown>): Array<[string, string]> => {
+    if (!details) return [];
+    const pick: Array<[string, string]> = [];
+    const label: Record<string, string> = {
+      registered_name: 'Registered name',
+      name_match_result: 'Name match',
+      name_match_score: 'Name match score',
+      legal_name_of_business: 'Legal business name',
+      trade_name_of_business: 'Trade name',
+      gst_in_status: 'GSTIN status',
+      date_of_registration: 'Registered on',
+      constitution_of_business: 'Business constitution',
+      taxpayer_type: 'Taxpayer type',
+      pan_status: 'PAN status',
+      category: 'Category',
+      name_at_bank: 'Name at bank',
+      bank_name: 'Bank',
+    };
+    for (const [k, v] of Object.entries(details)) {
+      if (v == null || typeof v === 'object') continue;
+      const l = label[k];
+      if (l) pick.push([l, String(v)]);
+    }
+    return pick.slice(0, 6);
+  };
+
   // Live image previews for key documents (only when file/URL is an image)
   const panPreviewUrl = useImagePreview(documents.pan_image, documents.pan_image_url);
   const aadharFrontPreviewUrl = useImagePreview(documents.aadhar_front, documents.aadhar_front_url);
@@ -1031,10 +1180,29 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const validateDocumentSection = () => {
     if (activeSection === 'pan') {
-      // PAN: holder name + number + image required
-      const panOk = documents.pan_holder_name?.trim() && documents.pan_number && hasDocFileOrUrl('pan_image');
-      const panFormatOk = !documents.pan_number || !documentFormatValidators.pan(documents.pan_number);
-      return !!(panOk && panFormatOk);
+      // PAN rules depend on the admin policy mode:
+      //   manual   → name + number + card image (agent reviews by hand)
+      //   auto     → name + number + MUST be electronically verified; no upload path
+      //   hybrid   → electronically verified, OR (verification attempted+failed AND image uploaded)
+      // Electronic modes only need the number — the name is auto-sourced from
+      // the store owner and back-filled from the provider's registered name.
+      const numberOk = !!documents.pan_number && !documentFormatValidators.pan(documents.pan_number);
+      const baseOk = isElectronic(panMode)
+        ? numberOk
+        : numberOk && !!documents.pan_holder_name?.trim();
+      if (!baseOk) return false;
+      if (panMode === 'auto') return panVerify.state === 'verified';
+      if (panMode === 'hybrid') {
+        if (panVerify.state === 'verified') return true;
+        if (panVerify.state === 'failed' || panVerify.state === 'manual') {
+          return hasDocFileOrUrl('pan_image');
+        }
+        // Not attempted yet — the merchant must tap "Verify PAN" first, unless
+        // an image is already on file from a previous manual save.
+        return hasDocFileOrUrl('pan_image');
+      }
+      // manual / disabled → classic evidence upload required
+      return hasDocFileOrUrl('pan_image');
     } else if (activeSection === 'aadhar') {
       // Aadhaar: entirely optional; if filled, validate format; images optional
       const hasAadhar = documents.aadhar_holder_name?.trim() || documents.aadhar_number;
@@ -1053,6 +1221,19 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         return !!(fssaiOk && fssaiFormatOk);
       }
       if (documents.gst_number && documentFormatValidators.gst(documents.gst_number)) return false;
+      // GST mode gating (GST itself is optional; rules apply once a number is entered):
+      //   auto   → must be electronically verified to proceed
+      //   hybrid → verified, or attempted-and-failed with the certificate uploaded
+      if (documents.gst_number?.trim() && isElectronic(gstMode)) {
+        if (gstMode === 'auto' && gstVerify.state !== 'verified') return false;
+        if (
+          gstMode === 'hybrid' &&
+          gstVerify.state !== 'verified' &&
+          !hasDocFileOrUrl('gst_image')
+        ) {
+          return false;
+        }
+      }
       // Optional-but-recommended licences: if any field is started, require the full set.
       const tradeStarted = !!documents.trade_license_number || hasDocFileOrUrl('trade_license_document') || !!documents.trade_license_expiry_date;
       if (tradeStarted) {
@@ -1121,7 +1302,21 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const showDocumentValidationError = (section: 'pan' | 'aadhar' | 'optional' | 'bank' | 'other') => {
     if (section === 'pan') {
-      setValidationMessage('Please fill all required fields in the PAN section before proceeding.');
+      if (panMode === 'auto' && panVerify.state !== 'verified') {
+        setValidationMessage(
+          panVerify.state === 'failed'
+            ? 'PAN verification failed. Please re-check the PAN number and name, or try again after some time. Electronic verification is required to continue.'
+            : 'Please verify your PAN electronically (tap "Verify PAN") before proceeding.'
+        );
+      } else if (panMode === 'hybrid' && panVerify.state !== 'verified' && !hasDocFileOrUrl('pan_image')) {
+        setValidationMessage(
+          panVerify.state === 'failed' || panVerify.state === 'manual'
+            ? 'Instant verification did not succeed — please upload a clear PAN card image to continue.'
+            : 'Please verify your PAN electronically (tap "Verify PAN"), or upload the PAN card image.'
+        );
+      } else {
+        setValidationMessage('Please fill all required fields in the PAN section before proceeding.');
+      }
     } else if (section === 'aadhar') {
       setValidationMessage('Please fill all required fields in the Aadhar section before proceeding.');
     } else if (section === 'bank') {
@@ -1136,7 +1331,22 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         );
       }
     } else if (section === 'optional') {
-      if (isPharmaBusiness()) {
+      const gstBlocked =
+        !!documents.gst_number?.trim() &&
+        isElectronic(gstMode) &&
+        gstVerify.state !== 'verified' &&
+        (gstMode === 'auto' || !hasDocFileOrUrl('gst_image'));
+      if (gstBlocked) {
+        setValidationMessage(
+          gstMode === 'auto'
+            ? (gstVerify.state === 'failed'
+                ? 'GSTIN verification failed. Re-check the number or try again after some time — electronic verification is required.'
+                : 'Please verify your GSTIN electronically (tap "Verify GSTIN") before proceeding.')
+            : (gstVerify.state === 'failed' || gstVerify.state === 'manual'
+                ? 'Instant GSTIN verification did not succeed — please upload the GST certificate to continue.'
+                : 'Please verify your GSTIN electronically (tap "Verify GSTIN"), or upload the GST certificate.')
+        );
+      } else if (isPharmaBusiness()) {
         setValidationMessage('Please fill all required pharma documents before proceeding.');
       } else if (isFoodBusiness()) {
         setValidationMessage('FSSAI certificate is required for food businesses.');
@@ -1904,11 +2114,17 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
           <div>
             <p className="text-sm font-semibold text-indigo-900">PAN Card (Mandatory)</p>
-            <p className="text-xs text-indigo-700 mt-0.5">Required for verification. Format: ABCDE1234F</p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+              PAN number is verified electronically — no card image needed when it verifies. Format: ABCDE1234F
+            </p>
           </div>
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {/* Electronic modes only ask for the number — the name is matched
+            against the store owner automatically and back-filled from the
+            provider's registered name on success. */}
+        {!isElectronic(panMode) && (
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
             Name as on PAN <span className="text-rose-500">*</span>
@@ -1923,6 +2139,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             autoComplete="name"
           />
         </div>
+        )}
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
             PAN Number <span className="text-rose-500">*</span>
@@ -1959,9 +2176,84 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           {docFormatErrors.pan_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.pan_number}</p>}
           <p className="text-xs text-slate-500 mt-1.5">10 characters, auto uppercase (e.g. ABCDE1234F)</p>
         </div>
+
+        {/* ── Electronic verification (auto / hybrid modes) ── */}
+        {isElectronic(panMode) && (
+          <div className="md:col-span-2">
+            {panVerify.state === 'verified' ? (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
+                  PAN verified electronically
+                </p>
+                {verifiedDetailRows(panVerify.details).length > 0 && (
+                  <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                    {verifiedDetailRows(panVerify.details).map(([l, v]) => (
+                      <div key={l} className="flex gap-1.5 text-xs">
+                        <dt className="text-emerald-700">{l}:</dt>
+                        <dd className="font-medium text-emerald-900">{v}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                <p className="mt-1.5 text-xs text-emerald-700">No card image needed. You can continue.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    panVerify.state === 'verifying' ||
+                    !documents.pan_number ||
+                    !!documentFormatValidators.pan(documents.pan_number)
+                  }
+                  onClick={() => verifyDocNow('pan')}
+                  className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {panVerify.state === 'verifying' ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" /> Verifying…</>
+                  ) : (
+                    'Verify PAN'
+                  )}
+                </button>
+                {panVerify.state === 'failed' && panMode === 'auto' && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                    <p className="font-semibold">PAN verification failed.</p>
+                    <p className="text-xs mt-0.5">
+                      {panVerify.error || 'The details could not be verified.'} Please re-check the
+                      number and name, or try again after some time. Electronic verification is
+                      required to continue.
+                    </p>
+                  </div>
+                )}
+                {panVerify.state === 'failed' && panMode === 'hybrid' && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    <p className="font-semibold">Instant verification didn't succeed.</p>
+                    <p className="text-xs mt-0.5">
+                      {panVerify.error || 'The details could not be verified electronically.'} Upload a
+                      clear PAN card image below — our team will verify it manually.
+                    </p>
+                  </div>
+                )}
+                {panVerify.state === 'manual' && (
+                  <p className="text-xs text-slate-500">
+                    Your PAN has been queued for manual verification by our team. You can upload the
+                    card image below to speed it up.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {uploadAllowedFor(panMode, panVerify) && (
         <div className="md:col-span-2">
           <label className="block text-xs font-medium text-slate-700 mb-1">
-            PAN Card Image <span className="text-rose-500">*</span>
+            {isElectronic(panMode) ? (
+              <>PAN Card Image <span className="text-rose-500">*</span> <span className="text-slate-400">(required — electronic verification did not succeed)</span></>
+            ) : (
+              <>PAN Card Image <span className="text-rose-500">*</span></>
+            )}
           </label>
           <input
             type="file"
@@ -2002,6 +2294,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             })
           )}
         </div>
+        )}
       </div>
       <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
         <div className="flex items-start gap-3">
@@ -2089,6 +2382,68 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           <p className="text-xs text-slate-500 mt-1.5">12 digits, no spaces</p>
         </div>
       </div>
+
+      {/* ── Aadhaar electronic verification via DigiLocker (auto / hybrid) ── */}
+      {isElectronic(aadhaarMode) && (
+        <div>
+          {aadhaarVerify.state === 'verified' ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
+                Aadhaar verified via DigiLocker
+              </p>
+              <p className="mt-1.5 text-xs text-emerald-700">No card images needed. You can continue.</p>
+            </div>
+          ) : aadhaarVerify.state === 'verifying' && aadhaarVerify.pending ? (
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-800">
+              <p className="font-semibold flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" /> Waiting for DigiLocker confirmation…
+              </p>
+              <p className="text-xs mt-0.5">
+                Complete the consent in the DigiLocker tab we opened. This page updates automatically.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                disabled={aadhaarVerify.state === 'verifying'}
+                onClick={() => verifyDocNow('aadhaar')}
+                className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {aadhaarVerify.state === 'verifying' ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" /> Starting DigiLocker…</>
+                ) : (
+                  'Verify with DigiLocker'
+                )}
+              </button>
+              <p className="text-xs text-slate-500">
+                Opens DigiLocker to verify your Aadhaar securely — no number typing or card photos needed.
+              </p>
+              {aadhaarVerify.state === 'failed' && aadhaarMode === 'auto' && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                  <span className="font-semibold">Aadhaar verification failed. </span>
+                  {aadhaarVerify.error || 'DigiLocker verification did not complete.'} Please try again
+                  after some time — electronic verification is required.
+                </div>
+              )}
+              {aadhaarVerify.state === 'failed' && aadhaarMode === 'hybrid' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  <span className="font-semibold">DigiLocker verification didn't complete. </span>
+                  You can upload your Aadhaar card images below instead — our team will verify them manually.
+                </div>
+              )}
+              {aadhaarVerify.state === 'manual' && (
+                <p className="text-xs text-slate-500">
+                  Aadhaar queued for manual verification. Upload the card images below to speed it up.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(uploadAllowedFor(aadhaarMode, aadhaarVerify) || hasDocFileOrUrl('aadhar_front') || hasDocFileOrUrl('aadhar_back')) && aadhaarVerify.state !== 'verified' && (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -2153,6 +2508,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             )}
           </div>
         </div>
+      )}
       <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
@@ -2588,6 +2944,70 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             {docFormatErrors.gst_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.gst_number}</p>}
             <p className="text-xs text-gray-500 mt-2">Optional for non-GST businesses</p>
           </div>
+
+          {/* ── Electronic GSTIN verification (auto / hybrid modes) ── */}
+          {isElectronic(gstMode) && !!String(documents.gst_number || '').trim() && (
+            <div>
+              {gstVerify.state === 'verified' ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
+                    GSTIN verified electronically
+                  </p>
+                  {verifiedDetailRows(gstVerify.details).length > 0 && (
+                    <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                      {verifiedDetailRows(gstVerify.details).map(([l, v]) => (
+                        <div key={l} className="flex gap-1.5 text-xs">
+                          <dt className="text-emerald-700">{l}:</dt>
+                          <dd className="font-medium text-emerald-900">{v}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  <p className="mt-1.5 text-xs text-emerald-700">No certificate upload needed.</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    disabled={
+                      gstVerify.state === 'verifying' ||
+                      !documents.gst_number ||
+                      !!documentFormatValidators.gst(documents.gst_number)
+                    }
+                    onClick={() => verifyDocNow('gstin')}
+                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {gstVerify.state === 'verifying' ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Verifying…</>
+                    ) : (
+                      'Verify GSTIN'
+                    )}
+                  </button>
+                  {gstVerify.state === 'failed' && gstMode === 'auto' && (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                      <span className="font-semibold">GSTIN verification failed. </span>
+                      {gstVerify.error || 'The GSTIN could not be verified.'} Re-check the number or
+                      try again after some time — electronic verification is required.
+                    </div>
+                  )}
+                  {gstVerify.state === 'failed' && gstMode === 'hybrid' && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                      <span className="font-semibold">Instant verification didn't succeed. </span>
+                      Upload your GST certificate below — our team will verify it manually.
+                    </div>
+                  )}
+                  {gstVerify.state === 'manual' && (
+                    <p className="text-xs text-slate-500">
+                      GSTIN queued for manual verification. Upload the certificate to speed it up.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {(!isElectronic(gstMode) || gstVerify.state === 'failed' || gstVerify.state === 'manual' || hasDocFileOrUrl('gst_image')) && gstVerify.state !== 'verified' && (
           <div className="space-y-2">
             <input
               type="file"
@@ -2622,6 +3042,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               })
             )}
           </div>
+          )}
         </div>
         )}
       </div>
@@ -3187,7 +3608,8 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <button
                   type="button"
                   onClick={handleDocumentSaveAndContinue}
-                  disabled={actionLoading || documentSaving}
+                  disabled={actionLoading || documentSaving || !validateDocumentSection()}
+                  title={!validateDocumentSection() ? 'Complete this section (including verification) to continue' : undefined}
                   className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                 >
                   {actionLoading || documentSaving ? (

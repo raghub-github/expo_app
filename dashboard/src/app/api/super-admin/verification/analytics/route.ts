@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   const filters: Filters = {
     subjectType: s === "rider" || s === "merchant_store" ? s : undefined,
     documentKind: params.get("documentKind") ?? undefined,
-    provider: (params.get("provider") as "cashfree" | "razorpay" | null) ?? undefined,
+    provider: params.get("provider") === "cashfree" ? "cashfree" : undefined,
     fromDate: params.get("from") ?? undefined,
     toDate: params.get("to") ?? undefined,
   };

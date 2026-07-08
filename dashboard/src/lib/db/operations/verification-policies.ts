@@ -10,14 +10,14 @@ export type PolicyRow = {
   id: number;
   subject_type: string;      // 'rider' | 'merchant_store' | ...
   document_kind: string;     // 'pan' | 'aadhaar' | ... | 'gstin' | 'bank_account' | ...
-  mode: string;              // 'manual' | 'auto_optional' | 'auto_required' | 'hybrid'
-  provider_order: string[];
+  mode: string;              // 'auto' | 'manual' | 'hybrid' | 'disabled'
+  provider: string | null;   // NULL when mode='manual'
+  auto_approve: boolean;
   retry_limit: number;
   retry_backoff_seconds: number;
   timeout_ms: number;
   confidence_threshold: string | null;
-  reject_confidence_threshold: string | null;
-  requires_manual_review_on: unknown;
+  fallback_to_manual: boolean;
   subject_filter: unknown;
   effective_from: string;
   effective_to: string | null;
@@ -27,7 +27,7 @@ export type SwitchRow = {
   id: number;
   provider: string;
   document_kind: string | null; // null = provider-wide
-  state: string;                 // 'enabled' | 'disabled' | 'read_only' | 'shadow'
+  state: string;                 // 'enabled' | 'disabled' | 'force_manual' | 'force_hybrid'
   reason: string | null;
   updated_at: string;
 };
@@ -36,10 +36,9 @@ export async function listPolicies(): Promise<PolicyRow[]> {
   const sql = getSql();
   const rows = (await sql`
     SELECT id, subject_type::text, document_kind::text, mode::text,
-           provider_order, retry_limit, retry_backoff_seconds, timeout_ms,
-           confidence_threshold::text, reject_confidence_threshold::text,
-           requires_manual_review_on, subject_filter,
-           effective_from, effective_to
+           provider::text, auto_approve, retry_limit, retry_backoff_seconds,
+           timeout_ms, confidence_threshold::text, fallback_to_manual,
+           subject_filter, effective_from, effective_to
       FROM public.verification_policies
      WHERE effective_to IS NULL
      ORDER BY subject_type, document_kind
@@ -52,6 +51,7 @@ export async function listSwitches(): Promise<SwitchRow[]> {
   const rows = (await sql`
     SELECT id, provider::text, document_kind::text, state::text, reason, updated_at
       FROM public.verification_switches
+     WHERE restored_at IS NULL
      ORDER BY provider, document_kind NULLS FIRST
   `) as unknown as SwitchRow[];
   return rows;
@@ -86,10 +86,9 @@ export async function updatePolicyMode(
            updated_at = NOW()
      WHERE id = ${policyId}
      RETURNING id, subject_type::text, document_kind::text, mode::text,
-               provider_order, retry_limit, retry_backoff_seconds, timeout_ms,
-               confidence_threshold::text, reject_confidence_threshold::text,
-               requires_manual_review_on, subject_filter,
-               effective_from, effective_to
+               provider::text, auto_approve, retry_limit, retry_backoff_seconds,
+               timeout_ms, confidence_threshold::text, fallback_to_manual,
+               subject_filter, effective_from, effective_to
   `) as unknown as PolicyRow[];
 
   await sql`
@@ -145,7 +144,7 @@ export async function bulkUpdatePolicyMode(
 /** Flip a kill switch state. */
 export async function updateSwitchState(
   switchId: number,
-  newState: "enabled" | "disabled" | "read_only" | "shadow",
+  newState: "enabled" | "disabled" | "force_manual" | "force_hybrid",
   actor: Actor,
   reason: string | null,
 ): Promise<SwitchRow> {
