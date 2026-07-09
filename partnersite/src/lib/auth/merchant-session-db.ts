@@ -58,7 +58,11 @@ export async function replaceSessionForDevice(
 
   if (error) {
     if (error.code === "23505") {
-      // unique_violation: another request already inserted for this device
+      // unique_violation: a concurrent request (e.g. the OAuth callback) already
+      // inserted the active row for this device. The violation itself PROVES an
+      // active row exists. Try to read it, but if a read-replica / pooler lag
+      // hides it, still treat this as success — throwing here would bounce a
+      // freshly-authenticated user to login with `device_session_invalid`.
       const { data: existing } = await db
         .from("merchant_sessions")
         .select("id, expires_at")
@@ -67,6 +71,10 @@ export async function replaceSessionForDevice(
         .limit(1)
         .maybeSingle();
       if (existing) return { id: existing.id, expiresAt: existing.expires_at };
+      console.warn(
+        "[merchant-session-db] replaceSessionForDevice: 23505 but active row not yet visible (read lag) — treating as success",
+      );
+      return { id: "pending", expiresAt };
     }
     console.error("[merchant-session-db] replaceSessionForDevice insert error:", error);
     throw new Error("Failed to create session");

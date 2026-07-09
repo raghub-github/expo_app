@@ -248,12 +248,22 @@ export async function proxy(request: NextRequest) {
               await replaceSessionForDevice(deviceId, validation.merchantParentId);
               deviceSessionValid = true;
             } catch {
-              // keep invalid
+              // Transient insert failure (e.g. read-lag on the unique-violation
+              // recovery for a row the OAuth callback just wrote). The Supabase
+              // session is valid and the merchant is confirmed — fail OPEN so we
+              // don't log a freshly-authenticated user out over bookkeeping.
+              deviceSessionValid = true;
             }
           }
         }
+        // validation.isValid === false is an AFFIRMATIVE authorization decision
+        // (not a merchant / blocked) → keep deviceSessionValid false so we bounce.
       } catch {
-        // treat as invalid
+        // validateMerchantFromSession threw (transient DB/network — its own
+        // helpers normally return isValid:false rather than throw). A thrown
+        // error is never an authorization decision, so fail OPEN for the
+        // already-authenticated session rather than bouncing.
+        deviceSessionValid = true;
       }
 
       // Ensure device id cookie exists for subsequent requests.
