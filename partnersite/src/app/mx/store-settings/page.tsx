@@ -62,6 +62,18 @@ interface DaySchedule {
   operationalMinutes: number
 }
 
+/**
+ * A day is 24-hour ONLY when it has exactly one slot spanning the whole day.
+ * Derived from the slots so editing a 24h day (or adding a 2nd slot) correctly
+ * flips it off — the per-day `is24Hours` flag must never be sticky, or saves
+ * discard the merchant's real times and the Edit/second-slot UI stays locked.
+ */
+function computeIs24FromSlots(slots: TimeSlot[]): boolean {
+  if (slots.length !== 1) return false
+  const s = slots[0]
+  return s?.openingTime === '00:00' && (s?.closingTime === '23:59' || s?.closingTime === '00:00')
+}
+
 function getCurrentDayKeyInTimeZone(timeZone?: string | null): DayType {
   const tz =
     (timeZone && String(timeZone).trim()) ||
@@ -2588,17 +2600,17 @@ function StoreSettingsContent() {
       toast.error('Maximum 2 slots allowed per day')
       return
     }
-    
+
     setManualTimeChanges(prev => new Set(prev).add(day))
     if (applyMondayToAll) setApplyMondayToAll(false);
     if (force24Hours) setForce24Hours(false);
-    
+
     const newSlot: TimeSlot = {
       id: Date.now().toString(),
       openingTime: slotPosition === 0 ? '09:00' : '14:00',
       closingTime: slotPosition === 0 ? '13:00' : '18:00'
     }
-    
+
     setStoreSchedule(prev => prev.map(d => {
       if (d.day === day) {
         const newSlots = slotPosition === 0 ? [newSlot, ...d.slots] : [...d.slots, newSlot]
@@ -2606,6 +2618,8 @@ function StoreSettingsContent() {
         return {
           ...d,
           slots: newSlots,
+          // A day with two slots (or a 09:00-style slot) is never 24h.
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes
@@ -2634,6 +2648,7 @@ function StoreSettingsContent() {
         return {
           ...d,
           slots: newSlots,
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes
@@ -2662,6 +2677,7 @@ function StoreSettingsContent() {
         return {
           ...d,
           slots: newSlots,
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes,
@@ -2685,16 +2701,21 @@ function StoreSettingsContent() {
     setManualTimeChanges(prev => new Set(prev).add(day))
     if (applyMondayToAll) setApplyMondayToAll(false);
     if (force24Hours) setForce24Hours(false);
-    
+
     setStoreSchedule(prev => prev.map(d => {
       if (d.day === day) {
-        const newSlots = d.slots.map(slot => 
+        const newSlots = d.slots.map(slot =>
           slot.id === slotId ? { ...slot, [field]: value } : slot
         )
         const { hours, minutes } = calculateOperationalTime(newSlots)
         return {
           ...d,
           slots: newSlots,
+          // Recompute per-day 24h from the actual slots. Without this, editing a
+          // day that was 00:00–23:59 kept is24Hours=true, so the save discarded
+          // the new times (wrote 00:00–23:59 back) and the Edit/second-slot UI
+          // stayed locked. 24h is true ONLY for a single 00:00→23:59 slot.
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes
