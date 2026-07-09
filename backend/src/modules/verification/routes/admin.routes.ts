@@ -61,6 +61,7 @@ function sendOutcome(reply: FastifyReply, o: SubmitOutcome) {
   if (o.kind === "auto") {
     return reply.send({
       kind: "auto",
+      policy: { mode: o.policy.mode, provider: o.policy.provider },
       request_id: o.requestId,
       verification_id: o.result.verificationId,
       provider_reference: o.result.providerReference,
@@ -74,6 +75,7 @@ function sendOutcome(reply: FastifyReply, o: SubmitOutcome) {
   return reply.send({
     kind: "manual",
     reason: o.reason,
+    detail: o.detail ?? null,
     policy: { mode: o.policy.mode, provider: o.policy.provider },
   });
 }

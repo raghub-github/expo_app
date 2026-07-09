@@ -14,7 +14,8 @@ import {
 export const runtime = "nodejs";
 
 const MODES = ["auto", "manual", "hybrid", "disabled"] as const;
-const STATES = ["enabled", "disabled", "read_only", "shadow"] as const;
+// Must match the DB enum verification_switch_state (0390_verification_enums.sql).
+const STATES = ["enabled", "disabled", "force_manual", "force_hybrid"] as const;
 
 const singlePolicySchema = z.object({
   kind: z.literal("single"),

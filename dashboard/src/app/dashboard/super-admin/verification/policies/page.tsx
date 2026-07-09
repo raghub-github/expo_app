@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR, { mutate } from "swr";
 import { ShieldCheck, Power, RefreshCw } from "lucide-react";
 
@@ -15,12 +15,12 @@ type Switch = {
   id: number;
   provider: string;
   document_kind: string | null;
-  state: "enabled" | "disabled" | "read_only" | "shadow";
+  state: "enabled" | "disabled" | "force_manual" | "force_hybrid";
   reason: string | null;
 };
 
 const MODES: Policy["mode"][] = ["auto", "manual", "hybrid", "disabled"];
-const STATES: Switch["state"][] = ["enabled", "disabled", "read_only", "shadow"];
+const STATES: Switch["state"][] = ["enabled", "disabled", "force_manual", "force_hybrid"];
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -47,8 +47,8 @@ function stateBadge(s: Switch["state"]): string {
   switch (s) {
     case "enabled": return "bg-emerald-50 text-emerald-700";
     case "disabled": return "bg-rose-50 text-rose-700";
-    case "read_only": return "bg-amber-50 text-amber-700";
-    case "shadow": return "bg-indigo-50 text-indigo-700";
+    case "force_manual": return "bg-amber-50 text-amber-700";
+    case "force_hybrid": return "bg-indigo-50 text-indigo-700";
   }
 }
 
@@ -62,6 +62,10 @@ export default function VerificationPolicyCenterPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [bulkSubject, setBulkSubject] = useState<"rider" | "merchant_store" | "">("");
   const [bulkMode, setBulkMode] = useState<Policy["mode"]>("manual");
+  // Until the admin picks a mode themselves, the dropdown mirrors the CURRENT
+  // dominant mode of the selected subject's policies (so "Hybrid everywhere"
+  // shows Hybrid, not a stale "Manual" default).
+  const [bulkModeTouched, setBulkModeTouched] = useState(false);
   const [reason, setReason] = useState("");
 
   const grouped = useMemo(() => {
@@ -71,6 +75,33 @@ export default function VerificationPolicyCenterPage() {
     }
     return g;
   }, [data]);
+
+  /** Dominant (most common) current mode across the policies in scope. */
+  const currentDominantMode = useMemo<Policy["mode"] | null>(() => {
+    const scoped = (data?.policies ?? []).filter(
+      (p) => !bulkSubject || p.subject_type === bulkSubject,
+    );
+    if (scoped.length === 0) return null;
+    const counts = new Map<Policy["mode"], number>();
+    for (const p of scoped) counts.set(p.mode, (counts.get(p.mode) ?? 0) + 1);
+    let best: Policy["mode"] = scoped[0]!.mode;
+    let bestCount = 0;
+    for (const [m, c] of counts) {
+      if (c > bestCount) { best = m; bestCount = c; }
+    }
+    return best;
+  }, [data, bulkSubject]);
+
+  const scopedModesMixed = useMemo(() => {
+    const scoped = (data?.policies ?? []).filter(
+      (p) => !bulkSubject || p.subject_type === bulkSubject,
+    );
+    return new Set(scoped.map((p) => p.mode)).size > 1;
+  }, [data, bulkSubject]);
+
+  useEffect(() => {
+    if (!bulkModeTouched && currentDominantMode) setBulkMode(currentDominantMode);
+  }, [bulkModeTouched, currentDominantMode]);
 
   async function patch(body: Record<string, unknown>): Promise<void> {
     setBusy(JSON.stringify(body));
@@ -96,6 +127,8 @@ export default function VerificationPolicyCenterPage() {
       subjectType: bulkSubject || undefined,
       mode: bulkMode,
     });
+    // Re-sync the dropdown with the refreshed policies.
+    setBulkModeTouched(false);
   }
 
   return (
@@ -139,7 +172,12 @@ export default function VerificationPolicyCenterPage() {
             <label className="mb-1 block text-xs font-medium text-slate-600">App / subject</label>
             <select
               value={bulkSubject}
-              onChange={(e) => setBulkSubject(e.target.value as "rider" | "merchant_store" | "")}
+              onChange={(e) => {
+                setBulkSubject(e.target.value as "rider" | "merchant_store" | "");
+                // Re-sync the mode dropdown to the newly selected subject's
+                // current mode.
+                setBulkModeTouched(false);
+              }}
               className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm"
             >
               <option value="">All subjects</option>
@@ -151,11 +189,20 @@ export default function VerificationPolicyCenterPage() {
             <label className="mb-1 block text-xs font-medium text-slate-600">Set mode to</label>
             <select
               value={bulkMode}
-              onChange={(e) => setBulkMode(e.target.value as Policy["mode"])}
+              onChange={(e) => {
+                setBulkMode(e.target.value as Policy["mode"]);
+                setBulkModeTouched(true);
+              }}
               className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm"
             >
               {MODES.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
             </select>
+            {currentDominantMode ? (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Current: <span className="font-semibold">{modeLabel(currentDominantMode)}</span>
+                {scopedModesMixed ? " (mixed — most common shown)" : ""}
+              </p>
+            ) : null}
           </div>
           <div className="md:col-span-2">
             <label className="mb-1 block text-xs font-medium text-slate-600">Reason (audit log)</label>
@@ -240,8 +287,9 @@ export default function VerificationPolicyCenterPage() {
           <h2 className="text-sm font-semibold text-slate-900">Provider kill switches</h2>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Cuts Cashfree traffic without touching per-doc policy. `read_only` means don't submit
-          but read existing state; `shadow` means submit but ignore the result (dry run).
+          Cuts Cashfree traffic without touching per-doc policy. `disabled` and `force_manual`
+          both route every doc straight to the agent queue; `force_hybrid` keeps auto-verify on
+          but flags results for agent review.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

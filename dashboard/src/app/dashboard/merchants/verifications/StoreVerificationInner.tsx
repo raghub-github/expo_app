@@ -7,6 +7,7 @@ import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
+import { ElectronicVerifyPanel } from "@/components/verification/ElectronicVerifyPanel";
 import {
   Store,
   ArrowLeft,
@@ -3761,6 +3762,29 @@ function StepDetailContentEditable({
                           )}
                         </div>
                       )}
+
+                      {/* Agent electronic verification — PAN / GST only, and
+                          ONLY while the doc is still unverified. */}
+                      {!isAadhaarBack &&
+                        !isVerified &&
+                        canPerformVerify &&
+                        storeIdForDocUpload != null &&
+                        (row.docType === "pan" || row.docType === "gst") ? (
+                        <ElectronicVerifyPanel
+                          subjectType="merchant_store"
+                          subjectId={storeIdForDocUpload}
+                          docKind={row.docType === "pan" ? "pan" : "gstin"}
+                          verified={isVerified}
+                          prefill={{
+                            number: (doc[row.numberKey] as string) ?? null,
+                            name:
+                              row.docType === "pan"
+                                ? ((docRec.pan_holder_name as string) ?? null)
+                                : null,
+                          }}
+                          className="mt-2"
+                        />
+                      ) : null}
                     </div>
                   </div>
                 </div>

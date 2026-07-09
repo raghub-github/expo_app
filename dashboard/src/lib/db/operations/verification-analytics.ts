@@ -12,7 +12,7 @@ import { getSql } from "@/lib/db/client";
 export type Filters = {
   subjectType?: "rider" | "merchant_store";
   documentKind?: string;         // e.g. 'pan', 'gstin', 'driving_licence'
-  provider?: "cashfree" | "razorpay";
+  provider?: "cashfree";
   fromDate?: string;             // ISO YYYY-MM-DD, inclusive
   toDate?: string;               // ISO YYYY-MM-DD, inclusive
 };

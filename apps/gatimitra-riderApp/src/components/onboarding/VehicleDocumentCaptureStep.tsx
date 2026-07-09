@@ -39,6 +39,10 @@ type Props = {
   /** From vehicle type document_requirements.optional_docs in DB */
   optional?: boolean;
   skipped?: boolean;
+  /** Electronic-verification modes hide the photo slots until the hybrid fallback. */
+  hidePhotos?: boolean;
+  /** Rendered between the number input and the photo slots (verify card). */
+  afterTextSlot?: React.ReactNode;
 };
 
 export function VehicleDocumentCaptureStep({
@@ -62,6 +66,8 @@ export function VehicleDocumentCaptureStep({
   duplicateWarning,
   optional = false,
   skipped = false,
+  hidePhotos = false,
+  afterTextSlot = null,
 }: Props) {
   const iconName = (doc.icon ?? "document-outline") as keyof typeof Ionicons.glyphMap;
   const needsBack = docRequiresBackPhoto(doc);
@@ -159,6 +165,9 @@ export function VehicleDocumentCaptureStep({
         </View>
       ) : null}
 
+      {afterTextSlot}
+
+      {hidePhotos ? null : (
       <View style={form.fieldGroup}>
         <FieldLabel label={photoLabel} required={!optional} />
         {doc.hint ? <Text style={form.sectionHint}>{doc.hint}</Text> : null}
@@ -223,6 +232,7 @@ export function VehicleDocumentCaptureStep({
           </>
         )}
       </View>
+      )}
     </>
   );
 }

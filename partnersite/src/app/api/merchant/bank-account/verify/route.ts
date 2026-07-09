@@ -5,28 +5,22 @@ import {
   isBeneficiaryNameAllowed,
   getVerificationAttemptsOnDay,
   MAX_VERIFICATION_ATTEMPTS_PER_DAY,
-  VERIFICATION_AMOUNT_PAISE,
   maskAccountNumber,
 } from "@/lib/bank-verification";
+import {
+  getCashfreeConfig,
+  verifyBankAccountSync,
+  verifyUpiSync,
+} from "@/lib/cashfree-verification";
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
-const razorpayKeyId = process.env.RAZORPAY_KEY_ID;
-const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET;
-/** RazorpayX Current Account number or Customer Identifier (from Dashboard → Banking). Required for payouts. */
-const razorpayXAccountNumber = process.env.RAZORPAY_X_ACCOUNT_NUMBER;
-
-const RAZORPAY_BASE = "https://api.razorpay.com/v1";
 
 function getSupabaseAdmin() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-}
-
-function getAuthHeader(): string {
-  return "Basic " + Buffer.from(razorpayKeyId! + ":" + razorpayKeySecret!).toString("base64");
 }
 
 type BankPayload = {
@@ -45,8 +39,14 @@ type UpiPayload = {
 /**
  * POST /api/merchant/bank-account/verify
  * Body: { storeId: string, bank?: BankPayload, upi?: UpiPayload, bankAccountId?: number }
- * Validates session, beneficiary name, 3/day limit; creates Razorpay contact + fund account + payout (₹1);
- * inserts merchant_bank_verification_payouts. Returns verification id and status.
+ *
+ * Verifies the merchant's bank account (Cashfree pennyless BAV — no ₹1
+ * transfer) or UPI ID (Cashfree VPA validation). Result is synchronous: the
+ * bank row is marked verified/failed immediately and the attempt is recorded
+ * in merchant_bank_verification_payouts for the 3-per-day limit + audit.
+ *
+ * Razorpay is intentionally NOT used here: verification runs on Cashfree or
+ * falls back to manual review by our team (backend/drizzle/0396).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
 
     const { data: storeRow, error: storeErr } = await db
       .from("merchant_stores")
-      .select("id, store_id, parent_id, store_name, store_display_name, owner_name, store_email, store_phones")
+      .select("id, store_id, parent_id, store_name, store_display_name, owner_full_name, store_email, store_phones")
       .eq("store_id", String(storeId))
       .eq("parent_id", validation.merchantParentId)
       .single();
@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
     const allowedNames = {
       storeName: storeRow.store_name,
       storeDisplayName: storeRow.store_display_name,
-      ownerName: storeRow.owner_name,
+      ownerName: storeRow.owner_full_name,
       parentName: parentRow?.parent_name ?? null,
     };
 
@@ -151,111 +151,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!razorpayKeyId || !razorpayKeySecret) {
-      return NextResponse.json(
-        { success: false, error: "Payment not configured" },
-        { status: 503 }
-      );
-    }
-    if (!razorpayXAccountNumber?.trim()) {
-      return NextResponse.json(
-        { success: false, error: "RazorpayX account not configured for payouts. Contact support." },
-        { status: 503 }
-      );
+    const cfg = getCashfreeConfig();
+    if (!cfg.ok) {
+      // No provider configured — do not fail the merchant: record the details
+      // as pending so our team verifies manually from the dashboard.
+      console.error("[bank-account/verify] Cashfree not configured, falling back to manual review:", cfg.missing.join(", "));
     }
 
     const accountType = hasBank ? "bank" : "upi";
-    const contactName = beneficiaryName.slice(0, 50);
-    const contactEmail = (storeRow.store_email || parentRow?.owner_email || "noreply@merchant.local").slice(0, 255);
     const contactPhone = (Array.isArray(storeRow.store_phones)
       ? storeRow.store_phones[0]
       : typeof storeRow.store_phones === "string"
         ? storeRow.store_phones
-        : "")
-      ?.replace(/\D/g, "")
-      .slice(0, 15) || "0000000000";
-
+        : "") || null;
     const refId = `merchant_verify_${storeRow.id}_${Date.now()}`;
 
-    const contactRes = await fetch(RAZORPAY_BASE + "/contacts", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: getAuthHeader(),
-      },
-      body: JSON.stringify({
-        name: contactName,
-        email: contactEmail,
-        contact: contactPhone,
-        type: "vendor",
-        reference_id: refId,
-      }),
-    });
-    if (!contactRes.ok) {
-      const errText = await contactRes.text();
-      console.error("[bank-account/verify] Razorpay contact error:", contactRes.status, errText);
-      return NextResponse.json(
-        { success: false, error: "Could not create payout contact. Please check details and try again." },
-        { status: 502 }
-      );
-    }
-    const contactData = await contactRes.json();
-    const razorpayContactId = contactData.id;
-
-    let razorpayFundAccountId: string;
-    if (hasBank) {
-      const faRes = await fetch(RAZORPAY_BASE + "/fund_accounts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: getAuthHeader(),
-        },
-        body: JSON.stringify({
-          contact_id: razorpayContactId,
-          account_type: "bank_account",
-          bank_account: {
-            name: (bank!.account_holder_name || "").slice(0, 100),
-            ifsc: (bank!.ifsc_code || "").trim().slice(0, 11),
-            account_number: String(bank!.account_number).replace(/\D/g, ""),
-          },
-        }),
-      });
-      if (!faRes.ok) {
-        const errText = await faRes.text();
-        console.error("[bank-account/verify] Razorpay fund account (bank) error:", faRes.status, errText);
-        return NextResponse.json(
-          { success: false, error: "Invalid bank account details. Check IFSC and account number." },
-          { status: 400 }
-        );
-      }
-      const faData = await faRes.json();
-      razorpayFundAccountId = faData.id;
-    } else {
-      const vpaAddress = String(upi!.upi_id).trim().toLowerCase();
-      const faRes = await fetch(RAZORPAY_BASE + "/fund_accounts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: getAuthHeader(),
-        },
-        body: JSON.stringify({
-          contact_id: razorpayContactId,
-          account_type: "vpa",
-          vpa: { address: vpaAddress },
-        }),
-      });
-      if (!faRes.ok) {
-        const errText = await faRes.text();
-        console.error("[bank-account/verify] Razorpay fund account (vpa) error:", faRes.status, errText);
-        return NextResponse.json(
-          { success: false, error: "Invalid UPI ID." },
-          { status: 400 }
-        );
-      }
-      const faData = await faRes.json();
-      razorpayFundAccountId = faData.id;
-    }
-
+    // Upsert the bank row first (same behaviour as before) so a failed
+    // provider call still leaves the details saved as pending.
     let resolvedBankAccountId = bankAccountId;
     if (hasBank && !resolvedBankAccountId) {
       const { data: existingPrimary } = await db
@@ -297,73 +209,128 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const idempotencyKey = `${refId}_payout`;
-    const payoutRes = await fetch(RAZORPAY_BASE + "/payouts", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: getAuthHeader(),
-        "X-Payout-Idempotency": idempotencyKey,
-      },
-      body: JSON.stringify({
-        account_number: razorpayXAccountNumber.trim(),
-        fund_account_id: razorpayFundAccountId,
-        amount: VERIFICATION_AMOUNT_PAISE,
-        currency: "INR",
-        mode: accountType === "bank" ? "IMPS" : "UPI",
-        purpose: "refund",
-        queue_if_low_balance: true,
-        reference_id: refId.slice(0, 40),
-        narration: "Verify",
-        notes: { merchant_store_id: String(storeRow.id), type: "verification" },
-      }),
-    });
-
-    let razorpayPayoutId: string | null = null;
-    let razorpayStatus = "created";
+    // ── Cashfree verification (synchronous) or manual-review fallback ──────
+    let status: "success" | "failed" | "pending_manual" = "pending_manual";
+    let providerReference: string | null = null;
+    let providerStatusCode: string | null = null;
     let failureReason: string | null = null;
+    let nameAtBank: string | null = null;
 
-    if (payoutRes.ok) {
-      const payoutData = await payoutRes.json();
-      razorpayPayoutId = payoutData.id;
-      razorpayStatus = payoutData.status || "created";
-    } else {
-      const errText = await payoutRes.text();
-      console.error("[bank-account/verify] Razorpay payout error:", payoutRes.status, errText);
-      failureReason = errText.slice(0, 500);
-      razorpayStatus = "failed";
+    if (cfg.ok) {
+      const result = hasBank
+        ? await verifyBankAccountSync({
+            accountNumber: String(bank!.account_number),
+            ifsc: bank!.ifsc_code,
+            name: beneficiaryName,
+            phone: contactPhone,
+            verificationId: refId,
+          })
+        : await verifyUpiSync({
+            vpa: String(upi!.upi_id),
+            name: beneficiaryName,
+            verificationId: refId,
+          });
+
+      providerReference = result.referenceId;
+      providerStatusCode = result.statusCode;
+      nameAtBank = result.nameAtBank;
+
+      if (result.outcome === "verified") {
+        // Provider confirmed the account. Cross-check the name the bank
+        // returned against the allowed store/owner names when we got one.
+        const bankNameOk =
+          !result.nameAtBank || isBeneficiaryNameAllowed(result.nameAtBank, allowedNames);
+        if (bankNameOk) {
+          status = "success";
+        } else {
+          status = "failed";
+          failureReason = `Name at bank ("${result.nameAtBank}") does not match store/owner name.`;
+        }
+      } else if (result.outcome === "invalid") {
+        status = "failed";
+        failureReason = result.failureReason ?? "Account could not be verified.";
+      } else {
+        // Provider error — keep the row pending for manual review rather than
+        // burning the merchant's attempt with a hard failure.
+        status = "pending_manual";
+        failureReason = result.failureReason;
+        console.error("[bank-account/verify] Cashfree error:", result.statusCode, result.failureReason);
+      }
     }
 
-    const status = razorpayPayoutId
-      ? ["processed", "processing", "queued", "pending"].includes(razorpayStatus)
-        ? "processing"
-        : razorpayStatus === "failed"
-          ? "failed"
-          : "processing"
-      : "failed";
+    // Reflect the outcome on the bank row.
+    const nowIso = new Date().toISOString();
+    const targetBankId = hasBank ? (resolvedBankAccountId || bankAccountId || null) : (bankAccountId || null);
+    if (status === "success") {
+      const updatePayload = hasBank
+        ? {
+            is_verified: true,
+            verified_at: nowIso,
+            verification_method: "CASHFREE_BAV",
+            verification_status: "verified",
+            beneficiary_name: nameAtBank ?? beneficiaryName,
+            updated_at: nowIso,
+          }
+        : {
+            upi_verified: true,
+            verified_at: nowIso,
+            verification_method: "CASHFREE_UPI",
+            verification_status: "verified",
+            updated_at: nowIso,
+          };
+      if (targetBankId) {
+        await db.from("merchant_store_bank_accounts").update(updatePayload).eq("id", targetBankId);
+      } else if (!hasBank) {
+        // UPI verify without an explicit bank row: mark the primary row.
+        const { data: primary } = await db
+          .from("merchant_store_bank_accounts")
+          .select("id")
+          .eq("store_id", storeRow.id)
+          .eq("is_primary", true)
+          .eq("is_active", true)
+          .limit(1)
+          .maybeSingle();
+        if (primary) {
+          await db.from("merchant_store_bank_accounts").update(updatePayload).eq("id", primary.id);
+        }
+      }
+    } else if (status === "failed" && targetBankId) {
+      await db.from("merchant_store_bank_accounts").update({
+        verification_status: "failed",
+        updated_at: nowIso,
+      }).eq("id", targetBankId);
+    }
+    // pending_manual leaves verification_status = 'pending' — the agent
+    // dashboard picks it up for manual review.
 
+    // Record the attempt (same table as before — feeds the 3/day limit and
+    // the admin audit trail). amount_paise is 0: pennyless verification.
     const { data: insertRow, error: insertErr } = await db
       .from("merchant_bank_verification_payouts")
       .insert({
         merchant_parent_id: validation.merchantParentId,
         merchant_store_id: storeRow.id,
-        bank_account_id: resolvedBankAccountId || bankAccountId || null,
+        bank_account_id: targetBankId,
         account_type: accountType,
-        amount_paise: VERIFICATION_AMOUNT_PAISE,
+        amount_paise: 0,
         beneficiary_name: beneficiaryName,
         account_number_masked: hasBank ? maskAccountNumber(bank!.account_number) : null,
         ifsc_code: hasBank ? bank!.ifsc_code : null,
         bank_name: hasBank ? bank!.bank_name : null,
         upi_id: hasUpi ? upi!.upi_id : null,
-        razorpay_contact_id: razorpayContactId,
-        razorpay_fund_account_id: razorpayFundAccountId,
-        razorpay_payout_id: razorpayPayoutId,
-        razorpay_status: razorpayStatus,
-        status,
+        status: status === "success" ? "success" : status === "failed" ? "failed" : "processing",
         failure_reason: failureReason,
-        metadata: { ref_id: refId },
+        completed_at: status === "pending_manual" ? null : nowIso,
+        metadata: {
+          ref_id: refId,
+          provider: "cashfree",
+          provider_reference: providerReference,
+          provider_status_code: providerStatusCode,
+          name_at_bank: nameAtBank,
+          manual_review: status === "pending_manual",
+        },
       })
-      .select("id, status, razorpay_payout_id")
+      .select("id, status")
       .single();
 
     if (insertErr) {
@@ -374,17 +341,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (status === "failed") {
+      return NextResponse.json({
+        success: false,
+        verificationId: insertRow.id,
+        status: "failed",
+        error: failureReason || "Account could not be verified. Check the details and try again.",
+      }, { status: 400 });
+    }
+
     return NextResponse.json({
       success: true,
       verificationId: insertRow.id,
-      payoutId: razorpayPayoutId,
-      status: insertRow.status,
+      status: status === "success" ? "verified" : "processing",
+      verified: status === "success",
       message:
-        status === "processing"
-          ? "We have sent ₹1 to your account. Verification will complete shortly. You can refresh in a few minutes."
-          : status === "failed"
-            ? "Payout could not be initiated. " + (failureReason || "Try again later.")
-            : "Verification initiated.",
+        status === "success"
+          ? (hasBank
+              ? "Bank account verified successfully — no test transfer needed."
+              : "UPI ID verified successfully.")
+          : "We could not verify instantly. Your details are saved and our team will verify them manually within 24 hours.",
     });
   } catch (e) {
     console.error("[bank-account/verify] Error:", e);

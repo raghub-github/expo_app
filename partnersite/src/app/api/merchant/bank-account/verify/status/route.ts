@@ -6,9 +6,6 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
-const razorpayKeyId = process.env.RAZORPAY_KEY_ID;
-const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET;
-const RAZORPAY_BASE = "https://api.razorpay.com/v1";
 
 function getSupabaseAdmin() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -18,8 +15,11 @@ function getSupabaseAdmin() {
 
 /**
  * GET /api/merchant/bank-account/verify/status?storeId=...
- * Returns verification status for the store's primary bank/UPI: verified, canEdit, attemptsToday.
- * Optionally syncs last payout status from Razorpay and updates is_verified on bank account.
+ * Returns verification status for the store's primary bank/UPI.
+ *
+ * Cashfree BAV is synchronous, so the DB already holds the final state —
+ * there is no external payout to poll (the old Razorpay ₹1-payout polling
+ * was removed; Razorpay is not used for verification).
  */
 export async function GET(request: NextRequest) {
   try {
@@ -84,54 +84,6 @@ export async function GET(request: NextRequest) {
       const vStatus = (primaryBank as { verification_status?: string }).verification_status;
       verificationStatus = vStatus ?? (primaryBank.is_verified || primaryBank.upi_verified ? "verified" : "pending");
       verified = primaryBank.is_verified === true || primaryBank.upi_verified === true || verificationStatus === "verified";
-    }
-
-    const { data: lastPayout } = await db
-      .from("merchant_bank_verification_payouts")
-      .select("id, razorpay_payout_id, status, account_type, bank_account_id")
-      .eq("merchant_store_id", storeRow.id)
-      .order("attempted_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (
-      lastPayout?.razorpay_payout_id &&
-      razorpayKeyId &&
-      razorpayKeySecret &&
-      lastPayout.status === "processing"
-    ) {
-      const authHeader = "Basic " + Buffer.from(razorpayKeyId + ":" + razorpayKeySecret).toString("base64");
-      const payoutRes = await fetch(RAZORPAY_BASE + "/payouts/" + lastPayout.razorpay_payout_id, {
-        headers: { Authorization: authHeader },
-      });
-      if (payoutRes.ok) {
-        const payoutData = await payoutRes.json();
-        const rpStatus = payoutData.status;
-        const ourStatus = rpStatus === "processed" ? "success" : rpStatus === "failed" ? "failed" : "processing";
-        await db.from("merchant_bank_verification_payouts").update({
-          status: ourStatus,
-          razorpay_status: rpStatus,
-          completed_at: rpStatus === "processed" || rpStatus === "failed" ? new Date().toISOString() : null,
-          failure_reason: payoutData.status_details?.description ?? null,
-        }).eq("id", lastPayout.id);
-
-        if (rpStatus === "processed") {
-          const isUpi = lastPayout.account_type === "upi";
-          const targetBankId = lastPayout.bank_account_id ?? primaryBank?.id;
-          if (targetBankId) {
-            await db.from("merchant_store_bank_accounts").update({
-              is_verified: isUpi ? (primaryBank?.is_verified ?? false) : true,
-              upi_verified: isUpi ? true : (primaryBank?.upi_verified ?? false),
-              verified_at: new Date().toISOString(),
-              verification_method: "PENNY_DROP",
-              verification_status: "verified",
-              updated_at: new Date().toISOString(),
-            }).eq("id", targetBankId);
-          }
-          verified = true;
-          verificationStatus = "verified";
-        }
-      }
     }
 
     return NextResponse.json({

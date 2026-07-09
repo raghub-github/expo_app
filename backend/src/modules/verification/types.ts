@@ -45,7 +45,10 @@ export type VerificationDocumentKind =
   | "face_match"
   | "name_match";
 
-export type VerificationProvider = "cashfree" | "razorpay" | "manual";
+// razorpay was removed as a verification provider (drizzle/0396) — verification
+// runs on Cashfree or manual review only. The DB enum still contains 'razorpay'
+// for historical rows, but no new work may target it.
+export type VerificationProvider = "cashfree" | "manual";
 
 export type VerificationSubjectKind =
   | "rider"

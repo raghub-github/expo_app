@@ -16,6 +16,7 @@ import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ONBOARDING_STAGE_LABELS } from "@/types/rider-dashboard";
 import { computeIdentityVerificationProgress } from "@/lib/rider-identity-doc-requirements";
 import { documentActionKey } from "@/lib/rider-document-side-verification";
+import { ElectronicVerifyPanel } from "@/components/verification/ElectronicVerifyPanel";
 
 interface Rider {
   id: number;
@@ -909,6 +910,7 @@ export default function RiderOnboardingClient() {
             const doc = getLatestDocument(docType);
             return (
               <DocumentCard
+                riderId={riderId}
                 key={docType}
                 docType={docType}
                 document={doc}
@@ -935,6 +937,7 @@ export default function RiderOnboardingClient() {
             const doc = getLatestDocument(docType);
             return (
               <DocumentCard
+                riderId={riderId}
                 key={docType}
                 docType={docType}
                 document={doc}
@@ -960,6 +963,7 @@ export default function RiderOnboardingClient() {
             const doc = getLatestDocument(docType);
             return (
               <DocumentCard
+                riderId={riderId}
                 key={docType}
                 docType={docType}
                 document={doc}
@@ -1041,8 +1045,16 @@ const DOC_TYPES_WITH_NUMBER = new Set([
   "rc",
 ]);
 
+/** rider docType → verification-engine kind for agent electronic verify. */
+const EV_KIND_BY_DOC_TYPE: Record<string, "pan" | "driving_licence" | "vehicle_rc"> = {
+  pan: "pan",
+  dl_front: "driving_licence",
+  rc: "vehicle_rc",
+};
+
 // Document Card Component ? equal height, aligned, doc number always shown, image cache-bust
 interface DocumentCardProps {
+  riderId: number;
   docType: string;
   document: Document | null;
   isOptional?: boolean;
@@ -1057,6 +1069,7 @@ interface DocumentCardProps {
 }
 
 function DocumentCard({
+  riderId,
   docType,
   document,
   isOptional = false,
@@ -1223,6 +1236,26 @@ function DocumentCard({
               )}
             </div>
           )}
+
+          {/* Agent electronic verification — only for unverified manual uploads
+              of doc kinds the engine supports. Verified docs never show this. */}
+          {document.verificationMethod === "MANUAL_UPLOAD" &&
+            !document.verified &&
+            !isDisabled &&
+            EV_KIND_BY_DOC_TYPE[docType] ? (
+            <ElectronicVerifyPanel
+              subjectType="rider"
+              subjectId={riderId}
+              docKind={EV_KIND_BY_DOC_TYPE[docType]}
+              verified={document.verified}
+              prefill={{
+                number: document.docNumber,
+                name: document.extractedName,
+                dob: document.extractedDob,
+              }}
+              onVerified={() => onApprove()}
+            />
+          ) : null}
         </>
       ) : (
         <div className="text-center py-8 text-gray-400">
