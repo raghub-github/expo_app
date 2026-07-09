@@ -3282,7 +3282,6 @@ export default function CheckoutScreen() {
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
-                  clipToPadding={false}
                   contentContainerStyle={[
                     styles.upsellScrollContent,
                     { gap: upsellChipLayout.gap, paddingRight: 16 },

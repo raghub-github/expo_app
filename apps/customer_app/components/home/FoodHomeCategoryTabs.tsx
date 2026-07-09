@@ -303,7 +303,7 @@ export function FoodHomeCategoryTabs({
     for (let i = 0; i < entries.length; i += GRID_FIRST_CATEGORY_PAGE_COLUMNS) {
       chunks.push(entries.slice(i, i + GRID_FIRST_CATEGORY_PAGE_COLUMNS));
     }
-    return chunks.length > 0 ? chunks : [[{ kind: "all" }]];
+    return chunks.length > 0 ? chunks : [[{ kind: "all" } as const]];
   }, [entries]);
 
   const renderTab = (entry: TabEntry, key: string) => {

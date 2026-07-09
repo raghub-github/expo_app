@@ -255,7 +255,7 @@ export function MerchantMenuCartSheet({
     const seen = new Set<string>();
     const result: ThumbItem[] = [];
     for (const item of items) {
-      const key = `${item.id}:${item.menuItemId ?? ""}`;
+      const key = `${item.menuItemId ?? ""}:${item.variantId ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       const raw = item.imageUrl?.trim();

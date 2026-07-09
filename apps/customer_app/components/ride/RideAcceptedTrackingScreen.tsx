@@ -921,7 +921,7 @@ export function RideAcceptedTrackingScreen({
       <RideCancelConfirmSheet
         visible={cancelFlowStep === "confirm"}
         loading={cancelLoading}
-        heroImage={rideVehicleImage}
+        heroImage={rideVehicleImage ?? undefined}
         message="Your captain may already be on the way. Cancelling now may apply fees depending on ride status."
         confirmLabel="Cancel my ride"
         keepLabel="Keep ride"

@@ -1283,7 +1283,7 @@ export default function RideSearchingScreen() {
         decisionRemainingSec={tipBoostDecisionRemainingSec}
         orderTotal={fare}
         existingTipAmount={activeTipAmount}
-        heroImage={rideImage}
+        heroImage={rideImage ?? undefined}
         onAddTipAndContinue={(tip) => void handleExtendSearch(tip)}
         onContinueWithoutTip={handleContinueWithoutTip}
         onCancelOrder={handleTipBoostCancel}
@@ -1320,7 +1320,7 @@ export default function RideSearchingScreen() {
       <RideCancelConfirmSheet
         visible={cancelFlowStep === "confirm"}
         loading={cancelLoading}
-        heroImage={rideImage}
+        heroImage={rideImage ?? undefined}
         onConfirm={() => void executeCancelRide()}
         onKeepSearching={closeCancelFlow}
         onClose={closeCancelFlow}

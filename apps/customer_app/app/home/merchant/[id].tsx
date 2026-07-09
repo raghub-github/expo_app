@@ -215,10 +215,17 @@ export default function MerchantDetailScreen() {
   const didRestoreScrollRef = useRef(false);
   const userMenuScrollStarted = useSharedValue(savedScrollOffset > 0);
 
+  // Arm scroll-restore ONCE per store. Re-arming on every `savedScrollOffset`
+  // change (which `onScrollEnd` writes on every scroll settle) turned the
+  // one-shot restore into a feedback loop: restore → scrollTo → onScrollEnd →
+  // savedScrollOffset changes → re-arm → restore … which made the menu jump up
+  // and down a few seconds after load. Only reset when the store actually
+  // changes; the user's own scrolling must not re-trigger a restore.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     userMenuScrollStarted.value = savedScrollOffset > 0;
     didRestoreScrollRef.current = false;
-  }, [merchantId, savedScrollOffset, userMenuScrollStarted]);
+  }, [merchantId]);
 
   const cancelScheduledMenuScroll = useCallback(() => {
     for (const timer of menuScrollTimersRef.current) {
@@ -1228,7 +1235,7 @@ export default function MerchantDetailScreen() {
 
     return () => {
       clearTimeout(t1);
-      clearHighlight();
+      clearTimeout(clearHighlight);
     };
   }, [focusItemId, sections, flashIndexMap, userMenuScrollStarted]);
 
@@ -1743,7 +1750,7 @@ const styles = StyleSheet.create({
   },
   retryBtn: {
     marginTop: 18,
-    backgroundColor: GatiMitraColors.primary,
+    backgroundColor: GatiMitraColors.primaryMint,
     paddingHorizontal: 22,
     paddingVertical: 12,
     borderRadius: 10,
@@ -1754,7 +1761,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   retryLinkText: {
-    color: GatiMitraColors.primary,
+    color: GatiMitraColors.primaryMint,
     fontSize: 14,
     fontWeight: "600",
   },

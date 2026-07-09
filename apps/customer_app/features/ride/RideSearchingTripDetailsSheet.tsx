@@ -25,7 +25,7 @@ type StopItem = {
 export type RideSearchingTripDetailsSheetProps = {
   visible: boolean;
   rideName: string;
-  rideImage: ImageSourcePropType;
+  rideImage: ImageSourcePropType | null;
   pickupAddress: string;
   dropAddress: string;
   stops?: StopItem[];
@@ -106,7 +106,9 @@ export function RideSearchingTripDetailsSheet({
             <Text style={styles.statusLabel}>{statusLabel}</Text>
 
             <View style={styles.serviceCard}>
-              <Image source={rideImage} style={styles.serviceImage} resizeMode="contain" />
+              {rideImage ? (
+                <Image source={rideImage} style={styles.serviceImage} resizeMode="contain" />
+              ) : null}
               <Text style={styles.serviceName}>{rideName}</Text>
               <Text style={styles.serviceFare}>
                 ₹{Number.isFinite(totalFare) ? totalFare : "—"}

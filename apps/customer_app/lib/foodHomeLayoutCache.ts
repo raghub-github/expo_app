@@ -203,7 +203,7 @@ export async function prefetchFoodHomeLayout(
   const queryKey = buildFoodHomeLayoutQueryKey(hints);
   const key = JSON.stringify(queryKey);
   const existing = queryClient.getQueryData<FoodHomeLayoutResult>(queryKey);
-  const queryState = queryClient.getQueryState({ queryKey });
+  const queryState = queryClient.getQueryState(queryKey);
   const isFresh =
     existing?.layoutKey &&
     queryState?.dataUpdatedAt != null &&

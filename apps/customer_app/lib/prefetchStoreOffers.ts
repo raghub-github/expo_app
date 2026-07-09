@@ -83,7 +83,7 @@ export async function prefetchStoreOffers(
 ): Promise<void> {
   if (!merchantId) return;
   const queryKey = buildStoreOffersQueryKey(merchantId, geo);
-  const state = queryClient.getQueryState({ queryKey });
+  const state = queryClient.getQueryState(queryKey);
   if (
     state?.dataUpdatedAt != null &&
     Date.now() - state.dataUpdatedAt < STORE_OFFERS_STALE_MS

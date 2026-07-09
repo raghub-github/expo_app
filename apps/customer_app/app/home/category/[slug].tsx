@@ -42,6 +42,7 @@ import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
+import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   fetchUserAppCategoriesWithCache,
   getUserAppCategoriesCachedAt,
@@ -209,7 +210,9 @@ function DishCard({
         {imageUrl ? (
           <Image source={{ uri: imageUrl }} style={styles.dishImage} resizeMode="cover" />
         ) : (
-          <Image source={defaultMerchantImage()} style={styles.dishImage} resizeMode="cover" />
+          defaultMerchantImage() ? (
+            <Image source={defaultMerchantImage()!} style={styles.dishImage} resizeMode="cover" />
+          ) : null
         )}
         {offerBadge ? (
           <View style={[styles.offerTag, offerBadge.includes("50") && styles.offerTagBlue]}>
@@ -882,7 +885,9 @@ export default function CategoryBrowseScreen() {
                       {featuredHero ? (
                         <Image source={{ uri: featuredHero }} style={styles.featuredImage} resizeMode="cover" />
                       ) : (
-                        <Image source={defaultMerchantImage()} style={styles.featuredImage} resizeMode="cover" />
+                        defaultMerchantImage() ? (
+                          <Image source={defaultMerchantImage()!} style={styles.featuredImage} resizeMode="cover" />
+                        ) : null
                       )}
                       <View style={styles.featuredOfferTag}>
                         <Text style={styles.featuredOfferText}>Flat 50% OFF</Text>

@@ -23,7 +23,9 @@ export function RideHistoryRow({ order, onPress }: Props) {
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.85}>
       <View style={styles.iconWrap}>
-        <Image source={vehicleImage} style={styles.vehicleImage} resizeMode="contain" />
+        {vehicleImage ? (
+          <Image source={vehicleImage} style={styles.vehicleImage} resizeMode="contain" />
+        ) : null}
       </View>
 
       <View style={styles.content}>

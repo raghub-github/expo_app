@@ -3,7 +3,7 @@
  * Banner carousel on image with manual swipe.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
 import { useEffect, useMemo } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -71,7 +71,7 @@ export function MerchantGridCard({
             onPress={cardPress.onPress}
             onPressIn={cardPress.onPressIn}
             onPressOut={cardPress.onPressOut}
-            onTouchMove={cardPress.onTouchMove}
+            {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
             activeOpacity={0.92}
             style={styles.imageTap}
           >
@@ -111,7 +111,7 @@ export function MerchantGridCard({
         onPress={cardPress.onPress}
         onPressIn={cardPress.onPressIn}
         onPressOut={cardPress.onPressOut}
-        onTouchMove={cardPress.onTouchMove}
+        {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
         activeOpacity={0.7}
         style={styles.body}
       >

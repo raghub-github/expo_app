@@ -28,6 +28,7 @@ import {
   resolveMapCenter,
 } from "@/lib/map-coordinates";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { useQueryClient } from "@tanstack/react-query";
 // Full address is collected on a separate screen after map confirm.
 
 const TEAL = "#14b8a6";
@@ -66,6 +67,7 @@ function AddressRowSkeleton() {
 
 export default function LocationMapScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
     latitude?: string;

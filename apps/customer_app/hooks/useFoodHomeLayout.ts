@@ -97,11 +97,12 @@ export function useFoodHomeLayout(
     initialData: syncCached ?? bootLayout,
   });
 
-  const effectiveLayout = query.data ?? bootLayout;
+  const effectiveLayout = (query.data ?? bootLayout) as FoodHomeLayoutResult | undefined;
   const layoutReady = !canQuery || effectiveLayout != null || query.isError;
+  const effectiveKey = effectiveLayout ? effectiveLayout.layoutKey : null;
   const layoutKey: FoodHomeLayoutKey | null = layoutReady
-    ? (effectiveLayout?.layoutKey ?? DEFAULT_FOOD_HOME_LAYOUT)
-    : effectiveLayout?.layoutKey ?? null;
+    ? (effectiveKey ?? DEFAULT_FOOD_HOME_LAYOUT)
+    : effectiveKey;
 
   useLayoutEffect(() => {
     if (effectiveLayout?.layoutKey === "grid_first") {

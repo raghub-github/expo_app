@@ -279,7 +279,9 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
               </View>
             </View>
             <View style={styles.summaryRight}>
-              <Image source={vehicleImage} style={styles.summaryVehicle} resizeMode="contain" />
+              {vehicleImage ? (
+                <Image source={vehicleImage} style={styles.summaryVehicle} resizeMode="contain" />
+              ) : null}
               <View
                 style={[
                   styles.statusBadge,

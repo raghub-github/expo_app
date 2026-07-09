@@ -64,11 +64,11 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const rideLabel = getRideServiceLabel(order.rideType);
 
-  const livePincode = useLocationStore((s) => s.pincode);
-  const liveState = useLocationStore((s) => s.state);
-  const liveCity = useLocationStore((s) => s.city);
-  const storeLat = useLocationStore((s) => s.latitude);
-  const storeLng = useLocationStore((s) => s.longitude);
+  const livePincode = useLocationStore((s) => s.address?.pincode ?? null);
+  const liveState = useLocationStore((s) => s.address?.state ?? null);
+  const liveCity = useLocationStore((s) => s.address?.city ?? null);
+  const storeLat = useLocationStore((s) => s.coords?.latitude ?? null);
+  const storeLng = useLocationStore((s) => s.coords?.longitude ?? null);
   const liveLat = order.deliveryLat ?? order.pickupLat ?? storeLat;
   const liveLng = order.deliveryLng ?? order.pickupLng ?? storeLng;
 
@@ -144,7 +144,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     }
 
     const primary = [...discounts].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))[0];
-    const meta = primary.meta ?? {};
+    const meta = ((primary as { meta?: Record<string, unknown> }).meta ?? {}) as Record<string, unknown>;
     const platformId =
       typeof meta.platformOfferId === "number" ? (meta.platformOfferId as number) : null;
     const merchantId =
@@ -780,9 +780,9 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         visible={razorpayVisible}
         orderParams={razorpayParams}
         prefill={{
-          name: profile?.fullName ?? undefined,
+          name: profile?.full_name ?? undefined,
           email: profile?.email ?? undefined,
-          contact: profile?.primaryMobile ?? undefined,
+          contact: profile?.mobile_number ?? undefined,
         }}
         themeColor={MINT_DARK}
         onSuccess={(result) => void finalizeRidePayment(result)}

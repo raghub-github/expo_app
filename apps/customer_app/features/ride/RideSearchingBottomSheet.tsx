@@ -27,7 +27,7 @@ type Props = {
   subtitle: string;
   elapsedLabel?: string;
   fare: number;
-  rideImage: ImageSourcePropType;
+  rideImage: ImageSourcePropType | null;
   rideName: string;
   pickupLabel: string;
   dropLabel: string;
@@ -233,7 +233,9 @@ export function RideSearchingBottomSheet({
             />
 
             <View style={styles.summaryCard}>
-              <Image source={rideImage} style={styles.rideImage} resizeMode="contain" />
+              {rideImage ? (
+                <Image source={rideImage} style={styles.rideImage} resizeMode="contain" />
+              ) : null}
 
               <View style={styles.summaryCenter}>
                 <View style={styles.rideNameRow}>

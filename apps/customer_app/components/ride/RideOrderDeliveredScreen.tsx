@@ -412,7 +412,9 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
               ) : (
                 <Text style={styles.receiptSub}>{formatRideHistoryDateTime(order.createdAt)}</Text>
               )}
-              <RNImage source={vehicleImage} style={styles.vehicleHero} resizeMode="contain" />
+              {vehicleImage ? (
+                <RNImage source={vehicleImage} style={styles.vehicleHero} resizeMode="contain" />
+              ) : null}
               <Text style={styles.fareAmount}>
                 {formatRideFare(deliveredBill.total)}
                 <Text style={styles.estTag}> (.est)</Text>

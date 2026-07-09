@@ -111,7 +111,9 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
           style={styles.gradient}
         >
           <View style={styles.iconWrap}>
-            <Image source={rideVehicleImage} style={styles.bikeIcon} resizeMode="contain" />
+            {rideVehicleImage ? (
+              <Image source={rideVehicleImage} style={styles.bikeIcon} resizeMode="contain" />
+            ) : null}
           </View>
           <View style={styles.textCol}>
             <Text style={styles.title} numberOfLines={1}>

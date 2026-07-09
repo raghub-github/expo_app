@@ -43,7 +43,9 @@ export function RideVehicleFareDetailsSheet({
       <View style={styles.handle} />
 
       <View style={styles.headerRow}>
-        <Image source={resolveRideImage(imageKey)} style={styles.headerIcon} resizeMode="contain" />
+        {resolveRideImage(imageKey) ? (
+          <Image source={resolveRideImage(imageKey)!} style={styles.headerIcon} resizeMode="contain" />
+        ) : null}
         <Text style={styles.title}>{vehicleName} Fare Details</Text>
       </View>
 

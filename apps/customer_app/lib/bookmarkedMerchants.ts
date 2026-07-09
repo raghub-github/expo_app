@@ -37,6 +37,7 @@ async function fetchBookmarkedMerchantRow(
 
   try {
     const detail = await merchantService.getMerchantById(storeId);
+    if (!detail) throw new Error("merchant_not_found");
     const { menu: _menu, ...summary } = detail;
     return { ...summary, serviceable };
   } catch {

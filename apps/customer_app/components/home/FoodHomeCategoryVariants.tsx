@@ -18,7 +18,7 @@ type Props = {
 
 export function FoodHomeCategoryGrid({ items, columns = 4, maxItems = 8, onSelect }: Props) {
   const visible = items.slice(0, maxItems);
-  const itemWidthPercent = `${100 / columns}%`;
+  const itemWidthPercent = `${100 / columns}%` as `${number}%`;
 
   return (
     <View style={styles.grid}>

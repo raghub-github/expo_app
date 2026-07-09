@@ -14,6 +14,7 @@ import {
   Image,
   ActivityIndicator,
   ScrollView,
+  type ImageSourcePropType,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -119,7 +120,7 @@ function NoTipBoostView({
   onSelectTip: (amount: number) => void;
   loadingAction: TipBoostLoadingAction;
   decisionRemainingSec: number;
-  heroImage: ImageSourcePropType;
+  heroImage: ImageSourcePropType | null;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
@@ -228,7 +229,7 @@ function TipAlreadyAddedView({
   onBackFromIncrease: () => void;
   loadingAction: TipBoostLoadingAction;
   decisionRemainingSec: number;
-  heroImage: ImageSourcePropType;
+  heroImage: ImageSourcePropType | null;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;

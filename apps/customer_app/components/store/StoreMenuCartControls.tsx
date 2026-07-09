@@ -57,8 +57,6 @@ export const StoreMenuAddButton = React.memo(function StoreMenuAddButton({
       <Pressable
         onPressIn={handlePressIn}
         disabled={disabled}
-        delayPressIn={0}
-        delayPressOut={0}
         hitSlop={ADD_HIT_SLOP}
         pressRetentionOffset={ADD_PRESS_RETENTION}
         accessibilityRole="button"
@@ -126,7 +124,6 @@ export const StoreMenuQtyStepper = React.memo(function StoreMenuQtyStepper({
       <Pressable
         onPressIn={handleDec}
         disabled={disabled}
-        delayPressIn={0}
         hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
         pressRetentionOffset={ADD_PRESS_RETENTION}
         accessibilityRole="button"
@@ -141,7 +138,6 @@ export const StoreMenuQtyStepper = React.memo(function StoreMenuQtyStepper({
       <Pressable
         onPressIn={handleInc}
         disabled={disabled}
-        delayPressIn={0}
         hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
         pressRetentionOffset={ADD_PRESS_RETENTION}
         accessibilityRole="button"

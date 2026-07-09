@@ -82,6 +82,12 @@ export type MenuItem = {
   hasVariants?: boolean;
   /** False when item is out of stock; omitted means available. */
   inStock?: boolean;
+  /**
+   * Optional stable row identifier used by the merchant menu list when the
+   * same MenuItem appears under multiple sections (recommended + category).
+   * Falls back to `id` when absent. Assigned by the list builder, not the API.
+   */
+  listRowKey?: string;
 };
 
 export type MenuItemFullConfig = {
