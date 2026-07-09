@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR, { mutate } from "swr";
-import { UserCheck, ExternalLink, Clock } from "lucide-react";
+import { UserCheck, ExternalLink, Clock, Zap, Loader2 } from "lucide-react";
 
 type Row = {
   review_id: number;
@@ -49,6 +49,82 @@ export default function VerificationQueuePage(props: {
   const [busy, setBusy] = useState<number | null>(null);
   const [openRow, setOpenRow] = useState<Row | null>(null);
   const [notes, setNotes] = useState("");
+
+  // ── Agent-triggered electronic verification (same Cashfree path as auto) ──
+  const EV_SUPPORTED = new Set(["pan", "gstin", "bank_account", "driving_licence", "vehicle_rc", "ifsc"]);
+  type EvResult =
+    | { state: "verified"; data: Record<string, unknown> }
+    | { state: "rejected"; reason: string }
+    | { state: "error"; message: string };
+  const [evForm, setEvForm] = useState<Record<string, string>>({});
+  const [evBusy, setEvBusy] = useState(false);
+  const [evResult, setEvResult] = useState<EvResult | null>(null);
+
+  useEffect(() => {
+    // Prefill the doc number from the request's business identifier.
+    setEvResult(null);
+    setEvForm(openRow?.business_identifier ? { number: openRow.business_identifier } : {});
+  }, [openRow?.review_id]);
+
+  async function runElectronicVerify(row: Row): Promise<void> {
+    setEvBusy(true);
+    setEvResult(null);
+    try {
+      const f = (k: string) => (evForm[k] ?? "").trim();
+      const common = { subjectType: row.subject_type, subjectId: row.subject_id, docKind: row.document_kind };
+      const body: Record<string, unknown> =
+        row.document_kind === "pan"
+          ? { ...common, pan: f("number").toUpperCase(), name: f("name") }
+          : row.document_kind === "gstin"
+            ? { ...common, gstin: f("number").toUpperCase(), businessName: f("name") || undefined }
+            : row.document_kind === "bank_account"
+              ? { ...common, bankAccount: f("number").replace(/\D/g, ""), ifsc: f("ifsc").toUpperCase(), name: f("name") || undefined }
+              : row.document_kind === "driving_licence"
+                ? { ...common, dlNumber: f("number").toUpperCase(), dob: f("dob") }
+                : row.document_kind === "vehicle_rc"
+                  ? { ...common, vehicleNumber: f("number").toUpperCase() }
+                  : { ...common, ifsc: f("number").toUpperCase() };
+
+      const res = await fetch("/api/super-admin/verification/submit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d?.success) {
+        setEvResult({ state: "error", message: String(d?.error ?? `HTTP ${res.status}`) });
+        return;
+      }
+      const o = (d.outcome ?? {}) as {
+        kind?: string; status?: string; status_reason?: string;
+        verified_data?: Record<string, unknown>; reason?: string; detail?: string | null;
+      };
+      if (o.kind === "auto" && o.status === "verified") {
+        setEvResult({ state: "verified", data: o.verified_data ?? {} });
+      } else if (o.kind === "auto") {
+        setEvResult({ state: "rejected", reason: o.status_reason || o.status || "rejected" });
+      } else {
+        // kind manual → provider error / policy filtered; show the real detail.
+        setEvResult({ state: "error", message: o.detail || o.reason || "Provider unavailable." });
+      }
+    } catch (e) {
+      setEvResult({ state: "error", message: e instanceof Error ? e.message : "Request failed" });
+    } finally {
+      setEvBusy(false);
+    }
+  }
+
+  const evField = (key: string, label: string, placeholder: string) => (
+    <div>
+      <label className="mb-0.5 block text-[11px] font-medium text-slate-500">{label}</label>
+      <input
+        value={evForm[key] ?? ""}
+        onChange={(e) => setEvForm((p) => ({ ...p, [key]: e.target.value }))}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-slate-200 px-2 py-1.5 font-mono text-xs"
+      />
+    </div>
+  );
 
   async function assign(row: Row): Promise<void> {
     setBusy(row.review_id);
@@ -196,6 +272,74 @@ export default function VerificationQueuePage(props: {
                   {JSON.stringify(openRow.verified_data, null, 2)}
                 </pre>
               </details>
+            ) : null}
+
+            {/* Agent electronic verification — run the same Cashfree check the
+                auto path uses, with the agent entering/correcting the details. */}
+            {EV_SUPPORTED.has(openRow.document_kind) ? (
+              <div className="mt-3 rounded-md border border-indigo-100 bg-indigo-50/50 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-indigo-800">
+                  <Zap className="h-3.5 w-3.5" /> Electronic verification (Cashfree)
+                </div>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+                  {evField(
+                    "number",
+                    openRow.document_kind === "pan" ? "PAN number" :
+                    openRow.document_kind === "gstin" ? "GSTIN" :
+                    openRow.document_kind === "bank_account" ? "Account number" :
+                    openRow.document_kind === "driving_licence" ? "DL number" :
+                    openRow.document_kind === "vehicle_rc" ? "Vehicle number" : "IFSC",
+                    "Document number",
+                  )}
+                  {openRow.document_kind === "pan" ? evField("name", "Name as on PAN", "Full name") : null}
+                  {openRow.document_kind === "gstin" ? evField("name", "Business name (optional)", "Registered business") : null}
+                  {openRow.document_kind === "bank_account" ? evField("ifsc", "IFSC", "SBIN0001234") : null}
+                  {openRow.document_kind === "bank_account" ? evField("name", "Holder name (optional)", "Account holder") : null}
+                  {openRow.document_kind === "driving_licence" ? evField("dob", "DOB (YYYY-MM-DD)", "1990-01-31") : null}
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    onClick={() => runElectronicVerify(openRow)}
+                    disabled={evBusy || !(evForm.number ?? "").trim()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {evBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                    {evBusy ? "Verifying…" : "Run verification"}
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Records a fresh attempt with full audit trail.
+                  </span>
+                </div>
+                {evResult?.state === "verified" ? (
+                  <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2">
+                    <div className="text-xs font-semibold text-emerald-800">✓ Provider verified this document</div>
+                    <dl className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 md:grid-cols-2">
+                      {Object.entries(evResult.data)
+                        .filter(([, v]) => v != null && typeof v !== "object")
+                        .slice(0, 8)
+                        .map(([k, v]) => (
+                          <div key={k} className="flex gap-1 text-[11px]">
+                            <dt className="text-emerald-700">{k}:</dt>
+                            <dd className="font-medium text-emerald-900">{String(v)}</dd>
+                          </div>
+                        ))}
+                    </dl>
+                    <div className="mt-1 text-[11px] text-emerald-700">
+                      Use <b>Verify</b> below to resolve this review.
+                    </div>
+                  </div>
+                ) : null}
+                {evResult?.state === "rejected" ? (
+                  <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
+                    <b>Provider rejected:</b> {evResult.reason}
+                  </div>
+                ) : null}
+                {evResult?.state === "error" ? (
+                  <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                    <b>Could not verify:</b> {evResult.message}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
 
             <div className="mt-3">
