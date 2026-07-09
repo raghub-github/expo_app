@@ -321,3 +321,67 @@ export function useRcRegistrationCheck(rcValue: string, riderId?: string, minLen
   });
 }
 
+
+// ── Electronic verification (Cashfree via backend policy engine) ────────────
+
+export type VerificationModesResponse = {
+  success: boolean;
+  /** document_kind → 'manual' | 'auto' | 'hybrid' | 'disabled' */
+  modes: Record<string, string>;
+};
+
+/**
+ * Per-document verification modes from the super-admin Policy Center.
+ * Drives the hybrid onboarding flow:
+ *   manual  → classic photo-upload step
+ *   auto    → number-only; failure blocks (retry later, no upload shown)
+ *   hybrid  → number-only; failure reveals the photo-upload fallback
+ */
+export function useVerificationModes() {
+  const session = useSessionStore((s) => s.session);
+  return useQuery({
+    queryKey: ["onboarding", "verification-modes"],
+    queryFn: async (): Promise<VerificationModesResponse> => {
+      return getJson<VerificationModesResponse>(
+        `${API_BASE()}/v1/onboarding/verification-modes`,
+        { headers: { authorization: `Bearer ${session?.accessToken ?? ""}` } }
+      );
+    },
+    enabled: Boolean(session?.accessToken),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+}
+
+export type VerifyDocumentRequest = {
+  riderId: string;
+  docKind: "pan" | "driving_licence" | "vehicle_rc";
+  pan?: string;
+  name?: string;
+  dlNumber?: string;
+  dob?: string;
+  vehicleNumber?: string;
+};
+
+export type VerifyDocumentResponse = {
+  success: boolean;
+  outcome?: "verified" | "failed" | "manual";
+  mode?: string;
+  verifiedData?: Record<string, unknown>;
+  error?: string;
+};
+
+/** Interactive electronic verification for PAN / DL / RC during onboarding. */
+export function useVerifyDocument() {
+  const session = useSessionStore((s) => s.session);
+  return useMutation({
+    mutationFn: async (body: VerifyDocumentRequest): Promise<VerifyDocumentResponse> => {
+      if (!session?.accessToken) throw new Error("Not authenticated");
+      return postJson<VerifyDocumentResponse>(
+        `${API_BASE()}/v1/onboarding/verify-document`,
+        body,
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+  });
+}

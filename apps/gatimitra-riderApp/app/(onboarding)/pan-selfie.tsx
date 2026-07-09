@@ -23,7 +23,14 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { useSaveOnboardingStep, useRiderStatus, usePanRegistrationCheck } from "@/src/hooks/useOnboarding";
+import {
+  useSaveOnboardingStep,
+  useRiderStatus,
+  usePanRegistrationCheck,
+  useVerificationModes,
+  useVerifyDocument,
+} from "@/src/hooks/useOnboarding";
+import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import { onboardingStepToRoute, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
@@ -347,8 +354,59 @@ export default function PanSelfieScreen() {
     panCheckQuery.data?.registered === false;
   const panPhotoValid = Boolean(panPhotoUri);
   const selfieValid = Boolean(selfieUri);
+
+  // ── Electronic verification (Policy Center mode for rider PAN) ───────────
+  //   manual → classic photo flow; auto → number-only, failure blocks;
+  //   hybrid → number-only, failure reveals the photo upload as fallback.
+  const { data: modesData } = useVerificationModes();
+  const verifyDocument = useVerifyDocument();
+  const panMode = (modesData?.modes?.["pan"] ?? "manual") as "manual" | "auto" | "hybrid" | "disabled";
+  const panElectronic = panMode === "auto" || panMode === "hybrid";
+  const [panEv, setPanEv] = useState<EvState>({ phase: "idle" });
+  useEffect(() => {
+    setPanEv({ phase: "idle" });
+  }, [panNumber]);
+
+  const runPanElectronicVerify = async () => {
+    if (!data.riderId) return;
+    setPanEv({ phase: "verifying" });
+    try {
+      const res = await verifyDocument.mutateAsync({
+        riderId: data.riderId,
+        docKind: "pan",
+        pan: panNumber.toUpperCase(),
+        name: data.fullName || undefined,
+      });
+      if (res.outcome === "verified") {
+        setPanEv({ phase: "verified", details: res.verifiedData ?? {} });
+      } else if (res.outcome === "manual") {
+        setPanEv({ phase: "manual" });
+      } else {
+        setPanEv({ phase: "failed", error: res.error || "PAN could not be verified." });
+      }
+    } catch (e) {
+      setPanEv({ phase: "failed", error: e instanceof Error ? e.message : "Verification failed." });
+    }
+  };
+
+  /** Photo needed right now? Electronic modes hide it until hybrid fallback. */
+  const panPhotoRequiredNow =
+    !panElectronic || panEv.phase === "failed" || panEv.phase === "manual";
+  const showPanPhotoBox =
+    (panPhotoRequiredNow && !(panElectronic && panEv.phase === "failed" && panMode === "auto")) ||
+    Boolean(panPhotoUri);
+
   const canContinuePan =
-    panValid && !panAlreadyRegistered && !checkingPan && panPhotoValid && !uploading;
+    panValid &&
+    !panAlreadyRegistered &&
+    !checkingPan &&
+    !uploading &&
+    (panElectronic
+      ? panEv.phase === "verified" ||
+        ((panEv.phase === "failed" || panEv.phase === "manual") &&
+          panMode === "hybrid" &&
+          panPhotoValid)
+      : panPhotoValid);
   const canContinueSelfie =
     selfieValid && Boolean(selfieSignedUrl) && !submitting && !uploading;
 
@@ -545,8 +603,13 @@ export default function PanSelfieScreen() {
       return;
     }
 
-    if (!panPhotoUri) {
+    // Electronic modes: the photo is only mandatory on the hybrid fallback.
+    if (!panPhotoUri && panPhotoRequiredNow && !(panElectronic && panEv.phase === "verified")) {
       notifyOnboardingToast(tx("panPhotoRequired"));
+      return;
+    }
+    if (panElectronic && panMode === "auto" && panEv.phase !== "verified") {
+      notifyOnboardingToast("Please verify your PAN electronically to continue.");
       return;
     }
     if (!data.riderId) {
@@ -563,29 +626,35 @@ export default function PanSelfieScreen() {
 
     try {
       const riderId = parseInt(data.riderId, 10);
-      const panUploadResult = await uploadToR2(
-        panPhotoUri,
-        "documents",
-        session.accessToken,
-        buildRiderDocumentKey(riderId, "pan", "single")
-      );
-      uploadedKeys.push(panUploadResult.key);
+      let uploadedProxyUrl: string | null = null;
 
-      await saveDocument.mutateAsync({
-        riderId,
-        docType: "pan",
-        fileUrl: panUploadResult.proxyUrl,
-        r2Key: panUploadResult.key,
-        metadata: { panNumber: panNumber.toUpperCase() },
-        files: documentFileEntry(panUploadResult),
-      });
+      if (panPhotoUri) {
+        const panUploadResult = await uploadToR2(
+          panPhotoUri,
+          "documents",
+          session.accessToken,
+          buildRiderDocumentKey(riderId, "pan", "single")
+        );
+        uploadedKeys.push(panUploadResult.key);
 
-      setPanPhotoSignedUrl(panUploadResult.proxyUrl);
+        await saveDocument.mutateAsync({
+          riderId,
+          docType: "pan",
+          fileUrl: panUploadResult.proxyUrl,
+          r2Key: panUploadResult.key,
+          metadata: { panNumber: panNumber.toUpperCase() },
+          files: documentFileEntry(panUploadResult),
+        });
+
+        uploadedProxyUrl = panUploadResult.proxyUrl;
+        setPanPhotoSignedUrl(panUploadResult.proxyUrl);
+      }
+
       setPanSkipped(false);
       await setData({
         panNumber: panNumber.toUpperCase(),
-        panPhotoUri,
-        panPhotoSignedUrl: panUploadResult.proxyUrl,
+        panPhotoUri: panPhotoUri ?? undefined,
+        panPhotoSignedUrl: uploadedProxyUrl ?? undefined,
         panSkipped: false,
       });
 
@@ -794,8 +863,20 @@ export default function PanSelfieScreen() {
                         {tx("masked")}: {maskedPan}
                       </Text>
                     ) : null}
+
+                    {/* Number-first electronic verification (auto / hybrid) */}
+                    {panElectronic ? (
+                      <ElectronicVerifyCard
+                        mode={panMode === "auto" ? "auto" : "hybrid"}
+                        state={panEv}
+                        disabled={!panValid || panAlreadyRegistered || checkingPan}
+                        onVerify={() => void runPanElectronicVerify()}
+                        verifyLabel="Verify PAN instantly"
+                      />
+                    ) : null}
                   </View>
 
+                  {showPanPhotoBox && panEv.phase !== "verified" ? (
                   <View style={styles.fieldGroup}>
                     <FieldLabel label={`${tx("panPhotoLabel")} (${tx("panOptional")})`} />
                     <Text style={styles.sectionHint}>{tx("panPhotoHint")}</Text>
@@ -814,6 +895,7 @@ export default function PanSelfieScreen() {
                       </Pressable>
                     ) : null}
                   </View>
+                  ) : null}
 
                   <View style={styles.panActionGroup}>
                     <ContinueButton

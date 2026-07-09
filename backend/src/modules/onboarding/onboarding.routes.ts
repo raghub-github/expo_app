@@ -1210,5 +1210,140 @@ export async function onboardingRoutes(app: FastifyInstance) {
       };
     },
   );
+
+  /**
+   * GET /verification-modes — per-document verification mode for RIDER
+   * onboarding, straight from the super-admin Policy Center. The rider app
+   * uses this to render the hybrid flow:
+   *   manual  → classic photo-upload step
+   *   auto    → number-only; failure blocks (retry later, no upload)
+   *   hybrid  → number-only; failure falls back to photo upload
+   */
+  app.get("/verification-modes", async () => {
+    const { getSql } = await import("../../db/client.js");
+    const sql = getSql();
+    try {
+      const rows = (await sql`
+        SELECT document_kind::text AS document_kind, mode::text AS mode
+          FROM public.verification_policies
+         WHERE subject_type = 'rider' AND effective_to IS NULL
+      `) as unknown as Array<{ document_kind: string; mode: string }>;
+      const modes: Record<string, string> = {};
+      for (const r of rows) modes[r.document_kind] = r.mode;
+      return { success: true, modes };
+    } catch {
+      // Degrade to manual — the app then shows the classic upload flow.
+      return { success: true, modes: {} };
+    }
+  });
+
+  /**
+   * POST /verify-document — interactive electronic verification for the rider
+   * app's onboarding steps (PAN / DL / RC). Runs the same policy-gated
+   * Cashfree submit as the automatic save-step hooks; the projection to
+   * rider_documents happens inside the verification service.
+   */
+  app.post(
+    "/verify-document",
+    {
+      schema: {
+        body: z.object({
+          riderId: z.string(),
+          docKind: z.enum(["pan", "driving_licence", "vehicle_rc"]),
+          pan: z.string().optional(),
+          name: z.string().optional(),
+          dlNumber: z.string().optional(),
+          dob: z.string().optional(),
+          vehicleNumber: z.string().optional(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const b = req.body as {
+        riderId: string; docKind: "pan" | "driving_licence" | "vehicle_rc";
+        pan?: string; name?: string; dlNumber?: string; dob?: string; vehicleNumber?: string;
+      };
+      const riderIdInt = parseInt(b.riderId, 10);
+      if (!Number.isFinite(riderIdInt) || riderIdInt < 1) {
+        return reply.code(400).send({ success: false, error: "invalid_rider_id" });
+      }
+
+      const db = getDb();
+      const riderRows = await db
+        .select({ id: riders.id, name: riders.name, dob: riders.dob })
+        .from(riders)
+        .where(eq(riders.id, riderIdInt))
+        .limit(1);
+      if (riderRows.length === 0) {
+        return reply.code(404).send({ success: false, error: "rider_not_found" });
+      }
+      const rider = riderRows[0]!;
+
+      const { submitPan, submitDrivingLicence, submitVehicleRc } = await import(
+        "../verification/service.js"
+      );
+      const subject = { subjectType: "rider" as const, subjectId: riderIdInt };
+
+      try {
+        let outcome;
+        if (b.docKind === "pan") {
+          const pan = (b.pan ?? "").trim().toUpperCase();
+          if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
+            return reply.code(400).send({ success: false, error: "invalid_pan" });
+          }
+          const name = (b.name ?? rider.name ?? "").trim();
+          if (name.length < 2) {
+            return reply.code(400).send({ success: false, error: "name_required" });
+          }
+          outcome = await submitPan({ ...subject, pan, name });
+        } else if (b.docKind === "driving_licence") {
+          const dlNumber = (b.dlNumber ?? "").trim().toUpperCase();
+          const dob = (b.dob ?? rider.dob ?? "").toString().slice(0, 10);
+          if (dlNumber.length < 6) return reply.code(400).send({ success: false, error: "invalid_dl" });
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
+            return reply.code(400).send({ success: false, error: "dob_required", hint: "YYYY-MM-DD" });
+          }
+          outcome = await submitDrivingLicence({ ...subject, dlNumber, dob });
+        } else {
+          const vehicleNumber = (b.vehicleNumber ?? "").trim().toUpperCase();
+          if (vehicleNumber.length < 4) return reply.code(400).send({ success: false, error: "invalid_vehicle_number" });
+          outcome = await submitVehicleRc({ ...subject, vehicleNumber });
+        }
+
+        if (outcome.kind === "auto") {
+          const status = outcome.result.status;
+          if (status === "verified") {
+            return reply.send({
+              success: true, outcome: "verified",
+              mode: outcome.policy.mode,
+              verifiedData: outcome.result.verifiedData ?? {},
+            });
+          }
+          if (status === "manual_review" || status === "provider_processing") {
+            return reply.send({ success: true, outcome: "manual", mode: outcome.policy.mode });
+          }
+          return reply.send({
+            success: true, outcome: "failed",
+            mode: outcome.policy.mode,
+            error: outcome.result.statusReason ?? "Document could not be verified.",
+          });
+        }
+
+        const reason = outcome.reason;
+        if (reason.startsWith("provider_error") || reason === "provider_not_configured") {
+          req.log?.error?.({ reason, detail: outcome.detail }, "rider_verify_document_provider_failure");
+          return reply.send({
+            success: true, outcome: "failed", mode: outcome.policy.mode,
+            error: "Electronic verification is temporarily unavailable.",
+          });
+        }
+        // Genuine policy manual — classic upload flow.
+        return reply.send({ success: true, outcome: "manual", mode: outcome.policy.mode });
+      } catch (e) {
+        req.log?.error?.({ err: e }, "rider_verify_document_failed");
+        return reply.code(500).send({ success: false, error: "internal_error" });
+      }
+    },
+  );
 }
 

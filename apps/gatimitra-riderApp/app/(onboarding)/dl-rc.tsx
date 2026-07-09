@@ -20,7 +20,15 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { useSaveOnboardingStep, useRiderStatus, useDlRegistrationCheck, useRcRegistrationCheck } from "@/src/hooks/useOnboarding";
+import {
+  useSaveOnboardingStep,
+  useRiderStatus,
+  useDlRegistrationCheck,
+  useRcRegistrationCheck,
+  useVerificationModes,
+  useVerifyDocument,
+} from "@/src/hooks/useOnboarding";
+import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import { onboardingStepToRoute, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
@@ -439,13 +447,63 @@ export default function DlRcScreen() {
   const docFrontPhotoValid = Boolean(docDraftUri);
   const docBackPhotoValid = !needsBackPhoto || Boolean(docDraftBackUri);
   const docPhotoValid = docFrontPhotoValid && docBackPhotoValid;
+
+  // ── Electronic verification (Policy Center modes for rider DL / RC) ──────
+  const { data: evModesData } = useVerificationModes();
+  const verifyDocument = useVerifyDocument();
+  const docEvKind =
+    wizardStep === "dl" ? ("driving_licence" as const)
+    : wizardStep === "rc" ? ("vehicle_rc" as const)
+    : null;
+  const docEvMode = docEvKind
+    ? ((evModesData?.modes?.[docEvKind] ?? "manual") as "manual" | "auto" | "hybrid" | "disabled")
+    : "manual";
+  const docElectronic = docEvKind != null && (docEvMode === "auto" || docEvMode === "hybrid");
+  const [docEv, setDocEv] = useState<EvState>({ phase: "idle" });
+  useEffect(() => {
+    setDocEv({ phase: "idle" });
+  }, [docDraftText, wizardStep]);
+
+  const runDocElectronicVerify = async () => {
+    if (!data.riderId || !docEvKind) return;
+    setDocEv({ phase: "verifying" });
+    try {
+      const res = await verifyDocument.mutateAsync(
+        docEvKind === "driving_licence"
+          ? { riderId: data.riderId, docKind: "driving_licence", dlNumber: docDraftText.trim().toUpperCase() }
+          : { riderId: data.riderId, docKind: "vehicle_rc", vehicleNumber: docDraftText.trim().toUpperCase() },
+      );
+      if (res.outcome === "verified") {
+        setDocEv({ phase: "verified", details: res.verifiedData ?? {} });
+      } else if (res.outcome === "manual") {
+        setDocEv({ phase: "manual" });
+      } else {
+        setDocEv({ phase: "failed", error: res.error || "Document could not be verified." });
+      }
+    } catch (e) {
+      setDocEv({ phase: "failed", error: e instanceof Error ? e.message : "Verification failed." });
+    }
+  };
+
+  /** Photos needed right now? Electronic modes hide them until hybrid fallback. */
+  const docPhotoRequiredNow =
+    !docElectronic || docEv.phase === "failed" || docEv.phase === "manual";
+  const showDocPhotoBox =
+    (docPhotoRequiredNow && !(docElectronic && docEv.phase === "failed" && docEvMode === "auto")) ||
+    Boolean(docDraftUri);
+
   const canContinueDoc =
     docTextValid &&
     !docAlreadyRegistered &&
     !checkingDocDuplicate &&
-    docPhotoValid &&
     !uploading &&
-    !submitting;
+    !submitting &&
+    (docElectronic
+      ? docEv.phase === "verified" ||
+        ((docEv.phase === "failed" || docEv.phase === "manual") &&
+          docEvMode === "hybrid" &&
+          docPhotoValid)
+      : docPhotoValid);
   const canContinueCategory =
     Boolean(selectedCategory?.isActive) &&
     categoryHasActiveVehicles(sortedVehicleTypes, categoryChoice) &&
@@ -820,11 +878,16 @@ export default function DlRcScreen() {
       );
       return;
     }
-    if (!docDraftUri) {
+    const docVerifiedElectronically = docElectronic && docEv.phase === "verified";
+    if (docElectronic && docEvMode === "auto" && docEv.phase !== "verified") {
+      notifyOnboardingToast("Please verify this document electronically to continue.");
+      return;
+    }
+    if (!docDraftUri && !docVerifiedElectronically) {
       notifyOnboardingToast(needsBackPhoto ? tx("dlFrontPhotoRequired") : tx("dlPhotoRequired"));
       return;
     }
-    if (needsBackPhoto && !docDraftBackUri) {
+    if (docDraftUri && needsBackPhoto && !docDraftBackUri) {
       notifyOnboardingToast(tx("dlBackPhotoRequired"));
       return;
     }
@@ -842,45 +905,51 @@ export default function DlRcScreen() {
 
     try {
       const riderId = parseInt(data.riderId, 10);
-      const frontUpload = await uploadToR2(
-        docDraftUri,
-        "documents",
-        session.accessToken,
-        buildRiderDocumentKey(riderId, doc.code, needsBackPhoto ? "front" : "single")
-      );
-      uploadedKeys.push(frontUpload.key);
-
-      let backUpload: { proxyUrl: string; key: string } | undefined;
-      if (needsBackPhoto && docDraftBackUri) {
-        backUpload = await uploadToR2(
-          docDraftBackUri,
-          "documents",
-          session.accessToken,
-          buildRiderDocumentKey(riderId, doc.code, "back")
-        );
-        uploadedKeys.push(backUpload.key);
-      }
-
       const textValue = doc.requiresTextField ? docDraftText.trim().toUpperCase() : "";
       const metadata: Record<string, string> = {};
       if (doc.requiresTextField) {
         metadata[metadataKeyForDocText(doc.code)] = textValue;
       }
 
-      await saveDocument.mutateAsync({
-        riderId,
-        docType: doc.code,
-        fileUrl: frontUpload.proxyUrl,
-        r2Key: frontUpload.key,
-        metadata,
-        files: documentFileEntries(frontUpload, backUpload),
-      });
+      let frontUpload: { proxyUrl: string; key: string } | undefined;
+      let backUpload: { proxyUrl: string; key: string } | undefined;
+
+      if (docDraftUri) {
+        frontUpload = await uploadToR2(
+          docDraftUri,
+          "documents",
+          session.accessToken,
+          buildRiderDocumentKey(riderId, doc.code, needsBackPhoto ? "front" : "single")
+        );
+        uploadedKeys.push(frontUpload.key);
+
+        if (needsBackPhoto && docDraftBackUri) {
+          backUpload = await uploadToR2(
+            docDraftBackUri,
+            "documents",
+            session.accessToken,
+            buildRiderDocumentKey(riderId, doc.code, "back")
+          );
+          uploadedKeys.push(backUpload.key);
+        }
+
+        await saveDocument.mutateAsync({
+          riderId,
+          docType: doc.code,
+          fileUrl: frontUpload.proxyUrl,
+          r2Key: frontUpload.key,
+          metadata,
+          files: documentFileEntries(frontUpload, backUpload),
+        });
+      }
+      // Electronically verified without a photo: nothing to upload — the
+      // verification service already recorded + projected the verified doc.
 
       const mergedAfterUpload = {
         ...data,
         ...docUploadToStorePatch(data, doc.code, {
           localUri: docDraftUri,
-          signedUrl: frontUpload.proxyUrl,
+          signedUrl: frontUpload?.proxyUrl ?? null,
           backLocalUri: docDraftBackUri,
           backSignedUrl: backUpload?.proxyUrl ?? null,
           textValue,
@@ -1063,6 +1132,18 @@ export default function DlRcScreen() {
                     }
                     optional={isOptionalDocStep}
                     skipped={isDocSkipped(data, wizardStep)}
+                    hidePhotos={docElectronic && !showDocPhotoBox && docEv.phase !== "verified" ? true : docElectronic && docEv.phase === "verified" && !docDraftUri}
+                    afterTextSlot={
+                      docElectronic ? (
+                        <ElectronicVerifyCard
+                          mode={docEvMode === "auto" ? "auto" : "hybrid"}
+                          state={docEv}
+                          disabled={!docTextValid || docAlreadyRegistered || checkingDocDuplicate}
+                          onVerify={() => void runDocElectronicVerify()}
+                          verifyLabel={wizardStep === "dl" ? "Verify DL instantly" : "Verify RC instantly"}
+                        />
+                      ) : null
+                    }
                   />
 
                   <ContinueButton
