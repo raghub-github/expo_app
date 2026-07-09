@@ -93,6 +93,32 @@ async function resolveFromStateName(stateName: string): Promise<GeoServiceAvaila
   }
 }
 
+async function resolveStateNameFromCoords(
+  lat: number,
+  lng: number
+): Promise<string | null> {
+  const sql = getSql()
+  if (!sql) return null
+  try {
+    // Nearest seeded pincode → state (spatial proximity), same cascade idea as backend.
+    const rows = await sql<{ state_name: string }[]>`
+      SELECT s.name AS state_name
+      FROM pincodes p
+      INNER JOIN states s ON s.id = p.state_id
+      WHERE p.latitude IS NOT NULL
+        AND p.longitude IS NOT NULL
+      ORDER BY
+        ((p.latitude::float8 - ${lat}) * (p.latitude::float8 - ${lat})
+         + (p.longitude::float8 - ${lng}) * (p.longitude::float8 - ${lng}))
+      LIMIT 1
+    `
+    return rows[0]?.state_name?.trim() || null
+  } catch (err) {
+    console.warn('[resolveGeoServiceAvailability] coords→state failed:', err)
+    return null
+  }
+}
+
 /** Resolve FOOD / RIDE / PARCEL from Postgres (same RPC as backend). */
 export async function resolveGeoServiceAvailabilityFromDb(args: {
   pincode?: string | null
@@ -104,12 +130,14 @@ export async function resolveGeoServiceAvailabilityFromDb(args: {
 
   const pincode = args.pincode?.trim() || ''
   const state = args.state?.trim() || ''
+  const lat = args.lat != null && Number.isFinite(args.lat) ? args.lat : null
+  const lng = args.lng != null && Number.isFinite(args.lng) ? args.lng : null
 
   if (pincode) {
     const fromPincode = await resolveFromPincodeRpc({
       pincode,
-      lat: args.lat,
-      lng: args.lng,
+      lat,
+      lng,
     })
     if (fromPincode) return fromPincode
   }
@@ -117,6 +145,16 @@ export async function resolveGeoServiceAvailabilityFromDb(args: {
   if (state) {
     const fromState = await resolveFromStateName(state)
     if (fromState) return fromState
+  }
+
+  // Truncated display names (e.g. "Hisua Nawada Bi...") may miss the state token —
+  // fall back to nearest pincode → state when coords are present.
+  if (lat != null && lng != null) {
+    const inferred = await resolveStateNameFromCoords(lat, lng)
+    if (inferred) {
+      const fromCoords = await resolveFromStateName(inferred)
+      if (fromCoords) return fromCoords
+    }
   }
 
   return null

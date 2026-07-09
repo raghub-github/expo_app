@@ -37,6 +37,7 @@ export default function AppAssetImage({
   }
 
   return (
+    // eslint-disable-next-line @next/next/no-img-element -- CMS proxy URLs
     <img
       src={url}
       alt={alt}

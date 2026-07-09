@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "predev": "node lib/legal/build-bundle.mjs",
-    "dev": "next dev -H 0.0.0.0",
+    "dev": "next dev -H 0.0.0.0 -p 3003",
     "prebuild": "node lib/legal/build-bundle.mjs",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3003",
     "lint": "next lint",
     "legal:build": "node lib/legal/build-bundle.mjs"
   },

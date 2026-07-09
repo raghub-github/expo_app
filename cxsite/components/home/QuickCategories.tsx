@@ -6,12 +6,15 @@ import { useState } from 'react'
 import { useAppSelector, useAppDispatch } from '@/lib/hooks'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
+import { useParcelServiceEnabled } from '@/components/common/ParcelServiceControl'
+import { SoonBadge } from '@/components/common/SoonBadge'
 
 export default function QuickCategories() {
   const router = useRouter()
   const dispatch = useAppDispatch()
   const { user, isAuthenticated, currentService } = useAppSelector(state => state.auth)
   const [showVoucherPopup, setShowVoucherPopup] = useState(false)
+  const { enabled: parcelEnabled } = useParcelServiceEnabled()
   
   // Service switch modal states
   const [showSwitchModal, setShowSwitchModal] = useState(false)
@@ -31,6 +34,7 @@ export default function QuickCategories() {
   // Handle navigation with service switch check
   const handleServiceNavigation = (path: string, targetServiceOverride?: ServiceCategory) => {
     const service = targetServiceOverride || pathToService[path]
+    if (service === 'parcel' && !parcelEnabled) return
     if (!service) {
       router.push(path)
       return
@@ -129,10 +133,13 @@ export default function QuickCategories() {
        {/* Categories grid - full width with even gaps, no overlap */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 md:gap-5 w-full max-w-[1400px] mx-auto drop-shadow-2xl" style={{zIndex: 30, gridAutoRows: '1fr'}}>
           {categories.map((category, index) => {
+            const isParcelSoon = category.service === 'parcel' && !parcelEnabled
             // Create card content
             const cardContent = (
               <div
-                className="w-full min-w-0 h-[135px] rounded-[15px] cursor-pointer relative overflow-hidden group hover:-translate-y-[6px] transition-all duration-300 flex flex-col justify-between bg-[#ffffff] border"
+                className={`w-full min-w-0 h-[135px] rounded-[15px] relative overflow-hidden group transition-all duration-300 flex flex-col justify-between bg-[#ffffff] border ${
+                  isParcelSoon ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:-translate-y-[6px]'
+                }`}
                 style={{
                   border: `1px solid ${category.borderColor}`,
                   boxShadow: '0 8px 32px rgba(7, 0, 0, 0.08), inset 0 1px 0 rgba(108, 107, 107, 0.9), inset 0 -1px 0 rgba(0, 0, 0, 0.05)',
@@ -140,6 +147,7 @@ export default function QuickCategories() {
                   WebkitBackdropFilter: 'blur(18px)'
                 }}
               >
+                {isParcelSoon ? <SoonBadge placement="corner" className="right-2 top-2" /> : null}
                 {/* Card tag (bordered) at top-left */}
                 <div className="absolute top-3 left-3 z-20">
                   <div 
@@ -209,8 +217,10 @@ export default function QuickCategories() {
               return (
                 <div 
                   key={index} 
-                  onClick={() => handleServiceNavigation(category.href, category.service)}
-                  className="cursor-pointer"
+                  onClick={() => !isParcelSoon && handleServiceNavigation(category.href, category.service)}
+                  className={isParcelSoon ? 'cursor-not-allowed' : 'cursor-pointer'}
+                  title={isParcelSoon ? 'Parcel — Coming soon in your area' : undefined}
+                  aria-disabled={isParcelSoon}
                 >
                   {cardContent}
                 </div>

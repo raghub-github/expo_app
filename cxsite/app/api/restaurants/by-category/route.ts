@@ -6,6 +6,7 @@ import {
   filterStoreRowsByUserGeo,
   haversineKm,
 } from '@/lib/server/merchantStoreGeo'
+import { attachStoreRatingsToRows } from '@/lib/server/fetchStoreRatings'
 
 export const dynamic = 'force-dynamic'
 
@@ -315,7 +316,7 @@ export async function GET(request: NextRequest) {
       return (rankIndex.get(aKey) ?? Number.MAX_SAFE_INTEGER) - (rankIndex.get(bKey) ?? Number.MAX_SAFE_INTEGER)
     })
 
-    const mapped = mapRows(orderedStores as Record<string, unknown>[])
+    const mapped = await attachStoreRatingsToRows(mapRows(orderedStores as Record<string, unknown>[]))
     log('Returning', mapped.length, 'stores from scored category match')
     return NextResponse.json(mapped)
   } catch (err) {

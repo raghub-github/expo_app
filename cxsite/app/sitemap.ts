@@ -21,7 +21,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/corporates",
     "/order",
     "/ride",
-    "/courier",
+    // /courier and /parcel are geo-gated (home Soon); omit until parcel is widely available
     "/restaurants",
     "/ecommerce",
     "/around-you",

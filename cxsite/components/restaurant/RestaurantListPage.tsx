@@ -13,6 +13,7 @@ import {
   operationalStatusPillClassName,
 } from '@/lib/operationalStatusBadge'
 import OpeningHoursModal from '@/components/common/OpeningHoursModal'
+import OrderHeader from '@/components/order/OrderHeader'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
 
 // Add CSS for blinking animation

@@ -11,6 +11,7 @@ import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import ParcelServiceControl from '@/components/common/ParcelServiceControl'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
 
@@ -271,12 +272,6 @@ export default function PersonServicePage() {
             </Link>
             
             <nav className="flex gap-4 sm:gap-8">
-              <button 
-                onClick={() => handleNavigation('/courier', 'parcel')}
-                className="text-[#b0b0d0] font-medium transition-colors hover:text-[#16c2a5] text-sm sm:text-base"
-              >
-                Parcel
-              </button>
               <span className="text-[#16c2a5] font-medium border-b-2 border-[#16c2a5] pb-1 text-sm sm:text-base">Ride</span>
               <button 
                 onClick={() => handleNavigation('/order', 'food')}
@@ -284,6 +279,13 @@ export default function PersonServicePage() {
               >
                 Food
               </button>
+              <ParcelServiceControl
+                label="Parcel"
+                badgePlacement="inline"
+                className="text-[#b0b0d0] font-medium transition-colors hover:text-[#16c2a5] text-sm sm:text-base"
+                disabledClassName="cursor-not-allowed opacity-45 hover:text-[#b0b0d0]"
+                onEnabledClick={() => handleNavigation('/courier', 'parcel')}
+              />
             </nav>
 
             {isAuthenticated && user ? (

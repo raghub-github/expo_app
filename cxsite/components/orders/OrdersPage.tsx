@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
 import { supabase } from '@/lib/supabase'
 import OrdersPageLoading from '@/components/orders/OrdersPageLoading'
+import { useParcelServiceEnabled } from '@/components/common/ParcelServiceControl'
+import { SoonBadge } from '@/components/common/SoonBadge'
 
 type ServiceType = 'all' | 'food' | 'person' | 'parcel' | 'cancelled' | 'completed'
 
@@ -450,6 +452,7 @@ function OrdersPageClient({
 }) {
   const router = useRouter()
   const { isAuthenticated, user, isLoading: authLoading } = useAppSelector(state => state.auth)
+  const { enabled: parcelEnabled } = useParcelServiceEnabled()
   const [hasMounted, setHasMounted] = useState(false)
   const [orders, setOrders] = useState<UnifiedOrder[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -1023,18 +1026,29 @@ function OrdersPageClient({
                     : `No ${statusTab} orders for the selected service.`}
                 </p>
                 {statusTab === 'all' && !searchQuery.trim() && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      router.push(
-                        sidebarFilter === 'person' ? '/ride' : sidebarFilter === 'parcel' ? '/courier' : '/order'
-                      )
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl bg-[#16c2a5] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#14b095]"
-                  >
-                    <i className="fas fa-plus text-xs" />
-                    {sidebarFilter === 'person' ? 'Book a ride' : sidebarFilter === 'parcel' ? 'Send a parcel' : 'Start ordering'}
-                  </button>
+                  sidebarFilter === 'parcel' && !parcelEnabled ? (
+                    <span
+                      className="relative inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-gray-200 px-5 py-2.5 text-sm font-semibold text-gray-500"
+                      title="Parcel — Coming soon in your area"
+                    >
+                      <i className="fas fa-plus text-xs" />
+                      Send a parcel
+                      <SoonBadge placement="inline" />
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        router.push(
+                          sidebarFilter === 'person' ? '/ride' : sidebarFilter === 'parcel' ? '/courier' : '/order'
+                        )
+                      }
+                      className="inline-flex items-center gap-2 rounded-xl bg-[#16c2a5] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#14b095]"
+                    >
+                      <i className="fas fa-plus text-xs" />
+                      {sidebarFilter === 'person' ? 'Book a ride' : sidebarFilter === 'parcel' ? 'Send a parcel' : 'Start ordering'}
+                    </button>
+                  )
                 )}
               </div>
             ) : (

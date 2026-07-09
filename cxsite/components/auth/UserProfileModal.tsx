@@ -6,6 +6,8 @@ import { useAppDispatch, useAppSelector } from '@/lib/hooks'
 import { logout, ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
 import ServiceSwitchModal from './ServiceSwitchModal'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
+import { useParcelServiceEnabled } from '@/components/common/ParcelServiceControl'
+import { SoonBadge } from '@/components/common/SoonBadge'
 
 interface UserProfileModalProps {
   isOpen: boolean
@@ -26,6 +28,7 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [showSwitchModal, setShowSwitchModal] = useState(false)
   const [targetService, setTargetService] = useState<ServiceCategory>('food')
+  const { enabled: parcelEnabled } = useParcelServiceEnabled()
 
   // Close logout confirm when modal closes
   useEffect(() => {
@@ -52,7 +55,8 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
   // Handle service click - ALWAYS show popup
   const handleServiceClick = (service: ServiceCategory) => {
     if (service === currentService) return // Don't switch to same service
-    
+    if (service === 'parcel' && !parcelEnabled) return
+
     // ALWAYS show switch popup - every single time
     setTargetService(service)
     setShowSwitchModal(true)
@@ -139,17 +143,21 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
                 {(['food', 'person', 'parcel'] as ServiceCategory[]).map((service) => {
                   const info = serviceLabels[service]
                   const isCurrent = service === currentService
+                  const parcelSoon = service === 'parcel' && !parcelEnabled
 
                   return (
                     <button
                       key={service}
                       type="button"
                       onClick={() => handleServiceClick(service)}
-                      disabled={isCurrent}
-                      className={`flex w-full items-center gap-3 rounded-xl border p-2.5 text-left transition-all ${
+                      disabled={isCurrent || parcelSoon}
+                      title={parcelSoon ? 'Parcel — Coming soon in your area' : undefined}
+                      className={`relative flex w-full items-center gap-3 rounded-xl border p-2.5 text-left transition-all ${
                         isCurrent
                           ? 'cursor-default border-[#16c2a5]/35 bg-[#e8fbf7]'
-                          : 'cursor-pointer border-slate-100 bg-slate-50/80 hover:border-[#16c2a5]/30 hover:bg-[#f0fdf9]'
+                          : parcelSoon
+                            ? 'cursor-not-allowed border-slate-100 bg-slate-50/80 opacity-50'
+                            : 'cursor-pointer border-slate-100 bg-slate-50/80 hover:border-[#16c2a5]/30 hover:bg-[#f0fdf9]'
                       }`}
                     >
                       <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${info.color} shadow-sm`}>
@@ -158,7 +166,9 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-semibold text-slate-900">{info.name}</p>
                       </div>
-                      {isCurrent ? (
+                      {parcelSoon ? (
+                        <SoonBadge placement="inline" />
+                      ) : isCurrent ? (
                         <span className="shrink-0 rounded-full bg-[#16c2a5] px-2 py-0.5 text-[10px] font-semibold text-white">
                           Active
                         </span>

@@ -365,7 +365,7 @@ export default function BrandSections() {
       {brandsBySection.map(({ section, brands }, idx) => (
         <section
           key={section.id}
-          className={`${idx === 0 ? 'pt-0 pb-16' : 'py-16'} px-5 md:px-20 relative`}
+          className={`${idx === 0 ? 'pt-12 pb-16' : 'py-16'} px-5 md:px-20 relative`}
         >
           <div className="text-center mb-4 relative">
             <h2 className={`text-[32px] md:text-[38px] font-black ${section.titleClass}`}>

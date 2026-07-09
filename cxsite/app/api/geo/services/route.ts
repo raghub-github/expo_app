@@ -5,11 +5,12 @@ import {
   type GeoServiceAvailabilityPayload,
 } from '@/lib/server/resolveGeoServiceAvailability'
 import { readUpstreamJson } from '@/lib/server/safeUpstreamJson'
+import { getGatimitraBackendUrl } from '@/lib/server/gatimitraBackendUrl'
 
 export const dynamic = 'force-dynamic'
 
-const BACKEND_URL =
-  process.env.GATIMITRA_BACKEND_API_URL?.replace(/\/$/, '') || 'https://api.gatimitra.com'
+const BACKEND_URL = getGatimitraBackendUrl()
+const UPSTREAM_TIMEOUT_MS = process.env.NODE_ENV === 'production' ? 12_000 : 4_000
 
 /** Proxy — same as customer app GET /v1/geo/services (DB first, then backend). */
 export async function GET(request: NextRequest) {
@@ -64,7 +65,7 @@ export async function GET(request: NextRequest) {
   try {
     const upstream = await fetch(`${BACKEND_URL}/v1/geo/services?${qs.toString()}`, {
       cache: 'no-store',
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
     const data = await readUpstreamJson<GeoServiceAvailabilityPayload>(upstream)
     if (data?.ok && upstream.ok) {

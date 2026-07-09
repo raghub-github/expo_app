@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getSupabaseServiceRole } from '@/lib/supabaseServiceRole'
 import { resolveImageUrlList, toAbsoluteImageUrl } from '@/lib/mediaUrl'
+import { getStoreRatingSummary, getStoreWrittenReviews } from '@/lib/server/fetchStoreRatings'
 
 function mergeGallerySources(row: Record<string, unknown>): string[] {
   const raw: unknown[] = []
@@ -74,6 +75,9 @@ function mapStoreToRestaurant(row: Record<string, unknown>) {
       ? (row.store_phones as string[])[0]
       : (row.store_phones as string) || null,
     fssai_license: (row.fssai_license as string) || (row.fssai_license_number as string) || null,
+    /** Filled from merchant_store_ratings (same table as customer app). */
+    avg_rating: null as number | null,
+    total_reviews: null as number | null,
   }
 }
 
@@ -276,6 +280,22 @@ export async function GET(
       const synthetic = buildSyntheticOperatingHoursFromDaily(data.opening_time, data.closing_time)
       ;(payload as Record<string, unknown>).operating_hours = synthetic
       ;(payload as Record<string, unknown>).operating_hours_raw = null
+    }
+
+    // Same source as customer app: merchant_store_ratings (recency-weighted + written reviews).
+    try {
+      const [rating, writtenReviews] = await Promise.all([
+        getStoreRatingSummary(storeIdNum),
+        getStoreWrittenReviews(storeIdNum, 40),
+      ])
+      ;(payload as Record<string, unknown>).avg_rating = rating?.avgRating ?? null
+      ;(payload as Record<string, unknown>).total_reviews = rating?.totalReviews ?? null
+      ;(payload as Record<string, unknown>).written_reviews = writtenReviews
+    } catch (ratingErr) {
+      log('merchant_store_ratings aggregate failed:', ratingErr)
+      ;(payload as Record<string, unknown>).avg_rating = null
+      ;(payload as Record<string, unknown>).total_reviews = null
+      ;(payload as Record<string, unknown>).written_reviews = []
     }
 
     log('Returning store:', data.store_id, data.store_name ?? data.store_display_name)

@@ -1,4 +1,5 @@
 import ParcelServicePageModern from '@/components/parcel/ParcelServicePageModern'
+import ParcelServiceGate from '@/components/parcel/ParcelServiceGate'
 import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata = {
@@ -7,5 +8,9 @@ export const metadata = {
 }
 
 export default function ParcelPage() {
-  return <ParcelServicePageModern />
+  return (
+    <ParcelServiceGate>
+      <ParcelServicePageModern />
+    </ParcelServiceGate>
+  )
 }

@@ -8,8 +8,7 @@
     "packages/*",
     "services/*",
     "dashboard",
-    "partnersite",
-    "merchant_db"
+    "partnersite"
   ],
   "dependencies": {
     "expo": "~54.0.35",
@@ -58,7 +57,6 @@
     "dev:notification-worker": "npm --workspace @gatimitra/notification-worker run dev",
     "dev:payment-worker": "npm --workspace @gatimitra/payment-worker run dev",
     "dev:financial-rule-worker": "npm --workspace @gatimitra/financial-rule-worker run dev",
-    "dev:merchant_db": "npm --workspace merchant-db run dev",
     "build": "turbo run build",
     "build:legacy": "npm -ws run build --if-present",
     "build:backend": "turbo run build --filter=@gatimitra/backend...",

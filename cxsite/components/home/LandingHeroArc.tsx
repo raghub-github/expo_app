@@ -476,7 +476,7 @@ export function LandingHeroGreenContent() {
   )
 
   return (
-    <div className="relative z-[2] flex min-h-[min(320px,50vh)] w-full max-w-full items-center justify-center overflow-visible px-0 py-4 sm:py-6 lg:min-h-[min(400px,58vh)] lg:py-8">
+    <div className="relative z-[2] flex min-h-[min(300px,48vh)] w-full max-w-full items-center justify-center overflow-visible px-0 py-3 sm:py-4 lg:min-h-[min(380px,52vh)] lg:py-5">
       <div
         ref={containerRef}
         className="landing-hero-arc-root relative flex aspect-square w-[min(88vw,420px)] max-w-full items-center justify-center sm:w-[min(82vw,460px)] lg:w-[min(36vw,400px)]"
@@ -516,38 +516,40 @@ export function LandingHeroGreenContent() {
               const active = i === selectedIndex
               const enabled = isItemEnabled(i)
               return (
-                <button
+                <div
                   key={arcItem.title}
-                  type="button"
-                  onClick={() => enabled && setSelectedIndex(i)}
-                  title={enabled ? arcItem.title : `${arcItem.title} — Coming soon`}
-                  disabled={!enabled}
-                  className={`landing-hero-arc-chip absolute z-10 flex h-[46px] w-[46px] -translate-x-1/2 -translate-y-1/2 items-center justify-center overflow-hidden rounded-full bg-white shadow-[0_6px_20px_rgba(0,0,0,0.12)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C] sm:h-[52px] sm:w-[52px] md:h-[56px] md:w-[56px] ${
-                    !enabled
-                      ? 'cursor-not-allowed opacity-[0.42] ring-1 ring-[#e8e8ec]'
-                      : active
-                        ? 'ring-[3px] ring-[#c4a574] ring-offset-[3px] ring-offset-[#f2f2f2] shadow-[0_8px_24px_rgba(0,0,0,0.16)]'
-                        : 'ring-1 ring-[#dcdce2] hover:shadow-lg'
-                  }`}
+                  className="landing-hero-arc-chip absolute z-10 -translate-x-1/2 -translate-y-1/2"
                   style={{ left: x, top: y }}
                 >
-                  <AppAssetImage
-                    assetKey={arcItem.assetKey}
-                    alt=""
-                    width={40}
-                    height={40}
-                    decoding="async"
-                    className="pointer-events-none h-[28px] w-[28px] shrink-0 object-contain sm:h-[32px] sm:w-[32px] md:h-[34px] md:w-[34px]"
-                  />
                   {!enabled ? (
-                    <span className="pointer-events-none absolute inset-0 flex items-end justify-center pb-0.5">
-                      <span className="rounded bg-neutral-800/75 px-1 py-px text-[7px] font-bold uppercase tracking-wide text-white sm:text-[8px]">
-                        Soon
-                      </span>
+                    <span className="pointer-events-none absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-[58%] whitespace-nowrap rounded-full bg-[#e8a317] px-1.5 py-px text-[7px] font-bold uppercase tracking-wide text-white shadow-[0_1px_4px_rgba(0,0,0,0.2)] sm:text-[8px]">
+                      Soon
                     </span>
                   ) : null}
-                  <span className="sr-only">{arcItem.title}</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => enabled && setSelectedIndex(i)}
+                    title={enabled ? arcItem.title : `${arcItem.title} — Coming soon`}
+                    disabled={!enabled}
+                    className={`relative flex h-[46px] w-[46px] items-center justify-center overflow-visible rounded-full bg-white shadow-[0_6px_20px_rgba(0,0,0,0.12)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C] sm:h-[52px] sm:w-[52px] md:h-[56px] md:w-[56px] ${
+                      !enabled
+                        ? 'cursor-not-allowed opacity-[0.42] ring-1 ring-[#e8e8ec]'
+                        : active
+                          ? 'ring-[3px] ring-[#c4a574] ring-offset-[3px] ring-offset-[#f2f2f2] shadow-[0_8px_24px_rgba(0,0,0,0.16)]'
+                          : 'ring-1 ring-[#dcdce2] hover:shadow-lg'
+                    }`}
+                  >
+                    <AppAssetImage
+                      assetKey={arcItem.assetKey}
+                      alt=""
+                      width={40}
+                      height={40}
+                      decoding="async"
+                      className="pointer-events-none h-[28px] w-[28px] shrink-0 object-contain sm:h-[32px] sm:w-[32px] md:h-[34px] md:w-[34px]"
+                    />
+                    <span className="sr-only">{arcItem.title}</span>
+                  </button>
+                </div>
               )
             })}
           </div>
@@ -618,7 +620,7 @@ export function LandingHeroDynamicCopy() {
           copy.line1
         )}
       </h1>
-      <div className="hero-stagger-paragraphs mt-7 max-w-[min(100%,34rem)] space-y-5 text-[0.9375rem] font-normal leading-[1.72] text-neutral-600 sm:mt-8 sm:space-y-6 sm:text-base sm:leading-[1.75] lg:mt-9 lg:leading-[1.78]">
+      <div className="hero-stagger-paragraphs mt-5 max-w-[min(100%,34rem)] space-y-4 text-[0.9375rem] font-normal leading-[1.68] text-neutral-600 sm:mt-6 sm:space-y-5 sm:text-base sm:leading-[1.72] lg:mt-6 lg:leading-[1.75]">
         {copy.paragraphs.map((p, i) => (
           <p key={i} className="m-0 text-pretty">
             {p}
@@ -640,7 +642,7 @@ export function LandingHeroExploreButton({
       key={`hero-explore-${selectedIndex}`}
       type="button"
       onClick={explore}
-      className={`hero-stagger-button cta-clickable-pulse mt-6 inline-flex min-w-[168px] max-w-[248px] self-start justify-center bg-[#109D4C] text-white font-bold text-[13px] sm:mt-7 sm:text-[14px] tracking-[0.08em] px-8 sm:px-9 py-2.5 rounded-[10px] shadow-[0_10px_28px_rgba(16,157,76,0.4)] hover:brightness-[1.05] transition-all uppercase ${
+      className={`hero-stagger-button cta-clickable-pulse mt-5 inline-flex min-w-[168px] max-w-[248px] self-start justify-center bg-[#109D4C] text-white font-bold text-[13px] sm:mt-6 sm:text-[14px] tracking-[0.08em] px-8 sm:px-9 py-2.5 rounded-[10px] shadow-[0_10px_28px_rgba(16,157,76,0.4)] hover:brightness-[1.05] transition-all uppercase ${
         !isSelectedEnabled ? 'opacity-90' : ''
       } ${className}`}
     >
