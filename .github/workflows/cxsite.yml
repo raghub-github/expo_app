@@ -1,0 +1,132 @@
+name: cxsite-deploy
+
+# Builds + ships the customer-facing marketing/policy site (gatimitra.com) and
+# reloads nginx so the apex server block (added in infra/nginx/nginx.conf) goes
+# live. Triggered on:
+#   - push to main touching cxsite/**, the legal source it bundles, the nginx
+#     config, or this workflow
+#   - manual run (workflow_dispatch)
+#
+# Required repo secrets (same set the other site workflows use):
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY
+#   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, NEXT_PUBLIC_MAPBOX_TOKEN
+#
+# GHCR auth uses the auto-provisioned GITHUB_TOKEN.
+#
+# NOTE: gatimitra.com HTTPS also needs a TLS cert covering the apex + www on
+# the VPS (/etc/letsencrypt/live/gatimitra.com/). Without it, `nginx -t` fails
+# and the reload is skipped (other sites stay up). Issue it once:
+#   certbot certonly --webroot -w /var/www/certbot -d gatimitra.com -d www.gatimitra.com
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cxsite/**"
+      - "apps/customer_app/legal/**"
+      - "infra/nginx/nginx.conf"
+      - "infra/nginx/proxy_common.conf"
+      - ".github/workflows/cxsite.yml"
+      - "infra/scripts/deploy-service.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: cxsite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+
+      # Refuse to build with an empty client-side secret (would ship `undefined`
+      # into the bundle). cxsite bakes NEXT_PUBLIC_* at docker build time.
+      - name: Validate NEXT_PUBLIC_* secrets
+        run: |
+          set -e
+          missing=""
+          for var in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY NEXT_PUBLIC_MAPBOX_TOKEN ; do
+            val="${!var}"
+            if [ -z "$val" ]; then missing="$missing $var"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub Action secrets:$missing"
+            exit 1
+          fi
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_MAPBOX_TOKEN: ${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: cxsite/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/gm-cxsite:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/gm-cxsite:latest
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_APP_URL=https://gatimitra.com
+            NEXT_PUBLIC_API_URL=https://api.gatimitra.com
+            NEXT_PUBLIC_MAPBOX_TOKEN=${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
+          cache-from: type=gha,scope=cxsite
+          cache-to: type=gha,mode=max,scope=cxsite
+
+      - name: Zero-downtime deploy on VPS (with retry)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: error
+          command: |
+            cat <<'EOF' > /tmp/_ssh_cxsite.sh
+            set -e
+            cd /opt/gatimitra
+            git fetch --depth 1 origin main
+            git reset --hard origin/main
+            chmod +x infra/scripts/deploy-service.sh
+            # Deploy cxsite (pulls the freshly pushed :latest image, health-checks
+            # the container's root path, then reloads nginx to pick up the new
+            # apex server block from the just-pulled infra/nginx/nginx.conf).
+            infra/scripts/deploy-service.sh cxsite http://localhost:3000/ 90
+            # Explicit nginx config test + reload — makes an apex/cert problem
+            # LOUD in the workflow logs instead of silently skipped.
+            COMPOSE="docker compose -f infra/docker/docker-compose.prod.yml"
+            if $COMPOSE exec -T nginx nginx -t; then
+              $COMPOSE exec -T nginx nginx -s reload
+              echo "nginx reloaded — gatimitra.com now routed to cxsite"
+            else
+              echo "::warning::nginx -t FAILED — likely the gatimitra.com TLS cert is missing."
+              echo "::warning::Run: certbot certonly --webroot -w /var/www/certbot -d gatimitra.com -d www.gatimitra.com"
+            fi
+            EOF
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+            ssh -o ConnectTimeout=20 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+                -i ~/.ssh/id_ed25519 \
+                ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                'bash -s' < /tmp/_ssh_cxsite.sh
