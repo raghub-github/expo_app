@@ -114,23 +114,26 @@ jobs:
             # Apply the nginx.conf apex block. nginx.conf is bind-mounted as a
             # SINGLE FILE; `git reset --hard` replaces it with a new inode, so
             # `exec nginx nginx -s reload` keeps reading the STALE in-container
-            # inode and never sees the change. We must (1) test the HOST file in
-            # a throwaway container that also mounts the certs, then (2)
-            # force-recreate nginx so it re-binds the new file. If the
-            # gatimitra.com cert is missing the test fails and we DON'T touch
-            # the running nginx (other sites stay up).
+            # inode and never sees the change. We must (1) test the HOST file
+            # with certs AND on the app network (so upstream hostnames like
+            # `backend:3000` resolve), then (2) force-recreate nginx so it
+            # re-binds the new file. If the config is bad (e.g. missing
+            # gatimitra.com cert) we DON'T touch the running nginx.
             COMPOSE="docker compose -f infra/docker/docker-compose.prod.yml"
-            if docker run --rm \
-                 -v /opt/gatimitra/infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro \
-                 -v /opt/gatimitra/infra/nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro \
-                 -v /etc/letsencrypt:/etc/letsencrypt:ro \
-                 nginx:1.27-alpine nginx -t; then
+            echo "=== TLS certs present on VPS (/etc/letsencrypt/live) ==="
+            ls -1 /etc/letsencrypt/live/ 2>/dev/null || echo "(none)"
+            echo "=== nginx -t against the live config (on app network, with certs) ==="
+            # `compose run` mounts the service's volumes (host nginx.conf +
+            # /etc/letsencrypt) and joins the app network, unlike a bare
+            # `docker run`. --no-deps: don't spin up backend/etc. just to test.
+            if $COMPOSE run --rm --no-deps -T nginx nginx -t; then
               $COMPOSE up -d --force-recreate --no-deps nginx
               echo "nginx recreated with new config — gatimitra.com now routed to cxsite"
             else
-              echo "::warning::nginx -t FAILED against the live config — almost certainly the"
-              echo "::warning::gatimitra.com TLS cert is missing. Running nginx left untouched."
-              echo "::warning::Fix on the VPS: certbot certonly --webroot -w /var/www/certbot -d gatimitra.com -d www.gatimitra.com"
+              echo "::error::nginx -t FAILED — see the cert inventory + error above."
+              echo "::error::If /etc/letsencrypt/live has no gatimitra.com entry, issue it:"
+              echo "::error::  certbot certonly --webroot -w /var/www/certbot -d gatimitra.com -d www.gatimitra.com"
+              echo "::error::Running nginx was left untouched (other sites stay up)."
               exit 1
             fi
             EOF
