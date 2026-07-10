@@ -110,15 +110,28 @@ jobs:
             # the container's root path, then reloads nginx to pick up the new
             # apex server block from the just-pulled infra/nginx/nginx.conf).
             infra/scripts/deploy-service.sh cxsite http://localhost:3000/ 90
-            # Explicit nginx config test + reload — makes an apex/cert problem
-            # LOUD in the workflow logs instead of silently skipped.
+
+            # Apply the nginx.conf apex block. nginx.conf is bind-mounted as a
+            # SINGLE FILE; `git reset --hard` replaces it with a new inode, so
+            # `exec nginx nginx -s reload` keeps reading the STALE in-container
+            # inode and never sees the change. We must (1) test the HOST file in
+            # a throwaway container that also mounts the certs, then (2)
+            # force-recreate nginx so it re-binds the new file. If the
+            # gatimitra.com cert is missing the test fails and we DON'T touch
+            # the running nginx (other sites stay up).
             COMPOSE="docker compose -f infra/docker/docker-compose.prod.yml"
-            if $COMPOSE exec -T nginx nginx -t; then
-              $COMPOSE exec -T nginx nginx -s reload
-              echo "nginx reloaded — gatimitra.com now routed to cxsite"
+            if docker run --rm \
+                 -v /opt/gatimitra/infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro \
+                 -v /opt/gatimitra/infra/nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro \
+                 -v /etc/letsencrypt:/etc/letsencrypt:ro \
+                 nginx:1.27-alpine nginx -t; then
+              $COMPOSE up -d --force-recreate --no-deps nginx
+              echo "nginx recreated with new config — gatimitra.com now routed to cxsite"
             else
-              echo "::warning::nginx -t FAILED — likely the gatimitra.com TLS cert is missing."
-              echo "::warning::Run: certbot certonly --webroot -w /var/www/certbot -d gatimitra.com -d www.gatimitra.com"
+              echo "::warning::nginx -t FAILED against the live config — almost certainly the"
+              echo "::warning::gatimitra.com TLS cert is missing. Running nginx left untouched."
+              echo "::warning::Fix on the VPS: certbot certonly --webroot -w /var/www/certbot -d gatimitra.com -d www.gatimitra.com"
+              exit 1
             fi
             EOF
             mkdir -p ~/.ssh
