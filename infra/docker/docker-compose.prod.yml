@@ -71,6 +71,16 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+    volumes:
+      # Firebase Admin SDK reads serviceAccountKey.json at boot for FCM v1
+      # sends + phone-auth ID-token verification (which /v1/push/register
+      # requires). The file lives on the host at
+      #   /opt/gatimitra/backend/credentials/serviceAccountKey.json
+      # (gitignored — never in the image). The container path matches
+      # env.GOOGLE_APPLICATION_CREDENTIALS=./credentials/serviceAccountKey.json
+      # resolved from /app (WORKDIR). File must be chown 1001:1001 on the
+      # host so the container's fastify user (UID 1001) can read it.
+      - ../../backend/credentials:/app/credentials:ro
     expose:
       - "3000"
     networks: [app]
@@ -85,6 +95,10 @@ services:
       - ../../services/notification-worker/.env
     environment:
       NODE_ENV: production
+    volumes:
+      # Same mount as backend — the worker needs Firebase Admin for topic
+      # subscribe/unsubscribe and error categorisation on the FCM path.
+      - ../../backend/credentials:/app/credentials:ro
     networks: [app]
 
   payment-worker:
