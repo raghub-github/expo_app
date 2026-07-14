@@ -640,6 +640,10 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
           appliedOfferId: null,
           appliedOfferLabel: null,
           appliedOfferType: null,
+          // Offer engine's per-item discount modifiers (allset merge). A ride
+          // is a single fare with no per-item offer applicability, so null.
+          appliedOfferDiscountPct: null,
+          appliedOfferDiscountFlat: null,
           isDiscountEligible: true,
           ineligibilityReason: null,
         },

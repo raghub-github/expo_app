@@ -152,6 +152,10 @@ export async function computeBillForRide(
             appliedOfferId: null,
             appliedOfferLabel: null,
             appliedOfferType: null,
+            // Fields introduced by the offer engine (allset merge). A ride
+            // line has no per-item offer, so both discount modifiers are null.
+            appliedOfferDiscountPct: null,
+            appliedOfferDiscountFlat: null,
             isDiscountEligible: true,
             ineligibilityReason: null,
           },

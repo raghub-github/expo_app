@@ -251,11 +251,13 @@ async function fetchMerchantOffers(storeInternalId: number) {
         WHERE a.offer_id = ANY(${offerPks})
           AND a.menu_item_id IS NOT NULL
       `;
-      for (const row of appRows as Array<{
+      // See billing.repository.ts:484 for the same double-cast pattern.
+      const typedAppRows = appRows as unknown as Array<{
         offer_id: number | string;
         menu_item_id: number | string | null;
         item_id: string | null;
-      }>) {
+      }>;
+      for (const row of typedAppRows) {
         const oid = Number(row.offer_id);
         if (!Number.isFinite(oid)) continue;
         const list = idsByOfferPk.get(oid) ?? [];

@@ -481,11 +481,15 @@ export async function loadBillingDatasetUncached(
             WHERE a.offer_id = ANY(${offerPks})
               AND a.menu_item_id IS NOT NULL
           `;
-          for (const row of appRows as Array<{
+          // postgres.js returns RowList<Row[]> whose generic Row type is too
+          // wide for a direct `as` narrowing (TS2352). Double-cast through
+          // `unknown` is the recommended pattern here (echoed in the TS error).
+          const typedAppRows = appRows as unknown as Array<{
             offer_id: number | string;
             menu_item_id: number | string | null;
             item_id: string | null;
-          }>) {
+          }>;
+          for (const row of typedAppRows) {
             const oid = Number(row.offer_id);
             if (!Number.isFinite(oid)) continue;
             const list = idsByOfferPk.get(oid) ?? [];
