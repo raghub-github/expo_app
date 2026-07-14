@@ -15,14 +15,17 @@ import {
   type OfferType,
   type CreateOfferPayload,
 } from "@/services/offersApi";
-import { fetchMenuItems, type MenuItemRow } from "@/services/menuApi";
+import { fetchMenuItems, fetchMenuCategories, type MenuItemRow, type MenuCategory } from "@/services/menuApi";
 import { getOfferLifecyclePhase } from "@/lib/offers/offer-lifecycle";
 import type { OfferTrackFilter } from "@/lib/offers/offer-lifecycle";
-import { campaignDateToValidFromIso, campaignDateToValidTillIso } from "@/lib/offers/offer-utils";
+import { isOfferCampaignExpired } from "@/lib/offers/offer-lifecycle";
+import { campaignDateToValidFromIso, campaignDateToValidTillIso, resolveMenuItemSelection } from "@/lib/offers/offer-utils";
 import {
   emptyOfferFormValues,
   populateOfferFormFromOffer,
+  computeAutoPriority,
   type OfferFormValues,
+  type OfferCreatePath,
 } from "@/lib/offers/offer-form";
 import { OffersTrackView } from "@/components/offers/OffersTrackView";
 import { OffersCreateView } from "@/components/offers/OffersCreateView";
@@ -32,17 +35,36 @@ import { offersSharedStyles } from "@/components/offers/offers-theme";
 
 type PageTab = "create" | "track";
 
-function buildPayloadFromForm(v: OfferFormValues): CreateOfferPayload {
+function buildPayloadFromForm(
+  v: OfferFormValues,
+  menuItems: MenuItemRow[]
+): CreateOfferPayload {
   const isPct = ["PERCENTAGE", "CART_PERCENTAGE"].includes(v.offerType);
   const needsBuyGet = ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType);
   const isCoupon = v.offerType === "COUPON";
   const couponDiscount = isCoupon && v.discountValue ? Number(v.discountValue) : null;
+  const isPrecision = v.createPath === "precision" || v.conditionsMode === "precision";
+  const isBogo = needsBuyGet || v.createPath === "bogo";
+  const savedMode: "boost" | "precision" | null = isBogo ? null : isPrecision ? "precision" : "boost";
+  const resolvedIds = resolveMenuItemSelection(v.selectedItemIds, menuItems);
+  const specificIds =
+    !isPrecision && v.applyToSpecificItems && resolvedIds.length > 0 ? resolvedIds : [];
+
+  const offer_metadata: Record<string, unknown> = {
+    create_path: isBogo ? "bogo" : isPrecision ? "precision" : "boost",
+    menu_item_ids: isPrecision ? [] : specificIds,
+  };
+  if (savedMode) offer_metadata.conditions_mode = savedMode;
+  if (v.applicableTimeStart || v.applicableTimeEnd) {
+    offer_metadata.applicable_time_start = v.applicableTimeStart.trim() || null;
+    offer_metadata.applicable_time_end = v.applicableTimeEnd.trim() || null;
+  }
 
   return {
     offer_title: v.title.trim(),
     offer_description: v.description.trim() || null,
     offer_type: v.offerType,
-    offer_sub_type: v.applyToSpecificItems ? "SPECIFIC_ITEM" : "ALL_ORDERS",
+    offer_sub_type: isPrecision ? "ALL_ORDERS" : specificIds.length > 0 ? "SPECIFIC_ITEM" : "ALL_ORDERS",
     discount_value:
       !isPct && v.discountValue
         ? Number(v.discountValue)
@@ -63,22 +85,19 @@ function buildPayloadFromForm(v: OfferFormValues): CreateOfferPayload {
     coupon_code: isCoupon && v.couponCode.trim() ? v.couponCode.trim().toUpperCase() : null,
     valid_from: campaignDateToValidFromIso(v.validFrom),
     valid_till: campaignDateToValidTillIso(v.validTill),
+    applicable_time_start: v.applicableTimeStart.trim() || null,
+    applicable_time_end: v.applicableTimeEnd.trim() || null,
+    applicable_on_days: v.applicableOnDays.length > 0 ? v.applicableOnDays : null,
     is_active: v.isActive,
     auto_apply: v.autoApply,
-    is_stackable: v.isStackable,
-    priority: v.priority ? Number(v.priority) : 0,
+    is_stackable: false,
+    priority: computeAutoPriority(v),
     max_uses_total: v.maxUsesTotal ? Number(v.maxUsesTotal) : null,
     max_uses_per_user: v.maxUsesPerUser ? Number(v.maxUsesPerUser) : null,
     first_order_only: v.firstOrderOnly,
     new_user_only: v.newUserOnly,
-    menu_item_ids: v.applyToSpecificItems && v.selectedItemIds.length > 0 ? v.selectedItemIds : null,
-    offer_metadata:
-      v.applicableTimeStart || v.applicableTimeEnd
-        ? {
-            applicable_time_start: v.applicableTimeStart || null,
-            applicable_time_end: v.applicableTimeEnd || null,
-          }
-        : undefined,
+    menu_item_ids: isPrecision ? [] : specificIds,
+    offer_metadata,
   };
 }
 
@@ -96,12 +115,14 @@ export default function OffersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Offer | null>(null);
+  const [createSkipChoose, setCreateSkipChoose] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formValues, setFormValues] = useState<OfferFormValues>(() => emptyOfferFormValues());
   const [imageFile, setImageFile] = useState<{ uri: string; type: string; name: string } | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
 
   const [menuItems, setMenuItems] = useState<MenuItemRow[]>([]);
+  const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([]);
   const [menuLoading, setMenuLoading] = useState(false);
   const [menuSearch, setMenuSearch] = useState("");
 
@@ -125,13 +146,18 @@ export default function OffersScreen() {
     if (!storeId || !token) return;
     setMenuLoading(true);
     try {
-      const { items } = await fetchMenuItems(String(storeId), token, {
-        limit: 500,
-        approvalStatus: "APPROVED",
-      });
+      const [{ items }, { categories }] = await Promise.all([
+        fetchMenuItems(String(storeId), token, {
+          limit: 500,
+          approvalStatus: "APPROVED",
+        }),
+        fetchMenuCategories(String(storeId), token),
+      ]);
       setMenuItems(items ?? []);
+      setMenuCategories(categories ?? []);
     } catch {
       setMenuItems([]);
+      setMenuCategories([]);
     } finally {
       setMenuLoading(false);
     }
@@ -178,10 +204,27 @@ export default function OffersScreen() {
     setMenuSearch("");
   };
 
-  const openCreate = (presetType?: OfferType) => {
+  const openCreate = (presetType?: OfferType, createPath?: OfferCreatePath) => {
     resetForm();
-    setFormValues(emptyOfferFormValues(presetType));
+    const mapped =
+      presetType === "BOGO" || presetType === "BUY_N_GET_M" ? "BUY_X_GET_Y" : presetType;
+    const path: OfferCreatePath =
+      createPath ??
+      (mapped === "BUY_X_GET_Y" || mapped === "BUY_N_GET_M" || mapped === "BOGO"
+        ? "bogo"
+        : "boost");
+    const base = emptyOfferFormValues(mapped);
+    setFormValues({
+      ...base,
+      createPath: path,
+      conditionsMode: path === "precision" ? "precision" : "boost",
+      ...(path === "precision"
+        ? { applyToSpecificItems: false, selectedItemIds: [] as string[] }
+        : {}),
+    });
     setEditing(null);
+    // Always show choose unless a concrete path was picked from Create tab cards.
+    setCreateSkipChoose(Boolean(createPath));
     setShowForm(true);
   };
 
@@ -200,12 +243,14 @@ export default function OffersScreen() {
     setFormValues(populateOfferFormFromOffer(o));
     setImageFile(null);
     setMenuSearch("");
+    setCreateSkipChoose(false);
     setShowForm(true);
   };
 
   const closeForm = () => {
     setShowForm(false);
     setEditing(null);
+    setCreateSkipChoose(false);
     resetForm();
   };
 
@@ -253,14 +298,15 @@ export default function OffersScreen() {
     if (!storeId || !token) return;
     const v = formValues;
 
-    if (v.applyToSpecificItems && v.selectedItemIds.length === 0) {
+    if (v.applyToSpecificItems && resolveMenuItemSelection(v.selectedItemIds, menuItems).length === 0) {
       Alert.alert("Required", "Select at least one menu item for this offer.");
       return;
     }
 
     if (v.offerType === "FLAT" && v.applyToSpecificItems) {
+      const resolved = new Set(resolveMenuItemSelection(v.selectedItemIds, menuItems));
       const invalid = menuItems.filter(
-        (m) => v.selectedItemIds.includes(m.item_id) && !isItemEligibleForFlat(m)
+        (m) => resolved.has(m.item_id) && !isItemEligibleForFlat(m)
       );
       if (invalid.length > 0) {
         Alert.alert("Not allowed", "Some selected items are already mapped to another offer.");
@@ -268,7 +314,7 @@ export default function OffersScreen() {
       }
     }
 
-    const payload = buildPayloadFromForm(v);
+    const payload = buildPayloadFromForm(v, menuItems);
 
     setSaving(true);
     try {
@@ -331,6 +377,10 @@ export default function OffersScreen() {
 
   const handleToggle = async (o: Offer) => {
     if (!storeId || !token) return;
+    if (!o.is_active && isOfferCampaignExpired(o)) {
+      Alert.alert("Expired", "This offer’s validity has ended. Create a new offer instead.");
+      return;
+    }
     try {
       await updateOffer(storeId, o.offer_id, { is_active: !o.is_active }, token);
       await reload();
@@ -387,11 +437,13 @@ export default function OffersScreen() {
       <OfferFormSheet
         visible={showForm}
         editing={!!editing}
+        skipChoose={createSkipChoose}
         saving={saving}
         uploadingImage={uploadingImage}
         values={formValues}
         onChange={patchForm}
         menuItems={menuItems}
+        menuCategories={menuCategories}
         menuLoading={menuLoading}
         menuSearch={menuSearch}
         onMenuSearchChange={setMenuSearch}

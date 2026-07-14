@@ -14,16 +14,6 @@ export type CustomerSlab = GenericSlab & {
     perKmRate: number;
     minCharge?: number | null;
 };
-export type PickupSlab = GenericSlab & {
-    baseFare?: number | null;
-    pickupPerKm: number;
-    minCharge?: number | null;
-    waitingChargePerMin?: number | null;
-    waitingStartAfter?: number;
-};
-export type DropSlab = GenericSlab & {
-    dropPerKm: number;
-};
 export type CumulativeSegment = {
     slabId?: number;
     minKm: number;
@@ -39,41 +29,6 @@ export type CustomerSlabPrice = {
     minChargeAdjustment: number;
     finalAmount: number;
     segments: CumulativeSegment[];
-};
-export type PickupPayoutBreakdown = {
-    baseFare: number;
-    distanceAmount: number;
-    subtotalBeforeMin: number;
-    minChargeAdjustment: number;
-    pickupPayout: number;
-    waitingAmount: number;
-    freeWaitMin: number;
-    waitRatePerMin: number;
-    segments: CumulativeSegment[];
-};
-export type DropPayoutBreakdown = {
-    dropAmount: number;
-    segments: CumulativeSegment[];
-};
-export type AppliedSurgeLine = {
-    surgeId?: number;
-    name: string;
-    kind?: string;
-    amount: number;
-};
-export type RiderPayoutBreakdown = {
-    baseFare: number;
-    pickupAmount: number;
-    dropAmount: number;
-    waitingAmount: number;
-    subtotalBeforeSurge: number;
-    appliedSurges: AppliedSurgeLine[];
-    rawSurgeTotal: number;
-    surgeTotal: number;
-    surgeCapped: boolean;
-    minChargeApplied: number;
-    gmitraMaxExtrasAllowed: boolean;
-    finalAmount: number;
 };
 export declare function toSafeNumber(value: unknown, fallback?: number): number;
 export declare function normalizeKm(value: unknown): number;
@@ -92,35 +47,12 @@ export declare function calcCustomerSlabPrice(input: {
     slabs: CustomerSlab[];
 }): CustomerSlabPrice | null;
 export declare function calcWaitingCharge(waitMin: unknown, freeWaitMin: unknown, waitRate: unknown): number;
-export declare function calcPickupPayout(input: {
-    pickupKm: unknown;
-    slabs: PickupSlab[];
-    waitingMinutes?: unknown;
-    extrasAllowed?: boolean;
-}): PickupPayoutBreakdown | null;
-export declare function calcDropPayout(input: {
-    dropKm: unknown;
-    slabs: DropSlab[];
-}): DropPayoutBreakdown | null;
 export declare function calcGmitraMaxAdjustment(input: {
     riderHasGmitraMax: boolean;
     surgeWaitMaxOnly: boolean;
 }): {
     extrasAllowed: boolean;
 };
-export declare function calcRiderPayoutBreakdown(input: {
-    pickupKm: unknown;
-    dropKm: unknown;
-    pickupSlabs: PickupSlab[];
-    dropSlabs: DropSlab[];
-    waitingMinutes?: unknown;
-    riderHasGmitraMax?: boolean;
-    surgeWaitMaxOnly?: boolean;
-    appliedSurges?: AppliedSurgeLine[];
-    rawSurgeTotal?: number;
-    surgeTotal?: number;
-    surgeCapped?: boolean;
-}): RiderPayoutBreakdown | null;
 export declare function mapCustomerSlabsFromPerKmRows<T extends {
     id: number;
     minKm: number;
@@ -131,4 +63,30 @@ export declare function mapCustomerSlabsFromPerKmRows<T extends {
     priority?: number;
     isActive?: boolean;
 }>(rows: T[]): CustomerSlab[];
+export type ServicePayoutRule = {
+    riderPercentage: number;
+    platformPercentage: number;
+};
+export type ServicePayoutRuleSplit = {
+    customerFare: number;
+    riderTotal: number;
+    platformRevenue: number;
+    pickupRatio: number;
+    dropRatio: number;
+    pickupAmount: number;
+    dropAmount: number;
+};
+/**
+ * Rider Fare Engine v3.0: rider payout = rider_percentage of customerFare,
+ * split pickup/drop purely by distance ratio (pickupKm / totalKm). No
+ * guardrails, no fixed ratios, no fallbacks — pickup and drop always sum to
+ * exactly riderTotal. Waiting charge and surge are NOT part of this split —
+ * callers add them on top.
+ */
+export declare function calcServicePayoutRuleSplit(input: {
+    customerFare: number;
+    pickupKm: number;
+    dropKm: number;
+    rule: ServicePayoutRule;
+}): ServicePayoutRuleSplit;
 //# sourceMappingURL=slabPricingEngine.d.ts.map

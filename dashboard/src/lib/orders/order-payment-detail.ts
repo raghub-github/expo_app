@@ -13,6 +13,9 @@ import {
   discountTotalFromBilling,
   type OrderDiscountOfferSource,
 } from "@/lib/merchant-billing-discount";
+import { computeMerchantCtmForPartnerOrder } from "@/lib/merchant-order-ctm";
+import { resolveDeliveryFeeDisplayFromBilling } from "@/lib/orderItemsPayload";
+import { supabaseAdmin } from "@/lib/supabase/server";
 
 export type OrderPaymentRecord = {
   paymentId: string;
@@ -55,7 +58,12 @@ export type OrderPaymentDetail = {
   /** Total discount granted to customer on this order. */
   totalDiscountGranted: number | null;
   discountOfferSource: OrderDiscountOfferSource | null;
+  /** Display delivery fee (quoted when membership waived; otherwise charged). */
   deliveryFee: number | null;
+  /** Pre-benefit quoted fee for strikethrough when membership waived. */
+  deliveryFeeQuoted?: number | null;
+  /** True when membership benefit made delivery ₹0. */
+  deliveryFeeWaived?: boolean;
   source: string | null;
   paymentMode: string | null;
   partialRefunded: boolean;
@@ -325,15 +333,26 @@ function resolveDeliveryFee(
   billing: Record<string, unknown> | null,
   core: Record<string, unknown>,
   settlementDelivery: number | null
-): number | null {
+): { fee: number | null; quoted: number | null; waived: boolean } {
+  const fromSnap = resolveDeliveryFeeDisplayFromBilling(billing);
+  if (fromSnap.waived && fromSnap.quoted != null) {
+    return { fee: fromSnap.quoted, quoted: fromSnap.quoted, waived: true };
+  }
+
   const fromBilling = asNum(billing?.delivery_fee);
-  const quoted = asNum(billing?.deliveryFeeQuotedInr ?? billing?.delivery_fee_quoted);
+  const quoted =
+    fromSnap.quoted ??
+    asNum(billing?.deliveryFeeQuotedInr ?? billing?.delivery_fee_quoted);
   const fee =
+    (fromBilling != null && fromBilling > 0 ? fromBilling : null) ??
     settlementDelivery ??
     asNum(core.total_delivery_fee) ??
-    (fromBilling != null && fromBilling > 0 ? fromBilling : null) ??
     (quoted != null && quoted > 0 ? quoted : null);
-  return fee != null && fee > 0 ? round2(fee) : null;
+  return {
+    fee: fee != null && fee > 0 ? round2(fee) : null,
+    quoted: quoted != null && quoted > 0 ? round2(quoted) : null,
+    waived: false,
+  };
 }
 
 function isOnlinePaymentMode(mode: string | null): boolean {
@@ -550,7 +569,9 @@ async function merchantGrossFromCommissionSnapshots(
   }
 }
 
-/** Merchant bill total — matches partnersite / merchant app (not settlement net). */
+/** Merchant bill total — same SSOT as partnersite / merchant app:
+ * Σ(net_line_total) + packaging − merchant_precision_discount
+ */
 async function resolveTotalCtm(
   merchantStoreId: number | null,
   core: Record<string, unknown>,
@@ -563,6 +584,30 @@ async function resolveTotalCtm(
     asNum(core.grand_total) ??
     asNum(billing?.final_amount) ??
     asNum(billing?.final_payable);
+
+  // Prefer frozen CTM written at accept (same as merchant wallet credit).
+  const frozenCtm = asNum(core.total_ctm);
+  if (frozenCtm != null && frozenCtm > 0) return round2(frozenCtm);
+
+  // Canonical partnersite/merchant path via CTM nets + precision.
+  if (
+    supabaseAdmin &&
+    orderCoreId != null &&
+    orderCoreId > 0 &&
+    merchantStoreId != null &&
+    merchantStoreId > 0
+  ) {
+    try {
+      const ctm = await computeMerchantCtmForPartnerOrder(
+        supabaseAdmin,
+        orderCoreId,
+        merchantStoreId
+      );
+      if (ctm != null && ctm > 0) return round2(ctm);
+    } catch {
+      /* fall through to legacy */
+    }
+  }
 
   let merchantItemSubtotal =
     orderCoreId != null && orderCoreId > 0
@@ -577,16 +622,22 @@ async function resolveTotalCtm(
     merchantItemSubtotal = merchantGrossFromBilling(billing, core);
   }
 
-  const computed =
-    merchantItemSubtotal > 0
-      ? merchantOrderTotalFromBilling(
-          merchantItemSubtotal,
-          billing,
-          packagingFallback
-        )
-      : null;
-
-  if (computed != null && computed > 0) return computed;
+  const precision =
+    asNum(core.merchant_precision_discount) ??
+    asNum((billing as Record<string, unknown> | null)?.merchant_precision_discount) ??
+    0;
+  if (merchantItemSubtotal > 0) {
+    // Prefer precision-only when known (avoids double-subtracting BOOST already in nets).
+    if (precision > 0.005) {
+      return round2(Math.max(0, merchantItemSubtotal + packagingFallback - precision));
+    }
+    const computed = merchantOrderTotalFromBilling(
+      merchantItemSubtotal,
+      billing,
+      packagingFallback
+    );
+    if (computed != null && computed > 0) return computed;
+  }
 
   if (orderCoreId != null && orderCoreId > 0) {
     try {
@@ -650,7 +701,8 @@ export async function fetchOrderPaymentDetail(input: {
         billing_snapshot,
         payment_method,
         payment_status,
-        order_source
+        order_source,
+        merchant_precision_discount
       FROM orders_core
       WHERE id = ${orderCoreId}
       LIMIT 1
@@ -777,7 +829,8 @@ export async function fetchOrderPaymentDetail(input: {
     input.grandTotal ??
     null;
 
-  const deliveryFee = resolveDeliveryFee(billing, core, settlementDelivery);
+  const deliveryResolved = resolveDeliveryFee(billing, core, settlementDelivery);
+  const deliveryFee = deliveryResolved.fee;
 
   let merchantItemSubtotal =
     orderCoreId > 0
@@ -870,6 +923,8 @@ export async function fetchOrderPaymentDetail(input: {
     totalDiscountGranted: discountSummary.amount,
     discountOfferSource: discountSummary.offerSource,
     deliveryFee,
+    deliveryFeeQuoted: deliveryResolved.quoted,
+    deliveryFeeWaived: deliveryResolved.waived,
     source:
       (core.order_source != null ? String(core.order_source) : null) ??
       input.orderSource,

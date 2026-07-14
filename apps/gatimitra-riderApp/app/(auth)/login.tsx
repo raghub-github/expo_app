@@ -7,7 +7,6 @@ import {
   StyleSheet,
   Image,
   Pressable,
-  Alert,
   useWindowDimensions,
   ActivityIndicator,
   Keyboard,
@@ -227,7 +226,7 @@ export default function LoginScreen() {
       setDeviceSessionRetry(false);
       setStep("otp");
       startCountdown();
-      Alert.alert("Success", "OTP sent successfully.");
+      // Do not Alert here — success is entering the OTP step (same UX as merchant app).
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       let errorMessage = err.message || "Unable to send OTP. Please try again.";
@@ -235,7 +234,9 @@ export default function LoginScreen() {
         errorMessage = "Unable to send OTP. Please try again.";
       }
       setError(errorMessage);
-      console.error("OTP request error:", e);
+      if (__DEV__) {
+        console.warn("OTP request error:", e);
+      }
     } finally {
       setBusy(false);
     }
@@ -309,7 +310,6 @@ export default function LoginScreen() {
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       await riderAuthService.sendOtp({ phoneE164: normalizedPhone });
       startCountdown();
-      Alert.alert("Success", "OTP sent successfully.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to send OTP. Please try again.");
     } finally {

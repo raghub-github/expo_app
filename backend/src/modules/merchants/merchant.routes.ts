@@ -337,9 +337,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             ? prepBuffers.get(storeInternalId) ?? 0
             : 0;
         const prepMin = resolveStorePrepMinutesForEta(menuAvgPrep, storeLevelPrep, prepBuffer);
-        // ETA range: canonical "(prep + distance/18kmh) + 5..10 min buffer"
-        // formula stamped server-side so list, merchant detail header, and
-        // checkout all show the same numbers for one store.
+        // ETA range: prep + distance/18kmh + 5..10 min buffer (list preview; not full order engine)
         const etaRange = previewEtaRange({
           distanceKm: "distance_km" in s ? (nearby.distance_km as number) : null,
           prepMinutes: prepMin,

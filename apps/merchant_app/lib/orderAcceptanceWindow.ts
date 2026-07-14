@@ -1,6 +1,7 @@
-/** Display-only acceptance countdown — backend owns timeout / auto-cancel. */
+export const AUTO_CANCEL_REASON = "MERCHANT_ACCEPT_TIMEOUT";
+export const AUTO_CANCEL_REASON_LABEL = "Auto Cancelled";
 
-export const AUTO_CANCEL_REASON = "Auto Cancelled";
+/** Display-only acceptance countdown — backend owns timeout / auto-cancel. */
 
 export const DEFAULT_ACCEPTANCE_WINDOW_MINUTES = 5;
 

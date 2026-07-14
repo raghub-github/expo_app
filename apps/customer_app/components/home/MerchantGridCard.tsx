@@ -1,35 +1,47 @@
 /**
- * Compact 3-column grid tile — "Loved by Customers" (Swiggy Recommended-style).
- * Banner carousel on image with manual swipe.
+ * Compact grid / rail tile — Swiggy Recommended-style.
+ * Static banner only (no carousel). Rating pill overlays image bottom-left.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
 import { useEffect, useMemo } from "react";
+import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MerchantSummary } from "@/services/merchant.service";
-import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
-import {
-  resolveMerchantBannerUri,
-  resolveMerchantCarouselBannerUri,
-  resolveMerchantCarouselGalleryUris,
-} from "@/lib/merchantBanner";
+import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
 import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { formatGridOfferBadge, gridDeliveryLabel } from "@/lib/merchantOfferBadge";
 import {
-  GridCardImageRatingMask,
   GridCardRatingCutout,
   GRID_RATING_PILL,
 } from "@/components/home/GridCardRatingCutout";
+import { AppText } from "@/components/AppText";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const GRID_PAD = 16;
 const GRID_GAP = 10;
 export const LOVED_GRID_COLS = 3;
+
+/** 3-column wrap width (legacy grid). */
 export const MERCHANT_GRID_CARD_W = Math.floor(
   (SCREEN_W - GRID_PAD * 2 - GRID_GAP * (LOVED_GRID_COLS - 1)) / LOVED_GRID_COLS
 );
+
+/**
+ * Horizontal rail: 2 full cards + ~38% of a 3rd peeking on the right.
+ * leftPad + 2*w + gap + 0.38*w ≈ screen
+ */
+export const MERCHANT_RAIL_CARD_W = Math.floor((SCREEN_W - GRID_PAD - GRID_GAP) / 2.38);
+export const MERCHANT_RAIL_GAP = GRID_GAP;
+/** Banner height vs width — Swiggy recommended tiles are shorter than square. */
+export const MERCHANT_RAIL_IMAGE_RATIO = 0.78;
+export function merchantRailImageHeight(cardWidth = MERCHANT_RAIL_CARD_W): number {
+  return Math.round(cardWidth * MERCHANT_RAIL_IMAGE_RATIO);
+}
+
 const CARD_RADIUS = 14;
 
 type MerchantGridCardProps = {
@@ -37,7 +49,7 @@ type MerchantGridCardProps = {
   onPress: () => void;
   onPressIn?: () => void;
   weatherDelayMinutes?: number;
-  /** Override default 3-column tile width (e.g. horizontal loved rail). */
+  /** Override default tile width (e.g. horizontal rail). */
   width?: number;
 };
 
@@ -46,27 +58,30 @@ export function MerchantGridCard({
   onPress,
   onPressIn,
   weatherDelayMinutes = 0,
-  width = MERCHANT_GRID_CARD_W,
+  width = MERCHANT_RAIL_CARD_W,
 }: MerchantGridCardProps) {
-  const bannerUri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
-  const galleryUris = useMemo(() => resolveMerchantCarouselGalleryUris(merchant), [merchant]);
-  const fallbackBannerUri = useMemo(() => resolveMerchantBannerUri(merchant), [merchant]);
-  const effectiveBannerUri = bannerUri ?? fallbackBannerUri;
-  const cardPress = useScrollSafePress(onPress, { onPressIn });
+  const bannerUri = useMemo(() => resolveMerchantBannerUri(merchant), [merchant]);
+  // Shutter only on committed onPress (via navigateToMerchant) — not pressIn,
+  // so cancelled scrolls never flash a full-screen Modal over the next tap.
+  const cardPress = useScrollSafePress(onPress, {
+    onPressIn: onPressIn,
+  });
 
   useEffect(() => {
-    warmMerchantHeroImage(merchant.id, effectiveBannerUri ?? galleryUris[0] ?? null);
-  }, [merchant.id, effectiveBannerUri, galleryUris]);
+    warmMerchantHeroImage(merchant.id, bannerUri);
+  }, [merchant.id, bannerUri]);
+
   const offerBadge = formatGridOfferBadge(merchant.offerText);
-  const { label: baseDeliveryLabel } = gridDeliveryLabel(merchant, weatherDelayMinutes);
+  const { label: baseDeliveryLabel, isFast } = gridDeliveryLabel(merchant, weatherDelayMinutes);
+  const showNearFast = isFast && weatherDelayMinutes <= 0;
   const deliveryLabel =
-    weatherDelayMinutes > 0 ? `${baseDeliveryLabel} · Rain Delay` : baseDeliveryLabel;
-  const imageSize = width;
+    weatherDelayMinutes > 0 ? `${baseDeliveryLabel} · Rain` : baseDeliveryLabel;
+  const imageH = merchantRailImageHeight(width);
 
   return (
     <View style={[styles.card, { width }]}>
-      <View style={[styles.imageStage, { width: imageSize }]}>
-        <View style={[styles.imageClip, { width: imageSize, height: imageSize }]}>
+      <View style={[styles.imageStage, { width }]}>
+        <View style={[styles.imageClip, { width, height: imageH }]}>
           <TouchableOpacity
             onPress={cardPress.onPress}
             onPressIn={cardPress.onPressIn}
@@ -75,30 +90,33 @@ export function MerchantGridCard({
             activeOpacity={0.92}
             style={styles.imageTap}
           >
-            <StoreBannerCarousel
-              bannerUri={effectiveBannerUri}
-              galleryUris={galleryUris}
-              width={imageSize}
-              height={imageSize}
-              borderRadius={CARD_RADIUS}
-              hidePlaceholderIcon
-              showDots={galleryUris.length > 0}
-              enableKenBurns={false}
-              enableAutoRotate={galleryUris.length > 0}
-              enableSwipe={galleryUris.length > 0}
-              deferTapToParent
-              onSwipeGesture={cardPress.blockPress}
-              onGestureComplete={() => cardPress.releasePressBlock(320)}
-            />
+            {bannerUri ? (
+              <Image
+                source={{ uri: bannerUri }}
+                style={styles.banner}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={0}
+              />
+            ) : (
+              <View style={styles.bannerPlaceholder}>
+                <LinearGradient
+                  colors={["#FFF4E8", "#FFE8D1", "#F5D5B8"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                />
+                <Ionicons name="restaurant" size={28} color="rgba(180,120,60,0.35)" />
+              </View>
+            )}
             {offerBadge ? (
               <View style={styles.offerImageTag}>
-                <Text style={styles.offerImageTagText} numberOfLines={2}>
+                <AppText style={styles.offerImageTagText} numberOfLines={2}>
                   {offerBadge}
-                </Text>
+                </AppText>
               </View>
             ) : null}
           </TouchableOpacity>
-          <GridCardImageRatingMask imageRadius={CARD_RADIUS} />
         </View>
 
         <GridCardRatingCutout
@@ -115,14 +133,29 @@ export function MerchantGridCard({
         activeOpacity={0.7}
         style={styles.body}
       >
-        <Text style={styles.name} numberOfLines={1}>
+        <AppText style={styles.name} numberOfLines={1}>
           {merchant.name}
-        </Text>
+        </AppText>
         <View style={styles.metaRow}>
-          <Ionicons name="time-outline" size={11} color="#9CA3AF" />
-          <Text style={styles.metaText} numberOfLines={1}>
-            {deliveryLabel}
-          </Text>
+          {showNearFast ? (
+            <>
+              <Ionicons name="flash" size={11} color="#22C55E" />
+              <AppText style={[styles.metaText, styles.metaFast]} numberOfLines={1}>
+                Near & Fast
+              </AppText>
+            </>
+          ) : (
+            <>
+              <Ionicons
+                name={weatherDelayMinutes > 0 ? "rainy-outline" : "time-outline"}
+                size={11}
+                color="#9CA3AF"
+              />
+              <AppText style={styles.metaText} numberOfLines={1}>
+                {deliveryLabel}
+              </AppText>
+            </>
+          )}
         </View>
       </TouchableOpacity>
     </View>
@@ -140,32 +173,48 @@ const styles = StyleSheet.create({
   },
   imageClip: {
     borderRadius: CARD_RADIUS,
+    borderBottomLeftRadius: 0,
     overflow: "hidden",
-    backgroundColor: GatiMitraColors.mintSoft,
+    backgroundColor: "#FFF4E8",
   },
   imageTap: {
     flex: 1,
   },
+  banner: {
+    width: "100%",
+    height: "100%",
+  },
+  bannerPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF4E8",
+    overflow: "hidden",
+  },
   offerImageTag: {
     position: "absolute",
-    top: 6,
-    left: 6,
-    right: 6,
-    maxWidth: "100%",
-    backgroundColor: "rgba(15, 23, 42, 0.82)",
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
+    top: 8,
+    left: 0,
+    maxWidth: "90%",
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    // Left edge flush with image; only right side rounded (Swiggy-style).
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderTopRightRadius: 6,
+    borderBottomRightRadius: 6,
     zIndex: 3,
   },
   offerImageTagText: {
     fontSize: 9,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#fff",
-    lineHeight: 12,
+    lineHeight: 11,
+    letterSpacing: 0.1,
   },
   body: {
-    paddingTop: GRID_RATING_PILL.overhang + 3,
+    paddingTop: GRID_RATING_PILL.overhang + 8,
     paddingHorizontal: 1,
   },
   name: {
@@ -179,12 +228,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 3,
-    marginTop: 3,
+    marginTop: 4,
   },
   metaText: {
     fontSize: 11,
     fontWeight: "500",
     color: "#9CA3AF",
     flex: 1,
+  },
+  metaFast: {
+    color: "#22C55E",
+    fontWeight: "600",
   },
 });

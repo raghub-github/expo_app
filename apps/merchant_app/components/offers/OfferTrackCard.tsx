@@ -10,6 +10,7 @@ import {
   getOfferLifecycle,
   getOfferStatusBadgeColors,
   hasOfferScheduleRestrictions,
+  isOfferCampaignExpired,
   offerHeadline,
 } from "@/lib/offers/offer-lifecycle";
 import { OFFERS_UI } from "./offers-theme";
@@ -45,6 +46,28 @@ export function OfferTrackCard({ offer, storeName, onEdit, onToggle, onDelete }:
   const dateRange = formatOfferCardDateRange(offer);
   const slotSummary = formatOfferSlotSummary(offer);
   const hasSlots = hasOfferScheduleRestrictions(offer);
+  const expired = isOfferCampaignExpired(offer);
+  const canResume = !offer.is_active && !expired;
+  const showToggle = offer.is_active || canResume;
+
+  const meta = (offer.offer_metadata ?? {}) as Record<string, unknown>;
+  const typeUpper = String(offer.offer_type ?? "").toUpperCase();
+  const isBogoType =
+    typeUpper === "BOGO" ||
+    typeUpper === "BUY_X_GET_Y" ||
+    typeUpper === "BUY_N_GET_M" ||
+    meta.create_path === "bogo";
+  const modeLabel = isBogoType
+    ? "BOGO"
+    : meta.create_path === "boost" || meta.create_path === "precision"
+      ? meta.create_path === "boost"
+        ? "Boost"
+        : "Precision"
+      : meta.conditions_mode === "boost" || meta.conditions_mode === "precision"
+        ? meta.conditions_mode === "boost"
+          ? "Boost"
+          : "Precision"
+        : null;
 
   const subtitleParts: string[] = [];
   if (headline && headline !== offer.offer_title) subtitleParts.push(headline);
@@ -71,6 +94,20 @@ export function OfferTrackCard({ offer, storeName, onEdit, onToggle, onDelete }:
         <Text style={styles.subtitle} numberOfLines={2}>
           {subtitle}
         </Text>
+        {modeLabel ? (
+          <Text
+            style={[
+              styles.modeLabel,
+              modeLabel === "Boost"
+                ? styles.modeLabelBoost
+                : modeLabel === "BOGO"
+                  ? styles.modeLabelBogo
+                  : styles.modeLabelPrecision,
+            ]}
+          >
+            {modeLabel}
+          </Text>
+        ) : null}
 
         {storeName ? (
           <View style={styles.metaRow}>
@@ -144,12 +181,14 @@ export function OfferTrackCard({ offer, storeName, onEdit, onToggle, onDelete }:
         </Pressable>
 
         <View style={styles.actions}>
-          <ActionButton
-            icon={offer.is_active ? "pause-circle" : "play-circle"}
-            label={offer.is_active ? "Pause" : "Resume"}
-            color={offer.is_active ? GatiMitraMerchant.warning : GatiMitraMerchant.success}
-            onPress={onToggle}
-          />
+          {showToggle ? (
+            <ActionButton
+              icon={offer.is_active ? "pause-circle" : "play-circle"}
+              label={offer.is_active ? "Pause" : "Activate"}
+              color={offer.is_active ? GatiMitraMerchant.warning : GatiMitraMerchant.success}
+              onPress={onToggle}
+            />
+          ) : null}
           <ActionButton icon="create-outline" label="Edit" color={GatiMitraMerchant.primary} onPress={onEdit} />
           <ActionButton icon="trash-outline" label="Remove" color={GatiMitraMerchant.error} onPress={onDelete} />
         </View>
@@ -232,6 +271,10 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 17, fontWeight: "800", color: OFFERS_UI.text, lineHeight: 22 },
   subtitle: { fontSize: 13, color: OFFERS_UI.textMuted, marginTop: 4, lineHeight: 18 },
+  modeLabel: { fontSize: 11, fontWeight: "700", marginTop: 4 },
+  modeLabelBoost: { color: "#047857" },
+  modeLabelPrecision: { color: "#4338CA" },
+  modeLabelBogo: { color: "#6D28D9" },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 },
   metaText: { flex: 1, fontSize: 13, color: OFFERS_UI.textMuted, lineHeight: 18 },
   slotChip: {

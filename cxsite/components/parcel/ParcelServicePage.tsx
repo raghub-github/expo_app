@@ -8,6 +8,7 @@ import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import AppLinkSentToast from '@/components/common/AppLinkSentToast'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
@@ -168,6 +169,7 @@ export default function ParcelServicePageV2() {
   const [currentLocation, setCurrentLocation] = useState('Detecting...')
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
+  const [showAppLinkToast, setShowAppLinkToast] = useState(false)
   
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -1925,9 +1927,12 @@ export default function ParcelServicePageV2() {
       <AppDownloadModal
         isOpen={showAppDownloadModal}
         onClose={() => setShowAppDownloadModal(false)}
+        variant="customer"
         title="Send parcels in the GatiMitra App"
         description="Web parcel booking is currently unavailable. Please download the app to send parcels."
+        onLinkSent={() => setShowAppLinkToast(true)}
       />
+      <AppLinkSentToast open={showAppLinkToast} onClose={() => setShowAppLinkToast(false)} />
 
       {/* TRACKING MODAL */}
       {showTrackingModal && trackedParcel && (

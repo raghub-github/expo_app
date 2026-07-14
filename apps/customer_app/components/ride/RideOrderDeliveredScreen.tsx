@@ -45,6 +45,7 @@ import {
   formatRideTripStats,
   getRideServiceLabel,
   parseRideDeliveredBill,
+  buildRidePaymentFareBreakdown,
   resolveRideVehicleImage,
 } from "@/lib/ride-order-display";
 import type { RideCaptainRatingSubmitPayload } from "@/components/ride/RideCaptainRatingSheet";
@@ -178,6 +179,11 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
   const dropAddress = order.deliveryAddress?.trim() || "Drop location";
   const dropTitle = getCompactAddressLine(order.deliveryAddress) || "your destination";
   const deliveredBill = useMemo(() => parseRideDeliveredBill(order), [order]);
+  const fareBreakdown = useMemo(() => buildRidePaymentFareBreakdown(order), [order]);
+  const fareLineItems = useMemo(
+    () => fareBreakdown.lines.filter((line) => !line.emphasis),
+    [fareBreakdown.lines]
+  );
   const tripStats = formatRideTripStats(deliveredBill.distanceKm, order.rideDurationMinutes);
   const deliveredAtIso = getDeliveredAtIso(order);
   const deliveredTime = formatDeliveredTime(deliveredAtIso);
@@ -416,7 +422,7 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
                 <RNImage source={vehicleImage} style={styles.vehicleHero} resizeMode="contain" />
               ) : null}
               <Text style={styles.fareAmount}>
-                {formatRideFare(deliveredBill.total)}
+                {formatRideFare(fareBreakdown.total)}
                 <Text style={styles.estTag}> (.est)</Text>
               </Text>
               {tripStats ? <Text style={styles.tripStatsHero}>{tripStats}</Text> : null}
@@ -454,35 +460,15 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
             {tripStats ? (
               <Text style={styles.tripStatsLine}>{tripStats}</Text>
             ) : null}
-            <View style={styles.fareRow}>
-              <Text style={styles.fareRowLabel}>Ride fare</Text>
-              <Text style={styles.fareRowValue}>{formatRideFare(deliveredBill.rideFare)}</Text>
-            </View>
-            {deliveredBill.waitingCharge > 0 ? (
-              <View style={styles.fareRow}>
-                <Text style={styles.fareRowLabel}>Waiting at pickup</Text>
-                <Text style={styles.fareRowValue}>
-                  {formatRideFare(deliveredBill.waitingCharge)}
-                </Text>
+            {fareLineItems.map((line) => (
+              <View key={`${line.label}-${line.amount}`} style={styles.fareRow}>
+                <Text style={styles.fareRowLabel}>{line.label}</Text>
+                <Text style={styles.fareRowValue}>{formatRideFare(line.amount)}</Text>
               </View>
-            ) : null}
-            {deliveredBill.additionalCharges > 0 ? (
-              <View style={styles.fareRow}>
-                <Text style={styles.fareRowLabel}>Additional charges</Text>
-                <Text style={styles.fareRowValue}>
-                  {formatRideFare(deliveredBill.additionalCharges)}
-                </Text>
-              </View>
-            ) : null}
-            {deliveredBill.tip > 0 ? (
-              <View style={styles.fareRow}>
-                <Text style={styles.fareRowLabel}>Tip</Text>
-                <Text style={styles.fareRowValue}>{formatRideFare(deliveredBill.tip)}</Text>
-              </View>
-            ) : null}
+            ))}
             <View style={[styles.fareRow, styles.fareRowTotal]}>
               <Text style={styles.fareTotalLabel}>Total</Text>
-              <Text style={styles.fareTotalValue}>{formatRideFare(deliveredBill.total)}</Text>
+              <Text style={styles.fareTotalValue}>{formatRideFare(fareBreakdown.total)}</Text>
             </View>
           </View>
 

@@ -20,21 +20,16 @@ export const MERCHANT_MENU_LOADING_MESSAGES = [
 ] as const;
 
 type MerchantLoadingMessageState = {
-  /** Last shown message index per merchant — next open picks the following one. */
-  lastIndexByMerchant: Record<string, number>;
-  pickStartIndex: (merchantId: string) => number;
+  /** Last shown index — every store entry advances globally. */
+  lastIndex: number;
+  pickStartIndex: (merchantId?: string) => number;
 };
 
 export const useMerchantLoadingMessageStore = create<MerchantLoadingMessageState>((set, get) => ({
-  lastIndexByMerchant: {},
-  pickStartIndex: (merchantId: string) => {
-    const key = merchantId.trim();
-    if (!key) return 0;
-    const prev = get().lastIndexByMerchant[key] ?? -1;
-    const next = (prev + 1) % MERCHANT_MENU_LOADING_MESSAGES.length;
-    set((state) => ({
-      lastIndexByMerchant: { ...state.lastIndexByMerchant, [key]: next },
-    }));
+  lastIndex: -1,
+  pickStartIndex: (_merchantId?: string) => {
+    const next = (get().lastIndex + 1) % MERCHANT_MENU_LOADING_MESSAGES.length;
+    set({ lastIndex: next });
     return next;
   },
 }));

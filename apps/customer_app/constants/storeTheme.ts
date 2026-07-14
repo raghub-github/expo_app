@@ -6,10 +6,13 @@ export const StoreTheme = {
   textMuted: "#9CA3AF",
   accentRed: "#E23744",
   accentRedDark: "#CB202D",
-  /** Primary CTA on store inner page (ADD, offers, filters). */
+  /** Primary CTA on store inner page (ADD outline, offers, filters). */
   accentMint: "#22C55E",
   accentMintDark: "#16A34A",
   accentMintSoft: "#ECFDF5",
+  /** Filled qty stepper + Continue bar — darker than accentMint. */
+  cartAction: "#15803D",
+  cartActionPressed: "#166534",
   ratingGreen: "#267E3E",
   ratingGreenBg: "#267E3E",
   offerBlue: "#256FEF",

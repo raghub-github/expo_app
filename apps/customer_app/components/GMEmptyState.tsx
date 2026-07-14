@@ -3,14 +3,7 @@
  */
 
 import React, { useEffect } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-  useWindowDimensions,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   Easing,
@@ -29,6 +22,7 @@ import {
   NON_SERVICEABLE_STATUS_BAR_BG,
   useScreenChromeStore,
 } from "@/store/screenChromeStore";
+import { AppText } from "@/components/AppText";
 
 const GREEN = "#22C55E";
 const GREEN_LIGHT = "#4ADE80";
@@ -323,11 +317,11 @@ export function GMEmptyState({ header }: { header?: React.ReactNode }) {
         <HeroIllustration floatStyle={heroStyle} />
 
         <Animated.View style={[styles.copyBlock, copyStyle]}>
-          <Text style={styles.title}>We're not serving here yet 🌱</Text>
-          <Text style={styles.subtitle}>
-            GatiMitra is <Text style={styles.subtitleAccent}>expanding fast.</Text>
+          <AppText style={styles.title}>We're not serving here yet 🌱</AppText>
+          <AppText style={styles.subtitle}>
+            GatiMitra is <AppText style={styles.subtitleAccent}>expanding fast.</AppText>
             {"\n"}Try another nearby location.
-          </Text>
+          </AppText>
         </Animated.View>
 
         <Animated.View style={[styles.ctaWrap, ctaStyle]}>
@@ -345,7 +339,7 @@ export function GMEmptyState({ header }: { header?: React.ReactNode }) {
               <View style={styles.ctaIconWrap}>
                 <Ionicons name="location-sharp" size={18} color="#fff" />
               </View>
-              <Text style={styles.ctaText}>Change Location</Text>
+              <AppText style={styles.ctaText}>Change Location</AppText>
             </LinearGradient>
           </TouchableOpacity>
         </Animated.View>

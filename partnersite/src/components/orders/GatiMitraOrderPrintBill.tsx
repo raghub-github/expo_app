@@ -7,6 +7,7 @@ import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { merchantItemCatalogAndNet } from '@/lib/merchant-order-item-display';
 
 export type GatiMitraPrintStoreInfo = {
   storeName: string;
@@ -67,12 +68,21 @@ function buildPrintHtml(
   const itemRows = items
     .map((item) => {
       const qty = item.quantity || 1;
-      const unit = Number(item.price || 0);
-      const amount = Number(item.total || unit * qty);
+      const { catalog, net, showStrike, offerBadge } = merchantItemCatalogAndNet(item);
+      const amtLabel = showStrike
+        ? `<span style="text-decoration:line-through;color:#888;margin-right:4px">${formatMoney(catalog)}</span>${formatMoney(net)}`
+        : formatMoney(net);
+      const unitLabel = showStrike
+        ? `${qty} x ${Math.round(net / Math.max(1, qty))}`
+        : `${qty} x ${Math.round(Number(item.price || 0))}`;
       return `<tr>
-          <td class="item-name">${escapeHtml(item.name)}</td>
-          <td class="item-qty">${qty} x ${unit}</td>
-          <td class="item-amt">${formatMoney(amount)}</td>
+          <td class="item-name">${escapeHtml(item.name)}${
+            offerBadge
+              ? `<div style="font-size:10px;color:#b45309;font-weight:700">${escapeHtml(offerBadge)}</div>`
+              : ''
+          }</td>
+          <td class="item-qty">${unitLabel}</td>
+          <td class="item-amt">${amtLabel}</td>
         </tr>`;
     })
     .join('');
@@ -253,12 +263,28 @@ export function GatiMitraOrderPrintBill({
           <ul className="space-y-2">
             {items.map((item, idx) => {
               const qty = item.quantity || 1;
-              const amount = Number(item.total || (item.price || 0) * qty);
+              const { catalog, net, showStrike, offerBadge } = merchantItemCatalogAndNet(item);
               return (
                 <li key={idx} className="flex justify-between gap-2 text-xs">
-                  <span className="min-w-0 flex-1">{item.name}</span>
+                  <span className="min-w-0 flex-1">
+                    {item.name}
+                    {offerBadge ? (
+                      <span className="mt-0.5 block text-[10px] font-bold text-amber-700">
+                        {offerBadge}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="shrink-0 tabular-nums">
-                    {qty} x {item.price} · {formatMoney(amount)}
+                    {showStrike ? (
+                      <>
+                        <span className="mr-1 text-gray-400 line-through">{formatMoney(catalog)}</span>
+                        {formatMoney(net)}
+                      </>
+                    ) : (
+                      <>
+                        {qty} x {item.price} · {formatMoney(net)}
+                      </>
+                    )}
                   </span>
                 </li>
               );

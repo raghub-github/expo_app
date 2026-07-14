@@ -282,9 +282,20 @@ export function MerchantIncomingOrderModal() {
         60_000,
         Math.max(1, Math.min(180, Number(settings.acceptance_window_minutes || 5))) * 60_000
       );
-      const orderAgeMs = Date.now() - new Date(full.created_at).getTime();
-      if (orderAgeMs >= acceptWindowMs) {
-        addDismissed(full.order_id);
+      const snapDeadline = (full as OrdersFoodRow & { merchant_response_deadline_at?: string | null })
+        .merchant_response_deadline_at
+        ? new Date(
+            String(
+              (full as OrdersFoodRow & { merchant_response_deadline_at?: string | null })
+                .merchant_response_deadline_at
+            )
+          ).getTime()
+        : NaN;
+      const deadlineMs = Number.isFinite(snapDeadline)
+        ? snapDeadline
+        : new Date(full.created_at).getTime() + acceptWindowMs;
+      // Past snapshotted deadline: do not open. Backend cron cancels — never dismiss permanently here.
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
         return false;
       }
 
@@ -626,9 +637,20 @@ export function MerchantIncomingOrderModal() {
     if (secondsLeft > 0) return;
     if (autoCancelFiredForOrderIdRef.current === modalOrder.order_id) return;
     autoCancelFiredForOrderIdRef.current = modalOrder.order_id;
-    close();
+    // Nudge backend cancel authority; close only after status leaves CREATED (realtime/poll).
+    void (async () => {
+      try {
+        await fetch(`/api/merchant/stores/${storeId}/sync-acceptance-timeout`, {
+          method: 'POST',
+          credentials: 'include',
+          cache: 'no-store',
+        });
+      } catch {
+        /* cron owns cancel */
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft, modalOrder, actionLoading]);
+  }, [secondsLeft, modalOrder, actionLoading, storeId]);
 
   if (typeof document === 'undefined') return null;
   if (!storeId || !Number.isFinite(storeInternalId)) return null;

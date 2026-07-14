@@ -9,6 +9,7 @@ import {
 } from '@/lib/merchant-visible-pricing';
 import {
   merchantBillPartsFromItems,
+  merchantLineTotalForItem,
   resolveMerchantCtm as resolveMerchantCtmFromOrder,
 } from '@/lib/merchant-order-item-display';
 import {
@@ -114,7 +115,12 @@ export async function computeMerchantCtmForPartnerOrder(
   const snaps = orderText ? snapshotsByOrderText.get(orderText) ?? [] : [];
 
   let items = resolvePartnerOrderItems(coreRow, foodRow, rawItemsByOrderTextId);
-  items = mapItemsWithMerchantBase(items, snaps);
+  const allCtmFrozen =
+    items.length > 0 && items.every((it) => it.ctmFromSnapshot === true);
+  // Frozen CTM nets already include BOOST — never rescale from live menu/commission.
+  if (!allCtmFrozen) {
+    items = mapItemsWithMerchantBase(items, snaps);
+  }
 
   const foodTotalRaw = foodRow?.food_items_total_value;
   const coreGrandRaw = coreRow.grand_total ?? coreRow.item_total;
@@ -130,14 +136,33 @@ export async function computeMerchantCtmForPartnerOrder(
       ? (coreRow.billing_snapshot as Record<string, unknown>)
       : null;
   const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+  const precisionFromCore = Math.max(
+    0,
+    Number(coreRow.merchant_precision_discount) || 0
+  );
+  const packaging = Number(customerPricing.packaging) || 0;
+
+  // Preferred SSOT: Σ(merchant line nets) + packaging − cart precision.
+  // BOOST is already inside nets; do NOT also subtract item offer discounts here.
+  const ctmNetSum = items.reduce((s, it) => s + merchantLineTotalForItem(it), 0);
+  if (allCtmFrozen && ctmNetSum > 0.005) {
+    return round2(Math.max(0, ctmNetSum + packaging - precisionFromCore));
+  }
+
+  // Legacy (no CTM snapshot): catalog/merchant-base lines − all merchant-funded billing discounts.
   const bill = merchantBillPartsFromItems(items, {
     subtotal: 0,
-    packaging: customerPricing.packaging,
-    discount: merchantDiscount,
+    packaging,
+    discount: Math.max(merchantDiscount, precisionFromCore),
     total: 0,
   });
+  if (bill.total > 0) return round2(bill.total);
 
-  return bill.total > 0 ? round2(bill.total) : null;
+  if (ctmNetSum > 0.005) {
+    return round2(Math.max(0, ctmNetSum + packaging - precisionFromCore));
+  }
+
+  return null;
 }
 
 /** Freeze merchant CTM at accept — same amount shown on all later stages + wallet credit. */

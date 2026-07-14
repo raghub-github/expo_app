@@ -48,15 +48,37 @@ function parseMissedOfferCompensation(
   const offerKey = typeof o.offerKey === "string" ? o.offerKey.trim() : "";
   if (amountInr <= 0 && discountInr <= 0) return null;
   if (!offerKey) return null;
+
+  const offerSource =
+    o.offerSource === "platform" || o.offerSource === "merchant" ? o.offerSource : null;
+  const offerKind = typeof o.offerKind === "string" ? o.offerKind : undefined;
+  const offerTitle = typeof o.offerTitle === "string" ? o.offerTitle : undefined;
+
+  // Merchant store precision / cart offers cannot be unlocked via GatiCash — platform only.
+  if (offerSource === "merchant") {
+    const kind = String(offerKind ?? "").toUpperCase().replace(/[-\s]+/g, "_");
+    const title = String(offerTitle ?? "").toLowerCase();
+    const isPrecisionLike =
+      kind === "PRECISION" ||
+      kind === "CART_PERCENTAGE" ||
+      kind === "CART_FLAT" ||
+      kind === "PERCENTAGE" ||
+      kind === "FLAT" ||
+      kind === "DISCOUNT" ||
+      kind === "COUPON" ||
+      kind === "" ||
+      /\bprecision\b/.test(title);
+    if (isPrecisionLike) return null;
+  }
+
   return {
     amountInr: Math.min(amountInr, MAX_MISSED_OFFER_WALLET_ADD),
     discountInr,
     offerKey,
     offerId: typeof o.offerId === "number" && o.offerId > 0 ? o.offerId : null,
-    offerSource:
-      o.offerSource === "platform" || o.offerSource === "merchant" ? o.offerSource : null,
-    offerKind: typeof o.offerKind === "string" ? o.offerKind : undefined,
-    offerTitle: typeof o.offerTitle === "string" ? o.offerTitle : undefined,
+    offerSource,
+    offerKind,
+    offerTitle,
   };
 }
 

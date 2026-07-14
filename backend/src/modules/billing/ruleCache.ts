@@ -15,7 +15,7 @@ export function billingDatasetCacheKey(
 ): string {
   const c = (couponCode ?? "").trim().toLowerCase();
   const st = (serviceType ?? "FOOD").trim().toUpperCase();
-  return `${rulesetVersion}|${merchantStoreId}|${c}|${st}`;
+  return `v3-offer-ids|${rulesetVersion}|${merchantStoreId}|${c}|${st}`;
 }
 
 /** In-process cache keyed by ruleset_version + merchant + coupon (invalidates when version bumps). */

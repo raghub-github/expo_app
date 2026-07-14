@@ -15,7 +15,7 @@ import {
   InteractionManager,
   Linking,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -72,7 +72,12 @@ import {
   orderItemHasCustomizations,
   type OrderDetailLineItem,
 } from "@/lib/order-item-customization-display";
-import { safeRouterBack, HOME_TAB_FALLBACK, RIDE_HOME_FALLBACK } from "@/lib/safeRouterBack";
+import {
+  safeRouterBack,
+  HOME_TAB_FALLBACK,
+  RIDE_HOME_FALLBACK,
+  FOOD_HOME_FALLBACK,
+} from "@/lib/safeRouterBack";
 import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
 import { getRideOrderStatus, isRideCaptainAssigned } from "@/services/rideBooking.service";
 
@@ -125,11 +130,33 @@ function formatMoney(value: number) {
   return `₹${value.toFixed(2)}`;
 }
 
+/** iOS swipe-back / stack POP → food home (not checkout). */
+function FoodOrderTrackingBackGuard() {
+  const router = useRouter();
+  const navigation = useNavigation();
+
+  useEffect(() => {
+    const unsub = navigation.addListener("beforeRemove", (e) => {
+      const type = e.data.action.type;
+      if (type !== "GO_BACK" && type !== "POP") return;
+      e.preventDefault();
+      router.replace(FOOD_HOME_FALLBACK);
+    });
+    return unsub;
+  }, [navigation, router]);
+
+  return null;
+}
+
 export default function OrderDetailsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const handleBack = useCallback(() => {
     safeRouterBack(router);
+  }, [router]);
+  /** After placing a food order, never pop back into checkout/cart — always food home. */
+  const handleFoodTrackingBack = useCallback(() => {
+    router.replace(FOOD_HOME_FALLBACK);
   }, [router]);
   const queryClient = useQueryClient();
   const { id, rate, view, returnTo } = useLocalSearchParams<{
@@ -619,7 +646,8 @@ export default function OrderDetailsScreen() {
     const storeId = order.merchantPublicStoreId;
     return (
       <>
-        <AndroidBackHandler />
+        <AndroidBackHandler fallback={FOOD_HOME_FALLBACK} preferFallback />
+        <FoodOrderTrackingBackGuard />
         <FoodLiveTrackingScreen
           order={order}
           tracking={tracking}
@@ -627,7 +655,7 @@ export default function OrderDetailsScreen() {
           merchantDelayed={merchantDelayed}
           etaUpdated={etaUpdated}
           etaContextLabel={etaContextLabel}
-          onBack={handleBack}
+          onBack={handleFoodTrackingBack}
           onOpenHelp={handleOpenHelp}
           onOpenMerchant={() => {
             if (storeId) router.push(`/home/merchant/${storeId}`);

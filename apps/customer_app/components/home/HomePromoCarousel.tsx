@@ -5,15 +5,15 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import {
   View,
-  Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  ImageBackground,
   NativeSyntheticEvent,
   NativeScrollEvent,
   Dimensions,
+  type ImageSourcePropType,
 } from "react-native";
+import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -21,9 +21,11 @@ import type { HomeBannerOffer } from "@/services/offers.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { formatRideOfferSubline } from "@/lib/ride-offers";
-import type { ImageSourcePropType } from "react-native";
 import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
+import { AppText } from "@/components/AppText";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { useQueryClient } from "@tanstack/react-query";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -33,7 +35,10 @@ const DEFAULT_CARD_H = 136;
 const FOOD_OFFER_ASSET_KEYS = [CX.home.promoOffer, CX.home.promoOffer2] as const;
 const RIDE_OFFER_ASSET_KEYS = [CX.home.promoRideOffer1, CX.home.promoRideOffer2] as const;
 
-function offerBannerArt(index: number, mode: "home" | "food" | "ride" = "home"): ImageSourcePropType | null {
+function offerBannerArt(
+  index: number,
+  mode: "home" | "food" | "ride" = "home"
+): ImageSourcePropType | null {
   const keys = mode === "ride" ? RIDE_OFFER_ASSET_KEYS : FOOD_OFFER_ASSET_KEYS;
   const key = keys[index % keys.length];
   const uri = getAppAssetUrl(key);
@@ -208,49 +213,53 @@ function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideC
   const bgSource = slideBackgroundSource(slide, index, imageFailed, mode);
   useAppAssetsStore((s) => s.assets);
 
+  useEffect(() => {
+    setImageFailed(false);
+  }, [slide.id, slide.imageUrl, index]);
+
   const content = (
     <>
-        {!customBanner ? (
-          <LinearGradient
-            colors={["rgba(12,100,68,0.22)", "rgba(12,100,68,0.06)", "transparent"]}
-            locations={[0, 0.45, 1]}
-            start={{ x: 0, y: 0.5 }}
-            end={{ x: 1, y: 0.5 }}
-            style={StyleSheet.absoluteFill}
-            pointerEvents="none"
-          />
-        ) : (
-          <LinearGradient
-            colors={["rgba(0,0,0,0.28)", "rgba(0,0,0,0.08)", "transparent"]}
-            locations={[0, 0.5, 1]}
-            start={{ x: 0, y: 0.5 }}
-            end={{ x: 1, y: 0.5 }}
-            style={StyleSheet.absoluteFill}
-            pointerEvents="none"
-          />
-        )}
+      {!customBanner ? (
+        <LinearGradient
+          colors={["rgba(12,100,68,0.22)", "rgba(12,100,68,0.06)", "transparent"]}
+          locations={[0, 0.45, 1]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+      ) : (
+        <LinearGradient
+          colors={["rgba(0,0,0,0.28)", "rgba(0,0,0,0.08)", "transparent"]}
+          locations={[0, 0.5, 1]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+      )}
 
-        <View style={styles.promoTextCol}>
-          {slide.showLimitedBadge ? (
-            <View style={styles.promoLimitedBadge}>
-              <Text style={styles.promoLimitedText}>LIMITED TIME</Text>
-            </View>
-          ) : null}
-
-          <Text style={styles.promoTitle} numberOfLines={2}>
-            {slide.title}
-          </Text>
-
-          <Text style={styles.promoSub} numberOfLines={2}>
-            {slide.sub}
-            {showParty ? " 🎉" : ""}
-          </Text>
-
-          <View style={styles.promoBtn}>
-            <Text style={styles.promoBtnText}>{slide.cta}</Text>
-            <Ionicons name="chevron-forward" size={14} color={CTA_TEXT} />
+      <View style={styles.promoTextCol}>
+        {slide.showLimitedBadge ? (
+          <View style={styles.promoLimitedBadge}>
+            <AppText style={styles.promoLimitedText}>LIMITED TIME</AppText>
           </View>
+        ) : null}
+
+        <AppText style={styles.promoTitle} numberOfLines={2}>
+          {slide.title}
+        </AppText>
+
+        <AppText style={styles.promoSub} numberOfLines={2}>
+          {slide.sub}
+          {showParty ? " 🎉" : ""}
+        </AppText>
+
+        <View style={styles.promoBtn}>
+          <AppText style={styles.promoBtnText}>{slide.cta}</AppText>
+          <Ionicons name="chevron-forward" size={14} color={CTA_TEXT} />
         </View>
+      </View>
     </>
   );
 
@@ -260,21 +269,22 @@ function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideC
       activeOpacity={0.92}
       onPress={() => onPress(slide)}
     >
-      {bgSource ? (
-        <ImageBackground
-          source={bgSource}
-          style={[styles.promoCard, { height: cardHeight }]}
-          imageStyle={styles.promoBgImage}
-          resizeMode="cover"
-          onError={() => setImageFailed(true)}
-        >
-          {content}
-        </ImageBackground>
-      ) : (
-        <View style={[styles.promoCard, { height: cardHeight }]}>
-          {content}
-        </View>
-      )}
+      <View style={[styles.promoCard, { height: cardHeight }]}>
+        {/* Soft mint base — image paints on top instantly (no skeleton flash). */}
+        <View style={[styles.promoBgFallback, { height: cardHeight }]} />
+        {bgSource ? (
+          <Image
+            source={bgSource}
+            style={[styles.promoBgImage, { height: cardHeight }]}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={0}
+            priority="high"
+            onError={() => setImageFailed(true)}
+          />
+        ) : null}
+        {content}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -295,6 +305,7 @@ export function HomePromoCarousel({
   showDefaultWhenEmpty = false,
 }: Props) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   useAppAssetsStore((s) => s.assets);
@@ -302,7 +313,8 @@ export function HomePromoCarousel({
   const slides: Slide[] = useMemo(() => {
     const picked = pickOffersForCarousel(offers, mode);
     if (picked.length > 0) return picked.map((offer) => offerToSlide(offer, mode));
-    if (showDefaultWhenEmpty) return DEFAULT_FALLBACK_SLIDES;
+    // Prefer default art banners over a loading skeleton so home never flashes grey.
+    if (showDefaultWhenEmpty || mode === "home") return DEFAULT_FALLBACK_SLIDES;
     return [];
   }, [offers, mode, showDefaultWhenEmpty]);
 
@@ -342,21 +354,24 @@ export function HomePromoCarousel({
         return;
       }
       if (slide.storeId) {
-        router.push({ pathname: "/home/merchant/[id]", params: { id: slide.storeId } });
+        navigateToMerchant(router, queryClient, slide.storeId);
         return;
       }
       router.push("/home" as never);
     },
-    [router, mode]
+    [router, queryClient, mode]
   );
 
-  if (slides.length === 0) return null;
+  if (slides.length === 0) {
+    return <View style={[styles.wrap, { minHeight: cardHeight + 20 }]} />;
+  }
 
   return (
-    <View style={styles.wrap}>
+    <View style={[styles.wrap, { minHeight: cardHeight + 20 }]}>
       <ScrollView
         ref={scrollRef}
         horizontal
+        nestedScrollEnabled
         scrollEnabled={slides.length > 1}
         bounces={false}
         pagingEnabled={false}
@@ -364,6 +379,8 @@ export function HomePromoCarousel({
         snapToAlignment="start"
         decelerationRate="fast"
         showsHorizontalScrollIndicator={false}
+        delaysContentTouches={false}
+        keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
         contentContainerStyle={styles.scrollContent}
@@ -416,7 +433,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   promoBgImage: {
+    ...StyleSheet.absoluteFillObject,
     borderRadius: 20,
+    width: "100%",
+  },
+  promoBgFallback: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 20,
+    backgroundColor: "#12804E",
   },
   promoTextCol: {
     flex: 1,
@@ -448,26 +472,26 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "800",
     color: "#FFFFFF",
-    letterSpacing: -0.45,
+    letterSpacing: -0.4,
     lineHeight: 26,
+    marginBottom: 4,
   },
   promoSub: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "500",
-    color: "rgba(255,255,255,0.94)",
-    marginTop: 3,
-    lineHeight: 16,
+    color: "rgba(255,255,255,0.92)",
+    lineHeight: 18,
+    marginBottom: 10,
   },
   promoBtn: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
-    gap: 2,
-    marginTop: 10,
-    paddingVertical: 7,
-    paddingHorizontal: 14,
     backgroundColor: "#FFFFFF",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 999,
+    gap: 2,
   },
   promoBtnText: {
     fontSize: 12,
@@ -476,22 +500,21 @@ const styles = StyleSheet.create({
   },
   dotsRow: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "center",
-    gap: 5,
-    marginTop: 8,
-    minHeight: 8,
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
   },
   dot: {
+    width: 6,
     height: 6,
     borderRadius: 3,
   },
   dotActive: {
-    width: 20,
     backgroundColor: DOT_ACTIVE,
+    width: 16,
   },
   dotInactive: {
-    width: 6,
-    backgroundColor: "#D1D5DB",
+    backgroundColor: "rgba(0,0,0,0.18)",
   },
 });

@@ -30,6 +30,15 @@ const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().positive().max(120_000)
   ).optional(),
+  /**
+   * Hold one DB slot for the full lifetime of each HTTP request.
+   * Default off — request-lifetime slots cause database_slot_timeout under polling load.
+   * Postgres pool max is the connection limit; use withDbSlot() around heavy DB only.
+   */
+  DATABASE_REQUEST_SLOTS: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
 
   // Supabase
   SUPABASE_URL: z.string().url(),
@@ -200,6 +209,14 @@ const EnvSchema = z.object({
   TRACK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   /** Public address share link base, e.g. https://link.gatimitra.com */
   ADDRESS_LINK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  /**
+   * Android App Links verification: SHA-256 signing-cert fingerprint(s) for the
+   * Customer App, comma-separated. Powers /.well-known/assetlinks.json. List
+   * both the Play "app signing" and "upload" certs. See lib/assetlinks.ts.
+   */
+  ANDROID_APP_LINK_SHA256: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Customer App package name for assetlinks.json (defaults to com.gatimitra.customer). */
+  ANDROID_APP_PACKAGE: z.preprocess(emptyToUndefined, z.string().optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
   /** Open-Meteo — no API key (see weather.constants.ts). */

@@ -28,14 +28,7 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
 import { RiderLogoutSessionInline } from '@/components/riders/RiderLogoutSessionInline';
-
-const RiderLogoutHistorySideSheet = dynamic(
-  () =>
-    import('@/components/riders/RiderLogoutHistorySideSheet').then(
-      (m) => m.RiderLogoutHistorySideSheet,
-    ),
-  { ssr: false },
-);
+import { RiderLogoutHistorySideSheet } from '@/components/riders/RiderLogoutHistorySideSheet';
 
 const RiderBankAccountVerifySideSheet = dynamic(
   () =>
@@ -150,6 +143,7 @@ export default function RidersPage() {
   const [bankVerifyLoading, setBankVerifyLoading] = useState(false);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [logoutHistoryOpen, setLogoutHistoryOpen] = useState(false);
+  const [sessionHistoryTab, setSessionHistoryTab] = useState<"login" | "logout">("logout");
   const [ordersPage, setOrdersPage] = useState(1);
   const [ordersPageSize, setOrdersPageSize] = useState(10);
   const [ticketsPage, setTicketsPage] = useState(1);
@@ -1090,7 +1084,10 @@ export default function RidersPage() {
                     value={
                       <RiderLogoutSessionInline
                         session={riderSummary?.logoutSession}
-                        onOpenHistory={() => setLogoutHistoryOpen(true)}
+                        onOpenHistory={(tab = "logout") => {
+                          setSessionHistoryTab(tab);
+                          setLogoutHistoryOpen(true);
+                        }}
                       />
                     }
                   />
@@ -2621,7 +2618,12 @@ export default function RidersPage() {
                     riderId={rider.id}
                     riderName={rider.name}
                     open
+                    initialTab={sessionHistoryTab}
                     onClose={() => setLogoutHistoryOpen(false)}
+                    onRevoked={() => {
+                      if (riderId) invalidateRiderSummary(queryClient, riderId);
+                      void refetchRiderSummary();
+                    }}
                   />
                 ) : null}
 

@@ -34,6 +34,11 @@ export type CartItem = {
   variantSizeValue?: string | null;
   variantSizeUnit?: string | null;
   addons?: CartItemAddon[];
+  /**
+   * false = already promoted (MRP / Boost / BOGO strike). Hint for UI;
+   * billing server recomputes authoritatively.
+   */
+  isDiscountEligible?: boolean;
 };
 
 /** Active cart context for floating cart (restaurant_id, name, totals, last_updated). */
@@ -87,6 +92,8 @@ type CartState = {
    * stops showing a stale value the customer saw at add-time.
    */
   syncPricesFromMap: (pricesByMenuItemId: Record<string, number>) => void;
+  /** Refresh per-line promo eligibility (MRP / Boost) from checkout/menu. */
+  syncDiscountEligibility: (eligibleByMenuItemId: Record<string, boolean>) => void;
   getActiveCartContext: () => ActiveCartContext;
   hydrate: () => Promise<void>;
   persist: () => Promise<void>;
@@ -300,6 +307,27 @@ export const useCartStore = create<CartState>((set, get) => ({
         return { ...i, price: fresh, basePrice: fresh };
       }
       return i;
+    });
+    if (!changed) return;
+    set({ items: next, lastUpdatedAt: Date.now() });
+    queueCartPersist(get);
+  },
+
+  syncDiscountEligibility: (eligibleByMenuItemId) => {
+    const { items } = get();
+    if (items.length === 0) return;
+    let changed = false;
+    const next = items.map((i) => {
+      const baseId = i.menuItemId.includes("::")
+        ? i.menuItemId.split("::")[0]!
+        : i.menuItemId.includes("_")
+          ? i.menuItemId.split("_")[0]!
+          : i.menuItemId;
+      const flagged =
+        eligibleByMenuItemId[i.menuItemId] ?? eligibleByMenuItemId[baseId];
+      if (flagged == null || flagged === i.isDiscountEligible) return i;
+      changed = true;
+      return { ...i, isDiscountEligible: flagged };
     });
     if (!changed) return;
     set({ items: next, lastUpdatedAt: Date.now() });

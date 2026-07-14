@@ -4,7 +4,7 @@
  * Left = Identity, center-right = Live radar, far right = Share store link.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSegments, usePathname, useRouter } from "expo-router";
@@ -12,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getConfig } from "@/config/env";
 import { OnlineOfflineToggle } from "@/components/OnlineOfflineToggle";
+import { ManageOrdersStoresSheet } from "@/components/ManageOrdersStoresSheet";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
 import { TimePickerModal } from "@/components/TimePickerModal";
 import { useStoreStatus } from "@/context/StoreStatusContext";
@@ -25,6 +26,7 @@ import { getOperatingHours, type OperatingHours, type DaySlots } from "@/service
 import {
   getNextOpenDayStartIso,
   getNextOpenIsoAfterIstCalendarDay,
+  isWithinOperatingHours,
   nowInStoreTz,
   operatingHoursToFlatRow,
 } from "@/lib/merchantStoreNextOpenIso";
@@ -141,7 +143,7 @@ function MainHeader({
   pathname?: string;
 }) {
   const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
-  const { selectedStore } = useSelectedStore();
+  const { selectedStore, managedStores, setManagedStores } = useSelectedStore();
   const { unreadCount } = useNotifications();
   const hasScheduledClosure =
     scheduledClosure != null ||
@@ -161,7 +163,13 @@ function MainHeader({
   const subPageTitle = profileSubPageTitle ?? earningsSubPageTitle;
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = partner?.childStores ?? [];
-  const hasMultipleChildStores = stores.length > 1;
+  const isMultiStoreMode = managedStores.length > 1;
+  const headerTitle = isMultiStoreMode
+    ? `All Restaurants (${managedStores.length})`
+    : truncateStoreNameForHeader(
+        selectedStore?.store_name ?? "Select a store",
+        HEADER_STORE_NAME_MAX_CHARS
+      );
 
   useEffect(() => {
     if (Platform.OS !== "web") {
@@ -193,8 +201,11 @@ function MainHeader({
             />
           )}
           <Pressable
-            disabled={subPageTitle ? false : stores.length === 0 || !hasMultipleChildStores}
-            onPress={() => (subPageTitle ? router.back() : setPickerVisible(true))}
+            disabled={subPageTitle ? false : stores.length === 0}
+            onPress={() => {
+              if (subPageTitle) router.back();
+              else if (stores.length > 0) setPickerVisible(true);
+            }}
             style={({ pressed }) => [
               styles.greetingBlock,
               pressed && styles.pressed,
@@ -203,13 +214,9 @@ function MainHeader({
           >
             <View style={styles.greetingRow}>
               <Text style={styles.greeting} numberOfLines={1} ellipsizeMode="clip">
-                {subPageTitle ??
-                  truncateStoreNameForHeader(
-                    selectedStore?.store_name ?? "Select a store",
-                    HEADER_STORE_NAME_MAX_CHARS
-                  )}
+                {subPageTitle ?? headerTitle}
               </Text>
-              {!subPageTitle && hasMultipleChildStores && (
+              {!subPageTitle && stores.length > 0 && (
                 <Ionicons
                   name={pickerVisible ? "chevron-up" : "chevron-down"}
                   size={16}
@@ -218,7 +225,13 @@ function MainHeader({
               )}
             </View>
             <Text style={styles.subtitle} numberOfLines={1}>
-              {selectedStore ? `Store ID: ${selectedStore.store_id}` : pageTitle}
+              {subPageTitle
+                ? ""
+                : isMultiStoreMode
+                  ? `${managedStores.length} restaurants selected`
+                  : selectedStore
+                    ? `Store ID: ${selectedStore.store_id}`
+                    : pageTitle}
             </Text>
           </Pressable>
         </View>
@@ -286,80 +299,24 @@ function MainHeader({
         </View>
       </View>
 
-      <Modal
+      <ManageOrdersStoresSheet
         visible={pickerVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPickerVisible(false)}
-      >
-        <Pressable style={styles.pickerOverlay} onPress={() => setPickerVisible(false)}>
-          <Pressable style={styles.pickerCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.pickerTitle}>Your stores</Text>
-            <ScrollView style={styles.pickerList} showsVerticalScrollIndicator={false}>
-              {stores.map((store) => {
-                const isActive = selectedStore?.id === store.id;
-                return (
-                  <Pressable
-                    key={store.id}
-                    onPress={() => {
-                      if (isActive) {
-                        setPickerVisible(false);
-                        return;
-                      }
-                      onRequestSwitchStore(store);
-                    }}
-                    style={({ pressed }) => [
-                      styles.pickerItem,
-                      isActive && styles.pickerItemActive,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <View style={styles.pickerItemTextWrap}>
-                      <Text
-                        style={[
-                          styles.pickerItemName,
-                          isActive && styles.pickerItemNameActive,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {store.store_name}
-                      </Text>
-                      <Text style={styles.pickerItemSub} numberOfLines={1}>
-                        ID: {store.store_id}
-                      </Text>
-                    </View>
-                    {isActive && (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={18}
-                        color={GatiMitraMerchant.primary}
-                      />
-                    )}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <Pressable
-              onPress={() => {
-                setPickerVisible(false);
-                router.push("/(auth)/partner-home");
-              }}
-              style={({ pressed }) => [
-                styles.manageStoresBtn,
-                pressed && styles.pressed,
-                GatiMitraMerchant.cursorPointer,
-              ]}
-            >
-              <Text style={styles.manageStoresText}>Manage all stores</Text>
-              <Ionicons
-                name="arrow-forward"
-                size={16}
-                color={GatiMitraMerchant.primary}
-              />
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        stores={stores}
+        selectedStore={selectedStore}
+        managedStores={managedStores}
+        activeStoreOnline={isOnline}
+        onClose={() => setPickerVisible(false)}
+        onConfirm={(selected) => {
+          setPickerVisible(false);
+          setManagedStores(selected);
+        }}
+        onSingleStoreSelected={(store) => {
+          setManagedStores([store]);
+          if (store.id !== selectedStore?.id) {
+            onRequestSwitchStore(store);
+          }
+        }}
+      />
     </View>
   );
 }
@@ -563,7 +520,7 @@ function StoreStatusCard({
   );
 }
 
-type WarningModalType = "store-status" | "switch-store";
+type WarningModalType = "store-status" | "switch-store" | "outside-hours";
 
 export function MerchantCustomHeader() {
   const insets = useSafeAreaInsets();
@@ -635,6 +592,13 @@ export function MerchantCustomHeader() {
   const { selectedStore } = useSelectedStore();
   const { activeTab } = useActiveTab();
 
+  const withinOperatingHoursNow = useMemo(() => {
+    if (!operatingHours) return null;
+    const row = operatingHoursToFlatRow(operatingHours);
+    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+    return isWithinOperatingHours(row, dayOfWeek, minutesSinceMidnight);
+  }, [operatingHours]);
+
   const isProfileSection = segments.includes("profile") || (typeof pathname === "string" && pathname.includes("profile"));
   const isHomeScreen =
     !isProfileSection &&
@@ -680,6 +644,13 @@ export function MerchantCustomHeader() {
     setCloseTempDate(now);
     const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
     setCloseTempTime(oneHourFromNow);
+    if (!isOnline && withinOperatingHoursNow === false) {
+      setWarningModal({
+        visible: true,
+        type: "outside-hours",
+      });
+      return;
+    }
     setWarningModal({
       visible: true,
       type: "store-status",
@@ -771,7 +742,17 @@ export function MerchantCustomHeader() {
               Alert.alert("Store opened", "Scheduled off cleared. Store is now open and accepting orders.");
             }
           })
-          .catch(() => {});
+          .catch((e: unknown) => {
+            const code = e != null && typeof e === "object" ? String((e as { code?: string }).code ?? "") : "";
+            const msg = e instanceof Error ? e.message : "";
+            if (
+              code === "outside_operating_hours" ||
+              msg.toLowerCase().includes("outside its scheduled operating hours")
+            ) {
+              setWarningModal({ visible: true, type: "outside-hours" });
+              return;
+            }
+          });
       }
     } else if (warningModal.type === "switch-store" && warningModal.storeToSwitch) {
       setSelectedStore(warningModal.storeToSwitch);
@@ -1069,8 +1050,50 @@ export function MerchantCustomHeader() {
         onRequestClose={closeWarningModal}
       >
         <Pressable style={styles.warningOverlay} onPress={closeWarningModal}>
-          <Pressable style={styles.warningCard} onPress={(e) => e.stopPropagation()}>
-            {warningModal.type === "store-status" && !warningModal.goingOffline ? (
+          <Pressable style={[styles.warningCard, warningModal.type === "outside-hours" && styles.outsideHoursCard]} onPress={(e) => e.stopPropagation()}>
+            {warningModal.type === "outside-hours" ? (
+              <>
+                <View style={styles.storeOnIconWrap}>
+                  <View style={[styles.storeOnIconCircle, styles.outsideHoursIconCircle]}>
+                    <Ionicons name="time-outline" size={28} color="#D97706" />
+                  </View>
+                </View>
+                <Text style={styles.storeOnTitle}>Outside Operating Hours</Text>
+                <Text style={styles.storeOnBody}>
+                  Your store cannot be turned ON because it is currently outside its scheduled operating hours.
+                </Text>
+                <Text style={[styles.storeOnBody, styles.outsideHoursBodySecondary]}>
+                  To open your store now, please update your Store Schedule first.
+                </Text>
+                <View style={styles.warningActions}>
+                  <Pressable
+                    onPress={closeWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      closeWarningModal();
+                      router.push("/(tabs)/profile/hours" as never);
+                    }}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.outsideHoursConfirmBtn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.outsideHoursConfirmText} numberOfLines={1}>
+                      Go to Store Schedule
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : warningModal.type === "store-status" && !warningModal.goingOffline ? (
               <>
                 <View style={styles.storeOnIconWrap}>
                   <View style={styles.storeOnIconCircle}>
@@ -2037,6 +2060,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     color: "#FFFFFF",
+  },
+  outsideHoursIconCircle: {
+    backgroundColor: "#FFFBEB",
+  },
+  outsideHoursCard: {
+    maxWidth: 400,
+  },
+  outsideHoursBodySecondary: {
+    marginTop: 8,
+  },
+  outsideHoursConfirmBtn: {
+    backgroundColor: "#D97706",
+    flex: 1.35,
+    minWidth: 168,
+  },
+  outsideHoursConfirmText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#FFFFFF",
+    textAlign: "center",
   },
   // Store OFF modal (close) options
   storeOffTitle: {

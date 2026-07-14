@@ -32,6 +32,16 @@ export type NormalizedOrderLineItem = {
   /** orders_core_items.addon_price at order placement */
   capturedAddonAmount?: number;
   hasCustomizations?: boolean;
+  /** Merchant catalog line before item Boost. */
+  catalogLineTotal?: number;
+  /** After restaurant item-offer share. */
+  netLineTotal?: number;
+  offerDiscount?: number;
+  offerLabel?: string | null;
+  isItemPromo?: boolean;
+  appliedOfferType?: string | null;
+  /** Frozen from merchant_ctm_pricing_snapshot. */
+  ctmFromSnapshot?: boolean;
 };
 
 export type OrderPricingBreakdown = {
@@ -193,6 +203,34 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
         Boolean(row.hasCustomizations) ||
         (customizationLines?.length ?? 0) > 0 ||
         (customizations?.length ?? 0) > 0,
+      catalogLineTotal:
+        row.catalog_line_total != null
+          ? Number(row.catalog_line_total)
+          : row.catalogLineTotal != null
+            ? Number(row.catalogLineTotal)
+            : undefined,
+      netLineTotal:
+        row.net_line_total != null
+          ? Number(row.net_line_total)
+          : row.netLineTotal != null
+            ? Number(row.netLineTotal)
+            : undefined,
+      offerDiscount:
+        row.offer_discount != null
+          ? Number(row.offer_discount)
+          : row.offerDiscount != null
+            ? Number(row.offerDiscount)
+            : undefined,
+      offerLabel:
+        (row.offer_label as string | null | undefined) ??
+        (row.offerLabel as string | null | undefined) ??
+        null,
+      isItemPromo: Boolean(row.is_item_promo ?? row.isItemPromo),
+      appliedOfferType:
+        (row.applied_offer_type as string | null | undefined) ??
+        (row.appliedOfferType as string | null | undefined) ??
+        null,
+      ctmFromSnapshot: Boolean(row.ctm_from_snapshot ?? row.ctmFromSnapshot),
     };
   });
 }
@@ -249,6 +287,7 @@ export function mapCoreDbItemsToRaw(
     const imageUrl = imageUrlFromSnapshot(snap);
     const addonUnit = Number(row.addon_price) || 0;
     return {
+      id: row.id,
       name: variant ? `${baseName} (${variant})` : baseName,
       item_name: row.item_name,
       menu_item_id: row.menu_item_id ?? null,
@@ -265,6 +304,13 @@ export function mapCoreDbItemsToRaw(
       customizations: customizations.length ? customizations : undefined,
       item_image_url: imageUrl,
       imageUrl,
+      applied_offer_type:
+        (row as { applied_offer_type?: string | null }).applied_offer_type ?? null,
+      offer_label:
+        (row as { applied_offer_label?: string | null }).applied_offer_label ?? null,
+      offer_discount:
+        Number((row as { offer_discount_amount?: string | number | null }).offer_discount_amount) ||
+        0,
     };
   });
 }

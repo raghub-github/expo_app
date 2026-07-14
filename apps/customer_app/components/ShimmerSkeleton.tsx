@@ -22,7 +22,7 @@ const SHIMMER_HIGH = 0.7;
 const GM_SHIMMER_DURATION_MS = 1300;
 const GM_STRIP_WIDTH = 120;
 
-/** Base skeleton box: #eceff1, 12px radius, horizontal shimmer sweep (1.3s). Use for all skeleton blocks. */
+/** Base skeleton box: #eceff1, 12px radius, horizontal shimmer sweep. */
 export function GMSkeleton({
   style,
   children,
@@ -31,10 +31,12 @@ export function GMSkeleton({
   children?: React.ReactNode;
 }) {
   const translateX = useSharedValue(-GM_STRIP_WIDTH);
+  const boxWidth = useSharedValue(SCREEN_WIDTH);
 
   useEffect(() => {
+    translateX.value = 0;
     translateX.value = withRepeat(
-      withTiming(SCREEN_WIDTH + GM_STRIP_WIDTH, {
+      withTiming(1, {
         duration: GM_SHIMMER_DURATION_MS,
         easing: Easing.inOut(Easing.ease),
       }),
@@ -44,11 +46,22 @@ export function GMSkeleton({
   }, [translateX]);
 
   const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
+    transform: [
+      {
+        translateX:
+          -GM_STRIP_WIDTH + translateX.value * (boxWidth.value + GM_STRIP_WIDTH * 2),
+      },
+    ],
   }));
 
   return (
-    <View style={[styles.gmSkeletonBase, style]}>
+    <View
+      style={[styles.gmSkeletonBase, style]}
+      onLayout={(e) => {
+        const w = e.nativeEvent.layout.width;
+        if (w > 0) boxWidth.value = w;
+      }}
+    >
       {children}
       <Animated.View style={[styles.gmSkeletonStrip, animatedStyle]} pointerEvents="none" />
     </View>
@@ -124,10 +137,15 @@ const skeletonStyles = StyleSheet.create({
     borderTopLeftRadius: HOME_CARD_RADIUS,
     borderTopRightRadius: HOME_CARD_RADIUS,
   },
-  content: { padding: 16, gap: 10 },
-  line1: { height: 18, borderRadius: 8, width: "72%" },
-  line2: { height: 14, borderRadius: 8, width: "48%" },
-  line3: { height: 12, borderRadius: 8, width: "36%" },
+  content: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 6,
+  },
+  line1: { height: 22, borderRadius: 8, width: "72%" },
+  line2: { height: 18, borderRadius: 8, width: "55%" },
+  line3: { height: 18, borderRadius: 8, width: "42%" },
 });
 
 const categoryRailSkeletonStyles = StyleSheet.create({
@@ -241,27 +259,25 @@ export function CategoryRailSkeleton({
   );
 }
 
-import { MERCHANT_GRID_CARD_W } from "@/components/home/MerchantGridCard";
+import { MERCHANT_RAIL_CARD_W, MERCHANT_RAIL_GAP, merchantRailImageHeight } from "@/components/home/MerchantGridCard";
 
-const LOVED_GRID_PAD = 16;
-const LOVED_GRID_GAP = 10;
+const LOVED_RAIL_PAD = 16;
 
-/** 3-column grid skeleton for Loved by Customers. */
-export function LovedMerchantsGridSkeleton({ count = 6 }: { count?: number }) {
-  const imageSize = MERCHANT_GRID_CARD_W;
+/** Horizontal rail skeleton — 2 full cards + peek. */
+export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
+  const imageH = merchantRailImageHeight(MERCHANT_RAIL_CARD_W);
   return (
     <View
       style={{
         flexDirection: "row",
-        flexWrap: "wrap",
-        paddingHorizontal: LOVED_GRID_PAD,
-        gap: LOVED_GRID_GAP,
+        paddingHorizontal: LOVED_RAIL_PAD,
+        gap: MERCHANT_RAIL_GAP,
       }}
     >
       {Array.from({ length: count }).map((_, i) => (
-        <View key={i} style={{ width: MERCHANT_GRID_CARD_W }}>
-          <GMSkeleton style={{ width: imageSize, height: imageSize, borderRadius: 12 }} />
-          <GMSkeleton style={{ height: 13, width: "88%", marginTop: 6, borderRadius: 6 }} />
+        <View key={i} style={{ width: MERCHANT_RAIL_CARD_W }}>
+          <GMSkeleton style={{ width: MERCHANT_RAIL_CARD_W, height: imageH, borderRadius: 14 }} />
+          <GMSkeleton style={{ height: 13, width: "88%", marginTop: 10, borderRadius: 6 }} />
           <GMSkeleton style={{ height: 11, width: "60%", marginTop: 4, marginBottom: 6, borderRadius: 6 }} />
         </View>
       ))}

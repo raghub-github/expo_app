@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import multipart from "@fastify/multipart";
 import { z } from "zod";
+import { SignJWT } from "jose";
 import { getSql } from "../../db/client.js";
+import { getEnv } from "../../config/env.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import { auth } from "../../plugins/auth.js";
 import { send as sendNotification } from "../notifications/notificationService.js";
@@ -34,6 +36,7 @@ import {
 import { loadMerchantOfferInsights } from "./merchant-offer-insights.service.js";
 import { loadMerchantMarketInsights } from "../../lib/merchant-store-competitors.js";
 import { registerMerchantSubscriptionRoutes } from "./merchant-subscription.routes.js";
+import { invalidateOfferPricing } from "../pricing/offer-invalidation.js";
 
 type AuditContext = {
   performedBy: string;
@@ -2685,12 +2688,48 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         return Number.isNaN(d.getTime()) ? "" : d.toISOString();
       }
 
+      function canonicalizeOfferMenuItemIds(
+        ids: string[],
+        itemIdByPk?: Map<number, string>
+      ): string[] {
+        const out: string[] = [];
+        const seen = new Set<string>();
+        for (const raw of ids) {
+          const s = String(raw ?? "").trim();
+          if (!s) continue;
+          let canon = s;
+          if (itemIdByPk && /^\d+$/.test(s)) {
+            const mapped = itemIdByPk.get(Number(s));
+            if (mapped) canon = mapped;
+          }
+          if (seen.has(canon)) continue;
+          seen.add(canon);
+          out.push(canon);
+        }
+        return out;
+      }
+
       /** Align offer JSON with partner site / dashboard (ISO dates + schedule fields). */
-      function shapeMerchantPartnerOfferRow(row: Record<string, unknown>) {
+      function shapeMerchantPartnerOfferRow(
+        row: Record<string, unknown>,
+        applicabilityIds?: string[] | null,
+        itemIdByPk?: Map<number, string>
+      ) {
         const meta = (row.offer_metadata as Record<string, unknown>) ?? {};
+        const fromMeta = Array.isArray(meta.menu_item_ids)
+          ? (meta.menu_item_ids as unknown[]).map((v) => String(v).trim()).filter(Boolean)
+          : [];
+        const fromApp = Array.isArray(applicabilityIds)
+          ? applicabilityIds.map((v) => String(v).trim()).filter(Boolean)
+          : [];
+        const mergedIds = canonicalizeOfferMenuItemIds([...fromMeta, ...fromApp], itemIdByPk);
         return {
           ...row,
-          menu_item_ids: (meta.menu_item_ids as string[] | null) ?? null,
+          menu_item_ids: mergedIds.length > 0 ? mergedIds : null,
+          offer_metadata: {
+            ...meta,
+            ...(mergedIds.length > 0 ? { menu_item_ids: mergedIds } : { menu_item_ids: [] }),
+          },
           combo_ids: (meta.combo_ids as number[] | null) ?? null,
           applicable_time_start: shapeMerchantPartnerOfferTimeColumn(row.applicable_time_start),
           applicable_time_end: shapeMerchantPartnerOfferTimeColumn(row.applicable_time_end),
@@ -2795,7 +2834,55 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             WHERE store_id = ${storeId}
             ORDER BY created_at DESC
           `;
-          const offers = (rows as any[]).map((r) => shapeMerchantPartnerOfferRow(r));
+          const offerPks = (rows as any[])
+            .map((r) => Number(r.id))
+            .filter((id) => Number.isFinite(id) && id > 0);
+          const idsByOfferPk = new Map<number, string[]>();
+          const itemIdByPk = new Map<number, string>();
+          try {
+            const menuRows = await sql`
+              SELECT id, item_id FROM merchant_menu_items
+              WHERE store_id = ${storeId} AND item_id IS NOT NULL
+            `;
+            for (const m of menuRows as unknown as Array<{ id: number; item_id: string | null }>) {
+              if (m.item_id) itemIdByPk.set(Number(m.id), String(m.item_id).trim());
+            }
+          } catch {
+            /* ignore */
+          }
+          if (offerPks.length > 0) {
+            try {
+              const appRows = await sql`
+                SELECT a.offer_id, a.menu_item_id, m.item_id
+                FROM merchant_offer_applicability a
+                LEFT JOIN merchant_menu_items m ON m.id = a.menu_item_id
+                WHERE a.offer_id = ANY(${offerPks})
+                  AND a.menu_item_id IS NOT NULL
+              `;
+              for (const row of appRows as unknown as Array<{
+                offer_id: number | string;
+                menu_item_id: number | string | null;
+                item_id: string | null;
+              }>) {
+                const oid = Number(row.offer_id);
+                if (!Number.isFinite(oid)) continue;
+                const publicId = row.item_id
+                  ? String(row.item_id).trim()
+                  : row.menu_item_id != null
+                    ? itemIdByPk.get(Number(row.menu_item_id))
+                    : null;
+                if (!publicId) continue;
+                const list = idsByOfferPk.get(oid) ?? [];
+                list.push(publicId);
+                idsByOfferPk.set(oid, list);
+              }
+            } catch {
+              /* applicability table may be missing on older DBs */
+            }
+          }
+          const offers = (rows as any[]).map((r) =>
+            shapeMerchantPartnerOfferRow(r, idsByOfferPk.get(Number(r.id)) ?? null, itemIdByPk)
+          );
           return reply.send({ success: true, offers });
         }
       );
@@ -2865,12 +2952,61 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (!title) return reply.code(400).send({ error: "offer_title required" });
           if (!body.valid_from || !body.valid_till) return reply.code(400).send({ error: "valid_from and valid_till required" });
 
+          const validFromDate = new Date(String(body.valid_from));
+          const validTillDate = new Date(String(body.valid_till));
+          if (Number.isNaN(validFromDate.getTime()) || Number.isNaN(validTillDate.getTime())) {
+            return reply.code(400).send({ error: "invalid_valid_from_or_valid_till" });
+          }
+          if (validTillDate.getTime() < validFromDate.getTime()) {
+            return reply.code(400).send({ error: "valid_till_must_be_on_or_after_valid_from" });
+          }
+
           const offerType = String(body.offer_type || "PERCENTAGE");
           const offerId = `OFF-${storeId}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
-          const baseMeta: Record<string, unknown> = {};
+          const bodyMeta =
+            body.offer_metadata && typeof body.offer_metadata === "object"
+              ? (body.offer_metadata as Record<string, unknown>)
+              : {};
+          const baseMeta: Record<string, unknown> = { ...bodyMeta };
           if (Array.isArray(body.menu_item_ids)) baseMeta.menu_item_ids = body.menu_item_ids;
           if (Array.isArray(body.combo_ids)) baseMeta.combo_ids = body.combo_ids;
+
+          const isBogo =
+            offerType === "BUY_X_GET_Y" || offerType === "BUY_N_GET_M" || offerType === "BOGO";
+          if (isBogo) {
+            delete baseMeta.conditions_mode;
+            if (!baseMeta.create_path) baseMeta.create_path = "bogo";
+          } else {
+            const modeRaw = String(baseMeta.conditions_mode ?? "").toLowerCase().trim();
+            if (modeRaw === "boost" || modeRaw === "precision") {
+              baseMeta.conditions_mode = modeRaw;
+              if (!baseMeta.create_path) baseMeta.create_path = modeRaw;
+            }
+            if (modeRaw === "precision") {
+              baseMeta.menu_item_ids = [];
+              body.offer_sub_type = "ALL_ORDERS";
+            }
+          }
+
+          const applicableTimeStart =
+            body.applicable_time_start !== undefined
+              ? shapeMerchantPartnerOfferTimeColumn(body.applicable_time_start)
+              : bodyMeta.applicable_time_start !== undefined
+                ? shapeMerchantPartnerOfferTimeColumn(bodyMeta.applicable_time_start)
+                : null;
+          const applicableTimeEnd =
+            body.applicable_time_end !== undefined
+              ? shapeMerchantPartnerOfferTimeColumn(body.applicable_time_end)
+              : bodyMeta.applicable_time_end !== undefined
+                ? shapeMerchantPartnerOfferTimeColumn(bodyMeta.applicable_time_end)
+                : null;
+          if (applicableTimeStart) baseMeta.applicable_time_start = applicableTimeStart;
+          if (applicableTimeEnd) baseMeta.applicable_time_end = applicableTimeEnd;
+
+          const applicableOnDays = Array.isArray(body.applicable_on_days)
+            ? (body.applicable_on_days as string[])
+            : null;
 
           // Enforce item-freeze rule for flat offers in backend: an item already mapped to any offer
           // cannot be re-used in a new FLAT offer.
@@ -2896,6 +3032,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               min_order_amount, max_order_amount, min_items,
               buy_quantity, get_quantity, coupon_code,
               offer_image_url, valid_from, valid_till,
+              applicable_time_start, applicable_time_end, applicable_on_days,
               is_active, auto_apply, is_stackable, priority,
               per_order_limit, first_order_only, new_user_only,
               max_uses_total, max_uses_per_user,
@@ -2907,7 +3044,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               ${body.discount_value ?? null}, ${body.discount_percentage ?? null}, ${body.max_discount_amount ?? null},
               ${body.min_order_amount ?? null}, ${body.max_order_amount ?? null}, ${body.min_items ?? null},
               ${body.buy_quantity ?? null}, ${body.get_quantity ?? null}, ${body.coupon_code ?? null},
-              ${body.offer_image_url ?? null}, ${new Date(String(body.valid_from)).toISOString()}, ${new Date(String(body.valid_till)).toISOString()},
+              ${body.offer_image_url ?? null}, ${validFromDate.toISOString()}, ${validTillDate.toISOString()},
+              ${applicableTimeStart}, ${applicableTimeEnd}, ${applicableOnDays},
               ${body.is_active ?? true}, ${body.auto_apply ?? true}, ${body.is_stackable ?? false}, ${body.priority ?? 0},
               ${body.per_order_limit ?? 1}, ${body.first_order_only ?? false}, ${body.new_user_only ?? false},
               ${body.max_uses_total ?? null}, ${body.max_uses_per_user ?? null},
@@ -2924,6 +3062,21 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             diff: { offer_type: offerType, menu_item_ids: baseMeta.menu_item_ids ?? null, combo_ids: baseMeta.combo_ids ?? null },
             actorType: "merchant", source: "merchant_app",
           });
+          try {
+            const pk = Number((row as any)?.id);
+            if (Number.isFinite(pk) && pk > 0) {
+              await sql`SELECT public.sync_offer_applicability_from_metadata(${pk})`;
+            }
+          } catch {
+            /* best-effort */
+          }
+          try {
+            await invalidateOfferPricing(storeId, "offer_created", {
+              offerId: offerId,
+            });
+          } catch {
+            /* best-effort */
+          }
           return reply.code(201).send({
             success: true,
             offer: shapeMerchantPartnerOfferRow(row as Record<string, unknown>),
@@ -2953,8 +3106,42 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const body = (req.body || {}) as Record<string, unknown>;
 
           const existingMeta = ((existing[0] as any).offer_metadata as Record<string, unknown>) ?? {};
+          const existingOfferType = String((existing[0] as any).offer_type ?? "");
           if (body.menu_item_ids !== undefined) {
-            existingMeta.menu_item_ids = Array.isArray(body.menu_item_ids) ? body.menu_item_ids : null;
+            existingMeta.menu_item_ids = Array.isArray(body.menu_item_ids) ? body.menu_item_ids : [];
+          }
+          if (body.offer_metadata && typeof body.offer_metadata === "object") {
+            const incoming = body.offer_metadata as Record<string, unknown>;
+            Object.assign(existingMeta, incoming);
+            // Never let a partial metadata patch wipe mapped items unless explicitly sent.
+            if (!("menu_item_ids" in incoming) && body.menu_item_ids === undefined) {
+              const prevIds = ((existing[0] as any).offer_metadata as Record<string, unknown> | null)
+                ?.menu_item_ids;
+              if (Array.isArray(prevIds)) existingMeta.menu_item_ids = prevIds;
+            } else if (body.menu_item_ids !== undefined) {
+              existingMeta.menu_item_ids = Array.isArray(body.menu_item_ids) ? body.menu_item_ids : [];
+            }
+          }
+
+          const effectiveType = String(body.offer_type ?? existingOfferType).toUpperCase();
+          const isBogo =
+            effectiveType === "BOGO" ||
+            effectiveType === "BUY_X_GET_Y" ||
+            effectiveType === "BUY_N_GET_M";
+          if (isBogo) {
+            delete existingMeta.conditions_mode;
+            existingMeta.create_path = "bogo";
+          } else {
+            const modeRaw = String(existingMeta.conditions_mode ?? "").toLowerCase().trim();
+            if (modeRaw === "boost" || modeRaw === "precision") {
+              existingMeta.conditions_mode = modeRaw;
+              if (!existingMeta.create_path) existingMeta.create_path = modeRaw;
+            }
+            if (modeRaw === "precision") {
+              existingMeta.menu_item_ids = [];
+              if (body.offer_sub_type === undefined) body.offer_sub_type = "ALL_ORDERS";
+              else body.offer_sub_type = "ALL_ORDERS";
+            }
           }
 
           // Determine effective offer type and menu_item_ids after this update,
@@ -3046,6 +3233,27 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             diff: { fields_updated: Object.keys(body).filter(k => !["id", "offer_id", "store_id", "created_at"].includes(k)) },
             actorType: "merchant", source: "merchant_app",
           });
+          try {
+            const pk = Number((existing[0] as any)?.id ?? (updated as any)?.id);
+            if (Number.isFinite(pk) && pk > 0) {
+              await sql`SELECT public.sync_offer_applicability_from_metadata(${pk})`;
+            }
+          } catch {
+            /* best-effort */
+          }
+          try {
+            const event =
+              body.is_active === false
+                ? ("offer_disabled" as const)
+                : body.is_active === true
+                  ? ("offer_published" as const)
+                  : ("offer_updated" as const);
+            await invalidateOfferPricing(storeId, event, {
+              offerId: offerIdParam,
+            });
+          } catch {
+            /* best-effort */
+          }
           return reply.send({
             success: true,
             offer: shapeMerchantPartnerOfferRow(updated as Record<string, unknown>),
@@ -3179,6 +3387,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             summary: `Deactivated offer "${offerIdParam}"`,
             actorType: "merchant", source: "merchant_app",
           });
+          try {
+            await invalidateOfferPricing(storeId, "offer_deleted", {
+              offerId: offerIdParam,
+            });
+          } catch {
+            /* best-effort */
+          }
           return reply.send({ success: true });
         }
       );
@@ -3758,10 +3973,16 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               const scheduleNext = getNextOpenIso(hoursRowForStatus, dayOfWeek, minutesSinceMidnight, nowRef);
               const nextAfterToday = getNextOpenIsoAfterIstCalendarDay(hoursRowForStatus, dayOfWeek, nowRef);
               const nextDayStart = getNextOpenDayStartIso(hoursRowForStatus, dayOfWeek, nowRef);
+              // A "close for today" that fires before today's own slot has started must not skip
+              // today: today hasn't happened yet, so the countdown should target today's slot, not
+              // jump past it to a future calendar day (see isBeforeFirstSlotToday).
+              const beforeFirstSlotToday = isBeforeFirstSlotToday(hoursRowForStatus, dayOfWeek, minutesSinceMidnight);
 
               if (manualStr) {
                 nextOpenIso = isLikelyLegacyEndOfDayIstClose(manualStr, nowRef)
-                  ? (nextAfterToday ?? scheduleNext ?? manualStr)
+                  ? beforeFirstSlotToday
+                    ? (scheduleNext ?? nextAfterToday ?? manualStr)
+                    : (nextAfterToday ?? scheduleNext ?? manualStr)
                   : manualStr;
               } else {
                 nextOpenIso = scheduleNext;
@@ -4075,6 +4296,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           block_auto_open?: boolean;
           manual_close_until?: string | null;
           manual_close_reason?: string | null;
+          /** When "today", backend computes manual_close_until authoritatively (ignores manual_close_until). */
+          closure_type?: "today" | "temporary" | "manual_hold";
         };
       }>("/stores/:storeId/status", async (req, reply) => {
         try {
@@ -4091,6 +4314,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           block_auto_open?: boolean;
           manual_close_until?: string | null;
           manual_close_reason?: string | null;
+          closure_type?: "today" | "temporary" | "manual_hold";
         };
         const hasIsOpen = typeof body.is_open === "boolean";
         const hasAutoOpen = typeof body.auto_open_from_schedule === "boolean";
@@ -4178,26 +4402,62 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
         }
 
-        // Outside scheduled hours toggles manual override so the cron doesn't auto-close
-        // (break / late-night extension), except before today's first slot — there OPEN is only
-        // allowed when the slot actually starts if auto-open is on.
-        let openingManualOverride = false;
+        // Manual open only inside configured operating hours (or 24h). Outside hours → reject.
         if (openingStore) {
           const hoursRows = await sql`SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1`;
           const hoursRow = hoursRows[0] as Record<string, unknown> | undefined;
-          if (hoursRow) {
-            const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
-            const withinHours = isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
-            const beforeFirstSlot = isBeforeFirstSlotToday(hoursRow, dayOfWeek, minutesSinceMidnight);
-            openingManualOverride = !withinHours && !beforeFirstSlot;
-          } else {
-            openingManualOverride = true;
+          if (!hoursRow) {
+            return reply.code(409).send({
+              error: "outside_operating_hours",
+              message:
+                "Your store cannot be turned ON because it is currently outside its scheduled operating hours. To open your store now, please update your Store Schedule first.",
+            });
+          }
+          const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+          const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+          const dayKey = dayNames[dayOfWeek];
+          const closedDays = (hoursRow.closed_days as string[] | null) ?? [];
+          const isTodayScheduledClosed =
+            closedDays.some((d) => String(d).trim().toLowerCase() === dayKey) ||
+            hoursRow[`${dayKey}_open`] !== true;
+          if (isTodayScheduledClosed) {
+            return reply.code(409).send({
+              error: "scheduled_off_day",
+              message:
+                "Cannot open: today is marked as a scheduled off day. Update your Store Schedule to mark today as open.",
+            });
+          }
+          if (!isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight)) {
+            return reply.code(409).send({
+              error: "outside_operating_hours",
+              message:
+                "Your store cannot be turned ON because it is currently outside its scheduled operating hours. To open your store now, please update your Store Schedule first.",
+            });
           }
         }
 
         let mergedManualCloseUntil: string | null = null;
         if (openingStore) {
           mergedManualCloseUntil = null;
+        } else if (closingStore && body.closure_type === "today") {
+          // Backend is authoritative for "close for today": compute the reopen instant from the
+          // current schedule server-side instead of trusting a client-precomputed value. Clients
+          // (merchant app, partner site) have independently shipped this wrong before by always
+          // skipping to a future calendar day, even when today's own slot hadn't started yet.
+          const hoursRowsForClose = await sql`
+            SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
+          `;
+          const hoursRowForClose = hoursRowsForClose[0] as Record<string, unknown> | undefined;
+          if (hoursRowForClose) {
+            const nowRefForClose = new Date();
+            const { dayOfWeek: closeDayOfWeek, minutesSinceMidnight: closeMinutesSinceMidnight } = nowInStoreTz();
+            const next = isBeforeFirstSlotToday(hoursRowForClose, closeDayOfWeek, closeMinutesSinceMidnight)
+              ? getNextOpenIso(hoursRowForClose, closeDayOfWeek, closeMinutesSinceMidnight, nowRefForClose)
+              : getNextOpenIsoAfterIstCalendarDay(hoursRowForClose, closeDayOfWeek, nowRefForClose);
+            mergedManualCloseUntil = next ?? getNextOpenDayStartIso(hoursRowForClose, closeDayOfWeek, nowRefForClose);
+          } else {
+            mergedManualCloseUntil = null;
+          }
         } else if (closingStore && body.manual_close_until != null && String(body.manual_close_until).trim() !== "") {
           const raw = String(body.manual_close_until).trim();
           const d = new Date(raw);
@@ -4263,8 +4523,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     unavailable_reason = NULL, close_reason = NULL, auto_unavailable_at = NULL, auto_available_at = ${nowIso},
                     manual_close_until = NULL,
                     block_auto_open = FALSE,
-                    is_manual_override = ${openingManualOverride},
-                    manual_override_at = ${openingManualOverride ? nowIso : null},
+                    is_manual_override = FALSE,
+                    manual_override_at = NULL,
                     schedule_end_prompted_at = NULL,
                     schedule_end_prompt_expires_at = NULL,
                     auto_off_reason = NULL,
@@ -4322,8 +4582,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               ${mergedManualCloseUntil}, ${mergedCloseReason}, ${mergedRestrictionType},
               ${unavailReason}, ${closingStore ? nowIso : null}, ${openingStore ? nowIso : null},
               ${openingStore ? "MANUAL_OPEN" : closingStore ? "MANUAL_CLOSE" : null},
-              ${openingStore ? openingManualOverride : false},
-              ${openingStore ? (openingManualOverride ? nowIso : null) : null},
+              ${false},
+              ${null},
               ${null},
               ${null},
               ${null},
@@ -5233,7 +5493,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ORDER BY created_at DESC
             LIMIT ${limit}
           `;
-          const notifications = (rows as unknown as Array<{
+          const typedRows = rows as unknown as Array<{
             id: number;
             store_id: number;
             type: string;
@@ -5243,7 +5503,51 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             order_id: number | null;
             action_url?: string | null;
             created_at: Date | string;
-          }>).map((r) => ({
+          }>;
+
+          // Heal leftover "New order!" rows after cancel/deliver (older paths missed deletes).
+          try {
+            const candidates = typedRows.filter(
+              (r) =>
+                String(r.type).toLowerCase() === "order" &&
+                String(r.title ?? "")
+                  .toLowerCase()
+                  .includes("new order") &&
+                r.order_id != null &&
+                Number(r.order_id) > 0
+            );
+            if (candidates.length > 0) {
+              const foodIds = [
+                ...new Set(candidates.map((r) => Number(r.order_id)).filter((n) => n > 0)),
+              ];
+              const foodRows = (await sql`
+                SELECT id, order_status FROM orders_food WHERE id = ANY(${foodIds}::bigint[])
+              `) as Array<{ id: number; order_status: string | null }>;
+              const statusById = new Map(
+                foodRows.map((f) => [Number(f.id), String(f.order_status ?? "").trim().toUpperCase()])
+              );
+              const stillNew = new Set(["CREATED", "NEW", "ORDER_PLACED", "PENDING", ""]);
+              const staleIds = candidates
+                .filter((c) => {
+                  const st = statusById.get(Number(c.order_id));
+                  return st == null || !stillNew.has(st);
+                })
+                .map((c) => Number(c.id));
+              if (staleIds.length > 0) {
+                await sql`
+                  DELETE FROM merchant_store_notifications
+                  WHERE store_id = ${storeId} AND id = ANY(${staleIds}::bigint[])
+                `;
+                for (let i = typedRows.length - 1; i >= 0; i--) {
+                  if (staleIds.includes(Number(typedRows[i].id))) typedRows.splice(i, 1);
+                }
+              }
+            }
+          } catch {
+            /* list still returns; purge is best-effort */
+          }
+
+          const notifications = typedRows.map((r) => ({
             id: String(r.id),
             store_id: r.store_id,
             type: r.type,
@@ -5330,8 +5634,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
           `;
           const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+          // Reply immediately — do not hold the HTTP request (or a DB slot) through push I/O.
           if (tokens.length > 0) {
-            await sendNotification({
+            void sendNotification({
               templateCode: "MERCHANT_WAITING_FOR_ORDER",
               target: { device_tokens: tokens },
               idempotencyKey: `WAITING_FOR_ORDER:${storeId}:${id}`,
@@ -7193,6 +7498,44 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /**
+       * GET /merchant-partner/realtime-auth — mint a short-lived Supabase-compatible
+       * JWT scoped to this merchant's owned stores (claim `store_ids`), signed with
+       * SUPABASE_JWT_SECRET. The app calls supabase.realtime.setAuth(token) so its
+       * Supabase client is authorized under RLS to receive orders_core/orders_food
+       * postgres_changes for its own stores (and nothing else). Refresh before expiry.
+       */
+      protectedApp.get("/realtime-auth", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = (await sql`
+          SELECT id FROM merchant_stores WHERE parent_id = ${parentId} AND deleted_at IS NULL
+        `) as Array<{ id: number | string }>;
+        const storeIds = storeRows
+          .map((r) => Number(r.id))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const secret = getEnv().SUPABASE_JWT_SECRET;
+        if (!secret) return reply.code(503).send({ error: "jwt_secret_missing" });
+        const ttlSec = 60 * 55; // 55 min; client refreshes before expiry
+        try {
+          const token = await new SignJWT({ role: "authenticated", store_ids: storeIds })
+            .setProtectedHeader({ alg: "HS256" })
+            .setSubject(String(req.auth.sub))
+            .setAudience("authenticated")
+            .setIssuedAt()
+            .setExpirationTime(`${ttlSec}s`)
+            .sign(new TextEncoder().encode(secret));
+          return reply.send({ token, expiresIn: ttlSec, storeIds });
+        } catch (e) {
+          req.log.error({ err: e }, "[realtime-auth] sign failed");
+          return reply.code(500).send({ error: "realtime_auth_failed" });
+        }
+      });
+
       /** GET /merchant-partner/stores/:storeId/food-orders — partner food orders (same pipeline as Partner Site). */
       protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
         "/stores/:storeId/food-orders",
@@ -7576,13 +7919,21 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
-          // Active = orders that are not completed/cancelled. We map business "pending/accepted/preparing"
-          // to core statuses used in orders_core.
+          // Pending deliveries for the merchant home KPI =
+          //   CREATED food rows (awaiting accept) + kitchen/dispatch pipeline.
+          // Do NOT use orders_core.status alone: new food orders are inserted with
+          // status='assigned' while still CREATED for the merchant — that inflated
+          // the KPI while New/Active food boards stayed empty when the list path failed.
           const rows = await sql`
             SELECT COUNT(*)::int AS c
-            FROM orders_core
-            WHERE merchant_store_id = ${storeId}
-              AND status IN ('assigned', 'accepted', 'reached_store', 'picked_up')
+            FROM orders_food f
+            WHERE f.merchant_store_id = ${storeId}
+              AND upper(COALESCE(f.order_status, '')) IN (
+                'CREATED', 'NEW', 'PLACED',
+                'ACCEPTED', 'PREPARING',
+                'READY_FOR_PICKUP', 'READY',
+                'OUT_FOR_DELIVERY', 'PICKED_UP', 'IN_TRANSIT', 'DISPATCHED'
+              )
           `;
           const countRow = rows[0] as { c?: number } | undefined;
           const active = countRow?.c != null ? Number(countRow.c) : 0;

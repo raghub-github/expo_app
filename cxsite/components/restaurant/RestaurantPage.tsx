@@ -29,7 +29,11 @@ function RestaurantSkeleton() {
 import { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback, Fragment } from 'react'
 import { Smartphone, X } from 'lucide-react'
 import { createClient } from '@supabase/supabase-js'
+import AppAssetImage from '@/components/common/AppAssetImage'
+import AppDownloadModal from '@/components/common/AppDownloadModal'
+import AppLinkSentToast from '@/components/common/AppLinkSentToast'
 import ProtectedImage from '@/components/common/ProtectedImage'
+import { CX } from '@/lib/appAssetKeys'
 import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 import { useRouter } from 'next/navigation'
 import { getRestaurantBreadcrumbMiddle } from '@/lib/restaurantDetailLink'
@@ -156,7 +160,7 @@ function openGoogleMapsDirections(destLat: number, destLng: number) {
   )
 }
 
-const FLOATING_PROMO_IMAGE_SRC = '/img/dnscreen.png'
+const FLOATING_PROMO_ASSET_KEY = CX.home.brandBanner
 
 const FLOATING_PROMO_TEXTS: string[][] = [
   ['Experience the Future', 'with GatiMitra'],
@@ -172,12 +176,12 @@ type FloatingImageAnim = (typeof FLOATING_IMAGE_ANIMS)[number]
 
 /** Interleaved reel: image (unique anim) → text → … */
 const FLOATING_PROMO_SLIDES: Array<
-  | { kind: 'image'; src: string; anim: FloatingImageAnim }
+  | { kind: 'image'; assetKey: string; anim: FloatingImageAnim }
   | { kind: 'text'; lines: string[] }
 > = FLOATING_PROMO_TEXTS.flatMap((lines, idx) => [
   {
     kind: 'image' as const,
-    src: FLOATING_PROMO_IMAGE_SRC,
+    assetKey: FLOATING_PROMO_ASSET_KEY,
     anim: FLOATING_IMAGE_ANIMS[idx % FLOATING_IMAGE_ANIMS.length],
   },
   { kind: 'text' as const, lines },
@@ -224,8 +228,7 @@ function RestaurantPage({
   /** Typed characters for the active text slide (write / erase). */
   const [floatingPromoTyped, setFloatingPromoTyped] = useState('')
   const [downloadContextItem, setDownloadContextItem] = useState<string | null>(null)
-  const [downloadMode, setDownloadMode] = useState<'phone' | 'email'>('phone')
-  const [downloadValue, setDownloadValue] = useState('')
+  const [showAppLinkToast, setShowAppLinkToast] = useState(false)
 
   // State for restaurant switch confirmation
   const [showSwitchModal, setShowSwitchModal] = useState(false)
@@ -654,8 +657,6 @@ function RestaurantPage({
 
   const handleOpenAppDownloadPopup = (itemName?: string) => {
     setDownloadContextItem(itemName?.trim() ? itemName.trim() : null)
-    setDownloadMode('phone')
-    setDownloadValue('')
     setShowAppDownloadModal(true)
   }
 
@@ -2057,13 +2058,13 @@ function RestaurantPage({
                             active ? `gm-promo-img gm-promo-img--${slide.anim}` : ''
                           }`}
                         >
-                          <img
+                          <AppAssetImage
                             key={active ? `promo-img-${i}-${floatingPromoSlide}` : `promo-img-${i}`}
-                            src={slide.src}
+                            assetKey={slide.assetKey}
                             alt=""
                             className="h-[152px] w-auto max-w-full object-contain drop-shadow-[0_10px_22px_rgba(0,0,0,0.22)]"
-                            loading="eager"
                             decoding="async"
+                            fetchPriority="high"
                           />
                         </div>
                       ) : (
@@ -2101,109 +2102,20 @@ function RestaurantPage({
       </div>
 
       {showAppDownloadModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4">
-          <div className="relative w-full max-w-4xl rounded-2xl border border-neutral-200 bg-white text-text shadow-[0_30px_100px_-30px_rgba(0,0,0,0.6)] overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setShowAppDownloadModal(false)}
-              className="absolute right-4 top-4 h-8 w-8 rounded-full border border-border/40 text-text-light hover:text-text hover:border-border/70 transition-colors z-10"
-              aria-label="Close download app popup"
-            >
-              <i className="fas fa-xmark" />
-            </button>
-
-            <div className="grid grid-cols-1 md:grid-cols-[340px_minmax(0,1fr)] gap-0 items-stretch">
-              <div className="hidden md:flex self-stretch items-center justify-center bg-[#18d4b3] px-4 py-5 md:px-5 md:py-6 min-h-[480px]">
-                <img
-                  src="/img/dnscreen.png"
-                  alt="GatiMitra app preview"
-                  className="h-full w-full max-h-[460px] max-w-[320px] object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,0.22)]"
-                  loading="eager"
-                  decoding="async"
-                />
-              </div>
-
-              <div className="p-6 md:p-8">
-                <h3 className="text-3xl font-semibold tracking-tight">Get the GatiMitra App</h3>
-                <p className="mt-3 text-sm text-text-light max-w-xl">
-                  {downloadContextItem
-                    ? `To order "${downloadContextItem}", please use our mobile app for the best experience.`
-                    : 'For a better experience, please order through our mobile app.'}
-                </p>
-
-                <div className="mt-6 flex items-center gap-6 text-sm">
-                  <label className="inline-flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="downloadMode"
-                      checked={downloadMode === 'phone'}
-                      onChange={() => setDownloadMode('phone')}
-                      className="accent-pink"
-                    />
-                    <span>Phone</span>
-                  </label>
-                  <label className="inline-flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="downloadMode"
-                      checked={downloadMode === 'email'}
-                      onChange={() => setDownloadMode('email')}
-                      className="accent-pink"
-                    />
-                    <span>Email</span>
-                  </label>
-                </div>
-
-                <div className="mt-3 flex flex-col sm:flex-row gap-2.5">
-                  <div className="flex w-full">
-                    {downloadMode === 'phone' && (
-                      <span className="inline-flex items-center px-3 rounded-l-md border border-r-0 border-border/60 bg-neutral-50 text-sm text-text-light">
-                        +91
-                      </span>
-                    )}
-                    <input
-                      value={downloadValue}
-                      onChange={(e) => setDownloadValue(e.target.value)}
-                      placeholder={downloadMode === 'phone' ? 'type here...' : 'you@example.com'}
-                      className={`w-full h-11 border border-border/60 rounded-md px-3 text-sm outline-none focus:ring-2 focus:ring-pink/25 focus:border-pink/40 ${
-                        downloadMode === 'phone' ? 'rounded-l-none' : ''
-                      }`}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    className="h-11 px-4 rounded-md bg-pink text-white text-sm font-semibold hover:bg-pink/90 transition-colors whitespace-nowrap"
-                  >
-                    Share App Link
-                  </button>
-                </div>
-
-                <p className="mt-5 text-xs text-text-light">Download app from</p>
-                <div className="mt-2 flex flex-wrap items-center gap-2.5">
-                  <a
-                    href={process.env.NEXT_PUBLIC_APP_DOWNLOAD_URL || 'https://play.google.com/store'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 rounded-md bg-[#1f2937] text-white px-3 py-2 text-xs font-medium"
-                  >
-                    <i className="fab fa-google-play text-base" />
-                    <span>GET IT ON Google Play</span>
-                  </a>
-                  <a
-                    href={process.env.NEXT_PUBLIC_APP_DOWNLOAD_URL || 'https://www.apple.com/app-store/'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 rounded-md bg-[#1f2937] text-white px-3 py-2 text-xs font-medium"
-                  >
-                    <i className="fab fa-apple text-base" />
-                    <span>Download on the App Store</span>
-                  </a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AppDownloadModal
+          isOpen={showAppDownloadModal}
+          onClose={() => setShowAppDownloadModal(false)}
+          variant="customer"
+          title="Get the GatiMitra App"
+          description={
+            downloadContextItem
+              ? `To order "${downloadContextItem}", please use our mobile app for the best experience.`
+              : 'For a better experience, please order through our mobile app.'
+          }
+          onLinkSent={() => setShowAppLinkToast(true)}
+        />
       )}
+      <AppLinkSentToast open={showAppLinkToast} onClose={() => setShowAppLinkToast(false)} />
 
       {/* Add custom styles for animations */}
       <CustomizeModal

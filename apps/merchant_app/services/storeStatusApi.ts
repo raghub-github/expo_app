@@ -361,6 +361,9 @@ async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promi
   return {
     store_id: Number(data.store_id ?? storeIdNum),
     is_open: data.is_open === true,
+    operational_status:
+      typeof data.operational_status === "string" ? data.operational_status.trim().toUpperCase() : null,
+    within_operating_hours: data.within_operating_hours === true,
     is_accepting_orders: data.is_accepting_orders === true,
     is_available: data.is_available !== false,
     auto_open_from_schedule: data.auto_open_from_schedule !== false,
@@ -439,7 +442,18 @@ export async function updateStoreStatus(
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as Record<string, unknown>;
-      const msg = (typeof err?.message === "string" && err.message.trim()) || (typeof err?.error === "string" && err.error.trim()) || res.statusText || "Failed to update store status";
+      const errCode = typeof err?.error === "string" ? err.error.trim() : "";
+      const msg =
+        (typeof err?.message === "string" && err.message.trim()) ||
+        errCode ||
+        (typeof err?.error === "string" && err.error.trim()) ||
+        res.statusText ||
+        "Failed to update store status";
+      if (errCode === "outside_operating_hours") {
+        const e = new Error(msg);
+        (e as Error & { code?: string }).code = "outside_operating_hours";
+        throw e;
+      }
       throw new Error(msg);
     }
     let data: Record<string, unknown>;

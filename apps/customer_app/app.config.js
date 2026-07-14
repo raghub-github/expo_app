@@ -13,6 +13,8 @@ module.exports = {
   ...appJson,
   expo: {
     ...appJson.expo,
+    jsEngine: "hermes",
+    newArchEnabled: true,
     icon: APP_ICON,
     splash: {
       ...appJson.expo.splash,

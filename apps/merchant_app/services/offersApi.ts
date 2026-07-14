@@ -79,6 +79,9 @@ export interface CreateOfferPayload {
   offer_image_url?: string | null;
   valid_from: string;
   valid_till: string;
+  applicable_time_start?: string | null;
+  applicable_time_end?: string | null;
+  applicable_on_days?: string[] | null;
   is_active?: boolean;
   auto_apply?: boolean;
   is_stackable?: boolean;

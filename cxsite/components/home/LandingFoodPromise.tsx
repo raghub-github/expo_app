@@ -171,16 +171,15 @@ export default function LandingFoodPromise() {
           </div>
 
           <div className="landing-food-promise__hero-image">
-            {/* Plain img so /img/dnscreen.png always loads from public without optimizer issues */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
+            {/* eslint-disable-next-line @next/next/no-img-element -- synced public/img asset */}
             <img
               src="/img/dnscreen.png"
               alt="GatiMitra app"
               className="landing-food-promise__hero-shot"
               width={320}
               height={640}
-              loading="eager"
               decoding="async"
+              fetchPriority="high"
             />
           </div>
 

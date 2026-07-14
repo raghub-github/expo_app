@@ -1,5 +1,8 @@
 import type { Sql } from "postgres";
-import { merchantFundedDiscountFromBilling } from "../../lib/merchant-billing-discount.js";
+import {
+  annotateMerchantItemsWithItemOffers,
+  merchantFundedDiscountFromBilling,
+} from "../../lib/merchant-billing-discount.js";
 import { emitEvent } from "../notifications/eventBus.js";
 import {
   applyMerchantBaseToOrderItems,
@@ -71,6 +74,16 @@ export type MerchantFoodOrderItem = {
   captured_base_amount?: number;
   captured_addon_amount?: number;
   has_customizations?: boolean;
+  /** Menu/catalog line total before item Boost (same as price after merchant-base rewrite). */
+  catalog_line_total?: number;
+  /** Line total after allocating restaurant item-offer discount. */
+  net_line_total?: number;
+  offer_discount?: number;
+  offer_label?: string | null;
+  is_item_promo?: boolean;
+  applied_offer_type?: string | null;
+  /** Frozen from merchant_ctm_pricing_snapshot — do not rescale from live menu. */
+  ctm_from_snapshot?: boolean;
 };
 
 export type MerchantOrderPricing = {
@@ -109,6 +122,8 @@ export type MerchantFoodOrderDto = {
   grand_total: number;
   food_items_total_value?: number | null;
   pricing: MerchantOrderPricing;
+  /** Frozen merchant precision discount (orders_core.merchant_precision_discount) — SSOT, pass-through. */
+  merchant_precision_discount: number;
   /** Full checkout breakdown (orders_core.billing_snapshot). */
   billing_snapshot: Record<string, unknown> | null;
   payment_status: string | null;
@@ -291,6 +306,13 @@ function mergeDbItemFields(
     captured_addon_amount: db.captured_addon_amount ?? it.captured_addon_amount,
     has_customizations: db.has_customizations ?? it.has_customizations,
     menu_item_id: db.menu_item_id ?? it.menu_item_id,
+    catalog_line_total: db.catalog_line_total ?? it.catalog_line_total,
+    net_line_total: db.net_line_total ?? it.net_line_total,
+    offer_discount: db.offer_discount ?? it.offer_discount,
+    offer_label: db.offer_label ?? it.offer_label,
+    is_item_promo: db.is_item_promo ?? it.is_item_promo,
+    applied_offer_type: db.applied_offer_type ?? it.applied_offer_type,
+    ctm_from_snapshot: db.ctm_from_snapshot === true || it.ctm_from_snapshot === true,
   };
 }
 
@@ -390,6 +412,7 @@ type CoreRow = {
   item_total: unknown;
   addon_total: unknown;
   billing_snapshot: unknown;
+  merchant_precision_discount: unknown;
   payment_status: string | null;
   created_at: Date | string;
   customer_id: number | null;
@@ -527,7 +550,134 @@ async function loadCoreRows(
   ordersFoodId?: number
 ): Promise<CoreRow[]> {
   if (ordersFoodId != null && Number.isFinite(ordersFoodId)) {
-    const rows = await sql<CoreRow[]>`
+    try {
+      const rows = await sql<CoreRow[]>`
+        SELECT
+          oc.id,
+          oc.order_id,
+          oc.formatted_order_id,
+          cust.full_name AS customer_full_name,
+          cust.primary_mobile AS customer_primary_mobile,
+          oc.status,
+          oc.current_status,
+          oc.delivery_type,
+          oc.grand_total,
+          oc.item_total,
+          oc.addon_total,
+          oc.billing_snapshot,
+          oc.merchant_precision_discount,
+          oc.checkout_metadata,
+          oc.payment_status,
+          oc.created_at,
+          oc.customer_id,
+          oc.rider_id,
+          oc.payment_method,
+          oc.items,
+          oc.drop_address_normalized,
+          oc.drop_address_raw,
+          oc.distance_km,
+          oc.cancelled_at,
+          oc.is_bulk_order,
+          oc.merchant_instructions_list
+        FROM orders_food of
+        LEFT JOIN orders_core oc
+          ON oc.id = of.order_id
+          OR (of.core_order_id IS NOT NULL AND oc.order_id = of.core_order_id)
+        LEFT JOIN customers cust ON cust.id = oc.customer_id
+        WHERE of.id = ${ordersFoodId}
+          AND (
+            oc.merchant_store_id = ${storeId}
+            OR of.merchant_store_id = ${storeId}
+          )
+        LIMIT 1
+      `;
+      return rows.filter((r) => Number.isFinite(Number(r.id)));
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code !== "42703") throw err;
+      // 0412 not applied yet — load without merchant_precision_discount.
+      const rows = await sql<CoreRow[]>`
+        SELECT
+          oc.id,
+          oc.order_id,
+          oc.formatted_order_id,
+          cust.full_name AS customer_full_name,
+          cust.primary_mobile AS customer_primary_mobile,
+          oc.status,
+          oc.current_status,
+          oc.delivery_type,
+          oc.grand_total,
+          oc.item_total,
+          oc.addon_total,
+          oc.billing_snapshot,
+          oc.checkout_metadata,
+          oc.payment_status,
+          oc.created_at,
+          oc.customer_id,
+          oc.rider_id,
+          oc.payment_method,
+          oc.items,
+          oc.drop_address_normalized,
+          oc.drop_address_raw,
+          oc.distance_km,
+          oc.cancelled_at,
+          oc.is_bulk_order,
+          oc.merchant_instructions_list
+        FROM orders_food of
+        LEFT JOIN orders_core oc
+          ON oc.id = of.order_id
+          OR (of.core_order_id IS NOT NULL AND oc.order_id = of.core_order_id)
+        LEFT JOIN customers cust ON cust.id = oc.customer_id
+        WHERE of.id = ${ordersFoodId}
+          AND (
+            oc.merchant_store_id = ${storeId}
+            OR of.merchant_store_id = ${storeId}
+          )
+        LIMIT 1
+      `;
+      return rows.filter((r) => Number.isFinite(Number(r.id)));
+    }
+  }
+
+  try {
+    return await sql<CoreRow[]>`
+      SELECT
+        oc.id,
+        oc.order_id,
+        oc.formatted_order_id,
+        cust.full_name AS customer_full_name,
+        cust.primary_mobile AS customer_primary_mobile,
+        oc.status,
+        oc.current_status,
+        oc.delivery_type,
+        oc.grand_total,
+        oc.item_total,
+        oc.addon_total,
+        oc.billing_snapshot,
+        oc.merchant_precision_discount,
+        oc.checkout_metadata,
+        oc.payment_status,
+        oc.created_at,
+        oc.customer_id,
+        oc.rider_id,
+        oc.payment_method,
+        oc.items,
+        oc.drop_address_normalized,
+        oc.drop_address_raw,
+        oc.distance_km,
+        oc.cancelled_at,
+        oc.is_bulk_order,
+        oc.merchant_instructions_list
+      FROM orders_core oc
+      LEFT JOIN customers cust ON cust.id = oc.customer_id
+      WHERE oc.merchant_store_id = ${storeId}
+      ORDER BY oc.created_at DESC
+      LIMIT ${limit}
+    `;
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "42703") throw err;
+    return await sql<CoreRow[]>`
       SELECT
         oc.id,
         oc.order_id,
@@ -552,55 +702,15 @@ async function loadCoreRows(
         oc.drop_address_raw,
         oc.distance_km,
         oc.cancelled_at,
-        oc.is_bulk_order
-      FROM orders_food of
-      LEFT JOIN orders_core oc
-        ON oc.id = of.order_id
-        OR (of.core_order_id IS NOT NULL AND oc.order_id = of.core_order_id)
+        oc.is_bulk_order,
+        oc.merchant_instructions_list
+      FROM orders_core oc
       LEFT JOIN customers cust ON cust.id = oc.customer_id
-      WHERE of.id = ${ordersFoodId}
-        AND (
-          oc.merchant_store_id = ${storeId}
-          OR of.merchant_store_id = ${storeId}
-        )
-      LIMIT 1
+      WHERE oc.merchant_store_id = ${storeId}
+      ORDER BY oc.created_at DESC
+      LIMIT ${limit}
     `;
-    return rows.filter((r) => Number.isFinite(Number(r.id)));
   }
-
-  return sql<CoreRow[]>`
-    SELECT
-      oc.id,
-      oc.order_id,
-      oc.formatted_order_id,
-      cust.full_name AS customer_full_name,
-      cust.primary_mobile AS customer_primary_mobile,
-      oc.status,
-      oc.current_status,
-      oc.delivery_type,
-      oc.grand_total,
-      oc.item_total,
-      oc.addon_total,
-      oc.billing_snapshot,
-      oc.checkout_metadata,
-      oc.payment_status,
-      oc.created_at,
-      oc.customer_id,
-      oc.rider_id,
-      oc.payment_method,
-      oc.items,
-      oc.drop_address_normalized,
-      oc.drop_address_raw,
-      oc.distance_km,
-      oc.cancelled_at,
-      oc.is_bulk_order,
-      oc.merchant_instructions_list
-    FROM orders_core oc
-    LEFT JOIN customers cust ON cust.id = oc.customer_id
-    WHERE oc.merchant_store_id = ${storeId}
-    ORDER BY oc.created_at DESC
-    LIMIT ${limit}
-  `;
 }
 
 async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[]): Promise<FoodRow[]> {
@@ -927,29 +1037,54 @@ async function buildOrderDto(
 
   const snaps = textOid ? opts.snapshotsByOrderText.get(textOid) ?? [] : [];
   const itemsBeforeBase = items.map((it) => ({ ...it }));
-  const { items: merchantItems, merchantSubtotal } = await applyMerchantBaseToOrderItems(
-    items,
-    snaps,
-    { storeId: opts.storeId, commissionPercent: opts.commissionPercent }
-  );
-  items = itemsBeforeBase.map((it, i) => {
-    const mapped = merchantItems[i];
-    const lineTotal = num(mapped?.price ?? it.price);
-    return scaleMerchantOrderItemBreakdown(it, lineTotal) as MerchantFoodOrderItem;
-  });
+  const allCtmFrozen =
+    items.length > 0 && items.every((it) => it.ctm_from_snapshot === true);
+  if (allCtmFrozen) {
+    // Merchant CTM snapshot is already merchant-rupee SSOT — do not rescale from menu/commission.
+    items = items.map((it) => ({
+      ...it,
+      // Keep catalog for strike; price stays catalog so annotate/bill math stay consistent.
+      price: num(it.catalog_line_total ?? it.price),
+    }));
+  } else {
+    const { items: merchantItems, merchantSubtotal } = await applyMerchantBaseToOrderItems(
+      items,
+      snaps,
+      { storeId: opts.storeId, commissionPercent: opts.commissionPercent }
+    );
+    items = itemsBeforeBase.map((it, i) => {
+      const mapped = merchantItems[i];
+      const lineTotal = num(mapped?.price ?? it.price);
+      return scaleMerchantOrderItemBreakdown(it, lineTotal) as MerchantFoodOrderItem;
+    });
+    void merchantSubtotal;
+  }
+  const merchantSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
 
   const billingSnap =
     core.billing_snapshot && typeof core.billing_snapshot === "object"
       ? (core.billing_snapshot as Record<string, unknown>)
       : null;
+  // CTM snapshot is immutable SSOT — skip recompute. Legacy orders still annotate.
+  if (!allCtmFrozen) {
+    items = annotateMerchantItemsWithItemOffers(items, billingSnap);
+  }
+
   const packaging = num(billingSnap?.packaging_fee ?? 0);
   const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
   const itemsSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
-  const computedTotal = merchantOrderTotalFromBilling(
-    itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
-    billingSnap,
-    packaging
+  const ctmNetSum = round2(
+    items.reduce((s, it) => s + num(it.net_line_total ?? it.price), 0)
   );
+  // Cart/precision only — BOOST (and other item offers) already live in net_line_total.
+  const precisionFromCore = Math.max(0, num(core.merchant_precision_discount));
+  const computedTotal = allCtmFrozen
+    ? round2(Math.max(0, ctmNetSum + packaging - precisionFromCore))
+    : merchantOrderTotalFromBilling(
+        itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
+        billingSnap,
+        packaging
+      );
   const foodFrozen = num(food?.food_items_total_value);
   /** Partnersite parity: recompute from line items when available; frozen value is fallback only. */
   const hasItemLines = items.length > 0 && (itemsSubtotal > 0.005 || merchantSubtotal > 0.005);
@@ -962,7 +1097,8 @@ async function buildOrderDto(
     subtotal: itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
     packaging,
     taxes: 0,
-    discount: merchantDiscount,
+    // Frozen path: surface cart precision as the bill discount line (BOOST already in nets).
+    discount: allCtmFrozen ? precisionFromCore : merchantDiscount,
     total: merchantTotal,
   };
 
@@ -1017,6 +1153,7 @@ async function buildOrderDto(
     grand_total: merchantTotal,
     food_items_total_value: merchantTotal,
     pricing,
+    merchant_precision_discount: Math.max(0, num(core.merchant_precision_discount)),
     billing_snapshot: billingSnap,
     payment_status: core.payment_status ?? null,
     items,
@@ -1337,10 +1474,15 @@ export async function loadMerchantFoodOrders(
   const textOrderIds = [
     ...new Set(cores.map((c) => String(c.order_id ?? "").trim()).filter((s) => s.length > 0)),
   ];
-  const itemsByOrderTextId =
-    textOrderIds.length > 0
-      ? await loadMerchantOrderLineItemsByTextIds(sql, textOrderIds)
-      : new Map<string, MerchantFoodOrderItem[]>();
+  let itemsByOrderTextId = new Map<string, MerchantFoodOrderItem[]>();
+  if (textOrderIds.length > 0) {
+    try {
+      itemsByOrderTextId = await loadMerchantOrderLineItemsByTextIds(sql, textOrderIds);
+    } catch {
+      /* Line-item enrichment is optional — JSON items on core/food still render. */
+      itemsByOrderTextId = new Map();
+    }
+  }
 
   const coreIds = cores.map((c) => c.id);
   const otpByCoreId = new Map<number, { pickup: string | null; rto: string | null }>();
@@ -1364,56 +1506,15 @@ export async function loadMerchantFoodOrders(
 
   const storeOrdinalByCoreId = new Map<number, number>();
   if (coreIds.length > 0) {
-    const ordRows = await sql`
-      SELECT
-        oc.id,
-        (
-          SELECT COUNT(*)::int
-          FROM orders_core prior
-          LEFT JOIN LATERAL (
-            SELECT pf.customer_id
-            FROM orders_food pf
-            WHERE pf.order_id = prior.id
-               OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = prior.order_id)
-            ORDER BY pf.id DESC
-            LIMIT 1
-          ) pfood ON TRUE
-          WHERE prior.merchant_store_id = ${storeId}
-            AND COALESCE(prior.customer_id, pfood.customer_id) IS NOT NULL
-            AND COALESCE(prior.customer_id, pfood.customer_id) = eff.cust_id
-            AND prior.created_at <= oc.created_at
-        ) AS ord
-      FROM orders_core oc
-      LEFT JOIN LATERAL (
-        SELECT pf.customer_id
-        FROM orders_food pf
-        WHERE pf.order_id = oc.id
-           OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = oc.order_id)
-        ORDER BY pf.id DESC
-        LIMIT 1
-      ) ofood ON TRUE
-      CROSS JOIN LATERAL (
-        SELECT COALESCE(oc.customer_id, ofood.customer_id) AS cust_id
-      ) eff
-      WHERE oc.id IN ${sql(coreIds)}
-        AND eff.cust_id IS NOT NULL
-    `;
-    for (const row of ordRows as unknown as Array<{ id: number; ord: number }>) {
-      const ord = Number(row.ord);
-      if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(Number(row.id), ord);
-    }
-
-    const missingIds = coreIds.filter((id) => !storeOrdinalByCoreId.has(id));
-    if (missingIds.length > 0) {
-      const phoneOrdRows = await sql`
+    try {
+      const ordRows = await sql`
         SELECT
           oc.id,
           (
             SELECT COUNT(*)::int
             FROM orders_core prior
-            LEFT JOIN customers pc ON pc.id = prior.customer_id
             LEFT JOIN LATERAL (
-              SELECT pf.customer_phone
+              SELECT pf.customer_id
               FROM orders_food pf
               WHERE pf.order_id = prior.id
                  OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = prior.order_id)
@@ -1421,57 +1522,106 @@ export async function loadMerchantFoodOrders(
               LIMIT 1
             ) pfood ON TRUE
             WHERE prior.merchant_store_id = ${storeId}
+              AND COALESCE(prior.customer_id, pfood.customer_id) IS NOT NULL
+              AND COALESCE(prior.customer_id, pfood.customer_id) = eff.cust_id
               AND prior.created_at <= oc.created_at
-              AND NULLIF(
-                REGEXP_REPLACE(COALESCE(pc.primary_mobile, pfood.customer_phone, ''), '\\D', '', 'g'),
-                ''
-              ) = oc_phone.phone_norm
           ) AS ord
         FROM orders_core oc
-        INNER JOIN LATERAL (
-          SELECT NULLIF(
-            REGEXP_REPLACE(
-              COALESCE(
-                (SELECT c.primary_mobile FROM customers c WHERE c.id = oc.customer_id LIMIT 1),
-                (SELECT pf.customer_phone FROM orders_food pf
-                  WHERE pf.order_id = oc.id OR pf.core_order_id = oc.order_id
-                  ORDER BY pf.id DESC LIMIT 1),
-                ''
-              ),
-              '\\D',
-              '',
-              'g'
-            ),
-            ''
-          ) AS phone_norm
-        ) oc_phone ON TRUE
-        WHERE oc.id IN ${sql(missingIds)}
-          AND oc_phone.phone_norm IS NOT NULL
+        LEFT JOIN LATERAL (
+          SELECT pf.customer_id
+          FROM orders_food pf
+          WHERE pf.order_id = oc.id
+             OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = oc.order_id)
+          ORDER BY pf.id DESC
+          LIMIT 1
+        ) ofood ON TRUE
+        CROSS JOIN LATERAL (
+          SELECT COALESCE(oc.customer_id, ofood.customer_id) AS cust_id
+        ) eff
+        WHERE oc.id IN ${sql(coreIds)}
+          AND eff.cust_id IS NOT NULL
       `;
-      for (const row of phoneOrdRows as unknown as Array<{ id: number; ord: number }>) {
+      for (const row of ordRows as unknown as Array<{ id: number; ord: number }>) {
         const ord = Number(row.ord);
         if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(Number(row.id), ord);
       }
-    }
 
-    const stillMissingCores = cores.filter((c) => !storeOrdinalByCoreId.has(c.id));
-    if (stillMissingCores.length > 0) {
-      await Promise.all(
-        stillMissingCores.map(async (core) => {
-          const food = matchFoodToCore(core, byCorePk, byTextId);
-          const cid = resolveCustomerId(core, food);
-          if (cid == null) return;
-          const rows = await sql`
-            SELECT COUNT(*)::int AS ord
-            FROM orders_core prior
-            WHERE prior.merchant_store_id = ${storeId}
-              AND prior.customer_id = ${cid}
-              AND prior.created_at <= ${new Date(core.created_at).toISOString()}::timestamptz
-          `;
-          const ord = Number((rows[0] as { ord?: number } | undefined)?.ord);
-          if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(core.id, ord);
-        })
-      );
+      const missingIds = coreIds.filter((id) => !storeOrdinalByCoreId.has(id));
+      if (missingIds.length > 0) {
+        const phoneOrdRows = await sql`
+          SELECT
+            oc.id,
+            (
+              SELECT COUNT(*)::int
+              FROM orders_core prior
+              LEFT JOIN customers pc ON pc.id = prior.customer_id
+              LEFT JOIN LATERAL (
+                SELECT pf.customer_phone
+                FROM orders_food pf
+                WHERE pf.order_id = prior.id
+                   OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = prior.order_id)
+                ORDER BY pf.id DESC
+                LIMIT 1
+              ) pfood ON TRUE
+              WHERE prior.merchant_store_id = ${storeId}
+                AND prior.created_at <= oc.created_at
+                AND NULLIF(
+                  REGEXP_REPLACE(COALESCE(pc.primary_mobile, pfood.customer_phone, ''), '\\D', '', 'g'),
+                  ''
+                ) = oc_phone.phone_norm
+            ) AS ord
+          FROM orders_core oc
+          INNER JOIN LATERAL (
+            SELECT NULLIF(
+              REGEXP_REPLACE(
+                COALESCE(
+                  (SELECT c.primary_mobile FROM customers c WHERE c.id = oc.customer_id LIMIT 1),
+                  (SELECT pf.customer_phone FROM orders_food pf
+                    WHERE pf.order_id = oc.id OR pf.core_order_id = oc.order_id
+                    ORDER BY pf.id DESC LIMIT 1),
+                  ''
+                ),
+                '\\D',
+                '',
+                'g'
+              ),
+              ''
+            ) AS phone_norm
+          ) oc_phone ON TRUE
+          WHERE oc.id IN ${sql(missingIds)}
+            AND oc_phone.phone_norm IS NOT NULL
+        `;
+        for (const row of phoneOrdRows as unknown as Array<{ id: number; ord: number }>) {
+          const ord = Number(row.ord);
+          if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(Number(row.id), ord);
+        }
+      }
+
+      const stillMissingCores = cores.filter((c) => !storeOrdinalByCoreId.has(c.id));
+      if (stillMissingCores.length > 0) {
+        await Promise.all(
+          stillMissingCores.map(async (core) => {
+            const food = matchFoodToCore(core, byCorePk, byTextId);
+            const cid = resolveCustomerId(core, food);
+            if (cid == null) return;
+            try {
+              const rows = await sql`
+                SELECT COUNT(*)::int AS ord
+                FROM orders_core prior
+                WHERE prior.merchant_store_id = ${storeId}
+                  AND prior.customer_id = ${cid}
+                  AND prior.created_at <= ${new Date(core.created_at).toISOString()}::timestamptz
+              `;
+              const ord = Number((rows[0] as { ord?: number } | undefined)?.ord);
+              if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(core.id, ord);
+            } catch {
+              /* optional enrichment */
+            }
+          })
+        );
+      }
+    } catch {
+      /* Ordinal enrichment is optional — never blank the whole food-orders list. */
     }
   }
 
@@ -1626,71 +1776,77 @@ export async function loadMerchantFoodOrders(
     }
   }
 
-  return Promise.all(
+  const built = await Promise.all(
     cores.map(async (core) => {
-      const food = matchFoodToCore(core, byCorePk, byTextId);
-      const dto = await buildOrderDto(core, food, buildOpts);
-      const catalog = cancelCatalogByCore.get(core.id);
-      const isCancelledOrder =
-        dto.order_status === "CANCELLED" || dto.order_status === "REJECTED";
-      if (!isCancelledOrder) return dto;
-
-      const meta =
-        catalog?.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
-          ? (catalog.metadata as Record<string, unknown>)
-          : null;
-      const resolved = resolveMerchantCancellationFields({
-        rejected_reason: catalog?.food_rejected_reason ?? dto.rejected_reason,
-        cancelled_by_label: catalog?.food_cancelled_by_label ?? dto.cancelled_by_label,
-        cancelled_by_type: catalog?.cancelled_by_type ?? dto.cancelled_by_type,
-        cancellation_details: catalog?.cancellation_details,
-        catalog_attribute:
-          catalog?.attribute ??
-          (meta && typeof meta.attribute === "string" ? meta.attribute : null),
-        catalog_rejection:
-          catalog?.rejection_label ??
-          (meta && typeof meta.rejection === "string" ? meta.rejection : null),
-        reason_text: catalog?.reason_text,
-        refund_reason: catalog?.refund_reason,
-        ocr_display_reason: catalog?.display_reason,
-        ocr_cancelled_by_label: catalog?.ocr_cancelled_by_label,
-        ocr_cancelled_by_type: catalog?.ocr_cancelled_by_type,
-      });
-
-      const netOrderValue =
-        num(dto.pricing?.total) > 0
-          ? num(dto.pricing.total)
-          : num(dto.food_items_total_value) > 0
-            ? num(dto.food_items_total_value)
-            : num(dto.grand_total);
-
-      let cancellation_compensation: MerchantCancellationCompensationDisplay | null = null;
       try {
-        cancellation_compensation = await resolveOrderCancellationCompensationDisplay(sql, {
-          orderCoreId: core.id,
-          merchantStoreId: storeId,
-          cancelledByType: resolved.cancelled_by_type,
-          cancelledByLabel: resolved.cancelled_by_label,
-          rejectedReason: resolved.rejected_reason,
-          orderCreatedAt: dto.created_at,
-          cancelledAt: dto.cancelled_at,
-          preparedAt: dto.prepared_at,
-          riderPickedUpAt: dto.rider_picked_up_at,
-          netOrderValue,
-        });
-      } catch {
-        /* optional engine */
-      }
+        const food = matchFoodToCore(core, byCorePk, byTextId);
+        const dto = await buildOrderDto(core, food, buildOpts);
+        const catalog = cancelCatalogByCore.get(core.id);
+        const isCancelledOrder =
+          dto.order_status === "CANCELLED" || dto.order_status === "REJECTED";
+        if (!isCancelledOrder) return dto;
 
-      return {
-        ...dto,
-        rejected_reason: resolved.rejected_reason,
-        cancelled_by_label: resolved.cancelled_by_label,
-        cancelled_by_type: resolved.cancelled_by_type,
-        cancellation_compensation,
-      };
+        const meta =
+          catalog?.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
+            ? (catalog.metadata as Record<string, unknown>)
+            : null;
+        const resolved = resolveMerchantCancellationFields({
+          rejected_reason: catalog?.food_rejected_reason ?? dto.rejected_reason,
+          cancelled_by_label: catalog?.food_cancelled_by_label ?? dto.cancelled_by_label,
+          cancelled_by_type: catalog?.cancelled_by_type ?? dto.cancelled_by_type,
+          cancellation_details: catalog?.cancellation_details,
+          catalog_attribute:
+            catalog?.attribute ??
+            (meta && typeof meta.attribute === "string" ? meta.attribute : null),
+          catalog_rejection:
+            catalog?.rejection_label ??
+            (meta && typeof meta.rejection === "string" ? meta.rejection : null),
+          reason_text: catalog?.reason_text,
+          refund_reason: catalog?.refund_reason,
+          ocr_display_reason: catalog?.display_reason,
+          ocr_cancelled_by_label: catalog?.ocr_cancelled_by_label,
+          ocr_cancelled_by_type: catalog?.ocr_cancelled_by_type,
+        });
+
+        const netOrderValue =
+          num(dto.pricing?.total) > 0
+            ? num(dto.pricing.total)
+            : num(dto.food_items_total_value) > 0
+              ? num(dto.food_items_total_value)
+              : num(dto.grand_total);
+
+        let cancellation_compensation: MerchantCancellationCompensationDisplay | null = null;
+        try {
+          cancellation_compensation = await resolveOrderCancellationCompensationDisplay(sql, {
+            orderCoreId: core.id,
+            merchantStoreId: storeId,
+            cancelledByType: resolved.cancelled_by_type,
+            cancelledByLabel: resolved.cancelled_by_label,
+            rejectedReason: resolved.rejected_reason,
+            orderCreatedAt: dto.created_at,
+            cancelledAt: dto.cancelled_at,
+            preparedAt: dto.prepared_at,
+            riderPickedUpAt: dto.rider_picked_up_at,
+            netOrderValue,
+          });
+        } catch {
+          /* optional engine */
+        }
+
+        return {
+          ...dto,
+          rejected_reason: resolved.rejected_reason,
+          cancelled_by_label: resolved.cancelled_by_label,
+          cancelled_by_type: resolved.cancelled_by_type,
+          cancellation_compensation,
+        };
+      } catch {
+        /* One bad row must never blank the whole merchant order board / incoming sheet. */
+        return null;
+      }
     })
   );
+  return built.filter((o): o is MerchantFoodOrderDto => o != null);
 }
 
 function normalizeOrderStatusForTransition(raw: string | null | undefined): string {
@@ -2172,10 +2328,18 @@ export async function patchMerchantFoodOrderStatus(
   const order = loaded[0];
   if (!order) throw new Error("order_not_found_after_update");
 
+  // Merchant CTM snapshot (net of merchant-funded offers) is the source of truth —
+  // order_settlement_breakdown.merchant_gross is written from it at placement time.
+  const settlementRows = await sql`
+    SELECT merchant_gross FROM order_settlement_breakdown WHERE order_id = ${corePk} LIMIT 1
+  `;
+  const fromCtm = num((settlementRows[0] as { merchant_gross?: unknown } | undefined)?.merchant_gross);
   const merchantGross =
-    num(order.pricing?.total) > 0
-      ? num(order.pricing?.total)
-      : num(existing.food_items_total_value);
+    fromCtm > 0
+      ? fromCtm
+      : num(order.pricing?.total) > 0
+        ? num(order.pricing?.total)
+        : num(existing.food_items_total_value);
 
   await creditMerchantOrderEarningOnDelivered({
     merchantStoreId: storeId,

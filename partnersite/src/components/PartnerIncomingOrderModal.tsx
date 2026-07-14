@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { usePathname, useRouter } from 'next/navigation';
+import { Lora, Poppins } from 'next/font/google';
 import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed } from 'lucide-react';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
@@ -11,7 +12,9 @@ import { createClient } from '@/lib/supabase/client';
 import {
   PARTNER_INCOMING_MODAL_CLOSED,
   PARTNER_INCOMING_MODAL_OPEN,
+  PARTNER_INCOMING_MODAL_SUPPRESS_CLEARED,
   PARTNER_PENDING_ORDERS_REFRESH,
+  clearPartnerIncomingModalSuppressed,
   isPartnerIncomingModalSuppressed,
   setPartnerIncomingModalSuppressed,
   usePartnerSelectedStore,
@@ -33,6 +36,7 @@ import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/Rejec
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
 import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
+import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import type { NormalizedOrderLineItem, OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
@@ -44,12 +48,24 @@ import {
   clampPrepMinutes,
   resolveStoreDefaultPrepMinutes,
 } from '@/lib/order-prep-time';
-import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import {
   broadcastIncomingOrderAlert,
   subscribeIncomingOrderAlert,
 } from '@/lib/partner-incoming-order-broadcast';
 import { partnerPreparingOrdersHref } from '@/lib/partner-orders-routes';
+
+const incomingLora = Lora({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-incoming-lora',
+  display: 'swap',
+});
+const incomingPoppins = Poppins({
+  subsets: ['latin'],
+  weight: ['500', '600', '700', '800'],
+  variable: '--font-incoming-poppins',
+  display: 'swap',
+});
 
 const PREP_STEP_MINUTES = 5;
 /** Max line items in accept popup; rest via +N more → sidesheet. */
@@ -104,14 +120,20 @@ const DEFAULT_SETTINGS: AcceptanceSettings = {
   alert_sound_urls_by_slot: [null, null, null],
 };
 
-function orderTotalRs(order: OrdersFoodRow): number {
-  return resolveMerchantCtm(order);
-}
 
 function isBulkOrderFlag(order: OrdersFoodRow | null): boolean {
   if (!order) return false;
   const anyOrder = order as unknown as Record<string, unknown>;
   return anyOrder.is_bulk_order === true || anyOrder.isBulkOrder === true;
+}
+
+function sortOrdersFifo(orders: OrdersFoodRow[]): OrdersFoodRow[] {
+  return [...orders].sort((a, b) => {
+    const ta = new Date(a.created_at || 0).getTime();
+    const tb = new Date(b.created_at || 0).getTime();
+    if (ta !== tb) return ta - tb;
+    return Number(a.order_id) - Number(b.order_id);
+  });
 }
 
 async function playChimeSequential(
@@ -198,14 +220,18 @@ function MiniOrderId({
     const last4 = formattedOrderId.slice(-4);
     const prefix = formattedOrderId.slice(0, -4);
     return (
-      <span className="font-mono text-lg font-extrabold tracking-wide text-gray-900">
-        <span className="text-gray-900">{prefix}</span>
+      <span className="incoming-num text-[1.15rem] font-extrabold tracking-wide text-stone-900">
+        <span>{prefix}</span>
         <span className="px-0.5" aria-hidden />
         <span className="text-orange-600">{last4}</span>
       </span>
     );
   }
-  return <span className="font-mono text-lg font-extrabold tracking-wide text-gray-900">#{fallbackOrderId}</span>;
+  return (
+    <span className="incoming-num text-[1.15rem] font-extrabold tracking-wide text-stone-900">
+      #{fallbackOrderId}
+    </span>
+  );
 }
 
 /**
@@ -216,7 +242,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const pathname = usePathname() || '';
   const { storeId, storeInternalId, ready: storeReady } = usePartnerSelectedStore(restaurantId);
   const [muted, setMuted] = useState(false);
-  const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
+  /** FIFO queue: oldest pending order is always index 0 (front card). */
+  const [queue, setQueue] = useState<OrdersFoodRow[]>([]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [itemsSheetOpen, setItemsSheetOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -235,13 +262,30 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const [maxPrepMinutes, setMaxPrepMinutes] = useState(PREP_TIME_MAX);
   const [storeDisplayName, setStoreDisplayName] = useState('');
   const storeDefaultPrepRef = useRef(PLATFORM_DEFAULT_PREP_MINUTES);
+  const queueRef = useRef<OrdersFoodRow[]>([]);
   const modalOrderRef = useRef<OrdersFoodRow | null>(null);
   const closeModalRef = useRef<() => void>(() => {});
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
 
+  const modalOrder = queue[0] ?? null;
+  const pendingCount = queue.length;
+
   useEffect(() => {
-    modalOrderRef.current = modalOrder;
-  }, [modalOrder]);
+    queueRef.current = queue;
+    modalOrderRef.current = queue[0] ?? null;
+  }, [queue]);
+
+  const upsertOrderInQueue = useCallback((full: OrdersFoodRow) => {
+    const prev = queueRef.current;
+    const idx = prev.findIndex((o) => Number(o.order_id) === Number(full.order_id));
+    const next =
+      idx < 0
+        ? sortOrdersFifo([...prev, full])
+        : sortOrdersFifo(prev.map((o, i) => (i === idx ? full : o)));
+    queueRef.current = next;
+    modalOrderRef.current = next[0] ?? null;
+    setQueue(next);
+  }, []);
 
   const getDismissed = () => {
     if (typeof window === 'undefined') return new Set<number>();
@@ -418,12 +462,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     void (async () => {
       try {
         const full = await fetchByCoreId(modalOrder.order_id);
-        if (full) setModalOrder(full);
+        if (full) upsertOrderInQueue(full);
       } finally {
         hydrateBusyRef.current = false;
       }
     })();
-  }, [storeId, modalOrder?.order_id, fetchByCoreId]);
+  }, [storeId, modalOrder?.order_id, fetchByCoreId, upsertOrderInQueue]);
 
   const playIncomingAlert = useCallback(
     (orderId: number) => {
@@ -462,7 +506,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const openIfNew = useCallback(
     async (full: OrdersFoodRow | null, opts?: { skipBroadcast?: boolean }) => {
       if (!full) return;
-      if (storeId && isPartnerIncomingModalSuppressed(storeId)) return;
       const coreOrderId = Number(full.order_id);
       if (!Number.isFinite(coreOrderId)) return;
       if (isOrderDismissed(coreOrderId)) return;
@@ -473,22 +516,42 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         ext.current_status ?? null
       );
       if (fst !== 'CREATED') return;
+
       const dedupeKey = `o:${full.order_id}`;
-      if (shownInsertIds.current.has(dedupeKey)) return;
-      shownInsertIds.current.add(dedupeKey);
+
+      // X parks auto-popup until floating bar; still allow reopen after suppress clear.
+      if (storeId && isPartnerIncomingModalSuppressed(storeId)) {
+        return;
+      }
+
+      // Already in queue — refresh row data; keep FIFO position (re-sort by created_at).
+      if (queueRef.current.some((o) => Number(o.order_id) === coreOrderId)) {
+        upsertOrderInQueue(full);
+        return;
+      }
 
       const acceptWindowMs = Math.max(
         60_000,
         Math.max(1, Math.min(180, Number(settings.acceptance_window_minutes || 5))) * 60_000
       );
-      const orderAgeMs = Date.now() - new Date(full.created_at).getTime();
-      if (orderAgeMs >= acceptWindowMs) {
-        addDismissed(coreOrderId);
+      const snapDeadline = full.merchant_response_deadline_at
+        ? new Date(full.merchant_response_deadline_at).getTime()
+        : NaN;
+      const deadlineMs = Number.isFinite(snapDeadline)
+        ? snapDeadline
+        : new Date(full.created_at).getTime() + acceptWindowMs;
+      // Past snapshotted deadline: do not open UI and do not client-cancel.
+      // Backend cron (or sync-acceptance-timeout) is the sole auto-cancel authority.
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
         return;
       }
 
-      setModalOrder(full);
-      if (typeof window !== 'undefined') {
+      if (shownInsertIds.current.has(dedupeKey)) return;
+      shownInsertIds.current.add(dedupeKey);
+
+      const wasEmpty = queueRef.current.length === 0;
+      upsertOrderInQueue(full);
+      if (typeof window !== 'undefined' && wasEmpty) {
         window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_OPEN));
       }
       playIncomingAlert(full.order_id);
@@ -500,14 +563,20 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         });
       }
     },
-    [storeId, settings.acceptance_window_minutes, playIncomingAlert, isOrderDismissed]
+    [
+      storeId,
+      settings.acceptance_window_minutes,
+      playIncomingAlert,
+      isOrderDismissed,
+      upsertOrderInQueue,
+    ]
   );
 
   const scanForNewOrders = useCallback(async () => {
     if (!storeId || !storeReady) return;
-    if (isPartnerIncomingModalSuppressed(storeId)) return;
-    if (modalOrderRef.current) return;
-    try {
+  // Don't bail on suppress here — openIfNew / suppress-clear handles reopen.
+  // (Previously early-return blocked rescans after floating-bar clear races.)
+  try {
       const pending = await fetchPartnerPendingNewOrdersCount(storeId);
       if (pending == null || pending <= 0) return;
 
@@ -524,14 +593,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         }
       }
       if (!res.ok || !Array.isArray(data.orders)) return;
-      const firstCreated = data.orders.find((o) => {
-        const coreOrderId = Number(o.order_id);
-        if (!Number.isFinite(coreOrderId) || isOrderDismissed(coreOrderId)) return false;
-        const ext = o as OrdersFoodRow & { core_status?: string; current_status?: string | null };
-        const st = resolvePartnerPipeline(o.order_status, ext.core_status ?? 'assigned', ext.current_status ?? null);
-        return st === 'CREATED';
-      });
-      await openIfNew(firstCreated ?? null);
+      const created = sortOrdersFifo(
+        data.orders.filter((o) => {
+          const coreOrderId = Number(o.order_id);
+          if (!Number.isFinite(coreOrderId) || isOrderDismissed(coreOrderId)) return false;
+          const ext = o as OrdersFoodRow & { core_status?: string; current_status?: string | null };
+          const st = resolvePartnerPipeline(
+            o.order_status,
+            ext.core_status ?? 'assigned',
+            ext.current_status ?? null
+          );
+          return st === 'CREATED';
+        })
+      );
+      for (const row of created) {
+        await openIfNew(row);
+      }
     } catch {
       /* ignore */
     }
@@ -643,15 +720,34 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   useEffect(() => {
     if (!storeReady || !storeId) return;
-    // Fallback: if realtime misses events (or order becomes "assigned" via UPDATE),
-    // still pop a modal when there is any CREATED pipeline order.
-    void scanForNewOrders();
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pending = await fetchPartnerPendingNewOrdersCount(storeId);
+        if (cancelled) return;
+        // After hard refresh / store switch: don't leave CREATED orders trapped behind X-suppress.
+        if (pending != null && pending > 0 && isPartnerIncomingModalSuppressed(storeId)) {
+          clearPartnerIncomingModalSuppressed(storeId);
+          shownInsertIds.current.clear();
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!cancelled) void scanForNewOrders();
+    })();
     const t = window.setInterval(() => void scanForNewOrders(), FALLBACK_POLL_MS);
     const onRescan = () => void scanForNewOrders();
+    const onSuppressCleared = () => {
+      shownInsertIds.current.clear();
+      void scanForNewOrders();
+    };
     window.addEventListener('partner-incoming-order-rescan', onRescan);
+    window.addEventListener(PARTNER_INCOMING_MODAL_SUPPRESS_CLEARED, onSuppressCleared);
     return () => {
+      cancelled = true;
       window.clearInterval(t);
       window.removeEventListener('partner-incoming-order-rescan', onRescan);
+      window.removeEventListener(PARTNER_INCOMING_MODAL_SUPPRESS_CLEARED, onSuppressCleared);
     };
   }, [scanForNewOrders, storeReady, storeId]);
 
@@ -716,15 +812,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     if (!modalOrder) {
       return { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 };
     }
-    const p = modalOrder.pricing;
-    if (p) return p;
-    const total = resolveMerchantCtm(modalOrder);
+    // Deterministic merchant bill: item subtotal (Boost/BOGO-adjusted nets) + packaging
+    // − frozen orders_core.merchant_precision_discount (SSOT), subtracted exactly once.
+    // We pass total:0 so merchantBillPartsFromItems recomputes from items rather than
+    // reusing any pre-existing total, guaranteeing a single subtraction.
+    const precision = Math.max(0, Number(modalOrder.merchant_precision_discount) || 0);
+    const packaging = Number(modalOrder.pricing?.packaging) || 0;
+    const bill = merchantBillPartsFromItems(
+      (Array.isArray(modalOrder.items) ? modalOrder.items : []) as NormalizedOrderLineItem[],
+      { subtotal: incomingOrderLineSum, packaging, discount: precision, total: 0 }
+    );
     return {
-      subtotal: incomingOrderLineSum,
-      packaging: 0,
+      subtotal: bill.itemsSubtotal,
+      packaging: bill.packaging,
       taxes: 0,
-      discount: 0,
-      total: Number.isFinite(total) ? total : incomingOrderLineSum,
+      discount: bill.discount,
+      total: bill.total,
     };
   }, [modalOrder, incomingOrderLineSum]);
   const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);
@@ -754,10 +857,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
   };
 
-  const finishModal = (opts?: { userDismissed?: boolean }) => {
-    const closedOrderId =
-      modalOrderRef.current?.order_id ?? modalOrder?.order_id ?? null;
-    // Stop any playing chime immediately and prevent further repeats.
+  const stopChime = () => {
     chimeRunIdRef.current += 1;
     try {
       if (chimeAudioRef.current) {
@@ -768,13 +868,25 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       /* ignore */
     }
     chimeAudioRef.current = null;
-    if (closedOrderId != null) addDismissed(closedOrderId);
-    if (opts?.userDismissed && storeId) {
-      setPartnerIncomingModalSuppressed(storeId);
+  };
+
+  /** Close the whole stack (X / suppress). */
+  const finishModal = (opts?: { userDismissed?: boolean }) => {
+    const closedIds = queueRef.current.map((o) => o.order_id);
+    stopChime();
+    if (opts?.userDismissed) {
+      // X: park modal only — do NOT permanently dismiss pending CREATED orders.
+      // Floating bar / suppress-clear must be able to reopen them.
+      if (storeId) setPartnerIncomingModalSuppressed(storeId);
+      for (const id of closedIds) {
+        shownInsertIds.current.delete(`o:${id}`);
+      }
+    } else {
+      for (const id of closedIds) addDismissed(id);
     }
-    // Clear ref before refresh events so syncOpenModalOrder cannot reopen this order.
+    queueRef.current = [];
     modalOrderRef.current = null;
-    setModalOrder(null);
+    setQueue([]);
     setRejectOpen(false);
     setItemsSheetOpen(false);
     if (typeof window !== 'undefined') {
@@ -787,8 +899,45 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
   };
 
-  const close = () => finishModal();
-  const dismissByUser = () => finishModal({ userDismissed: true });
+  /** After accept/reject (or remote status change): show next FIFO card, or close if empty. */
+  const advanceOrClose = (opts?: { markDismissed?: boolean }) => {
+    const markDismissed = opts?.markDismissed !== false;
+    const prev = queueRef.current;
+    const current = prev[0];
+    if (current && markDismissed) addDismissed(current.order_id);
+    if (current && !markDismissed) {
+      shownInsertIds.current.delete(`o:${current.order_id}`);
+    }
+    stopChime();
+    const next = prev.slice(1);
+    queueRef.current = next;
+    modalOrderRef.current = next[0] ?? null;
+    setQueue(next);
+    setRejectOpen(false);
+    setItemsSheetOpen(false);
+    if (typeof window !== 'undefined') {
+      invalidatePartnerPendingCountCache();
+      window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+    }
+    if (next.length === 0) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
+      }
+      queueMicrotask(() => void scanForNewOrdersRef.current());
+      return;
+    }
+    // Keep modal open for the next oldest order.
+  };
+
+  const close = () => advanceOrClose({ markDismissed: true });
+  /** X: dismiss only the front card; show next if more are queued. */
+  const dismissByUser = () => {
+    if (queueRef.current.length > 1) {
+      advanceOrClose({ markDismissed: false });
+      return;
+    }
+    finishModal({ userDismissed: true });
+  };
 
   closeModalRef.current = close;
 
@@ -796,31 +945,53 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     const open = modalOrderRef.current;
     if (!storeId || !open) return;
     if (isOrderDismissed(open.order_id)) {
-      modalOrderRef.current = null;
-      setModalOrder(null);
+      closeModalRef.current();
       return;
     }
     try {
+      const snapDeadline = open.merchant_response_deadline_at
+        ? new Date(open.merchant_response_deadline_at).getTime()
+        : NaN;
+      const fallbackDeadline = new Date(open.created_at).getTime() + acceptWindowMs;
+      const deadline = Number.isFinite(snapDeadline) ? snapDeadline : fallbackDeadline;
+      if (Number.isFinite(deadline) && Date.now() >= deadline) {
+        try {
+          await fetch(
+            `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(storeId)}`,
+            { method: 'POST', credentials: 'include', cache: 'no-store' }
+          );
+        } catch {
+          /* backend cron owns cancel */
+        }
+      }
+
       const full = await fetchByCoreId(open.order_id);
-      if (!isPartnerIncomingPending(full)) {
+      // Close ONLY on a definitive state: the order was fetched and is no longer
+      // pending (accepted / rejected / cancelled). A transient null (network blip,
+      // slow API) must NOT close the modal — the next sync tick retries. This
+      // mirrors the Merchant App, which also never closes on transient absence.
+      if (full && !isPartnerIncomingPending(full)) {
         closeModalRef.current();
         return;
       }
+      if (!full) return;
       if (isOrderDismissed(open.order_id)) {
-        modalOrderRef.current = null;
-        setModalOrder(null);
+        closeModalRef.current();
         return;
       }
-      setModalOrder(full);
+      upsertOrderInQueue(full);
     } catch {
       /* ignore */
     }
-  }, [storeId, fetchByCoreId, isOrderDismissed]);
+  }, [storeId, fetchByCoreId, isOrderDismissed, upsertOrderInQueue, acceptWindowMs]);
+
+  const fuseExpired = Boolean(modalOrder) && secondsLeft <= 0;
 
   useEffect(() => {
     if (!modalOrder || !storeId) return;
     void syncOpenModalOrder();
-    const t = window.setInterval(() => void syncOpenModalOrder(), OPEN_ORDER_SYNC_MS);
+    const intervalMs = fuseExpired ? 1_200 : OPEN_ORDER_SYNC_MS;
+    const t = window.setInterval(() => void syncOpenModalOrder(), intervalMs);
     const onRefresh = () => void syncOpenModalOrder();
     window.addEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
     window.addEventListener('partner-incoming-order-rescan', onRefresh);
@@ -829,7 +1000,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       window.removeEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
       window.removeEventListener('partner-incoming-order-rescan', onRefresh);
     };
-  }, [modalOrder?.order_id, storeId, syncOpenModalOrder]);
+  }, [modalOrder?.order_id, storeId, syncOpenModalOrder, fuseExpired]);
 
   const showOrderActionToast = (kind: PartnerOrderActionToastKind, orderId: number) => {
     if (hasShownPartnerOrderActionToast(orderId, kind)) return;
@@ -900,8 +1071,9 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
       if (closeAfter) {
+        const moreWaiting = queueRef.current.length > 1;
         close();
-        if (status === 'ACCEPTED') {
+        if (status === 'ACCEPTED' && !moreWaiting) {
           router.push(partnerPreparingOrdersHref(pathname, storeId));
         }
       }
@@ -927,245 +1099,273 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   return (
     <>
-      {modalOrder &&
-        !rejectOpen &&
-        portal(
-          <div
-            className="fixed inset-0 z-[110] flex items-end justify-center bg-black/50 p-2 backdrop-blur-[2px] sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="partner-incoming-title"
-          >
-            <div className="flex max-h-[min(88dvh,calc(100dvh-5.5rem))] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:max-h-[min(82dvh,calc(100dvh-6.5rem))] sm:rounded-2xl">
-              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-100 px-4 py-2">
-                <h2 id="partner-incoming-title" className="text-base font-bold text-gray-900">
-                  1 new order
-                </h2>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-50"
-                    onClick={() => persistMute(!muted)}
-                    aria-label={muted ? 'Unmute' : 'Mute'}
-                  >
-                    {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                    {muted ? 'Unmute' : 'Mute'}
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
-                    aria-label="Close"
-                    onClick={dismissByUser}
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="shrink-0 bg-violet-100 px-4 py-1.5 text-center text-[11px] font-bold uppercase tracking-[0.1em] text-violet-900">
-                GatiMitra delivery
-                {modalOrder.order_type ? (
-                  <span className="ml-1.5 font-semibold normal-case tracking-normal text-violet-800/90">
-                    · {String(modalOrder.order_type).replace(/_/g, ' ')}
-                  </span>
-                ) : null}
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-2.5 sm:px-5">
-                <div className="flex items-start justify-between gap-2">
-                  <MiniOrderId
-                    formattedOrderId={modalOrder.formatted_order_id}
-                    fallbackOrderId={modalOrder.order_id}
+      {modalOrder && !rejectOpen
+        ? portal(
+            <div
+              className={`${incomingLora.variable} ${incomingPoppins.variable} partner-incoming-modal fixed inset-0 z-[110] flex items-end justify-center bg-stone-950/55 p-2 backdrop-blur-[3px] sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="partner-incoming-title"
+            >
+              <div
+                className={`relative w-full max-w-2xl ${
+                  pendingCount > 2 ? 'pb-[8%]' : pendingCount > 1 ? 'pb-[5%]' : ''
+                }`}
+              >
+                {pendingCount > 2 ? (
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-3 bottom-0 top-3 z-0 rounded-2xl bg-white/70 shadow-md ring-1 ring-stone-900/10"
                   />
-                  <span className="text-xs font-medium text-gray-600">
-                    {new Date(modalOrder.created_at).toLocaleTimeString('en-IN', {
-                      hour: 'numeric',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                </div>
-
-                <p className="mt-1.5 text-sm text-gray-800">
-                  {modalOrder.customer_name ? (
-                    <span className="font-semibold text-gray-900">
-                      {(() => {
-                        const n = Number((modalOrder as any).customer_order_count ?? 0);
-                        if (Number.isFinite(n) && n > 0) {
-                          return `${n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`} order by ${modalOrder.customer_name}`;
-                        }
-                        return `Order by ${modalOrder.customer_name}`;
-                      })()}
-                    </span>
-                  ) : (
-                    <span className="font-semibold text-gray-900">New customer order</span>
-                  )}
-                </p>
-
-                {(() => {
-                  const utensilsLabel = getUtensilsCustomerLabel(modalOrder);
-                  const sendCutlery =
-                    modalOrder.requires_utensils === true ||
-                    (utensilsLabel != null && !/don'?t send/i.test(utensilsLabel));
-                  return (
-                    <div className="mt-3 flex gap-2">
-                      <div
-                        className={`flex w-1/2 min-w-0 items-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-semibold leading-tight ${
-                          sendCutlery
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                            : 'border-gray-200 bg-gray-50 text-gray-600'
-                        }`}
+                ) : null}
+                {pendingCount > 1 ? (
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-1.5 bottom-0 top-1.5 z-[1] rounded-2xl bg-white shadow-lg ring-1 ring-stone-900/10"
+                  />
+                ) : null}
+                <div className="relative z-10 flex max-h-[min(88dvh,calc(100dvh-5rem))] w-full min-h-0 flex-col overflow-hidden rounded-t-[1.25rem] bg-[#fafaf9] shadow-[0_24px_64px_rgba(28,25,23,0.28)] ring-1 ring-stone-900/10 sm:max-h-[min(85dvh,calc(100dvh-6rem))] sm:rounded-[1.25rem]">
+                  {/* Header */}
+                  <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-white px-4 py-2.5 sm:px-5">
+                    <div className="min-w-0">
+                      <h2
+                        id="partner-incoming-title"
+                        className="text-[15px] font-semibold tracking-tight text-stone-900"
                       >
-                        <UtensilsCrossed
-                          size={14}
-                          className={`shrink-0 ${sendCutlery ? 'text-emerald-600' : 'text-gray-500'}`}
-                          aria-hidden
-                        />
-                        <span className="min-w-0 truncate">
-                          {utensilsLabel ?? (sendCutlery ? 'Send cutlery & utensils' : "Don't send cutlery")}
-                        </span>
-                      </div>
-                      <div className="flex w-1/2 min-w-0 items-center justify-end gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-[11px] text-gray-800">
-                        <span className="font-semibold tabular-nums">
-                          Total items – {itemCount}
-                        </span>
-                        {orderItems.length > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => setItemsSheetOpen(true)}
-                            className="shrink-0 font-bold text-blue-600 hover:underline"
-                          >
-                            View all
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {isBig ? (
-                  <div className="mt-3 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
-                    <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden />
-                    <div>
-                      <p className="text-sm font-bold text-amber-900">Big order</p>
-                      <p className="mt-0.5 text-xs leading-snug text-amber-900/90">
-                        Allow extra prep time before you accept.
+                        {pendingCount === 1 ? '1 new order' : `${pendingCount} new orders`}
+                      </h2>
+                      <p className="incoming-num mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700">
+                        GatiMitra delivery
+                        {modalOrder.order_type
+                          ? ` · ${String(modalOrder.order_type).replace(/_/g, ' ')}`
+                          : ''}
                       </p>
                     </div>
-                  </div>
-                ) : null}
-
-                <div className="mt-3 border-t border-gray-100 pt-2.5">
-                  <MerchantOrderItemsList
-                    items={orderItems as NormalizedOrderLineItem[]}
-                    totalItemCount={itemCount}
-                    totalLineCount={orderItems.length}
-                    requiresUtensils={false}
-                    maxItems={MAX_PREVIEW_ITEMS}
-                    compact
-                    hideMoreHint
-                    showUtensilsBanner={false}
-                  />
-                  {moreItemsCount > 0 ? (
-                    <button
-                      type="button"
-                      className="mt-2 w-full text-center text-xs font-bold text-blue-600 hover:underline"
-                      onClick={() => setItemsSheetOpen(true)}
-                    >
-                      +{moreItemsCount} more in list — View all
-                    </button>
-                  ) : null}
-                  <MerchantOrderBillSummary
-                    className="mt-2"
-                    compact
-                    items={orderItems as NormalizedOrderLineItem[]}
-                    pricing={
-                      modalOrder.pricing ?? {
-                        subtotal: 0,
-                        packaging: 0,
-                        taxes: 0,
-                        discount: 0,
-                        total: orderTotalRs(modalOrder),
-                      }
-                    }
-                  />
-                </div>
-
-                <div className="mt-3 border-t border-gray-100 pt-3">
-                  <p className="text-xs font-semibold text-gray-900">Preparation time</p>
-                  <p className="text-[10px] text-gray-500">
-                    {PREP_TIME_MIN}–{maxPrepMinutes} min · shown to customer
-                  </p>
-                  <div className="mt-2 flex overflow-hidden rounded-lg border border-gray-300">
-                    <button
-                      type="button"
-                      className="flex w-12 items-center justify-center border-r border-gray-300 bg-white py-2.5 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
-                      disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
-                      onClick={() => stepPrep(-PREP_STEP_MINUTES)}
-                      aria-label="Decrease preparation time"
-                    >
-                      <Minus size={18} />
-                    </button>
-                    <div className="flex flex-1 items-center justify-center bg-white py-2.5 text-center text-sm font-bold text-gray-900">
-                      {prepMinutes} mins
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-600 hover:bg-stone-100"
+                        onClick={() => persistMute(!muted)}
+                        aria-label={muted ? 'Unmute' : 'Mute'}
+                      >
+                        {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                        {muted ? 'Unmute' : 'Mute'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg p-1.5 text-stone-500 hover:bg-stone-100"
+                        aria-label="Close"
+                        onClick={dismissByUser}
+                      >
+                        <X size={18} />
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      className="flex w-12 items-center justify-center border-l border-gray-300 bg-white py-2.5 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
-                      disabled={prepMinutes >= maxPrepMinutes || actionLoading}
-                      onClick={() => stepPrep(PREP_STEP_MINUTES)}
-                      aria-label="Increase preparation time"
-                    >
-                      <Plus size={18} />
-                    </button>
+                  </div>
+
+                  {/* Body grows with content; scrolls only when over max-h — no empty flex gap */}
+                  <div className="min-h-0 overflow-y-auto overscroll-contain px-4 pt-2.5 sm:px-5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <MiniOrderId
+                        formattedOrderId={modalOrder.formatted_order_id}
+                        fallbackOrderId={modalOrder.order_id}
+                      />
+                      <span className="incoming-num shrink-0 text-[11px] font-semibold text-stone-500">
+                        {new Date(modalOrder.created_at).toLocaleTimeString('en-IN', {
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
+
+                    <p className="mt-1 text-[13px] leading-snug text-stone-700">
+                      {modalOrder.customer_name ? (
+                        <span className="font-medium text-stone-900">
+                          {(() => {
+                            const n = Number((modalOrder as any).customer_order_count ?? 0);
+                            if (Number.isFinite(n) && n > 0) {
+                              return `${n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`} order by ${modalOrder.customer_name}`;
+                            }
+                            return `Order by ${modalOrder.customer_name}`;
+                          })()}
+                        </span>
+                      ) : (
+                        <span className="font-medium text-stone-900">New customer order</span>
+                      )}
+                    </p>
+
+                    {(() => {
+                      const utensilsLabel = getUtensilsCustomerLabel(modalOrder);
+                      const sendCutlery =
+                        modalOrder.requires_utensils === true ||
+                        (utensilsLabel != null && !/don'?t send/i.test(utensilsLabel));
+                      return (
+                        <div className="mt-2 flex items-center gap-2">
+                          <div
+                            className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium leading-tight ${
+                              sendCutlery
+                                ? 'bg-emerald-50 text-emerald-900 ring-1 ring-emerald-200/80'
+                                : 'bg-stone-100 text-stone-600 ring-1 ring-stone-200/80'
+                            }`}
+                          >
+                            <UtensilsCrossed
+                              size={13}
+                              className={`shrink-0 ${sendCutlery ? 'text-emerald-600' : 'text-stone-500'}`}
+                              aria-hidden
+                            />
+                            <span className="min-w-0 truncate">
+                              {utensilsLabel ??
+                                (sendCutlery ? 'Send cutlery & utensils' : "Don't send cutlery")}
+                            </span>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-[11px] text-stone-700 ring-1 ring-stone-200/80">
+                            <span className="incoming-num font-semibold">
+                              {itemCount} item{itemCount === 1 ? '' : 's'}
+                            </span>
+                            {orderItems.length > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => setItemsSheetOpen(true)}
+                                className="font-semibold text-emerald-700 hover:underline"
+                              >
+                                View all
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {isBig ? (
+                      <div className="mt-2 flex gap-2 rounded-lg bg-amber-50 px-2.5 py-1.5 ring-1 ring-amber-200/80">
+                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
+                        <div>
+                          <p className="text-[12px] font-semibold text-amber-950">Big order</p>
+                          <p className="text-[11px] leading-snug text-amber-900/85">
+                            Allow extra prep time before you accept.
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="incoming-items mt-2 pb-2">
+                      <MerchantOrderItemsList
+                        items={orderItems as NormalizedOrderLineItem[]}
+                        totalItemCount={itemCount}
+                        totalLineCount={orderItems.length}
+                        requiresUtensils={false}
+                        maxItems={MAX_PREVIEW_ITEMS}
+                        compact
+                        hideMoreHint
+                        showUtensilsBanner={false}
+                        className="!border-0"
+                      />
+                    </div>
+                    {moreItemsCount > 0 ? (
+                      <button
+                        type="button"
+                        className="mb-2 w-full text-center text-[11px] font-semibold text-emerald-700 hover:underline"
+                        onClick={() => setItemsSheetOpen(true)}
+                      >
+                        +{moreItemsCount} more — View all
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {/* Fixed footer: bill → prep → actions */}
+                  <div className="shrink-0 border-t border-stone-200/80 bg-white">
+                    <div className="space-y-2 px-4 pt-2.5 sm:px-5">
+                      <MerchantOrderBillSummary
+                        compact
+                        items={orderItems as NormalizedOrderLineItem[]}
+                        pricing={incomingOrderPricing}
+                        discountLabel="Merchant Precision Discount"
+                      />
+
+                      <div className="flex items-center gap-3 rounded-xl bg-stone-50 px-3 py-2 ring-1 ring-stone-200/80">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[12px] font-semibold leading-tight text-stone-900">
+                            Preparation time
+                          </p>
+                          <p className="incoming-num mt-0.5 text-[10px] font-medium leading-tight text-stone-500">
+                            {PREP_TIME_MIN}–{maxPrepMinutes} min · customer sees this
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-stretch overflow-hidden rounded-lg bg-white ring-1 ring-stone-200">
+                          <button
+                            type="button"
+                            className="flex h-9 w-9 items-center justify-center border-r border-stone-200 text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+                            disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
+                            onClick={() => stepPrep(-PREP_STEP_MINUTES)}
+                            aria-label="Decrease preparation time"
+                          >
+                            <Minus size={15} />
+                          </button>
+                          <div className="incoming-num flex h-9 min-w-[3.5rem] items-center justify-center px-2 text-center text-[13px] font-bold tabular-nums text-stone-900">
+                            {prepMinutes}m
+                          </div>
+                          <button
+                            type="button"
+                            className="flex h-9 w-9 items-center justify-center border-l border-stone-200 text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+                            disabled={prepMinutes >= maxPrepMinutes || actionLoading}
+                            onClick={() => stepPrep(PREP_STEP_MINUTES)}
+                            aria-label="Increase preparation time"
+                          >
+                            <Plus size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex gap-2 px-4 pb-3 pt-1.5 sm:px-5">
+                      <button
+                        type="button"
+                        disabled={actionLoading}
+                        className="flex-1 rounded-xl border border-red-300 bg-white py-2.5 text-[13px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        onClick={() => setRejectOpen(true)}
+                      >
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        disabled={actionLoading || secondsLeft <= 0}
+                        className="relative flex-[1.45] overflow-hidden rounded-xl bg-emerald-600 py-2.5 text-[13px] font-semibold text-white shadow-sm shadow-emerald-900/15 hover:bg-emerald-700 disabled:opacity-50"
+                        onClick={() =>
+                          void patchStatus(
+                            'ACCEPTED',
+                            { preparation_time_minutes: prepMinutes },
+                            'manual'
+                          )
+                        }
+                      >
+                        <span
+                          className="absolute inset-y-0 left-0 bg-orange-500/40 transition-[width] duration-1000 ease-linear"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.max(
+                                0,
+                                Math.round(
+                                  (1 -
+                                    secondsLeft /
+                                      Math.max(1, Math.round(acceptWindowMs / 1000))) *
+                                    100
+                                )
+                              )
+                            )}%`,
+                          }}
+                          aria-hidden
+                        />
+                        <span className="incoming-num relative">
+                          Accept order ({mmss})
+                        </span>
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-
-              <div className="flex shrink-0 gap-2 border-t border-gray-100 bg-white px-4 py-2.5">
-                <button
-                  type="button"
-                  disabled={actionLoading}
-                  className="flex-1 rounded-xl border-2 border-red-500 py-3 text-sm font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
-                  onClick={() => setRejectOpen(true)}
-                >
-                  Reject
-                </button>
-                <button
-                  type="button"
-                  disabled={actionLoading || secondsLeft <= 0}
-                  className="relative flex-[1.35] overflow-hidden rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
-                  onClick={() =>
-                    void patchStatus(
-                      'ACCEPTED',
-                      { preparation_time_minutes: prepMinutes },
-                      'manual'
-                    )
-                  }
-                >
-                  <span
-                    className="absolute inset-y-0 left-0 bg-orange-500/35 transition-[width] duration-1000 ease-linear"
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        Math.max(
-                          0,
-                          Math.round(
-                            (1 -
-                              secondsLeft /
-                                Math.max(1, Math.round(acceptWindowMs / 1000))) *
-                              100
-                          )
-                        )
-                      )}%`,
-                    }}
-                    aria-hidden
-                  />
-                  <span className="relative">Accept order ({mmss})</span>
-                </button>
               </div>
             </div>
-          </div>
-        )}
+          )
+        : null}
 
       <OrderBillSidesheet
         open={!!modalOrder && itemsSheetOpen && !rejectOpen}

@@ -1,6 +1,5 @@
-import { catalogCodeToPricingVehicle } from "../modules/ride-state-config/catalogVehicleMap.js";
 import { resolveRidePricingGeoFromPickup } from "../modules/ride-state-config/rideStateConfig.repository.js";
-import { loadEffectiveRiderPickupSlabs } from "../modules/rider-payout-pricing/riderPayoutPricing.repository.js";
+import { loadEffectiveServicePayoutRule } from "../modules/rider-payout-pricing/riderPayoutPricing.repository.js";
 import { calculateWaitingCharge } from "../modules/rider-payout-pricing/riderPayoutPricing.service.js";
 import { rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 
@@ -38,24 +37,13 @@ export async function resolveRidePickupFreeWaitMinutes(args: {
   });
   if (!rideGeo.pricingGeo) return DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES;
 
-  const vehicleType = catalogCodeToPricingVehicle(args.rideType ?? "");
-  const { slabs } = await loadEffectiveRiderPickupSlabs({
+  const { rule } = await loadEffectiveServicePayoutRule({
     level: rideGeo.pricingGeo.level,
     refId: rideGeo.pricingGeo.refId,
     service: "ride",
-    vehicleType,
   });
-  if (!slabs.length) return DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES;
-
-  const sorted = [...slabs].sort(
-    (a, b) =>
-      a.minKm - b.minKm ||
-      (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
-      b.priority - a.priority ||
-      a.id - b.id
-  );
-  const first = sorted[0]!;
-  return Math.max(0, Math.round(Number(first.waitingStartAfter ?? DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES)));
+  if (!rule) return DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES;
+  return Math.max(0, Math.round(rule.waitingFreeMinutes ?? DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES));
 }
 
 export async function resolveRidePickupWaitingChargePerMin(args: {
@@ -84,23 +72,12 @@ export async function resolveRidePickupWaitingChargePerMin(args: {
   });
   if (!rideGeo.pricingGeo) return 0;
 
-  const vehicleType = catalogCodeToPricingVehicle(args.rideType ?? "");
-  const { slabs } = await loadEffectiveRiderPickupSlabs({
+  const { rule } = await loadEffectiveServicePayoutRule({
     level: rideGeo.pricingGeo.level,
     refId: rideGeo.pricingGeo.refId,
     service: "ride",
-    vehicleType,
   });
-  if (!slabs.length) return 0;
-
-  const sorted = [...slabs].sort(
-    (a, b) =>
-      a.minKm - b.minKm ||
-      (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
-      b.priority - a.priority ||
-      a.id - b.id
-  );
-  const perMin = Number(sorted[0]?.waitingChargePerMin ?? 0);
+  const perMin = Number(rule?.waitingChargePerMin ?? 0);
   return Number.isFinite(perMin) && perMin > 0 ? perMin : 0;
 }
 
@@ -150,25 +127,14 @@ export async function computeRiderPickupWaitingEarning(args: {
   });
   if (!rideGeo.pricingGeo) return 0;
 
-  const vehicleType = catalogCodeToPricingVehicle(args.rideType ?? "");
-  const { slabs } = await loadEffectiveRiderPickupSlabs({
+  const { rule } = await loadEffectiveServicePayoutRule({
     level: rideGeo.pricingGeo.level,
     refId: rideGeo.pricingGeo.refId,
     service: "ride",
-    vehicleType,
   });
-  if (!slabs.length) return 0;
-
-  const sorted = [...slabs].sort(
-    (a, b) =>
-      a.minKm - b.minKm ||
-      (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
-      b.priority - a.priority ||
-      a.id - b.id
-  );
-  const first = sorted[0]!;
-  const startAfterMinutes = Math.max(0, Math.round(Number(first.waitingStartAfter ?? 0)));
-  const chargePerMin = Math.max(0, Number(first.waitingChargePerMin ?? 0));
+  if (!rule) return 0;
+  const startAfterMinutes = Math.max(0, Math.round(rule.waitingFreeMinutes ?? 0));
+  const chargePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
   if (chargePerMin <= 0) return 0;
 
   const waitMinutes = Math.ceil(waitSeconds / 60);

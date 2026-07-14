@@ -17,18 +17,6 @@ export type CustomerSlab = GenericSlab & {
   minCharge?: number | null;
 };
 
-export type PickupSlab = GenericSlab & {
-  baseFare?: number | null;
-  pickupPerKm: number;
-  minCharge?: number | null;
-  waitingChargePerMin?: number | null;
-  waitingStartAfter?: number;
-};
-
-export type DropSlab = GenericSlab & {
-  dropPerKm: number;
-};
-
 export type CumulativeSegment = {
   slabId?: number;
   minKm: number;
@@ -45,45 +33,6 @@ export type CustomerSlabPrice = {
   minChargeAdjustment: number;
   finalAmount: number;
   segments: CumulativeSegment[];
-};
-
-export type PickupPayoutBreakdown = {
-  baseFare: number;
-  distanceAmount: number;
-  subtotalBeforeMin: number;
-  minChargeAdjustment: number;
-  pickupPayout: number;
-  waitingAmount: number;
-  freeWaitMin: number;
-  waitRatePerMin: number;
-  segments: CumulativeSegment[];
-};
-
-export type DropPayoutBreakdown = {
-  dropAmount: number;
-  segments: CumulativeSegment[];
-};
-
-export type AppliedSurgeLine = {
-  surgeId?: number;
-  name: string;
-  kind?: string;
-  amount: number;
-};
-
-export type RiderPayoutBreakdown = {
-  baseFare: number;
-  pickupAmount: number;
-  dropAmount: number;
-  waitingAmount: number;
-  subtotalBeforeSurge: number;
-  appliedSurges: AppliedSurgeLine[];
-  rawSurgeTotal: number;
-  surgeTotal: number;
-  surgeCapped: boolean;
-  minChargeApplied: number;
-  gmitraMaxExtrasAllowed: boolean;
-  finalAmount: number;
 };
 
 function round2(n: number): number {
@@ -203,66 +152,6 @@ export function calcWaitingCharge(
   return round2(chargeableWait * rate);
 }
 
-export function calcPickupPayout(input: {
-  pickupKm: unknown;
-  slabs: PickupSlab[];
-  waitingMinutes?: unknown;
-  extrasAllowed?: boolean;
-}): PickupPayoutBreakdown | null {
-  const slabs = input.slabs ?? [];
-  if (slabs.length === 0) return null;
-
-  const pickupKm = normalizeKm(input.pickupKm);
-  const first = getFirstZeroKmSlab(slabs);
-  const baseFare = normalizeMoney(first?.baseFare ?? 0);
-
-  const { amount: distanceAmount, segments } = calcCumulativeDistanceCharge(
-    pickupKm,
-    getActiveSortedSlabs(slabs).map((s) => ({ ...s, rate: s.pickupPerKm }))
-  );
-
-  const subtotalBeforeMin = round2(baseFare + distanceAmount);
-  const minCharge =
-    first?.minCharge != null && Number.isFinite(Number(first.minCharge))
-      ? normalizeMoney(first.minCharge)
-      : null;
-  const pickupPayout =
-    minCharge != null ? round2(Math.max(subtotalBeforeMin, minCharge)) : subtotalBeforeMin;
-  const minChargeAdjustment = round2(pickupPayout - subtotalBeforeMin);
-
-  const extrasAllowed = input.extrasAllowed !== false;
-  const freeWaitMin = normalizeKm(first?.waitingStartAfter ?? 0);
-  const waitRatePerMin = extrasAllowed ? normalizeMoney(first?.waitingChargePerMin ?? 0) : 0;
-  const waitingAmount = calcWaitingCharge(input.waitingMinutes ?? 0, freeWaitMin, waitRatePerMin);
-
-  return {
-    baseFare,
-    distanceAmount,
-    subtotalBeforeMin,
-    minChargeAdjustment,
-    pickupPayout,
-    waitingAmount,
-    freeWaitMin,
-    waitRatePerMin,
-    segments,
-  };
-}
-
-export function calcDropPayout(input: {
-  dropKm: unknown;
-  slabs: DropSlab[];
-}): DropPayoutBreakdown | null {
-  const slabs = input.slabs ?? [];
-  if (slabs.length === 0) return null;
-
-  const { amount: dropAmount, segments } = calcCumulativeDistanceCharge(
-    input.dropKm,
-    getActiveSortedSlabs(slabs).map((s) => ({ ...s, rate: s.dropPerKm }))
-  );
-
-  return { dropAmount, segments };
-}
-
 export function calcGmitraMaxAdjustment(input: {
   riderHasGmitraMax: boolean;
   surgeWaitMaxOnly: boolean;
@@ -270,74 +159,6 @@ export function calcGmitraMaxAdjustment(input: {
   const riderMax = input.riderHasGmitraMax === true;
   const surgeWaitMaxOnly = input.surgeWaitMaxOnly === true;
   return { extrasAllowed: !surgeWaitMaxOnly || riderMax };
-}
-
-export function calcRiderPayoutBreakdown(input: {
-  pickupKm: unknown;
-  dropKm: unknown;
-  pickupSlabs: PickupSlab[];
-  dropSlabs: DropSlab[];
-  waitingMinutes?: unknown;
-  riderHasGmitraMax?: boolean;
-  surgeWaitMaxOnly?: boolean;
-  appliedSurges?: AppliedSurgeLine[];
-  rawSurgeTotal?: number;
-  surgeTotal?: number;
-  surgeCapped?: boolean;
-}): RiderPayoutBreakdown | null {
-  if (input.pickupSlabs.length === 0 && input.dropSlabs.length === 0) return null;
-
-  const { extrasAllowed } = calcGmitraMaxAdjustment({
-    riderHasGmitraMax: input.riderHasGmitraMax === true,
-    surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
-  });
-
-  const pickup =
-    input.pickupSlabs.length > 0
-      ? calcPickupPayout({
-          pickupKm: input.pickupKm,
-          slabs: input.pickupSlabs,
-          waitingMinutes: input.waitingMinutes,
-          extrasAllowed,
-        })
-      : null;
-
-  const drop =
-    input.dropSlabs.length > 0
-      ? calcDropPayout({ dropKm: input.dropKm, slabs: input.dropSlabs })
-      : null;
-
-  const baseFare = pickup?.baseFare ?? 0;
-  const pickupAmount = pickup?.distanceAmount ?? 0;
-  const minChargeApplied = pickup?.minChargeAdjustment ?? 0;
-  const dropAmount = drop?.dropAmount ?? 0;
-  const waitingAmount = pickup?.waitingAmount ?? 0;
-
-  const subtotalBeforeSurge = round2(
-    (pickup?.pickupPayout ?? 0) + dropAmount + waitingAmount
-  );
-
-  const appliedSurges = extrasAllowed ? (input.appliedSurges ?? []) : [];
-  const rawSurgeTotal = extrasAllowed
-    ? round2(input.rawSurgeTotal ?? appliedSurges.reduce((s, x) => s + x.amount, 0))
-    : 0;
-  const surgeTotal = extrasAllowed ? round2(input.surgeTotal ?? rawSurgeTotal) : 0;
-  const finalAmount = round2(subtotalBeforeSurge + surgeTotal);
-
-  return {
-    baseFare,
-    pickupAmount,
-    dropAmount,
-    waitingAmount,
-    subtotalBeforeSurge,
-    appliedSurges,
-    rawSurgeTotal,
-    surgeTotal,
-    surgeCapped: input.surgeCapped === true,
-    minChargeApplied,
-    gmitraMaxExtrasAllowed: extrasAllowed,
-    finalAmount,
-  };
 }
 
 export function mapCustomerSlabsFromPerKmRows<
@@ -362,4 +183,60 @@ export function mapCustomerSlabsFromPerKmRows<
     priority: s.priority,
     isActive: s.isActive,
   }));
+}
+
+// ─── Rider Fare Engine v3.0: percentage-of-customer-fare payout split ─────────
+
+export type ServicePayoutRule = {
+  riderPercentage: number;
+  platformPercentage: number;
+};
+
+export type ServicePayoutRuleSplit = {
+  customerFare: number;
+  riderTotal: number;
+  platformRevenue: number;
+  pickupRatio: number;
+  dropRatio: number;
+  pickupAmount: number;
+  dropAmount: number;
+};
+
+/**
+ * Rider Fare Engine v3.0: rider payout = rider_percentage of customerFare,
+ * split pickup/drop purely by distance ratio (pickupKm / totalKm). No
+ * guardrails, no fixed ratios, no fallbacks — pickup and drop always sum to
+ * exactly riderTotal. Waiting charge and surge are NOT part of this split —
+ * callers add them on top.
+ */
+export function calcServicePayoutRuleSplit(input: {
+  customerFare: number;
+  pickupKm: number;
+  dropKm: number;
+  rule: ServicePayoutRule;
+}): ServicePayoutRuleSplit {
+  const customerFare = normalizeMoney(input.customerFare);
+  const pickupKm = normalizeKm(input.pickupKm);
+  const dropKm = normalizeKm(input.dropKm);
+  const rule = input.rule;
+
+  const riderTotal = round2(customerFare * (rule.riderPercentage / 100));
+  const platformRevenue = round2(customerFare - riderTotal);
+
+  const totalKm = pickupKm + dropKm;
+  const pickupRatio = totalKm > 0 ? pickupKm / totalKm : 1;
+  const dropRatio = totalKm > 0 ? dropKm / totalKm : 0;
+
+  const pickupAmount = totalKm > 0 ? round2(riderTotal * pickupRatio) : riderTotal;
+  const dropAmount = round2(riderTotal - pickupAmount);
+
+  return {
+    customerFare,
+    riderTotal,
+    platformRevenue,
+    pickupRatio: round2(pickupRatio * 100),
+    dropRatio: round2(dropRatio * 100),
+    pickupAmount,
+    dropAmount,
+  };
 }

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -9,10 +9,14 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantOfferItem, PlatformOfferItem } from "@/services/offers.service";
+import { formatListCardOfferFromMerchantOffer } from "@/lib/merchantOfferBadge";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreBottomSheetShell } from "./StoreBottomSheetShell";
 
 type StoreOffer = MerchantOfferItem | PlatformOfferItem;
+
+const GENERIC_CAMPAIGN_TITLE =
+  /^(precision|percentage\s*discount|boost|percentage|buy one get one)$/i;
 
 export type StoreOffersSheetProps = {
   visible: boolean;
@@ -22,62 +26,103 @@ export type StoreOffersSheetProps = {
 };
 
 function isMerchantOffer(o: StoreOffer): o is MerchantOfferItem {
-  return "coupon_code" in o || "offer_type" in o;
+  return "offer_type" in o;
 }
 
-function merchantOfferCriteria(offer: MerchantOfferItem): string | null {
+function isPlatformOffer(o: StoreOffer): o is PlatformOfferItem {
+  return "offer_kind" in o && !("offer_type" in o);
+}
+
+function isItemSurfaceOffer(o: StoreOffer): boolean {
+  if (!isMerchantOffer(o)) return false;
+  // Precision never belongs on menu item rows — only in this sheet / checkout sheet.
+  if (o.conditions_mode === "precision") return false;
+  if (o.display_surface === "sheet") return false;
+  return o.display_surface === "item";
+}
+
+function platformOfferTitle(offer: PlatformOfferItem): string {
+  const name = offer.name?.trim();
+  if (name) return name;
+  return offer.label;
+}
+
+function platformOfferSub(offer: PlatformOfferItem): string | null {
   const parts: string[] = [];
-  if (offer.min_order_amount != null && offer.min_order_amount > 0) {
-    parts.push(`Min order ₹${Math.round(offer.min_order_amount)}`);
+  if (offer.sub_label?.trim()) parts.push(offer.sub_label.trim());
+  else if (offer.min_order_amount != null && offer.min_order_amount > 0) {
+    parts.push(`on orders above ₹${Math.round(offer.min_order_amount)}`);
   }
-  const ot = String(offer.offer_type ?? "").toUpperCase();
-  if (ot === "PERCENTAGE" && offer.discount_percentage != null && offer.discount_percentage > 0) {
-    parts.push(`${offer.discount_percentage}% off`);
-    if (offer.max_discount_amount != null && offer.max_discount_amount > 0) {
-      parts.push(`up to ₹${Math.round(offer.max_discount_amount)}`);
+  if (offer.max_discount_amount != null && offer.max_discount_amount > 0) {
+    const maxLine = `up to ₹${Math.round(offer.max_discount_amount)}`;
+    if (!parts.some((p) => p.includes(`₹${Math.round(offer.max_discount_amount!)}`))) {
+      parts.push(maxLine);
     }
-  } else if (offer.discount_value != null && offer.discount_value > 0) {
-    parts.push(`₹${Math.round(offer.discount_value)} off`);
   }
-  if (parts.length === 0) return null;
+  if (parts.length === 0) return "Applied automatically at checkout when eligible";
   return parts.join(" · ");
 }
 
-function OfferCard({ offer }: { offer: StoreOffer }) {
+function OfferCard({
+  offer,
+  itemScoped,
+  platform,
+}: {
+  offer: StoreOffer;
+  itemScoped?: boolean;
+  platform?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const merchant = isMerchantOffer(offer);
   const code = merchant ? offer.coupon_code : null;
   const autoApply = merchant ? offer.auto_apply : true;
-  const criteria = merchant ? merchantOfferCriteria(offer) : null;
+  const title =
+    platform && isPlatformOffer(offer)
+      ? platformOfferTitle(offer)
+      : merchant
+        ? formatListCardOfferFromMerchantOffer(offer) ||
+          (GENERIC_CAMPAIGN_TITLE.test(offer.label) ? "Special offer" : offer.label)
+        : offer.label;
+  const sub =
+    platform && isPlatformOffer(offer) ? platformOfferSub(offer) : offer.sub_label || null;
 
   const details = [
-    autoApply
-      ? "Offer will be applied automatically. No promo code required."
-      : code
-        ? `Use code ${code} at checkout.`
-        : "Apply this offer at checkout when eligible.",
-    "Applicable only on selected items",
+    platform
+      ? "Offer will be applied automatically at checkout when eligible."
+      : autoApply
+        ? "Offer will be applied automatically. No promo code required."
+        : code
+          ? `Use code ${code} at checkout.`
+          : "Apply this offer at checkout when eligible.",
+    itemScoped
+      ? "Shown on eligible menu items · auto-applied in the bill when those items are in your cart."
+      : "Check eligibility on the offer details above.",
     "Offer may not be combined with other offers.",
   ];
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, platform && styles.cardPlatform]}>
       <TouchableOpacity
         style={styles.cardHeader}
         onPress={() => setExpanded((v) => !v)}
         activeOpacity={0.85}
       >
-        <View style={styles.tagIcon}>
-          <Ionicons name="pricetag" size={16} color={StoreTheme.offerBlue} />
+        <View
+          style={[
+            styles.tagIcon,
+            itemScoped && styles.tagIconItem,
+            platform && styles.tagIconPlatform,
+          ]}
+        >
+          <Ionicons
+            name={platform ? "sparkles" : "pricetag"}
+            size={16}
+            color={platform ? "#0F766E" : itemScoped ? "#15803D" : StoreTheme.offerBlue}
+          />
         </View>
         <View style={styles.cardTextCol}>
-          <Text style={styles.cardTitle}>{offer.label}</Text>
-          {offer.sub_label ? (
-            <Text style={styles.cardSub}>{offer.sub_label}</Text>
-          ) : null}
-          {criteria ? (
-            <Text style={styles.cardCriteria}>{criteria}</Text>
-          ) : null}
+          <Text style={styles.cardTitle}>{title}</Text>
+          {sub ? <Text style={styles.cardSub}>{sub}</Text> : null}
           {code ? (
             <View style={styles.codeBox}>
               <Text style={styles.codeText}>{code}</Text>
@@ -110,11 +155,27 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
   const { height: winH } = useWindowDimensions();
   const scrollMaxH = Math.round(winH * 0.62);
 
+  const { itemOffers, storeOffers, platformOffers } = useMemo(() => {
+    const item: StoreOffer[] = [];
+    const store: StoreOffer[] = [];
+    const platform: PlatformOfferItem[] = [];
+    for (const o of offers) {
+      if (isPlatformOffer(o)) {
+        platform.push(o);
+        continue;
+      }
+      if (isItemSurfaceOffer(o)) item.push(o);
+      else store.push(o);
+    }
+    return { itemOffers: item, storeOffers: store, platformOffers: platform };
+  }, [offers]);
+
+  const empty = offers.length === 0;
+
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.9}>
       <View style={styles.handle} />
       <Text style={styles.sheetTitle}>Offers at {storeName}</Text>
-      <Text style={styles.sectionLabel}>Restaurant coupons</Text>
 
       <ScrollView
         style={[styles.list, { maxHeight: scrollMaxH }]}
@@ -122,12 +183,50 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
         showsVerticalScrollIndicator
         bounces
       >
-        {offers.length === 0 ? (
+        {empty ? (
           <Text style={styles.empty}>No offers available for this store right now.</Text>
         ) : (
-          offers.map((offer) => (
-            <OfferCard key={`${offer.id}-${offer.label}`} offer={offer} />
-          ))
+          <>
+            {platformOffers.length > 0 ? (
+              <View style={styles.sectionBlock}>
+                <Text style={styles.sectionLabel}>SPECIAL OFFERS</Text>
+                <Text style={styles.sectionHint}>Applied automatically at checkout</Text>
+                {platformOffers.map((offer) => (
+                  <OfferCard
+                    key={`platform-${offer.id}-${offer.label}`}
+                    offer={offer}
+                    platform
+                  />
+                ))}
+              </View>
+            ) : null}
+
+            {storeOffers.length > 0 ? (
+              <View style={styles.sectionBlock}>
+                <Text style={styles.sectionLabel}>MORE OFFERS</Text>
+                <Text style={styles.sectionHint}>Bill discounts · applied at checkout</Text>
+                {storeOffers.map((offer) => (
+                  <OfferCard key={`store-${offer.id}-${offer.label}`} offer={offer} />
+                ))}
+              </View>
+            ) : null}
+
+            {itemOffers.length > 0 ? (
+              <View style={styles.sectionBlock}>
+                <Text style={styles.sectionLabel}>ITEM DEALS</Text>
+                <Text style={styles.sectionHint}>
+                  Look for badges on eligible dishes
+                </Text>
+                {itemOffers.map((offer) => (
+                  <OfferCard
+                    key={`item-${offer.id}-${offer.label}`}
+                    offer={offer}
+                    itemScoped
+                  />
+                ))}
+              </View>
+            ) : null}
+          </>
         )}
       </ScrollView>
     </StoreBottomSheetShell>
@@ -151,12 +250,20 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     paddingHorizontal: 16,
   },
+  sectionBlock: {
+    gap: 12,
+    marginBottom: 8,
+  },
   sectionLabel: {
     fontSize: 15,
     fontWeight: "700",
     color: StoreTheme.textPrimary,
-    marginBottom: 12,
-    paddingHorizontal: 16,
+  },
+  sectionHint: {
+    fontSize: 12,
+    color: StoreTheme.textSecondary,
+    marginTop: -6,
+    marginBottom: 2,
   },
   list: {
     flexGrow: 0,
@@ -179,6 +286,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     overflow: "hidden",
   },
+  cardPlatform: {
+    borderColor: "#99F6E4",
+    backgroundColor: "#F0FDFA",
+  },
   cardHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -192,6 +303,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#EFF6FF",
     alignItems: "center",
     justifyContent: "center",
+  },
+  tagIconItem: {
+    backgroundColor: "#ECFDF5",
+  },
+  tagIconPlatform: {
+    backgroundColor: "#CCFBF1",
   },
   cardTextCol: {
     flex: 1,
@@ -207,12 +324,6 @@ const styles = StyleSheet.create({
   cardSub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
-    lineHeight: 16,
-  },
-  cardCriteria: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#E23744",
     lineHeight: 16,
   },
   codeBox: {

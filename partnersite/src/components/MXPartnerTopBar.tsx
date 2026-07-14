@@ -30,6 +30,7 @@ import {
   Phone,
   Settings,
   Store,
+  Search,
   Volume2,
   X,
 } from 'lucide-react';
@@ -45,6 +46,7 @@ import { usePartnerShellHeader } from '@/context/PartnerShellHeaderContext';
 import LogoutConfirmModal from '@/components/LogoutConfirmModal';
 import { PartnerToggleConfirmModal } from '@/components/PartnerToggleConfirmModal';
 import { StoreOperationalFlowModals } from '@/components/StoreOperationalFlowModals';
+import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursModal';
 import { LicenseExpiredModal } from '@/components/LicenseExpiredModal';
 import {
   MANUAL_LOCK_LICENSE_BLOCKED_MESSAGE,
@@ -59,6 +61,7 @@ import {
 import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 import { PARTNER_NOTIFICATIONS_CHANGED } from '@/lib/clear-store-order-notifications';
 import { dispatchPartnerNotificationsCleared } from '@/lib/partner-notifications-panel';
+import { createClient } from '@/lib/supabase/client';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import { toStoredDocumentUrl } from '@/lib/r2';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
@@ -388,6 +391,26 @@ function OutletBannerThumb({ url }: { url: string | null | undefined }) {
   );
 }
 
+function OutletSheetCheckbox({
+  checked,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  ariaLabel: string;
+}) {
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={onChange}
+      aria-label={ariaLabel}
+      className="h-[18px] w-[18px] shrink-0 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+    />
+  );
+}
+
 interface MXPartnerTopBarProps {
   restaurantName?: string;
   restaurantId?: string;
@@ -472,8 +495,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [pendingToggle, setPendingToggle] = useState<PendingOutletToggle | null>(null);
   const [toggleConfirmLoading, setToggleConfirmLoading] = useState(false);
   const [parentPhotoBusy, setParentPhotoBusy] = useState(false);
-  /** When on, outlet list is for picking the active store (with confirm) instead of online toggles. */
-  const [switchStoreMode, setSwitchStoreMode] = useState(false);
+  const [outletSearchQuery, setOutletSearchQuery] = useState('');
+  const [checkedOutletIds, setCheckedOutletIds] = useState<Set<string>>(() => new Set());
   const [pendingStoreSwitch, setPendingStoreSwitch] = useState<{
     storeId: string;
     storeName: string;
@@ -483,6 +506,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     null
   );
   const [operationalOpenModal, setOperationalOpenModal] = useState<{ storeId: string; storeName: string } | null>(null);
+  const [outsideHoursModalStoreId, setOutsideHoursModalStoreId] = useState<string | null>(null);
   const [licenseBlocked, setLicenseBlocked] = useState(false);
   const [licenseExpiredDocs, setLicenseExpiredDocs] = useState<LicenseDocumentStatus[]>([]);
   const [licensePendingDocs, setLicensePendingDocs] = useState<LicenseDocumentStatus[]>([]);
@@ -895,6 +919,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const tryOpenStoreAfterLicenseCheck = useCallback(
     async (storeId: string, storeName: string) => {
+      const ops = storeOpsById[storeId];
+      if (ops?.withinOperatingHours === false || ops?.todayScheduledClosed === true) {
+        setOutsideHoursModalStoreId(storeId);
+        return;
+      }
       try {
         const res = await fetch(
           `/api/merchant/store-documents/status?storeId=${encodeURIComponent(storeId)}`,
@@ -925,7 +954,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       }
       setOperationalOpenModal({ storeId, storeName });
     },
-    []
+    [storeOpsById]
   );
 
   const refetchAllStoreOps = useCallback(async () => {
@@ -997,6 +1026,32 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     return () => window.removeEventListener(PARTNER_NOTIFICATIONS_CHANGED, onChanged);
   }, [fetchPartnerNotifications]);
 
+  // Live inbox: when backend deletes "New order!" on cancel/deliver, refresh immediately.
+  useEffect(() => {
+    if (!resolvedStoreId || !isValidPartnerStoreId(resolvedStoreId)) return;
+    const storePk = Number(resolvedStoreId);
+    if (!Number.isFinite(storePk) || storePk <= 0) return;
+    const supabase = createClient();
+    const ch = supabase
+      .channel(`partner_store_notifs:${storePk}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'merchant_store_notifications',
+          filter: `store_id=eq.${storePk}`,
+        },
+        () => {
+          void fetchPartnerNotifications();
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+  }, [resolvedStoreId, fetchPartnerNotifications]);
+
   useEffect(() => {
     if (sheet !== 'status') return;
     void refetchAllStoreOps();
@@ -1046,7 +1101,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   useEffect(() => {
     if (sheet !== 'status') {
-      setSwitchStoreMode(false);
       setPendingStoreSwitch(null);
       setOperationalCloseModal(null);
       setOperationalOpenModal(null);
@@ -1688,12 +1742,61 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           return 0;
         });
 
-  // If only one outlet exists, hide/disable switching.
+  const filteredOutletsForStatus = useMemo(() => {
+    const q = outletSearchQuery.trim().toLowerCase();
+    if (!q) return outletsOrderedForStatus;
+    return outletsOrderedForStatus.filter((s) => {
+      const name = String(s.store_name ?? '').toLowerCase();
+      const id = String(s.store_id ?? '').toLowerCase();
+      const addr = String(s.full_address ?? '').toLowerCase();
+      return name.includes(q) || id.includes(q) || addr.includes(q);
+    });
+  }, [outletsOrderedForStatus, outletSearchQuery]);
+
+  const allFilteredOutletsChecked =
+    filteredOutletsForStatus.length > 0 &&
+    filteredOutletsForStatus.every((s) => checkedOutletIds.has(s.store_id));
+
+  const toggleOutletChecked = useCallback((storeId: string) => {
+    setCheckedOutletIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(storeId)) next.delete(storeId);
+      else next.add(storeId);
+      return next;
+    });
+  }, []);
+
+  const toggleAllFilteredOutlets = useCallback(() => {
+    setCheckedOutletIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredOutletsChecked) {
+        filteredOutletsForStatus.forEach((s) => next.delete(s.store_id));
+      } else {
+        filteredOutletsForStatus.forEach((s) => next.add(s.store_id));
+      }
+      return next;
+    });
+  }, [allFilteredOutletsChecked, filteredOutletsForStatus]);
+
+  const confirmOutletSelection = useCallback(() => {
+    const ids = [...checkedOutletIds];
+    if (ids.length === 0) return;
+    const primary =
+      (resolvedStoreId && checkedOutletIds.has(resolvedStoreId) ? resolvedStoreId : null) ?? ids[0];
+    if (!primary || primary === resolvedStoreId) return;
+    const store = displayStores.find((s) => s.store_id === primary);
+    if (!store) return;
+    setPendingStoreSwitch({ storeId: store.store_id, storeName: store.store_name });
+  }, [checkedOutletIds, resolvedStoreId, displayStores]);
+
   useEffect(() => {
-    if (outletsOrderedForStatus.length <= 1 && switchStoreMode) {
-      setSwitchStoreMode(false);
+    if (sheet === 'status' && statusTab === 'manage') {
+      setOutletSearchQuery('');
+      if (resolvedStoreId) {
+        setCheckedOutletIds(new Set([resolvedStoreId]));
+      }
     }
-  }, [outletsOrderedForStatus.length, switchStoreMode]);
+  }, [sheet, statusTab, resolvedStoreId]);
 
   const sheetBody = () => {
     if (!sheet) return null;
@@ -2242,40 +2345,45 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 </button>
 
                 <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50/40 p-3 shadow-[0_2px_8px_rgba(15,23,42,0.06)] ring-1 ring-slate-100/90">
-                  {outletsOrderedForStatus.length > 1 ? (
-                    <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white px-2.5 py-2 shadow-sm">
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-gray-900">Switch store</p>
-                        <p className="text-[10px] leading-snug text-gray-500">
-                          {switchStoreMode
-                            ? 'Tap another outlet to make it active'
-                            : 'Turn on to pick a different outlet'}
-                        </p>
-                      </div>
-                      <CompactSwitch
-                        on={switchStoreMode}
-                        ariaLabel="Switch store mode"
-                        onToggle={() => setSwitchStoreMode((v) => !v)}
-                      />
-                    </div>
-                  ) : null}
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                      All outlets
-                    </span>
-                    <span className="rounded-full bg-slate-200/80 px-1.5 py-px text-[10px] font-semibold text-slate-600">
-                      {outletsOrderedForStatus.length}
-                    </span>
+                  <div className="relative mb-3">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden
+                    />
+                    <input
+                      type="search"
+                      value={outletSearchQuery}
+                      onChange={(e) => setOutletSearchQuery(e.target.value)}
+                      placeholder="Search restaurant name or ID"
+                      className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                    />
                   </div>
+
+                  <button
+                    type="button"
+                    className="mb-2 flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left"
+                    onClick={toggleAllFilteredOutlets}
+                  >
+                    <span className="text-sm font-bold text-slate-900">
+                      All Restaurants ({outletsOrderedForStatus.length})
+                    </span>
+                    <OutletSheetCheckbox
+                      checked={allFilteredOutletsChecked}
+                      onChange={toggleAllFilteredOutlets}
+                      ariaLabel="Select all restaurants"
+                    />
+                  </button>
+
                   {outletsOrderedForStatus.length === 0 ? (
                     <p className="py-4 text-center text-xs text-gray-500">No approved stores yet.</p>
                   ) : (
-                    <ul className="scrollbar-hide max-h-[min(48vh,300px)] space-y-1.5 overflow-y-auto">
-                      {outletsOrderedForStatus.map((s) => {
+                    <ul className="scrollbar-hide max-h-[min(48vh,300px)] overflow-y-auto">
+                      {filteredOutletsForStatus.map((s, index) => {
                         const row = storeOpsById[s.store_id];
                         const isOn = row?.open;
                         const isCurrent = s.store_id === resolvedStoreId;
                         const locality =
+                          s.full_address?.split(',').slice(-2).join(', ').trim() ||
                           s.full_address?.split(',').pop()?.trim() ||
                           s.full_address ||
                           '';
@@ -2297,92 +2405,107 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                             : isOn
                               ? 'bg-emerald-500'
                               : 'bg-rose-400';
+                        const isChecked = checkedOutletIds.has(s.store_id);
                         return (
-                          <li
-                            key={s.store_id}
-                            className={`flex items-center gap-2.5 rounded-lg border bg-white px-2.5 py-2 shadow-sm transition-colors ${
-                              isCurrent
-                                ? 'border-sky-200/90 ring-1 ring-sky-100'
-                                : 'border-gray-200 hover:border-gray-300'
-                            }`}
-                          >
-                            <OutletBannerThumb url={s.banner_url} />
-                            <div className="min-w-0 flex-1">
-                              <p
-                                className="truncate text-[13px] font-semibold leading-tight text-gray-900"
-                                title={s.store_name}
+                          <li key={s.store_id}>
+                            {index > 0 ? (
+                              <div className="my-1 border-t border-dashed border-slate-200" />
+                            ) : null}
+                            <div
+                              className={`flex items-start gap-2.5 rounded-lg border bg-white px-2.5 py-2.5 shadow-sm transition-colors ${
+                                isCurrent
+                                  ? 'border-sky-200/90 ring-1 ring-sky-100'
+                                  : 'border-gray-200 hover:border-gray-300'
+                              }`}
+                            >
+                              <OutletBannerThumb url={s.banner_url} />
+                              <button
+                                type="button"
+                                className="min-w-0 flex-1 text-left"
+                                onClick={() => toggleOutletChecked(s.store_id)}
                               >
-                                {s.store_name}
-                              </p>
-                              <p
-                                className="mt-0.5 truncate text-[11px] leading-snug text-gray-500"
-                                title={`${s.store_id}${locality ? ` · ${locality}` : ''}`}
-                              >
-                                <span className="font-medium text-gray-500">ID:</span>{' '}
-                                <span className="font-mono text-gray-600">{s.store_id}</span>
-                                {locality ? <span className="text-gray-300"> · </span> : null}
-                                {locality ? <span className="text-gray-500">{locality}</span> : null}
-                              </p>
-                              {!switchStoreMode ? (
-                                <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5">
+                                <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5">
                                   <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
                                   <span className="text-[10px] font-semibold text-slate-600">
                                     {statusLabel}
                                   </span>
                                 </span>
-                              ) : null}
-                            </div>
-                            {switchStoreMode ? (
-                              <div className="flex shrink-0 items-center">
-                                {isCurrent ? (
-                                  <span className="rounded-full bg-sky-600/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800">
-                                    Active
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="rounded-lg bg-sky-600 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm hover:bg-sky-700"
-                                    onClick={() =>
-                                      setPendingStoreSwitch({
+                                <p
+                                  className="text-[13px] font-semibold leading-tight text-gray-900"
+                                  title={s.store_name}
+                                >
+                                  {s.store_name}
+                                </p>
+                                {locality ? (
+                                  <p className="mt-0.5 text-[11px] leading-snug text-gray-500">{locality}</p>
+                                ) : null}
+                                <p className="mt-0.5 text-[11px] text-gray-500">
+                                  <span className="font-medium">ID:</span>{' '}
+                                  <span className="font-mono text-gray-600">{s.store_id}</span>
+                                </p>
+                              </button>
+                              <div className="flex shrink-0 flex-col items-end gap-2 pt-0.5">
+                                <OutletSheetCheckbox
+                                  checked={isChecked}
+                                  onChange={() => toggleOutletChecked(s.store_id)}
+                                  ariaLabel={`Select ${s.store_name}`}
+                                />
+                                <CompactSwitch
+                                  on={isOn === true}
+                                  disabled={isOn === null}
+                                  ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
+                                  onToggle={() => {
+                                    if (isOn === true) {
+                                      setOperationalCloseModal({
                                         storeId: s.store_id,
                                         storeName: s.store_name,
-                                      })
+                                      });
+                                    } else if (s.store_id === resolvedStoreId && licenseBlocked) {
+                                      setLicenseModalStoreId(s.store_id);
+                                      setLicenseModalOpen(true);
+                                    } else if (s.store_id !== resolvedStoreId) {
+                                      void tryOpenStoreAfterLicenseCheck(s.store_id, s.store_name);
+                                    } else {
+                                      const ops = storeOpsById[s.store_id];
+                                      if (
+                                        ops?.withinOperatingHours === false ||
+                                        ops?.todayScheduledClosed === true
+                                      ) {
+                                        setOutsideHoursModalStoreId(s.store_id);
+                                      } else {
+                                        setOperationalOpenModal({
+                                          storeId: s.store_id,
+                                          storeName: s.store_name,
+                                        });
+                                      }
                                     }
-                                  >
-                                    Switch
-                                  </button>
-                                )}
+                                  }}
+                                />
                               </div>
-                            ) : (
-                              <CompactSwitch
-                                on={isOn === true}
-                                disabled={isOn === null}
-                                ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
-                                onToggle={() => {
-                                  if (isOn === true) {
-                                    setOperationalCloseModal({
-                                      storeId: s.store_id,
-                                      storeName: s.store_name,
-                                    });
-                                  } else if (s.store_id === resolvedStoreId && licenseBlocked) {
-                                    setLicenseModalStoreId(s.store_id);
-                                    setLicenseModalOpen(true);
-                                  } else if (s.store_id !== resolvedStoreId) {
-                                    void tryOpenStoreAfterLicenseCheck(s.store_id, s.store_name);
-                                  } else {
-                                    setOperationalOpenModal({
-                                      storeId: s.store_id,
-                                      storeName: s.store_name,
-                                    });
-                                  }
-                                }}
-                              />
-                            )}
+                            </div>
                           </li>
                         );
                       })}
+                      {filteredOutletsForStatus.length === 0 ? (
+                        <li className="py-6 text-center text-xs text-gray-500">
+                          No restaurants match your search.
+                        </li>
+                      ) : null}
                     </ul>
                   )}
+
+                  {outletsOrderedForStatus.length > 1 ? (
+                    <button
+                      type="button"
+                      disabled={checkedOutletIds.size === 0}
+                      onClick={confirmOutletSelection}
+                      className="mt-3 w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {checkedOutletIds.size === 1
+                        ? 'Confirm (1 restaurant)'
+                        : `Confirm (${checkedOutletIds.size} restaurants)`}
+                    </button>
+                  ) : null}
                 </div>
               </div>
             ) : statusTab === 'schedule' ? (
@@ -3141,6 +3264,12 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         onDismissClose={() => setOperationalCloseModal(null)}
         onDismissOpen={() => setOperationalOpenModal(null)}
         onSuccess={handleOperationalFlowSuccess}
+      />
+
+      <OutsideOperatingHoursModal
+        open={outsideHoursModalStoreId != null}
+        onClose={() => setOutsideHoursModalStoreId(null)}
+        storeId={outsideHoursModalStoreId}
       />
 
       <PartnerToggleConfirmModal

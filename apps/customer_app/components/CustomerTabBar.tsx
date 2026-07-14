@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Pressable, StyleSheet } from "react-native";
 import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -11,6 +11,7 @@ import {
   resolveTabBarBottomInset,
 } from "@/constants/layout";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
+import { AppText } from "@/components/AppText";
 
 const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
@@ -144,7 +145,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
               style={styles.tab}
             >
               <TabIcon tab={tab} focused={focused} />
-              <Text style={[styles.label, focused && styles.labelActive]}>{tab.label}</Text>
+              <AppText style={[styles.label, focused && styles.labelActive]}>{tab.label}</AppText>
               {focused ? <View style={styles.activeUnderline} /> : <View style={styles.underlineSpacer} />}
             </Pressable>
           );

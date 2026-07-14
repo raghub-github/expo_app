@@ -54,6 +54,11 @@ import { mapFeaturedOffersToRideBookOffers } from "@/lib/ride-offers";
 import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { shouldShowPreBookTipSheet } from "@/lib/ride-tip-amounts";
 import { applyBikeLiteFareRule, sortRideOptionsBikeLiteSecond } from "@/lib/ride-customer-fare";
+import {
+  buildRideQuoteBillingLines,
+  resolveRideQuotePayableAmount,
+  resolveRideQuoteSlabFare,
+} from "@/lib/ride-quote-display";
 import { formatRideDistanceKm, logRideRouteDebug } from "@/lib/ride-route-snapshot";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useRideRouteSnapshot } from "@/hooks/useRideRouteSnapshot";
@@ -450,6 +455,10 @@ export default function RideBookScreen() {
   const fareDetailsQuote = fareDetailsOptionId ? fareQuoteMeta[fareDetailsOptionId] : undefined;
   const fareDetailsDisplayFare =
     fareDetailsOptionId != null ? displayFareQuotes[fareDetailsOptionId] ?? null : null;
+  const fareDetailsBillingLines = useMemo(
+    () => (fareDetailsQuote ? buildRideQuoteBillingLines(fareDetailsQuote) : []),
+    [fareDetailsQuote]
+  );
 
   const bikeUnavailableOnRoute = useMemo(() => {
     if (availabilityLoading || routeLoading || availabilityError) return false;
@@ -691,8 +700,7 @@ export default function RideBookScreen() {
       for (const entry of entries) {
         if (!entry) continue;
         nextMeta[entry[0]] = entry[1];
-        const payable = entry[1].billing?.finalAmount ?? entry[1].finalFare;
-        next[entry[0]] = Math.round(payable);
+        next[entry[0]] = resolveRideQuotePayableAmount(entry[1]);
       }
       setFareQuoteMeta(nextMeta);
       setFareQuotes(applyBikeLiteFareRule(next));
@@ -862,13 +870,14 @@ export default function RideBookScreen() {
       const quoted = displayFareQuotes[selectedRideId];
       const quoteMeta = fareQuoteMeta[selectedRideId];
       if (tripKm != null && tripKm > 0 && (quoted == null || quoted <= 0)) return;
-      const baseFare =
-        quoteMeta?.finalFare != null && quoteMeta.finalFare > 0
-          ? Math.round(quoteMeta.finalFare)
-          : quoted != null && quoted > 0
-            ? quoted
+      const slabFare = quoteMeta ? resolveRideQuoteSlabFare(quoteMeta) : 0;
+      const payableFare =
+        quoted != null && quoted > 0
+          ? Math.round(quoted)
+          : quoteMeta
+            ? resolveRideQuotePayableAmount(quoteMeta)
             : 0;
-      if (baseFare <= 0) return;
+      if (slabFare <= 0 || payableFare <= 0) return;
       const navParams: Record<string, string> = {
         pickup: effectivePickupAddress,
         drop: String(params.drop ?? ""),
@@ -886,7 +895,8 @@ export default function RideBookScreen() {
       if (params.bookedForSelf) navParams.bookedForSelf = String(params.bookedForSelf);
       if (params.passengerName) navParams.passengerName = String(params.passengerName);
       if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
-      navParams.estimatedFare = String(baseFare);
+      navParams.estimatedFare = String(slabFare);
+      navParams.quotedGrandTotal = String(payableFare);
       if (pickupGeoHints.pickupPincode) navParams.pickupPincode = pickupGeoHints.pickupPincode;
       if (pickupGeoHints.pickupState) navParams.pickupState = pickupGeoHints.pickupState;
       if (customerTipAmount > 0) navParams.customerTipAmount = String(customerTipAmount);
@@ -1152,6 +1162,7 @@ export default function RideBookScreen() {
         vehicleName={fareDetailsOption?.name ?? "Ride"}
         imageKey={fareDetailsOption?.imageKey ?? "bike"}
         fare={fareDetailsDisplayFare}
+        billingLines={fareDetailsBillingLines}
         rateCardSummary={fareDetailsQuote?.rateCardSummary}
         waitingChargeNote={fareDetailsQuote?.waitingChargeNote}
         loading={fareQuotesLoading || routeLoading}

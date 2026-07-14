@@ -1,38 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  calculateRiderPickupDropPayout,
+  calculatePercentageRiderPayout,
   calculateWaitingCharge,
 } from "./riderPayoutPricing.service.js";
-import type { RiderDropSlabRow, RiderPickupSlabRow } from "./types.js";
+import type { ServicePayoutRuleRow } from "./types.js";
 
-const pickupSlabs: RiderPickupSlabRow[] = [
-  {
-    id: 1,
-    geoLevel: "state",
-    geoRefId: "x",
-    minKm: 0,
-    maxKm: 2,
-    baseFare: 8,
-    pickupPerKm: 3,
-    minCharge: 12,
-    waitingChargePerMin: 1,
-    waitingStartAfter: 3,
-    priority: 100,
-    isActive: true,
-  },
-  { id: 2, geoLevel: "state", geoRefId: "x", minKm: 2, maxKm: 4, pickupPerKm: 4, minCharge: null, waitingChargePerMin: null, waitingStartAfter: 0, priority: 100, isActive: true },
-  { id: 3, geoLevel: "state", geoRefId: "x", minKm: 4, maxKm: 7, pickupPerKm: 5, minCharge: null, waitingChargePerMin: null, waitingStartAfter: 0, priority: 100, isActive: true },
-  { id: 4, geoLevel: "state", geoRefId: "x", minKm: 7, maxKm: null, pickupPerKm: 6, minCharge: null, waitingChargePerMin: null, waitingStartAfter: 0, priority: 100, isActive: true },
-];
-
-const dropSlabs: RiderDropSlabRow[] = [
-  { id: 10, geoLevel: "state", geoRefId: "x", minKm: 0, maxKm: 2, dropPerKm: 8, priority: 100, isActive: true },
-  { id: 11, geoLevel: "state", geoRefId: "x", minKm: 2, maxKm: 4, dropPerKm: 9, priority: 100, isActive: true },
-  { id: 12, geoLevel: "state", geoRefId: "x", minKm: 4, maxKm: 7, dropPerKm: 9, priority: 100, isActive: true },
-  { id: 13, geoLevel: "state", geoRefId: "x", minKm: 7, maxKm: 10, dropPerKm: 10, priority: 100, isActive: true },
-  { id: 14, geoLevel: "state", geoRefId: "x", minKm: 10, maxKm: null, dropPerKm: 10, priority: 100, isActive: true },
-];
+const baseRule: ServicePayoutRuleRow = {
+  id: 1,
+  serviceType: "food",
+  geoLevel: "state",
+  geoRefId: "x",
+  riderPercentage: 90,
+  platformPercentage: 10,
+  waitingChargePerMin: 1,
+  waitingFreeMinutes: 3,
+  priority: 100,
+  isActive: true,
+  effectiveFrom: null,
+  effectiveTo: null,
+};
 
 test("waiting charge: free until startAfter minutes", () => {
   assert.equal(calculateWaitingCharge({ waitingMinutes: 2, chargePerMin: 1, startAfterMinutes: 3 }), 0);
@@ -40,29 +27,52 @@ test("waiting charge: free until startAfter minutes", () => {
   assert.equal(calculateWaitingCharge({ waitingMinutes: 5, chargePerMin: 1, startAfterMinutes: 3 }), 2);
 });
 
-test("Food rider payout via backend wrapper: pickup 3 drop 5 wait 5 = 63", () => {
-  const res = calculateRiderPickupDropPayout({
-    pickupKm: 3,
-    dropKm: 5,
-    pickupSlabs,
-    dropSlabs,
+test("PRD example: 95 fare, 90% rider, 7km/2km => pickup 66.50+wait, drop 19.00, platform 9.50", () => {
+  const res = calculatePercentageRiderPayout({
+    customerFare: 95,
+    pickupKm: 7,
+    dropKm: 2,
+    rule: baseRule,
     waitingMinutes: 5,
   });
   assert.equal(res.ok, true);
   if (!res.ok) return;
-  assert.equal(res.quote.baseFareApplied, 8);
-  assert.equal(res.quote.pickupAmount, 10);
-  assert.equal(res.quote.dropAmount, 43);
-  assert.equal(res.quote.waitingAmount, 2);
-  assert.equal(res.quote.finalAmount, 63);
+  // wait 5min, free 3min, 1/min => 2 charged, added to pickup leg
+  assert.equal(res.quote.pickupAmount, 68.5);
+  assert.equal(res.quote.dropAmount, 19);
+  assert.equal(res.quote.platformRevenue, 9.5);
+  assert.equal(res.quote.finalAmount, 87.5);
+});
+
+test("waiting charge is not counted toward the rider percentage split", () => {
+  const withoutWait = calculatePercentageRiderPayout({
+    customerFare: 95,
+    pickupKm: 7,
+    dropKm: 2,
+    rule: baseRule,
+    waitingMinutes: 0,
+  });
+  const withWait = calculatePercentageRiderPayout({
+    customerFare: 95,
+    pickupKm: 7,
+    dropKm: 2,
+    rule: baseRule,
+    waitingMinutes: 10,
+  });
+  assert.equal(withoutWait.ok, true);
+  assert.equal(withWait.ok, true);
+  if (!withoutWait.ok || !withWait.ok) return;
+  assert.equal(withWait.quote.platformRevenue, withoutWait.quote.platformRevenue);
+  assert.equal(withWait.quote.dropAmount, withoutWait.quote.dropAmount);
+  assert.ok(withWait.quote.pickupAmount > withoutWait.quote.pickupAmount);
 });
 
 test("surge_wait_max_only blocks waiting and surges for non-Max riders", () => {
-  const res = calculateRiderPickupDropPayout({
+  const res = calculatePercentageRiderPayout({
+    customerFare: 95,
     pickupKm: 1,
     dropKm: 1,
-    pickupSlabs,
-    dropSlabs,
+    rule: baseRule,
     waitingMinutes: 10,
     riderHasGmitraMax: false,
     surgeWaitMaxOnly: true,
@@ -76,12 +86,12 @@ test("surge_wait_max_only blocks waiting and surges for non-Max riders", () => {
   assert.equal(res.quote.surgeTotal, 0);
 });
 
-test("surge adds to rider payout total", () => {
-  const res = calculateRiderPickupDropPayout({
-    pickupKm: 3,
-    dropKm: 5,
-    pickupSlabs,
-    dropSlabs,
+test("surge adds to rider payout total on top of the percentage split", () => {
+  const res = calculatePercentageRiderPayout({
+    customerFare: 95,
+    pickupKm: 7,
+    dropKm: 2,
+    rule: baseRule,
     waitingMinutes: 0,
     appliedSurges: [{ surgeId: 1, name: "Peak", kind: "peak_hour", amount: 15 }],
     rawSurgeTotal: 15,
@@ -89,5 +99,44 @@ test("surge adds to rider payout total", () => {
   });
   assert.equal(res.ok, true);
   if (!res.ok) return;
-  assert.equal(res.quote.finalAmount, 76);
+  assert.equal(res.quote.finalAmount, 100.5); // 85.50 rider total + 15 surge
+});
+
+test("v2 PRD admin-calculator example: 520 fare, 80% rider, 5km/15km, wait 6, surge 20 => final 442, platform 104", () => {
+  const rule: ServicePayoutRuleRow = {
+    ...baseRule,
+    riderPercentage: 80,
+    platformPercentage: 20,
+    waitingChargePerMin: 2,
+    waitingFreeMinutes: 2,
+  };
+  const res = calculatePercentageRiderPayout({
+    customerFare: 520,
+    pickupKm: 5,
+    dropKm: 15,
+    rule,
+    waitingMinutes: 5, // 5 - 2 free = 3 chargeable * 2/min = 6
+    appliedSurges: [{ surgeId: 1, name: "Peak", kind: "peak_hour", amount: 20 }],
+    rawSurgeTotal: 20,
+    surgeTotal: 20,
+  });
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.quote.platformRevenue, 104);
+  // pickup/drop split by distance ratio (25%/75% of riderTotal=416), waiting added to pickup leg
+  assert.equal(res.quote.dropAmount, 312);
+  assert.equal(res.quote.pickupAmount, 104 + 6); // 104 distance share + 6 waiting
+  assert.equal(res.quote.waitingAmount, 6);
+  assert.equal(res.quote.surgeTotal, 20);
+  assert.equal(res.quote.finalAmount, 442);
+});
+
+test("zero customer fare is rejected", () => {
+  const res = calculatePercentageRiderPayout({
+    customerFare: 0,
+    pickupKm: 5,
+    dropKm: 5,
+    rule: baseRule,
+  });
+  assert.equal(res.ok, false);
 });

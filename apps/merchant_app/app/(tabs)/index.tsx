@@ -208,13 +208,6 @@ export default function DashboardScreen() {
     restriction === "manual_hold";
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
-  useEffect(() => {
-    if (orderTabBootstrapped.current) return;
-    if (pendingCount <= 0) return;
-    orderTabBootstrapped.current = true;
-    setOrderTab("Active");
-  }, [pendingCount]);
-
   const hasActiveOrders = useMemo(
     () => orders.some((o) => isActiveMerchantOrderStage(o.status)),
     [orders]
@@ -232,6 +225,19 @@ export default function DashboardScreen() {
     }),
     [orders]
   );
+
+  useEffect(() => {
+    if (orderTabBootstrapped.current) return;
+    if (orderTabCounts.new > 0) {
+      orderTabBootstrapped.current = true;
+      setOrderTab("New");
+      return;
+    }
+    if (orderTabCounts.active > 0 || pendingCount > 0) {
+      orderTabBootstrapped.current = true;
+      setOrderTab("Active");
+    }
+  }, [orderTabCounts.new, orderTabCounts.active, pendingCount]);
 
   const recentOrders = useMemo(() => {
     let list = orders;

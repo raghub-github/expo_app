@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { resolveRideImage } from "@/features/ride/rideOptionAssets";
+import type { RideQuoteBillingLine } from "@/lib/ride-quote-display";
 
 export type RideVehicleFareDetailsSheetProps = {
   visible: boolean;
@@ -16,6 +17,7 @@ export type RideVehicleFareDetailsSheetProps = {
   vehicleName: string;
   imageKey: string;
   fare: number | null;
+  billingLines?: RideQuoteBillingLine[];
   rateCardSummary?: string | null;
   waitingChargeNote?: string | null;
   loading?: boolean;
@@ -32,11 +34,13 @@ export function RideVehicleFareDetailsSheet({
   vehicleName,
   imageKey,
   fare,
+  billingLines = [],
   rateCardSummary,
   waitingChargeNote,
   loading = false,
 }: RideVehicleFareDetailsSheetProps) {
   const fareLabel = formatFareAmount(fare);
+  const showBreakdown = billingLines.length > 0;
 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.72}>
@@ -66,10 +70,26 @@ export function RideVehicleFareDetailsSheet({
 
         <View style={styles.divider} />
 
-        <View style={styles.lineRow}>
-          <Text style={styles.lineLabel}>Ride Fare</Text>
-          <Text style={styles.lineValue}>{loading ? "…" : fareLabel}</Text>
-        </View>
+        {showBreakdown ? (
+          billingLines.map((line) => (
+            <View key={`${line.label}-${line.amount}`} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{line.label}</Text>
+              <Text style={styles.lineValue}>{loading ? "…" : formatFareAmount(line.amount)}</Text>
+            </View>
+          ))
+        ) : (
+          <View style={styles.lineRow}>
+            <Text style={styles.lineLabel}>Ride Fare</Text>
+            <Text style={styles.lineValue}>{loading ? "…" : fareLabel}</Text>
+          </View>
+        )}
+
+        {showBreakdown ? (
+          <View style={[styles.lineRow, styles.totalBreakdownRow]}>
+            <Text style={styles.totalBreakdownLabel}>Total payable</Text>
+            <Text style={styles.totalBreakdownValue}>{loading ? "…" : fareLabel}</Text>
+          </View>
+        ) : null}
 
         <Text style={styles.disclaimer}>
           *Price may vary based on final pickup or drop location, time taken, final route and toll area.
@@ -169,6 +189,22 @@ const styles = StyleSheet.create({
   lineValue: {
     fontSize: 15,
     fontWeight: "700",
+    color: "#111827",
+  },
+  totalBreakdownRow: {
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
+  },
+  totalBreakdownLabel: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  totalBreakdownValue: {
+    fontSize: 16,
+    fontWeight: "800",
     color: "#111827",
   },
   disclaimer: {

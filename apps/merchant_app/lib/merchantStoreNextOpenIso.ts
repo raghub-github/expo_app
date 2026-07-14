@@ -69,7 +69,11 @@ export function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: numbe
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
-    hour12: false,
+    // `hour12: false` alone leaves hourCycle unspecified; on some ICU builds it resolves to
+    // "h24" (1-24) instead of "h23" (0-23), so midnight reads as hour=24 — pushing
+    // minutesSinceMidnight 1440 too high for the whole 00:00-00:59 window. hourCycle alone
+    // (no hour12) is required: if both are set, hour12 wins and hourCycle is ignored.
+    hourCycle: "h23",
   });
   const parts = formatter.formatToParts(new Date());
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);

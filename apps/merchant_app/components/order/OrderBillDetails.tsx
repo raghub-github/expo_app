@@ -3,7 +3,8 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ApiFoodOrder } from "@/services/ordersApi";
 import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS } from "@/constants/theme";
-import { merchantOrderBillTotal, formatMerchantRs } from "@/lib/merchant-line-total";
+import { formatMerchantRs } from "@/lib/merchant-line-total";
+import { merchantBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
 import { OrderMerchantBillModal } from "@/components/order/OrderMerchantBillModal";
 
 function isPaidOrder(order: ApiFoodOrder): boolean {
@@ -20,8 +21,17 @@ type Props = {
 
 export function OrderBillDetails({ order }: Props) {
   const [billOpen, setBillOpen] = useState(false);
-  const discount = order.pricing?.discount ?? 0;
-  const total = merchantOrderBillTotal(order);
+  // Deterministic merchant bill: item subtotal + packaging − frozen precision (once).
+  const bill = merchantBillPartsFromOrder({
+    pricing: order.pricing,
+    grand_total: order.grand_total,
+    food_items_total_value: order.food_items_total_value ?? null,
+    items: order.items,
+    billingSnapshot: order.billing_snapshot ?? null,
+    merchantPrecisionDiscount: Math.max(0, Number(order.merchant_precision_discount) || 0),
+  });
+  const discount = bill.discount;
+  const total = bill.total;
   const showPaid = isPaidOrder(order);
 
   return (
@@ -38,7 +48,7 @@ export function OrderBillDetails({ order }: Props) {
       >
         {discount > 0 ? (
           <Text style={styles.discountNote}>
-            Restaurant discount −{formatMerchantRs(discount)} included in total
+            Merchant Precision Discount −{formatMerchantRs(discount)} included in total
           </Text>
         ) : null}
         <View style={styles.totalRow}>
@@ -53,7 +63,7 @@ export function OrderBillDetails({ order }: Props) {
           <Text style={styles.totalAmount}>{formatMerchantRs(total)}</Text>
         </View>
         <Text style={styles.hint}>
-          All items (with customizations) + packaging − restaurant discount · Tap for breakdown
+          All items (with customizations) + packaging − Merchant Precision Discount · Tap for breakdown
         </Text>
       </Pressable>
 

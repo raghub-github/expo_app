@@ -77,7 +77,9 @@ export async function GET(req: NextRequest) {
     };
     const toLocalHour = (iso: string) => {
       const d = new Date(iso);
-      return parseInt(d.toLocaleString('en-CA', { timeZone: tz, hour: '2-digit', hour12: false }), 10);
+      // hourCycle alone (no hour12): `hour12: false` without an explicit hourCycle can resolve
+      // to "h24" (1-24) on some ICU builds, returning "24" at midnight instead of "00".
+      return parseInt(d.toLocaleString('en-CA', { timeZone: tz, hour: '2-digit', hourCycle: 'h23' }), 10);
     };
 
     const todayStart = new Date(now);

@@ -7,6 +7,16 @@ export type CheckoutDiscountLike = {
   hidden?: boolean;
 };
 
+/**
+ * Customer-facing discount names — show the merchant's actual configured offer
+ * title (as it appears in the offers sheet) rather than a generic placeholder.
+ */
+export function friendlyCheckoutDiscountLabel(label: string | null | undefined): string {
+  const raw = String(label ?? "").trim();
+  if (!raw) return "Store offer";
+  return raw;
+}
+
 export function isSubscriptionBenefitDiscount(d: CheckoutDiscountLike): boolean {
   const source = d.meta?.source;
   return (

@@ -1,5 +1,5 @@
 import React from "react";
-import { TouchableOpacity, Text, StyleSheet } from "react-native";
+import { Pressable, Text, StyleSheet, Platform, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import Animated from "react-native-reanimated";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -17,10 +17,21 @@ export const MerchantFloatingFab = React.memo(function MerchantFloatingFab({
 }: MerchantFloatingFabProps) {
   return (
     <Animated.View style={[styles.wrap, { bottom }, animatedStyle]} pointerEvents="box-none">
-      <TouchableOpacity onPress={onPress} style={styles.fab} activeOpacity={0.9}>
-        <Ionicons name="restaurant-outline" size={18} color="#fff" />
-        <Text style={styles.text}>Menu</Text>
-      </TouchableOpacity>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.pressable, pressed && styles.fabPressed]}
+        // Tight hit area — do not steal taps from nearby ADD buttons.
+        hitSlop={4}
+        android_ripple={{ color: "rgba(255,255,255,0.2)" }}
+        accessibilityRole="button"
+        accessibilityLabel="Open menu"
+      >
+        {/* Inner shell keeps bg/border stable on Android Pressable + ripple. */}
+        <View style={styles.fab} pointerEvents="none">
+          <Ionicons name="restaurant-outline" size={18} color="#FFFFFF" />
+          <Text style={styles.text}>Menu</Text>
+        </View>
+      </Pressable>
     </Animated.View>
   );
 });
@@ -29,7 +40,12 @@ const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
     right: 16,
-    zIndex: 30,
+    /** Below cart dock (200) so Continue stays tappable; above list content. */
+    zIndex: 180,
+    elevation: 24,
+  },
+  pressable: {
+    borderRadius: 24,
   },
   fab: {
     flexDirection: "row",
@@ -39,11 +55,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 24,
     gap: 8,
-    ...StoreTheme.cardShadow,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.18)",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 10,
+      },
+      default: {},
+    }),
+  },
+  fabPressed: {
+    opacity: Platform.OS === "ios" ? 0.88 : 1,
+    transform: [{ scale: 0.98 }],
   },
   text: {
     fontSize: 14,
     fontWeight: "700",
-    color: "#fff",
+    color: "#FFFFFF",
   },
 });

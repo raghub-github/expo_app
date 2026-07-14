@@ -1,8 +1,11 @@
 /**
- * Customer checkout: exactly ONE checkout promo at a time
- * (platform OR merchant OR billing coupon — never stacked with each other).
- * Membership subscription benefits (e.g. GMitra Plus free delivery) apply after
- * this step and stack with the single promo.
+ * Customer checkout promos:
+ * 1) Menu Boost / BOGO (item-surface) always apply when eligible — matches "Get for ₹" on menu.
+ * 2) Exactly ONE cart-level promo (platform OR precision merchant OR coupon) — never stacked
+ *    with each other. Auto-pick ONLY ever considers merchant Precision offers — Platform
+ *    Offers never auto-apply, they are manual-selection-only (client must pass
+ *    selectedPlatformOfferId explicitly). Membership benefits (e.g. GMitra Plus free
+ *    delivery) apply after this.
  */
 
 import type {
@@ -14,18 +17,20 @@ import type {
   MutableBillState,
   PlatformOfferRow,
 } from "./types.js";
-import { applyMerchantStoreOffers } from "./merchantOffersApply.js";
+import {
+  applyCartSurfaceMerchantOffers,
+  applyItemSurfaceMerchantOffers,
+  applyMerchantStoreOffers,
+  isItemSurfaceMerchantOffer,
+} from "./merchantOffersApply.js";
 import {
   applyPlatformCartOffers,
   applyPlatformDeliveryOffers,
   applyPlatformFeeBucketOffers,
-  estimateOfferDiscountValue,
-  listEligiblePlatformOffersForCheckout,
-  platformOfferConflictsWithSubscriptionFreeDelivery,
-  qualifyingCartFromRem,
   resolveSelectedPlatformOfferForCheckout,
 } from "./platformOffersApply.js";
 import { merchantOfferEligibilityReason } from "./merchantOffersCheckout.js";
+import { cartPromoQualifyingSubtotal } from "./discountEligibility.js";
 
 function merchantOfferConflictsWithSubscriptionFreeDelivery(
   ctx: BillContext,
@@ -55,7 +60,7 @@ function estimateMerchantOfferDiscount(
 ): number {
   const t = offer.offerType.toUpperCase();
   if (t === "FREE_DELIVERY") return Math.max(0, rem.delivery);
-  const base = Math.max(0, rem.items);
+  const base = Math.max(0, Math.min(rem.items, cartPromoQualifyingSubtotal(ctx, rem.items)));
   if (base <= 0) return 0;
   let amt = 0;
   if (t === "PERCENTAGE" || t === "CART_PERCENTAGE") {
@@ -78,12 +83,36 @@ function estimateMerchantOfferDiscount(
   if (orderCap > 0) amt = Math.min(amt, orderCap);
   if (t !== "FREE_DELIVERY") amt = Math.min(amt, base);
   void grossCart;
-  void ctx;
   return Math.max(0, amt);
 }
 
-function estimatePlatformOfferTotal(o: PlatformOfferRow, ctx: BillContext, rem: FeeRem): number {
-  return estimateOfferDiscountValue(o, ctx, rem);
+/**
+ * Best eligible auto-applicable merchant offer by estimated discount value.
+ * Never considers item-surface (Boost/BOGO) or COUPON-type offers — those are handled
+ * elsewhere (item-surface always-on, coupon requires an explicit code).
+ */
+function bestEligibleMerchantOffer(
+  ctx: BillContext,
+  dataset: BillingDataset,
+  grossCart: number,
+  rem: FeeRem
+): Winner {
+  let best: Winner = { kind: "none" };
+  let bestAmt = 0;
+  for (const offer of dataset.merchantOffers) {
+    if (isItemSurfaceMerchantOffer(offer)) continue;
+    if (offer.autoApply === false) continue;
+    const t = offer.offerType.toUpperCase();
+    if (t === "COUPON") continue;
+    if (merchantOfferConflictsWithSubscriptionFreeDelivery(ctx, offer)) continue;
+    if (merchantOfferEligibilityReason(offer, ctx, grossCart)) continue;
+    const amt = estimateMerchantOfferDiscount(offer, ctx, grossCart, rem);
+    if (amt > bestAmt) {
+      bestAmt = amt;
+      best = { kind: "merchant", offer };
+    }
+  }
+  return best;
 }
 
 function resolveExclusiveWinner(
@@ -92,7 +121,8 @@ function resolveExclusiveWinner(
   itemPlusAddon: number,
   rem: FeeRem
 ): Winner {
-  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
+  // Cart / coupon / platform cart min-order + estimates use promo-eligible subtotal only.
+  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
 
   if (
     ctx.forceNoAutoOffer === true &&
@@ -103,6 +133,8 @@ function resolveExclusiveWinner(
     return { kind: "none" };
   }
 
+  // Explicit platform pick is a manual user action — always honored regardless of
+  // merchant-offer eligibility (platform never auto-applies, but a manual pick sticks).
   const platformId = ctx.selectedPlatformOfferId;
   if (platformId != null) {
     const offer = resolveSelectedPlatformOfferForCheckout(ctx, dataset, grossCart, platformId);
@@ -112,10 +144,17 @@ function resolveExclusiveWinner(
   const merchantId = ctx.selectedMerchantOfferId;
   if (merchantId != null && merchantId > 0) {
     const offer = dataset.merchantOffers.find((o) => o.id === merchantId);
+    // Item-surface already applied separately — don't re-apply via exclusive.
+    if (offer && isItemSurfaceMerchantOffer(offer)) {
+      return { kind: "none" };
+    }
     if (offer && !merchantOfferEligibilityReason(offer, ctx, grossCart)) {
       return { kind: "merchant", offer };
     }
-    return { kind: "none" };
+    // The previously-applied merchant offer is no longer eligible (e.g. a borderline
+    // min-order recompute) — re-auto-pick the next-best eligible merchant offer instead
+    // of silently dropping the discount. Never falls back to platform (manual-only).
+    return bestEligibleMerchantOffer(ctx, dataset, grossCart, rem);
   }
 
   const code = (ctx.couponCode ?? "").trim();
@@ -128,34 +167,9 @@ function resolveExclusiveWinner(
     return { kind: "coupon", coupon: dataset.coupon };
   }
 
-  // Auto-pick: best single offer across platform + auto merchant (not coupon-without-code)
-  let best: Winner = { kind: "none" };
-  let bestAmt = 0;
-
-  const platformEligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart);
-  for (const o of platformEligible) {
-    if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) continue;
-    const amt = estimatePlatformOfferTotal(o, ctx, rem);
-    if (amt > bestAmt) {
-      bestAmt = amt;
-      best = { kind: "platform", offer: o };
-    }
-  }
-
-  for (const offer of dataset.merchantOffers) {
-    if (offer.autoApply === false) continue;
-    const t = offer.offerType.toUpperCase();
-    if (t === "COUPON") continue;
-    if (merchantOfferConflictsWithSubscriptionFreeDelivery(ctx, offer)) continue;
-    if (merchantOfferEligibilityReason(offer, ctx, grossCart)) continue;
-    const amt = estimateMerchantOfferDiscount(offer, ctx, grossCart, rem);
-    if (amt > bestAmt) {
-      bestAmt = amt;
-      best = { kind: "merchant", offer };
-    }
-  }
-
-  return best;
+  // Auto mode (nothing explicitly selected): merchant Precision only. Platform offers
+  // are never auto-applied — they remain in the offer sheet for manual selection.
+  return bestEligibleMerchantOffer(ctx, dataset, grossCart, rem);
 }
 
 function withScopedSelection<T>(
@@ -176,7 +190,7 @@ function withScopedSelection<T>(
   }
 }
 
-/** Apply at most one checkout promo (customer-facing rule). */
+/** Apply item-surface Boost/BOGO, then at most one cart-level checkout promo. */
 export function applyExclusiveCheckoutOffer(
   ctx: BillContext,
   dataset: BillingDataset,
@@ -191,6 +205,16 @@ export function applyExclusiveCheckoutOffer(
     rem: FeeRem
   ) => void
 ): void {
+  // 1) Menu Boost / BOGO — always when eligible (matches Get for ₹ on store page).
+  // Never gate on selectedMerchantOfferId / forceNoAutoOffer — those are cart-surface only.
+  // Otherwise picking Precision/coupon at checkout skips Boost and CTM freezes disc=0.
+  withScopedSelection(
+    ctx,
+    { selectedMerchantOfferId: null, forceNoAutoOffer: false },
+    () => applyItemSurfaceMerchantOffers(ctx, dataset, state, itemPlusAddon, rem)
+  );
+
+  // 2) One cart-level promo (platform Flat / precision merchant / coupon).
   const winner = resolveExclusiveWinner(ctx, dataset, itemPlusAddon, rem);
   if (winner.kind === "none") return;
 
@@ -203,7 +227,7 @@ export function applyExclusiveCheckoutOffer(
     withScopedSelection(
       ctx,
       { selectedMerchantOfferId: winner.offer.id, selectedPlatformOfferId: null, forceNoAutoOffer: false },
-      () => applyMerchantStoreOffers(ctx, dataset, state, itemPlusAddon, rem)
+      () => applyCartSurfaceMerchantOffers(ctx, dataset, state, itemPlusAddon, rem)
     );
     return;
   }
@@ -218,3 +242,6 @@ export function applyExclusiveCheckoutOffer(
     }
   );
 }
+
+// Re-export for tests / partner paths that still call full merchant apply.
+export { applyMerchantStoreOffers };

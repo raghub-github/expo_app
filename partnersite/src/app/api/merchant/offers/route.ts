@@ -87,12 +87,27 @@ function relativizeProxyUrl(v: unknown): unknown {
   return m ? m[1] : v;
 }
 
-function shapeOfferRow(row: Record<string, unknown>) {
+function shapeOfferRow(
+  row: Record<string, unknown>,
+  applicabilityIds?: string[] | null,
+  itemIdByPk?: Map<number, string>
+) {
   const meta = (row.offer_metadata as Record<string, unknown>) || {};
+  const fromMeta = Array.isArray(meta.menu_item_ids)
+    ? (meta.menu_item_ids as unknown[]).map((v) => String(v).trim()).filter(Boolean)
+    : [];
+  const fromApp = Array.isArray(applicabilityIds)
+    ? applicabilityIds.map((v) => String(v).trim()).filter(Boolean)
+    : [];
+  const mergedIds = canonicalizeOfferMenuItemIds([...fromMeta, ...fromApp], itemIdByPk);
   const rawImageUrl = row.offer_image_url ?? row.image_url ?? null;
   return {
     ...row,
-    menu_item_ids: (meta.menu_item_ids as string[]) ?? null,
+    menu_item_ids: mergedIds.length > 0 ? mergedIds : null,
+    offer_metadata: {
+      ...meta,
+      ...(mergedIds.length > 0 ? { menu_item_ids: mergedIds } : { menu_item_ids: [] }),
+    },
     image_url: relativizeProxyUrl(rawImageUrl) as string | null,
     offer_image_url: relativizeProxyUrl(row.offer_image_url) as string | null,
     applicable_time_start: shapeTimeColumn(row.applicable_time_start),
@@ -102,6 +117,10 @@ function shapeOfferRow(row: Record<string, unknown>) {
       row.valid_from != null ? new Date(row.valid_from as string).toISOString() : row.valid_from,
     valid_till:
       row.valid_till != null ? new Date(row.valid_till as string).toISOString() : row.valid_till,
+    lifecycle_status: row.lifecycle_status ?? 'ACTIVE',
+    published_at: row.published_at ?? null,
+    disabled_at: row.disabled_at ?? null,
+    disabled_reason: row.disabled_reason ?? null,
     created_at:
       row.created_at != null ? new Date(row.created_at as string).toISOString() : new Date().toISOString(),
     updated_at:
@@ -111,6 +130,28 @@ function shapeOfferRow(row: Record<string, unknown>) {
           ? new Date(row.created_at as string).toISOString()
           : new Date().toISOString(),
   };
+}
+
+/** Prefer catalog `item_id`; map numeric PKs → item_id; never count PK+item_id as two. */
+function canonicalizeOfferMenuItemIds(
+  ids: string[],
+  itemIdByPk?: Map<number, string>
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of ids) {
+    const s = String(raw ?? '').trim();
+    if (!s) continue;
+    let canon = s;
+    if (itemIdByPk && /^\d+$/.test(s)) {
+      const mapped = itemIdByPk.get(Number(s));
+      if (mapped) canon = mapped;
+    }
+    if (seen.has(canon)) continue;
+    seen.add(canon);
+    out.push(canon);
+  }
+  return out;
 }
 
 export async function GET(req: NextRequest) {
@@ -156,7 +197,46 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message || 'Failed to load offers' }, { status: 500 });
     }
 
-    const offers = (data ?? []).map((row) => shapeOfferRow(row as Record<string, unknown>));
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const offerPks = rows
+      .map((r) => Number(r.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const idsByOfferPk = new Map<number, string[]>();
+    // Full store map so metadata numeric PKs can be resolved to catalog item_id.
+    const itemIdByPk = new Map<number, string>();
+    const { data: storeMenuRows } = await db
+      .from('merchant_menu_items')
+      .select('id, item_id')
+      .eq('store_id', resolved.store.id);
+    for (const m of storeMenuRows ?? []) {
+      const row = m as { id: number; item_id?: string | null };
+      if (row.item_id) itemIdByPk.set(Number(row.id), String(row.item_id).trim());
+    }
+
+    if (offerPks.length > 0) {
+      const { data: appRows } = await db
+        .from('merchant_offer_applicability')
+        .select('offer_id, menu_item_id')
+        .in('offer_id', offerPks)
+        .not('menu_item_id', 'is', null);
+
+      for (const row of appRows ?? []) {
+        const r = row as { offer_id: number; menu_item_id: number };
+        const oid = Number(r.offer_id);
+        const mid = Number(r.menu_item_id);
+        if (!Number.isFinite(oid) || !Number.isFinite(mid)) continue;
+        const publicId = itemIdByPk.get(mid);
+        if (!publicId) continue;
+        const list = idsByOfferPk.get(oid) ?? [];
+        list.push(publicId);
+        idsByOfferPk.set(oid, list);
+      }
+    }
+
+    const offers = rows.map((row) =>
+      shapeOfferRow(row, idsByOfferPk.get(Number(row.id)) ?? null, itemIdByPk)
+    );
 
     return NextResponse.json({
       success: true,
@@ -210,48 +290,109 @@ export async function POST(req: NextRequest) {
 
     const actor = await getAuditActor();
     const offerId = generateOfferId(storeId);
+    const publishMode = String(body.publish_mode ?? 'publish').toLowerCase();
+    const isDraft = publishMode === 'draft' || body.lifecycle_status === 'DRAFT';
+    const now = new Date();
+    const validFrom = body.valid_from ? new Date(body.valid_from) : now;
+    const validTill = body.valid_till ? new Date(body.valid_till) : now;
+
+    let lifecycleStatus = 'ACTIVE';
+    let isActive = true;
+    let publishedAt: string | null = now.toISOString();
+
+    if (isDraft) {
+      lifecycleStatus = 'DRAFT';
+      isActive = false;
+      publishedAt = null;
+    } else if (validTill < now) {
+      lifecycleStatus = 'EXPIRED';
+      isActive = false;
+    } else if (validFrom > now) {
+      lifecycleStatus = 'SCHEDULED';
+      isActive = true;
+    }
 
     // merchant_offers has no menu_item_ids column; store in offer_metadata
     const baseMetadata = (body.offer_metadata && typeof body.offer_metadata === 'object') ? { ...body.offer_metadata } : {};
     if (body.menu_item_ids != null && Array.isArray(body.menu_item_ids)) {
       (baseMetadata as Record<string, unknown>).menu_item_ids = body.menu_item_ids;
+    } else if (
+      Array.isArray((baseMetadata as Record<string, unknown>).menu_item_ids) === false &&
+      body.menu_item_ids === null
+    ) {
+      (baseMetadata as Record<string, unknown>).menu_item_ids = [];
     }
+    if (Array.isArray(body.category_ids) && body.category_ids.length > 0) {
+      (baseMetadata as Record<string, unknown>).category_ids = body.category_ids;
+    }
+
+    const offerType = String(body.offer_type || 'PERCENTAGE');
+    const isBogo = offerType === 'BUY_X_GET_Y' || offerType === 'BUY_N_GET_M' || offerType === 'BOGO';
+
+    // Persist Boost vs Precision exactly as the merchant selected (do not override).
+    // BOGO is identified by offer_type — do not stamp conditions_mode.
+    if (isBogo) {
+      delete (baseMetadata as Record<string, unknown>).conditions_mode;
+      (baseMetadata as Record<string, unknown>).create_path = 'bogo';
+    } else {
+      const modeRaw = String((baseMetadata as Record<string, unknown>).conditions_mode ?? '')
+        .toLowerCase()
+        .trim();
+      if (modeRaw === 'boost' || modeRaw === 'precision') {
+        (baseMetadata as Record<string, unknown>).conditions_mode = modeRaw;
+        if (!(baseMetadata as Record<string, unknown>).create_path) {
+          (baseMetadata as Record<string, unknown>).create_path = modeRaw;
+        }
+      }
+      if (modeRaw === 'precision') {
+        (baseMetadata as Record<string, unknown>).menu_item_ids = [];
+        body.offer_sub_type = 'ALL_ORDERS';
+      }
+    }
+
+    const toNumOrNull = (v: unknown) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
 
     const payload: Record<string, unknown> = {
       store_id: merchantStoreId,
       offer_id: offerId,
       offer_title: body.offer_title,
       offer_description: body.offer_description ?? null,
-      offer_type: body.offer_type,
+      offer_type: offerType,
       offer_sub_type: body.offer_sub_type ?? null,
-      discount_value: body.discount_value ?? null,
-      discount_percentage: body.discount_percentage ?? null,
-      max_discount_amount: body.max_discount_amount ?? null,
-      min_order_amount: body.min_order_amount ?? null,
-      max_order_amount: body.max_order_amount ?? null,
-      min_items: body.min_items ?? null,
-      buy_quantity: body.buy_quantity ?? null,
-      get_quantity: body.get_quantity ?? null,
+      discount_value: toNumOrNull(body.discount_value),
+      discount_percentage: toNumOrNull(body.discount_percentage),
+      max_discount_amount: toNumOrNull(body.max_discount_amount),
+      min_order_amount: toNumOrNull(body.min_order_amount),
+      max_order_amount: toNumOrNull(body.max_order_amount),
+      min_items: toNumOrNull(body.min_items),
+      buy_quantity: isBogo ? (toNumOrNull(body.buy_quantity) ?? 1) : toNumOrNull(body.buy_quantity),
+      get_quantity: isBogo ? (toNumOrNull(body.get_quantity) ?? 1) : toNumOrNull(body.get_quantity),
       coupon_code: body.coupon_code ?? null,
       offer_image_url: body.offer_image_url ?? body.image_url ?? null,
       valid_from: body.valid_from,
       valid_till: body.valid_till,
-      is_active: body.is_active ?? true,
+      is_active: body.is_active ?? isActive,
+      lifecycle_status: body.lifecycle_status ?? lifecycleStatus,
+      published_at: publishedAt,
       auto_apply: body.auto_apply ?? true,
       is_stackable: body.is_stackable ?? false,
-      priority: body.priority ?? 0,
-      per_order_limit: body.per_order_limit ?? 1,
+      priority: toNumOrNull(body.priority) ?? 0,
+      per_order_limit: toNumOrNull(body.per_order_limit) ?? 1,
       first_order_only: body.first_order_only ?? false,
       new_user_only: body.new_user_only ?? false,
-      user_segment: body.user_segment ?? null,
-      max_discount_per_order: body.max_discount_per_order ?? null,
+      user_segment: body.user_segment ?? {},
+      max_discount_per_order: toNumOrNull(body.max_discount_per_order),
       usage_reset_period: body.usage_reset_period ?? null,
-      max_uses_total: body.max_uses_total ?? null,
-      max_uses_per_user: body.max_uses_per_user ?? null,
+      max_uses_total: toNumOrNull(body.max_uses_total),
+      max_uses_per_user: toNumOrNull(body.max_uses_per_user),
       applicable_on_days: body.applicable_on_days ?? null,
-      applicable_time_start: body.applicable_time_start ?? null,
-      applicable_time_end: body.applicable_time_end ?? null,
-      offer_metadata: Object.keys(baseMetadata).length ? baseMetadata : null,
+      applicable_time_start: shapeTimeColumn(body.applicable_time_start),
+      applicable_time_end: shapeTimeColumn(body.applicable_time_end),
+      offer_metadata: Object.keys(baseMetadata).length ? baseMetadata : {},
       created_by_name: actor.performed_by_name,
       // Ownership tracking
       created_source_platform: 'MERCHANT_PORTAL',
@@ -260,6 +401,13 @@ export async function POST(req: NextRequest) {
       created_by_user_id: actor.performed_by_id ?? null,
       created_by_org_id: parentId ?? null,
     };
+
+    if (!payload.offer_title || !payload.valid_from || !payload.valid_till) {
+      return NextResponse.json(
+        { error: 'offer_title, valid_from and valid_till are required' },
+        { status: 400 }
+      );
+    }
 
     const { data, error } = await db
       .from('merchant_offers')
@@ -270,6 +418,12 @@ export async function POST(req: NextRequest) {
     if (error) {
       console.error('[merchant/offers] create failed:', error);
       return NextResponse.json({ error: error.message || 'Failed to create offer' }, { status: 500 });
+    }
+
+    try {
+      await db.rpc('sync_offer_applicability_from_metadata', { p_offer_id: data.id });
+    } catch (syncErr) {
+      console.warn('[merchant/offers] create sync applicability failed', syncErr);
     }
 
     // Shape response so frontend gets menu_item_ids (stored in offer_metadata; no column on table)
@@ -296,6 +450,24 @@ export async function POST(req: NextRequest) {
       summary: `Merchant created offer "${data.offer_title}" (${data.offer_type})`,
       actorName: actor.performed_by_name, actorEmail: actor.performed_by_email,
     });
+
+    if (!isDraft) {
+      void fetch(
+        `${process.env.GATIMITRA_BACKEND_API_URL?.replace(/\/$/, '') || 'http://127.0.0.1:3000'}/v1/internal/offers/invalidate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Internal-Secret': process.env.BACKEND_SCHEDULE_TICK_SECRET || '',
+          },
+          body: JSON.stringify({
+            storeId: merchantStoreId,
+            offerId: data.id,
+            event: 'offer_published',
+          }),
+        }
+      ).catch(() => {});
+    }
 
     return NextResponse.json(response);
   } catch (e) {

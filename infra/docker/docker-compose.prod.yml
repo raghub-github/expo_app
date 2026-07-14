@@ -180,6 +180,13 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3001"
+      # nginx returns 403 HTML for /v1/internal on api.gatimitra.com — dashboard
+      # must call Fastify on the Docker network, never the public API origin.
+      BACKEND_URL: http://backend:3000
+      BACKEND_INTERNAL_URL: http://backend:3000
+
+    depends_on:
+      - backend
 
     expose:
       - "3001"

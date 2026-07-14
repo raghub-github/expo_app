@@ -1018,6 +1018,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     borderColor: "rgba(255,255,255,0.45)",
     ...Platform.select({
+      web: { boxShadow: "0 -4px 12px rgba(15, 23, 42, 0.08)" },
       ios: {
         shadowColor: "#0F172A",
         shadowOffset: { width: 0, height: -4 },

@@ -53,9 +53,7 @@ import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
-import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
-import { getQueryClient } from '@/lib/query-client';
 import { merchantKeys } from '@/lib/query-keys';
 import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
@@ -238,18 +236,9 @@ function OrdersPageContent() {
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [storeInternalId, setStoreInternalId] = useState<number | null>(null);
-  const [orders, setOrders] = useState<OrdersFoodRow[]>(() => {
-    if (typeof window === 'undefined') return [];
-    const id = readPartnerSelectedStoreId();
-    if (!id) return [];
-    return getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(id)) ?? [];
-  });
-  const [stats, setStats] = useState<FoodOrderStats>(() => {
-    if (typeof window === 'undefined') return DEFAULT_FOOD_ORDER_STATS;
-    const id = readPartnerSelectedStoreId();
-    if (!id) return DEFAULT_FOOD_ORDER_STATS;
-    return readCachedFoodOrderStats(id) ?? DEFAULT_FOOD_ORDER_STATS;
-  });
+  // SSR-safe defaults only — reading sessionStorage/React Query in useState causes hydration mismatches.
+  const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
+  const [stats, setStats] = useState<FoodOrderStats>(DEFAULT_FOOD_ORDER_STATS);
   const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
@@ -329,20 +318,8 @@ function OrdersPageContent() {
   const [rtoOtpInput, setRtoOtpInput] = useState('');
   const [otpVerified, setOtpVerified] = useState<Record<number, { pickup?: boolean; rto?: boolean }>>({});
   const [otpCache, setOtpCache] = useState<Record<number, CachedOrderOtps>>({});
-  const [loading, setLoading] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    const id = readPartnerSelectedStoreId();
-    if (!id) return true;
-    const cached = getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(id));
-    return !cached?.length;
-  });
-  const [notifyEnabled, setNotifyEnabled] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    try {
-      const s = localStorage.getItem(ORDERS_STORAGE_KEY);
-      return s ? JSON.parse(s).notifyEnabled !== false : true;
-    } catch { return true; }
-  });
+  const [loading, setLoading] = useState(true);
+  const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [billSheetOpen, setBillSheetOpen] = useState(false);
   const [billSheetAllItemsOnly, setBillSheetAllItemsOnly] = useState(false);
@@ -360,17 +337,7 @@ function OrdersPageContent() {
   const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
   const [showTurnOnModal, setShowTurnOnModal] = useState(false);
   const [turnOnLoading, setTurnOnLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<'card' | 'list'>(() => {
-    if (typeof window === 'undefined') return 'card';
-    // Only allow list view on large screens (lg+)
-    const isLargeScreen = typeof window !== 'undefined' && window.innerWidth >= 1024;
-    if (!isLargeScreen) return 'card';
-    try {
-      const s = localStorage.getItem(ORDERS_STORAGE_KEY);
-      const v = s ? JSON.parse(s).viewMode : null;
-      return v === 'list' || v === 'card' ? v : 'card';
-    } catch { return 'card'; }
-  });
+  const [viewMode, setViewMode] = useState<'card' | 'list'>('card');
 
   const [orderSort, setOrderSort] = useState<'remaining' | 'newest' | 'oldest'>('remaining');
   const [orderIdSearch, setOrderIdSearch] = useState('');
@@ -389,24 +356,37 @@ function OrdersPageContent() {
     router.replace(path, { scroll: false });
   }, [searchParams, router]);
 
-  // Force card view on mobile/tablet, only allow list on lg+
+  // Restore persisted view after mount (SSR-safe).
+  useEffect(() => {
+    try {
+      if (window.innerWidth >= 1024) {
+        const s = localStorage.getItem(ORDERS_STORAGE_KEY);
+        const v = s ? JSON.parse(s).viewMode : null;
+        if (v === 'list' || v === 'card') setViewMode(v);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Force card view on mobile/tablet; list only on lg+.
   useEffect(() => {
     const handleResize = () => {
-      if (typeof window !== 'undefined' && window.innerWidth < 1024 && viewMode === 'list') {
+      if (window.innerWidth < 1024 && viewMode === 'list') {
         setViewMode('card');
         try {
           const s = localStorage.getItem(ORDERS_STORAGE_KEY);
           const stored = s ? JSON.parse(s) : {};
           stored.viewMode = 'card';
           localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(stored));
-        } catch {}
+        } catch {
+          /* ignore */
+        }
       }
     };
-    if (typeof window !== 'undefined') {
-      window.addEventListener('resize', handleResize);
-      handleResize(); // Check on mount
-      return () => window.removeEventListener('resize', handleResize);
-    }
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
   }, [viewMode]);
 
   const persistLocal = useCallback(
@@ -778,6 +758,7 @@ function OrdersPageContent() {
     const reload = () => {
       void fetchOrders();
       void fetchStats();
+      dispatchPartnerNotificationsChanged();
     };
     const ch = supabase
       .channel(`partner_store_orders:${storeInternalId}`)
@@ -1024,7 +1005,6 @@ function OrdersPageContent() {
     void confirmStoreClose();
   }, [closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, confirmStoreClose]);
 
-  const autoCancelFiredRef = useRef<Set<number>>(new Set());
   const orderPipelineByKeyRef = useRef<Map<number, string>>(new Map());
 
   const updateStatus = useCallback(
@@ -1303,8 +1283,13 @@ function OrdersPageContent() {
     if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
     const st = resolveOrderSidebarPipelineStatus(selectedOrder);
     if (st !== 'CREATED' && st !== 'NEW') return { label: undefined, disabled: false };
-    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-    const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
+    const fromBackend = selectedOrder.merchant_response_deadline_at;
+    const deadline = fromBackend
+      ? new Date(fromBackend).getTime()
+      : new Date(selectedOrder.created_at).getTime() +
+        Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5))) *
+          60_000;
+    if (!Number.isFinite(deadline)) return { label: undefined, disabled: false };
     const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
     const m = Math.floor(secondsLeft / 60);
     const s = secondsLeft % 60;
@@ -1318,8 +1303,13 @@ function OrdersPageContent() {
     (order: OrdersFoodRow) => {
       const st = resolveOrderSidebarPipelineStatus(order);
       if (st !== 'CREATED' && st !== 'NEW') return { label: undefined as string | undefined, disabled: false };
-      const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      const fromBackend = order.merchant_response_deadline_at;
+      const deadline = fromBackend
+        ? new Date(fromBackend).getTime()
+        : new Date(order.created_at).getTime() +
+          Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5))) *
+            60_000;
+      if (!Number.isFinite(deadline)) return { label: undefined as string | undefined, disabled: false };
       const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
       const m = Math.floor(secondsLeft / 60);
       const s = secondsLeft % 60;
@@ -1331,30 +1321,9 @@ function OrdersPageContent() {
     [acceptanceSettings?.acceptance_window_minutes, nowTick]
   );
 
-  useEffect(() => {
-    if (!storeId) return;
-    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
-    for (const order of orders) {
-      const st = resolveOrderSidebarPipelineStatus(order);
-      if (st !== 'CREATED') continue;
-      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
-      if (nowTick < deadline) continue;
-      if (autoCancelFiredRef.current.has(order.id)) continue;
-      if (actionLoading === order.id) continue;
-      autoCancelFiredRef.current.add(order.id);
-      void updateStatus(order, 'CANCELLED', {
-        rejected_reason: 'Auto Cancelled',
-        cancel_mode: 'auto',
-      });
-    }
-  }, [
-    nowTick,
-    orders,
-    storeId,
-    acceptanceSettings?.acceptance_window_minutes,
-    actionLoading,
-    updateStatus,
-  ]);
+  // Backend owns auto-cancel. Clients must never PATCH CANCELLED on fuse expiry.
+  // When countdown hits 0, Accept is disabled until backend/realtime closes the order.
+  // (Previous client auto-cancel here could fire before snapshotted deadline.)
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 

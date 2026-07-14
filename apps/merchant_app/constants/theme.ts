@@ -99,28 +99,37 @@ export const GatiMitraMerchant = {
   statusCompleted: "#166534",
   statusCompletedBg: "#DCFCE7",
 
-  // Elevation (no overflow, proper shadow)
-  shadow: {
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  shadowSm: {
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  shadowCard: {
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
-  },
+  // Elevation — native uses shadow* / elevation; web uses boxShadow (RN Web deprecation).
+  shadow: Platform.select({
+    web: { boxShadow: "0 2px 8px rgba(15, 23, 42, 0.06)" },
+    default: {
+      shadowColor: "#0F172A",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.06,
+      shadowRadius: 8,
+      elevation: 3,
+    },
+  }) as object,
+  shadowSm: Platform.select({
+    web: { boxShadow: "0 1px 4px rgba(15, 23, 42, 0.05)" },
+    default: {
+      shadowColor: "#0F172A",
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.05,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+  }) as object,
+  shadowCard: Platform.select({
+    web: { boxShadow: "0 2px 6px rgba(15, 23, 42, 0.04)" },
+    default: {
+      shadowColor: "#0F172A",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.04,
+      shadowRadius: 6,
+      elevation: 2,
+    },
+  }) as object,
 
   /** Web: cursor pointer for buttons, toggles, cards. Native: no-op. */
   cursorPointer: Platform.OS === "web" ? { cursor: "pointer" as const } : {},

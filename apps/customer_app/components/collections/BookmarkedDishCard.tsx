@@ -3,8 +3,10 @@ import { View, Text, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity 
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import type { BookmarkedMenuItem } from "@/services/merchant.service";
 import { setMenuItemBookmark } from "@/services/merchant.service";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -19,12 +21,13 @@ type Props = {
 
 export function BookmarkedDishCard({ item, onRemoved }: Props) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { removeMenuItemBookmark } = useMenuItemBookmarkMutations();
   const [removing, setRemoving] = useState(false);
 
   const handleOpen = useCallback(() => {
-    router.push({ pathname: "/home/merchant/[id]", params: { id: item.storeId } });
-  }, [item.storeId, router]);
+    navigateToMerchant(router, queryClient, item.storeId);
+  }, [item.storeId, queryClient, router]);
 
   const handleUnbookmark = useCallback(async () => {
     if (removing) return;

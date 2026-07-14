@@ -1,9 +1,10 @@
-import { TouchableOpacity, Text, StyleSheet, View } from "react-native";
+import { TouchableOpacity, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { walletBalanceFallback } from "@/lib/walletBalanceCache";
+import { AppText } from "@/components/AppText";
 
 const TITLE_DARK = "#1F2937";
 const ICON_CIRCLE_BG = "#F3F4F6";
@@ -48,9 +49,9 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
         <View style={styles.gridIconWrap}>
           <Ionicons name="wallet" size={14} color="#FFFFFF" />
         </View>
-        <Text style={styles.gridAmount} numberOfLines={1}>
+        <AppText style={styles.gridAmount} numberOfLines={1}>
           ₹{displayAmount}
-        </Text>
+        </AppText>
       </TouchableOpacity>
     );
   }
@@ -66,9 +67,9 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
       <View style={styles.iconCircle}>
         <Ionicons name="wallet-outline" size={13} color={TITLE_DARK} />
       </View>
-      <Text style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+      <AppText style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
         ₹{displayAmount}
-      </Text>
+      </AppText>
     </TouchableOpacity>
   );
 }

@@ -81,7 +81,7 @@ const extendSearchResponseSchema = z.object({
 const availabilityQuerySchema = z.object({
   pickupLat: z.coerce.number(),
   pickupLng: z.coerce.number(),
-  radiusKm: z.coerce.number().min(0.5).max(10).optional(),
+  radiusKm: z.coerce.number().min(0.5).max(15).optional(),
   rideType: z.string().min(1).optional(),
   tripKm: z.coerce.number().min(0).max(500).optional(),
   pickupPincode: z.string().optional(),

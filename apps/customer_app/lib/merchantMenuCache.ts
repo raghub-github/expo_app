@@ -6,6 +6,7 @@ import {
   type MerchantDetail,
 } from "@/services/merchant.service";
 import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
+import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 
 /** Version-based SWR — no time-based expiry. */
 export const MERCHANT_DETAIL_STALE_MS = Number.POSITIVE_INFINITY;
@@ -24,11 +25,35 @@ type MerchantMenuCacheBlob = Record<string, CachedMerchantMenuEntry>;
 const MAX_CACHED_STORES = 15;
 const memoryByStoreId = new Map<string, CachedMerchantMenuEntry>();
 
+function parseBlob(raw: string | null | undefined): MerchantMenuCacheBlob {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as MerchantMenuCacheBlob;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Sync hydrate from MMKV (or memory) so first store open has zero wait. */
+function hydrateMemoryFromFastKvSync(): void {
+  const blob = parseBlob(fastGetString(STORAGE_KEYS.MERCHANT_MENU_CACHE));
+  for (const [storeId, entry] of Object.entries(blob)) {
+    if (!entry?.detail || memoryByStoreId.has(storeId)) continue;
+    memoryByStoreId.set(storeId, entry);
+  }
+}
+
+hydrateMemoryFromFastKvSync();
+
 export function hasMemoryMerchantMenu(merchantId: string): boolean {
   return (memoryByStoreId.get(merchantId)?.detail?.menu?.length ?? 0) > 0;
 }
 
 export function readSyncMerchantMenu(merchantId: string): MerchantDetail | undefined {
+  if (!memoryByStoreId.has(merchantId)) {
+    hydrateMemoryFromFastKvSync();
+  }
   return memoryByStoreId.get(merchantId)?.detail;
 }
 
@@ -37,21 +62,26 @@ export function getMerchantMenuCachedAt(merchantId: string): number | undefined 
 }
 
 async function readPersistedBlob(): Promise<MerchantMenuCacheBlob> {
+  const fromFast = parseBlob(fastGetString(STORAGE_KEYS.MERCHANT_MENU_CACHE));
+  if (Object.keys(fromFast).length > 0) return fromFast;
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEYS.MERCHANT_MENU_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as MerchantMenuCacheBlob;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return parseBlob(raw);
   } catch {
     return {};
   }
 }
 
 async function writePersistedBlob(blob: MerchantMenuCacheBlob): Promise<void> {
+  const raw = JSON.stringify(blob);
   try {
-    await AsyncStorage.setItem(STORAGE_KEYS.MERCHANT_MENU_CACHE, JSON.stringify(blob));
+    fastSetString(STORAGE_KEYS.MERCHANT_MENU_CACHE, raw);
   } catch {
-    // Non-blocking — in-memory + React Query still work.
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.MERCHANT_MENU_CACHE, raw);
+    } catch {
+      // Non-blocking — in-memory + React Query still work.
+    }
   }
 }
 
@@ -67,6 +97,8 @@ function rememberInMemory(merchantId: string, detail: MerchantDetail): void {
 
 /** Warm in-memory store menus from disk at app launch (disk only when memory empty). */
 export async function hydrateMerchantMenuMemoryFromStorage(): Promise<void> {
+  await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.MERCHANT_MENU_CACHE]);
+  hydrateMemoryFromFastKvSync();
   const blob = await readPersistedBlob();
   for (const [storeId, entry] of Object.entries(blob)) {
     if (!entry?.detail || memoryByStoreId.has(storeId)) continue;

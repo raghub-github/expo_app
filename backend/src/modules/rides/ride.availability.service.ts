@@ -11,7 +11,8 @@ import {
   resolveRideStateIdFromCoords,
 } from "../ride-state-config/index.js";
 
-export const DEFAULT_RIDE_SUPPLY_RADIUS_KM = 2;
+/** Default search radius for map pins / nearest-ETA (options still return with 0 riders). */
+export const DEFAULT_RIDE_SUPPLY_RADIUS_KM = 8;
 export const RIDER_LOCATION_MAX_AGE_MINUTES = 10;
 
 export type NearbySupplyRider = {
@@ -114,93 +115,103 @@ export async function getNearbyRideSupply(input: {
   const db = getDb();
   const sqlClient = getSql();
 
-  let rideLimits: Awaited<ReturnType<typeof loadRideVehicleLimitsForState>> = [];
-  if (tripKm != null) {
-    const stateId = await resolveRideStateIdFromCoords({
-      pickupLat: input.pickupLat,
-      pickupLng: input.pickupLng,
-      pickupPincode: input.pickupPincode,
-      pickupState: input.pickupState,
-    });
-    if (stateId) {
-      rideLimits = await loadRideVehicleLimitsForState(stateId);
-    }
-  }
+  // Approx bounding box — cuts candidates before haversine / duty lookups.
+  const latDelta = radiusKm / 111;
+  const cosLat = Math.cos((input.pickupLat * Math.PI) / 180);
+  const lngDelta = radiusKm / (111 * Math.max(0.2, Math.abs(cosLat)));
+  const minLat = input.pickupLat - latDelta;
+  const maxLat = input.pickupLat + latDelta;
+  const minLng = input.pickupLng - lngDelta;
+  const maxLng = input.pickupLng + lngDelta;
 
-  const catalogRows = await db
-    .select()
-    .from(customerRideServiceCatalog)
-    .where(eq(customerRideServiceCatalog.isActive, true))
-    .orderBy(asc(customerRideServiceCatalog.sortOrder));
-
-  const supplyRows = (await sqlClient`
-    WITH latest_duty AS (
-      SELECT DISTINCT ON (dl.rider_id)
-        dl.rider_id,
-        dl.status,
-        dl.service_types
-      FROM duty_logs dl
-      ORDER BY dl.rider_id, dl.timestamp DESC
-    ),
-    rider_positions AS (
+  const [rideLimits, catalogRows, supplyRows] = await Promise.all([
+    (async () => {
+      if (tripKm == null) return [] as Awaited<ReturnType<typeof loadRideVehicleLimitsForState>>;
+      const stateId = await resolveRideStateIdFromCoords({
+        pickupLat: input.pickupLat,
+        pickupLng: input.pickupLng,
+        pickupPincode: input.pickupPincode,
+        pickupState: input.pickupState,
+      });
+      if (!stateId) return [];
+      return loadRideVehicleLimitsForState(stateId);
+    })(),
+    db
+      .select()
+      .from(customerRideServiceCatalog)
+      .where(eq(customerRideServiceCatalog.isActive, true))
+      .orderBy(asc(customerRideServiceCatalog.sortOrder)),
+    // Start from recent GPS candidates, then LATERAL one latest duty row each
+    // (uses duty_logs_rider_created_desc_idx). Never scan all of duty_logs.
+    sqlClient`
       SELECT
-        rcl.rider_id,
-        rcl.lat,
-        rcl.lng,
-        rcl.heading_deg AS heading,
-        rcl.updated_at
-      FROM rider_current_locations rcl
-    )
-    SELECT
-      rp.rider_id,
-      rp.lat,
-      rp.lng,
-      rp.heading,
-      rv.vehicle_type,
-      rv.ac_type,
-      rv.limitation_flags,
-      (
-        6371 * acos(
-          LEAST(1.0, GREATEST(-1.0,
-            cos(radians(${input.pickupLat})) * cos(radians(rp.lat))
-            * cos(radians(rp.lng) - radians(${input.pickupLng}))
-            + sin(radians(${input.pickupLat})) * sin(radians(rp.lat))
-          ))
-        )
-      ) AS distance_km
-    FROM rider_positions rp
-    INNER JOIN riders r ON r.id = rp.rider_id
-    INNER JOIN latest_duty ld ON ld.rider_id = rp.rider_id
-    INNER JOIN rider_vehicles rv ON rv.rider_id = rp.rider_id
-    WHERE r.deleted_at IS NULL
-      AND r.status <> 'BLOCKED'
-      AND ld.status = 'ON'
-      AND ld.service_types @> '["person_ride"]'::jsonb
-      AND rv.deleted_at IS NULL
-      AND rv.is_active = true
-      AND rv.verified = true
-      AND COALESCE(rv.vehicle_active_status, 'active') = 'active'
-      AND rp.updated_at >= NOW() - (${RIDER_LOCATION_MAX_AGE_MINUTES} * INTERVAL '1 minute')
-      AND (
-        6371 * acos(
-          LEAST(1.0, GREATEST(-1.0,
-            cos(radians(${input.pickupLat})) * cos(radians(rp.lat))
-            * cos(radians(rp.lng) - radians(${input.pickupLng}))
-            + sin(radians(${input.pickupLat})) * sin(radians(rp.lat))
-          ))
-        )
-      ) <= ${radiusKm}
-    ORDER BY distance_km ASC
-  `) as Array<{
-    rider_id: number;
-    lat: number;
-    lng: number;
-    heading: number | null;
-    vehicle_type: string;
-    ac_type: string | null;
-    limitation_flags: unknown;
-    distance_km: number;
-  }>;
+        rp.rider_id,
+        rp.lat,
+        rp.lng,
+        rp.heading,
+        rv.vehicle_type,
+        rv.ac_type,
+        rv.limitation_flags,
+        (
+          6371 * acos(
+            LEAST(1.0, GREATEST(-1.0,
+              cos(radians(${input.pickupLat})) * cos(radians(rp.lat))
+              * cos(radians(rp.lng) - radians(${input.pickupLng}))
+              + sin(radians(${input.pickupLat})) * sin(radians(rp.lat))
+            ))
+          )
+        ) AS distance_km
+      FROM (
+        SELECT
+          rcl.rider_id,
+          rcl.lat,
+          rcl.lng,
+          rcl.heading_deg AS heading
+        FROM rider_current_locations rcl
+        WHERE rcl.updated_at >= NOW() - (${RIDER_LOCATION_MAX_AGE_MINUTES} * INTERVAL '1 minute')
+          AND rcl.lat BETWEEN ${minLat} AND ${maxLat}
+          AND rcl.lng BETWEEN ${minLng} AND ${maxLng}
+      ) rp
+      INNER JOIN riders r ON r.id = rp.rider_id
+      INNER JOIN LATERAL (
+        SELECT dl.status, dl.service_types
+        FROM duty_logs dl
+        WHERE dl.rider_id = rp.rider_id
+        ORDER BY dl.timestamp DESC
+        LIMIT 1
+      ) ld ON true
+      INNER JOIN rider_vehicles rv ON rv.rider_id = rp.rider_id
+      WHERE r.deleted_at IS NULL
+        AND r.status <> 'BLOCKED'
+        AND ld.status = 'ON'
+        AND ld.service_types @> '["person_ride"]'::jsonb
+        AND rv.deleted_at IS NULL
+        AND rv.is_active = true
+        AND rv.verified = true
+        AND COALESCE(rv.vehicle_active_status, 'active') = 'active'
+        AND (
+          6371 * acos(
+            LEAST(1.0, GREATEST(-1.0,
+              cos(radians(${input.pickupLat})) * cos(radians(rp.lat))
+              * cos(radians(rp.lng) - radians(${input.pickupLng}))
+              + sin(radians(${input.pickupLat})) * sin(radians(rp.lat))
+            ))
+          )
+        ) <= ${radiusKm}
+      ORDER BY distance_km ASC
+    ` as Promise<
+      Array<{
+        rider_id: number;
+        lat: number;
+        lng: number;
+        heading: number | null;
+        vehicle_type: string;
+        ac_type: string | null;
+        limitation_flags: unknown;
+        distance_km: number;
+      }>
+    >,
+  ]);
 
   const ridersById = new Map<
     number,
@@ -236,9 +247,7 @@ export async function getNearbyRideSupply(input: {
   }
 
   const riders = Array.from(ridersById.values());
-
   const uniqueRiderIds = new Set(riders.map((r) => r.riderId));
-
   const options: RideAvailabilityOption[] = [];
 
   for (const row of catalogRows) {
@@ -257,6 +266,8 @@ export async function getNearbyRideSupply(input: {
     const matchingRiders = riders
       .filter((r) => riderMatchesCatalogOption(r, row.code, matchTypes))
       .sort((a, b) => a.distanceKm - b.distanceKm);
+
+    // Only surface vehicle options that have at least one nearby on-duty rider.
     if (matchingRiders.length === 0) continue;
 
     const nearest = matchingRiders[0]!;
@@ -273,7 +284,7 @@ export async function getNearbyRideSupply(input: {
       name: row.label,
       subtitle,
       baseFare: parseNum(row.baseFare) ?? 0,
-      etaMins: row.etaMins ?? 3,
+      etaMins: nearestEta,
       capacity: row.capacity,
       tag: row.tag === "FASTEST" || row.tag === "SAVE" ? row.tag : null,
       imageKey: row.imageKey,

@@ -128,14 +128,37 @@ function baseAmountForItem(item: NormalizedOrderLineItem): number {
   return 0;
 }
 
-/** Line total = base + customizations (single source; no double-add). */
+function menuRupee(n: number): number {
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
+/** Line total — prefer frozen Merchant CTM snapshot (same as partnersite / merchant app). */
 export function merchantLineTotalForItem(item: NormalizedOrderLineItem): number {
+  if (item.ctmFromSnapshot) {
+    if (item.netLineTotal != null && Number.isFinite(item.netLineTotal)) {
+      return menuRupee(item.netLineTotal);
+    }
+    if (item.catalogLineTotal != null && item.catalogLineTotal > 0.005) {
+      return menuRupee(item.catalogLineTotal);
+    }
+  }
+  if (
+    item.netLineTotal != null &&
+    item.catalogLineTotal != null &&
+    item.netLineTotal < item.catalogLineTotal - 0.005
+  ) {
+    return menuRupee(item.netLineTotal);
+  }
+  if (item.catalogLineTotal != null && item.catalogLineTotal > 0.005) {
+    return menuRupee(item.catalogLineTotal);
+  }
+
   const base = baseAmountForItem(item);
   const cust = customizationTotalForItem(item);
-  if (base > 0.005 || cust > 0.005) return round2(base + cust);
+  if (base > 0.005 || cust > 0.005) return menuRupee(base + cust);
 
   const qty = Math.max(1, item.quantity || 1);
-  return round2(Number(item.total) || Number(item.price) * qty);
+  return menuRupee(Number(item.total) || Number(item.price) * qty);
 }
 
 export function orderItemsTotals(items: NormalizedOrderLineItem[]) {

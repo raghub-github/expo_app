@@ -8,6 +8,7 @@ import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import AppLinkSentToast from '@/components/common/AppLinkSentToast'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
@@ -26,6 +27,7 @@ export default function ParcelServicePageModern() {
   const [targetService, setTargetService] = useState<ServiceCategory>('parcel')
   const [hasCheckedService, setHasCheckedService] = useState(false)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
+  const [showAppLinkToast, setShowAppLinkToast] = useState(false)
 
   const [trackingType, setTrackingType] = useState<'mobile' | 'gmid' | 'partnerid'>('mobile')
   const [trackingInput, setTrackingInput] = useState('')
@@ -405,9 +407,12 @@ export default function ParcelServicePageModern() {
       <AppDownloadModal
         isOpen={showAppDownloadModal}
         onClose={() => setShowAppDownloadModal(false)}
+        variant="customer"
         title="Send parcels in the GatiMitra App"
         description="Parcel booking is app-only. Download the GatiMitra app to create and manage parcel orders."
+        onLinkSent={() => setShowAppLinkToast(true)}
       />
+      <AppLinkSentToast open={showAppLinkToast} onClose={() => setShowAppLinkToast(false)} />
 
       {isAuthModalOpen && <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />}
       <UserProfileModal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} />

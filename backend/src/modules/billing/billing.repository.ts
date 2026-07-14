@@ -27,6 +27,10 @@ import type {
   SlabRow,
   TaxConfigRow,
 } from "./types.js";
+import {
+  narrowBillingRulesForService,
+  narrowTaxConfigsForService,
+} from "./billingRuleSelection.js";
 
 function n(v: unknown): number | null {
   if (v == null) return null;
@@ -178,8 +182,8 @@ export async function loadBillingDatasetUncached(
     byRule.set(c.ruleId, list);
   }
 
-  const rules: RuleRow[] = engineRuleRows
-    .map((r) => ({
+  const rules: RuleRow[] = narrowBillingRulesForService(
+    engineRuleRows.map((r) => ({
       id: r.id,
       name: r.name,
       type: r.type,
@@ -197,8 +201,9 @@ export async function loadBillingDatasetUncached(
       serviceType: (r.serviceType ?? "FOOD").trim().toUpperCase(),
       discountAppliesOn: String((r as { discountAppliesOn?: string }).discountAppliesOn ?? "ITEMS_TOTAL").toUpperCase(),
       chargeSubtype: (r as { chargeSubtype?: string | null }).chargeSubtype ?? null,
-    }))
-    .filter((r) => r.serviceType === serviceType || r.serviceType === "ALL");
+    })),
+    serviceType
+  );
 
   const slabDb = await db
     .select()
@@ -342,8 +347,8 @@ export async function loadBillingDatasetUncached(
     ORDER BY r.charge_order_key ASC, t.id ASC
   `;
 
-  const taxConfigs: TaxConfigRow[] = taxRows
-    .map((t) => ({
+  let taxConfigs: TaxConfigRow[] = narrowTaxConfigsForService(
+    taxRows.map((t) => ({
       id: t.id,
       name: t.name,
       rate: n(t.rate) ?? 0,
@@ -353,13 +358,18 @@ export async function loadBillingDatasetUncached(
       chargeOrderKey: Number(t.charge_order_key) || t.priority,
       isHidden: t.is_hidden,
       serviceType: (t.service_type ?? "FOOD").trim().toUpperCase(),
-    }))
-    .filter((t) => t.serviceType === serviceType || t.serviceType === "ALL");
+    })),
+    serviceType
+  );
 
   // Optional runtime injection: add GST lines for delivery/packaging if not already configured in DB.
   // This is intentionally opt-in via env and will never duplicate existing tax configs.
   const env = safeEnvForTaxInjection();
-  if (env.APPLY_GST_ON_DELIVERY_FEE && !hasApplicableBaseTax(taxConfigs, "DELIVERY_FEE")) {
+  if (
+    serviceType !== "RIDE" &&
+    env.APPLY_GST_ON_DELIVERY_FEE &&
+    !hasApplicableBaseTax(taxConfigs, "DELIVERY_FEE")
+  ) {
     const pct = env.DELIVERY_FEE_GST_PERCENT ?? 5;
     const rate = Math.max(0, Math.min(1, pct / 100));
     if (rate > 0) {
@@ -377,7 +387,11 @@ export async function loadBillingDatasetUncached(
     }
   }
 
-  if (env.APPLY_GST_ON_PACKAGING && !hasApplicableBaseTax(taxConfigs, "PACKAGING_FEE")) {
+  if (
+    serviceType !== "RIDE" &&
+    env.APPLY_GST_ON_PACKAGING &&
+    !hasApplicableBaseTax(taxConfigs, "PACKAGING_FEE")
+  ) {
     const mode = (env.PACKAGING_GST_MODE ?? "same_as_item").trim().toLowerCase();
     const derivedRate = mode === "same_as_item" ? sumItemGstRate(taxConfigs) : 0;
     const rate = Math.max(0, Math.min(1, derivedRate));
@@ -439,45 +453,99 @@ export async function loadBillingDatasetUncached(
           and(
             eq(merchantOffersTable.storeId, opts.merchantStoreId),
             eq(merchantOffersTable.isActive, true),
+            or(
+              eq(merchantOffersTable.lifecycleStatus, "ACTIVE"),
+              eq(merchantOffersTable.lifecycleStatus, "SCHEDULED"),
+              sql`${merchantOffersTable.lifecycleStatus} IS NULL`
+            ),
             lte(merchantOffersTable.validFrom, now),
             gte(merchantOffersTable.validTill, now),
           )
         )
         .orderBy(sql`${merchantOffersTable.displayPriority} DESC NULLS LAST`, asc(merchantOffersTable.id));
 
-      merchantOffers = mo.map((r) => ({
-        id:                  r.id,
-        offerId:             r.offerId,
-        title:               r.offerTitle,
-        offerType:           String(r.offerType ?? "PERCENTAGE"),
-        offerSubType:        r.offerSubType ?? null,
-        discountValue:       n(r.discountValue),
-        discountPercentage:  n(r.discountPercentage),
-        maxDiscountAmount:   n(r.maxDiscountAmount),
-        minOrderAmount:      n(r.minOrderAmount),
-        maxOrderAmount:      n(r.maxOrderAmount),
-        buyQuantity:         r.buyQuantity ?? null,
-        getQuantity:         r.getQuantity ?? null,
-        couponCode:          r.couponCode ?? null,
-        autoApply:           r.autoApply ?? true,
-        isStackable:         r.isStackable ?? false,
-        perOrderLimit:       r.perOrderLimit ?? 1,
-        firstOrderOnly:      r.firstOrderOnly ?? false,
-        newUserOnly:         r.newUserOnly ?? false,
-        maxUsesTotal:        r.maxUsesTotal ?? null,
-        maxUsesPerUser:      r.maxUsesPerUser ?? null,
-        currentUses:         r.currentUses ?? 0,
-        applicableOnDays:    Array.isArray(r.applicableOnDays) ? r.applicableOnDays as string[] : null,
-        applicableTimeStart: r.applicableTimeStart ?? null,
-        applicableTimeEnd:   r.applicableTimeEnd ?? null,
-        maxDiscountPerOrder: n(r.maxDiscountPerOrder),
-        metadata:            (r.offerMetadata as Record<string, unknown>) ?? {},
-        displayPriority:     r.displayPriority ?? 0,
-        priority:            r.priority ?? 0,
-        createdSourcePlatform: r.createdSourcePlatform ?? "MERCHANT_APP",
-        createdByRole:         r.createdByRole ?? "MERCHANT",
-        approvalStatus:        r.approvalStatus ?? "AUTO_APPROVED",
-      }));
+      // Applicability holds resolved menu PKs; metadata often has catalog item_id strings.
+      // Merge both (same as customer offers listing) so Boost eligibility matches cart PKs.
+      const offerPks = mo.map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
+      const idsByOfferPk = new Map<number, string[]>();
+      if (offerPks.length > 0) {
+        try {
+          const pg = getSql();
+          const appRows = await pg`
+            SELECT
+              a.offer_id,
+              a.menu_item_id,
+              m.item_id
+            FROM merchant_offer_applicability a
+            LEFT JOIN merchant_menu_items m ON m.id = a.menu_item_id
+            WHERE a.offer_id = ANY(${offerPks})
+              AND a.menu_item_id IS NOT NULL
+          `;
+          for (const row of appRows as Array<{
+            offer_id: number | string;
+            menu_item_id: number | string | null;
+            item_id: string | null;
+          }>) {
+            const oid = Number(row.offer_id);
+            if (!Number.isFinite(oid)) continue;
+            const list = idsByOfferPk.get(oid) ?? [];
+            if (row.menu_item_id != null) list.push(String(row.menu_item_id));
+            if (row.item_id) list.push(String(row.item_id).trim());
+            idsByOfferPk.set(oid, list);
+          }
+        } catch {
+          // Older DBs may lack applicability — metadata-only fallback.
+        }
+      }
+
+      merchantOffers = mo.map((r) => {
+        const meta =
+          r.offerMetadata && typeof r.offerMetadata === "object"
+            ? { ...(r.offerMetadata as Record<string, unknown>) }
+            : {};
+        const fromMetaRaw = meta.menu_item_ids ?? meta.menuItemIds ?? meta.selected_item_ids;
+        const fromMeta = Array.isArray(fromMetaRaw)
+          ? fromMetaRaw.map((v) => String(v).trim()).filter(Boolean)
+          : [];
+        const fromApp = idsByOfferPk.get(Number(r.id)) ?? [];
+        const mergedIds = [...new Set([...fromMeta, ...fromApp])];
+        if (mergedIds.length > 0) {
+          meta.menu_item_ids = mergedIds;
+        }
+        return {
+          id:                  r.id,
+          offerId:             r.offerId,
+          title:               r.offerTitle,
+          offerType:           String(r.offerType ?? "PERCENTAGE"),
+          offerSubType:        r.offerSubType ?? null,
+          discountValue:       n(r.discountValue),
+          discountPercentage:  n(r.discountPercentage),
+          maxDiscountAmount:   n(r.maxDiscountAmount),
+          minOrderAmount:      n(r.minOrderAmount),
+          maxOrderAmount:      n(r.maxOrderAmount),
+          buyQuantity:         r.buyQuantity ?? null,
+          getQuantity:         r.getQuantity ?? null,
+          couponCode:          r.couponCode ?? null,
+          autoApply:           r.autoApply ?? true,
+          isStackable:         r.isStackable ?? false,
+          perOrderLimit:       r.perOrderLimit ?? 1,
+          firstOrderOnly:      r.firstOrderOnly ?? false,
+          newUserOnly:         r.newUserOnly ?? false,
+          maxUsesTotal:        r.maxUsesTotal ?? null,
+          maxUsesPerUser:      r.maxUsesPerUser ?? null,
+          currentUses:         r.currentUses ?? 0,
+          applicableOnDays:    Array.isArray(r.applicableOnDays) ? r.applicableOnDays as string[] : null,
+          applicableTimeStart: r.applicableTimeStart ?? null,
+          applicableTimeEnd:   r.applicableTimeEnd ?? null,
+          maxDiscountPerOrder: n(r.maxDiscountPerOrder),
+          metadata:            meta,
+          displayPriority:     r.displayPriority ?? 0,
+          priority:            r.priority ?? 0,
+          createdSourcePlatform: r.createdSourcePlatform ?? "MERCHANT_APP",
+          createdByRole:         r.createdByRole ?? "MERCHANT",
+          approvalStatus:        r.approvalStatus ?? "AUTO_APPROVED",
+        };
+      });
     } catch {
       merchantOffers = [];
     }

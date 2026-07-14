@@ -1,4 +1,10 @@
 import type { NormalizedOrderLineItem } from "@/lib/orderLineItems";
+import {
+  formatBogoOfferBadge,
+  formatBoostOfferBadge,
+  isBogoOfferType,
+  resolveMerchantOfferBadge,
+} from "@/lib/merchant-offer-display";
 
 export function formatOrderRs(amount: number, decimals = 0): string {
   const n = Number.isFinite(amount) ? amount : 0;
@@ -128,12 +134,88 @@ function baseAmountForItem(item: NormalizedOrderLineItem): number {
 }
 
 export function merchantLineTotalForItem(item: NormalizedOrderLineItem): number {
+  // Prefer frozen Merchant CTM snapshot over live/customer line math.
+  if (item.ctmFromSnapshot) {
+    if (item.netLineTotal != null && Number.isFinite(item.netLineTotal)) {
+      return menuRupee(item.netLineTotal);
+    }
+    if (item.catalogLineTotal != null && item.catalogLineTotal > 0.005) {
+      return menuRupee(item.catalogLineTotal);
+    }
+  }
+  if (
+    item.netLineTotal != null &&
+    item.catalogLineTotal != null &&
+    item.netLineTotal < item.catalogLineTotal - 0.005
+  ) {
+    return menuRupee(item.netLineTotal);
+  }
+  if (item.catalogLineTotal != null && item.catalogLineTotal > 0.005) {
+    return menuRupee(item.catalogLineTotal);
+  }
+
   const base = baseAmountForItem(item);
   const cust = customizationTotalForItem(item);
   if (base > 0.005 || cust > 0.005) return menuRupee(base + cust);
 
   const qty = Math.max(1, item.quantity || 1);
   return menuRupee(Number(item.total) || Number(item.price) * qty);
+}
+
+/** Catalog vs effective selling price from frozen order snapshot (no recalculation). */
+export function merchantItemCatalogAndNet(item: NormalizedOrderLineItem): {
+  catalog: number;
+  net: number;
+  showStrike: boolean;
+  offerBadge: string | null;
+  offerKind: "bogo" | "boost" | "other" | null;
+} {
+  const lineTotal = merchantLineTotalForItem(item);
+  const hasCatalog =
+    item.catalogLineTotal != null && Number(item.catalogLineTotal) > 0.005;
+  const catalog = hasCatalog ? menuRupee(Number(item.catalogLineTotal)) : lineTotal;
+
+  let net = catalog;
+  if (item.netLineTotal != null && Number.isFinite(Number(item.netLineTotal))) {
+    net = menuRupee(Number(item.netLineTotal));
+  } else if (
+    item.isItemPromo &&
+    item.offerDiscount != null &&
+    item.offerDiscount > 0.005
+  ) {
+    net = menuRupee(Math.max(0, catalog - Number(item.offerDiscount)));
+  } else if (!hasCatalog && !item.ctmFromSnapshot) {
+    net = lineTotal;
+  }
+
+  const { kind, badge } = resolveMerchantOfferBadge({
+    offerType: item.appliedOfferType,
+    offerLabel: item.offerLabel,
+  });
+
+  // BOGO: same gross & net on merchant UI — badge only (no strikethrough).
+  if (kind === "bogo" || isBogoOfferType(item.appliedOfferType)) {
+    return {
+      catalog,
+      net: catalog,
+      showStrike: false,
+      offerBadge: badge ?? formatBogoOfferBadge(item.offerLabel),
+      offerKind: "bogo",
+    };
+  }
+
+  const showStrike = net < catalog - 0.005;
+  return {
+    catalog,
+    net,
+    showStrike,
+    offerBadge: showStrike
+      ? badge ?? (kind === "boost" ? formatBoostOfferBadge() : item.offerLabel ?? null)
+      : kind === "boost"
+        ? badge ?? formatBoostOfferBadge()
+        : null,
+    offerKind: kind,
+  };
 }
 
 export function orderItemsTotals(items: NormalizedOrderLineItem[]) {
@@ -199,6 +281,7 @@ export function resolveMerchantCtm(order: {
   pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
   total_ctm?: number | string | null;
   food_items_total_value?: number | string | null;
+  merchant_precision_discount?: number | string | null;
   items?: NormalizedOrderLineItem[] | null;
 }): number {
   const fromPricing = Number(order.pricing?.total);
@@ -209,13 +292,16 @@ export function resolveMerchantCtm(order: {
 
   const items = order.items ?? [];
   if (items.length > 0) {
-    const bill = merchantBillPartsFromItems(items, {
-      subtotal: 0,
-      packaging: order.pricing?.packaging ?? 0,
-      discount: order.pricing?.discount ?? 0,
-      total: 0,
-    });
-    if (bill.total > 0) return bill.total;
+    const packaging = Number(order.pricing?.packaging) || 0;
+    // Prefer cart precision column when present; pricing.discount is precision-only on frozen CTM.
+    const precision = Math.max(
+      0,
+      Number(order.merchant_precision_discount) || Number(order.pricing?.discount) || 0
+    );
+    const lineSum = items.reduce((s, it) => s + merchantLineTotalForItem(it), 0);
+    if (lineSum > 0.005) {
+      return round2(Math.max(0, lineSum + packaging - precision));
+    }
   }
 
   const fromField = Number(order.food_items_total_value);

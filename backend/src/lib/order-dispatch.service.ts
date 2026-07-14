@@ -513,8 +513,13 @@ export async function restartOrderDispatch(orderCoreId: number): Promise<void> {
 export async function maybeStartOrderDispatch(orderCoreId: number): Promise<void> {
   try {
     await startOrderDispatch(orderCoreId);
+    const eligible = await countEligibleRidersForOrder(orderCoreId).catch(() => -1);
+    console.info("[dispatch] wave1 started", { orderCoreId, eligibleRiders: eligible });
   } catch (err) {
-    console.warn("[dispatch] maybeStartOrderDispatch failed (tolerated)", (err as Error).message);
+    console.warn(
+      "[dispatch] maybeStartOrderDispatch failed (tolerated)",
+      { orderCoreId, message: (err as Error).message, stack: (err as Error).stack }
+    );
   }
 }
 

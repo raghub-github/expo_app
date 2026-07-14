@@ -41,6 +41,8 @@ export function PartnerWaitingOrderSync({
   const skipRetriggerRef = useRef(false);
   const panelClearedRef = useRef(false);
   const prevHadWaitingRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const hasWaitingRef = useRef(hasWaitingInList);
   const retriggerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storeIdRef = useRef(storeId);
@@ -50,6 +52,7 @@ export function PartnerWaitingOrderSync({
   storeIdRef.current = storeId;
   isOnlineRef.current = isOnline;
   onListChangeRef.current = onListChange;
+  hasWaitingRef.current = hasWaitingInList;
 
   useEffect(() => {
     const onPanelCleared = (event: Event) => {
@@ -159,8 +162,10 @@ export function PartnerWaitingOrderSync({
     let cancelled = false;
 
     const run = async () => {
-      if (cancelled || !storeIdRef.current || !isValidPartnerStoreId(storeIdRef.current)) return;
+      if (cancelled || inFlightRef.current) return;
+      if (!storeIdRef.current || !isValidPartnerStoreId(storeIdRef.current)) return;
       if (panelClearedRef.current) return;
+      inFlightRef.current = true;
       const sid = storeIdRef.current;
       try {
         const acRes = await fetch(
@@ -202,6 +207,9 @@ export function PartnerWaitingOrderSync({
           return;
         }
 
+        // Already have the waiting row — skip ensure spam.
+        if (hasWaitingRef.current) return;
+
         const res = await fetch('/api/merchant/store-notifications', {
           method: 'POST',
           credentials: 'include',
@@ -214,6 +222,8 @@ export function PartnerWaitingOrderSync({
         }
       } catch {
         /* ignore */
+      } finally {
+        inFlightRef.current = false;
       }
     };
 
@@ -223,6 +233,55 @@ export function PartnerWaitingOrderSync({
       cancelled = true;
       window.clearInterval(timer);
     };
+  }, [storeId, refreshList, scheduleRefreshList]);
+
+  // React when online flips without remounting the 15s interval.
+  useEffect(() => {
+    if (!storeId || !isValidPartnerStoreId(storeId)) return;
+    if (inFlightRef.current || panelClearedRef.current) return;
+    void (async () => {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
+      const sid = storeId;
+      try {
+        if (!isOnline) {
+          skipRetriggerRef.current = true;
+          try {
+            await fetch(
+              `/api/merchant/store-notifications?store_id=${encodeURIComponent(sid)}&kind=waiting`,
+              { method: 'DELETE', credentials: 'include' }
+            );
+            scheduleRefreshList();
+          } finally {
+            window.setTimeout(() => {
+              skipRetriggerRef.current = false;
+            }, 800);
+          }
+          return;
+        }
+        if (hasWaitingRef.current || panelClearedRef.current) return;
+        const acRes = await fetch(
+          `/api/merchant/active-orders-count?store_id=${encodeURIComponent(sid)}`,
+          { credentials: 'include' }
+        );
+        const active = Number(readJsonBody(await acRes.text()).active_orders ?? 0);
+        if (active > 0) return;
+        const res = await fetch('/api/merchant/store-notifications', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ store_id: sid, action: 'ensure_waiting' }),
+        });
+        if (res.ok) {
+          const body = readJsonBody(await res.text()) as { created?: boolean };
+          if (body.created) refreshList();
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        inFlightRef.current = false;
+      }
+    })();
   }, [storeId, isOnline, refreshList, scheduleRefreshList]);
 
   return null;

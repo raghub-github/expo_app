@@ -16,6 +16,7 @@ import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refun
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
 import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
 import { completeOrderDispatch } from "../../lib/order-dispatch.service.js";
+import { clearMerchantStoreOrderNotifications } from "../../lib/clear-merchant-order-notifications.js";
 import { emitEvent } from "../notifications/eventBus.js";
 
 export const CUSTOMER_FOOD_CANCELLED_BY_LABEL = "Cancelled by me";
@@ -254,6 +255,21 @@ export async function cancelFoodOrderForCustomer(
     }
   }
 
+  // Drop stale "New order!" inbox rows (customer cancel may happen while still CREATED).
+  try {
+    const storeId = orderCtx.merchantStoreId ?? row.merchantStoreId ?? 0;
+    if (storeId > 0) {
+      await clearMerchantStoreOrderNotifications(sql, {
+        merchantStoreId: storeId,
+        ordersFoodId: row.ordersFoodId,
+        orderCoreId: row.coreId,
+        formattedOrderId: row.formattedOrderId ?? orderIdText,
+      });
+    }
+  } catch {
+    /* non-fatal */
+  }
+
   // Emit to notifications module — will fan out to customer + merchant + rider.
   // We do a quick lookup for the user_id form since orderCtx.customerPk is numeric.
   try {
@@ -263,11 +279,11 @@ export async function cancelFoodOrderForCustomer(
     `) as unknown as Array<{ customer_id: string }>;
     emitEvent("order.status_changed", {
       orderId: orderIdText,
-      orderShortId: orderIdText,
+      orderShortId: row.formattedOrderId ?? orderIdText,
       fromStatus: previousStatus,
       toStatus: "CANCELLED",
       customerId: customerRows[0]?.customer_id ?? null,
-      merchantStoreId: orderCtx.merchantStoreId ?? null,
+      merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId ?? null,
       reason: reasonText || "Cancelled by customer",
     });
   } catch { /* tolerated */ }

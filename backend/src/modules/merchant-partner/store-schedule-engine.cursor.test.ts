@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveNextSlotTransitionIso } from "./store-schedule-engine.js";
+import {
+  resolveNextSlotTransitionIso,
+  merchantStoresRowHasStaleOnlineFlags,
+  schedulePhaseImpliesSurfaceClosed,
+} from "./store-schedule-engine.js";
 
 function mockHoursRow(): Record<string, unknown> {
   return {
@@ -23,5 +27,35 @@ test("resolveNextSlotTransitionIso returns next open when outside slot", () => {
   const ref = new Date("2026-06-22T08:00:00+05:30"); // Monday
   const iso = resolveNextSlotTransitionIso(mockHoursRow(), 1, 8 * 60, ref);
   assert.ok(iso);
+});
+
+test("merchantStoresRowHasStaleOnlineFlags detects orphan online booleans", () => {
+  assert.equal(
+    merchantStoresRowHasStaleOnlineFlags({
+      operational_status: "CLOSED",
+      is_active: true,
+      is_accepting_orders: false,
+      is_available: false,
+    }),
+    true
+  );
+  assert.equal(
+    merchantStoresRowHasStaleOnlineFlags({
+      operational_status: "CLOSED",
+      is_active: false,
+      is_accepting_orders: false,
+      is_available: false,
+    }),
+    false
+  );
+});
+
+test("schedulePhaseImpliesSurfaceClosed is true outside WITHIN_SLOT", () => {
+  assert.equal(schedulePhaseImpliesSurfaceClosed("OUTSIDE_HOURS", null), true);
+  assert.equal(schedulePhaseImpliesSurfaceClosed("WITHIN_SLOT", null), false);
+  assert.equal(
+    schedulePhaseImpliesSurfaceClosed("WITHIN_SLOT", "2026-07-10T12:00:00.000Z"),
+    true
+  );
 });
 

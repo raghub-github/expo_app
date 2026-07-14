@@ -1,10 +1,10 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AppText } from "@/components/AppText";
 
 export type FoodHomeFilterRowProps = {
   variant: "grid_first" | "classic";
-  storeCountLabel: string;
   hasActiveFilters: boolean;
   sortBy: "default" | "rating" | "distance";
   openNow: boolean;
@@ -22,7 +22,6 @@ export type FoodHomeFilterRowProps = {
 
 export function FoodHomeFilterRow({
   variant,
-  storeCountLabel,
   hasActiveFilters,
   sortBy,
   openNow,
@@ -37,7 +36,7 @@ export function FoodHomeFilterRow({
   compact = false,
 }: FoodHomeFilterRowProps) {
   return (
-    <View style={[styles.row, compact && styles.rowCompact]}>
+    <View style={[styles.wrap, compact && styles.wrapCompact]}>
       <ScrollView
         horizontal
         nestedScrollEnabled
@@ -45,6 +44,7 @@ export function FoodHomeFilterRow({
         style={styles.chipsScroll}
         contentContainerStyle={styles.chipsRow}
         keyboardShouldPersistTaps="handled"
+        delaysContentTouches={false}
       >
         {variant === "grid_first" ? (
           <>
@@ -57,9 +57,9 @@ export function FoodHomeFilterRow({
                 size={16}
                 color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
               />
-              <Text style={[styles.chipText, hasActiveFilters && styles.chipTextActive]}>
+              <AppText style={[styles.chipText, hasActiveFilters && styles.chipTextActive]}>
                 Filters
-              </Text>
+              </AppText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.chip, sortBy === "distance" && styles.chipNearFast]}
@@ -70,18 +70,18 @@ export function FoodHomeFilterRow({
                 size={16}
                 color={sortBy === "distance" ? "#15803D" : "#16A34A"}
               />
-              <Text style={[styles.chipText, sortBy === "distance" && styles.chipTextNearFast]}>
+              <AppText style={[styles.chipText, sortBy === "distance" && styles.chipTextNearFast]}>
                 Near & Fast
-              </Text>
+              </AppText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.chip, noPackagingCharges && styles.chipActive]}
               onPress={onToggleNoPackagingCharges}
               activeOpacity={0.85}
             >
-              <Text style={[styles.chipText, noPackagingCharges && styles.chipTextActive]}>
+              <AppText style={[styles.chipText, noPackagingCharges && styles.chipTextActive]}>
                 No packaging charges
-              </Text>
+              </AppText>
             </TouchableOpacity>
             {showMealsUnderPriceChip ? (
               <TouchableOpacity
@@ -89,7 +89,7 @@ export function FoodHomeFilterRow({
                 onPress={onMealsUnderPricePress}
                 activeOpacity={0.85}
               >
-                <Text style={styles.chipText}>{mealsUnderPriceLabel}</Text>
+                <AppText style={styles.chipText}>{mealsUnderPriceLabel}</AppText>
               </TouchableOpacity>
             ) : null}
           </>
@@ -104,9 +104,9 @@ export function FoodHomeFilterRow({
                 size={18}
                 color={openNow ? "#fff" : GatiMitraColors.primaryMint}
               />
-              <Text style={[styles.chipText, openNow && styles.chipTextActive]}>
+              <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
                 Open Now
-              </Text>
+              </AppText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.chip, sortBy !== "default" && styles.chipActive]}
@@ -117,9 +117,9 @@ export function FoodHomeFilterRow({
                 size={18}
                 color={sortBy !== "default" ? "#fff" : GatiMitraColors.textPrimaryNew}
               />
-              <Text style={[styles.chipText, sortBy !== "default" && styles.chipTextActive]}>
+              <AppText style={[styles.chipText, sortBy !== "default" && styles.chipTextActive]}>
                 {sortBy === "default" ? "Sort" : sortBy === "rating" ? "Rating" : "Distance"}
-              </Text>
+              </AppText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.chip, hasActiveFilters && styles.chipActive]}
@@ -130,47 +130,34 @@ export function FoodHomeFilterRow({
                 size={18}
                 color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
               />
-              <Text style={[styles.chipText, hasActiveFilters && styles.chipTextActive]}>
+              <AppText style={[styles.chipText, hasActiveFilters && styles.chipTextActive]}>
                 Filters
-              </Text>
+              </AppText>
             </TouchableOpacity>
           </>
         )}
       </ScrollView>
-      <Text style={styles.storeCount}>{storeCountLabel}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
+  wrap: {
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(0, 0, 0, 0.06)",
   },
-  rowCompact: {
+  wrapCompact: {
     paddingBottom: 8,
   },
   chipsScroll: {
-    flex: 1,
-    flexGrow: 1,
-    flexShrink: 1,
+    flexGrow: 0,
   },
   chipsRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     paddingRight: 4,
-  },
-  storeCount: {
-    flexShrink: 0,
-    fontSize: 13,
-    fontWeight: "600",
-    color: GatiMitraColors.textSecondary,
   },
   chip: {
     flexDirection: "row",

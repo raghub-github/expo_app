@@ -25,8 +25,8 @@ export function getMerchantOrderCardBillLines(order: OrderRecord): MerchantOrder
 
   if (bill.discount > 0.005) {
     lines.push({
-      key: "store_offer",
-      label: "Restaurant discount",
+      key: "merchant_precision_discount",
+      label: "Merchant Precision Discount",
       amount: bill.discount,
       kind: "discount",
     });

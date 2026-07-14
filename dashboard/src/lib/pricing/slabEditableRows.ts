@@ -24,28 +24,6 @@ export type EditableCustomerSlabRow = {
   isActive: boolean;
 };
 
-export type EditablePickupSlabRow = {
-  id: number;
-  minKm: string;
-  maxKm: string;
-  baseFare: string;
-  pickupPerKm: string;
-  minCharge: string;
-  waitingChargePerMin: string;
-  waitingStartAfter: string;
-  priority: string;
-  isActive: boolean;
-};
-
-export type EditableDropSlabRow = {
-  id: number;
-  minKm: string;
-  maxKm: string;
-  dropPerKm: string;
-  priority: string;
-  isActive: boolean;
-};
-
 export type EditableRideCustomerSlabRow = {
   id: number;
   minKm: string;
@@ -98,34 +76,6 @@ export function rideCustomerSlabFromApi(s: Record<string, unknown>): EditableRid
   };
 }
 
-export function pickupSlabFromApi(s: Record<string, unknown>): EditablePickupSlabRow {
-  return {
-    id: Number(s.id),
-    minKm: formatDecimalField(Number(s.minKm)),
-    maxKm: formatDecimalField(s.maxKm == null ? null : Number(s.maxKm)),
-    baseFare: formatDecimalField(s.baseFare == null ? null : Number(s.baseFare)),
-    pickupPerKm: formatDecimalField(Number(s.pickupPerKm)),
-    minCharge: formatDecimalField(s.minCharge == null ? null : Number(s.minCharge)),
-    waitingChargePerMin: formatDecimalField(
-      s.waitingChargePerMin == null ? null : Number(s.waitingChargePerMin)
-    ),
-    waitingStartAfter: formatIntegerField(Number(s.waitingStartAfter ?? 0), "0"),
-    priority: formatIntegerField(Number(s.priority ?? 100), "100"),
-    isActive: s.isActive === true,
-  };
-}
-
-export function dropSlabFromApi(s: Record<string, unknown>): EditableDropSlabRow {
-  return {
-    id: Number(s.id),
-    minKm: formatDecimalField(Number(s.minKm)),
-    maxKm: formatDecimalField(s.maxKm == null ? null : Number(s.maxKm)),
-    dropPerKm: formatDecimalField(Number(s.dropPerKm)),
-    priority: formatIntegerField(Number(s.priority ?? 100), "100"),
-    isActive: s.isActive === true,
-  };
-}
-
 export function blankCustomerSlabRow(prev: EditableCustomerSlabRow | undefined): EditableCustomerSlabRow {
   const isFirst = !prev;
   return {
@@ -137,34 +87,6 @@ export function blankCustomerSlabRow(prev: EditableCustomerSlabRow | undefined):
     minCharge: "",
     waitingChargePerMin: isFirst ? "0" : "",
     surgeMultiplier: isFirst ? "1" : "",
-    priority: "100",
-    isActive: true,
-  };
-}
-
-export function blankPickupSlabRow(prev: EditablePickupSlabRow | undefined): EditablePickupSlabRow {
-  const isFirst = !prev;
-  return {
-    id: -Date.now(),
-    minKm: isFirst ? "0" : nextSlabMinKmFromEditable(prev!),
-    maxKm: "",
-    baseFare: isFirst ? "0" : "",
-    pickupPerKm: "0",
-    minCharge: "",
-    waitingChargePerMin: isFirst ? "0" : "",
-    waitingStartAfter: "0",
-    priority: "100",
-    isActive: true,
-  };
-}
-
-export function blankDropSlabRow(prev: EditableDropSlabRow | undefined): EditableDropSlabRow {
-  const isFirst = !prev;
-  return {
-    id: -Date.now(),
-    minKm: isFirst ? "0" : nextSlabMinKmFromEditable(prev!),
-    maxKm: "",
-    dropPerKm: "0",
     priority: "100",
     isActive: true,
   };
@@ -198,32 +120,6 @@ export function parseCustomerSlabForPreview(row: EditableCustomerSlabRow) {
     baseFare: parseOptionalDecimal(row.baseFare),
     perKmRate: parseDecimalOrZero(row.perKmRate),
     minCharge: parseOptionalDecimal(row.minCharge),
-    priority: parseIntegerOrZero(row.priority) || 100,
-    isActive: row.isActive,
-  };
-}
-
-export function parsePickupSlabForPreview(row: EditablePickupSlabRow) {
-  return {
-    id: row.id,
-    minKm: parseDecimalOrZero(row.minKm),
-    maxKm: parseOptionalKm(row.maxKm),
-    baseFare: parseOptionalDecimal(row.baseFare),
-    pickupPerKm: parseDecimalOrZero(row.pickupPerKm),
-    minCharge: parseOptionalDecimal(row.minCharge),
-    waitingChargePerMin: parseOptionalDecimal(row.waitingChargePerMin),
-    waitingStartAfter: parseIntegerOrZero(row.waitingStartAfter),
-    priority: parseIntegerOrZero(row.priority) || 100,
-    isActive: row.isActive,
-  };
-}
-
-export function parseDropSlabForPreview(row: EditableDropSlabRow) {
-  return {
-    id: row.id,
-    minKm: parseDecimalOrZero(row.minKm),
-    maxKm: parseOptionalKm(row.maxKm),
-    dropPerKm: parseDecimalOrZero(row.dropPerKm),
     priority: parseIntegerOrZero(row.priority) || 100,
     isActive: row.isActive,
   };
@@ -265,31 +161,6 @@ export function parseRideCustomerSlabForSave(row: EditableRideCustomerSlabRow) {
   };
 }
 
-export function parsePickupSlabForSave(row: EditablePickupSlabRow) {
-  const minKm = parseDecimalOrZero(row.minKm);
-  return {
-    minKm,
-    maxKm: parseOptionalKm(row.maxKm),
-    baseFare: isFirstKmSlab(row.minKm) ? parseOptionalDecimal(row.baseFare) : null,
-    pickupPerKm: parseDecimalOrZero(row.pickupPerKm),
-    minCharge: parseOptionalDecimal(row.minCharge),
-    waitingChargePerMin: parseOptionalDecimal(row.waitingChargePerMin),
-    waitingStartAfter: parseIntegerOrZero(row.waitingStartAfter),
-    priority: parseIntegerOrZero(row.priority) || 100,
-    isActive: row.isActive,
-  };
-}
-
-export function parseDropSlabForSave(row: EditableDropSlabRow) {
-  return {
-    minKm: parseDecimalOrZero(row.minKm),
-    maxKm: parseOptionalKm(row.maxKm),
-    dropPerKm: parseDecimalOrZero(row.dropPerKm),
-    priority: parseIntegerOrZero(row.priority) || 100,
-    isActive: row.isActive,
-  };
-}
-
 /** Normalize in-progress input strings before save (blur rules). */
 export function normalizeCustomerSlabRow(row: EditableCustomerSlabRow): EditableCustomerSlabRow {
   return {
@@ -317,26 +188,3 @@ export function normalizeRideCustomerSlabRow(row: EditableRideCustomerSlabRow): 
   };
 }
 
-export function normalizePickupSlabRow(row: EditablePickupSlabRow): EditablePickupSlabRow {
-  return {
-    ...row,
-    minKm: normalizeDecimalOnBlur(row.minKm),
-    maxKm: normalizeDecimalOnBlur(row.maxKm),
-    baseFare: normalizeDecimalOnBlur(row.baseFare),
-    pickupPerKm: normalizeDecimalOnBlur(row.pickupPerKm),
-    minCharge: normalizeDecimalOnBlur(row.minCharge),
-    waitingChargePerMin: normalizeDecimalOnBlur(row.waitingChargePerMin),
-    waitingStartAfter: normalizeIntegerOnBlur(row.waitingStartAfter),
-    priority: normalizeIntegerOnBlur(row.priority),
-  };
-}
-
-export function normalizeDropSlabRow(row: EditableDropSlabRow): EditableDropSlabRow {
-  return {
-    ...row,
-    minKm: normalizeDecimalOnBlur(row.minKm),
-    maxKm: normalizeDecimalOnBlur(row.maxKm),
-    dropPerKm: normalizeDecimalOnBlur(row.dropPerKm),
-    priority: normalizeIntegerOnBlur(row.priority),
-  };
-}

@@ -1,4 +1,3 @@
-import { getDb } from "../db/client.js";
 import { resolveGeoLocation } from "../modules/billing/geoLocationResolver.js";
 import { catalogCodeToPricingVehicle } from "../modules/ride-state-config/catalogVehicleMap.js";
 import { pickMostSpecificGeoAnchor, resolveRidePricingGeoFromPickup } from "../modules/ride-state-config/rideStateConfig.repository.js";
@@ -33,6 +32,7 @@ function kmBetween(
 
 export async function resolveOrderRiderPayoutBreakdown(args: {
   service: OrderRiderPayoutService;
+  customerFare: number;
   pickupLat: number;
   pickupLng: number;
   dropLat: number;
@@ -103,11 +103,13 @@ export async function resolveOrderRiderPayoutBreakdown(args: {
       ? catalogCodeToPricingVehicle(args.rideCatalogCode)
       : null);
 
+  if (!Number.isFinite(args.customerFare) || args.customerFare <= 0) return null;
+
   const quote = await resolveRiderPayoutQuote({
-    db: getDb(),
     level,
     refId,
     service: args.service,
+    customerFare: args.customerFare,
     pickupKm: Math.max(0, pickupKm),
     dropKm: Math.max(0, dropKm),
     waitingMinutes: args.waitingMinutes ?? 0,
@@ -135,6 +137,7 @@ export async function resolveOrderRiderPayoutBreakdown(args: {
 
 export async function resolveOrderRiderPayoutAmount(args: {
   service: OrderRiderPayoutService;
+  customerFare: number;
   pickupLat: number;
   pickupLng: number;
   dropLat: number;

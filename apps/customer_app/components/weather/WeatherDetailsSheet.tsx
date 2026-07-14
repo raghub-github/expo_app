@@ -1,20 +1,12 @@
 import { memo, useMemo } from "react";
-import {
-  Modal,
-  View,
-  Text,
-  Pressable,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-  ScrollView,
-} from "react-native";
+import { Modal, View, Pressable, TouchableOpacity, StyleSheet, Platform, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { buildWeatherPanelModel, type WeatherMetricCard, type WeatherPanelModel } from "@/lib/weatherPanelModel";
 import { WeatherPanelAnimations } from "./WeatherPanelAnimations";
+import { AppText } from "@/components/AppText";
 
 const TITLE_DARK = "#111827";
 const TEXT_GRAY = "#6B7280";
@@ -43,10 +35,10 @@ const MetricCard = memo(function MetricCard({ metric }: { metric: WeatherMetricC
       <View style={styles.metricIconWrap}>
         <Ionicons name={metric.icon as keyof typeof Ionicons.glyphMap} size={18} color={metric.tint} />
       </View>
-      <Text style={styles.metricLabel}>{metric.label}</Text>
-      <Text style={styles.metricValue} numberOfLines={2}>
+      <AppText style={styles.metricLabel}>{metric.label}</AppText>
+      <AppText style={styles.metricValue} numberOfLines={2}>
         {metric.value}
-      </Text>
+      </AppText>
     </View>
   );
 });
@@ -67,12 +59,12 @@ const AdvisoryList = memo(function AdvisoryList({
     <View style={styles.advisoryBox}>
       <View style={styles.advisoryHeader}>
         <Ionicons name={icon} size={17} color={tint} />
-        <Text style={styles.advisoryTitle}>{title}</Text>
+        <AppText style={styles.advisoryTitle}>{title}</AppText>
       </View>
       {items.map((line) => (
         <View key={line} style={styles.advisoryRow}>
           <View style={[styles.advisoryDot, { backgroundColor: tint }]} />
-          <Text style={styles.advisoryText}>{line}</Text>
+          <AppText style={styles.advisoryText}>{line}</AppText>
         </View>
       ))}
     </View>
@@ -142,27 +134,27 @@ function WeatherDetailsSheetInner({ visible, weather, onClose }: Props) {
                 <WeatherPanelAnimations animation={panel.animation} />
                 <View style={styles.heroDecorA} />
                 <View style={styles.heroDecorB} />
-                <Text style={styles.heroEmoji}>{panel.heroIcon}</Text>
-                <Text style={styles.heroTemp}>{temp}</Text>
-                <Text style={styles.heroCondition}>{conditionLabel}</Text>
+                <AppText style={styles.heroEmoji}>{panel.heroIcon}</AppText>
+                <AppText style={styles.heroTemp}>{temp}</AppText>
+                <AppText style={styles.heroCondition}>{conditionLabel}</AppText>
                 <View
                   style={[
                     styles.heroPill,
                     { backgroundColor: badgeStyle.bg, borderColor: badgeStyle.border },
                   ]}
                 >
-                  <Text style={[styles.heroPillText, { color: badgeStyle.text }]}>
+                  <AppText style={[styles.heroPillText, { color: badgeStyle.text }]}>
                     {panel.badgeLabel}
-                  </Text>
+                  </AppText>
                 </View>
                 {weather.areaLabel ? (
-                  <Text style={styles.heroArea} numberOfLines={1}>
+                  <AppText style={styles.heroArea} numberOfLines={1}>
                     {weather.areaLabel}
-                  </Text>
+                  </AppText>
                 ) : null}
               </LinearGradient>
 
-              <Text style={styles.heroMessage}>{panel.heroMessage}</Text>
+              <AppText style={styles.heroMessage}>{panel.heroMessage}</AppText>
 
               {panel.metrics.length > 0 ? (
                 <View style={styles.metricsGrid}>
@@ -182,17 +174,17 @@ function WeatherDetailsSheetInner({ visible, weather, onClose }: Props) {
                 ]}
               >
                 <View style={styles.impactHeader}>
-                  <Text style={styles.impactIcon}>{panel.deliveryImpact.icon}</Text>
-                  <Text style={[styles.impactTitle, { color: panel.deliveryImpact.color }]}>
+                  <AppText style={styles.impactIcon}>{panel.deliveryImpact.icon}</AppText>
+                  <AppText style={[styles.impactTitle, { color: panel.deliveryImpact.color }]}>
                     {panel.deliveryImpact.label}
-                  </Text>
+                  </AppText>
                 </View>
                 {weather.etaDelayMinutes > 0 ? (
-                  <Text style={styles.impactDetail}>
+                  <AppText style={styles.impactDetail}>
                     Estimated +{weather.etaDelayMinutes} min delivery time
-                  </Text>
+                  </AppText>
                 ) : panel.deliveryImpact.level === "normal" ? (
-                  <Text style={styles.impactDetail}>No weather-related delivery delays right now.</Text>
+                  <AppText style={styles.impactDetail}>No weather-related delivery delays right now.</AppText>
                 ) : null}
               </View>
 
@@ -204,13 +196,13 @@ function WeatherDetailsSheetInner({ visible, weather, onClose }: Props) {
               />
 
               {weather.updatedAt ? (
-                <Text style={styles.updatedAt}>
+                <AppText style={styles.updatedAt}>
                   Updated{" "}
                   {new Date(weather.updatedAt).toLocaleTimeString([], {
                     hour: "2-digit",
                     minute: "2-digit",
                   })}
-                </Text>
+                </AppText>
               ) : null}
             </ScrollView>
           </View>

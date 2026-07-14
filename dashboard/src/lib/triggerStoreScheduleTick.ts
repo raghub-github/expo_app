@@ -3,7 +3,11 @@
  * Keeps merchant portal / dashboard in sync with Partner Site + mobile app DB state.
  */
 function scheduleTickBackendCandidates(): string[] {
-  const explicit = (process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_BACKEND_URL)?.trim();
+  const explicit = (
+    process.env.BACKEND_INTERNAL_URL ??
+    process.env.BACKEND_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL
+  )?.trim();
   const candidates: string[] = [];
   if (explicit) candidates.push(explicit.replace(/\/+$/, ""));
   if (process.env.NODE_ENV === "development") {

@@ -37,10 +37,12 @@ import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
 import {
   markFoodHomeListScrollActive,
   markFoodHomeListScrollEnded,
+  resetFoodHomeListScrollGuard,
 } from "@/lib/foodHomeScrollGuard";
-import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
+import { LovedMerchantsGridSkeleton, RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
+import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import {
@@ -73,7 +75,7 @@ const TITLE_DARK = "#1A1A1A";
 const TEXT_GRAY = "#6B7280";
 const BORDER = "#E5E7EB";
 const CARD_BG = "#FFFFFF";
-const BG = "#F8F8F8";
+const BG = GatiMitraColors.softBackground;
 const SHADOW = { shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3 };
 
 type BrowseCategoryChip =
@@ -187,61 +189,6 @@ function merchantCardImageUri(m: MerchantSummary): string | undefined {
   return toAbsoluteImageUrl(m.displayImage ?? m.banner_url ?? null) ?? undefined;
 }
 
-function DishCard({
-  id,
-  name,
-  rating,
-  deliveryTime,
-  offerBadge,
-  imageUrl,
-  onPress,
-}: {
-  id: string;
-  name: string;
-  rating?: number;
-  deliveryTime?: string;
-  offerBadge?: string;
-  imageUrl?: string;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity style={styles.dishCard} onPress={onPress} activeOpacity={0.9}>
-      <View style={styles.dishImageWrap}>
-        {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={styles.dishImage} resizeMode="cover" />
-        ) : (
-          defaultMerchantImage() ? (
-            <Image source={defaultMerchantImage()!} style={styles.dishImage} resizeMode="cover" />
-          ) : null
-        )}
-        {offerBadge ? (
-          <View style={[styles.offerTag, offerBadge.includes("50") && styles.offerTagBlue]}>
-            <Text style={styles.offerTagText}>{offerBadge}</Text>
-          </View>
-        ) : null}
-        <View style={styles.ratingBadge}>
-          <Ionicons name="star" size={12} color="#fff" />
-          <Text style={styles.ratingText}>{rating ?? "—"}</Text>
-        </View>
-      </View>
-      <Text style={styles.dishName} numberOfLines={1}>{name}</Text>
-      <View style={styles.dishMeta}>
-        {deliveryTime ? (
-          <View style={styles.metaRow}>
-            <Ionicons name="time-outline" size={12} color={TEXT_GRAY} />
-            <Text style={styles.metaText}>{deliveryTime}</Text>
-          </View>
-        ) : (
-          <View style={styles.metaRow}>
-            <Ionicons name="flash" size={12} color={TEAL} />
-            <Text style={[styles.metaText, { color: TEAL }]}>Near & Fast</Text>
-          </View>
-        )}
-      </View>
-    </TouchableOpacity>
-  );
-}
-
 const SHEET_COLUMNS = 4;
 /** Same horizontal inset as sheet panel → equal gap from screen left/right. */
 const SHEET_GRID_WIDTH = width - PAD * 2;
@@ -328,6 +275,8 @@ export default function CategoryBrowseScreen() {
   useEffect(() => {
     void hydrateDietaryPreferences();
   }, [hydrateDietaryPreferences]);
+
+  useEffect(() => () => resetFoodHomeListScrollGuard(), []);
 
   const { data: sheetCategoriesResponse, isSuccess: sheetCategoriesReady, isFetching: sheetCategoriesFetching } =
     useQuery({
@@ -625,6 +574,8 @@ export default function CategoryBrowseScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        delaysContentTouches={false}
+        nestedScrollEnabled
         onScrollBeginDrag={markFoodHomeListScrollActive}
         onScrollEndDrag={markFoodHomeListScrollEnded}
         onMomentumScrollEnd={markFoodHomeListScrollEnded}
@@ -632,7 +583,10 @@ export default function CategoryBrowseScreen() {
         {/* Category chips – horizontal */}
         <ScrollView
           horizontal
+          nestedScrollEnabled
           showsHorizontalScrollIndicator={false}
+          delaysContentTouches={false}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={[
             styles.categoryChipsWrap,
             { gap: railMetrics.gap, paddingRight: PAD + railMetrics.gap },
@@ -844,23 +798,13 @@ export default function CategoryBrowseScreen() {
             <Text style={styles.sectionHeading}>RECOMMENDED FOR YOU</Text>
             {isLoading ? (
               <View style={styles.skeletonListWrap}>
-                <RestaurantListSkeleton count={3} />
+                <LovedMerchantsGridSkeleton count={4} />
               </View>
             ) : (
-              <View style={styles.dishGrid}>
-                {recommended.map((m) => (
-                  <DishCard
-                    key={m.id}
-                    id={m.id}
-                    name={m.name}
-                    rating={m.avgRating ?? undefined}
-                    deliveryTime={m.deliveryTime}
-                    offerBadge="FLAT 50% OFF"
-                    imageUrl={merchantCardImageUri(m)}
-                    onPress={() => openMerchantPage(m.id, m)}
-                  />
-                ))}
-              </View>
+              <LovedMerchantsHorizontal
+                merchants={recommended}
+                onPressMerchant={openMerchantPage}
+              />
             )}
 
             <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
@@ -1072,7 +1016,6 @@ export default function CategoryBrowseScreen() {
   );
 }
 
-const CARD_WIDTH = (width - PAD * 2 - 12) / 2;
 const styles = StyleSheet.create({
   modalRoot: {
     flex: 1,
@@ -1356,7 +1299,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginHorizontal: PAD,
     marginTop: 20,
-    marginBottom: 6,
+    /** Match Swiggy title → row gap. */
+    marginBottom: 14,
   },
   sectionSub: {
     fontSize: 13,
@@ -1375,58 +1319,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     paddingHorizontal: PAD,
-    gap: 12,
+    gap: 10,
+    overflow: "visible",
   },
-  dishCard: {
-    width: CARD_WIDTH,
-    backgroundColor: CARD_BG,
-    borderRadius: 16,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-  dishCardSkeleton: { height: 180, backgroundColor: BORDER },
-  dishImageWrap: {
-    width: "100%",
-    height: 120,
-    backgroundColor: "#eee",
-    position: "relative",
-  },
-  dishImage: { width: "100%", height: "100%" },
-  offerTag: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    backgroundColor: TEAL,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  offerTagBlue: { backgroundColor: "#3b82f6" },
-  offerTagText: { fontSize: 10, fontWeight: "700", color: "#fff" },
-  ratingBadge: {
-    position: "absolute",
-    bottom: 8,
-    left: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  ratingText: { fontSize: 12, fontWeight: "700", color: "#fff" },
-  dishName: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: TITLE_DARK,
-    marginTop: 8,
-    marginHorizontal: 10,
-  },
-  dishMeta: { marginHorizontal: 10, marginBottom: 10, marginTop: 4 },
-  metaRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  metaText: { fontSize: 12, color: TEXT_GRAY },
   gridPlaceholder: {
     flexDirection: "row",
     flexWrap: "wrap",

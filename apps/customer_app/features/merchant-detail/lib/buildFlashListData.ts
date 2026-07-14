@@ -15,7 +15,12 @@ export type BuildFlashListInput = {
   comboPairs: ComboPair[];
   sectionStartingPrice: number | null;
   visibleOffersCount: number;
-  closedBannerMessage: string | null;
+  /**
+   * Whether to show the closed-store banner cell — a stable boolean, NOT the live
+   * countdown string. The banner's own live text is owned by MerchantClosedBanner so a
+   * 1s tick never invalidates this memoized list (and re-renders every row) every second.
+   */
+  showClosedBanner: boolean;
   menuPending: boolean;
   /** Row key / id of the last item added to cart — pairing strip renders below it only. */
   pairingAnchorKey: string | null;
@@ -62,7 +67,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     comboPairs,
     sectionStartingPrice,
     visibleOffersCount,
-    closedBannerMessage,
+    showClosedBanner,
     menuPending,
     pairingAnchorKey,
     pairingCompanionItems,
@@ -82,8 +87,8 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
   push({ type: "hero", key: "hero" });
   push({ type: "info", key: "info" });
 
-  if (closedBannerMessage) {
-    push({ type: "closed_banner", key: "closed_banner", message: closedBannerMessage });
+  if (showClosedBanner) {
+    push({ type: "closed_banner", key: "closed_banner" });
   }
 
   push({ type: "filter_bar", key: "filter_bar" });
@@ -122,7 +127,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
         sectionByTitle.set(sec.title.trim().toLowerCase(), headerIdx);
 
         sec.data.forEach((item, itemIndex) => {
-          const showPairing =
+          const isPairingAnchor =
             pairingAnchorKey != null &&
             pairingCompanionItems.length > 0 &&
             itemMatchesPairingAnchor(item, pairingAnchorKey);
@@ -133,14 +138,14 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
             sectionIndex,
             itemIndex,
             isLastInSection: itemIndex === sec.data.length - 1,
-            showDivider: !showPairing,
+            showDivider: !isPairingAnchor,
           });
           menuItemByKey.set(item.listRowKey, rowIdx);
           menuItemByKey.set(item.id, rowIdx);
           if (item.menuItemId != null) {
             menuItemByKey.set(String(item.menuItemId), rowIdx);
           }
-          if (showPairing) {
+          if (isPairingAnchor) {
             push({
               type: "pairing_strip",
               key: `pairing-${item.listRowKey}`,

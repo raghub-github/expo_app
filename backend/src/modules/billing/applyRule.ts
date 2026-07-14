@@ -8,6 +8,7 @@ import type {
   SlabRow,
 } from "./types.js";
 import { round2 } from "./money.js";
+import { cartPromoQualifyingSubtotal } from "./discountEligibility.js";
 function clamp0(n: number): number {
   return Math.max(0, n);
 }
@@ -349,10 +350,10 @@ export function resolveDiscountAppliesOn(rule: RuleRow): string {
  */
 export function applyDiscountRule(
   rule: RuleRow,
-  _ctx: BillContext,
+  ctx: BillContext,
   state: MutableBillState,
   rem: FeeRem,
-  _itemPlusAddon: number
+  itemPlusAddon: number
 ): ApplyRuleResult {
   if (rule.type !== "DISCOUNT" && rule.type !== "OFFER") {
     return { applied: false, reason: "not_discount_rule" };
@@ -368,16 +369,17 @@ export function applyDiscountRule(
     return raw;
   };
   const appliesOn = resolveDiscountAppliesOn(rule);
-  const legacyDisc = (meta.discount_base as string | undefined) ?? "ITEM_PLUS_ADDON";
+  const eligibleItems = Math.min(
+    Math.max(0, rem.items),
+    cartPromoQualifyingSubtotal(ctx, itemPlusAddon)
+  );
 
   let rawAmt = 0;
   if (rule.calculationType === "FIXED") {
     rawAmt = clamp0(vn);
   } else if (rule.calculationType === "PERCENTAGE") {
     if (appliesOn === "ITEMS_TOTAL") {
-      const base =
-        legacyDisc === "AFTER_DISCOUNTS" ? Math.max(0, rem.items) : Math.max(0, rem.items);
-      rawAmt = clamp0((base * vn) / 100);
+      rawAmt = clamp0((eligibleItems * vn) / 100);
     } else if (appliesOn === "SUBTOTAL") {
       const base = sumRem(rem);
       rawAmt = clamp0((base * vn) / 100);
@@ -388,7 +390,7 @@ export function applyDiscountRule(
     } else if (appliesOn === "PACKAGING_FEE") {
       rawAmt = clamp0((Math.max(0, rem.packaging) * vn) / 100);
     } else {
-      rawAmt = clamp0((Math.max(0, rem.items) * vn) / 100);
+      rawAmt = clamp0((eligibleItems * vn) / 100);
     }
   } else {
     return { applied: false, reason: "unsupported_discount_calc" };
@@ -398,7 +400,7 @@ export function applyDiscountRule(
   if (amt <= 0) return { applied: false, reason: "zero_discount" };
 
   if (appliesOn === "ITEMS_TOTAL") {
-    const take = Math.min(amt, rem.items);
+    const take = Math.min(amt, eligibleItems, rem.items);
     rem.items -= take;
     amt = take;
   } else if (appliesOn === "SUBTOTAL") {
@@ -433,6 +435,7 @@ export function applyDiscountRule(
     meta: {
       ruleId: rule.id,
       discountAppliesOn: appliesOn,
+      eligibleBase: eligibleItems,
       ...(rule.type === "OFFER" ? { offerOwner: rule.offerOwner } : {}),
     },
   };

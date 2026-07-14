@@ -21,6 +21,7 @@ import {
 import { generateOrderOtps } from "./food-order-otps.js";
 import { recordPlacementTimelines } from "./order-placement-timeline.js";
 import { resolveBulkOrderPlacement } from "./bulk-order.js";
+import { cartSurfaceMerchantDiscountFromBilling } from "./merchant-billing-discount.js";
 
 function sanitizeStringForDb(s: string | null | undefined): string | null {
   if (s == null) return null;
@@ -230,6 +231,7 @@ export async function insertPlacedOrderCoreWithTimelines(
     pending.grandTotal,
     orderIdText
   );
+  const precisionDiscountCustomer = cartSurfaceMerchantDiscountFromBilling(billing);
 
   const [inserted] = await tx
     .insert(ordersCore)
@@ -273,6 +275,26 @@ export async function insertPlacedOrderCoreWithTimelines(
   const orderCorePk = inserted?.id;
   if (orderCorePk == null || !Number.isFinite(orderCorePk)) {
     throw new Error("orders_core insert did not return id");
+  }
+
+  // Capture merchant precision/cart discount immediately (does not fail placement if col missing).
+  if (precisionDiscountCustomer > 0.005) {
+    try {
+      await tx.execute(sql`
+        UPDATE orders_core
+        SET merchant_precision_discount = ${precisionDiscountCustomer.toFixed(2)}::numeric
+        WHERE id = ${orderCorePk}
+      `);
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === "42703") {
+        console.error(
+          "[placement] merchant_precision_discount column missing — apply backend/drizzle/0412_merchant_precision_discount_ctm.sql"
+        );
+      } else {
+        console.error("[placement] failed to set merchant_precision_discount:", err);
+      }
+    }
   }
 
   await recordPlacementTimelines(tx, {

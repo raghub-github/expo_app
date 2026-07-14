@@ -8,7 +8,6 @@ import React, {
 } from "react";
 import { View, Text, StyleSheet, Platform, ScrollView } from "react-native";
 import Animated, { type ScrollHandlerProcessed } from "react-native-reanimated";
-import { Ionicons } from "@expo/vector-icons";
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
 import { StorePastOrdersSection } from "@/components/store/StorePastOrdersSection";
@@ -17,26 +16,38 @@ import { StoreSectionHeader } from "@/components/store/StoreSectionHeader";
 import { StoreFooterSection } from "@/components/store/StoreFooterSection";
 import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
 import { StoreMenuPairingSection } from "@/components/store/StoreMenuPairingSection";
+import { MerchantClosedBanner } from "./MerchantClosedBanner";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { StoreTheme } from "@/constants/storeTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MerchantFlashListItem } from "../types";
 import type { ComboPair } from "@/components/store/StoreComboSection";
 import type { MenuItem, MerchantSummary } from "@/services/merchant.service";
-import { MENU_ITEM_ROW_HEIGHT, MENU_LOADING_FILL_MIN_HEIGHT, MERCHANT_HEADER_TOP_GUTTER } from "../constants/layout";
+import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import {
+  MENU_ITEM_ROW_HEIGHT,
+  MENU_LOADING_FILL_MIN_HEIGHT,
+  MERCHANT_HERO_ACTIONS_TOP_PAD,
+} from "../constants/layout";
 import { MerchantHeroBannerRow } from "./MerchantHeroBannerRow";
 import {
   MerchantHeroTopBarContent,
   type MerchantHeroTopBarActions,
 } from "./MerchantHeroTopBar";
+import {
+  markMerchantMenuScrollActive,
+  markMerchantMenuScrollEnded,
+} from "@/lib/merchantMenuScrollGuard";
 
 const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
 
-/** Imperative scroll API — same surface as FlashList scroll helpers. */
+/**
+ * Full-mount scroll list (not FlashList virtualization).
+ * Fast fling must never show blank white gaps between menu rows.
+ */
 export type MerchantScrollListHandle = {
   scrollToOffset: (params: { offset: number; animated?: boolean }) => void;
   scrollToIndex: (params: { index: number; animated?: boolean; viewOffset?: number }) => void;
-  /** Abort in-flight scrollToIndex retries after the user drags. */
   cancelPendingScroll: () => void;
 };
 
@@ -51,9 +62,11 @@ export type MerchantDetailFlashListProps = {
   distanceKm: number | null;
   storeEtaLabel: string;
   scheduledSlotLabel: string | null;
+  isStoreClosedForStatus: boolean;
+  merchantNextOpenAt?: string | number | null;
+  merchantNextCloseAt?: string | number | null;
   offerTickerTexts: string[];
   visibleOffersCount: number;
-  /** Keep offer strip height reserved while offers warm from cache/network. */
   reserveOfferRow?: boolean;
   onInfoPress: () => void;
   onOffersPress: () => void;
@@ -73,17 +86,21 @@ export type MerchantDetailFlashListProps = {
   onCouponPress: () => void;
   similarMerchants: MerchantSummary[];
   highlightedMenuItemKey: string | null;
+  highlightedOfferId?: number | null;
   highlyReorderedIds: Set<string>;
   bookmarkMenuItemIdSet: Set<number>;
   onBookmark: (item: MenuItem) => void;
   onShare: (item: MenuItem) => void;
   resolveMenuItemPk: (item: MenuItem) => number | null;
   showHeroActions: boolean;
+  /** Safe-area + gap above hero CTAs (merchant owns status-bar padding). */
+  heroActionsTopPad?: number;
   heroActions: MerchantHeroTopBarActions;
   onListLayout?: () => void;
+  itemOfferById?: Map<string, ItemOfferDisplay>;
 };
 
-export const MerchantDetailFlashList = forwardRef<
+const MerchantDetailFlashListInner = forwardRef<
   MerchantScrollListHandle,
   MerchantDetailFlashListProps
 >(function MerchantDetailFlashList(props, ref) {
@@ -98,6 +115,9 @@ export const MerchantDetailFlashList = forwardRef<
     distanceKm,
     storeEtaLabel,
     scheduledSlotLabel,
+    isStoreClosedForStatus,
+    merchantNextOpenAt,
+    merchantNextCloseAt,
     offerTickerTexts,
     visibleOffersCount,
     reserveOfferRow = false,
@@ -119,14 +139,17 @@ export const MerchantDetailFlashList = forwardRef<
     onCouponPress,
     similarMerchants,
     highlightedMenuItemKey,
+    highlightedOfferId = null,
     highlyReorderedIds,
     bookmarkMenuItemIdSet,
     onBookmark,
     onShare,
     resolveMenuItemPk,
     showHeroActions,
+    heroActionsTopPad = MERCHANT_HERO_ACTIONS_TOP_PAD,
     heroActions,
     onListLayout,
+    itemOfferById,
   } = props;
 
   const scrollRef = useRef<ScrollView>(null);
@@ -184,7 +207,7 @@ export const MerchantDetailFlashList = forwardRef<
             requestAnimationFrame(() => attempt(retriesLeft - 1));
           }
         };
-        attempt(6);
+        attempt(8);
       },
     }),
     [cancelPendingScroll, data]
@@ -193,7 +216,8 @@ export const MerchantDetailFlashList = forwardRef<
   const recordRowLayout = useCallback(
     (key: string, height: number) => {
       if (height <= 0) return;
-      if (rowHeightsRef.current.has(key)) return;
+      const prev = rowHeightsRef.current.get(key);
+      if (prev === height) return;
       rowHeightsRef.current.set(key, height);
       scheduleRebuildRowOffsets();
     },
@@ -208,7 +232,11 @@ export const MerchantDetailFlashList = forwardRef<
             <MerchantHeroBannerRow uri={heroUri} merchantId={merchantId} />
             {showHeroActions ? (
               <View
-                style={[styles.heroActionsOverlay, { paddingTop: MERCHANT_HEADER_TOP_GUTTER }]}
+                style={[
+                  styles.heroActionsOverlay,
+                  // `top` (not paddingTop) — absoluteFill + padding was still overlapping on Android.
+                  { top: Math.max(8, heroActionsTopPad) },
+                ]}
                 pointerEvents="box-none"
                 collapsable={false}
               >
@@ -246,12 +274,12 @@ export const MerchantDetailFlashList = forwardRef<
 
       case "closed_banner":
         return (
-          <View style={styles.closedBanner}>
-            <View style={styles.closedBannerIconWrap}>
-              <Ionicons name="time-outline" size={18} color="#fff" />
-            </View>
-            <Text style={styles.closedBannerText}>{item.message}</Text>
-          </View>
+          <MerchantClosedBanner
+            merchantLoaded={!!merchant}
+            isStoreClosedForStatus={isStoreClosedForStatus}
+            nextOpenAt={merchantNextOpenAt}
+            nextCloseAt={merchantNextCloseAt}
+          />
         );
 
       case "filter_bar":
@@ -269,11 +297,12 @@ export const MerchantDetailFlashList = forwardRef<
         return (
           <StorePastOrdersSection
             items={item.items}
-            getQty={getQty}
+            merchantId={merchantId}
             onAdd={onAdd}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
             isStoreClosed={isStoreClosed}
+            itemOfferById={itemOfferById}
           />
         );
 
@@ -305,6 +334,12 @@ export const MerchantDetailFlashList = forwardRef<
       case "menu_item": {
         const menuItem = item.item;
         const menuItemPk = resolveMenuItemPk(menuItem);
+        const itemOffer =
+          itemOfferById?.get(menuItem.id) ??
+          (menuItem.menuItemId != null
+            ? itemOfferById?.get(String(menuItem.menuItemId))
+            : undefined) ??
+          null;
         return (
           <StoreMenuItemRow
             item={menuItem}
@@ -318,18 +353,21 @@ export const MerchantDetailFlashList = forwardRef<
             isHighlyReordered={highlyReorderedIds.has(menuItem.id)}
             isBookmarked={menuItemPk != null && bookmarkMenuItemIdSet.has(menuItemPk)}
             highlighted={
-              highlightedMenuItemKey != null &&
-              (menuItem.id === highlightedMenuItemKey ||
-                (menuItem.menuItemId != null &&
-                  String(menuItem.menuItemId) === highlightedMenuItemKey))
+              (highlightedMenuItemKey != null &&
+                (menuItem.id === highlightedMenuItemKey ||
+                  (menuItem.menuItemId != null &&
+                    String(menuItem.menuItemId) === highlightedMenuItemKey))) ||
+              (highlightedOfferId != null && itemOffer?.offerId === highlightedOfferId)
             }
             onBookmark={onBookmark}
             onShare={onShare}
+            itemOffer={itemOffer}
           />
         );
       }
 
       case "pairing_strip":
+        if (item.companions.length === 0) return null;
         return (
           <StoreMenuPairingSection
             companions={item.companions}
@@ -381,10 +419,22 @@ export const MerchantDetailFlashList = forwardRef<
         onScroll={scrollHandler as never}
         scrollEventThrottle={16}
         keyboardShouldPersistTaps="always"
+        nestedScrollEnabled
         showsVerticalScrollIndicator
+        // Never clip off-screen rows — blank white gaps on fast fling.
         removeClippedSubviews={false}
         bounces
-        {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
+        // First-tap ADD must not wait for scroll gesture settle (Android + iOS).
+        delaysContentTouches={false}
+        // Keep ADD responder when the finger moves slightly (thumb jitter ≠ scroll).
+        canCancelContentTouches={false}
+        onScrollBeginDrag={markMerchantMenuScrollActive}
+        onMomentumScrollBegin={markMerchantMenuScrollActive}
+        onScrollEndDrag={markMerchantMenuScrollEnded}
+        onMomentumScrollEnd={markMerchantMenuScrollEnded}
+        {...(Platform.OS === "android"
+          ? { overScrollMode: "never" as const, persistentScrollbar: false }
+          : null)}
       >
         {data.map((item) => (
           <View
@@ -406,6 +456,18 @@ export const MerchantDetailFlashList = forwardRef<
   );
 });
 
+/**
+ * Full-mount menu host — every menu row is mounted (no virtualization), so a re-render of
+ * this component reconciles ALL N rows on the JS thread. Individual rows already subscribe
+ * to the cart directly (useMenuItemCartQty), so a cart tap must NOT re-render this list at
+ * all — it only needs to re-render when its own props change (menu/filter/pairing/highlight).
+ * Without this memo, every first-add re-rendered the parent screen (cartLineCount change),
+ * which dragged the whole mounted menu through reconciliation in the SAME frame as the tap,
+ * stalling the touch/paint pipeline on large menus + slower CPUs (dropped / delayed taps).
+ * All props are kept referentially stable by the parent for exactly this reason.
+ */
+export const MerchantDetailFlashList = React.memo(MerchantDetailFlashListInner);
+
 const styles = StyleSheet.create({
   listHost: {
     flex: 1,
@@ -417,20 +479,24 @@ const styles = StyleSheet.create({
     zIndex: 0,
     backgroundColor: StoreTheme.background,
   },
-  /** No flexGrow — content height = rendered rows only (prevents white overscroll gaps). */
   listContent: {
     backgroundColor: StoreTheme.background,
     paddingBottom: 8,
   },
   rowShell: {
     backgroundColor: StoreTheme.background,
+    overflow: "visible",
+    zIndex: 1,
   },
   heroCell: {
     position: "relative",
     backgroundColor: StoreTheme.background,
   },
   heroActionsOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
     paddingHorizontal: 12,
     zIndex: 4,
     justifyContent: "flex-start",
@@ -438,32 +504,6 @@ const styles = StyleSheet.create({
   menuLoading: {
     backgroundColor: StoreTheme.background,
     paddingTop: 4,
-  },
-  closedBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: "#374151",
-  },
-  closedBannerIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(0,0,0,0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  closedBannerText: {
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "600",
-    color: "#fff",
   },
   sectionHeader: {
     paddingHorizontal: 16,

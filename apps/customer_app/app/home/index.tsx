@@ -5,20 +5,11 @@
  */
 
 import { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-  ScrollView,
-  Modal,
-  Pressable,
-  RefreshControl,
-  useWindowDimensions,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Modal, Pressable, RefreshControl, useWindowDimensions } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import { LinearGradient } from "expo-linear-gradient";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
+import type { ListRenderItem } from "@shopify/flash-list";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -33,16 +24,23 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { foodHomeRouterBack } from "@/lib/safeRouterBack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { merchantService } from "@/services/merchant.service";
+import type { MerchantSummary } from "@/services/merchant.service";
 import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
-import { navigateToMerchant, showMerchantNavShutter } from "@/lib/navigateToMerchant";
+import {
+  fetchAndCacheMerchantsList,
+  MERCHANTS_LIST_GC_MS,
+  MERCHANTS_LIST_STALE_MS,
+  readSyncMerchantsList,
+  seedMerchantsListQueryIfCached,
+} from "@/lib/merchantsListCache";
+import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
 import {
   markFoodHomeListScrollActive,
   markFoodHomeListScrollEnded,
+  resetFoodHomeListScrollGuard,
 } from "@/lib/foodHomeScrollGuard";
-import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
-import type { MerchantSummary } from "@/services/merchant.service";
 import { prefetchGridFirstHeroMedia, prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import { addressService } from "@/services/address.service";
@@ -72,7 +70,7 @@ import { FoodHomeFilterRow } from "@/components/home/FoodHomeFilterRow";
 import {
   defaultGridFirstStickyMetrics,
   GRID_FIRST_FILTER_ROW_H,
-  GRID_FIRST_FILTER_SHOW_SCROLL_Y,
+  GRID_FIRST_GOLD_STRIP_H,
   GRID_FIRST_STICK_HANDOFF_PX,
   gridFirstCategoryBlockHeight,
   gridFirstCategoryStickScrollY,
@@ -81,7 +79,6 @@ import {
   type GridFirstStickyMetrics,
 } from "@/lib/gridFirstStickyLayout";
 import { FoodHomeCategoryTabs, computeGridFirstCategoryTabMetrics } from "@/components/home/FoodHomeCategoryTabs";
-import { MerchantGridCard } from "@/components/home/MerchantGridCard";
 import { pickLovedByCustomersMerchants } from "@/lib/lovedByCustomers";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import {
@@ -103,7 +100,6 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   filterAndSortMerchants,
-  merchantListingStoreCountLabel,
   openRestaurantsDeliveringLabel,
   resolveMerchantLiveStatus,
 } from "@/lib/merchantListing";
@@ -116,6 +112,7 @@ import { Image } from "expo-image";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { FoodHomeCategoryChips } from "@/components/home/FoodHomeCategoryVariants";
 import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
+import { AppText } from "@/components/AppText";
 
 const PAGE_PAD = 16;
 const SECTION_GAP = 24;
@@ -143,6 +140,7 @@ const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
 const CUISINE_OPTIONS = ["North Indian", "South Indian", "Chinese", "Fast Food", "Bakery", "Desserts"];
 
 const HOME_CATEGORY_STORE_TYPE = "FOOD";
+const EMPTY_MERCHANTS: MerchantSummary[] = [];
 
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
@@ -210,11 +208,6 @@ export default function FoodMerchantsScreen() {
     [queryClient, router]
   );
 
-  useFocusEffect(
-    useCallback(() => {
-      useMerchantNavTransitionStore.getState().hide();
-    }, [])
-  );
   const {
     address,
     coords,
@@ -312,17 +305,31 @@ export default function FoodMerchantsScreen() {
     gridFirstUnder250MaxPrice,
   } = useFoodHomeLayout(address, merchantsAnchorCoords);
 
+  const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
+  const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
+  const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
+
   useLayoutEffect(() => {
     seedUserAppCategoriesQueryIfCached(queryClient, HOME_CATEGORY_STORE_TYPE);
     const cachedCategories = readSyncUserAppCategories(HOME_CATEGORY_STORE_TYPE);
     if (cachedCategories) {
       prefetchUserAppCategoryImages(cachedCategories.items ?? [], cachedCategories.allTab?.imageUrl);
     }
-  }, [queryClient]);
+    if (merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null) {
+      seedMerchantsListQueryIfCached(
+        queryClient,
+        merchantsAnchorCoords.latitude,
+        merchantsAnchorCoords.longitude,
+        vegOnly
+      );
+    }
+  }, [
+    queryClient,
+    merchantsAnchorCoords?.latitude,
+    merchantsAnchorCoords?.longitude,
+    vegOnly,
+  ]);
 
-  const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
-  const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
-  const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
   const [openNow, setOpenNow] = useState(true);
   const [sortBy, setSortBy] = useState<SortOption>("default");
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
@@ -334,6 +341,17 @@ export default function FoodMerchantsScreen() {
   const [noPackagingCharges, setNoPackagingCharges] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  const cachedMerchantsInitial = useMemo(() => {
+    if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
+      return undefined;
+    }
+    return readSyncMerchantsList(
+      merchantsAnchorCoords.latitude,
+      merchantsAnchorCoords.longitude,
+      vegOnly
+    );
+  }, [merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
+
   const { data: merchantsData, isLoading, isFetching, refetch } = useQuery({
     queryKey: [
       "merchants",
@@ -341,23 +359,31 @@ export default function FoodMerchantsScreen() {
       merchantsAnchorCoords?.longitude,
       vegOnly,
     ],
-    queryFn: () =>
-      merchantService.getMerchants({
-        limit: 20,
-        ...(merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
-          ? { lat: merchantsAnchorCoords.latitude, lng: merchantsAnchorCoords.longitude }
-          : {}),
-        vegOnly,
-        distanceMode: "road",
-      }),
+    queryFn: async () => {
+      if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
+        return [];
+      }
+      return fetchAndCacheMerchantsList(
+        merchantsAnchorCoords.latitude,
+        merchantsAnchorCoords.longitude,
+        vegOnly
+      );
+    },
     // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
-    staleTime: 60_000,
-    gcTime: 5 * 60 * 1000,
+    initialData: cachedMerchantsInitial,
+    initialDataUpdatedAt: cachedMerchantsInitial ? Date.now() - MERCHANTS_LIST_STALE_MS : undefined,
+    staleTime: MERCHANTS_LIST_STALE_MS,
+    gcTime: MERCHANTS_LIST_GC_MS,
     placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
 
+  useEffect(() => {
+    if (merchantsData?.length) {
+      prefetchMerchantCardImages(merchantsData);
+    }
+  }, [merchantsData]);
   const offerLocationParams = useMemo(() => {
     const pincode = address?.pincode?.trim() || undefined;
     const state = address?.state?.trim() || undefined;
@@ -436,7 +462,9 @@ export default function FoodMerchantsScreen() {
     }));
   }, [apiHomeCategories]);
 
-  const categoryRailBootstrapping = false;
+  /** Reserve category rail height while first fetch runs — never flash empty → rail. */
+  const categoryRailBootstrapping =
+    homeCategoriesPending && homeCategoryRailItems.length === 0;
 
   const homeCategoryRailColumns = useMemo(
     () => chunkIntoPairs(homeCategoryRailItems),
@@ -530,11 +558,6 @@ export default function FoodMerchantsScreen() {
     [filteredAndSortedMerchants]
   );
 
-  const storeCountLabel = useMemo(
-    () => merchantListingStoreCountLabel(filteredAndSortedMerchants, statusMap, openNow),
-    [filteredAndSortedMerchants, statusMap, openNow]
-  );
-
   const openRestaurantCountLabel = useMemo(
     () => openRestaurantsDeliveringLabel(merchants, statusMap),
     [merchants, statusMap]
@@ -611,7 +634,7 @@ export default function FoodMerchantsScreen() {
     if (homeCategoryRailItems.length === 0) {
       return (
         <View style={styles.categoryRailLoading}>
-          <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+          <AppText style={styles.categoryRailLoadingText}>No categories yet.</AppText>
         </View>
       );
     }
@@ -661,7 +684,7 @@ export default function FoodMerchantsScreen() {
     if (homeCategoryRailItems.length === 0) {
       return (
         <View style={styles.categoryRailLoading}>
-          <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+          <AppText style={styles.categoryRailLoadingText}>No categories yet.</AppText>
         </View>
       );
     }
@@ -707,12 +730,12 @@ export default function FoodMerchantsScreen() {
                     style={{ width: categoryRailLayout.imgSize, height: categoryRailLayout.imgSize }}
                   />
                 </View>
-                <Text
+                <AppText
                   style={[styles.categoryRailLabel, { width: categoryRailLayout.itemW }]}
                   numberOfLines={2}
                 >
                   {cat.name}
-                </Text>
+                </AppText>
               </TouchableOpacity>
             ))}
           </View>
@@ -912,7 +935,6 @@ export default function FoodMerchantsScreen() {
 
   const filterRowProps = useMemo(
     () => ({
-      storeCountLabel,
       hasActiveFilters,
       sortBy,
       openNow,
@@ -926,7 +948,6 @@ export default function FoodMerchantsScreen() {
       onMealsUnderPricePress: handleMealsUnderPricePress,
     }),
     [
-      storeCountLabel,
       hasActiveFilters,
       sortBy,
       openNow,
@@ -1006,11 +1027,8 @@ export default function FoodMerchantsScreen() {
     }, [isGridFirstLayout, hasStoresInArea, setImmersiveStatusBarChrome, setStatusBarBackground])
   );
 
-  useLayoutEffect(() => {
-    if (!isGridFirstLayout || !hasStoresInArea) return;
-    setImmersiveStatusBarChrome(true);
-    setStatusBarBackground("transparent", "dark");
-  }, [isGridFirstLayout, hasStoresInArea, setImmersiveStatusBarChrome, setStatusBarBackground]);
+  // Do NOT re-apply immersive in a layout effect — it races merchant focus and
+  // collapses the store header gap / shifts the Continue bar after ~1 min.
 
   const isNonServiceableScreen =
     layoutCanQuery && layoutReady && !hasStoresInArea && !showSkeleton && !vegOnly;
@@ -1027,7 +1045,9 @@ export default function FoodMerchantsScreen() {
     [statusBarTopInset]
   );
 
-  const [gridFirstGoldStripH, setGridFirstGoldStripH] = useState(0);
+  const [gridFirstGoldStripH, setGridFirstGoldStripH] = useState(() =>
+    showGridFirstSubscriptionRow ? GRID_FIRST_GOLD_STRIP_H : 0
+  );
   const [gridFirstCategoryLayout, setGridFirstCategoryLayout] = useState({
     y: 0,
     height: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
@@ -1040,7 +1060,9 @@ export default function FoodMerchantsScreen() {
   useEffect(() => {
     if (!showGridFirstSubscriptionRow) {
       setGridFirstGoldStripH(0);
+      return;
     }
+    setGridFirstGoldStripH((prev) => (prev > 0 ? prev : GRID_FIRST_GOLD_STRIP_H));
   }, [showGridFirstSubscriptionRow]);
 
   const gridFirstStickyMetrics = useMemo<GridFirstStickyMetrics>(() => {
@@ -1132,73 +1154,74 @@ export default function FoodMerchantsScreen() {
     markFoodHomeListScrollEnded();
   }, []);
 
-  const gridFirstCategoryFlowStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(
-      gridFirstScrollY.value,
-      [
-        gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX,
-        gridFirstCategoryStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX,
-      ],
-      [1, 0],
-      Extrapolation.CLAMP
+  // Never leave the global scroll flag stuck after unmount / mid-fling leave.
+  useEffect(() => () => resetFoodHomeListScrollGuard(), []);
+
+  const restaurantKeyExtractor = useCallback((item: MerchantSummary) => item.id, []);
+
+  const renderRestaurantItem = useCallback<ListRenderItem<MerchantSummary>>(
+    ({ item }) => (
+      <GMRestaurantCardV2
+        merchant={item}
+        initialSaved={bookmarkSet.has(item.id)}
+        weatherDelayMinutes={weatherDelayMinutes}
+        bottomSpacing={18}
+      />
     ),
-  }));
+    [bookmarkSet, weatherDelayMinutes]
+  );
+
+  const restaurantListExtraData = useMemo(
+    () => `${weatherDelayMinutes}:${[...bookmarkSet].join(",")}`,
+    [weatherDelayMinutes, bookmarkSet]
+  );
+
+  const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
+    // Hide in-flow category while sticky overlay owns it; reveal again on scroll-up
+    // past stick point so hero + category return to natural document flow.
+    return {
+      opacity: interpolate(
+        gridFirstScrollY.value,
+        [
+          gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX,
+          gridFirstCategoryStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX,
+        ],
+        [1, 0],
+        Extrapolation.CLAMP
+      ),
+    };
+  });
 
   const gridFirstFilterFlowStyle = useAnimatedStyle(() => {
     const y = gridFirstScrollY.value;
     const stickyAt = gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX;
     const handoffAt = gridFirstFilterStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX;
 
-    if (y < GRID_FIRST_FILTER_SHOW_SCROLL_Y) {
+    // Sticky overlay owns the filter while the header is pinned — collapse in-flow copy.
+    if (
+      gridFirstCategoryStickAtSv.value > 1 &&
+      y >= stickyAt &&
+      y < handoffAt - GRID_FIRST_STICK_HANDOFF_PX
+    ) {
       return {
         opacity: 0,
         maxHeight: 0,
         marginBottom: 0,
-        overflow: "hidden" as const,
-        transform: [{ translateY: -8 }],
-      };
-    }
-
-    // Sticky overlay owns the filter while the header is pinned.
-    if (y >= stickyAt && y < handoffAt - GRID_FIRST_STICK_HANDOFF_PX) {
-      return {
-        opacity: 0,
-        maxHeight: 0,
-        marginBottom: 0,
+        marginTop: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
         overflow: "hidden" as const,
         transform: [{ translateY: 0 }],
       };
     }
 
-    if (y < handoffAt - GRID_FIRST_STICK_HANDOFF_PX) {
-      const progress = interpolate(
-        y,
-        [GRID_FIRST_FILTER_SHOW_SCROLL_Y, GRID_FIRST_FILTER_SHOW_SCROLL_Y + GRID_FIRST_STICK_HANDOFF_PX],
-        [0, 1],
-        Extrapolation.CLAMP
-      );
-      return {
-        opacity: progress,
-        maxHeight: GRID_FIRST_FILTER_ROW_H + 12,
-        marginBottom: SECTION_GAP_SM * progress,
-        overflow: "hidden" as const,
-        transform: [{ translateY: interpolate(progress, [0, 1], [-8, 0], Extrapolation.CLAMP) }],
-      };
-    }
-
-    const progress = interpolate(
-      y,
-      [handoffAt - GRID_FIRST_STICK_HANDOFF_PX, handoffAt + GRID_FIRST_STICK_HANDOFF_PX],
-      [0, 1],
-      Extrapolation.CLAMP
-    );
-
+    // Always visible in document flow (above Recommended) when not sticky-owned.
     return {
-      opacity: progress,
-      maxHeight: GRID_FIRST_FILTER_ROW_H + 12,
-      marginBottom: SECTION_GAP_SM * progress,
-      overflow: "hidden" as const,
-      transform: [{ translateY: interpolate(progress, [0, 1], [-6, 0], Extrapolation.CLAMP) }],
+      opacity: 1,
+      maxHeight: GRID_FIRST_FILTER_ROW_H + 24,
+      marginBottom: SECTION_GAP_SM,
+      overflow: "visible" as const,
+      transform: [{ translateY: 0 }],
     };
   });
 
@@ -1286,16 +1309,24 @@ export default function FoodMerchantsScreen() {
       ) : null}
 
       <View style={styles.contentWrap}>
-        <Animated.ScrollView
+        <FlashList
           style={styles.scroll}
-          contentContainerStyle={{ paddingBottom: 8, flexGrow: 1 }}
-          endFillColor={GatiMitraColors.softBackground}
-          overScrollMode="never"
+          data={showSkeleton ? EMPTY_MERCHANTS : filteredAndSortedMerchants}
+          keyExtractor={restaurantKeyExtractor}
+          renderItem={renderRestaurantItem}
+          extraData={restaurantListExtraData}
+          drawDistance={480}
+          contentContainerStyle={{ paddingBottom: 8 }}
           showsVerticalScrollIndicator={false}
+          // First-tap cards/chips must not wait for scroll gesture settle (mirror merchant menu).
+          delaysContentTouches={false}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
           onScroll={isGridFirstLayout ? onGridFirstScroll : undefined}
           scrollEventThrottle={isGridFirstLayout ? 16 : undefined}
           onScrollBeginDrag={onFoodHomeListScrollBegin}
           onScrollEndDrag={onFoodHomeListScrollEnd}
+          onMomentumScrollBegin={onFoodHomeListScrollBegin}
           onMomentumScrollEnd={onFoodHomeListScrollEnd}
           refreshControl={
             <RefreshControl
@@ -1305,13 +1336,15 @@ export default function FoodMerchantsScreen() {
               colors={[GatiMitraColors.primaryMint]}
             />
           }
-        >
+          ListHeaderComponent={
+            <>
           <View style={isGridFirstLayout ? styles.gridFirstSkyBlock : styles.offersSection}>
             {isGridFirstLayout ? (
               <View style={[styles.gridFirstSkyInner, { height: gridFirstSkyHeight }]}>
                 <FoodHomeHeroCarousel
                   heroMedia={gridFirstHeroMedia}
                   offers={homeFeaturedOffers}
+                  merchantFallbacks={merchants}
                   embeddedInSky
                   immersive
                   topInset={statusBarTopInset}
@@ -1348,6 +1381,11 @@ export default function FoodMerchantsScreen() {
 
           {isGridFirstLayout ? (
             <View
+              style={
+                showGridFirstSubscriptionRow
+                  ? { minHeight: GRID_FIRST_GOLD_STRIP_H }
+                  : undefined
+              }
               onLayout={(e) => {
                 const h = e.nativeEvent.layout.height;
                 if (h > 0) setGridFirstGoldStripH(h);
@@ -1401,7 +1439,7 @@ export default function FoodMerchantsScreen() {
                 />
               ) : homeCategoryRailItems.length === 0 ? (
                 <View style={styles.categoryRailLoading}>
-                  <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+                  <AppText style={styles.categoryRailLoadingText}>No categories yet.</AppText>
                 </View>
               ) : (
                 <FoodHomeCategoryChips items={homeCategoryRailItems} onSelect={handleCategorySelect} />
@@ -1422,7 +1460,7 @@ export default function FoodMerchantsScreen() {
           </>
           )}
 
-          {/* Dynamic filter bar – hidden at top on grid-first; sticky overlay reveals on scroll */}
+          {/* Filter bar — always in flow above Recommended; sticky chrome takes over on scroll */}
           {isGridFirstLayout ? (
             <Animated.View
               style={[styles.section, styles.filterBar, gridFirstFilterFlowStyle]}
@@ -1441,73 +1479,54 @@ export default function FoodMerchantsScreen() {
             </View>
           )}
 
-          {/* Loved by Customers — layout-specific presentation */}
+          {/* Loved by Customers — horizontal rail: 2 full + 3rd peek */}
           {(showSkeleton || lovedByCustomers.length > 0) && (showLovedGrid || showLovedHorizontal) ? (
             <View style={styles.lovedSection}>
-              <Text style={styles.sectionHeading}>{lovedSectionTitle}</Text>
+              <AppText style={styles.sectionHeading}>{lovedSectionTitle}</AppText>
               {showSkeleton ? (
-                <LovedMerchantsGridSkeleton count={showLovedHorizontal ? 4 : 6} />
-              ) : showLovedHorizontal ? (
+                <LovedMerchantsGridSkeleton count={4} />
+              ) : (
                 <LovedMerchantsHorizontal
                   merchants={lovedByCustomers}
                   weatherDelayMinutes={weatherDelayMinutes}
                   onPressMerchant={openMerchantPage}
                 />
-              ) : (
-                <View style={styles.merchantGrid}>
-                  {lovedByCustomers.map((m) => (
-                    <MerchantGridCard
-                      key={`loved-${m.id}`}
-                      merchant={m}
-                      weatherDelayMinutes={weatherDelayMinutes}
-                      onPressIn={() => showMerchantNavShutter(m.id)}
-                      onPress={() => openMerchantPage(m.id, m)}
-                    />
-                  ))}
-                </View>
               )}
             </View>
           ) : null}
 
-          {/* All nearby restaurants (includes loved stores) */}
           <View style={[styles.section, styles.restaurantSection]}>
-            <Text style={styles.sectionHeading}>RESTAURANTS NEAR YOU</Text>
+            <AppText style={styles.sectionHeading}>RESTAURANTS NEAR YOU</AppText>
             {!showSkeleton ? (
-              <Text style={styles.restaurantOpenCount}>{openRestaurantCountLabel}</Text>
+              <AppText style={styles.restaurantOpenCount}>{openRestaurantCountLabel}</AppText>
             ) : null}
-            {showSkeleton ? (
+          </View>
+            </>
+          }
+          ListEmptyComponent={
+            showSkeleton ? (
               <RestaurantListSkeleton count={3} cardWidth={restaurantCardWidth} />
-            ) : filteredAndSortedMerchants.length === 0 ? (
-              vegOnly ? (
-                <View style={styles.vegEmptyWrap}>
-                  <View style={styles.vegEmptyIconRing}>
-                    <Ionicons name="leaf" size={20} color={GatiMitraColors.primaryMint} />
-                  </View>
-                  <Text style={styles.vegEmptyTitle}>
-                    We couldn’t find any pure-veg stores in your area.
-                  </Text>
+            ) : vegOnly ? (
+              <View style={styles.vegEmptyWrap}>
+                <View style={styles.vegEmptyIconRing}>
+                  <Ionicons name="leaf" size={20} color={GatiMitraColors.primaryMint} />
                 </View>
-              ) : (
-                <Text style={styles.restaurantEmptyHint}>
-                  No restaurants match your filters.
-                </Text>
-              )
+                <AppText style={styles.vegEmptyTitle}>
+                  We couldn’t find any pure-veg stores in your area.
+                </AppText>
+              </View>
             ) : (
-              filteredAndSortedMerchants.map((m, idx) => (
-                <GMRestaurantCardV2
-                  key={`near-${m.id}`}
-                  merchant={m}
-                  initialSaved={bookmarkSet.has(m.id)}
-                  weatherDelayMinutes={weatherDelayMinutes}
-                  bottomSpacing={idx === filteredAndSortedMerchants.length - 1 ? 0 : 18}
-                />
-              ))
-            )}
-          </View>
-          <View style={isVegEmptyState ? styles.footerDock : undefined}>
-            <BrandingFooter compact />
-          </View>
-        </Animated.ScrollView>
+              <AppText style={styles.restaurantEmptyHint}>
+                No restaurants match your filters.
+              </AppText>
+            )
+          }
+          ListFooterComponent={
+            <View style={isVegEmptyState ? styles.footerDock : undefined}>
+              <BrandingFooter compact />
+            </View>
+          }
+        />
 
         {isGridFirstLayout ? (
           <FoodHomeGridFirstStickyChrome
@@ -1549,12 +1568,12 @@ export default function FoodMerchantsScreen() {
               </View>
               <View style={styles.filterSheetHeader}>
                 <View style={styles.filterSheetTitleBlock}>
-                  <Text style={styles.filterSheetTitle}>Filters</Text>
-                  <Text style={styles.filterSheetSubtitle}>
+                  <AppText style={styles.filterSheetTitle}>Filters</AppText>
+                  <AppText style={styles.filterSheetSubtitle}>
                     {activeFilterCount > 0
                       ? `${activeFilterCount} active — tap Apply to update the list`
                       : "Refine delivery time, cuisine, and offers"}
-                  </Text>
+                  </AppText>
                 </View>
                 <TouchableOpacity
                   onPress={clearFilters}
@@ -1564,9 +1583,9 @@ export default function FoodMerchantsScreen() {
                   accessibilityLabel="Clear all filters"
                   accessibilityState={{ disabled: !hasActiveFilters }}
                 >
-                  <Text style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
+                  <AppText style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
                     Clear all
-                  </Text>
+                  </AppText>
                 </TouchableOpacity>
               </View>
               <ScrollView
@@ -1576,7 +1595,7 @@ export default function FoodMerchantsScreen() {
                 keyboardShouldPersistTaps="handled"
                 bounces={false}
               >
-                <Text style={styles.filterSectionLabel}>Delivery time</Text>
+                <AppText style={styles.filterSectionLabel}>Delivery time</AppText>
                 <View style={styles.filterChipsRow}>
                   {DELIVERY_OPTIONS.map((opt) => (
                     <TouchableOpacity
@@ -1585,18 +1604,18 @@ export default function FoodMerchantsScreen() {
                       onPress={() => setDeliveryFilter(opt.id)}
                       activeOpacity={0.85}
                     >
-                      <Text
+                      <AppText
                         style={[
                           styles.filterSheetChipText,
                           deliveryFilter === opt.id && styles.filterSheetChipTextActive,
                         ]}
                       >
                         {opt.label}
-                      </Text>
+                      </AppText>
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={styles.filterSectionLabel}>Cuisine</Text>
+                <AppText style={styles.filterSectionLabel}>Cuisine</AppText>
                 <View style={styles.filterChipsRow}>
                   {CUISINE_OPTIONS.map((c) => (
                     <TouchableOpacity
@@ -1608,18 +1627,18 @@ export default function FoodMerchantsScreen() {
                       onPress={() => toggleCuisine(c)}
                       activeOpacity={0.85}
                     >
-                      <Text
+                      <AppText
                         style={[
                           styles.filterSheetChipText,
                           selectedCuisines.includes(c) && styles.filterSheetChipTextActive,
                         ]}
                       >
                         {c}
-                      </Text>
+                      </AppText>
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={styles.filterSectionLabel}>Other</Text>
+                <AppText style={styles.filterSectionLabel}>Other</AppText>
                 <TouchableOpacity
                   style={[styles.filterSheetRow, filterHasOffers && styles.filterSheetRowActive]}
                   onPress={() => setFilterHasOffers((v) => !v)}
@@ -1637,14 +1656,14 @@ export default function FoodMerchantsScreen() {
                       color={filterHasOffers ? "#fff" : GatiMitraColors.primaryMint}
                     />
                   </View>
-                  <Text
+                  <AppText
                     style={[
                       styles.filterSheetRowText,
                       filterHasOffers && styles.filterSheetRowTextOnMint,
                     ]}
                   >
                     Has offers
-                  </Text>
+                  </AppText>
                   {filterHasOffers ? (
                     <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />
                   ) : null}
@@ -1669,7 +1688,7 @@ export default function FoodMerchantsScreen() {
                     end={{ x: 1, y: 1 }}
                     style={styles.filterApplyBtnGradient}
                   >
-                    <Text style={styles.filterApplyBtnText}>Apply</Text>
+                    <AppText style={styles.filterApplyBtnText}>Apply</AppText>
                   </LinearGradient>
                 </TouchableOpacity>
               </View>
@@ -1780,8 +1799,9 @@ const styles = StyleSheet.create({
     marginBottom: SECTION_GAP_SM,
   },
   categoryTabsSection: {
-    paddingVertical: 6,
-    marginBottom: SECTION_GAP_SM,
+    paddingTop: 4,
+    paddingBottom: 10,
+    marginBottom: 0,
   },
   categoryChipsSection: {
     paddingVertical: 8,
@@ -1837,9 +1857,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
     marginBottom: 0,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(0, 0, 0, 0.06)",
+    paddingBottom: 0,
+    borderBottomWidth: 0,
   },
   filterBarChipsScroll: {
     flex: 1,
@@ -1891,17 +1910,19 @@ const styles = StyleSheet.create({
   restaurantSection: {
     borderTopWidth: 0,
     marginBottom: 0,
-    paddingTop: 12,
+    paddingTop: 4,
+    /** Headings use sectionHeading pad (16) — don't double-inset vs Recommended. */
+    paddingHorizontal: 0,
   },
   lovedSection: {
-    marginTop: 14,
-    marginBottom: SECTION_GAP,
+    marginTop: 4,
+    marginBottom: 12,
     overflow: "visible",
   },
   merchantGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    paddingHorizontal: 16,
+    paddingHorizontal: PAGE_PAD,
     gap: 10,
     overflow: "visible",
   },
@@ -1911,8 +1932,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     color: GatiMitraColors.textSecondary,
     marginTop: 0,
-    marginBottom: 4,
-    paddingHorizontal: 16,
+    /** Match Swiggy title → row gap (~1.5× title height). */
+    marginBottom: 14,
+    paddingHorizontal: PAGE_PAD,
     textTransform: "uppercase",
   },
   restaurantOpenCount: {
@@ -1920,7 +1942,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     letterSpacing: 0.5,
     color: "#64748B",
-    paddingHorizontal: 16,
+    paddingHorizontal: PAGE_PAD,
     marginBottom: 12,
     textTransform: "uppercase",
   },

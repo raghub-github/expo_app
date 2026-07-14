@@ -26,6 +26,9 @@ export type OrderItemApiRow = {
   hasImage: boolean;
   imageUrl: string | null;
   status: string;
+  /** Item-surface Boost / BOGO — partnersite & merchant app parity. */
+  appliedOfferType?: string | null;
+  offerLabel?: string | null;
 };
 
 export type OrderPricingLine = {
@@ -43,7 +46,12 @@ export type OrderPricingSummary = {
   packaging: number;
   packagingTax: number;
   gst: number;
+  /** Amount customer actually paid for delivery (0 when membership waived). */
   deliveryFee: number;
+  /** Pre-benefit quoted fee — use with deliveryFeeWaived for strikethrough UI. */
+  deliveryFeeQuoted?: number;
+  /** True when membership / free-delivery benefit zeroed the charged fee. */
+  deliveryFeeWaived?: boolean;
   discount: number;
   platformFee: number;
   surgeFee: number;
@@ -54,6 +62,73 @@ export type OrderPricingSummary = {
   donationAmount: number;
   totalOrderAmount: number;
 };
+
+/** Membership free-delivery display from billing_snapshot (mirrors customer checkout). */
+export function resolveDeliveryFeeDisplayFromBilling(
+  snap: Record<string, unknown> | null | undefined,
+): { paid: number; quoted: number | null; waived: boolean } {
+  if (!snap || typeof snap !== "object") {
+    return { paid: 0, quoted: null, waived: false };
+  }
+
+  const paid = round2(asNum(snap.delivery_fee));
+  const quotedRaw =
+    asNum(snap.deliveryFeeQuotedInr) ||
+    asNum(snap.delivery_fee_quoted) ||
+    asNum(snap.deliveryFeeBeforeBenefitsInr) ||
+    0;
+  let waivedInr = asNum(snap.deliveryFeeWaivedInr);
+
+  if (waivedInr <= 0.005) {
+    const charges = Array.isArray(snap.charges) ? snap.charges : [];
+    for (const raw of charges) {
+      if (!raw || typeof raw !== "object") continue;
+      const c = raw as { amount?: unknown; meta?: Record<string, unknown>; label?: unknown };
+      const source = String(c.meta?.source ?? "");
+      if (
+        source === "customer_subscription_delivery_waived_marker" ||
+        String(c.label ?? "") === "__delivery_fee_waived_inr__"
+      ) {
+        waivedInr = Math.abs(asNum(c.amount));
+        if (waivedInr > 0.005) break;
+      }
+    }
+  }
+
+  if (waivedInr <= 0.005) {
+    const discounts = Array.isArray(snap.discounts) ? snap.discounts : [];
+    for (const raw of discounts) {
+      if (!raw || typeof raw !== "object") continue;
+      const d = raw as { amount?: unknown; meta?: Record<string, unknown> };
+      if (String(d.meta?.source ?? "") === "customer_subscription_free_delivery") {
+        waivedInr = Math.abs(asNum(d.amount));
+        if (waivedInr > 0.005) break;
+      }
+    }
+  }
+
+  const waived =
+    waivedInr > 0.005 ||
+    (paid <= 0.005 &&
+      quotedRaw > 0.005 &&
+      (asNum(snap.deliveryFeeQuotedInr) > 0.005 ||
+        asNum(snap.deliveryFeeBeforeBenefitsInr) > 0.005 ||
+        asNum(snap.delivery_fee_quoted) > 0.005));
+
+  const quotedCandidate = waived
+    ? Math.max(waivedInr, quotedRaw, paid)
+    : quotedRaw > paid + 0.005
+      ? quotedRaw
+      : 0;
+  const quoted = quotedCandidate > 0.005 ? round2(quotedCandidate) : null;
+
+  return {
+    paid,
+    quoted,
+    /** Membership free delivery: charged fee is 0 but quoted amount remains for strikethrough. */
+    waived: Boolean(waived && quoted != null && paid <= 0.005),
+  };
+}
 
 export type OrderItemsPricing = OrderPricingSummary & {
   /** Merchant-facing bill lines (CTM view — matches partnersite / merchant app). */
@@ -221,6 +296,7 @@ export function buildOrderPricingSummary(
   const convenienceFee = round2(asNum(snap.convenience_fee));
   const miscFee = round2(asNum(snap.misc_fee));
   const deliveryFee = round2(asNum(snap.delivery_fee));
+  const deliveryDisplay = resolveDeliveryFeeDisplayFromBilling(snap);
   const gst = round2(asNum(snap.tax_total));
   const tipAmount = round2(asNum(snap.tip_amount));
   const donationAmount = round2(asNum(snap.donation_amount));
@@ -299,6 +375,8 @@ export function buildOrderPricingSummary(
     packagingTax,
     gst,
     deliveryFee,
+    deliveryFeeQuoted: deliveryDisplay.quoted ?? undefined,
+    deliveryFeeWaived: deliveryDisplay.waived || undefined,
     discount,
     platformFee,
     surgeFee,
@@ -323,6 +401,11 @@ function parsePricingSummary(pr: Record<string, unknown>): OrderPricingSummary {
     packagingTax: Number(pr.packagingTax) || 0,
     gst: Number(pr.gst) || 0,
     deliveryFee: Number(pr.deliveryFee) || 0,
+    deliveryFeeQuoted:
+      pr.deliveryFeeQuoted != null && Number(pr.deliveryFeeQuoted) > 0
+        ? Number(pr.deliveryFeeQuoted)
+        : undefined,
+    deliveryFeeWaived: Boolean(pr.deliveryFeeWaived) || undefined,
     discount: Number(pr.discount) || 0,
     platformFee: Number(pr.platformFee) || 0,
     surgeFee: Number(pr.surgeFee) || 0,
@@ -386,6 +469,30 @@ export function customerDiscountFromOrderPricing(
   return { amount: null, offerSource: null };
 }
 
+/** Delivery fee for payment card — prefers customer bill + membership strike fields. */
+export function customerDeliveryFromOrderPricing(
+  pricing: OrderItemsPricing | null | undefined,
+): { amount: number | null; quoted: number | null; waived: boolean } {
+  if (!pricing) return { amount: null, quoted: null, waived: false };
+
+  const customer = pricing.customer ?? pricing;
+  const paid = customer.deliveryFee ?? pricing.deliveryFee ?? 0;
+  const quoted =
+    customer.deliveryFeeQuoted ??
+    pricing.deliveryFeeQuoted ??
+    null;
+  const waived = Boolean(
+    customer.deliveryFeeWaived || pricing.deliveryFeeWaived,
+  );
+
+  if (waived && quoted != null && quoted > 0) {
+    return { amount: quoted, quoted, waived: true };
+  }
+  if (paid > 0) return { amount: paid, quoted, waived: false };
+  if (quoted != null && quoted > 0) return { amount: quoted, quoted, waived: false };
+  return { amount: null, quoted, waived: false };
+}
+
 export function parseOrderItemsApiResponse(data: unknown): OrderItemsPayload | null {
   if (!data || typeof data !== "object") return null;
   const body = data as { success?: boolean; items?: unknown; pricing?: unknown };
@@ -432,12 +539,19 @@ export function seedOrderItemsCache(orderId: number, payload: OrderItemsPayload)
 /** Deduped fetch — order detail + items modal share the same in-memory cache. */
 export function fetchOrderItemsCached(orderId: number): Promise<OrderItemsPayload | null> {
   const cached = orderItemsCache.get(orderId);
-  if (cached?.items?.length) return Promise.resolve(cached);
+  // Stale entries from before offer badges existed — force a fresh load.
+  const cacheHasOfferFields =
+    Boolean(cached?.items?.length) &&
+    cached!.items.every((row) => "appliedOfferType" in row || "offerLabel" in row);
+  if (cacheHasOfferFields) return Promise.resolve(cached!);
 
   const inflight = orderItemsInflight.get(orderId);
   if (inflight) return inflight;
 
-  const request = fetch(`/api/orders/${orderId}/items`, { credentials: "include" })
+  const request = fetch(`/api/orders/${orderId}/items`, {
+    credentials: "include",
+    cache: "no-store",
+  })
     .then((res) => res.json())
     .then((body) => parseOrderItemsApiResponse(body))
     .then((parsed) => {

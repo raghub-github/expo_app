@@ -1,13 +1,17 @@
 import { applyDiscountRule, applyRule, resolveDiscountAppliesOn } from "./applyRule.js";
 import { round2 } from "./money.js";
 import { ruleConditionsPass } from "./conditions.js";
-import { applyMerchantStoreOffers } from "./merchantOffersApply.js";
+import {
+  applyMerchantStoreOffers,
+  ensureOrderLineOfferAttribution,
+} from "./merchantOffersApply.js";
 import {
   applyPlatformCartOffers,
   applyPlatformDeliveryOffers,
   applyPlatformFeeBucketOffers,
 } from "./platformOffersApply.js";
 import { applyExclusiveCheckoutOffer } from "./checkoutExclusiveOffer.js";
+import { cartPromoQualifyingSubtotal, eligibleSubtotal } from "./discountEligibility.js";
 import type {
   AppliedLine,
   BillContext,
@@ -163,15 +167,16 @@ function applyCouponDiscount(
   }
 
   let amt = 0;
+  const eligibleBase = cartPromoQualifyingSubtotal(ctx, Math.max(0, rem.items));
   if (coupon.discountType === "FIXED") {
     amt = Math.max(0, coupon.valueNumeric ?? 0);
   } else if (coupon.discountType === "PERCENTAGE") {
-    const base = Math.max(0, rem.items);
+    const base = Math.max(0, eligibleBase);
     amt = (base * (coupon.valueNumeric ?? 0)) / 100;
   }
   const cap = coupon.maxDiscountCap;
   if (cap != null && cap > 0) amt = Math.min(amt, cap);
-  const take = Math.min(Math.max(0, amt), rem.items);
+  const take = Math.min(Math.max(0, amt), rem.items, eligibleBase);
   if (take <= 0) return;
 
   rem.items -= take;
@@ -475,7 +480,9 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     for (const rule of batch) {
       if (!rule.stackable && state.appliedNonStackableDiscount) continue;
       if (disabled.has(rule.id)) continue;
-      if (!ruleConditionsPass(rule.conditions, ctx, state, itemPlusAddon)) continue;
+      if (!ruleConditionsPass(rule.conditions, ctx, state, itemPlusAddon, {
+        useEligibleSubtotalForOrderValue: true,
+      })) continue;
 
       const applies = rule.appliesTo;
       if (applies !== "ORDER" && applies !== "DELIVERY" && applies !== "ITEM") continue;
@@ -608,6 +615,9 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     });
   }
 
+  // Freeze per-line offer attribution into order_line_pricing (merchant SSOT).
+  ensureOrderLineOfferAttribution(ctx, state);
+
   return {
     item_total: round2(ctx.itemSubtotal),
     addon_total: round2(ctx.addonSubtotal),
@@ -636,5 +646,42 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     taxes: state.taxes,
     breakdown_steps: state.breakdown_steps,
     ruleset_version: dataset.rulesetVersion,
+    eligible_subtotal: round2(eligibleSubtotal(ctx)),
+    order_line_eligibility: (ctx.orderLines ?? []).map((l) => ({
+      menuItemId: String(l.menuItemId),
+      lineTotal: round2(Math.max(0, Number(l.lineTotal) || 0)),
+      quantity: l.quantity,
+      isDiscountEligible: l.discountEligible !== false,
+      ineligibilityReason: (l.ineligibilityReason ?? null) as "ITEM_PROMO" | "MRP" | null,
+    })),
+    order_line_pricing: (ctx.orderLines ?? []).map((l) => {
+      const catalog = round2(Math.max(0, Number(l.lineTotal) || 0));
+      const disc = round2(Math.max(0, Number(l.offerDiscountAmount) || 0));
+      const effective = round2(
+        l.effectiveLineTotal != null && Number.isFinite(l.effectiveLineTotal)
+          ? Math.max(0, Number(l.effectiveLineTotal))
+          : Math.max(0, catalog - disc)
+      );
+      return {
+        menuItemId: String(l.menuItemId),
+        quantity: l.quantity,
+        catalogLineTotal: catalog,
+        effectiveLineTotal: effective,
+        offerDiscountAmount: disc,
+        appliedOfferId: l.appliedOfferId ?? null,
+        appliedOfferLabel: l.appliedOfferLabel ?? null,
+        appliedOfferType: l.appliedOfferType ?? null,
+        appliedOfferDiscountPct:
+          l.appliedOfferDiscountPct != null && Number.isFinite(l.appliedOfferDiscountPct)
+            ? round2(Number(l.appliedOfferDiscountPct))
+            : null,
+        appliedOfferDiscountFlat:
+          l.appliedOfferDiscountFlat != null && Number.isFinite(l.appliedOfferDiscountFlat)
+            ? round2(Number(l.appliedOfferDiscountFlat))
+            : null,
+        isDiscountEligible: l.discountEligible !== false,
+        ineligibilityReason: (l.ineligibilityReason ?? null) as "ITEM_PROMO" | "MRP" | null,
+      };
+    }),
   };
 }

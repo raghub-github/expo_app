@@ -11,6 +11,16 @@ import {
 } from 'react'
 import { resolveAppAssetUrl } from '@/lib/resolveAppAssetUrl'
 import { criticalAppAssetFallback } from '@/lib/criticalAppAssetFallbacks'
+import { CUSTOMER_APP_SCREEN_IMG, RIDE_APP_SCREEN_IMG } from '@/lib/appDownload'
+import { CX } from '@/lib/appAssetKeys'
+
+/** Always serve local marketing screenshots (not CMS scooter / outdated R2). */
+const FORCED_MARKETING_ASSETS: Record<string, string> = {
+  [CX.home.brandBanner]: CUSTOMER_APP_SCREEN_IMG,
+  [`customer.${CX.home.brandBanner}`]: CUSTOMER_APP_SCREEN_IMG,
+  [CX.ride.banner]: RIDE_APP_SCREEN_IMG,
+  [`customer.${CX.ride.banner}`]: RIDE_APP_SCREEN_IMG,
+}
 
 type AppAssetItem = {
   id: string
@@ -93,6 +103,8 @@ export function AppAssetsProvider({ children }: { children: ReactNode }) {
   const getUrl = useCallback(
     (assetKey: string) => {
       if (!assetKey) return null
+      const forced = FORCED_MARKETING_ASSETS[assetKey]
+      if (forced) return forced
       return (
         urls[assetKey] ??
         urls[

@@ -342,11 +342,16 @@ const ROUTE_TITLES: Record<string, string> = {
 };
 
 const SUPER_ADMIN_HUB_PATH = "/dashboard/super-admin";
+const GEO_LIST_PATH = "/dashboard/super-admin/geo";
+const GEO_DETAIL_ROUTE_RE = /^\/dashboard\/super-admin\/geo\/[^/]+\/[^/]+$/;
 
 /** One-step back within Super Admin nested routes (not always the hub). */
 function resolveSuperAdminBackHref(cleanPath: string): string {
   if (/^\/dashboard\/super-admin\/cxapp-home\/[^/]+$/.test(cleanPath)) {
     return "/dashboard/super-admin/cxapp-home";
+  }
+  if (GEO_DETAIL_ROUTE_RE.test(cleanPath)) {
+    return GEO_LIST_PATH;
   }
   return SUPER_ADMIN_HUB_PATH;
 }
@@ -381,6 +386,7 @@ function HeaderComponent() {
     }
     if (ROUTE_TITLES[clean]) return ROUTE_TITLES[clean];
     if (/^\/dashboard\/super-admin\/rule-engine\/\d+\/edit$/.test(clean)) return "Edit rule";
+    if (GEO_DETAIL_ROUTE_RE.test(clean)) return "Geo & coverage";
     return getCurrentPageName(clean);
   }, [effectivePathname, searchParams]);
   const isMerchantsAreaForDisplay = effectivePathname.startsWith("/dashboard/merchants");

@@ -20,8 +20,12 @@ export default function HomeLayout() {
         name="merchant/[id]"
         options={{
           animation: "none",
+          animationDuration: 0,
+          freezeOnBlur: true,
           statusBarTranslucent: false,
+          // Match shutter / skeleton — never flash a grey/blank route.
           contentStyle: { backgroundColor: "#FFFFFF" },
+          gestureEnabled: true,
         }}
       />
       <Stack.Screen name="shop" />

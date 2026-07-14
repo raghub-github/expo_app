@@ -36,6 +36,7 @@ import {
   formatEnginePreviewStatus,
   type EnginePreviewDisplay,
 } from '@gatimitra/financial-rules';
+import { resolveMerchantOfferBadge } from '@/lib/merchant-offer-display';
 
 type RiderPenaltyPreviewRider = {
   riderId: number;
@@ -186,6 +187,8 @@ function mapApiItemToRefundItemForView(
     imageUrl: row.imageUrl ?? undefined,
     refundPercentage: 0,
     isDeliveryFee: delivery,
+    appliedOfferType: row.appliedOfferType ?? null,
+    offerLabel: row.offerLabel ?? null,
   };
 }
 
@@ -206,6 +209,8 @@ function syncRefundItemAmounts(
       chargesPerQuantity: amounts.chargesPerQuantity,
       totalPerQuantity: amounts.totalPerQuantity,
       customAmount: amounts.amountPerQuantity,
+      appliedOfferType: row.appliedOfferType ?? item.appliedOfferType ?? null,
+      offerLabel: row.offerLabel ?? item.offerLabel ?? null,
     };
   });
 }
@@ -428,6 +433,8 @@ interface RefundItem {
   imageUrl?: string;
   refundPercentage: number;
   isDeliveryFee: boolean;
+  appliedOfferType?: string | null;
+  offerLabel?: string | null;
 }
 
 function payloadToRefundState(
@@ -1780,7 +1787,31 @@ export default function ItemsRefundModal({
                       </div>
                     </td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{isDeliveryFeeRow(item) ? 'FIXED' : 'AVAILABLE'}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.name}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">
+                      <div className="inline-flex flex-col items-center gap-1 max-w-[220px]">
+                        {(() => {
+                          const { kind, badge } = resolveMerchantOfferBadge({
+                            offerType: item.appliedOfferType,
+                            offerLabel: item.offerLabel,
+                          });
+                          if (!badge) return null;
+                          const isBogo = kind === 'bogo';
+                          return (
+                            <span
+                              className={`inline-flex max-w-full truncate rounded-full border px-1.5 py-px text-[9px] font-bold leading-none ${
+                                isBogo
+                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                  : 'border-amber-200 bg-amber-50 text-amber-900'
+                              }`}
+                              title={badge}
+                            >
+                              {badge}
+                            </span>
+                          );
+                        })()}
+                        <span className="whitespace-normal break-words leading-snug">{item.name}</span>
+                      </div>
+                    </td>
                     <td className="px-2 py-1.5 border border-slate-200 text-left align-top text-slate-600 min-w-[200px]">
                       <CustomisationCell
                         detail={item.customisationDetail}

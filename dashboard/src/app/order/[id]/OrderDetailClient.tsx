@@ -1731,6 +1731,7 @@ export default function OrderDetailClient({
               orderRefunds={orderRefunds}
               paymentDetail={paymentDetail}
               orderItemsPricing={orderItemsPayload?.pricing ?? null}
+              onPrefetchOrderItems={ensureOrderItemsPrefetch}
             />
           </div>
           </>

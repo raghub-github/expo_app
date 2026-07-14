@@ -16,6 +16,8 @@ import {
 import { prefetchFoodHomeLayout } from "@/lib/foodHomeLayoutCache";
 import { prefetchUserAppCategories } from "@/lib/userAppCategoryCache";
 import { prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedia";
+import { prefetchMerchantsList } from "@/lib/merchantsListCache";
+import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const FOOD_HOME_CATEGORY_STORE_TYPE = "FOOD";
@@ -71,6 +73,8 @@ export async function prefetchHomeScreenData(queryClient: QueryClient): Promise<
 
   if (coords) {
     tasks.push(restoreAndPrefetchLocationWeather(queryClient, address, coords));
+    const vegOnly = useDietaryPreferenceStore.getState().vegOnly;
+    tasks.push(prefetchMerchantsList(queryClient, coords.latitude, coords.longitude, vegOnly));
   }
 
   await Promise.allSettled(tasks);

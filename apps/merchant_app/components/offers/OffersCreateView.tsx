@@ -1,68 +1,16 @@
-import type { ComponentProps } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { OfferType } from "@/services/offersApi";
 import { countOffersForTrackFilter } from "@/lib/offers/offer-lifecycle";
 import type { Offer } from "@/services/offersApi";
+import { OFFER_PROMO_CHOICES, type OfferCreatePath } from "@/lib/offers/offer-form-constants";
 import { OFFERS_UI, offersSharedStyles } from "./offers-theme";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
-
-export type OfferCreateCategory = {
-  id: string;
-  title: string;
-  subtitle: string;
-  icon: ComponentProps<typeof Ionicons>["name"];
-  presetType?: OfferType;
-  enabled: boolean;
-};
-
-const CREATE_CATEGORIES: OfferCreateCategory[] = [
-  {
-    id: "delight",
-    title: "Delight your customers",
-    subtitle: "Freebies, BOGO, and more to boost menu to cart conversions",
-    icon: "gift-outline",
-    presetType: "BOGO",
-    enabled: true,
-  },
-  {
-    id: "grow",
-    title: "Grow your customer base",
-    subtitle: "Offers to increase your customers and orders",
-    icon: "people-outline",
-    presetType: "CART_PERCENTAGE",
-    enabled: true,
-  },
-  {
-    id: "value",
-    title: "Increase your order value",
-    subtitle: "Encourage high-value orders and party orders",
-    icon: "cash-outline",
-    presetType: "CART_FLAT",
-    enabled: true,
-  },
-  {
-    id: "mealtime",
-    title: "Get more mealtime orders",
-    subtitle: "Boost orders during breakfast, lunch, or dinner",
-    icon: "restaurant-outline",
-    presetType: "PERCENTAGE",
-    enabled: true,
-  },
-  {
-    id: "delivery",
-    title: "Free delivery & cart deals",
-    subtitle: "Free delivery, coupons, and cart-level discounts",
-    icon: "bicycle-outline",
-    presetType: "FREE_DELIVERY",
-    enabled: true,
-  },
-];
 
 type Props = {
   offers: Offer[];
   storeName: string | null;
-  onCreate: (presetType?: OfferType) => void;
+  onCreate: (presetType?: OfferType, createPath?: OfferCreatePath) => void;
   onGoToTrack: () => void;
   onRefresh?: () => void;
   refreshing?: boolean;
@@ -102,9 +50,6 @@ export function OffersCreateView({
           <View style={styles.featuredTitles}>
             <View style={styles.titleRow}>
               <Text style={styles.featuredTitle}>GatiMitra Promos</Text>
-              <Pressable hitSlop={8}>
-                <Ionicons name="information-circle-outline" size={16} color={OFFERS_UI.textFaint} />
-              </Pressable>
             </View>
           </View>
           {hasActive ? (
@@ -124,7 +69,7 @@ export function OffersCreateView({
             onPress={() => onCreate()}
             style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.85 }]}
           >
-            <Text style={styles.outlineBtnText}>Create more</Text>
+            <Text style={styles.outlineBtnText}>Create offer</Text>
           </Pressable>
           <Pressable
             onPress={onGoToTrack}
@@ -136,33 +81,50 @@ export function OffersCreateView({
         </View>
       </View>
 
-      <Text style={[offersSharedStyles.sectionTitle, { marginTop: 8 }]}>More discounts</Text>
-      <View style={[offersSharedStyles.card, styles.categoryCard]}>
-        {CREATE_CATEGORIES.map((cat, index) => (
-          <View key={cat.id}>
-            {index > 0 ? <View style={styles.categoryDivider} /> : null}
+      <Text style={[offersSharedStyles.sectionTitle, { marginTop: 8 }]}>Choose promo type</Text>
+      <View style={{ gap: 10 }}>
+        {OFFER_PROMO_CHOICES.map((choice) => {
+          const path: OfferCreatePath =
+            choice.id === "precision" ? "precision" : choice.id === "bogo" ? "bogo" : "boost";
+          return (
             <Pressable
-              onPress={() => onCreate(cat.presetType)}
-              style={({ pressed }) => [styles.categoryRow, pressed && { opacity: 0.75 }]}
+              key={choice.id}
+              onPress={() => onCreate(choice.offerType, path)}
+              style={({ pressed }) => [styles.promoCard, pressed && { opacity: 0.9 }]}
             >
-              <View style={styles.categoryIcon}>
-                <Ionicons name={cat.icon} size={20} color={GatiMitraMerchant.primary} />
+              <View
+                style={[
+                  styles.promoIcon,
+                  choice.id === "precision"
+                    ? styles.promoIconPrecision
+                    : choice.id === "bogo"
+                      ? styles.promoIconBogo
+                      : styles.promoIconPct,
+                ]}
+              >
+                <Text style={styles.promoIconText}>
+                  {choice.id === "precision"
+                    ? "PRECI\nSION"
+                    : choice.id === "bogo"
+                      ? "BUY 1\nGET 1"
+                      : "30%\nOff"}
+                </Text>
               </View>
-              <View style={styles.categoryText}>
-                <Text style={styles.categoryTitle}>{cat.title}</Text>
-                <Text style={styles.categorySub}>{cat.subtitle}</Text>
+              <View style={styles.promoText}>
+                <Text style={styles.promoTitle}>{choice.title}</Text>
+                <Text style={styles.promoDesc}>{choice.description}</Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color={OFFERS_UI.textFaint} />
             </Pressable>
-          </View>
-        ))}
+          );
+        })}
       </View>
 
       <View style={styles.tipBanner}>
         <Ionicons name="bulb-outline" size={18} color={GatiMitraMerchant.navy} />
         <Text style={styles.tipText}>
-          All offer types from your menu — percentage, flat, BOGO, coupons, and more — are available
-          when you create an offer.
+          Same flow as Partner Site — pick Precision, BOGO, or Percentage (Boost). Precision skips
+          item selection; Percentage is Boost-only.
         </Text>
       </View>
     </ScrollView>
@@ -223,31 +185,37 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.primary,
   },
   filledBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
-  categoryCard: { paddingVertical: 4 },
-  categoryRow: {
+  promoCard: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 14,
     gap: 12,
+    marginHorizontal: H_PADDING,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: OFFERS_UI.cardBorder,
+    backgroundColor: "#fff",
   },
-  categoryIcon: {
-    width: 40,
-    height: 40,
+  promoIcon: {
+    width: 48,
+    height: 48,
     borderRadius: 10,
-    backgroundColor: OFFERS_UI.accentSoft,
     alignItems: "center",
     justifyContent: "center",
   },
-  categoryText: { flex: 1, minWidth: 0 },
-  categoryTitle: { fontSize: 14, fontWeight: "700", color: OFFERS_UI.text },
-  categorySub: { fontSize: 12, color: OFFERS_UI.textMuted, marginTop: 3, lineHeight: 17 },
-  categoryDivider: {
-    marginHorizontal: 14,
-    borderTopWidth: 1,
-    borderStyle: "dashed",
-    borderColor: OFFERS_UI.metricDivider,
+  promoIconBogo: { backgroundColor: "#6D28D9" },
+  promoIconPct: { backgroundColor: "#F59E0B" },
+  promoIconPrecision: { backgroundColor: "#4338CA" },
+  promoIconText: {
+    color: "#FEF08A",
+    fontSize: 8,
+    fontWeight: "900",
+    textAlign: "center",
+    lineHeight: 11,
   },
+  promoText: { flex: 1, minWidth: 0 },
+  promoTitle: { fontSize: 14, fontWeight: "800", color: OFFERS_UI.text },
+  promoDesc: { fontSize: 12, color: OFFERS_UI.textMuted, marginTop: 3, lineHeight: 17 },
   tipBanner: {
     flexDirection: "row",
     alignItems: "flex-start",

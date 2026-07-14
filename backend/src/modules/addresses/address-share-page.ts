@@ -28,6 +28,13 @@ export function buildAddressSharePageHtml(args: {
 }): string {
   const { shortCode, token } = args;
   const appUrl = `gatimitra://address/save?id=${encodeURIComponent(token)}`;
+  const androidPackage = "com.gatimitra.customer";
+  // Carry the token as the Play install referrer so the app can resume the
+  // deep link after a fresh install (deferred deep linking via the Play
+  // Install Referrer API — see native follow-up).
+  const playStoreUrl =
+    `https://play.google.com/store/apps/details?id=${androidPackage}` +
+    `&referrer=${encodeURIComponent(`addr_${token}`)}`;
   const pageUrl = buildAddressShareUrl(shortCode, token);
   const ogImage = buildAddressShareOgImageUrl();
   const ogTitle = "GatiMitra";
@@ -87,18 +94,30 @@ export function buildAddressSharePageHtml(args: {
   <script>
     (function () {
       var appUrl = ${JSON.stringify(appUrl)};
+      var playStoreUrl = ${JSON.stringify(playStoreUrl)};
+      var isAndroid = /Android/i.test(navigator.userAgent);
+      var isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
       function openApp() {
         document.getElementById('status').textContent = 'Opening GatiMitra…';
         window.location.href = appUrl;
+        // If we're still visible after the scheme attempt, the app isn't
+        // installed. On Android, send the user to the Play Store (the token
+        // rides along as the install referrer so the deep link resumes after
+        // install). This is a fallback only — a verified App Link opens the
+        // app directly and this page never loads.
         setTimeout(function () {
-          if (document.visibilityState !== 'hidden') {
+          if (document.visibilityState === 'hidden') return;
+          if (isAndroid) {
+            document.getElementById('status').textContent = 'Opening Play Store…';
+            window.location.href = playStoreUrl;
+          } else {
             document.getElementById('status').textContent =
               'If the app did not open, install GatiMitra and try again.';
           }
         }, 1800);
       }
       document.getElementById('openApp').addEventListener('click', openApp);
-      if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      if (isAndroid || isIOS) {
         setTimeout(openApp, 400);
       }
     })();

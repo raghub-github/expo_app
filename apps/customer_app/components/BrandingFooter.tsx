@@ -5,8 +5,9 @@
  */
 
 import { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Animated } from "react-native";
+import { View, StyleSheet, Animated } from "react-native";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AppText } from "@/components/AppText";
 
 const BRAND_LABEL = "GatiMitra";
 const TAGLINE = "Made for Your Moments";
@@ -43,16 +44,18 @@ export function BrandingFooter({ variant = "default", compact = false }: Brandin
     >
       {isHome ? null : <View style={styles.divider} />}
       {isHome ? (
-        <Text style={styles.taglineHome}>
-          <Text style={styles.sparkle}>✨ </Text>
-          {TAGLINE}
-          <Text style={styles.sparkle}> ✨</Text>
-        </Text>
+        <AppText style={styles.taglineHome} bold>
+          ✨ {TAGLINE} ✨
+        </AppText>
       ) : (
-        <Text style={styles.tagline}>{TAGLINE}</Text>
+        <AppText style={styles.tagline} bold>
+          {TAGLINE}
+        </AppText>
       )}
       <View style={styles.brandTextWrap}>
-        <Text style={[styles.brandText, isHome && styles.brandTextHome]}>{BRAND_LABEL}</Text>
+        <AppText style={[styles.brandText, isHome && styles.brandTextHome]} bold>
+          {BRAND_LABEL}
+        </AppText>
       </View>
       {isHome ? <View style={styles.homeRule} /> : null}
     </Animated.View>
@@ -106,9 +109,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: GatiMitraColors.splashMint,
     textAlign: "center",
-  },
-  sparkle: {
-    color: GatiMitraColors.splashMint,
   },
   brandTextHome: {
     fontSize: 26,

@@ -399,8 +399,9 @@ export function StoreBannerCarousel({
     (dx: number, dy: number) =>
       enableSwipe &&
       showCarouselRef.current &&
-      Math.abs(dx) > 4 &&
-      Math.abs(dx) > Math.abs(dy) * 1.05,
+      // Require a clear horizontal intent so slight diagonal jitter doesn't steal taps.
+      Math.abs(dx) > 12 &&
+      Math.abs(dx) > Math.abs(dy) * 1.5,
     [enableSwipe]
   );
 
@@ -423,7 +424,8 @@ export function StoreBannerCarousel({
           const w = widthRef.current;
           if (slidesRef.current.length <= 1) return;
 
-          if (Math.abs(g.dx) > 10) {
+          // Only block parent press once a real swipe is underway.
+          if (Math.abs(g.dx) > SWIPE_THRESHOLD) {
             if (!didSwipeRef.current) onSwipeGesture?.();
             didSwipeRef.current = true;
           }

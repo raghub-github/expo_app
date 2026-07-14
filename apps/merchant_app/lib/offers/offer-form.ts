@@ -2,16 +2,22 @@ import type { Offer, OfferType } from "@/services/offersApi";
 import { toLocalDateInputValue, normalizeTimeColumnForInput } from "@/lib/offers/offer-utils";
 import { formatOfferTypeLabel } from "@/lib/offers/offer-lifecycle";
 import { formatOfferInr } from "@/lib/offers/offer-analytics";
+import {
+  OFFER_NAV_STEPS,
+  OFFER_STEP_LABELS,
+  OFFER_WIZARD_STEPS,
+  DISCOUNT_SLIDER_MIN,
+  type OfferWizardStep,
+  type OfferCreatePath,
+} from "@/lib/offers/offer-form-constants";
 
-export type OfferWizardStep = "basic" | "type" | "applicability" | "conditions" | "review";
+export type { OfferWizardStep, OfferCreatePath };
+export { OFFER_NAV_STEPS, OFFER_STEP_LABELS, OFFER_WIZARD_STEPS };
 
-export const WIZARD_STEPS: { id: OfferWizardStep; label: string }[] = [
-  { id: "basic", label: "Basic info" },
-  { id: "type", label: "Offer type" },
-  { id: "applicability", label: "Applies to" },
-  { id: "conditions", label: "Conditions" },
-  { id: "review", label: "Review" },
-];
+/** Progress bar steps after choose (create) or from start when editing. */
+export const WIZARD_STEPS: { id: OfferWizardStep; label: string }[] = OFFER_WIZARD_STEPS.map(
+  (id) => ({ id, label: OFFER_STEP_LABELS[id] })
+);
 
 export type OfferFormValues = {
   title: string;
@@ -36,9 +42,14 @@ export type OfferFormValues = {
   priority: string;
   applicableTimeStart: string;
   applicableTimeEnd: string;
+  applicableOnDays: string[];
   applyToSpecificItems: boolean;
   selectedItemIds: string[];
   imagePreview: string | null;
+  /** Boost = item-facing %; Precision = sheet-facing rules. */
+  conditionsMode: "boost" | "precision";
+  /** First-screen path: Precision | Percentage(Boost) | BOGO */
+  createPath: OfferCreatePath;
 };
 
 export function todayYmd(): string {
@@ -53,6 +64,9 @@ export function plusDaysYmd(days: number): string {
 }
 
 export function emptyOfferFormValues(presetType?: OfferType): OfferFormValues {
+  const isBogo =
+    presetType === "BUY_X_GET_Y" || presetType === "BUY_N_GET_M" || presetType === "BOGO";
+  const createPath: OfferCreatePath = isBogo ? "bogo" : "boost";
   return {
     title: "",
     description: "",
@@ -61,10 +75,10 @@ export function emptyOfferFormValues(presetType?: OfferType): OfferFormValues {
     minOrder: "",
     maxOrder: "",
     couponCode: "",
-    buyQty: "",
-    getQty: "",
+    buyQty: isBogo ? "1" : "",
+    getQty: isBogo ? "1" : "",
     validFrom: todayYmd(),
-    validTill: plusDaysYmd(30),
+    validTill: plusDaysYmd(1),
     autoApply: true,
     maxDiscountAmount: "",
     maxUsesTotal: "",
@@ -76,9 +90,12 @@ export function emptyOfferFormValues(presetType?: OfferType): OfferFormValues {
     priority: "0",
     applicableTimeStart: "",
     applicableTimeEnd: "",
+    applicableOnDays: [],
     applyToSpecificItems: false,
     selectedItemIds: [],
     imagePreview: null,
+    conditionsMode: "boost",
+    createPath,
   };
 }
 
@@ -111,6 +128,28 @@ export function populateOfferFormFromOffer(o: Offer): OfferFormValues {
     normalizeTimeColumnForInput(meta.applicable_time_end as string | undefined) ||
     "";
 
+  const conditionsMode: "boost" | "precision" =
+    meta.create_path === "precision" || meta.conditions_mode === "precision"
+      ? "precision"
+      : meta.create_path === "boost" || meta.conditions_mode === "boost"
+        ? "boost"
+        : hasItems
+          ? "boost"
+          : "precision";
+
+  const isBogoType =
+    o.offer_type === "BUY_X_GET_Y" ||
+    o.offer_type === "BUY_N_GET_M" ||
+    o.offer_type === "BOGO" ||
+    meta.create_path === "bogo";
+  const createPath: OfferCreatePath = isBogoType
+    ? "bogo"
+    : conditionsMode === "precision"
+      ? "precision"
+      : "boost";
+
+  const selectedIds = conditionsMode === "precision" ? [] : hasItems ? [...(o.menu_item_ids ?? [])] : [];
+
   return {
     title: o.offer_title ?? "",
     description: o.offer_description ?? "",
@@ -134,80 +173,196 @@ export function populateOfferFormFromOffer(o: Offer): OfferFormValues {
     priority: o.priority != null ? String(o.priority) : "0",
     applicableTimeStart: timeStart,
     applicableTimeEnd: timeEnd,
-    applyToSpecificItems: hasItems,
-    selectedItemIds: hasItems ? [...(o.menu_item_ids ?? [])] : [],
+    applicableOnDays: Array.isArray(o.applicable_on_days) ? [...o.applicable_on_days] : [],
+    applyToSpecificItems: conditionsMode === "precision" ? false : selectedIds.length > 0,
+    selectedItemIds: selectedIds,
     imagePreview: o.offer_image_url ?? null,
+    conditionsMode,
+    createPath,
   };
 }
 
-export function validateWizardStep(
-  step: OfferWizardStep,
-  v: OfferFormValues
-): string | null {
+/** Auto priority — same rules as partnersite (higher discount → higher priority). */
+export function computeAutoPriority(v: OfferFormValues): number {
+  if (["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType)) {
+    const buy = Math.max(1, parseInt(v.buyQty || "1", 10) || 1);
+    const get = Math.max(1, parseInt(v.getQty || "1", 10) || 1);
+    return Math.round((get / (buy + get)) * 100);
+  }
+  if (["PERCENTAGE", "CART_PERCENTAGE", "COUPON"].includes(v.offerType)) {
+    const pct = parseFloat(v.discountValue || "0");
+    return Number.isFinite(pct) ? Math.round(Math.min(100, Math.max(0, pct))) : 0;
+  }
+  if (["FLAT", "CART_FLAT"].includes(v.offerType)) {
+    const amt = parseFloat(v.discountValue || "0");
+    return Number.isFinite(amt) ? Math.min(100, Math.round(amt / 5)) : 0;
+  }
+  return 0;
+}
+
+export function canProceedFromStep(step: OfferWizardStep, v: OfferFormValues): boolean {
   switch (step) {
-    case "basic":
-      if (!v.title.trim()) return "Offer title is required.";
-      return null;
-    case "type": {
-      const isPct = ["PERCENTAGE", "CART_PERCENTAGE"].includes(v.offerType);
-      const needsBuyGet = ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType);
-      if (isPct && !v.discountValue.trim()) return "Enter discount percentage.";
-      if (["FLAT", "CART_FLAT"].includes(v.offerType) && !v.discountValue.trim()) {
-        return "Enter flat discount amount.";
-      }
-      if (v.offerType === "COUPON" && !v.couponCode.trim()) return "Coupon code is required.";
-      if (needsBuyGet && !v.buyQty.trim()) return "Enter buy quantity.";
-      return null;
-    }
+    case "choose":
+      return v.offerType === "PERCENTAGE" || ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType);
     case "applicability":
-      if (v.applyToSpecificItems && v.selectedItemIds.length === 0) {
-        return "Select at least one menu item.";
+      // Precision is whole-menu only - no item selection required.
+      if (v.createPath === "precision" || v.conditionsMode === "precision") return true;
+      if (v.applyToSpecificItems) return v.selectedItemIds.length > 0;
+      return true;
+    case "conditions": {
+      if (["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType)) {
+        const buy = parseInt(v.buyQty || "", 10);
+        const get = parseInt(v.getQty || "", 10);
+        return Number.isFinite(buy) && buy >= 1 && Number.isFinite(get) && get >= 1;
       }
-      return null;
-    case "conditions":
-      if (!v.validFrom.trim() || !v.validTill.trim()) return "Valid from and till dates are required.";
-      if (v.validFrom > v.validTill) return "Valid till must be on or after valid from.";
-      return null;
+      if (["PERCENTAGE", "CART_PERCENTAGE"].includes(v.offerType)) {
+        const n = parseFloat(v.discountValue || "");
+        return Number.isFinite(n) && n >= DISCOUNT_SLIDER_MIN && n <= 100;
+      }
+      if (["FLAT", "CART_FLAT", "COUPON"].includes(v.offerType)) {
+        const n = parseFloat(v.discountValue || "");
+        return Number.isFinite(n) && n > 0;
+      }
+      return true;
+    }
+    case "schedule":
+      return Boolean(v.validFrom.trim() && v.validTill.trim() && v.validFrom <= v.validTill);
     case "review":
-      return null;
+      return Boolean(v.title.trim() && v.validFrom.trim() && v.validTill.trim() && v.validFrom <= v.validTill);
     default:
-      return null;
+      return true;
   }
 }
 
-export function buildReviewRows(v: OfferFormValues): { label: string; value: string }[] {
+export function nextStepBlockedReason(step: OfferWizardStep, v: OfferFormValues): string | null {
+  if (canProceedFromStep(step, v)) return null;
+  switch (step) {
+    case "choose":
+      return "Choose Precision, Buy one get one, or Percentage discount";
+    case "applicability":
+      return "Select at least one menu item";
+    case "conditions":
+      if (["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType)) {
+        return "Set buy and get quantities";
+      }
+      return `Set a discount of at least ${DISCOUNT_SLIDER_MIN}%`;
+    case "schedule":
+      return "Set a valid start and end date";
+    case "review":
+      return "Offer title and validity dates are required";
+    default:
+      return "Fill required fields to continue";
+  }
+}
+
+export function validateWizardStep(step: OfferWizardStep, v: OfferFormValues): string | null {
+  return nextStepBlockedReason(step, v);
+}
+
+export function buildMerchantReviewSummary(
+  v: OfferFormValues,
+  opts?: { selectedCount?: number; menuItemCount?: number }
+): {
+  headline: string;
+  customerSees: string;
+  equivalent: string;
+  appliesLabel: string;
+} {
+  const buy = Math.max(1, parseInt(v.buyQty || "1", 10) || 1);
+  const get = Math.max(1, parseInt(v.getQty || "1", 10) || 1);
+  const pct = parseFloat(v.discountValue || "0");
+  const isBogo = ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType);
+  const selectedCount = opts?.selectedCount ?? v.selectedItemIds.length;
+  const menuCount = opts?.menuItemCount;
+  const appliesLabel =
+    v.createPath === "precision" || v.conditionsMode === "precision"
+      ? "All menu items (Precision)"
+      : v.applyToSpecificItems
+        ? `${selectedCount} selected item${selectedCount === 1 ? "" : "s"}`
+        : menuCount != null
+          ? `All menu items (${menuCount})`
+          : "All menu items";
+
+  if (isBogo) {
+    const equivPct = Math.round((get / (buy + get)) * 100);
+    return {
+      headline: `Buy ${buy} Get ${get} Free`,
+      customerSees:
+        get === 1 && buy === 1
+          ? "Customers will get one item free when they buy one."
+          : `Customers will get ${get} item${get > 1 ? "s" : ""} free when they buy ${buy}.`,
+      equivalent: `This is equivalent to a ${equivPct}% discount.`,
+      appliesLabel,
+    };
+  }
+
+  if (["PERCENTAGE", "CART_PERCENTAGE"].includes(v.offerType) && pct > 0) {
+    const cap = v.maxDiscountAmount;
+    return {
+      headline: cap ? `${pct}% Off up to ₹${cap}` : `Flat ${pct}% Off`,
+      customerSees: cap
+        ? `Customers save ${pct}% on eligible items, up to ₹${cap}.`
+        : `Customers get a flat ${pct}% discount on eligible items.`,
+      equivalent: v.minOrder
+        ? `Applies when order value is at least ₹${v.minOrder}.`
+        : "No minimum order value required.",
+      appliesLabel,
+    };
+  }
+
+  return {
+    headline: v.title.trim() || "Your offer",
+    customerSees: "Complete the previous steps to see how this offer looks to customers.",
+    equivalent: "",
+    appliesLabel,
+  };
+}
+
+export function buildReviewRows(
+  v: OfferFormValues,
+  opts?: {
+    conditionsMode?: "boost" | "precision";
+    selectedCount?: number;
+    menuItemCount?: number;
+  }
+): { label: string; value: string }[] {
+  const summary = buildMerchantReviewSummary(v, {
+    selectedCount: opts?.selectedCount,
+    menuItemCount: opts?.menuItemCount,
+  });
   const isPct = ["PERCENTAGE", "CART_PERCENTAGE"].includes(v.offerType);
+  const isBogo = ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(v.offerType);
+  const typeValue = isBogo
+    ? formatOfferTypeLabel(v.offerType)
+    : v.createPath === "precision" || opts?.conditionsMode === "precision"
+      ? "Precision"
+      : "Boost";
   const rows: { label: string; value: string }[] = [
-    { label: "Title", value: v.title.trim() || "—" },
-    { label: "Type", value: formatOfferTypeLabel(v.offerType) },
+    { label: "Offer name", value: v.title.trim() || "—" },
+    { label: "Offer type", value: typeValue },
+    { label: "Customer sees", value: summary.headline },
     {
       label: "Discount",
       value: v.discountValue
         ? isPct
           ? `${v.discountValue}%`
           : formatOfferInr(Number(v.discountValue))
-        : "—",
+        : summary.equivalent || "—",
     },
     {
       label: "Applies to",
-      value: v.applyToSpecificItems
-        ? `${v.selectedItemIds.length} menu item(s)`
-        : "All orders",
+      value:
+        v.createPath === "precision" || opts?.conditionsMode === "precision"
+          ? "All menu items (Precision)"
+          : summary.appliesLabel,
     },
     { label: "Valid", value: `${v.validFrom} → ${v.validTill}` },
-    { label: "Auto-apply", value: v.autoApply ? "Yes" : "No" },
-    { label: "Status", value: v.isActive ? "Active" : "Inactive" },
+    { label: "Priority", value: `Auto · ${computeAutoPriority(v)}` },
   ];
   if (v.minOrder) rows.push({ label: "Min order", value: formatOfferInr(Number(v.minOrder)) });
-  if (v.maxOrder) rows.push({ label: "Max order", value: formatOfferInr(Number(v.maxOrder)) });
   if (v.maxDiscountAmount) {
     rows.push({ label: "Max discount cap", value: formatOfferInr(Number(v.maxDiscountAmount)) });
   }
-  if (v.couponCode) rows.push({ label: "Coupon", value: v.couponCode });
-  if (v.maxUsesTotal) rows.push({ label: "Total uses", value: v.maxUsesTotal });
-  if (v.maxUsesPerUser) rows.push({ label: "Per user", value: v.maxUsesPerUser });
-  if (v.firstOrderOnly) rows.push({ label: "Audience", value: "First order only" });
-  else if (v.newUserOnly) rows.push({ label: "Audience", value: "New users only" });
   if (v.applicableTimeStart || v.applicableTimeEnd) {
     rows.push({
       label: "Daily slot",

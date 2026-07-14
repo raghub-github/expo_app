@@ -7,7 +7,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import type { OrderRecord } from "@/hooks/useOrders";
+import type { OrderRecord } from "@/lib/orderRecord";
 
 type OpenHandler = ((order: OrderRecord) => void) | null;
 

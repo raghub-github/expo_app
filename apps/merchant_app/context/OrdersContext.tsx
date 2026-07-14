@@ -28,7 +28,7 @@ import {
   type OrderCounts,
   type OrderRecord,
   type OrderStage,
-} from "@/hooks/useOrders";
+} from "@/lib/orderRecord";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 
 const POLL_FAST_MS = 3_000;
@@ -39,6 +39,8 @@ type OrdersContextValue = {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
+  /** Upsert a single order into the live board (notification / push deep-link path). */
+  upsertOrder: (order: OrderRecord) => void;
   transitionOrder: (
     orderId: string,
     nextStatus: OrderStage,
@@ -94,6 +96,32 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const [orderNowMs, setOrderNowMs] = useState(() => Date.now());
   const refetchInFlightRef = useRef<Promise<void> | null>(null);
   const transitionInFlightRef = useRef<Set<string>>(new Set());
+  const fastFetchInFlightRef = useRef<Set<number>>(new Set());
+  /** Orders inserted optimistically from realtime, kept alive across a stale full refetch. */
+  const pendingOptimisticRef = useRef<Map<number, { order: OrderRecord; at: number }>>(new Map());
+
+  /**
+   * A full-list refetch may have started BEFORE an optimistic realtime insert and
+   * therefore not include the new order. Re-attach any recent optimistic CREATED
+   * order the fetched list is still missing, so it isn't dropped (which would close
+   * the incoming modal). Entries self-prune once the list catches up, the order
+   * leaves CREATED, or after a short grace window.
+   */
+  const mergePendingOptimistic = useCallback((list: OrderRecord[]): OrderRecord[] => {
+    const pending = pendingOptimisticRef.current;
+    if (pending.size === 0) return list;
+    const now = Date.now();
+    const coreIdsInList = new Set(list.map((o) => o.ordersCoreId));
+    const extra: OrderRecord[] = [];
+    for (const [coreId, entry] of pending) {
+      if (coreIdsInList.has(coreId) || entry.order.status !== "created" || now - entry.at > 15_000) {
+        pending.delete(coreId);
+        continue;
+      }
+      extra.push(entry.order);
+    }
+    return extra.length > 0 ? [...extra, ...list] : list;
+  }, []);
 
   const refetch = useCallback(async () => {
     if (!token || !storeId) {
@@ -109,11 +137,17 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     const run = (async () => {
       setError(null);
       try {
+        if (__DEV__) {
+          console.log(`[orders] fetching food-orders store=${storeId}`);
+        }
         const [list] = await Promise.all([
           fetchFoodOrders(storeId, token, { limit: 200 }),
         ]);
+        if (__DEV__) {
+          console.log(`[orders] food-orders ok count=${list.length}`);
+        }
         const mapped = list.map(mapApiOrder);
-        setOrders(mapped);
+        setOrders(mergePendingOptimistic(mapped));
         prefetchMenuItemsForOrders(
           storeId,
           token,
@@ -131,7 +165,13 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         }
 
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load orders");
+        // Keep the last good board visible — a transient API blip must not wipe
+        // CREATED orders (and close the incoming sheet) to an empty New/Active list.
+        const msg = e instanceof Error ? e.message : "Failed to load orders";
+        if (__DEV__) {
+          console.warn(`[orders] food-orders failed store=${storeId}:`, msg);
+        }
+        setError(msg);
       } finally {
         setLoading(false);
       }
@@ -143,7 +183,70 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     } finally {
       refetchInFlightRef.current = null;
     }
-  }, [token, storeId]);
+  }, [token, storeId, mergePendingOptimistic]);
+
+  /**
+   * Fast path: a single orders_food row changed in realtime. Fetch just that
+   * order and upsert it into the list immediately, so the incoming-order modal
+   * opens (new CREATED) or closes (accepted/rejected from either platform)
+   * without waiting for the debounced full-list refetch. This mirrors the
+   * Partner Site, which opens from a targeted fetch off the same realtime event.
+   * The debounced `refetch()` still runs afterwards for silent reconciliation.
+   */
+  const applyRealtimeFoodRow = useCallback(
+    async (foodId: number) => {
+      if (!token || !storeId) return;
+      if (!Number.isFinite(foodId) || foodId <= 0) return;
+      // Don't fight an in-progress local Accept/Reject on this order.
+      if (transitionInFlightRef.current.has(String(foodId))) return;
+      if (fastFetchInFlightRef.current.has(foodId)) return;
+      fastFetchInFlightRef.current.add(foodId);
+      try {
+        const updated = await fetchFoodOrder(storeId, foodId, token);
+        const mapped = mapApiOrder(updated);
+        // A late fast-fetch must not resurrect an order the user just actioned.
+        if (transitionInFlightRef.current.has(String(foodId))) return;
+        // Keep this optimistic row alive across a stale full refetch (see mergePendingOptimistic).
+        if (mapped.status === "created" && !mapped.id.startsWith("core-")) {
+          pendingOptimisticRef.current.set(mapped.ordersCoreId, { order: mapped, at: Date.now() });
+        } else {
+          pendingOptimisticRef.current.delete(mapped.ordersCoreId);
+        }
+        setOrders((list) => {
+          const idx = list.findIndex(
+            (o) => o.id === mapped.id || o.ordersCoreId === mapped.ordersCoreId
+          );
+          if (idx < 0) return [mapped, ...list];
+          const next = list.slice();
+          next[idx] = mapped;
+          return next;
+        });
+      } catch {
+        // Targeted fetch failed — the debounced full refetch will reconcile.
+      } finally {
+        fastFetchInFlightRef.current.delete(foodId);
+      }
+    },
+    [token, storeId]
+  );
+
+  const upsertOrder = useCallback((order: OrderRecord) => {
+    if (order.status === "created" && !order.id.startsWith("core-")) {
+      pendingOptimisticRef.current.set(order.ordersCoreId, {
+        order,
+        at: Date.now(),
+      });
+    }
+    setOrders((list) => {
+      const idx = list.findIndex(
+        (o) => o.id === order.id || o.ordersCoreId === order.ordersCoreId
+      );
+      if (idx < 0) return [order, ...list];
+      const next = list.slice();
+      next[idx] = order;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -166,8 +269,12 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   useMerchantOrdersRealtime({
     storeId,
     enabled: Boolean(token && storeId),
+    authToken: token,
     onOrdersStale: () => {
       void refetch();
+    },
+    onFoodRowChange: (foodId) => {
+      void applyRealtimeFoodRow(foodId);
     },
   });
 
@@ -342,6 +449,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       refetch,
+      upsertOrder,
       transitionOrder,
       extendPrepDelay,
       counts,
@@ -354,6 +462,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       refetch,
+      upsertOrder,
       transitionOrder,
       extendPrepDelay,
       counts,

@@ -65,7 +65,7 @@ export default function NotificationSetup() {
   const { token: authToken } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { orders } = useOrders();
+  const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const ordersRef = useRef(orders);
   ordersRef.current = orders;
@@ -160,6 +160,7 @@ export default function NotificationSetup() {
               return;
             }
           }
+          upsertOrder(order);
           if (order.status === "created" && !order.id.startsWith("core-")) {
             openIncomingOrderSheet(order);
             return;
@@ -187,7 +188,7 @@ export default function NotificationSetup() {
       navigateFromPushData({ push: (href) => router.push(href as never) }, data);
     });
     return () => sub.remove();
-  }, [router, storeId, authToken, openIncomingOrderSheet]);
+  }, [router, storeId, authToken, openIncomingOrderSheet, upsertOrder]);
 
   return null;
 }

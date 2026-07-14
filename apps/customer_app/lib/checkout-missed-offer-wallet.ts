@@ -43,6 +43,47 @@ function isSubscriptionOnlyOffer(offerKind?: string | null): boolean {
   return String(offerKind ?? "").toUpperCase() === "SUBSCRIPTION_BENEFIT";
 }
 
+/**
+ * Merchant store precision / cart checkout offers must NOT unlock via GatiCash.
+ * Platform min-cart offers can still use the unlock sheet.
+ */
+export function isMerchantPrecisionOfferBlockedFromGatiCash(o: {
+  conditionsMode?: string | null;
+  displaySurface?: string | null;
+  offerType?: string | null;
+  title?: string | null;
+  summary?: string | null;
+}): boolean {
+  const mode = String(o.conditionsMode ?? "")
+    .toLowerCase()
+    .trim();
+  if (mode === "precision") return true;
+  if (mode === "boost" || mode === "bogo") return false;
+
+  const ot = String(o.offerType ?? "")
+    .toUpperCase()
+    .replace(/[-\s]+/g, "_");
+  if (ot === "CART_PERCENTAGE" || ot === "CART_FLAT" || ot === "PRECISION") return true;
+  if (ot === "BOGO" || ot === "BUY_X_GET_Y" || ot === "BUY_N_GET_M" || ot === "BOOST") {
+    return false;
+  }
+  if (ot === "FREE_DELIVERY") return false;
+
+  const surface = String(o.displaySurface ?? "").toLowerCase();
+  // Sheet-only store %/flat/coupon = precision path (Boost is item/both).
+  if (
+    surface === "sheet" &&
+    (ot === "PERCENTAGE" || ot === "FLAT" || ot === "COUPON" || ot === "")
+  ) {
+    return true;
+  }
+
+  const text = `${o.title ?? ""} ${o.summary ?? ""}`.toLowerCase();
+  if (/\bprecision\b/.test(text)) return true;
+
+  return false;
+}
+
 function isMinCartLocked(reason?: string | null, lockReason?: string | null): boolean {
   const raw = `${reason ?? ""} ${lockReason ?? ""}`;
   if (/minCart=/i.test(raw)) return true;
@@ -69,6 +110,78 @@ export function parseUnlockGapInr(
     }
   }
   return Number.MAX_SAFE_INTEGER;
+}
+
+/** Extract min-cart threshold from server lock text or explicit minOrderAmount. */
+export function parseMinCartThresholdInr(
+  reason?: string | null,
+  lockReason?: string | null,
+  minOrderAmount?: number | null
+): number | null {
+  if (minOrderAmount != null && Number.isFinite(minOrderAmount) && minOrderAmount > 0) {
+    return Math.round(minOrderAmount * 100) / 100;
+  }
+  const raw = `${reason ?? ""} ${lockReason ?? ""}`;
+  const minMatch = raw.match(/minCart=(\d+(?:\.\d+)?)/i);
+  if (minMatch) {
+    const min = Number(minMatch[1]);
+    if (Number.isFinite(min) && min > 0) return min;
+  }
+  const addMatch = raw.match(/add ₹(\d+(?:\.\d+)?) more to unlock/i);
+  // Without a live cart we can't recover min from "add ₹X more" alone.
+  if (addMatch) return null;
+  return null;
+}
+
+/**
+ * Live unlock gap from current cart — updates instantly as qty changes
+ * (before checkout-offers refetch finishes).
+ */
+export function liveUnlockGapInr(args: {
+  reason?: string | null;
+  lockReason?: string | null;
+  minOrderAmount?: number | null;
+  minCartAmount?: number | null;
+  cartSubtotal: number;
+  /** Cart ₹ when the server (or cached) lock text was produced. */
+  fetchedCartSubtotal?: number | null;
+}): number {
+  const {
+    reason,
+    lockReason,
+    minOrderAmount,
+    minCartAmount,
+    cartSubtotal,
+    fetchedCartSubtotal,
+  } = args;
+
+  const explicitMin =
+    minCartAmount != null && Number.isFinite(minCartAmount) && minCartAmount > 0
+      ? minCartAmount
+      : parseMinCartThresholdInr(reason, lockReason, minOrderAmount);
+
+  if (explicitMin != null) {
+    return Math.ceil(Math.max(0, explicitMin - cartSubtotal));
+  }
+
+  // Recover min from "Add ₹X more" + cart at fetch time (humanized platform reasons).
+  const staleGap = parseUnlockGapInr(reason, lockReason, undefined);
+  if (
+    staleGap > 0 &&
+    staleGap < Number.MAX_SAFE_INTEGER &&
+    fetchedCartSubtotal != null &&
+    Number.isFinite(fetchedCartSubtotal)
+  ) {
+    const recoveredMin = staleGap + fetchedCartSubtotal;
+    return Math.ceil(Math.max(0, recoveredMin - cartSubtotal));
+  }
+
+  return staleGap;
+}
+
+export function formatAddMoreToUnlock(gapInr: number): string {
+  if (!(gapInr > 0) || !Number.isFinite(gapInr)) return "";
+  return `Add ₹${Math.ceil(gapInr)} more to unlock this offer`;
 }
 
 function humanMissedReason(
@@ -122,43 +235,70 @@ export function listMissedOfferWalletCandidates(
   offers: CheckoutOffersResponse | undefined,
   cartSubtotal: number
 ): MissedCandidate[] {
+  // No discount-eligible cart base → unlock sheet must not surface.
+  if (!(cartSubtotal > 0.005)) return [];
+
+  const eligiblePlatformIds = new Set((offers?.platformOffers ?? []).map((o) => o.id));
+  const eligibleMerchantIds = new Set((offers?.merchantOffers ?? []).map((o) => o.id));
+  const fetchedCart = offers?.fetchedCartSubtotal ?? null;
+
   const ineligiblePlatform: MissedCandidate[] = (offers?.platformOffersIneligible ?? [])
     .filter(
       (o) =>
+        !eligiblePlatformIds.has(o.id) &&
         !isTimeWindowLocked(o.reason) &&
         !isSubscriptionOnlyOffer(o.offerKind) &&
         isMinCartLocked(o.reason) &&
         (o.estimatedSavingsInr ?? 0) > 0.005
     )
-    .map((o) => ({
-      id: o.id,
-      source: "platform" as const,
-      title: o.name?.trim() || o.summary?.trim() || "Platform offer",
-      reason: o.reason,
-      summary: o.summary,
-      estimatedSavingsInr: o.estimatedSavingsInr ?? 0,
-      unlockGapInr: parseUnlockGapInr(o.reason, undefined, cartSubtotal),
-      offerKind: o.offerKind ?? "DISCOUNT",
-    }));
+    .map((o) => {
+      const unlockGapInr = liveUnlockGapInr({
+        reason: o.reason,
+        minCartAmount: o.minCartAmount,
+        cartSubtotal,
+        fetchedCartSubtotal: fetchedCart,
+      });
+      return {
+        id: o.id,
+        source: "platform" as const,
+        title: o.name?.trim() || o.summary?.trim() || "Platform offer",
+        reason: o.reason,
+        summary: o.summary,
+        estimatedSavingsInr: o.estimatedSavingsInr ?? 0,
+        unlockGapInr,
+        offerKind: o.offerKind ?? "DISCOUNT",
+      };
+    });
 
   const ineligibleMerchant: MissedCandidate[] = (offers?.merchantOffersIneligible ?? [])
     .filter(
       (o) =>
+        !eligibleMerchantIds.has(o.id) &&
+        !isMerchantPrecisionOfferBlockedFromGatiCash(o) &&
         !isTimeWindowLocked(o.reason, o.lockReason) &&
         isMinCartLocked(o.reason, o.lockReason) &&
         (o.estimatedSavingsInr ?? 0) > 0.005
     )
-    .map((o) => ({
-      id: o.id,
-      source: "merchant" as const,
-      title: o.title?.trim() || o.summary?.trim() || "Store offer",
-      reason: o.reason,
-      lockReason: o.lockReason,
-      summary: o.summary,
-      estimatedSavingsInr: o.estimatedSavingsInr ?? 0,
-      unlockGapInr: parseUnlockGapInr(o.reason, o.lockReason, cartSubtotal),
-      offerKind: "DISCOUNT",
-    }));
+    .map((o) => {
+      const unlockGapInr = liveUnlockGapInr({
+        reason: o.reason,
+        lockReason: o.lockReason,
+        minOrderAmount: o.minOrderAmount,
+        cartSubtotal,
+        fetchedCartSubtotal: fetchedCart,
+      });
+      return {
+        id: o.id,
+        source: "merchant" as const,
+        title: o.title?.trim() || o.summary?.trim() || "Store offer",
+        reason: o.reason,
+        lockReason: o.lockReason,
+        summary: o.summary,
+        estimatedSavingsInr: o.estimatedSavingsInr ?? 0,
+        unlockGapInr,
+        offerKind: o.offerType ?? "DISCOUNT",
+      };
+    });
 
   return [...ineligiblePlatform, ...ineligibleMerchant]
     .filter((c) => c.unlockGapInr > 0 && c.unlockGapInr < Number.MAX_SAFE_INTEGER)
@@ -176,6 +316,7 @@ export function resolveMissedOfferWalletCompensation(
   selectedKey?: string | null
 ): MissedOfferWalletCompensation | null {
   if (!offers || !merchantId || deliveryType !== "delivery") return null;
+  if (!(cartSubtotal > 0.005)) return null;
 
   const candidates = listMissedOfferWalletCandidates(offers, cartSubtotal);
   if (candidates.length === 0) return null;
@@ -200,4 +341,20 @@ export function isOfferGatiCashUnlockable(
   lockReason?: string | null
 ): boolean {
   return isMinCartLocked(reason, lockReason) && !isTimeWindowLocked(reason, lockReason);
+}
+
+/** Merchant row: min-cart unlock via GatiCash — never for store precision. */
+export function isMerchantOfferGatiCashUnlockable(
+  o: {
+    reason?: string | null;
+    lockReason?: string | null;
+    conditionsMode?: string | null;
+    displaySurface?: string | null;
+    offerType?: string | null;
+    title?: string | null;
+    summary?: string | null;
+  }
+): boolean {
+  if (isMerchantPrecisionOfferBlockedFromGatiCash(o)) return false;
+  return isOfferGatiCashUnlockable(o.reason, o.lockReason);
 }

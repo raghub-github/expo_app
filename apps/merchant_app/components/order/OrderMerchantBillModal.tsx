@@ -128,6 +128,7 @@ export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
     food_items_total_value: order.food_items_total_value ?? null,
     items,
     billingSnapshot: order.billing_snapshot ?? null,
+    merchantPrecisionDiscount: Math.max(0, Number(order.merchant_precision_discount) || 0),
   });
   const displayTotal = bill.total;
   const showPaid = isPaidOrder(order);
@@ -168,11 +169,11 @@ export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
             <SummaryRow label="Packaging charges" amount={bill.packaging} />
           ) : null}
           {bill.discount > 0 ? (
-            <SummaryRow label="Restaurant discount" amount={bill.discount} discount />
+            <SummaryRow label="Merchant Precision Discount" amount={bill.discount} discount />
           ) : (
             <Text style={styles.platformNote}>
-              Restaurant discount — none. Platform (GatiMitra) offers are not deducted from
-              your bill.
+              Merchant Precision Discount — none. Platform (GatiMitra) offers are not deducted
+              from your bill.
             </Text>
           )}
           <View style={styles.divider} />

@@ -19,6 +19,8 @@ export type NormalizeOrderItemInput = {
     quantity?: number;
   }>;
   itemSnapshot?: Record<string, unknown> | null;
+  /** Client hint: false when Boost / BOGO already on the line. */
+  isDiscountEligible?: boolean | null;
 };
 
 export type NormalizedOrderAddon = {
@@ -44,6 +46,11 @@ export type NormalizedOrderItem = {
   variantName: string | null;
   addons: NormalizedOrderAddon[];
   itemSnapshot: Record<string, unknown> | null;
+  /**
+   * Client hint for cart/coupon min-order base.
+   * `false` = Boost/BOGO already applied; server may also mark false for MRP / item-surface.
+   */
+  isDiscountEligible?: boolean;
 };
 
 export type NormalizeOrderItemsResult =
@@ -144,7 +151,7 @@ export function normalizeOrderItems(items: unknown): NormalizeOrderItemsResult {
       if (norm) addons.push(norm);
     }
 
-    normalized.push({
+    const item: NormalizedOrderItem = {
       menuItemId,
       itemName,
       quantity,
@@ -154,7 +161,13 @@ export function normalizeOrderItems(items: unknown): NormalizeOrderItemsResult {
       variantName,
       addons,
       itemSnapshot: raw.itemSnapshot != null && typeof raw.itemSnapshot === "object" ? raw.itemSnapshot as Record<string, unknown> : null,
-    });
+    };
+    if (raw.isDiscountEligible === false) {
+      item.isDiscountEligible = false;
+    } else if (raw.isDiscountEligible === true) {
+      item.isDiscountEligible = true;
+    }
+    normalized.push(item);
   }
 
   return { ok: true, items: normalized };

@@ -24,34 +24,6 @@ export const RIDE_VEHICLE_LABELS: Record<RideVehiclePricingType, string> = {
   "4_wheeler_ac": "4 Wheeler AC",
 };
 
-export type RiderPickupSlabRow = {
-  id: number;
-  geoLevel: string;
-  geoRefId: string;
-  vehicleType?: RideVehiclePricingType | null;
-  minKm: number;
-  maxKm: number | null;
-  baseFare: number | null;
-  pickupPerKm: number;
-  minCharge: number | null;
-  waitingChargePerMin: number | null;
-  waitingStartAfter: number;
-  priority: number;
-  isActive: boolean;
-};
-
-export type RiderDropSlabRow = {
-  id: number;
-  geoLevel: string;
-  geoRefId: string;
-  vehicleType?: RideVehiclePricingType | null;
-  minKm: number;
-  maxKm: number | null;
-  dropPerKm: number;
-  priority: number;
-  isActive: boolean;
-};
-
 export type RideCustomerPricingRow = {
   id: number;
   geoLevel: string;
@@ -66,25 +38,40 @@ export type RideCustomerPricingRow = {
   isActive: boolean;
 };
 
-export type RiderPayoutLegSegment = {
-  slabId: number;
-  minKm: number;
-  maxKm: number | null;
-  segmentKm: number;
-  perKmRate: number;
-  segmentAmount: number;
+/**
+ * Rider Fare Engine v3.0: percentage-of-customer-fare payout rule, geo-inherited.
+ * Intentionally minimal — no guardrails. Pickup/drop split is always pure
+ * distance ratio (pickupKm / totalKm); nothing here can force a fixed split.
+ */
+export type ServicePayoutRuleRow = {
+  id: number;
+  serviceType: RiderPayoutServiceType;
+  geoLevel: string;
+  geoRefId: string;
+  riderPercentage: number;
+  platformPercentage: number;
+  waitingChargePerMin: number | null;
+  waitingFreeMinutes: number;
+  priority: number;
+  isActive: boolean;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
 };
 
 export type RiderPayoutQuote = {
   pickupKm: number;
   dropKm: number;
-  baseFareApplied: number;
-  pickupSegments: RiderPayoutLegSegment[];
-  dropSegments: RiderPayoutLegSegment[];
+  customerFare: number;
+  riderPercentage: number;
+  platformPercentage: number;
+  platformRevenue: number;
+  ruleId: number;
+  rulePriority: number;
+  pickupRatio: number;
+  dropRatio: number;
   pickupAmount: number;
   dropAmount: number;
   waitingMinutes: number;
-  waitingStartAfter: number;
   waitingAmount: number;
   subtotalBeforeSurge: number;
   appliedSurges: AppliedRiderSurge[];
@@ -94,7 +81,6 @@ export type RiderPayoutQuote = {
   maxTotalSurgeAmount: number | null;
   surgeWaitMaxOnly: boolean;
   riderGmitraMaxApplied: boolean;
-  minChargeApplied: number;
   finalAmount: number;
-  pricingEngine: "rider_pickup_drop_v2" | "legacy_delivery_rate_slabs";
+  pricingEngine: "rider_percentage_v3";
 };

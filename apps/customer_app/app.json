@@ -7,6 +7,8 @@
     "icon": "./assets/icon.png",
     "scheme": "gatimitra",
     "userInterfaceStyle": "automatic",
+    "jsEngine": "hermes",
+    "newArchEnabled": true,
     "splash": {
       "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",

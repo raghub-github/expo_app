@@ -6,7 +6,7 @@ import {
   mapRiderSurgeDefinitionToPreview,
   mapRiderSurgeTimeSlotToPreview,
 } from "@/lib/geo/mapRiderSurgeCatalog";
-import { previewRiderPayoutBreakdown } from "@/lib/geo/riderPayoutPreview";
+import { previewServicePayoutBreakdown } from "@/lib/geo/riderPayoutPreview";
 
 export const runtime = "nodejs";
 
@@ -16,33 +16,18 @@ const serviceSchema = z.enum(["food", "parcel", "ride"]);
 const postSchema = z.object({
   service: serviceSchema,
   vehicleType: vehicleSchema.optional().nullable(),
+  customerFare: z.number().positive(),
   pickupKm: z.number().nonnegative(),
   dropKm: z.number().nonnegative(),
   waitingMinutes: z.number().nonnegative().optional(),
   riderHasGmitraMax: z.boolean().optional(),
   forceActiveSurgeIds: z.array(z.number().int().positive()).optional(),
-  pickupSlabs: z.array(
-    z.object({
-      id: z.number(),
-      minKm: z.number(),
-      maxKm: z.number().nullable(),
-      baseFare: z.number().nullable(),
-      pickupPerKm: z.number(),
-      minCharge: z.number().nullable(),
-      waitingChargePerMin: z.number().nullable(),
-      waitingStartAfter: z.number(),
-      priority: z.number(),
-    })
-  ),
-  dropSlabs: z.array(
-    z.object({
-      id: z.number(),
-      minKm: z.number(),
-      maxKm: z.number().nullable(),
-      dropPerKm: z.number(),
-      priority: z.number(),
-    })
-  ),
+  rule: z.object({
+    riderPercentage: z.number().gt(0).lte(100),
+    platformPercentage: z.number().gte(0).lt(100),
+    waitingChargePerMin: z.number().nonnegative().nullable(),
+    waitingFreeMinutes: z.number().nonnegative(),
+  }),
 });
 
 export async function POST(req: NextRequest) {
@@ -69,11 +54,11 @@ export async function POST(req: NextRequest) {
     const catalog = await loadSurgeCatalog();
     const surgeDefinitions = catalog.definitions.map(mapRiderSurgeDefinitionToPreview);
     const surgeTimeSlots = catalog.timeSlots.map(mapRiderSurgeTimeSlotToPreview);
-    const breakdown = previewRiderPayoutBreakdown({
+    const breakdown = previewServicePayoutBreakdown({
+      customerFare: parsed.data.customerFare,
       pickupKm: parsed.data.pickupKm,
       dropKm: parsed.data.dropKm,
-      pickupSlabs: parsed.data.pickupSlabs,
-      dropSlabs: parsed.data.dropSlabs,
+      rule: parsed.data.rule,
       waitingMinutes: parsed.data.waitingMinutes,
       riderHasGmitraMax: parsed.data.riderHasGmitraMax,
       service: parsed.data.service,

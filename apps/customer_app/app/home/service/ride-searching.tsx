@@ -117,6 +117,7 @@ function buildTripStateFromParams(params: {
   selectedRideName?: string;
   selectedRideImageKey?: string;
   estimatedFare?: string;
+  quotedGrandTotal?: string;
   tripKm?: string;
   routeDistanceKm?: string;
 }): TripState {
@@ -141,7 +142,12 @@ function buildTripStateFromParams(params: {
     rideTypeId: String(params.selectedRideId ?? ""),
     rideName: String(params.selectedRideName ?? "Ride"),
     rideImageKey: String(params.selectedRideImageKey ?? "bike"),
-    fare: params.estimatedFare != null ? Number(params.estimatedFare) : 0,
+    fare:
+      params.quotedGrandTotal != null && Number(params.quotedGrandTotal) > 0
+        ? Number(params.quotedGrandTotal)
+        : params.estimatedFare != null
+          ? Number(params.estimatedFare)
+          : 0,
     tripKm: fareKm,
   };
 }
@@ -222,6 +228,11 @@ export default function RideSearchingScreen() {
   const initialTipAmount =
     params.customerTipAmount != null ? Math.max(0, Number(params.customerTipAmount)) : 0;
   const [activeTipAmount, setActiveTipAmount] = useState(initialTipAmount);
+  const slabFareForPlacement = useMemo(() => {
+    const fromParams = params.estimatedFare != null ? Number(params.estimatedFare) : 0;
+    if (Number.isFinite(fromParams) && fromParams > 0) return fromParams;
+    return Number.isFinite(fare) && fare > 0 ? fare : 0;
+  }, [params.estimatedFare, fare]);
   const totalFare = fare + (Number.isFinite(activeTipAmount) ? activeTipAmount : 0);
   const stops = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
   const stopsForApi = useMemo(() => parseRideStopsForOrder(params.stops), [params.stops]);
@@ -336,6 +347,7 @@ export default function RideSearchingScreen() {
     params.pickup,
     params.drop,
     params.estimatedFare,
+    params.quotedGrandTotal,
     params.tripKm,
     params.routeDistanceKm,
     params.selectedRideId,
@@ -701,10 +713,15 @@ export default function RideSearchingScreen() {
           0,
           Number(status.customerTipAmount ?? order.tipAmount ?? 0)
         );
+        const orderGrandTotal = Math.max(0, Number(order.totalAmount ?? 0) - tipAmount);
         const baseFare =
-          status.estimatedFare != null && Number.isFinite(status.estimatedFare) && status.estimatedFare > 0
-            ? status.estimatedFare
-            : Math.max(0, Number(order.totalAmount ?? 0) - tipAmount);
+          orderGrandTotal > 0
+            ? orderGrandTotal
+            : status.estimatedFare != null &&
+                Number.isFinite(status.estimatedFare) &&
+                status.estimatedFare > 0
+              ? status.estimatedFare
+              : 0;
         const imageKey = resolveRideCatalogImageKey(order.rideType);
 
         const quotedKm = resolveRideFareDistanceKm({
@@ -884,7 +901,7 @@ export default function RideSearchingScreen() {
       dropLng: dropLng!,
       intermediateStops: stopsForApi.length > 0 ? stopsForApi : undefined,
       rideType: rideTypeId,
-      estimatedFare: Number.isFinite(fare) ? fare : 0,
+      estimatedFare: slabFareForPlacement,
       customerTipAmount: Number.isFinite(initialTipAmount) ? initialTipAmount : 0,
       tripKm: quotedTripKm,
       paymentMethod: "online",
@@ -904,6 +921,9 @@ export default function RideSearchingScreen() {
       .then((result) => {
         if (cancelled) return;
         setOrderId(result.orderId);
+        if (result.totalAmount != null && Number.isFinite(result.totalAmount) && result.totalAmount > 0) {
+          setTripState((prev) => ({ ...prev, fare: Math.round(result.totalAmount) }));
+        }
         searchExtensionsUsedRef.current = 0;
         searchWindowEndedRef.current = false;
         searchExpiresAtRef.current = result.searchExpiresAt;
@@ -945,7 +965,7 @@ export default function RideSearchingScreen() {
     params.farPickupAcknowledged,
     stopsForApi,
     rideTypeId,
-    fare,
+    slabFareForPlacement,
     initialTipAmount,
     tripKm,
     fareTripKm,

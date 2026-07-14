@@ -5,20 +5,11 @@
  */
 
 import React, { useCallback, useState, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  Dimensions,
-  ActivityIndicator,
-} from "react-native";
+import { View, TouchableOpacity, Pressable, StyleSheet, Dimensions, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { Image } from "expo-image";
 import { useQueryClient } from "@tanstack/react-query";
-import { navigateToMerchant, showMerchantNavShutter } from "@/lib/navigateToMerchant";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -29,6 +20,7 @@ import { StoreBannerCarousel, LIST_CARD_CAROUSEL_HOLD_MS, LIST_CARD_CAROUSEL_SLI
 import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
+import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
 import {
   resolveMerchantCarouselBannerUri,
   resolveMerchantCarouselGalleryUris,
@@ -42,6 +34,7 @@ import { toTimestamp } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AppText } from "@/components/AppText";
 
 const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
@@ -49,6 +42,10 @@ const CARD_WIDTH = width - PAGE_PAD * 2;
 const IMAGE_HEIGHT = 220;
 const CARD_RADIUS = 20;
 const CARD_GAP = 18;
+/** Name + ETA + offer slots + content padding (stable CLS body). */
+const CARD_BODY_HEIGHT = 12 + 22 + 6 + 18 + 6 + 18 + 14;
+/** FlashList estimatedItemSize: image + body + bottom gap. */
+export const RESTAURANT_CARD_ESTIMATED_SIZE = IMAGE_HEIGHT + CARD_BODY_HEIGHT + CARD_GAP;
 
 export type GMRestaurantCardV2Props = {
   merchant: MerchantSummary;
@@ -92,7 +89,7 @@ function StoreOpenStatusBadge({
               : styles.openClosedTagRed,
       ]}
     >
-      <Text
+      <AppText
         style={[
           styles.openClosedTagText,
           (isClosingSoon || !openStatus.isGreen) && styles.openClosedTagTextRed,
@@ -100,7 +97,7 @@ function StoreOpenStatusBadge({
         numberOfLines={2}
       >
         {formatOpenStatusTagText(openStatus)}
-      </Text>
+      </AppText>
     </View>
   );
 }
@@ -116,9 +113,18 @@ function GMRestaurantCardV2Inner({
   const { syncBookmark } = useStoreBookmarkMutations();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
+  const [ratingSheetOpen, setRatingSheetOpen] = useState(false);
+  /** Zomato-style: tap toggles overall ↔ For you / New. */
+  const [showForYou, setShowForYou] = useState(false);
 
   const liveStatus = useMerchantLiveStatus(merchant);
   const isOpen = liveStatus === "OPEN";
+
+  const userHasRatedStore = merchant.userHasRatedStore === true;
+  const forYouRating =
+    userHasRatedStore && merchant.forYouRating != null && Number.isFinite(Number(merchant.forYouRating))
+      ? Number(merchant.forYouRating)
+      : null;
 
   useEffect(() => {
     setSaved(initialSaved);
@@ -163,10 +169,10 @@ function GMRestaurantCardV2Inner({
     navigateToMerchant(router, queryClient, merchant.id, merchant);
   }, [merchant, queryClient, router]);
 
+  // Shutter is shown inside navigateToMerchant on committed press only.
   const cardPress = useScrollSafePress(openMerchant, {
     onPressIn: () => {
       warmMerchantHeroImage(merchant.id, bannerUri);
-      showMerchantNavShutter(merchant.id);
     },
   });
 
@@ -175,10 +181,12 @@ function GMRestaurantCardV2Inner({
   }, [cardPress]);
 
   const onCarouselGestureComplete = useCallback(() => {
-    cardPress.releasePressBlock(320);
+    // Clear immediately — next tap must not wait on a post-swipe latch.
+    cardPress.releasePressBlock(0);
   }, [cardPress]);
 
   return (
+    <>
     <Pressable
       style={[styles.card, { marginBottom: bottomSpacing }]}
       onPress={cardPress.onPress}
@@ -205,7 +213,10 @@ function GMRestaurantCardV2Inner({
         />
           {!isOpen ? <View style={styles.closedOverlay} pointerEvents="none" /> : null}
           <TouchableOpacity
-            onPress={toggleBookmark}
+            onPress={() => {
+              cardPress.blockPress();
+              toggleBookmark();
+            }}
             style={styles.bookmarkBtn}
             hitSlop={12}
             disabled={savedLoading}
@@ -215,18 +226,11 @@ function GMRestaurantCardV2Inner({
             ) : (
               <Ionicons
                 name={saved ? "bookmark" : "bookmark-outline"}
-                size={24}
+                size={22}
                 color={saved ? GatiMitraColors.primaryMint : "#fff"}
               />
             )}
           </TouchableOpacity>
-          {merchant.cuisines && merchant.cuisines.length > 0 && (
-            <View style={styles.cuisineTag} pointerEvents="none">
-              <Text style={styles.cuisineTagText} numberOfLines={1}>
-                {merchant.cuisines[0]}
-              </Text>
-            </View>
-          )}
           <StoreOpenStatusBadge
             isOpen={isOpen}
             nextOpenAt={merchant.nextOpenAt}
@@ -235,26 +239,49 @@ function GMRestaurantCardV2Inner({
       </View>
 
       <View style={[styles.content, !isOpen && styles.contentClosed]} pointerEvents="box-none">
-          <View style={styles.titleRow}>
-            <Text style={styles.name} numberOfLines={1}>
+          <View style={styles.mainCol}>
+            <AppText style={styles.name} numberOfLines={1}>
               {merchant.name}
-            </Text>
-            <View style={styles.ratingWrap}>
-              <MerchantRatingBadge
-                rating={merchant.avgRating}
-                totalReviews={merchant.totalReviews}
-                showReviewHint
-              />
-            </View>
+            </AppText>
+            <NearFastDeliveryMeta
+              deliveryTime={deliveryTimeLabel}
+              distanceKm={merchant.distanceKm}
+              compact
+            />
+            <MerchantOfferRow offerText={merchant.offerText} />
           </View>
-          <NearFastDeliveryMeta
-            deliveryTime={deliveryTimeLabel}
-            distanceKm={merchant.distanceKm}
-            compact
-          />
-          <MerchantOfferRow offerText={merchant.offerText} />
+          <View style={styles.ratingWrap}>
+            <MerchantRatingBadge
+              rating={showForYou ? forYouRating : merchant.avgRating}
+              totalReviews={merchant.totalReviews}
+              showReviewHint
+              hintLabel={showForYou ? "For you" : undefined}
+              showAsNew={showForYou && !userHasRatedStore}
+              onPillPress={() => {
+                cardPress.blockPress();
+                setShowForYou((prev) => !prev);
+              }}
+              onReviewHintPress={() => {
+                cardPress.blockPress();
+                setRatingSheetOpen(true);
+              }}
+            />
+          </View>
         </View>
     </Pressable>
+    <MerchantRatingExplainerSheet
+      visible={ratingSheetOpen}
+      onClose={() => {
+        setRatingSheetOpen(false);
+        cardPress.releasePressBlock(0);
+      }}
+      storeName={merchant.name}
+      overallRating={merchant.avgRating ?? null}
+      totalReviews={merchant.totalReviews ?? null}
+      forYouRating={forYouRating}
+      userHasRatedStore={userHasRatedStore}
+    />
+    </>
   );
 }
 
@@ -274,6 +301,8 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
     a.banner_url === b.banner_url &&
     a.offerText === b.offerText &&
     a.avgRating === b.avgRating &&
+    a.forYouRating === b.forYouRating &&
+    a.userHasRatedStore === b.userHasRatedStore &&
     a.deliveryTime === b.deliveryTime &&
     a.etaMinMinutes === b.etaMinMinutes &&
     a.etaMaxMinutes === b.etaMaxMinutes &&
@@ -289,8 +318,8 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
     overflow: "hidden",
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(0,0,0,0.06)",
   },
   cardPress: {
     width: "100%",
@@ -320,29 +349,14 @@ const styles = StyleSheet.create({
   },
   bookmarkBtn: {
     position: "absolute",
-    top: 12,
-    right: 12,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(0,0,0,0.35)",
+    top: 10,
+    right: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
-  },
-  cuisineTag: {
-    position: "absolute",
-    bottom: 12,
-    left: 12,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-    maxWidth: "50%",
-  },
-  cuisineTagText: {
-    fontSize: 12,
-    color: "#fff",
-    fontWeight: "600",
   },
   openClosedTag: {
     position: "absolute",
@@ -388,24 +402,27 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   content: {
-    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingHorizontal: 14,
     paddingTop: 12,
     paddingBottom: 14,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
     gap: 10,
   },
-  name: {
+  mainCol: {
     flex: 1,
-    fontSize: 18,
+    minWidth: 0,
+    gap: 6,
+  },
+  name: {
+    fontSize: 17,
     fontWeight: "700",
     color: GatiMitraColors.textPrimaryNew,
-    minWidth: 0,
+    letterSpacing: -0.2,
+    lineHeight: 22,
   },
   ratingWrap: {
     flexShrink: 0,
+    marginTop: 1,
   },
 });

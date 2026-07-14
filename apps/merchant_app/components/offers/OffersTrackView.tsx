@@ -7,8 +7,10 @@ import {
   ActivityIndicator,
   Pressable,
   RefreshControl,
+  Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import type { Offer } from "@/services/offersApi";
 import { aggregateOffersPerformance, formatOfferInr } from "@/lib/offers/offer-analytics";
 import {
@@ -19,6 +21,8 @@ import {
 import { OfferTrackCard } from "./OfferTrackCard";
 import { OFFERS_UI, offersSharedStyles } from "./offers-theme";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
+
+const NO_OFFERS_TARGET = require("../../assets/no-running-offers-target.png");
 
 type TrackPill = { id: OfferTrackFilter; label: string };
 
@@ -93,16 +97,25 @@ export function OffersTrackView({
   if (offers.length === 0) {
     return (
       <View style={styles.emptyWrap}>
-        <View style={styles.emptyIcon}>
-          <Ionicons name="pricetag-outline" size={36} color={GatiMitraMerchant.primary} />
+        <View style={styles.emptyHalo}>
+          <Image source={NO_OFFERS_TARGET} style={styles.emptyArt} resizeMode="contain" />
         </View>
-        <Text style={styles.emptyTitle}>No offers yet</Text>
+        <Text style={styles.emptyTitle}>No Running Offers</Text>
         <Text style={styles.emptySub}>
-          Run your first campaign to bring more orders to {storeName ?? "your store"}.
+          Create your first discount offer to get started and attract more customers!
         </Text>
-        <Pressable onPress={onCreatePress} style={({ pressed }) => [styles.emptyBtn, pressed && { opacity: 0.9 }]}>
-          <Ionicons name="add" size={18} color="#fff" />
-          <Text style={styles.emptyBtnText}>Create first offer</Text>
+        <Pressable
+          onPress={onCreatePress}
+          style={({ pressed }) => [styles.emptyBtnWrap, pressed && { opacity: 0.92 }]}
+        >
+          <LinearGradient
+            colors={["#10B981", "#2DD4BF"]}
+            start={{ x: 0, y: 0.5 }}
+            end={{ x: 1, y: 0.5 }}
+            style={styles.emptyBtn}
+          >
+            <Text style={styles.emptyBtnText}>Create Your First Offer</Text>
+          </LinearGradient>
         </Pressable>
       </View>
     );
@@ -153,7 +166,7 @@ export function OffersTrackView({
           </Pressable>
         </View>
 
-        <View style={styles.sectionHead}>
+        <View style={[styles.sectionHead, styles.campaignSectionHead]}>
           <Text style={styles.sectionTitle}>Campaign performance</Text>
           <Text style={styles.sectionSub}>
             {filtered.length} shown · {pillCounts.active} live now
@@ -227,12 +240,15 @@ const styles = StyleSheet.create({
   loadingHint: { fontSize: 13, color: OFFERS_UI.textMuted },
   sectionHead: {
     paddingHorizontal: H_PADDING,
-    marginBottom: 10,
+    marginBottom: 12,
     flexDirection: "row",
     alignItems: "baseline",
     justifyContent: "space-between",
     flexWrap: "wrap",
     gap: 4,
+  },
+  campaignSectionHead: {
+    marginTop: 22,
   },
   sectionTitle: {
     fontSize: 17,
@@ -240,7 +256,7 @@ const styles = StyleSheet.create({
     color: OFFERS_UI.text,
   },
   sectionSub: { fontSize: 12, color: OFFERS_UI.textFaint, fontWeight: "500" },
-  perfCard: { padding: 0, overflow: "hidden" },
+  perfCard: { padding: 0, overflow: "hidden", marginBottom: 4 },
   perfHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -341,35 +357,52 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.primary,
   },
   filterCtaText: { color: "#fff", fontWeight: "700", fontSize: 13 },
-  emptyWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: H_PADDING, paddingBottom: 80 },
-  emptyIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 24,
-    backgroundColor: OFFERS_UI.accentSoft,
+  emptyWrap: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
+    paddingHorizontal: H_PADDING + 8,
+    paddingBottom: 80,
+    backgroundColor: "#F9FAFB",
   },
-  emptyTitle: { fontSize: 18, fontWeight: "800", color: OFFERS_UI.text },
-  emptySub: {
-    fontSize: 14,
-    color: OFFERS_UI.textMuted,
+  emptyHalo: {
+    width: 168,
+    height: 168,
+    borderRadius: 84,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 28,
+  },
+  emptyArt: { width: 132, height: 132 },
+  emptyTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#111827",
     textAlign: "center",
-    marginTop: 8,
-    marginBottom: 24,
+    letterSpacing: -0.3,
+  },
+  emptySub: {
+    fontSize: 15,
+    color: "#6B7280",
+    textAlign: "center",
+    marginTop: 12,
+    marginBottom: 28,
     maxWidth: 300,
-    lineHeight: 21,
+    lineHeight: 22,
+  },
+  emptyBtnWrap: {
+    borderRadius: 999,
+    overflow: "hidden",
+    ...GatiMitraMerchant.shadowSm,
   },
   emptyBtn: {
-    flexDirection: "row",
+    paddingHorizontal: 28,
+    paddingVertical: 15,
+    borderRadius: 999,
     alignItems: "center",
-    gap: 8,
-    backgroundColor: GatiMitraMerchant.primary,
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 12,
-    ...GatiMitraMerchant.shadowSm,
+    justifyContent: "center",
+    minWidth: 220,
   },
   emptyBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
   fab: {

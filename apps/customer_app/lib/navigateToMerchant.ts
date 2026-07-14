@@ -1,19 +1,20 @@
 import type { Router } from "expo-router";
 import type { QueryClient } from "@tanstack/react-query";
-import type { MerchantSummary } from "@/services/merchant.service";
+import type { MerchantDetail, MerchantSummary } from "@/services/merchant.service";
 import { buildMerchantDetailParams } from "@/lib/merchantHeroWarmCache";
-import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
-import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
+import {
+  getMerchantDetailPlaceholder,
+  MERCHANT_DETAIL_QUERY_KEY,
+  merchantSummaryToDetailPlaceholder,
+  prefetchMerchantDetail,
+} from "@/lib/prefetchMerchantDetail";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
 
-/** Paint skeleton shutter immediately (e.g. onPressIn before navigation). */
-export function showMerchantNavShutter(merchantId: string): void {
-  if (!merchantId) return;
-  useScreenChromeStore.getState().setStatusBarBackground("#FFFFFF", "dark");
-  useMerchantNavTransitionStore.getState().show(merchantId);
-}
-
-/** Tap store card → instant skeleton shutter + warm cache + push merchant route. */
+/**
+ * Open restaurant detail with an instant full-screen shutter Modal.
+ * show() first → one frame for Modal to present → then push + prefetch.
+ */
 export function navigateToMerchant(
   router: Router,
   queryClient: QueryClient,
@@ -22,14 +23,51 @@ export function navigateToMerchant(
 ): void {
   if (!merchantId) return;
 
-  showMerchantNavShutter(merchantId);
-  prefetchMerchantDetail(queryClient, merchantId);
+  // 1) Shutter Modal first — must beat the native stack paint.
+  useMerchantNavTransitionStore.getState().show(merchantId);
+  useScreenChromeStore.setState({
+    statusBarBackground: "#FFFFFF",
+    statusBarStyle: "dark",
+    hideStatusBarSpacer: false,
+  });
 
-  // Let Modal paint + start slide before native route push (avoids white gap on the right).
+  // 2) Seed shell data for first merchant paint (under the Modal).
+  const key = MERCHANT_DETAIL_QUERY_KEY(merchantId);
+  const existing = queryClient.getQueryData<MerchantDetail>(key);
+  if (!existing?.menu?.length) {
+    const placeholder = merchant
+      ? merchantSummaryToDetailPlaceholder(merchant)
+      : getMerchantDetailPlaceholder(queryClient, merchantId);
+    if (placeholder) {
+      queryClient.setQueryData(key, placeholder);
+    }
+  }
+
+  // 3) Push after Modal can present this frame.
   requestAnimationFrame(() => {
     router.push({
       pathname: "/home/merchant/[id]",
       params: buildMerchantDetailParams(merchantId, merchant),
     });
+    prefetchMerchantDetail(queryClient, merchantId);
   });
+}
+
+/** Warm / pressIn — show shutter immediately on intentional press-down. */
+export function showMerchantNavShutter(merchantId: string): void {
+  if (!merchantId) return;
+  useMerchantNavTransitionStore.getState().show(merchantId);
+  useScreenChromeStore.setState({
+    statusBarBackground: "#FFFFFF",
+    statusBarStyle: "dark",
+    hideStatusBarSpacer: false,
+  });
+}
+
+/** Cancel pressIn shutter if the gesture became a scroll. */
+export function cancelMerchantNavShutter(merchantId?: string): void {
+  const nav = useMerchantNavTransitionStore.getState();
+  if (!nav.active) return;
+  if (merchantId && nav.merchantId && nav.merchantId !== merchantId) return;
+  nav.hide();
 }

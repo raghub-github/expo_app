@@ -1678,6 +1678,13 @@ export const ordersCore = pgTable(
     deliveryAddress: text("delivery_address"),
     /** Full billing engine snapshot at checkout (copied from pending_orders on finalize). */
     billingSnapshot: jsonb("billing_snapshot"),
+    /** Merchant-funded cart/precision discount (₹, CTM scale) frozen at placement. */
+    merchantPrecisionDiscount: numeric("merchant_precision_discount", {
+      precision: 12,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
     billingRulesetVersion: integer("billing_ruleset_version"),
     formattedOrderId: text("formatted_order_id"),
     pickupOtp: text("pickup_otp"),
@@ -1746,6 +1753,17 @@ export const ordersCoreItems = pgTable(
     addonPrice: numeric("addon_price", { precision: 12, scale: 2 }).default("0"),
     totalPrice: numeric("total_price", { precision: 12, scale: 2 }).notNull(),
     itemSnapshot: jsonb("item_snapshot"),
+    /** Offer Engine v2 — false when MRP / Boost / BOGO already on the line. */
+    isDiscountEligible: boolean("is_discount_eligible"),
+    /** Customer-visible unit price after store item offers (null = legacy). */
+    effectiveUnitPrice: numeric("effective_unit_price", { precision: 12, scale: 2 }),
+    /** Customer-visible line total after store item offers. */
+    effectiveLineTotal: numeric("effective_line_total", { precision: 12, scale: 2 }),
+    offerDiscountAmount: numeric("offer_discount_amount", { precision: 12, scale: 2 }),
+    appliedOfferId: bigint("applied_offer_id", { mode: "number" }),
+    appliedOfferLabel: text("applied_offer_label"),
+    appliedOfferType: text("applied_offer_type"),
+    ineligibilityReason: text("ineligibility_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
@@ -1807,6 +1825,33 @@ export const orderItemAddonCommissionSnapshots = pgTable(
   (table) => ({
     orderIdx: index("idx_oiacs_order").on(table.orderId),
     orderItemIdx: index("idx_oiacs_order_item").on(table.orderItemId),
+  })
+);
+
+/** Immutable Merchant CTM line pricing — SSOT for merchant-facing order screens. */
+export const merchantCtmPricingSnapshot = pgTable(
+  "merchant_ctm_pricing_snapshot",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    coreOrderId: bigint("core_order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    orderItemId: bigint("order_item_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCoreItems.id, { onDelete: "cascade" }),
+    menuItemId: bigint("menu_item_id", { mode: "number" }),
+    grossValue: numeric("gross_value", { precision: 12, scale: 2 }).notNull(),
+    merchantOfferType: text("merchant_offer_type").notNull().default("NONE"),
+    merchantOfferName: text("merchant_offer_name"),
+    merchantOfferDiscount: numeric("merchant_offer_discount", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    netCtmValue: numeric("net_ctm_value", { precision: 12, scale: 2 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    coreOrderIdx: index("idx_merchant_ctm_core_order").on(table.coreOrderId),
+    orderItemUid: uniqueIndex("merchant_ctm_pricing_snapshot_order_item_uid").on(table.orderItemId),
   })
 );
 
@@ -3315,6 +3360,13 @@ export const riderIncentiveParticipation = pgTable(
  * agent (AGENT_DASHBOARD), or admin (ADMIN_DASHBOARD).
  * Canonical offer_type values: PERCENTAGE | FLAT | BUY_X_GET_Y | BUY_N_GET_M |
  * FREE_ITEM | FREE_DELIVERY | CART_PERCENTAGE | CART_FLAT | TIERED | BOGO | BUNDLE | COUPON
+ *
+ * Percentage paths use offer_metadata.conditions_mode:
+ *   'boost'     — menu strike / Get for ₹ (item or all-menu)
+ *   'precision' — checkout / offer-sheet only (always ALL_ORDERS, no item pick)
+ * BOGO uses offer_type BUY_X_GET_Y / BUY_N_GET_M / BOGO (separate create path).
+ * Legacy unused tables merchant_offer_conditions / merchant_offer_usage dropped in 0407
+ * (0407 replaces former 0399–0406 offer migrations).
  */
 export const merchantOffers = pgTable(
   "merchant_offers",
@@ -3377,6 +3429,11 @@ export const merchantOffers = pgTable(
     approvedByAdmin:       bigint("approved_by_admin",  { mode: "number" }),
     approvalStatus:        text("approval_status").notNull().default("AUTO_APPROVED"),
     approvalNote:          text("approval_note"),
+    // Offer Engine V3 lifecycle (migration 0407)
+    lifecycleStatus:       text("lifecycle_status").notNull().default("ACTIVE"),
+    publishedAt:           timestamp("published_at", { withTimezone: true }),
+    disabledAt:            timestamp("disabled_at", { withTimezone: true }),
+    disabledReason:        text("disabled_reason"),
   },
   (table) => ({
     storeIdIdx:      index("merchant_offers_store_id_idx").on(table.storeId),
@@ -3386,6 +3443,7 @@ export const merchantOffers = pgTable(
     offerTypeIdx:    index("merchant_offers_offer_type_idx").on(table.offerType),
     isFeaturedIdx:   index("merchant_offers_is_featured_idx").on(table.isFeatured),
     activeLookupIdx: index("idx_active_offer_lookup").on(table.storeId, table.isActive, table.validFrom, table.validTill),
+    lifecycleIdx:    index("idx_merchant_offers_v3_runtime_lookup").on(table.storeId, table.lifecycleStatus, table.isActive),
     sourcePlatIdx:   index("merchant_offers_created_source_platform_idx").on(table.createdSourcePlatform),
     createdRoleIdx:  index("merchant_offers_created_by_role_idx").on(table.createdByRole),
     approvalIdx:     index("merchant_offers_approval_status_idx").on(table.approvalStatus),

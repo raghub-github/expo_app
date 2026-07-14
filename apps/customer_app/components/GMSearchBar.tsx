@@ -5,10 +5,11 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AppText } from "@/components/AppText";
 
 const PLACEHOLDERS = [
   "Search biryani…",
@@ -66,9 +67,9 @@ export function GMSearchBar({
       activeOpacity={0.92}
     >
       <Ionicons name="search" size={20} color={GatiMitraColors.textSecondary} />
-      <Text style={styles.placeholder} numberOfLines={1}>
+      <AppText style={styles.placeholder} numberOfLines={1}>
         {text}
-      </Text>
+      </AppText>
       <Animated.View style={micStyle}>
         <Ionicons name="mic-outline" size={20} color={GatiMitraColors.textPrimaryNew} />
       </Animated.View>

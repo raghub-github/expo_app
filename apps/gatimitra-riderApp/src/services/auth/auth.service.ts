@@ -124,20 +124,20 @@ function normalizeOtpErrorMessage(message: string): string {
 
 export const riderAuthService = {
   /**
-   * Send OTP — same as merchant: Supabase signInWithOtp when configured (Send SMS hook → MSG91).
-   * Set EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true only when Supabase hook cannot reach your API.
+   * Send OTP — same as merchant:
+   * Supabase `signInWithOtp` → Dashboard Send SMS hook → MSG91.
+   * Set `EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true` only when the Supabase hook cannot reach your API.
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
     _lastBackendOtpRequestId = null;
 
     const envInfo = getSupabaseOtpEnvDebugInfo();
     const viaBackend = shouldSendPhoneOtpViaBackend();
-    const phoneTail = payload.phoneE164.replace(/\D/g, "").slice(-4);
-
     if (__DEV__) {
+      const tail = payload.phoneE164.replace(/\D/g, "").slice(-4);
       // eslint-disable-next-line no-console
       console.log("[RiderAuth] sendOtp: start", {
-        phoneTail: phoneTail ? `…${phoneTail}` : "(short)",
+        phoneTail: tail ? `…${tail}` : "(short)",
         channel: viaBackend ? "backend" : "supabase",
         supabase: envInfo,
       });
@@ -171,7 +171,7 @@ export const riderAuthService = {
       if (__DEV__) {
         // eslint-disable-next-line no-console
         console.log(
-          "[RiderAuth] sendOtp: backend OK — SMS via MSG91 on API server.",
+          "[RiderAuth] sendOtp: backend OK — SMS via MSG91 on API server (set EXPO_PUBLIC_API_BASE_URL reachable from device; backend needs MSG91_AUTH_KEY). OTP may appear in backend console in non-production.",
           dataJson.otp != null ? { devOtp: dataJson.otp } : {},
         );
       }
@@ -185,16 +185,16 @@ export const riderAuthService = {
       );
     }
 
-    // Normalize phone to strict E.164 (same as partnersite). Supabase rejects
+    // Normalize phone to strict E.164 (same as partnersite / merchant). Supabase rejects
     // mixed formats.
     const normalizedPhone = payload.phoneE164.startsWith("+")
       ? payload.phoneE164
       : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
 
     // IMPORTANT: do NOT pass `shouldCreateUser: true` for phone OTP. With the
-    // Send SMS Hook configured, the explicit flag triggers a user-creation
-    // flow that races the hook and Supabase returns 500 `unexpected_failure`
-    // for already-known numbers.
+    // Send SMS Hook configured in the Supabase project, the explicit flag
+    // triggers a user-creation flow that races the hook and Supabase returns
+    // 500 `unexpected_failure` for already-known numbers.
     const { error } = await supabase.auth.signInWithOtp({
       phone: normalizedPhone,
       options: { channel: "sms" },
@@ -225,6 +225,14 @@ export const riderAuthService = {
         : "";
       if ((error as { status?: number }).status === 429 || /rate.?limit|too many/i.test(msg)) {
         throw new Error("Too many OTP attempts on this number. Wait an hour or use a different number.");
+      }
+      if (
+        /network request failed|failed to fetch|AuthRetryableFetchError/i.test(msg) ||
+        (error as { status?: number }).status === 0
+      ) {
+        throw new Error(
+          "Unable to reach authentication server. Check internet connection and that EXPO_PUBLIC_SUPABASE_URL matches the merchant app project (uoxkwzn…). Then restart Expo with -c.",
+        );
       }
       throw new Error(msg + hint);
     }

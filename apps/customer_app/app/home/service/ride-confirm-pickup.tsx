@@ -93,6 +93,7 @@ export default function RideConfirmPickupScreen() {
     passengerName?: string;
     passengerPhone?: string;
     estimatedFare?: string;
+    quotedGrandTotal?: string;
     tripKm?: string;
     routeDistanceKm?: string;
     routeEtaMins?: string;
@@ -341,6 +342,7 @@ export default function RideConfirmPickupScreen() {
       if (params.dropLng) navParams.dropLng = String(params.dropLng);
       if (params.stops) navParams.stops = String(params.stops);
       if (params.estimatedFare) navParams.estimatedFare = String(params.estimatedFare);
+      if (params.quotedGrandTotal) navParams.quotedGrandTotal = String(params.quotedGrandTotal);
       if (params.customerTipAmount) navParams.customerTipAmount = String(params.customerTipAmount);
       if (params.pickupPincode) navParams.pickupPincode = String(params.pickupPincode);
       if (params.pickupState) navParams.pickupState = String(params.pickupState);

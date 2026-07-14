@@ -476,6 +476,11 @@ export interface Offer {
   valid_from: string;
   valid_till: string;
   is_active: boolean | null;
+  /** V3 lifecycle: DRAFT | SCHEDULED | ACTIVE | DISABLED | EXPIRED */
+  lifecycle_status?: string | null;
+  published_at?: string | null;
+  disabled_at?: string | null;
+  disabled_reason?: string | null;
   /** Enterprise: auto-apply without coupon */
   auto_apply?: boolean | null;
   /** Enterprise: can combine with other stackable offers */

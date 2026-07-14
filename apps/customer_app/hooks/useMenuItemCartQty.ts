@@ -1,4 +1,5 @@
 import { useCartStore } from "@/store/cartStore";
+import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 
 /** Per-row cart qty — avoids SectionList extraData re-rendering every row on cart changes. */
 export function useMenuItemCartQty(
@@ -7,7 +8,7 @@ export function useMenuItemCartQty(
   merchantId: string | undefined
 ): number {
   return useCartStore((s) => {
-    if (!merchantId || s.merchantId !== merchantId) return 0;
+    if (!merchantCartMatchesRoute(s.merchantId, merchantId)) return 0;
     const numId = menuItemId != null ? String(menuItemId) : null;
     let sum = 0;
     for (const line of s.items) {

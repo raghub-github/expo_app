@@ -12,7 +12,11 @@ import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../ser
 import { getStoreByStoreId, getStoreByIdForOrder, getMerchantAboutPayload } from "../merchants/merchant.service.js";
 import { getStoreRatingsForStores } from "../merchants/merchant-store-ratings.js";
 import { auth } from "../../plugins/auth.js";
-import { createPendingOrder, finalizeOrder } from "./order.placement.service.js";
+import {
+  createPendingOrder,
+  finalizeOrder,
+  orderLinePricingFieldsFromSnapshot,
+} from "./order.placement.service.js";
 import { getEnv } from "../../config/env.js";
 import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
 import { resolveOrderItemsVegNonVeg } from "../../lib/order-item-veg.js";
@@ -151,6 +155,11 @@ import {
   resolveOrdersCorePk,
   writeOrderItemCommissionSnapshots,
 } from "../commission/writeOrderCommissionSnapshots.js";
+import {
+  buildCtmLineInputsFromFrozenItems,
+  writeMerchantCtmPricingSnapshots,
+  ensureMerchantCtmPricingSnapshotsForOrder,
+} from "../commission/writeMerchantCtmPricingSnapshots.js";
 import { enrichAddonsWithMenuMetadata } from "../commission/resolveMenuAddonMetadata.js";
 import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
 import { resolveMenuAddonPk } from "../commission/resolveMenuAddonPk.js";
@@ -1925,10 +1934,24 @@ export async function orderRoutes(app: FastifyInstance) {
             billingRulesetVersion: billingRulesetVersion ?? undefined,
           } as any);
 
-          const itemInserts = normItems.map((i) => {
+          // Freeze the SAME per-line offer economics onto orders_core_items as the finalize /
+          // webhook paths (single source of truth). Without this the CTM snapshot had no per-line
+          // applied_offer_* to project from, so a Billing-Engine BOGO persisted as NONE on this path.
+          const billingSnapForItems =
+            billingSnapshot && typeof billingSnapshot === "object"
+              ? (billingSnapshot as Record<string, unknown>)
+              : null;
+          const itemInserts = normItems.map((i, lineIndex) => {
             const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
             const lineAddonTotal = addonPerUnit * i.quantity;
             const lineTotal = i.basePrice * i.quantity + lineAddonTotal;
+            const pricing = orderLinePricingFieldsFromSnapshot(
+              billingSnapForItems,
+              String(i.menuItemId),
+              lineIndex,
+              i.quantity,
+              lineTotal,
+            );
             return {
               orderId: idText,
               menuItemId: i.menuItemId,
@@ -1943,6 +1966,14 @@ export async function orderRoutes(app: FastifyInstance) {
               addonPrice: String(addonPerUnit.toFixed(2)),
               totalPrice: String(lineTotal.toFixed(2)),
               itemSnapshot: i.itemSnapshot ?? undefined,
+              isDiscountEligible: pricing.isDiscountEligible,
+              effectiveUnitPrice: pricing.effectiveUnitPrice,
+              effectiveLineTotal: pricing.effectiveLineTotal,
+              offerDiscountAmount: pricing.offerDiscountAmount,
+              appliedOfferId: pricing.appliedOfferId,
+              appliedOfferLabel: pricing.appliedOfferLabel,
+              appliedOfferType: pricing.appliedOfferType,
+              ineligibilityReason: pricing.ineligibilityReason,
             };
           });
 
@@ -1999,6 +2030,35 @@ export async function orderRoutes(app: FastifyInstance) {
             );
           }
 
+          if (orderIdNumRoute != null && orderIdNumRoute > 0) {
+            const billingSnapRoute = billingSnapForItems;
+            // Same leak-proof projection as the finalize / webhook paths: each CTM line comes from
+            // its own just-frozen orders_core_items row (itemInserts[i] ↔ insertedItems[i]).
+            const ctmLines = buildCtmLineInputsFromFrozenItems(
+              insertedItems.map((r: { id?: number }, i: number) => {
+                const ins = itemInserts[i]!;
+                return {
+                  orderItemId: Number(r.id),
+                  menuItemId: ins.menuItemId != null ? Number(ins.menuItemId) : null,
+                  quantity: ins.quantity,
+                  catalogLineTotal: Number(ins.totalPrice ?? 0),
+                  offerDiscountAmount: Number(ins.offerDiscountAmount ?? 0),
+                  appliedOfferType: ins.appliedOfferType ?? null,
+                  appliedOfferLabel: ins.appliedOfferLabel ?? null,
+                  appliedOfferId: ins.appliedOfferId ?? null,
+                  isItemPromo:
+                    String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+                };
+              })
+            );
+            await writeMerchantCtmPricingSnapshots(tx, {
+              coreOrderId: orderIdNumRoute,
+              commissionPercent: 0,
+              billingSnapshot: billingSnapRoute,
+              lines: ctmLines,
+            });
+          }
+
           const paymentInsert = tx.insert(ordersCorePayments) as any;
           await paymentInsert.values({
             orderId: idText,
@@ -2028,6 +2088,14 @@ export async function orderRoutes(app: FastifyInstance) {
           error: "order_creation_failed",
           message: "Order could not be created. Please try again.",
           ...(process.env.NODE_ENV !== "production" && { debug: errMsg }),
+        });
+      }
+
+      const legacyCorePk = await resolveOrdersCorePk(db as any, orderIdText);
+      if (legacyCorePk != null) {
+        void ensureMerchantCtmPricingSnapshotsForOrder(db as any, {
+          coreOrderId: legacyCorePk,
+          orderIdText,
         });
       }
 

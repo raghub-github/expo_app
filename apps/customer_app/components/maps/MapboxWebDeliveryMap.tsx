@@ -70,11 +70,23 @@ export function MapboxWebDeliveryMap({
   const lastRefitNonceRef = useRef(0);
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
   const markerDataUri = useMapMarkerDataUri("bike");
+  // Captured once (first non-null value) for the initial HTML build only — must NOT
+  // be a dependency of the `html` memo below, or the WebView would reload every time
+  // the icon resolves. injectMarkerIcon() (below) upgrades it in place instead.
+  const initialMarkerUriRef = useRef(markerDataUri);
+  if (initialMarkerUriRef.current == null && markerDataUri != null) {
+    initialMarkerUriRef.current = markerDataUri;
+  }
 
+  // Render as soon as the token is known — never block the whole map on the rider
+  // marker icon, which resolves asynchronously (see useMapMarkerDataUri) and can be
+  // slow on a cold cache. injectMarkerIcon() below upgrades the icon in place once
+  // markerDataUri resolves, no reload needed.
   const html = useMemo(() => {
-    if (!token || !markerDataUri) return "";
-    return buildDeliveryTrackingMapHtml(token, center, markerDataUri);
-  }, [token, markerDataUri, center.latitude, center.longitude]);
+    if (!token) return "";
+    return buildDeliveryTrackingMapHtml(token, center, initialMarkerUriRef.current ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, center.latitude, center.longitude]);
 
   useEffect(() => {
     readyRef.current = false;
@@ -129,6 +141,7 @@ export function MapboxWebDeliveryMap({
   }, [payload.remainingRoute.length, payload.connectorRoute?.length, payload.preRiderArcRoute?.length, syncAll]);
 
   if (!token || !html) {
+    // html is only ever empty when token is — see the memo above.
     return <CustomerMapUnavailable style={style} />;
   }
 

@@ -1,8 +1,9 @@
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { StyleSheet, TouchableOpacity, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW_BG } from "@/lib/foodHomeLayout";
+import { AppText } from "@/components/AppText";
 
 type Props = {
   enabled: boolean;
@@ -43,10 +44,10 @@ export function FoodHomeGoldStrip({
           <Ionicons name="ribbon" size={16} color="#B45309" />
         </View>
 
-        <Text style={styles.message} numberOfLines={3}>
+        <AppText style={styles.message} numberOfLines={3}>
           {copy}
-          <Text style={styles.knowMore}> Know more ›</Text>
-        </Text>
+          <AppText style={styles.knowMore}> Know more ›</AppText>
+        </AppText>
       </LinearGradient>
     </TouchableOpacity>
   );

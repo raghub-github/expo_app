@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAppSelector, useAppDispatch } from '@/lib/hooks'
@@ -9,11 +8,14 @@ import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import AppLinkSentToast from '@/components/common/AppLinkSentToast'
 import AppAssetImage from '@/components/common/AppAssetImage'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import ParcelServiceControl from '@/components/common/ParcelServiceControl'
 import Footer from '@/components/layout/Footer'
 import { CX } from '@/lib/appAssetKeys'
+import { resolveAndroidDownloadUrl, resolveIosDownloadUrl } from '@/lib/appDownload'
+import { AppleStoreIcon, GooglePlayIcon } from '@/components/common/StoreBrandIcons'
 import { ServiceCategory, setCurrentService } from '@/lib/slices/authSlice'
 
 const RIDE_SERVICES = [
@@ -85,9 +87,10 @@ export default function RideLandingPage() {
   const [targetService, setTargetService] = useState<ServiceCategory>('person')
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
+  const [showAppLinkToast, setShowAppLinkToast] = useState(false)
 
-  const androidUrl = process.env.NEXT_PUBLIC_APP_DOWNLOAD_URL || 'https://play.google.com/store'
-  const iosUrl = process.env.NEXT_PUBLIC_IOS_APP_DOWNLOAD_URL || 'https://www.apple.com/app-store/'
+  const androidUrl = resolveAndroidDownloadUrl()
+  const iosUrl = resolveIosDownloadUrl()
 
   useEffect(() => {
     if (isAuthenticated && currentService !== 'person') {
@@ -210,7 +213,7 @@ export default function RideLandingPage() {
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center gap-2 rounded-full border border-white/25 bg-white/5 px-5 py-3.5 text-sm font-semibold text-white backdrop-blur-sm transition-colors hover:border-[#16c2a5]/60 hover:bg-white/10"
               >
-                <i className="fab fa-google-play" aria-hidden />
+                <GooglePlayIcon className="h-4 w-4" />
                 Google Play
               </a>
               <a
@@ -219,7 +222,7 @@ export default function RideLandingPage() {
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center gap-2 rounded-full border border-white/25 bg-white/5 px-5 py-3.5 text-sm font-semibold text-white backdrop-blur-sm transition-colors hover:border-[#16c2a5]/60 hover:bg-white/10"
               >
-                <i className="fab fa-apple" aria-hidden />
+                <AppleStoreIcon className="h-4 w-4" />
                 App Store
               </a>
             </div>
@@ -231,15 +234,15 @@ export default function RideLandingPage() {
 
           <div className="ride-landing__hero-visual relative mx-auto flex w-full max-w-md justify-center lg:max-w-lg">
             <div className="ride-landing__hero-art relative w-full">
-              <Image
+              {/* eslint-disable-next-line @next/next/no-img-element -- synced public/img asset */}
+              <img
                 src="/img/ride.png"
                 alt="GatiMitra ride app screens — Bike, Auto, or Cab"
                 width={480}
                 height={640}
                 className="mx-auto h-auto max-h-[420px] w-auto object-contain sm:max-h-[480px]"
-                sizes="(max-width: 1024px) 70vw, 400px"
-                priority
-                unoptimized
+                decoding="async"
+                fetchPriority="high"
               />
             </div>
           </div>
@@ -420,7 +423,7 @@ export default function RideLandingPage() {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 rounded-full border border-white/25 px-5 py-3.5 text-sm font-semibold text-white hover:border-[#16c2a5]/50"
             >
-              <i className="fab fa-google-play" aria-hidden />
+              <GooglePlayIcon className="h-4 w-4" />
               Play Store
             </a>
             <a
@@ -429,7 +432,7 @@ export default function RideLandingPage() {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 rounded-full border border-white/25 px-5 py-3.5 text-sm font-semibold text-white hover:border-[#16c2a5]/50"
             >
-              <i className="fab fa-apple" aria-hidden />
+              <AppleStoreIcon className="h-4 w-4" />
               App Store
             </a>
           </div>
@@ -452,9 +455,12 @@ export default function RideLandingPage() {
       <AppDownloadModal
         isOpen={showAppDownloadModal}
         onClose={() => setShowAppDownloadModal(false)}
+        variant="ride"
         title="Book rides in the GatiMitra App"
         description="Ride booking is available only on the mobile app. Download GatiMitra to get fares, choose Bike, Auto, or Cab, and ride with a trusted Captain."
+        onLinkSent={() => setShowAppLinkToast(true)}
       />
+      <AppLinkSentToast open={showAppLinkToast} onClose={() => setShowAppLinkToast(false)} />
     </div>
   )
 }

@@ -22,6 +22,11 @@
  *   3. Add a handler in registerDomainEventHandlers().
  */
 import { send as sendNotification } from "./notificationService.js";
+import { getSql } from "../../db/client.js";
+import {
+  clearMerchantStoreOrderNotificationsByOrderRef,
+  shouldClearOrderNotifications,
+} from "../../lib/clear-merchant-order-notifications.js";
 
 // ---------------------------------------------------------------------------
 // Event catalog
@@ -191,8 +196,24 @@ export function registerDomainEventHandlers(): void {
   if (wired) return;
   wired = true;
 
-  // Order status → send to whichever roles have a mapping.
+  // Order status → clear stale "New order!" inbox rows, then push templates.
   on("order.status_changed", async (e) => {
+    if (
+      shouldClearOrderNotifications(e.toStatus) &&
+      e.merchantStoreId != null &&
+      e.merchantStoreId > 0
+    ) {
+      try {
+        await clearMerchantStoreOrderNotificationsByOrderRef(getSql(), {
+          merchantStoreId: e.merchantStoreId,
+          orderIdText: e.orderId,
+          formattedOrderId: e.orderShortId ?? e.orderId,
+        });
+      } catch {
+        /* inbox clear is best-effort */
+      }
+    }
+
     const map = STATUS_TO_TEMPLATE[e.toStatus.toUpperCase()];
     if (!map) return;
     const vars = {

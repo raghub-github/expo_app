@@ -1,12 +1,29 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { prefetchFoodHomeLayout } from "@/lib/foodHomeLayoutCache";
+import {
+  prefetchFoodHomeLayout,
+  getSyncFoodHomeLayoutFromQueryClient,
+} from "@/lib/foodHomeLayoutCache";
 import { prefetchUserAppCategories } from "@/lib/userAppCategoryCache";
 import { useLocationStore } from "@/store/locationStore";
-import { merchantService } from "@/services/merchant.service";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
+import { prefetchMerchantsList, readSyncMerchantsList } from "@/lib/merchantsListCache";
+import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
+import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
+import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
+import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 
-/** Warm food-home layout + nearby merchants as soon as location is known. */
+/**
+ * Warm food-home layout + nearby merchants AND their imagery as soon as location is
+ * known — while the user is still on the Home tab, before they ever open Food.
+ *
+ * Data alone is not enough for "instant visual readiness": if the hero/card images are
+ * only prefetched once the Food screen mounts, the first paint still waits on a download
+ * + decode. So after each data prefetch resolves we also decode the images into the
+ * memory/disk cache here. Every prefetch helper dedupes by URI, so warming early cannot
+ * cause a double download — it only moves the fetch off the first-paint critical path.
+ */
 export function FoodHomeLayoutPrefetch() {
   const queryClient = useQueryClient();
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
@@ -16,8 +33,23 @@ export function FoodHomeLayoutPrefetch() {
 
   useEffect(() => {
     if (!locationHydrated) return;
-    void prefetchFoodHomeLayout(queryClient, address, coords);
+    let cancelled = false;
+    void (async () => {
+      await prefetchFoodHomeLayout(queryClient, address, coords);
+      if (cancelled) return;
+      // Decode the FRESHEST hero media (post-network) into cache now, not on-screen —
+      // hydrateFoodHomeLayoutForHints only warmed the disk-cached media pre-fetch.
+      const hints = extractCustomerGeoHints(address, coords);
+      const layout = getSyncFoodHomeLayoutFromQueryClient(queryClient, hints);
+      if (layout) {
+        prefetchGridFirstHeroMedia(layout.gridFirstHeroMedia);
+        prefetchMealsUnder250HeroMedia(layout);
+      }
+    })();
     void prefetchUserAppCategories(queryClient, "FOOD");
+    return () => {
+      cancelled = true;
+    };
   }, [
     locationHydrated,
     coords?.latitude,
@@ -29,18 +61,23 @@ export function FoodHomeLayoutPrefetch() {
 
   useEffect(() => {
     if (!locationHydrated || coords?.latitude == null || coords?.longitude == null) return;
-    void queryClient.prefetchQuery({
-      queryKey: ["merchants", coords.latitude, coords.longitude, vegOnly],
-      queryFn: () =>
-        merchantService.getMerchants({
-          limit: 20,
-          lat: coords.latitude,
-          lng: coords.longitude,
-          vegOnly,
-          distanceMode: "road",
-        }),
-      staleTime: 60_000,
-    });
+    const lat = coords.latitude;
+    const lng = coords.longitude;
+    let cancelled = false;
+    void (async () => {
+      await prefetchMerchantsList(queryClient, lat, lng, vegOnly);
+      if (cancelled) return;
+      const list = readSyncMerchantsList(lat, lng, vegOnly);
+      if (list?.length) {
+        // Warms restaurant card images AND the hero fallback (merchant banners are used
+        // as the hero when admin has no grid-first media) — both ready before navigation.
+        prefetchMerchantCardImages(list);
+        prefetchMerchantBanners(list);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [locationHydrated, coords?.latitude, coords?.longitude, vegOnly, queryClient]);
 
   return null;

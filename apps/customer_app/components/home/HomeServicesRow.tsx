@@ -2,11 +2,12 @@
  * Six service cards in a 2-column grid — height adapts to fill one-screen home layout.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
+import { AppText } from "@/components/AppText";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -121,15 +122,15 @@ function ServiceTile({
     >
       {item.pill ? (
         <View style={styles.pill}>
-          <Text style={styles.pillText} numberOfLines={1}>
+          <AppText style={styles.pillText} numberOfLines={1}>
             {item.pill}
-          </Text>
+          </AppText>
         </View>
       ) : null}
 
-      <Text style={styles.title} numberOfLines={1}>
+      <AppText style={styles.title} numberOfLines={1}>
         {item.title}
-      </Text>
+      </AppText>
 
       <View style={[styles.arrowBtn, { backgroundColor: item.arrowColor }]}>
         <Ionicons name="chevron-forward" size={13} color="#fff" />

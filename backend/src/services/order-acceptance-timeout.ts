@@ -5,9 +5,13 @@ import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.js";
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "../lib/apply-merchant-cancellation-ledger.js";
+import { clearMerchantStoreOrderNotifications } from "../lib/clear-merchant-order-notifications.js";
 import { emitEvent } from "../modules/notifications/eventBus.js";
 
-const AUTO_CANCEL_REASON = "Auto Cancelled";
+/** Machine reason code — Super Admin accept window expiry (single source of truth). */
+export const MERCHANT_ACCEPT_TIMEOUT_REASON = "MERCHANT_ACCEPT_TIMEOUT";
+/** Human-readable label shown on timelines / merchant cards. */
+export const MERCHANT_ACCEPT_TIMEOUT_LABEL = "Auto Cancelled";
 
 /** Unaccepted food orders past server deadline — cancelled by backend cron (app/site may be closed). */
 
@@ -28,15 +32,27 @@ type AutoAcceptTarget = {
   merchant_store_id: number;
 };
 
-/** Expired if persisted deadline passed, or legacy created_at + platform window. */
+/**
+ * Expired only when Current Time >= snapshotted acceptance deadline.
+ * Prefer order-level deadline / window (frozen at place). Live Super Admin
+ * minutes are last-resort for legacy rows missing both snapshot fields.
+ * Never cancels before the order's configured deadline.
+ */
 const EXPIRED_ACCEPTANCE_PREDICATE = `
   (
     f.merchant_acceptance_deadline_at IS NOT NULL
-    AND f.merchant_acceptance_deadline_at < NOW()
+    AND f.merchant_acceptance_deadline_at <= NOW()
   )
   OR (
     f.merchant_acceptance_deadline_at IS NULL
-    AND (NOW() - f.created_at) > make_interval(mins => COALESCE(cfg.win_m, 5))
+    AND f.merchant_acceptance_window_seconds IS NOT NULL
+    AND f.merchant_acceptance_window_seconds > 0
+    AND (f.created_at + make_interval(secs => f.merchant_acceptance_window_seconds::double precision)) <= NOW()
+  )
+  OR (
+    f.merchant_acceptance_deadline_at IS NULL
+    AND (f.merchant_acceptance_window_seconds IS NULL OR f.merchant_acceptance_window_seconds <= 0)
+    AND (f.created_at + make_interval(mins => COALESCE(cfg.win_m, 5))) <= NOW()
   )
 `;
 
@@ -46,6 +62,14 @@ const UNACCEPTED_FOOD_WHERE = `
   AND f.accepted_at IS NULL
 `;
 
+/**
+ * Cancel expired unaccepted food rows.
+ *
+ * Important: do NOT UPDATE orders_core in the same SQL statement as orders_food.
+ * `handle_orders_food_cancellation` (BEFORE UPDATE on orders_food) already writes
+ * orders_core; a second core UPDATE in the same command raises Postgres 27000
+ * ("tuple to be updated was already modified by an operation triggered by the current command").
+ */
 async function fetchExpiredAcceptanceTargets(
   sql: Sql,
   options: { merchantStoreId?: number; limit?: number } = {}
@@ -53,8 +77,10 @@ async function fetchExpiredAcceptanceTargets(
   const limit = Math.max(1, Math.min(500, options.limit ?? 200));
   const storeId = options.merchantStoreId;
 
-  if (storeId != null && Number.isFinite(storeId) && storeId > 0) {
-    return (await sql.unsafe(`
+  const rows =
+    storeId != null && Number.isFinite(storeId) && storeId > 0
+      ? ((await sql.unsafe(
+          `
       WITH cfg AS (
         SELECT
           store_type,
@@ -82,15 +108,16 @@ async function fetchExpiredAcceptanceTargets(
           order_status = 'CANCELLED',
           cancelled_at = NOW(),
           rejected_reason = $3,
-          cancelled_by_label = $3,
+          cancelled_by_label = $4,
           cancelled_by_type = 'system',
           cancellation_details = jsonb_build_object(
             'version', 1,
             'source', 'system',
             'action_source', 'system',
             'cancel_mode', 'auto',
+            'reason_code', $3::text,
             'rejected_reason', $3::text,
-            'cancelled_by_label', $3::text
+            'cancelled_by_label', $4::text
           ),
           merchant_acceptance_timeout_processed_at = NOW(),
           updated_at = NOW()
@@ -98,27 +125,15 @@ async function fetchExpiredAcceptanceTargets(
         WHERE f.id = t.food_id
           AND ${UNACCEPTED_FOOD_WHERE}
         RETURNING f.order_id AS core_id, f.id AS food_id, f.merchant_store_id
-      ),
-      upd_core AS (
-        UPDATE orders_core c
-        SET
-          status = 'cancelled',
-          current_status = 'CANCELLED',
-          cancelled_at = NOW(),
-          cancelled_by = 'SYSTEM',
-          updated_at = NOW()
-        FROM upd_food u
-        WHERE c.id = u.core_id
-          AND c.cancelled_at IS NULL
-        RETURNING c.id AS core_id, c.grand_total
       )
       SELECT f.core_id, f.food_id, f.merchant_store_id, c.grand_total
       FROM upd_food f
-      JOIN upd_core c ON c.core_id = f.core_id
-    `, [storeId, limit, AUTO_CANCEL_REASON])) as CancelledRow[];
-  }
-
-  return (await sql.unsafe(`
+      JOIN orders_core c ON c.id = f.core_id
+    `,
+          [storeId, limit, MERCHANT_ACCEPT_TIMEOUT_REASON, MERCHANT_ACCEPT_TIMEOUT_LABEL]
+        )) as CancelledRow[])
+      : ((await sql.unsafe(
+          `
     WITH cfg AS (
       SELECT
         store_type,
@@ -145,15 +160,16 @@ async function fetchExpiredAcceptanceTargets(
         order_status = 'CANCELLED',
         cancelled_at = NOW(),
         rejected_reason = $2,
-        cancelled_by_label = $2,
+        cancelled_by_label = $3,
         cancelled_by_type = 'system',
         cancellation_details = jsonb_build_object(
           'version', 1,
           'source', 'system',
           'action_source', 'system',
           'cancel_mode', 'auto',
+          'reason_code', $2::text,
           'rejected_reason', $2::text,
-          'cancelled_by_label', $2::text
+          'cancelled_by_label', $3::text
         ),
         merchant_acceptance_timeout_processed_at = NOW(),
         updated_at = NOW()
@@ -161,24 +177,32 @@ async function fetchExpiredAcceptanceTargets(
       WHERE f.id = t.food_id
         AND ${UNACCEPTED_FOOD_WHERE}
       RETURNING f.order_id AS core_id, f.id AS food_id, f.merchant_store_id
-    ),
-    upd_core AS (
-      UPDATE orders_core c
-      SET
-        status = 'cancelled',
-        current_status = 'CANCELLED',
-        cancelled_at = NOW(),
-        cancelled_by = 'SYSTEM',
-        updated_at = NOW()
-      FROM upd_food u
-      WHERE c.id = u.core_id
-        AND c.cancelled_at IS NULL
-      RETURNING c.id AS core_id, c.grand_total
     )
     SELECT f.core_id, f.food_id, f.merchant_store_id, c.grand_total
     FROM upd_food f
-    JOIN upd_core c ON c.core_id = f.core_id
-  `, [limit, AUTO_CANCEL_REASON])) as CancelledRow[];
+    JOIN orders_core c ON c.id = f.core_id
+  `,
+          [limit, MERCHANT_ACCEPT_TIMEOUT_REASON, MERCHANT_ACCEPT_TIMEOUT_LABEL]
+        )) as CancelledRow[]);
+
+  // Separate statement: fill SYSTEM actor if the BEFORE trigger left cancelled_by empty.
+  const coreIds = rows
+    .map((r) => Number(r.core_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (coreIds.length > 0) {
+    await sql`
+      UPDATE orders_core
+      SET
+        status = 'cancelled',
+        current_status = 'CANCELLED',
+        cancelled_at = COALESCE(cancelled_at, NOW()),
+        cancelled_by = COALESCE(NULLIF(BTRIM(cancelled_by), ''), 'SYSTEM'),
+        updated_at = NOW()
+      WHERE id = ANY(${coreIds})
+    `;
+  }
+
+  return rows;
 }
 
 async function fetchAutoAcceptTargets(
@@ -227,10 +251,10 @@ async function finalizeCancelledRow(
     await recordCancellationTimeline(sql, {
       orderCorePk: coreId,
       previousStatus: "Pymt Assign RX",
-      rejectedReason: AUTO_CANCEL_REASON,
+      rejectedReason: MERCHANT_ACCEPT_TIMEOUT_REASON,
       actorType: "system",
       cancelMode: "auto",
-      statusMessage: AUTO_CANCEL_REASON,
+      statusMessage: MERCHANT_ACCEPT_TIMEOUT_LABEL,
     });
     const orderCtx = await lookupOrderContext(coreId, sql);
     const engineResult = await executeOrderCancellationFinancials(
@@ -250,16 +274,19 @@ async function finalizeCancelledRow(
     await recordOrderCancellation(sql, {
       orderCorePk: coreId,
       cancelledBy: "SYSTEM",
-      displayReason: AUTO_CANCEL_REASON,
+      displayReason: MERCHANT_ACCEPT_TIMEOUT_REASON,
       cancelledByType: "system",
-      cancelledByLabel: AUTO_CANCEL_REASON,
+      cancelledByLabel: MERCHANT_ACCEPT_TIMEOUT_LABEL,
       actionSource: "system",
       cancelMode: "auto",
       previousStatus: "CREATED",
       grandTotal: row.grand_total,
       refundStatus: refund.refundStatus,
       refundAmount: refund.refundAmount,
-      metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
+      metadata: {
+        reason_code: MERCHANT_ACCEPT_TIMEOUT_REASON,
+        ...(engineResult.raw ? { financial_rule_engine: engineResult.raw } : {}),
+      },
     });
     try {
       await applyMerchantOrderCancellationLedger(
@@ -294,16 +321,27 @@ async function finalizeCancelledRow(
       }>;
       const owner = ownerRows[0];
       const orderIdText = String(owner?.order_id ?? coreId);
+      const displayId = owner?.formatted_order_id ?? orderIdText;
+      try {
+        await clearMerchantStoreOrderNotifications(sql, {
+          merchantStoreId: storeId,
+          ordersFoodId: foodId,
+          orderCoreId: coreId,
+          formattedOrderId: displayId,
+        });
+      } catch {
+        /* inbox clear is best-effort */
+      }
       emitEvent("order.status_changed", {
         orderId: orderIdText,
-        orderShortId: owner?.formatted_order_id ?? orderIdText,
+        orderShortId: displayId,
         fromStatus: "CREATED",
         toStatus: "CANCELLED",
         customerId: owner?.customer_user_id ?? null,
         merchantUserId: owner?.merchant_user_id ?? null,
         merchantStoreId: storeId,
         merchantName: owner?.store_name ?? null,
-        reason: AUTO_CANCEL_REASON,
+        reason: MERCHANT_ACCEPT_TIMEOUT_REASON,
       });
     } catch {
       /* notification fan-out is best-effort */

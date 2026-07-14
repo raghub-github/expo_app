@@ -1,8 +1,6 @@
 'use client'
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
-import AppAssetImage from '@/components/common/AppAssetImage'
-import { CX } from '@/lib/appAssetKeys'
 import {
   Bike,
   CalendarClock,
@@ -159,9 +157,10 @@ export default function LandingAppShowcase() {
                       <span className="landing-app-showcase__phone-glow landing-app-showcase__phone-glow--tl" />
                       <span className="landing-app-showcase__phone-glow landing-app-showcase__phone-glow--br" />
                     </div>
-                    <AppAssetImage
-                      assetKey={CX.home.brandBanner}
-                      alt="GatiMitra delivery bike"
+                    {/* eslint-disable-next-line @next/next/no-img-element -- synced public/img asset */}
+                    <img
+                      src="/img/bikeride-phone.png"
+                      alt="GatiMitra bike ride"
                       className="landing-app-showcase__phone-bike"
                       decoding="async"
                       fetchPriority="high"

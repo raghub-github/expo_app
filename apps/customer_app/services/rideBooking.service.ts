@@ -3,6 +3,7 @@
  */
 
 import api from "./api";
+import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 
 const RIDES_PREFIX = "/v1/rides";
 
@@ -97,7 +98,9 @@ export type ExtendRideSearchResponse = {
 export async function placeRideOrder(
   payload: PlaceRideOrderPayload
 ): Promise<PlaceRideOrderResponse> {
-  const { data } = await api.post<PlaceRideOrderResponse>(`${RIDES_PREFIX}`, payload);
+  const { data } = await api.post<PlaceRideOrderResponse>(`${RIDES_PREFIX}`, payload, {
+    timeout: ORDER_PLACEMENT_TIMEOUT_MS,
+  });
   return data;
 }
 

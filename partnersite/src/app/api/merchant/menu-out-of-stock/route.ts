@@ -24,7 +24,9 @@ function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: number } {
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
-    hour12: false,
+    // hourCycle alone (no hour12): `hour12: false` without an explicit hourCycle can resolve
+    // to "h24" (1-24) on some ICU builds, reporting hour=24 at midnight instead of 0.
+    hourCycle: "h23",
   });
   const parts = formatter.formatToParts(new Date());
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);

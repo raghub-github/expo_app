@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { View, StyleSheet, ScrollView, RefreshControl } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { useLocationStore } from "@/store/locationStore";
@@ -26,6 +26,7 @@ import {
 } from "@/hooks/useFeaturedOffersHome";
 import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const BG = "#FFFFFF";
 const TEAL = GatiMitraColors.splashMint;
@@ -118,6 +119,18 @@ export default function HomeScreen() {
   const { data: featuredOffersData } = useFeaturedOffersHome(
     offerLocationParams,
     locationHydrated
+  );
+
+  // Restore root status-bar spacer — merchant/food immersive can leave it off and
+  // the header then overlaps the system status bar (layout jump).
+  useFocusEffect(
+    useCallback(() => {
+      useScreenChromeStore.setState({
+        statusBarBackground: "#FFFFFF",
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
+    }, [])
   );
 
   return (

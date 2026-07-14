@@ -26,6 +26,8 @@ const itemSchema = z.object({
   variantName: z.string().optional().nullable(),
   addons: z.array(addonSchema).optional().default([]),
   itemSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
+  /** Client hint — ignored for money math; server recomputes eligibility (Offer Engine v2). */
+  isDiscountEligible: z.boolean().optional(),
 });
 
 const checkoutOffersQuerySchema = z.object({
@@ -43,6 +45,8 @@ const checkoutOffersQuerySchema = z.object({
   city: z.string().optional(),
   /** Pre-discount payable cart (items + addons + fees) — aligns with bill apply. */
   qualifyingCartTotal: z.coerce.number().nonnegative().optional(),
+  /** Comma-separated cart menu item ids for item-scoped merchant offer eligibility. */
+  menuItemIds: z.string().optional(),
 });
 
 const checkoutOfferMerchantRowSchema = z.object({
@@ -53,6 +57,9 @@ const checkoutOfferMerchantRowSchema = z.object({
   requiresCouponCode: z.string().nullable().optional(),
   minOrderAmount: z.number().nullable().optional(),
   estimatedSavingsInr: z.number().nullable().optional(),
+  displaySurface: z.enum(["item", "sheet", "both"]).optional(),
+  offerType: z.string().optional(),
+  conditionsMode: z.enum(["boost", "precision", "bogo"]).nullable().optional(),
 });
 
 const calculateBodySchema = z.object({
@@ -235,6 +242,26 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
       meta: s.meta,
     })),
     rulesetVersion: b.ruleset_version,
+    eligibleSubtotal: b.eligible_subtotal,
+    orderLineEligibility: b.order_line_eligibility.map((l) => ({
+      menuItemId: l.menuItemId,
+      lineTotal: l.lineTotal,
+      quantity: l.quantity,
+      isDiscountEligible: l.isDiscountEligible,
+      ineligibilityReason: l.ineligibilityReason,
+    })),
+    orderLinePricing: (b.order_line_pricing ?? []).map((l) => ({
+      menuItemId: l.menuItemId,
+      quantity: l.quantity,
+      catalogLineTotal: l.catalogLineTotal,
+      effectiveLineTotal: l.effectiveLineTotal,
+      offerDiscountAmount: l.offerDiscountAmount,
+      appliedOfferId: l.appliedOfferId,
+      appliedOfferLabel: l.appliedOfferLabel,
+      appliedOfferType: l.appliedOfferType,
+      isDiscountEligible: l.isDiscountEligible,
+      ineligibilityReason: l.ineligibilityReason,
+    })),
   };
 }
 
@@ -330,6 +357,18 @@ export async function billingRoutes(app: FastifyInstance) {
             taxes: z.array(z.any()),
             breakdownSteps: z.array(z.any()),
             rulesetVersion: z.number(),
+            eligibleSubtotal: z.number().optional(),
+            orderLineEligibility: z
+              .array(
+                z.object({
+                  menuItemId: z.string(),
+                  lineTotal: z.number(),
+                  quantity: z.number(),
+                  isDiscountEligible: z.boolean(),
+                  ineligibilityReason: z.enum(["ITEM_PROMO", "MRP"]).nullable(),
+                })
+              )
+              .optional(),
           }),
           400: z.object({ error: z.string(), message: z.string() }),
           403: z.object({ error: z.string() }),
@@ -485,6 +524,20 @@ export async function billingRoutes(app: FastifyInstance) {
                   summary: z.string(),
                   reason: z.string(),
                   estimatedSavingsInr: z.number().nullable().optional(),
+                  minCartAmount: z.number().nullable().optional(),
+                })
+              )
+              .optional(),
+            eligibleSubtotal: z.number().optional(),
+            fetchedCartSubtotal: z.number().optional(),
+            orderLineEligibility: z
+              .array(
+                z.object({
+                  menuItemId: z.string(),
+                  lineTotal: z.number(),
+                  quantity: z.number(),
+                  isDiscountEligible: z.boolean(),
+                  ineligibilityReason: z.enum(["ITEM_PROMO", "MRP"]).nullable(),
                 })
               )
               .optional(),
@@ -524,6 +577,12 @@ export async function billingRoutes(app: FastifyInstance) {
         liveState: q.state,
         liveCity: q.city,
         qualifyingCartTotal: q.qualifyingCartTotal,
+        menuItemIds: q.menuItemIds
+          ? q.menuItemIds
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined,
       });
 
       if (!result.ok) {

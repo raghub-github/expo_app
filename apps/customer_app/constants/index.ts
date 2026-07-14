@@ -26,6 +26,12 @@ export const STORAGE_KEYS = {
   FOOD_HOME_LAYOUT_CACHE: "gm_customer_food_home_layout_cache_v2",
   /** Store menu payloads for instant revisit (SWR) */
   MERCHANT_MENU_CACHE: "gm_customer_merchant_menu_cache_v1",
+  /** Nearby merchants list for instant food-home paint (geo-bucketed) */
+  MERCHANTS_LIST_CACHE: "gm_customer_merchants_list_cache_v1",
+  /** Per-store offers blob for instant restaurant-detail offer strip */
+  STORE_OFFERS_CACHE: "gm_customer_store_offers_cache_v1",
+  /** Last my-orders payload for instant "Your Orders & Collections" */
+  MY_ORDERS_CACHE: "gm_customer_my_orders_cache_v1",
   /** FOOD browse categories for instant home/search/category paint */
   USER_APP_CATEGORIES_CACHE: "gm_customer_user_app_categories_cache_v1",
   /** Default delivery partner tip amount saved from tracking sheet */

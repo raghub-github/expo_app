@@ -32,6 +32,12 @@ import {
 } from "@/lib/order-item-customisation";
 import { extractItemsArray } from "@/lib/orderLineItems";
 import { itemsFromBillingSnapshot } from "@/lib/foodOrderItems";
+import { computeMerchantCtmForPartnerOrder } from "@/lib/merchant-order-ctm";
+import {
+  merchantBillPartsFromItems,
+  merchantLineTotalForItem,
+} from "@/lib/merchant-order-item-display";
+import { resolvePartnerOrderItems } from "@/lib/partnerFoodOrderItems";
 
 export const runtime = "nodejs";
 
@@ -209,7 +215,7 @@ export async function GET(
     const { data: core, error: coreErr } = await db
       .from("orders_core")
       .select(
-        "id, order_id, merchant_store_id, item_total, addon_total, grand_total, billing_snapshot, checkout_metadata, items"
+        "id, order_id, merchant_store_id, item_total, addon_total, grand_total, billing_snapshot, checkout_metadata, items, total_ctm, merchant_precision_discount"
       )
       .eq("id", orderId)
       .maybeSingle();
@@ -246,7 +252,7 @@ export async function GET(
         ? db
             .from("orders_core_items")
             .select(
-              "id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot"
+              "id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot, applied_offer_type, applied_offer_label, offer_discount_amount"
             )
             .eq("order_id", textOrderId)
             .order("id")
@@ -354,6 +360,8 @@ export async function GET(
       variantName: string | null;
       addons: Array<{ name: string; quantity: number; price: number; type?: string | null }>;
       vegNonveg: string | null;
+      appliedOfferType: string | null;
+      offerLabel: string | null;
     }> = [];
 
     const billingSnap = parseBillingSnapshot(core.billing_snapshot);
@@ -401,8 +409,44 @@ export async function GET(
       vegNonveg: string | null;
       cartLine: Record<string, unknown> | null;
       storedAddonPrice: number;
+      appliedOfferType: string | null;
+      offerLabel: string | null;
     };
     const pendingLines: PendingLine[] = [];
+
+    const billingPricingRows: Array<Record<string, unknown>> = Array.isArray(
+      (billingSnap as Record<string, unknown> | null)?.order_line_pricing
+    )
+      ? ((billingSnap as Record<string, unknown>).order_line_pricing as Array<
+          Record<string, unknown>
+        >)
+      : Array.isArray((billingSnap as Record<string, unknown> | null)?.orderLinePricing)
+        ? ((billingSnap as Record<string, unknown>).orderLinePricing as Array<
+            Record<string, unknown>
+          >)
+        : [];
+
+    const offerFromBilling = (
+      lineIndex: number,
+      menuItemId: number | null
+    ): { type: string | null; label: string | null } => {
+      if (!billingPricingRows.length) return { type: null, label: null };
+      const mid = menuItemId != null ? String(menuItemId) : "";
+      const row =
+        billingPricingRows[lineIndex] ??
+        (mid
+          ? billingPricingRows.find(
+              (r) => String(r.menuItemId ?? r.menu_item_id ?? "").trim() === mid
+            )
+          : undefined);
+      if (!row) return { type: null, label: null };
+      const type =
+        String(row.appliedOfferType ?? row.applied_offer_type ?? "").trim() || null;
+      const label =
+        String(row.appliedOfferLabel ?? row.applied_offer_label ?? "").trim() || null;
+      if (!type || type.toUpperCase() === "NONE") return { type: null, label: null };
+      return { type, label };
+    };
 
     if (coreItemRows && coreItemRows.length > 0) {
       let lineIndex = 0;
@@ -417,6 +461,8 @@ export async function GET(
           addon_price?: string | number | null;
           veg_nonveg?: string | null;
           item_snapshot?: Record<string, unknown> | null;
+          applied_offer_type?: string | null;
+          applied_offer_label?: string | null;
         };
         const qty = Math.max(1, Number(r.quantity) || 1);
         const customerUnit = asNum(r.base_price);
@@ -463,6 +509,15 @@ export async function GET(
           variant,
         });
 
+        const frozenType = String(r.applied_offer_type ?? "").trim() || null;
+        const frozenLabel = String(r.applied_offer_label ?? "").trim() || null;
+        const fromBill = offerFromBilling(lineIndex, menuItemId);
+        const appliedOfferType =
+          frozenType && frozenType.toUpperCase() !== "NONE"
+            ? frozenType
+            : fromBill.type;
+        const offerLabel = frozenLabel || fromBill.label;
+
         pendingLines.push({
           id: r.id,
           menuItemId,
@@ -481,6 +536,8 @@ export async function GET(
           vegNonveg: r.veg_nonveg ?? null,
           cartLine,
           storedAddonPrice: asNum(r.addon_price),
+          appliedOfferType,
+          offerLabel,
         });
         lineIndex += 1;
       }
@@ -489,6 +546,7 @@ export async function GET(
         const qty = Math.max(1, it.quantity);
         const baseUnit = asNum(it.price);
         const addonUnit = 0;
+        const fromBill = offerFromBilling(idx, it.menuItemId ?? null);
         pendingLines.push({
           id: idx + 1,
           menuItemId: it.menuItemId ?? null,
@@ -512,6 +570,8 @@ export async function GET(
             variant: it.variantName ?? null,
           }),
           storedAddonPrice: 0,
+          appliedOfferType: it.appliedOfferType ?? fromBill.type,
+          offerLabel: it.offerLabel ?? fromBill.label,
         });
       });
     }
@@ -582,19 +642,84 @@ export async function GET(
         variantName: line.variant,
         addons: line.addonList,
         vegNonveg: line.vegNonveg,
+        appliedOfferType: line.appliedOfferType,
+        offerLabel: line.offerLabel,
       });
     }
 
-    const merchantSubtotal = round2(
-      pendingLines.reduce((s, l) => s + l.lineSubtotalForGst, 0)
+    const merchantPartnerItems = resolvePartnerOrderItems(
+      core as Record<string, unknown>,
+      (food as Record<string, unknown> | null) ?? null,
+      itemsByTextId
     );
-    const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
-    const merchantDiscountLines = merchantFundedDiscountLinesFromBilling(billingSnap);
-    const merchantTotal = merchantOrderTotalFromBilling(
-      merchantSubtotal,
-      billingSnap,
-      customerPricingSummary.packaging
+    const allCtmFrozen =
+      merchantPartnerItems.length > 0 &&
+      merchantPartnerItems.every((it) => it.ctmFromSnapshot === true);
+    const precisionFromCore = Math.max(
+      0,
+      Number((core as { merchant_precision_discount?: unknown }).merchant_precision_discount) || 0
     );
+
+    let merchantSubtotal = round2(
+      allCtmFrozen
+        ? merchantPartnerItems.reduce((s, it) => s + merchantLineTotalForItem(it), 0)
+        : pendingLines.reduce((s, l) => s + l.lineSubtotalForGst, 0)
+    );
+    const merchantDiscountLegacy = merchantFundedDiscountFromBilling(billingSnap);
+    const merchantDiscountLinesLegacy = merchantFundedDiscountLinesFromBilling(billingSnap);
+    // SSOT: cart precision only when CTM nets already include item BOOST.
+    const merchantDiscount = allCtmFrozen
+      ? precisionFromCore
+      : Math.max(merchantDiscountLegacy, precisionFromCore);
+    const merchantDiscountLines = allCtmFrozen
+      ? precisionFromCore > 0.005
+        ? [
+            {
+              label: "Merchant Precision Discount",
+              amount: precisionFromCore,
+            },
+          ]
+        : []
+      : merchantDiscountLinesLegacy;
+
+    let merchantTotal: number | null = null;
+    const frozenCoreCtm = Number((core as { total_ctm?: unknown }).total_ctm);
+    if (Number.isFinite(frozenCoreCtm) && frozenCoreCtm > 0) {
+      merchantTotal = round2(frozenCoreCtm);
+    } else if (storeId != null && storeId > 0) {
+      try {
+        merchantTotal = await computeMerchantCtmForPartnerOrder(db, orderId, storeId);
+      } catch {
+        merchantTotal = null;
+      }
+    }
+    if (merchantTotal == null || merchantTotal <= 0) {
+      if (allCtmFrozen && merchantSubtotal > 0.005) {
+        merchantTotal = round2(
+          Math.max(0, merchantSubtotal + customerPricingSummary.packaging - precisionFromCore)
+        );
+      } else {
+        const bill = merchantBillPartsFromItems(merchantPartnerItems, {
+          subtotal: 0,
+          packaging: customerPricingSummary.packaging,
+          discount: merchantDiscount,
+          total: 0,
+        });
+        merchantTotal =
+          bill.total > 0
+            ? round2(bill.total)
+            : merchantOrderTotalFromBilling(
+                merchantSubtotal,
+                billingSnap,
+                customerPricingSummary.packaging
+              );
+      }
+    }
+    if (allCtmFrozen && merchantSubtotal <= 0.005 && merchantTotal > 0) {
+      merchantSubtotal = round2(
+        Math.max(0, merchantTotal - customerPricingSummary.packaging + precisionFromCore)
+      );
+    }
 
     const merchantLines: Array<{
       key: string;
@@ -606,7 +731,9 @@ export async function GET(
     if (merchantSubtotal > 0) {
       merchantLines.push({
         key: "items",
-        label: "Items subtotal (merchant prices)",
+        label: allCtmFrozen
+          ? "Items subtotal (merchant nets)"
+          : "Items subtotal (merchant prices)",
         amount: merchantSubtotal,
         kind: "charge",
       });
@@ -631,7 +758,7 @@ export async function GET(
     if (merchantDiscountLines.length === 0 && merchantDiscount > 0) {
       merchantLines.push({
         key: "merchant_discount",
-        label: "Restaurant discount",
+        label: allCtmFrozen ? "Merchant Precision Discount" : "Restaurant discount",
         amount: merchantDiscount,
         kind: "discount",
         discountTag: "store",
@@ -657,7 +784,53 @@ export async function GET(
       customer: customerPricingSummary,
     };
 
-    const rows = [...detailRows];
+    const offerByItemId = new Map<
+      number,
+      { appliedOfferType: string | null; offerLabel: string | null }
+    >();
+    for (const list of itemsByTextId.values()) {
+      for (const raw of list) {
+        const id = Number(raw.id);
+        if (!Number.isFinite(id) || id <= 0) continue;
+        const type =
+          (raw.applied_offer_type as string | null | undefined) ??
+          (raw.appliedOfferType as string | null | undefined) ??
+          null;
+        const label =
+          (raw.offer_label as string | null | undefined) ??
+          (raw.offerLabel as string | null | undefined) ??
+          null;
+        if (type || label) {
+          offerByItemId.set(id, { appliedOfferType: type, offerLabel: label });
+        }
+      }
+    }
+    for (let i = 0; i < merchantPartnerItems.length; i++) {
+      const partner = merchantPartnerItems[i];
+      const row = detailRows[i];
+      if (!partner || !row) continue;
+      if (!partner.appliedOfferType && !partner.offerLabel) continue;
+      if (offerByItemId.has(Number(row.id))) continue;
+      offerByItemId.set(Number(row.id), {
+        appliedOfferType: partner.appliedOfferType ?? null,
+        offerLabel: partner.offerLabel ?? null,
+      });
+    }
+
+    const rows = detailRows.map((r) => {
+      const fromRow = r as {
+        appliedOfferType?: string | null;
+        offerLabel?: string | null;
+        id: number;
+      };
+      const fromMap = offerByItemId.get(Number(fromRow.id));
+      return {
+        ...r,
+        appliedOfferType:
+          fromMap?.appliedOfferType ?? fromRow.appliedOfferType ?? null,
+        offerLabel: fromMap?.offerLabel ?? fromRow.offerLabel ?? null,
+      };
+    });
 
     return NextResponse.json({
       success: true,

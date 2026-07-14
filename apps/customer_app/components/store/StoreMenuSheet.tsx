@@ -30,11 +30,26 @@ export type StoreMenuSheetSection = {
   scrollTarget: MenuSheetScrollTarget;
 };
 
+export type StoreMenuSheetOfferRow = {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  /** Item count mapped to this offer (0 = whole menu / sheet offer). */
+  count: number;
+  scrollTarget: MenuSheetScrollTarget;
+  highlightItemId?: string | null;
+};
+
 export type StoreMenuSheetProps = {
   visible: boolean;
   onClose: () => void;
   sections: StoreMenuSheetSection[];
   onSelectSection: (section: StoreMenuSheetSection) => void;
+  /** Active offers — shown above categories when present. */
+  offerRows?: StoreMenuSheetOfferRow[];
+  onSelectOffer?: (offer: StoreMenuSheetOfferRow) => void;
+  /** Currently selected offer while browsing (highlights row if sheet reopened). */
+  selectedOfferId?: string | null;
   largeOrderSection?: StoreMenuSheetSection | null;
   fssaiLabel?: string | null;
 };
@@ -52,11 +67,50 @@ function MenuRow({
         <Text style={styles.rowTitle} numberOfLines={2}>
           {section.title}
         </Text>
-        {section.showPlus ? (
-          <Text style={styles.plusSuffix}> +</Text>
-        ) : null}
+        {section.showPlus ? <Text style={styles.plusSuffix}> +</Text> : null}
       </View>
       <Text style={styles.rowCount}>{section.count}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function OfferRow({
+  offer,
+  selected,
+  onPress,
+}: {
+  offer: StoreMenuSheetOfferRow;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.offerRow, selected && styles.offerRowSelected]}
+      onPress={onPress}
+      activeOpacity={0.75}
+    >
+      <View style={[styles.offerIcon, selected && styles.offerIconSelected]}>
+        <Text style={[styles.offerIconPct, selected && styles.offerIconPctSelected]}>%</Text>
+      </View>
+      <View style={styles.offerTextCol}>
+        <Text style={[styles.offerTitle, selected && styles.offerTitleSelected]} numberOfLines={1}>
+          {offer.title}
+        </Text>
+        {offer.subtitle ? (
+          <Text style={styles.offerSub} numberOfLines={1}>
+            {offer.subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {offer.count > 0 ? (
+        <Text style={[styles.rowCount, selected && styles.offerCountSelected]}>{offer.count}</Text>
+      ) : (
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={selected ? StoreTheme.accentMintDark : StoreTheme.textMuted}
+        />
+      )}
     </TouchableOpacity>
   );
 }
@@ -66,6 +120,9 @@ export function StoreMenuSheet({
   onClose,
   sections,
   onSelectSection,
+  offerRows = [],
+  onSelectOffer,
+  selectedOfferId = null,
   largeOrderSection,
   fssaiLabel,
 }: StoreMenuSheetProps) {
@@ -73,12 +130,13 @@ export function StoreMenuSheet({
   const { width: winW, height: winH } = useWindowDimensions();
   const cardWidth = Math.min(Math.round(winW * 0.88), 400);
   const cardMaxH = Math.round(winH * 0.58);
+  const hasOffers = offerRows.length > 0;
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
       statusBarTranslucent
       presentationStyle="overFullScreen"
@@ -93,6 +151,22 @@ export function StoreMenuSheet({
             showsVerticalScrollIndicator={false}
             bounces={false}
           >
+            {hasOffers ? (
+              <>
+                <Text style={styles.sectionLabel}>ACTIVE OFFERS</Text>
+                {offerRows.map((offer) => (
+                  <OfferRow
+                    key={offer.id}
+                    offer={offer}
+                    selected={selectedOfferId === offer.id}
+                    onPress={() => onSelectOffer?.(offer)}
+                  />
+                ))}
+                <View style={styles.divider} />
+                <Text style={styles.sectionLabel}>CATEGORIES</Text>
+              </>
+            ) : null}
+
             {sections.map((section) => (
               <MenuRow
                 key={section.id}
@@ -124,9 +198,19 @@ export function StoreMenuSheet({
         ) : null}
 
         <TouchableOpacity
-          style={[styles.closePill, { bottom: Math.max(insets.bottom, 12) }]}
+          style={[
+            styles.closePill,
+            {
+              // Same slot as Menu FAB — no layout jump when sheet opens.
+              bottom:
+                Math.max(insets.bottom, 12) +
+                (Platform.OS === "android" ? 8 : 0),
+              right: 16,
+            },
+          ]}
           onPress={onClose}
           activeOpacity={0.88}
+          hitSlop={10}
         >
           <Ionicons name="close" size={16} color="#fff" />
           <Text style={styles.closeText}>Close</Text>
@@ -168,6 +252,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 20,
   },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: StoreTheme.textMuted,
+    letterSpacing: 0.6,
+    marginTop: 6,
+    marginBottom: 2,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -200,10 +292,62 @@ const styles = StyleSheet.create({
     minWidth: 24,
     textAlign: "right",
   },
+  offerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 8,
+    marginHorizontal: -8,
+    borderRadius: 12,
+  },
+  offerRowSelected: {
+    backgroundColor: StoreTheme.accentMintSoft,
+  },
+  offerIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: "#EFF6FF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offerIconSelected: {
+    backgroundColor: StoreTheme.accentMint,
+  },
+  offerIconPct: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: StoreTheme.offerBlue,
+  },
+  offerIconPctSelected: {
+    color: "#fff",
+  },
+  offerTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  offerTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: StoreTheme.textPrimary,
+  },
+  offerTitleSelected: {
+    color: StoreTheme.accentMintDark,
+  },
+  offerSub: {
+    fontSize: 11,
+    color: StoreTheme.textSecondary,
+    marginTop: 1,
+  },
+  offerCountSelected: {
+    color: StoreTheme.accentMintDark,
+    fontWeight: "700",
+  },
   divider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: StoreTheme.border,
-    marginVertical: 4,
+    marginVertical: 6,
   },
   largeOrderRow: {
     flexDirection: "row",
@@ -226,12 +370,11 @@ const styles = StyleSheet.create({
   },
   closePill: {
     position: "absolute",
-    right: 16,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     backgroundColor: "#2D2D32",
-    paddingVertical: 10,
+    paddingVertical: 11,
     paddingHorizontal: 16,
     borderRadius: 24,
     zIndex: 3,

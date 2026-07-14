@@ -5,11 +5,12 @@
  */
 
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import Animated from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
+import { AppText } from "@/components/AppText";
 
 export const GM_HEADER_HEIGHT = 56;
 const GM_MINIMAL_HEADER_HEIGHT = 44;
@@ -82,12 +83,12 @@ export function GMHeader({
           >
             <Ionicons name="chevron-back" size={21} color={GatiMitraColors.textPrimaryNew} />
           </TouchableOpacity>
-          <Text
+          <AppText
             style={[styles.locationLabelMinimal, blendBackground && styles.locationLabelBlend]}
             numberOfLines={locationLabelLines}
           >
             {locationLabel}
-          </Text>
+          </AppText>
           <View style={styles.headerSpacer} />
         </View>
       </View>
@@ -116,7 +117,7 @@ export function GMHeader({
           {searchElement ?? (
             <>
               <Ionicons name="search" size={20} color={GatiMitraColors.textSecondary} />
-              <Text style={styles.searchPlaceholder}>Search restaurants…</Text>
+              <AppText style={styles.searchPlaceholder}>Search restaurants…</AppText>
             </>
           )}
         </TouchableOpacity>
@@ -124,7 +125,7 @@ export function GMHeader({
         {showActions && (
           <View style={styles.actions}>
             <View style={styles.vegWrap}>
-              <Text style={styles.vegLabel}>Veg</Text>
+              <AppText style={styles.vegLabel}>Veg</AppText>
               <TouchableOpacity
                 style={[styles.vegToggle, vegOnly && styles.vegToggleOn]}
                 onPress={() => onVegChange?.(!vegOnly)}
@@ -138,7 +139,7 @@ export function GMHeader({
                 <Ionicons name="cart-outline" size={24} color={GatiMitraColors.textPrimaryNew} />
                 {cartCount > 0 && (
                   <Animated.View style={styles.cartBadge}>
-                    <Text style={styles.cartBadgeText}>{cartCount > 99 ? "99+" : cartCount}</Text>
+                    <AppText style={styles.cartBadgeText}>{cartCount > 99 ? "99+" : cartCount}</AppText>
                   </Animated.View>
                 )}
               </TouchableOpacity>

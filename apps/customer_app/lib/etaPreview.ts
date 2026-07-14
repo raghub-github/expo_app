@@ -2,25 +2,22 @@
  * Customer-app ETA preview — MIRROR of backend `previewEtaRange` in
  * backend/src/modules/eta/eta.preview.ts. The two files MUST stay in sync.
  *
- * Same formula:
- *   raw      = prepMinutes + max(8, round(distanceKm × 60 / 18))
- *   minRange = round(raw + 5)
- *   maxRange = round(raw + 10)
+ * Formula:
+ *   routeMinutes = max(5, round(distanceKm × 60 / 18))
+ *   raw          = min(prep, 25) + routeMinutes
+ *   etaMin       = raw + 5
+ *   etaMax       = raw + 10
  *
- * Use this everywhere a customer-visible ETA is rendered:
- *   - Restaurant list cards
- *   - Merchant detail header
- *   - Checkout header / Bill Summary
- *   - "Delivery in X mins" copy throughout the app
- *
- * Calling this with the same `(distanceKm, prepMinutes)` will always yield the
- * same range, so all three screens for one store agree.
+ * Use this everywhere a customer-visible pre-order ETA is rendered.
+ * Order placement uses the full backend ETA engine separately.
  */
 
 const AVG_CITY_KMPH = 18;
-const MIN_LEG_MINUTES = 8;
+const MIN_LEG_MINUTES = 5;
+const DEFAULT_PREP_MINUTES = 15;
 const BUFFER_MIN_LOW = 5;
 const BUFFER_MIN_HIGH = 10;
+const MAX_LIST_PREP_MINUTES = 25;
 
 export type EtaPreviewRange = {
   etaMinMinutes: number;
@@ -33,14 +30,17 @@ export function previewEtaRange(args: {
 }): EtaPreviewRange {
   const distance =
     Number.isFinite(args.distanceKm) && (args.distanceKm ?? 0) > 0 ? Number(args.distanceKm) : 0;
-  const prep =
+  let prep =
     Number.isFinite(args.prepMinutes) && (args.prepMinutes ?? 0) > 0
       ? Math.round(Number(args.prepMinutes))
-      : 18;
+      : DEFAULT_PREP_MINUTES;
+  prep = Math.min(prep, MAX_LIST_PREP_MINUTES);
+
   const routeMinutes =
     distance > 0
       ? Math.max(MIN_LEG_MINUTES, Math.round((distance * 60) / AVG_CITY_KMPH))
       : MIN_LEG_MINUTES;
+
   const raw = prep + routeMinutes;
   return {
     etaMinMinutes: raw + BUFFER_MIN_LOW,
