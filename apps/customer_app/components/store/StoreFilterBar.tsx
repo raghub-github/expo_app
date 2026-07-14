@@ -1,6 +1,5 @@
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
-import { ScrollView } from "react-native-gesture-handler";
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
@@ -50,6 +49,7 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
         directionalLockEnabled
         showsHorizontalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        delaysContentTouches={false}
         contentContainerStyle={styles.scroll}
         style={styles.scrollView}
       >

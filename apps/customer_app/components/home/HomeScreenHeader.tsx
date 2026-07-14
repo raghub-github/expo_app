@@ -1,9 +1,12 @@
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
+import { AppText } from "@/components/AppText";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -120,11 +123,17 @@ export function HomeLocationHeader({
   | "onLocationPress"
   | "onNotificationPress"
 >) {
+  const insets = useSafeAreaInsets();
+  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
+  // Root spacer usually owns safe-top; if immersive left it off, pad here so we never overlap.
+  const safeTop = insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
+  const topPad =
+    (hideStatusBarSpacer ? safeTop : 0) + STATUS_BAR_TO_HEADER_GAP;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
 
   return (
     <View style={styles.headerBlock}>
-      <View style={[styles.topRow, { paddingTop: STATUS_BAR_TO_HEADER_GAP }]}>
+      <View style={[styles.topRow, { paddingTop: topPad }]}>
         <TouchableOpacity style={styles.locationBlock} activeOpacity={0.82} onPress={onLocationPress}>
           <View style={styles.locationPinCircle}>
             <Ionicons name="location" size={17} color="#FFFFFF" />
@@ -132,16 +141,16 @@ export function HomeLocationHeader({
 
           <View style={styles.locationTextBlock}>
             <View style={styles.locationTitleRow}>
-              <Text style={styles.locationPrimary} numberOfLines={1} ellipsizeMode="tail">
+              <AppText style={styles.locationPrimary} numberOfLines={1} ellipsizeMode="tail">
                 {locationPrimary}
-              </Text>
+              </AppText>
               <Ionicons name="chevron-down" size={15} color={TITLE_DARK} style={styles.locationChevron} />
             </View>
             <View style={styles.locationSecondaryRow}>
               <View style={styles.stateDot} />
-              <Text style={styles.locationSecondary} numberOfLines={1} ellipsizeMode="tail">
+              <AppText style={styles.locationSecondary} numberOfLines={1} ellipsizeMode="tail">
                 {locationSecondary}
-              </Text>
+              </AppText>
             </View>
           </View>
         </TouchableOpacity>
@@ -157,9 +166,9 @@ export function HomeLocationHeader({
             <Ionicons name="notifications-outline" size={18} color={TITLE_DARK} />
             {showBadge ? (
               <View style={styles.badge}>
-                <Text style={styles.badgeText}>
+                <AppText style={styles.badgeText}>
                   {notificationBadgeCount! > 9 ? "9+" : notificationBadgeCount}
-                </Text>
+                </AppText>
               </View>
             ) : null}
           </TouchableOpacity>
@@ -190,17 +199,17 @@ export function HomeWeatherBanner({
           accessibilityRole="button"
         >
           <View style={styles.weatherLeft}>
-            <Text style={styles.weatherIcon}>{weatherEmoji(severity)}</Text>
-            <Text style={styles.weatherTemp}>{headline.temp}</Text>
-            <Text style={styles.weatherLabel} numberOfLines={1}>
+            <AppText style={styles.weatherIcon}>{weatherEmoji(severity)}</AppText>
+            <AppText style={styles.weatherTemp}>{headline.temp}</AppText>
+            <AppText style={styles.weatherLabel} numberOfLines={1}>
               {headline.label}
-            </Text>
+            </AppText>
           </View>
 
           <View style={styles.weatherDivider} />
 
           <View style={styles.weatherRight}>
-            <Text style={styles.weatherPromo}>{promo}</Text>
+            <AppText style={styles.weatherPromo}>{promo}</AppText>
             <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
           </View>
         </TouchableOpacity>

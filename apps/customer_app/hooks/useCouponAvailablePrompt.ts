@@ -125,16 +125,9 @@ export function resolveBestEligibleCheckoutOffer(
   return pickBestPrompt([...snapshot.keys], snapshot.candidates);
 }
 
-/** Zomato-style unlock copy above the store Continue cart bar. */
-export function formatStoreCartOfferBannerText(prompt: CouponAvailablePrompt): string {
-  if (prompt.savingsInr != null && prompt.savingsInr > 0) {
-    return `You have unlocked Flat ₹${prompt.savingsInr} OFF. Apply coupon on cart.`;
-  }
-  const label = prompt.offerTitle?.trim() || prompt.description?.trim();
-  if (label) {
-    return `You have unlocked ${label}. Apply coupon on cart.`;
-  }
-  return "You have unlocked an offer. Apply coupon on cart.";
+/** Zomato-style unlock copy above the store Continue cart bar — no price amounts. */
+export function formatStoreCartOfferBannerText(_prompt: CouponAvailablePrompt): string {
+  return "A Special Offer Has Been Unlocked. Applicable discounts will be applied during checkout.";
 }
 
 export function useCouponAvailablePrompt(options: {

@@ -2,12 +2,10 @@ import { toast } from 'sonner';
 
 /**
  * Returned by POST /api/store-operations when the merchant tries to manually open a store on a
- * weekday that is marked as a scheduled OFF day (closed_days / `<day>_open` = false). This is the
- * only schedule state that hard-blocks manual open — the schedule sync engine always force-closes
- * a scheduled-off day (manual override cannot keep it online), so the API rejects up front.
+ * weekday that is marked as a scheduled OFF day (closed_days / `<day>_open` = false).
  *
- * For every other "outside hours" state (BREAK, before slot 1, after slot 2, mid-day gap) manual
- * open succeeds with `is_manual_override = true` and the store stays online.
+ * `OUTSIDE_OPERATING_HOURS` is returned when current time is outside configured slots (before
+ * first open, mid-day break, after last close, etc.). Manual open is blocked; update Outlet Timings.
  */
 export const STORE_OPERATIONS_SCHEDULED_OFF_DAY_CODE = 'SCHEDULED_OFF_DAY' as const;
 export const STORE_OPERATIONS_LICENSE_EXPIRED_CODE = 'LICENSE_EXPIRED' as const;
@@ -16,8 +14,10 @@ export const STORE_OPERATIONS_LICENSE_PENDING_CODE = 'LICENSE_PENDING_VERIFICATI
 export const LICENSE_ONLINE_BLOCKED_TOAST =
   "Can't go online until your new licence is verified by Gatimitra.";
 
-/** Legacy code retained so old clients still get a friendly toast (the route no longer emits it). */
 export const STORE_OPERATIONS_OUTSIDE_OPERATING_HOURS_CODE = 'OUTSIDE_OPERATING_HOURS' as const;
+
+export const STORE_OPERATIONS_OUTSIDE_OPERATING_HOURS_TOAST =
+  'Your store cannot be turned ON because it is currently outside its scheduled operating hours. Update your Store Schedule first.';
 
 export const STORE_OPERATIONS_SCHEDULED_OFF_DAY_TOAST =
   "Can't turn the store on: today is marked as a scheduled off day in Outlet Timings. Update Outlet Timings to mark today as open.";
@@ -33,7 +33,6 @@ export function isScheduledOffDayStoreOpsError(body: unknown): boolean {
   return (body as StoreOperationsErrorJson).code === STORE_OPERATIONS_SCHEDULED_OFF_DAY_CODE;
 }
 
-/** @deprecated Manual open no longer rejects on "outside operating hours" — retained for older payloads. */
 export function isOutsideOperatingHoursStoreOpsError(body: unknown): boolean {
   if (!body || typeof body !== 'object') return false;
   return (body as StoreOperationsErrorJson).code === STORE_OPERATIONS_OUTSIDE_OPERATING_HOURS_CODE;
@@ -70,12 +69,11 @@ export function toastStoreOperationsPostFailure(
     toast.error(msg);
     return;
   }
-  if (res.status === 400 && isOutsideOperatingHoursStoreOpsError(body)) {
-    // Legacy: older deployments still emit this code. Surface the server message verbatim.
+  if ((res.status === 400 || res.status === 409) && isOutsideOperatingHoursStoreOpsError(body)) {
     const msg =
       typeof b.error === 'string' && b.error.trim() !== ''
         ? b.error.trim()
-        : fallbackMessage;
+        : STORE_OPERATIONS_OUTSIDE_OPERATING_HOURS_TOAST;
     toast.error(msg);
     return;
   }

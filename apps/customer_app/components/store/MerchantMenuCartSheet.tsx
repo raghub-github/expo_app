@@ -14,9 +14,9 @@ import type { CartItem } from "@/store/cartStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 export const STORE_MERCHANT_SHEET_H_MARGIN = 12;
-export const STORE_MERCHANT_SHEET_BOTTOM_GAP = 12;
-export const MERCHANT_CART_CONTINUE_GREEN = StoreTheme.accentMint;
-export const MERCHANT_CART_CONTINUE_GREEN_PRESSED = StoreTheme.accentMintDark;
+export const STORE_MERCHANT_SHEET_BOTTOM_GAP = 8;
+export const MERCHANT_CART_CONTINUE_GREEN = StoreTheme.cartAction;
+export const MERCHANT_CART_CONTINUE_GREEN_PRESSED = StoreTheme.cartActionPressed;
 export const MERCHANT_CART_CONTINUE_PINK = "#E23744";
 export const MERCHANT_CART_CONTINUE_PINK_PRESSED = "#CB202D";
 
@@ -25,25 +25,26 @@ const THUMB_OVERLAP = 11;
 const MAX_IMAGE_THUMBS = 2;
 const OFFER_ROW_HEIGHT = 52;
 const CONTINUE_PILL_HEIGHT = 54;
-const CONTINUE_PILL_RADIUS = 12;
+const CONTINUE_PILL_RADIUS = 14;
 const SHEET_TOP_RADIUS = 20;
 const SHEET_INNER_PAD_H = 12;
-const SHEET_INNER_PAD_TOP = 12;
-const OFFER_PILL_GAP = 10;
-const SHEET_BOTTOM_PAD = 8;
+const SHEET_INNER_PAD_TOP = 10;
+const OFFER_TO_PILL_GAP = 10;
+/** Tight white pad under the green pill — matches reference, no large gap. */
+const SHEET_BOTTOM_PAD = 6;
 
-/** Exact dock height — keeps list padding stable (no overlap jump when offer loads). */
+/** Exact dock height — offer strip + green pill + safe-area (stable list padding). */
 export function resolveStoreContinueBarHeight(
   reserveOfferStrip: boolean,
   bottomInset: number
 ): number {
   const offerBlock = reserveOfferStrip
-    ? OFFER_ROW_HEIGHT + OFFER_PILL_GAP
+    ? OFFER_ROW_HEIGHT + OFFER_TO_PILL_GAP
     : SHEET_INNER_PAD_TOP;
   return (
     offerBlock +
     CONTINUE_PILL_HEIGHT +
-    Math.max(bottomInset, 10) +
+    Math.max(0, bottomInset) +
     SHEET_BOTTOM_PAD
   );
 }
@@ -106,13 +107,19 @@ const scallopStyles = StyleSheet.create({
 
 type ThumbItem = { key: string; uri: string | null };
 
+const OFFER_BANNER_TITLE = "A Special Offer Has Been Unlocked";
+const OFFER_BANNER_SUBTITLE = "Applicable discounts will be applied during checkout.";
+
 function parseOfferCopy(text: string): { title: string; subtitle: string } {
   const trimmed = text.trim();
-  const split = trimmed.match(/^(.+?)\.\s*(Apply coupon on cart\.?)$/i);
+  if (!trimmed) {
+    return { title: OFFER_BANNER_TITLE, subtitle: OFFER_BANNER_SUBTITLE };
+  }
+  const split = trimmed.match(/^(.+?)\.\s*(.+)$/);
   if (split) {
     return { title: split[1].trim(), subtitle: split[2].trim() };
   }
-  return { title: trimmed, subtitle: "Apply coupon on cart" };
+  return { title: trimmed, subtitle: OFFER_BANNER_SUBTITLE };
 }
 
 /** Blue pricetag badge — offer strip + store info row. */
@@ -222,7 +229,7 @@ function CartThumbStack({
 
 export const STORE_CONTINUE_BAR_BODY_HEIGHT =
   SHEET_INNER_PAD_TOP + CONTINUE_PILL_HEIGHT + SHEET_BOTTOM_PAD;
-export const STORE_CONTINUE_OFFER_BANNER_HEIGHT = OFFER_ROW_HEIGHT + OFFER_PILL_GAP;
+export const STORE_CONTINUE_OFFER_BANNER_HEIGHT = OFFER_ROW_HEIGHT + OFFER_TO_PILL_GAP;
 
 export type MerchantMenuCartSheetProps = {
   items: CartItem[];
@@ -238,7 +245,8 @@ export type MerchantMenuCartSheetProps = {
 };
 
 /**
- * Zomato-style bottom tray — white sheet bg, offer strip, green Continue pill on top.
+ * Zomato-style bottom tray — white sheet, offer strip, rounded green Continue pill.
+ * Always docked to screen bottom (parent `cartDock`); safe-area sits under the pill.
  */
 export function MerchantMenuCartSheet({
   items,
@@ -279,14 +287,10 @@ export function MerchantMenuCartSheet({
   const showOfferStrip = reserveOfferStrip || !!offerCopy;
 
   const continueBg = isStoreClosed ? "#9CA3AF" : MERCHANT_CART_CONTINUE_GREEN;
+  const safeBottom = Math.max(0, bottomInset) + SHEET_BOTTOM_PAD;
 
   return (
-    <View
-      style={[
-        styles.bgSheet,
-        { paddingBottom: Math.max(bottomInset, 10) + SHEET_BOTTOM_PAD },
-      ]}
-    >
+    <View style={[styles.bgSheet, { paddingBottom: safeBottom }]}>
       {showOfferStrip ? (
         <LinearGradient
           colors={["#E8F4FF", "#F7FBFF", "#FFFFFF"]}
@@ -301,13 +305,13 @@ export function MerchantMenuCartSheet({
                 <Text style={styles.offerTitle} numberOfLines={2}>
                   {offerCopy.title}
                 </Text>
-                <Text style={styles.offerSubtitle} numberOfLines={1}>
+                <Text style={styles.offerSubtitle} numberOfLines={2}>
                   {offerCopy.subtitle}
                 </Text>
               </>
             ) : (
               <Text style={styles.offerSubtitle} numberOfLines={1}>
-                Apply coupon on cart
+                {OFFER_BANNER_SUBTITLE}
               </Text>
             )}
           </View>
@@ -363,6 +367,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: SHEET_TOP_RADIUS,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderColor: "#E8E8E8",
+    overflow: "hidden",
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -384,10 +389,10 @@ const styles = StyleSheet.create({
   },
   pillWrap: {
     paddingHorizontal: SHEET_INNER_PAD_H,
-    paddingTop: OFFER_PILL_GAP,
+    paddingTop: OFFER_TO_PILL_GAP,
   },
   pillWrapNoOffer: {
-    paddingTop: SHEET_INNER_PAD_TOP + 4,
+    paddingTop: SHEET_INNER_PAD_TOP,
   },
   offerTextCol: {
     flex: 1,
@@ -464,20 +469,20 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
   itemCountText: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: "600",
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: "700",
     color: "#FFFFFF",
   },
   continueRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 1,
+    gap: 2,
     flexShrink: 0,
   },
   continueLabel: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "800",
     color: "#FFFFFF",
   },
 });

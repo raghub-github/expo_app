@@ -8,8 +8,10 @@ import { toast } from 'sonner';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import {
   isLicenseBlockedStoreOpsError,
+  isOutsideOperatingHoursStoreOpsError,
   toastStoreOperationsPostFailure,
 } from '@/lib/storeOperationsPostFeedback';
+import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursModal';
 
 export type StoreOperationalTarget = { storeId: string; storeName: string };
 
@@ -49,6 +51,7 @@ export function StoreOperationalFlowModals({
   const [closeReasonOther, setCloseReasonOther] = useState('');
   const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
   const [toggleOnLoading, setToggleOnLoading] = useState(false);
+  const [outsideHoursOpen, setOutsideHoursOpen] = useState(false);
 
   const activeCloseStoreId = closeTarget?.storeId ?? null;
 
@@ -214,9 +217,14 @@ export function StoreOperationalFlowModals({
         toast.success('Store is now OPEN. Orders are being accepted!');
         await onSuccess();
       } else {
-        toastStoreOperationsPostFailure(res, data, 'Failed to open store');
-        if (isLicenseBlockedStoreOpsError(data)) {
+        if (isOutsideOperatingHoursStoreOpsError(data)) {
           onDismissOpen();
+          setOutsideHoursOpen(true);
+        } else {
+          toastStoreOperationsPostFailure(res, data, 'Failed to open store');
+          if (isLicenseBlockedStoreOpsError(data)) {
+            onDismissOpen();
+          }
         }
         await onSuccess();
       }
@@ -449,6 +457,11 @@ export function StoreOperationalFlowModals({
           </div>
         </div>
       )}
+      <OutsideOperatingHoursModal
+        open={outsideHoursOpen}
+        onClose={() => setOutsideHoursOpen(false)}
+        storeId={openTarget?.storeId ?? null}
+      />
     </>,
     document.body
   );

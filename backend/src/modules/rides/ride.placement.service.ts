@@ -620,6 +620,30 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
       taxes: [],
       breakdown_steps: [],
       ruleset_version: billingRulesetVersion ?? 1,
+      eligible_subtotal: estimatedFare,
+      order_line_eligibility: [
+        {
+          menuItemId: "ride",
+          lineTotal: estimatedFare,
+          quantity: 1,
+          isDiscountEligible: true,
+          ineligibilityReason: null,
+        },
+      ],
+      order_line_pricing: [
+        {
+          menuItemId: "ride",
+          quantity: 1,
+          catalogLineTotal: estimatedFare,
+          effectiveLineTotal: estimatedFare,
+          offerDiscountAmount: 0,
+          appliedOfferId: null,
+          appliedOfferLabel: null,
+          appliedOfferType: null,
+          isDiscountEligible: true,
+          ineligibilityReason: null,
+        },
+      ],
     } satisfies BillingResult);
 
   void insertRideCustomerPaymentSnapshot(db, {

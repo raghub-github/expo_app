@@ -279,8 +279,14 @@ async function writeRideRiderPayoutSnapshot(
 ): Promise<void> {
   const db = getDb();
   const [row] = await db
-    .select({ billingSnapshot: ordersCore.billingSnapshot })
+    .select({
+      billingSnapshot: ordersCore.billingSnapshot,
+      fareAmount: ordersCore.fareAmount,
+      estimatedFare: ordersRide.estimatedFare,
+      finalFare: ordersRide.finalFare,
+    })
     .from(ordersCore)
+    .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCorePk))
     .limit(1);
 
@@ -292,6 +298,18 @@ async function writeRideRiderPayoutSnapshot(
   const tip = round0(customerTipAmount);
   const riderPayout = Math.max(0, snapshot.totalEarning - tip);
 
+  // Rider Fare Engine v3.0 ledger enrichment: record the customer fare the
+  // payout was derived from, so platform revenue is auditable per order.
+  const customerFare = Number(row?.finalFare ?? row?.estimatedFare ?? row?.fareAmount ?? 0);
+  const ledgerExtra =
+    Number.isFinite(customerFare) && customerFare > 0
+      ? {
+          customer_fare: customerFare,
+          platform_revenue: round0(Math.max(0, customerFare - riderPayout)),
+          rider_percentage_effective: Math.round((riderPayout / customerFare) * 10000) / 100,
+        }
+      : {};
+
   await db
     .update(ordersCore)
     .set({
@@ -301,6 +319,7 @@ async function writeRideRiderPayoutSnapshot(
         rider_payout_snapshot: snapshot,
         delivery_fee: riderPayout,
         final_delivery_fee: riderPayout,
+        ...ledgerExtra,
       },
       updatedAt: new Date(),
     })
@@ -356,9 +375,12 @@ export async function persistRideRiderAcceptPayoutSnapshot(
       distanceKm: ordersCore.distanceKm,
       checkoutMetadata: ordersCore.checkoutMetadata,
       billingSnapshot: ordersCore.billingSnapshot,
+      fareAmount: ordersCore.fareAmount,
       rideType: ordersRide.rideType,
       customerTipAmount: ordersRide.customerTipAmount,
       acceptPayoutSnapshot: ordersRide.acceptPayoutSnapshot,
+      estimatedFare: ordersRide.estimatedFare,
+      finalFare: ordersRide.finalFare,
     })
     .from(ordersCore)
     .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
@@ -392,8 +414,12 @@ export async function persistRideRiderAcceptPayoutSnapshot(
       ? Math.max(0, Math.round((haversineDistanceMeters(riderLat, riderLng, pickupLat, pickupLng) / 1000) * 10) / 10)
       : undefined;
 
+  const customerFare = Number(row.finalFare ?? row.estimatedFare ?? row.fareAmount ?? 0);
+  if (!Number.isFinite(customerFare) || customerFare <= 0) return null;
+
   const payout = await resolveOrderRiderPayoutBreakdown({
     service: "ride",
+    customerFare,
     pickupLat,
     pickupLng,
     dropLat,
@@ -443,6 +469,7 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
       distanceKm: ordersCore.distanceKm,
       billingSnapshot: ordersCore.billingSnapshot,
       tipAmount: ordersCore.tipAmount,
+      fareAmount: ordersCore.fareAmount,
     })
     .from(ordersCore)
     .where(and(eq(ordersCore.id, orderCorePk), eq(ordersCore.orderType, "food")))
@@ -479,8 +506,12 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
         )
       : undefined;
 
+  const customerFare = Number(row.fareAmount ?? 0);
+  if (!Number.isFinite(customerFare) || customerFare <= 0) return null;
+
   const payout = await resolveOrderRiderPayoutBreakdown({
     service: "food",
+    customerFare,
     pickupLat,
     pickupLng,
     dropLat,

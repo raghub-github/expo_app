@@ -10,7 +10,7 @@ import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
-import { StoreMenuAddButton, StoreMenuQtyStepper } from "./StoreMenuCartControls";
+import { StoreMenuInstantCartControl } from "./StoreMenuCartControls";
 import { getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
@@ -55,6 +55,7 @@ function PairingCard({
   const diet = getItemDiet(item);
   const price = getSellingPrice(item);
   const showImage = !!imageUri && !imageFailed;
+  const isCustomisable = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
 
   return (
     <View style={styles.card}>
@@ -76,25 +77,17 @@ function PairingCard({
             <DietIndicator type={diet} />
           </View>
         </View>
-        {cartQty === 0 ? (
-          <View style={styles.addSlot}>
-            <StoreMenuAddButton
-              onPress={() => onAdd(item)}
-              disabled={isStoreClosed}
-              accessibilityLabel={`Add ${item.name}`}
-            />
-          </View>
-        ) : (
-          <View style={styles.addSlot}>
-            <StoreMenuQtyStepper
-              quantity={cartQty}
-              disabled={isStoreClosed}
-              onIncrement={() => onIncrement(item.id, item.menuItemId)}
-              onDecrement={() => onDecrement(item.id, item.menuItemId)}
-              accessibilityLabel={`${item.name} quantity`}
-            />
-          </View>
-        )}
+        <View style={styles.addSlot}>
+          <StoreMenuInstantCartControl
+            itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
+            quantity={cartQty}
+            disabled={isStoreClosed}
+            onAdd={() => onAdd(item)}
+            onIncrement={() => onIncrement(item.id, item.menuItemId)}
+            onDecrement={() => onDecrement(item.id, item.menuItemId)}
+            accessibilityLabel={`${item.name} quantity`}
+          />
+        </View>
       </View>
       <Text style={styles.name} numberOfLines={2}>
         {item.name}

@@ -216,10 +216,19 @@ export function RiderDispatchRealtime() {
               type?: string;
               orderId?: string;
               reason?: string;
+              estimatedEarning?: number;
+              pricingEngine?: string;
             };
             if (payload.type === "pong") return;
             if (payload.type === "dispatch_offer" || payload.type === "incoming_order") {
-              riderDispatchLog("dispatch event received", payload.type);
+              riderDispatchLog("dispatch event received", {
+                type: payload.type,
+                orderId: payload.orderId,
+                estimatedEarning: payload.estimatedEarning,
+                pricingEngine: payload.pricingEngine,
+              });
+              // Refetch so GET /orders/available applies the same Rider Fare Engine v3.0
+              // payout the push payload was built with.
               void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
             }
             if (

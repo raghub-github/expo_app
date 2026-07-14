@@ -1,6 +1,7 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AppText } from "@/components/AppText";
 
 export type FoodHomeCategoryItem = {
   id: string;
@@ -36,9 +37,9 @@ export function FoodHomeCategoryGrid({ items, columns = 4, maxItems = 8, onSelec
               style={styles.image}
             />
           </View>
-          <Text style={styles.label} numberOfLines={2}>
+          <AppText style={styles.label} numberOfLines={2}>
             {cat.name}
-          </Text>
+          </AppText>
         </TouchableOpacity>
       ))}
     </View>
@@ -54,7 +55,10 @@ export function FoodHomeCategoryChips({ items, onSelect }: ChipsProps) {
   return (
     <ScrollView
       horizontal
+      nestedScrollEnabled
       showsHorizontalScrollIndicator={false}
+      delaysContentTouches={false}
+      keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.chipsContent}
     >
       {items.map((cat) => (
@@ -64,9 +68,9 @@ export function FoodHomeCategoryChips({ items, onSelect }: ChipsProps) {
           activeOpacity={0.85}
           onPress={() => onSelect(cat.id, cat.slug)}
         >
-          <Text style={styles.chipText} numberOfLines={1}>
+          <AppText style={styles.chipText} numberOfLines={1}>
             {cat.name}
-          </Text>
+          </AppText>
         </TouchableOpacity>
       ))}
     </ScrollView>

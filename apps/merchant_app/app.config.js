@@ -2,7 +2,16 @@
  * Merchant app config. Backend URL from .env (same backend as monorepo).
  * Android FCM: google-services.json (package com.gatimitra.partner) must match Firebase console.
  */
+const fs = require("fs");
+const path = require("path");
 const appJson = require("./app.json");
+
+// Only reference google-services.json when it actually exists on disk. In Expo Go / local
+// dev the FCM file is absent (and unused), and pointing Expo at a missing path makes it log
+// "Could not parse Expo config: android.googleServicesFile" on every bundle. Production /
+// EAS Android builds provide the real file, so FCM stays wired there.
+const googleServicesFile = path.resolve(__dirname, "google-services.json");
+const hasGoogleServices = fs.existsSync(googleServicesFile);
 
 module.exports = ({ config }) => ({
   ...appJson,
@@ -15,7 +24,7 @@ module.exports = ({ config }) => ({
       ...appJson.expo.android,
       ...config?.expo?.android,
       package: "com.gatimitra.partner",
-      googleServicesFile: "./google-services.json",
+      ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       softwareKeyboardLayoutMode: "pan",
     },
     plugins: [

@@ -4,7 +4,10 @@ export async function notifyCustomerPrepDelay(args: {
   additionalMinutes: 5 | 10 | 15;
   storeName?: string | null;
 }): Promise<void> {
-  const backendUrl = process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_BACKEND_URL;
+  const backendUrl =
+    process.env.BACKEND_INTERNAL_URL ??
+    process.env.BACKEND_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL;
   const token = process.env.INTERNAL_API_TOKEN;
   if (!backendUrl || !token) {
     console.warn("[prep-delay] BACKEND_URL or INTERNAL_API_TOKEN missing — skip customer notify");

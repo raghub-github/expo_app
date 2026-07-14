@@ -40,12 +40,24 @@ function usageCapExceeded(offer: MerchantOfferRow, ctx: BillContext): boolean {
 function eligibleSubtotal(ctx: BillContext, offer: MerchantOfferRow, grossCart: number): number {
   const meta = offer.metadata ?? {};
   const raw = meta.menu_item_ids ?? meta.menuItemIds;
-  if (!Array.isArray(raw) || raw.length === 0) return grossCart;
+  // Cart-level listing: when no item scope, use promo-eligible gross (excludes strike lines).
+  if (!Array.isArray(raw) || raw.length === 0) {
+    const eligible = (ctx.orderLines ?? [])
+      .filter((l) => l.discountEligible !== false)
+      .reduce((s, l) => s + l.lineTotal, 0);
+    return eligible > 0.005 ? eligible : grossCart;
+  }
   const allow = new Set(raw.map(normalizeMenuId));
   let sum = 0;
+  let matched = false;
   for (const line of ctx.orderLines ?? []) {
-    if (allow.has(normalizeMenuId(line.menuItemId))) sum += line.lineTotal;
+    if (allow.has(normalizeMenuId(line.menuItemId))) {
+      matched = true;
+      if (line.discountEligible === false) continue;
+      sum += line.lineTotal;
+    }
   }
+  if (matched && sum <= 0.005) return grossCart;
   return sum;
 }
 

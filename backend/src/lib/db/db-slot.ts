@@ -10,9 +10,16 @@ declare module "fastify" {
 }
 
 let activeDbSlots = 0;
-const waitQueue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+type WaitEntry = {
+  resolve: () => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+const waitQueue: WaitEntry[] = [];
 
 const slotDepth = new AsyncLocalStorage<number>();
+/** True for the remainder of an HTTP request after the request-level slot is acquired. */
+const requestSlotAls = new AsyncLocalStorage<boolean>();
 
 export class DbSlotTimeoutError extends Error {
   constructor() {
@@ -39,6 +46,15 @@ function acquireTimeoutMs(): number {
   return env.NODE_ENV === "production" ? 12_000 : 25_000;
 }
 
+export function getDbSlotStats(): { active: number; waiting: number; limit: number } {
+  return { active: activeDbSlots, waiting: waitQueue.length, limit: dbSlotLimit() };
+}
+
+/**
+ * Acquire a concurrency slot.
+ * Waiters receive a *transferred* slot (no active++), avoiding the race where a
+ * fast-path acquire + waiter both increment after a release and inflate phantoms.
+ */
 export async function acquireDbSlot(): Promise<void> {
   const limit = dbSlotLimit();
   if (activeDbSlots < limit) {
@@ -47,26 +63,49 @@ export async function acquireDbSlot(): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    const entry = {
-      resolve: () => resolve(),
+    const entry: WaitEntry = {
+      resolve,
       reject,
+      timer: null,
     };
-    waitQueue.push(entry);
-    setTimeout(() => {
+    entry.timer = setTimeout(() => {
       const idx = waitQueue.indexOf(entry);
       if (idx >= 0) {
         waitQueue.splice(idx, 1);
+        entry.timer = null;
         reject(new DbSlotTimeoutError());
       }
     }, acquireTimeoutMs());
+    waitQueue.push(entry);
   });
-  activeDbSlots++;
+  // Slot was transferred from the releaser — activeDbSlots stays the same.
 }
 
 export function releaseDbSlot(): void {
-  activeDbSlots = Math.max(0, activeDbSlots - 1);
   const next = waitQueue.shift();
-  if (next) next.resolve();
+  if (next) {
+    if (next.timer) {
+      clearTimeout(next.timer);
+      next.timer = null;
+    }
+    next.resolve();
+    return;
+  }
+  activeDbSlots = Math.max(0, activeDbSlots - 1);
+}
+
+/** Mark this async context as already holding the request-level DB slot. */
+export function enterRequestDbSlotContext(): void {
+  requestSlotAls.enterWith(true);
+}
+
+export function clearRequestDbSlotContext(): void {
+  requestSlotAls.enterWith(false);
+}
+
+function requestAlreadyHoldsSlot(req?: Pick<FastifyRequest, "dbSlotHeld">): boolean {
+  if (req?.dbSlotHeld) return true;
+  return requestSlotAls.getStore() === true;
 }
 
 /** Limits concurrent in-flight DB work (re-entrant — nested calls share one slot). */
@@ -75,11 +114,8 @@ export async function withDbSlot<T>(
   req?: Pick<FastifyRequest, "dbSlotHeld">
 ): Promise<T> {
   const depth = slotDepth.getStore() ?? 0;
-  if (depth > 0) {
-    return fn();
-  }
-  if (req?.dbSlotHeld) {
-    return slotDepth.run(1, fn);
+  if (depth > 0 || requestAlreadyHoldsSlot(req)) {
+    return slotDepth.run(depth + 1, fn);
   }
 
   await acquireDbSlot();

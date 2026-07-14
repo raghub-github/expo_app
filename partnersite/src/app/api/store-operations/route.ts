@@ -714,23 +714,13 @@ export async function POST(req: NextRequest) {
         .eq('store_id', storeInternalId)
         .maybeSingle();
       /**
-       * Scheduled OFF days are the only hard block on manual open: the schedule sync engine
-       * always force-closes a scheduled-off day (manual override cannot keep it online), so
-       * succeeding here would only result in an immediate AUTO_CLOSE on the next poll.
-       *
-       * For other "outside hours" states (BREAK, after last slot — not before today's first slot)
-       * we accept the manual open: the merchant overrides the schedule and the sync engine
-       * respects `is_manual_override = true` to keep the store online until they close or the
-       * next schedule boundary closes it.
+       * Manual open is only allowed inside a configured operating slot (or 24h).
+       * Scheduled OFF days and all other outside-hours states are rejected — merchants
+       * must update Outlet Timings / wait for the next slot.
        */
-      let manualOpenBeforeFirstSlot = false;
       if (ohOpen) {
         const ohRec = ohOpen as Record<string, unknown>;
         const openSchedule = evaluateStoreSchedule(ohRec, openStoreTz, now);
-        manualOpenBeforeFirstSlot = isBeforeFirstSlotToday(
-          openSchedule,
-          openSchedule.minutesSinceMidnight
-        );
         if (openSchedule.isTodayScheduledClosed) {
           return NextResponse.json(
             {
@@ -741,6 +731,26 @@ export async function POST(req: NextRequest) {
             { status: 400 }
           );
         }
+        const { dayOfWeek: openDow, minutesSinceMidnight: openMin } = nowInStoreTz(openStoreTz);
+        if (!isWithinOperatingHours(ohRec, openDow, openMin)) {
+          return NextResponse.json(
+            {
+              error:
+                'Your store cannot be turned ON because it is currently outside its scheduled operating hours. To open your store now, please update your Store Schedule first.',
+              code: 'OUTSIDE_OPERATING_HOURS',
+            },
+            { status: 400 }
+          );
+        }
+      } else {
+        return NextResponse.json(
+          {
+            error:
+              'Your store cannot be turned ON because operating hours are not configured. To open your store now, please update your Store Schedule first.',
+            code: 'OUTSIDE_OPERATING_HOURS',
+          },
+          { status: 400 }
+        );
       }
 
       const hadScheduledClosure =
@@ -794,12 +804,6 @@ export async function POST(req: NextRequest) {
       }
 
       const logRestrictionBefore = (avail?.restriction_type as string | null) ?? null;
-      const ohRecOpen = ohOpen ? (ohOpen as Record<string, unknown>) : null;
-      const { dayOfWeek: openDow, minutesSinceMidnight: openMin } = nowInStoreTz(openStoreTz);
-      const manualOverrideOutsideSchedule =
-        !!ohRecOpen &&
-        !isWithinOperatingHours(ohRecOpen, openDow, openMin) &&
-        !manualOpenBeforeFirstSlot;
 
       const { error: availUpErr } = await db
         .from('merchant_store_availability')
@@ -811,10 +815,9 @@ export async function POST(req: NextRequest) {
           auto_unavailable_at: null,
           auto_available_at: nowIso,
           manual_close_until: null,
-          // When opening manually, always clear manual activation lock so merchant isn't stuck.
           block_auto_open: false,
-          is_manual_override: manualOverrideOutsideSchedule,
-          manual_override_at: manualOverrideOutsideSchedule ? nowIso : null,
+          is_manual_override: false,
+          manual_override_at: null,
           schedule_end_prompted_at: null,
           schedule_end_prompt_expires_at: null,
           last_toggle_type: 'MANUAL_OPEN',
@@ -907,12 +910,20 @@ export async function POST(req: NextRequest) {
           .eq('store_id', storeInternalId)
           .single();
         const ohRec = (ohToday ?? null) as Record<string, unknown> | null;
-        const { dayOfWeek } = nowInStoreTz(closeTz);
-        const next =
-          ohRec && Object.keys(ohRec).length > 0
-            ? getNextOpenIsoAfterIstCalendarDay(ohRec, dayOfWeek, now, closeTz) ??
-              getNextOpenDayStartIso(ohRec, dayOfWeek, now, closeTz)
-            : null;
+        const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(closeTz);
+        let next: string | null = null;
+        if (ohRec && Object.keys(ohRec).length > 0) {
+          // "Close for today" is meant to skip the REST of today's operating slots. If it's
+          // triggered before today's first slot has even started (e.g. a close fired just
+          // after midnight), today hasn't happened yet — don't skip it, reopen at today's
+          // own next slot instead of jumping to a future calendar day.
+          const todaySchedule = evaluateStoreSchedule(ohRec, closeTz, now);
+          const beforeFirstSlotToday = isBeforeFirstSlotToday(todaySchedule, minutesSinceMidnight);
+          next = beforeFirstSlotToday
+            ? getNextOpenIso(ohRec, dayOfWeek, minutesSinceMidnight, now, closeTz)
+            : getNextOpenIsoAfterIstCalendarDay(ohRec, dayOfWeek, now, closeTz);
+          next = next ?? getNextOpenDayStartIso(ohRec, dayOfWeek, now, closeTz);
+        }
         mergedManualCloseUntil = next ?? endOfCalendarDayInStoreTimeZone(now, closeTz);
       } else {
         const mins = typeof durationMinutes === 'number' ? durationMinutes : parseInt(String(durationMinutes || 30), 10);

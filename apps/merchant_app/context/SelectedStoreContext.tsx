@@ -18,6 +18,9 @@ import {
 type SelectedStoreContextValue = {
   selectedStore: ChildStore | null;
   setSelectedStore: (store: ChildStore | null) => void;
+  /** Stores included in "manage orders from" (multi-select). */
+  managedStores: ChildStore[];
+  setManagedStores: (stores: ChildStore[]) => void;
   /** False until we've tried restoring the last store from SecureStore. */
   isStoreReady: boolean;
 };
@@ -42,6 +45,7 @@ function findStoreInPartner(
 export function SelectedStoreProvider({ children }: { children: ReactNode }) {
   const { partner, isLoading: authLoading } = useAuth();
   const [selectedStore, setSelectedStoreState] = useState<ChildStore | null>(null);
+  const [managedStores, setManagedStoresState] = useState<ChildStore[]>([]);
   const [isStoreReady, setIsStoreReady] = useState(false);
 
   useEffect(() => {
@@ -66,6 +70,7 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
           );
           if (match && isApprovedStore(match)) {
             setSelectedStoreState(match);
+            setManagedStoresState([match]);
           }
         }
       } finally {
@@ -81,6 +86,7 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!authLoading && !partner) {
       setSelectedStoreState(null);
+      setManagedStoresState([]);
       setIsStoreReady(true);
     }
   }, [authLoading, partner]);
@@ -88,6 +94,11 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
   const setSelectedStore = useCallback(
     (store: ChildStore | null) => {
       setSelectedStoreState(store);
+      if (store) {
+        setManagedStoresState([store]);
+      } else {
+        setManagedStoresState([]);
+      }
       if (store && partner) {
         void writeLastSelectedStore({
           parentId: partner.parent.id,
@@ -101,13 +112,40 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
     [partner],
   );
 
+  const setManagedStores = useCallback(
+    (stores: ChildStore[]) => {
+      const approved = stores.filter(isApprovedStore);
+      setManagedStoresState(approved);
+      if (approved.length === 1) {
+        const only = approved[0];
+        setSelectedStoreState(only);
+        if (partner) {
+          void writeLastSelectedStore({
+            parentId: partner.parent.id,
+            storeDbId: only.id,
+            storePublicId: only.store_id,
+          });
+        }
+      }
+    },
+    [partner],
+  );
+
+  useEffect(() => {
+    if (selectedStore && managedStores.length === 0) {
+      setManagedStoresState([selectedStore]);
+    }
+  }, [selectedStore, managedStores.length]);
+
   const value = useMemo(
     () => ({
       selectedStore,
       setSelectedStore,
+      managedStores,
+      setManagedStores,
       isStoreReady,
     }),
-    [selectedStore, setSelectedStore, isStoreReady],
+    [selectedStore, setSelectedStore, managedStores, setManagedStores, isStoreReady],
   );
 
   return (

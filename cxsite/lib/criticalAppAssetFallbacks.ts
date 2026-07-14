@@ -10,14 +10,16 @@ const BUNDLED = (slug: string) =>
 export const CRITICAL_APP_ASSET_FALLBACKS: Record<string, string> = {
   [CX.auth.logo]: BUNDLED('customer_auth_logo'),
   [CX.auth.logoWithName]: BUNDLED('customer_auth_logo_with_name'),
-  [CX.home.brandBanner]: BUNDLED('customer_home_brand_banner'),
+  // Prefer bundled marketing screenshots so download modal / home stay correct in prod
+  // even if CMS R2 assets are slow or outdated (synced from `img/` → `public/img/`).
+  [CX.home.brandBanner]: '/img/dnscreen.png',
   [CX.home.serviceFood]: BUNDLED('customer_home_service_food'),
   [CX.home.serviceRide]: BUNDLED('customer_home_service_ride'),
   [CX.home.serviceParcel]: BUNDLED('customer_home_service_parcel'),
   [CX.home.serviceEcommerce]: BUNDLED('customer_home_service_ecommerce'),
   [CX.home.serviceVoucher]: BUNDLED('customer_home_service_voucher'),
   [CX.home.serviceLocation]: BUNDLED('customer_home_service_location'),
-  [CX.ride.banner]: BUNDLED('customer_ride_banner'),
+  [CX.ride.banner]: '/img/ride.png',
   [CX.ride.bottomBanner]: BUNDLED('customer_ride_bottom_banner'),
   [CX.ride.bike]: BUNDLED('customer_ride_bike'),
   [CX.ride.auto]: BUNDLED('customer_ride_auto'),

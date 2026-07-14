@@ -249,6 +249,12 @@ export function getOfferLifecyclePhase(offer: Offer, now: Date = new Date()): Of
   return getOfferLifecycle(offer, now).phase;
 }
 
+/** Campaign ended (valid_till date passed) or dates invalid. */
+export function isOfferCampaignExpired(offer: Offer, now: Date = new Date()): boolean {
+  const { reason } = getOfferLifecycle(offer, now);
+  return reason === "expired" || reason === "invalid_dates";
+}
+
 export function getOfferStatusBadge(lifecycle: OfferLifecycleResult): { label: string } {
   if (lifecycle.phase === "active") {
     return { label: "Active" };

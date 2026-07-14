@@ -29,7 +29,7 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useOrders, type LineItem, type OrderRecord } from "@/hooks/useOrders";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
-import { patchFoodOrderStatus } from "@/services/ordersApi";
+import { patchFoodOrderStatus, fetchFoodOrder, syncAcceptanceTimeout } from "@/services/ordersApi";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import {
   playIncomingOrderAlert,
@@ -46,6 +46,7 @@ import { AnimatedPlacedTime } from "@/components/order/AnimatedPlacedTime";
 import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { formatMerchantRs } from "@/lib/merchant-line-total";
+import { merchantBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import {
@@ -61,7 +62,10 @@ import {
 } from "@/lib/order-prep-time";
 import * as SecureStore from "expo-secure-store";
 
-const DISMISS_KEY = "merchant_incoming_order_dismissed_v1";
+// v3: clear prior dismiss poison (v1 auto-dismissed on list flicker; v2 still
+ // blocked re-open after a failed board hydrate). Fresh devices always show the
+ // accept sheet for still-CREATED orders inside the acceptance window.
+const DISMISS_KEY = "merchant_incoming_order_dismissed_v3";
 const MAX_PREVIEW_ITEMS = 3;
 const PREP_STEP_MINUTES = 5;
 
@@ -398,7 +402,6 @@ export default function IncomingOrderModal() {
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
 
   const seenFoodIdsRef = useRef<Set<string>>(new Set());
-  const initializedRef = useRef(false);
   const shownCoreIdsRef = useRef<Set<string>>(new Set());
   const soundPlayedForOrderRef = useRef<string | null>(null);
 
@@ -407,31 +410,36 @@ export default function IncomingOrderModal() {
       if (!storeId || !token) return;
       if (order.status !== "created" || order.id.startsWith("core-")) return;
 
-      const dev = await readDeviceOrderAlertsAsync(storeId);
-      if (!dev.orderAlertsEnabled) return;
-
+      // Session + persistent dedupe — never re-pop an order already shown/dismissed.
+      const dedupeKey = `c:${order.ordersCoreId}`;
+      if (shownCoreIdsRef.current.has(dedupeKey)) return;
       const dismissed = await getDismissed();
       if (dismissed.has(order.ordersCoreId)) return;
 
-      const dedupeKey = `c:${order.ordersCoreId}`;
-      if (shownCoreIdsRef.current.has(dedupeKey)) return;
-      shownCoreIdsRef.current.add(dedupeKey);
-
+      // Suppress ONLY orders whose acceptance window is genuinely, finitely over.
+      // A NaN/bogus deadline must never hide a fresh order.
       const deadline = acceptDeadlineMs(
         order.createdAt,
         acceptanceWindowMinutes,
         order.merchantResponseDeadlineAt
       );
-      if (Date.now() >= deadline) {
+      if (Number.isFinite(deadline) && Date.now() >= deadline) {
         await addDismissed(order.ordersCoreId);
         return;
       }
 
+      // Show the accept sheet. This must NOT depend on device alert/sound prefs —
+      // a merchant with sound muted still has to SEE and accept the order. The
+      // alert preference only decides whether the chime plays.
+      shownCoreIdsRef.current.add(dedupeKey);
       setSheetOrder(order);
 
       if (soundPlayedForOrderRef.current !== order.id) {
         soundPlayedForOrderRef.current = order.id;
-        void playIncomingOrderAlert(acceptanceSettings, dev);
+        const dev = await readDeviceOrderAlertsAsync(storeId);
+        if (dev.orderAlertsEnabled && dev.soundAlertsEnabled) {
+          void playIncomingOrderAlert(acceptanceSettings, dev);
+        }
       }
     },
     [storeId, token, acceptanceWindowMinutes, acceptanceSettings]
@@ -474,15 +482,18 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     if (!storeId || !token) return;
-    const created = orders.filter((o) => o.status === "created" && !o.id.startsWith("core-"));
-    if (!initializedRef.current) {
-      for (const o of created) {
-        seenFoodIdsRef.current.add(o.id);
-      }
-      initializedRef.current = true;
-      return;
-    }
     if (sheetOrder) return;
+    // Surface the oldest still-actionable pending order FIRST (FIFO), including
+    // orders that were already CREATED when the app mounted / resumed. This gives
+    // the merchant app cold-start parity with the Partner Site incoming queue, so
+    // both platforms show the same order instead of one silently hiding a pending
+    // order after a restart/store-switch. `openIfNew` still guards against orders
+    // outside the accept window and ones already dismissed on this device.
+    const created = orders
+      .filter((o) => o.status === "created" && !o.id.startsWith("core-"))
+      .sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
     for (const o of created) {
       if (seenFoodIdsRef.current.has(o.id)) continue;
       seenFoodIdsRef.current.add(o.id);
@@ -631,14 +642,97 @@ export default function IncomingOrderModal() {
     const liveById = orders.find((o) => o.id === sheetOrder.id);
     const liveByCore = orders.find((o) => o.ordersCoreId === sheetOrder.ordersCoreId);
     const live = liveById ?? liveByCore;
-    if (!live || live.status !== "created") {
+    // Close ONLY on a definitive action — the order is present with a non-created
+    // status (accepted / rejected here or on the Partner Site). A transient ABSENCE
+    // must NOT close the modal: an in-flight full refetch that started before an
+    // optimistic realtime insert can momentarily drop the row from `orders`, and
+    // closing here would both hide and permanently dismiss a still-pending order.
+    // `displayOrder` falls back to the opened sheetOrder; the next reconcile restores it.
+    if (live && live.status !== "created") {
       void dismissSheet();
     }
   }, [orders, sheetOrder, dismissSheet]);
 
+  /**
+   * Authoritative liveness check while the incoming sheet is open.
+   * Backend is the only auto-cancel authority — we never PATCH CANCEL from the fuse.
+   * When list/realtime lag (cancelled row filtered off the board), targeted fetch closes
+   * the sheet so it never stays open for an inactive order.
+   */
+  useEffect(() => {
+    if (!sheetOrder || !storeId || !token) return;
+    if (sheetOrder.id.startsWith("core-")) return;
+    const foodId = parseInt(sheetOrder.id, 10);
+    if (!Number.isFinite(foodId)) return;
+
+    let cancelled = false;
+    const syncKickInFlight = { current: false };
+
+    const verifyOpenOrder = async () => {
+      try {
+        const pastDeadline =
+          acceptSecondsLeft(
+            sheetOrder.createdAt,
+            acceptanceWindowMinutes,
+            Date.now(),
+            sheetOrder.merchantResponseDeadlineAt
+          ) <= 0;
+        if (pastDeadline && !syncKickInFlight.current) {
+          syncKickInFlight.current = true;
+          try {
+            await syncAcceptanceTimeout(storeId, token);
+          } catch {
+            /* cron owns cancel; sync is a nudge */
+          } finally {
+            syncKickInFlight.current = false;
+          }
+        }
+
+        const updated = await fetchFoodOrder(storeId, foodId, token);
+        if (cancelled) return;
+        const stage = String(updated.order_status || "").toUpperCase();
+        if (stage && stage !== "CREATED" && stage !== "NEW" && stage !== "PLACED") {
+          await dismissSheet();
+        }
+      } catch {
+        /* network blip — retry on next tick */
+      }
+    };
+
+    void verifyOpenOrder();
+    const intervalMs = acceptSecondsLeft(
+      sheetOrder.createdAt,
+      acceptanceWindowMinutes,
+      Date.now(),
+      sheetOrder.merchantResponseDeadlineAt
+    ) <= 0
+      ? 1_200
+      : 2_500;
+    const t = setInterval(() => {
+      void verifyOpenOrder();
+    }, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [
+    sheetOrder?.id,
+    sheetOrder?.createdAt,
+    sheetOrder?.merchantResponseDeadlineAt,
+    storeId,
+    token,
+    acceptanceWindowMinutes,
+    dismissSheet,
+  ]);
+
   if (!storeId) return null;
 
   const order = displayOrder;
+  // Deterministic merchant bill: item subtotal (boost/BOGO-adjusted) + packaging
+  // − frozen orders_core.merchant_precision_discount (subtracted exactly once).
+  const incomingBill = order ? merchantBillPartsFromOrder(order) : null;
+  const precisionDiscount = incomingBill?.discount ?? 0;
+  const orderValue = incomingBill?.total ?? order?.total ?? 0;
   const sheetVisible = !!order && !rejectOpen && !allItemsOpen && !customizationItem;
   const lineItems = order?.lineItems ?? [];
   const previewItems = lineItems.slice(0, MAX_PREVIEW_ITEMS);
@@ -740,8 +834,13 @@ export default function IncomingOrderModal() {
                   <View style={styles.earningsCard}>
                     <View style={styles.earningsMain}>
                       <Text style={styles.earningsLabel}>Order value</Text>
+                      {precisionDiscount > 0.005 ? (
+                        <Text style={styles.earningsPrecisionLine}>
+                          Merchant Precision Discount −{formatMerchantRs(precisionDiscount)}
+                        </Text>
+                      ) : null}
                       <Text style={styles.earningsValue}>
-                        {formatMerchantRs(order.total)}
+                        {formatMerchantRs(orderValue)}
                       </Text>
                     </View>
                     <View style={styles.earningsDivider} />
@@ -859,7 +958,7 @@ export default function IncomingOrderModal() {
           <IncomingOrderAllItemsSheet
             visible={allItemsOpen}
             items={lineItems}
-            total={order.total}
+            total={incomingBill?.total ?? order.total}
             orderVeg={order.vegNonVeg}
             onClose={() => setAllItemsOpen(false)}
             onItemPress={(item) => openCustomizationSheet(item, setCustomizationItem)}
@@ -1159,6 +1258,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     color: GatiMitraMerchant.textSecondary,
+  },
+  earningsPrecisionLine: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#059669",
+    marginTop: 2,
+    fontVariant: ["tabular-nums"],
   },
   earningsValue: {
     fontSize: 24,

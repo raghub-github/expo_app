@@ -5,7 +5,9 @@ import { refundFieldsFromEngineResult } from '@gatimitra/financial-rules';
 import { labelsForStatusUpdate, normalizeActionMode, normalizeActionSource } from '@/lib/merchantOrderFoodActions';
 import { recordOrderCancellation } from '@/lib/record-order-cancellation';
 
-export const AUTO_CANCEL_REASON = 'Auto Cancelled';
+/** Machine reason — must match backend `MERCHANT_ACCEPT_TIMEOUT_REASON`. */
+export const AUTO_CANCEL_REASON = 'MERCHANT_ACCEPT_TIMEOUT';
+export const AUTO_CANCEL_REASON_LABEL = 'Auto Cancelled';
 
 const UNACCEPTED_STATUSES = new Set(['CREATED', 'NEW', 'PLACED']);
 
@@ -43,6 +45,46 @@ export async function loadAcceptanceWindowMinutes(
     : 5;
 }
 
+/**
+ * Still awaiting accept if Current Time < snapshotted deadline.
+ * Never uses a shortened live Super Admin window to treat an order as expired early.
+ */
+export function isWithinAcceptanceDeadline(
+  args: {
+    createdAtIso: string | null | undefined;
+    merchantAcceptanceDeadlineAt?: string | null;
+    merchantAcceptanceWindowSeconds?: number | null;
+  },
+  fallbackWindowMinutes: number,
+  nowMs = Date.now()
+): boolean {
+  const snap = args.merchantAcceptanceDeadlineAt
+    ? new Date(args.merchantAcceptanceDeadlineAt).getTime()
+    : NaN;
+  if (Number.isFinite(snap)) return nowMs < snap;
+
+  const winSec = Number(args.merchantAcceptanceWindowSeconds ?? 0);
+  const created = args.createdAtIso ? new Date(args.createdAtIso).getTime() : NaN;
+  if (Number.isFinite(created) && Number.isFinite(winSec) && winSec > 0) {
+    return nowMs < created + winSec * 1000;
+  }
+
+  return isWithinAcceptanceWindow(args.createdAtIso ?? '', fallbackWindowMinutes, nowMs);
+}
+
+/** @deprecated Prefer isWithinAcceptanceDeadline with snapshotted columns. */
+export function isWithinAcceptanceWindow(
+  createdAtIso: string,
+  acceptanceWindowMinutes: number,
+  nowMs = Date.now()
+): boolean {
+  const mins = Math.max(1, Math.min(180, acceptanceWindowMinutes));
+  const created = new Date(createdAtIso).getTime();
+  if (!Number.isFinite(created)) return true;
+  const deadline = created + mins * 60_000;
+  return nowMs < deadline;
+}
+
 async function autoCancelOneFoodOrder(
   db: SupabaseClient,
   storeInternalId: number,
@@ -67,7 +109,7 @@ async function autoCancelOneFoodOrder(
     newStatus: 'CANCELLED',
     actionSource,
     actionMode,
-    rejectedReason: AUTO_CANCEL_REASON,
+    rejectedReason: AUTO_CANCEL_REASON_LABEL,
   });
 
   const now = new Date().toISOString();
@@ -77,16 +119,18 @@ async function autoCancelOneFoodOrder(
       order_status: 'CANCELLED',
       cancelled_at: now,
       rejected_reason: AUTO_CANCEL_REASON,
-      cancelled_by_label: actionLabels.cancelled_by_label ?? AUTO_CANCEL_REASON,
+      cancelled_by_label: AUTO_CANCEL_REASON_LABEL,
       cancelled_by_type: 'system',
       cancellation_details: {
         version: 1,
         source: 'system',
         action_source: 'system',
         cancel_mode: 'auto',
+        reason_code: AUTO_CANCEL_REASON,
         rejected_reason: AUTO_CANCEL_REASON,
-        cancelled_by_label: actionLabels.cancelled_by_label ?? AUTO_CANCEL_REASON,
+        cancelled_by_label: AUTO_CANCEL_REASON_LABEL,
       },
+      merchant_acceptance_timeout_processed_at: now,
       updated_at: now,
     })
     .eq('id', foodId)
@@ -148,7 +192,7 @@ async function autoCancelOneFoodOrder(
       cancelledBy: 'SYSTEM',
       displayReason: AUTO_CANCEL_REASON,
       cancelledByType: 'system',
-      cancelledByLabel: actionLabels.cancelled_by_label ?? AUTO_CANCEL_REASON,
+      cancelledByLabel: AUTO_CANCEL_REASON_LABEL,
       actionSource: 'system',
       cancelMode: 'auto',
       previousStatus: currentStatus,
@@ -156,7 +200,10 @@ async function autoCancelOneFoodOrder(
       grandTotal: coreMoney?.grand_total ?? 0,
       refundStatus: refund.refundStatus,
       refundAmount: refund.refundAmount,
-      metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
+      metadata: {
+        reason_code: AUTO_CANCEL_REASON,
+        ...(engineResult.raw ? { financial_rule_engine: engineResult.raw } : {}),
+      },
     });
   } catch {
     /* ignore financial side-effects — row is already cancelled */
@@ -184,20 +231,27 @@ async function autoCancelOneFoodOrder(
   return true;
 }
 
-/** Cancel food orders past the acceptance window for one store (portal-open flush). */
+/**
+ * Fallback flush when Fastify sync is unavailable.
+ * Cancels ONLY when Current Time >= snapshotted merchant_acceptance_deadline_at
+ * (or snapshotted window seconds). Never cancels early off live Super Admin minutes alone.
+ */
 export async function syncExpiredOrderAcceptanceForStore(
   db: SupabaseClient,
   storeInternalId: number
 ): Promise<{ cancelled: number }> {
   const windowMins = await loadAcceptanceWindowMinutes(db, storeInternalId);
-  const cutoff = new Date(Date.now() - windowMins * 60_000).toISOString();
+  const nowIso = new Date().toISOString();
+  const nowMs = Date.now();
 
   const { data: rows, error } = await db
     .from('orders_food')
-    .select('id, order_id, order_status, created_at, accepted_at, food_items_total_value')
+    .select(
+      'id, order_id, order_status, created_at, accepted_at, food_items_total_value, merchant_acceptance_deadline_at, merchant_acceptance_window_seconds'
+    )
     .eq('merchant_store_id', storeInternalId)
     .is('cancelled_at', null)
-    .lt('created_at', cutoff)
+    .is('accepted_at', null)
     .order('created_at', { ascending: true })
     .limit(200);
 
@@ -209,8 +263,16 @@ export async function syncExpiredOrderAcceptanceForStore(
   for (const row of rows) {
     const st = normFoodStatus(row.order_status as string | null);
     if (!UNACCEPTED_STATUSES.has(st)) continue;
-    const createdAt = String(row.created_at ?? '');
-    if (!createdAt || isWithinAcceptanceWindow(createdAt, windowMins)) continue;
+    const stillOpen = isWithinAcceptanceDeadline(
+      {
+        createdAtIso: String(row.created_at ?? ''),
+        merchantAcceptanceDeadlineAt: row.merchant_acceptance_deadline_at as string | null,
+        merchantAcceptanceWindowSeconds: row.merchant_acceptance_window_seconds as number | null,
+      },
+      windowMins,
+      nowMs
+    );
+    if (stillOpen) continue;
     const ok = await autoCancelOneFoodOrder(db, storeInternalId, {
       id: Number(row.id),
       order_id: Number(row.order_id),
@@ -221,15 +283,6 @@ export async function syncExpiredOrderAcceptanceForStore(
     if (ok) cancelled += 1;
   }
 
+  void nowIso;
   return { cancelled };
-}
-
-export function isWithinAcceptanceWindow(
-  createdAtIso: string,
-  acceptanceWindowMinutes: number,
-  nowMs = Date.now()
-): boolean {
-  const mins = Math.max(1, Math.min(180, acceptanceWindowMinutes));
-  const deadline = new Date(createdAtIso).getTime() + mins * 60_000;
-  return nowMs < deadline;
 }

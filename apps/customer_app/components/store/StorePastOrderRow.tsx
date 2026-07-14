@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { View, StyleSheet } from "react-native";
+import { View, StyleSheet, Text } from "react-native";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreText } from "./StoreText";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
-import { StoreMenuAddButton, StoreMenuQtyStepper } from "./StoreMenuCartControls";
+import { StoreMenuInstantCartControl, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
 import { getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { formatOfferRupee, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 
 export type PastOrderItem = {
   menuItem: MenuItem;
@@ -18,11 +20,12 @@ export type PastOrderItem = {
 
 export type StorePastOrderRowProps = {
   item: PastOrderItem;
-  quantity: number;
+  merchantId: string;
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
   isStoreClosed?: boolean;
+  itemOffer?: ItemOfferDisplay | null;
 };
 
 function formatOrderedAgo(iso: string): string {
@@ -40,25 +43,44 @@ function formatOrderedAgo(iso: string): string {
 }
 
 const IMAGE = 96;
-const ACTION_W = 88;
+const ACTION_W = 104;
 
-export function StorePastOrderRow({
+export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   item: { menuItem, orderedAt, userRating },
-  quantity,
+  merchantId,
   onAdd,
   onIncrement,
   onDecrement,
   isStoreClosed = false,
+  itemOffer = null,
 }: StorePastOrderRowProps) {
+  const cartQty = useMenuItemCartQty(menuItem.id, menuItem.menuItemId, merchantId);
   const [imageFailed, setImageFailed] = useState(false);
-  const isCustomisable =
-    menuItem.hasVariants || menuItem.hasAddons || menuItem.hasCustomizations;
+  const isCustomisable = !!(
+    menuItem.hasVariants ||
+    menuItem.hasAddons ||
+    menuItem.hasCustomizations
+  );
   const diet = getItemDiet(menuItem);
   const sellingPrice = getSellingPrice(menuItem);
+  const offerUnitPrice =
+    itemOffer?.kind !== "bogo" && itemOffer?.offerPrice != null ? itemOffer.offerPrice : null;
+  const showOfferPrice =
+    offerUnitPrice != null && offerUnitPrice < sellingPrice - 0.001;
+  const strikeAmount = showOfferPrice
+    ? Math.round(itemOffer?.strikePrice ?? sellingPrice)
+    : sellingPrice;
+  const payableAmount = showOfferPrice ? offerUnitPrice! : sellingPrice;
   const imageUri = useMemo(
-    () => (menuItem.imageUrl?.trim() ? (toAbsoluteImageUrl(menuItem.imageUrl) ?? menuItem.imageUrl) : null),
+    () =>
+      menuItem.imageUrl?.trim()
+        ? (toAbsoluteImageUrl(menuItem.imageUrl) ?? menuItem.imageUrl)
+        : null,
     [menuItem.imageUrl]
   );
+
+  // Same key as menu rows so past-order + menu steppers stay in sync.
+  const itemKey = `${merchantId}:${menuItem.listRowKey ?? menuItem.id}`;
 
   useEffect(() => {
     setImageFailed(false);
@@ -81,7 +103,7 @@ export function StorePastOrderRow({
 
   return (
     <View style={styles.row}>
-      <View style={styles.imageCol}>
+      <View style={styles.imageCol} pointerEvents="none">
         <View style={styles.imageWrap}>
           {imageUri && !imageFailed ? (
             <Image
@@ -101,42 +123,67 @@ export function StorePastOrderRow({
         </View>
       </View>
 
-      <View style={styles.infoCol}>
+      <View style={styles.infoCol} pointerEvents="none">
         <StoreText style={styles.name} bold numberOfLines={2}>
           {menuItem.name}
         </StoreText>
-        <StoreText style={styles.price} bold>
-          ₹{Math.round(sellingPrice)}
-        </StoreText>
+
+        {showOfferPrice ? (
+          <>
+            <View style={styles.offerPriceRow}>
+              {itemOffer?.kind === "bogo" ? (
+                <View style={styles.offerBadge}>
+                  <Text style={styles.bogoBadgeText}>{itemOffer.label}</Text>
+                </View>
+              ) : itemOffer ? (
+                <View style={[styles.offerBadge, styles.boostBadge]}>
+                  <Text style={styles.boostBadgeText}>{itemOffer.label}</Text>
+                </View>
+              ) : null}
+              <Text style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</Text>
+            </View>
+            <Text style={styles.discountPrice}>Get for {formatOfferRupee(payableAmount)}</Text>
+          </>
+        ) : (
+          <>
+            {itemOffer?.kind === "bogo" ? (
+              <View style={styles.offerBadge}>
+                <Text style={styles.bogoBadgeText}>{itemOffer.label}</Text>
+              </View>
+            ) : itemOffer ? (
+              <View style={[styles.offerBadge, styles.boostBadge]}>
+                <Text style={styles.boostBadgeText}>{itemOffer.label}</Text>
+              </View>
+            ) : null}
+            <StoreText style={styles.price} bold>
+              {formatOfferRupee(sellingPrice)}
+            </StoreText>
+          </>
+        )}
+
         <StoreText style={styles.orderedAgo}>{formatOrderedAgo(orderedAt)}</StoreText>
         {userRating != null && userRating > 0 ? (
           <StoreText style={styles.rating}>You rated {Math.round(userRating)} ★</StoreText>
         ) : null}
       </View>
 
-      <View style={styles.actionCol}>
-        {quantity === 0 ? (
-          <StoreMenuAddButton
-            onPress={handleAdd}
-            disabled={isStoreClosed}
-            style={styles.addControl}
-          />
-        ) : (
-          <StoreMenuQtyStepper
-            quantity={quantity}
-            disabled={isStoreClosed}
-            onIncrement={handleIncrement}
-            onDecrement={handleDecrement}
-            style={styles.addControl}
-          />
-        )}
+      <View style={styles.actionCol} collapsable={false} pointerEvents="auto">
+        <StoreMenuInstantCartControl
+          itemKey={itemKey}
+          quantity={cartQty}
+          disabled={isStoreClosed}
+          onAdd={handleAdd}
+          onIncrement={handleIncrement}
+          onDecrement={handleDecrement}
+          accessibilityLabel={`${menuItem.name} quantity`}
+        />
         {isCustomisable ? (
           <StoreText style={styles.customisable}>customisable</StoreText>
         ) : null}
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: {
@@ -179,9 +226,51 @@ const styles = StyleSheet.create({
     lineHeight: 23,
     letterSpacing: -0.2,
   },
+  offerBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "#2563EB",
+    backgroundColor: "#EFF6FF",
+  },
+  boostBadge: {
+    borderColor: "#2563EB",
+  },
+  bogoBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#2563EB",
+  },
+  boostBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#2563EB",
+  },
   price: {
     fontSize: 18,
     color: StoreTheme.textPrimary,
+    letterSpacing: -0.2,
+    marginTop: 2,
+  },
+  offerPriceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    flexWrap: "wrap",
+  },
+  basePriceStrike: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: StoreTheme.textSecondary,
+    textDecorationLine: "line-through",
+  },
+  discountPrice: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#2563EB",
     letterSpacing: -0.2,
     marginTop: 2,
   },
@@ -197,11 +286,13 @@ const styles = StyleSheet.create({
   },
   actionCol: {
     width: ACTION_W,
-    alignItems: "center",
+    minWidth: ACTION_W,
+    minHeight: MENU_ADD_CONTROL_HEIGHT + 12,
+    alignItems: "stretch",
     justifyContent: "center",
-  },
-  addControl: {
-    width: ACTION_W,
+    zIndex: 60,
+    elevation: 60,
+    paddingVertical: 6,
   },
   customisable: {
     fontSize: 10,

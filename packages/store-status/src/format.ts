@@ -34,7 +34,9 @@ function formatLocalHHMM(iso: string | null, timezone: string): string | null {
   return new Intl.DateTimeFormat("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    // hourCycle alone (no hour12): `hour12: false` without an explicit hourCycle can resolve
+    // to "h24" (1-24) on some ICU builds, rendering "24:30" instead of "00:30" at midnight.
+    hourCycle: "h23",
     timeZone: timezone,
   }).format(d);
 }

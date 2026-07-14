@@ -14,6 +14,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
+import { useAnimatedCount } from "@/hooks/useAnimatedCount";
 import { Ionicons } from "@expo/vector-icons";
 import type { BillingLine, CalculateBillResponse } from "@/services/billing.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -79,6 +80,32 @@ function BillSavingsBanner({
 
 function fmt(n: number): string {
   return `₹${n.toFixed(2)}`;
+}
+
+/** Smoothly tweened bill-row value — same amounts, but read as continuous motion instead
+ * of an instant snap when the underlying quantity/offer/tax recalculates. */
+function AnimatedBillValue({
+  value,
+  prefix = "",
+  style,
+}: {
+  value: number;
+  prefix?: string;
+  style?: object;
+}) {
+  const animated = useAnimatedCount(value);
+  return (
+    <CheckoutText style={[styles.lineValue, style]}>
+      {prefix}
+      {fmt(animated)}
+    </CheckoutText>
+  );
+}
+
+/** Same tween, styled as a strike-through (list-price) amount. */
+function AnimatedAsStrike({ value }: { value: number }) {
+  const animated = useAnimatedCount(value);
+  return <CheckoutText style={styles.strikeValue}>{fmt(animated)}</CheckoutText>;
 }
 
 function BillInfoModal({
@@ -165,16 +192,17 @@ function DeliveryFeeValue({
   originalInr: number;
   currentInr: number;
 }) {
+  const animatedOriginal = useAnimatedCount(originalInr);
   const waived = originalInr > 0.005 && currentInr <= 0.005;
   if (waived) {
     return (
       <View style={styles.deliveryValueCluster}>
-        <CheckoutText style={styles.strikeValue}>{fmt(originalInr)}</CheckoutText>
+        <CheckoutText style={styles.strikeValue}>{fmt(animatedOriginal)}</CheckoutText>
         <CheckoutText style={styles.waivedValue}>{fmt(0)}</CheckoutText>
       </View>
     );
   }
-  return <CheckoutText style={styles.lineValue}>{fmt(currentInr)}</CheckoutText>;
+  return <AnimatedBillValue value={currentInr} />;
 }
 
 function DeliveryFeeBreakdownModal({
@@ -275,6 +303,8 @@ export type BillSummarySheetProps = {
   onGstInfoPress: () => void;
   visibleDiscounts: BillingLine[];
   showItemTotalStrike: boolean;
+  /** When set with showItemTotalStrike, Item total nets to this (merchant Boost only). */
+  itemTotalNetOverride?: number | null;
   /** GatiCash wallet applied on checkout (INR). */
   gatiCashApplyAmount?: number;
   /** Missed-offer GatiCash credit selected for after order (INR, informational only). */
@@ -302,6 +332,7 @@ export function BillSummarySheet({
   onGstInfoPress,
   visibleDiscounts,
   showItemTotalStrike,
+  itemTotalNetOverride = null,
   gatiCashApplyAmount = 0,
   missedOfferWalletPendingAmount = 0,
   missedOfferUnlockDiscount = 0,
@@ -346,20 +377,66 @@ export function BillSummarySheet({
     });
   }, [serverBill]);
 
+  /**
+   * BOGO is an item-level pricing rule — the free-unit benefit is already reflected in the
+   * struck-through Item Total. It must NOT also appear as a separate "Buy One Get One"
+   * discount row, so it is folded out of the rows and out of the Grand Total below. Scoped
+   * strictly to BOGO (identified by the offer type/mode the billing engine stamps on every
+   * discount row via offerDiscountMeta) — boost/precision/coupon/platform are untouched.
+   */
+  const isBogoDiscountRow = (d: { meta?: Record<string, unknown> | null }): boolean => {
+    const meta = d.meta ?? {};
+    const t = String(meta.offerType ?? "").toUpperCase().replace(/[-\s]+/g, "_");
+    if (t === "BOGO" || t === "BUY_X_GET_Y" || t === "BUY_N_GET_M") return true;
+    return String(meta.conditionsMode ?? "").toLowerCase() === "bogo";
+  };
+
+  const bogoDiscountTotal = useMemo(
+    () =>
+      visibleDiscounts.reduce(
+        (s, d) => (isBogoDiscountRow(d) ? s + (Number(d.amount) || 0) : s),
+        0
+      ),
+    [visibleDiscounts]
+  );
+
   const grandTotalBeforeDiscounts = useMemo(() => {
     if (!serverBill) return 0;
     return (
       serverBill.finalAmount -
       serverBill.tipAmount -
       serverBill.donationAmount +
-      serverBill.discountTotal
+      serverBill.discountTotal -
+      // BOGO is folded into the Item Total (item-level price), never a row below Grand Total.
+      bogoDiscountTotal
     );
-  }, [serverBill]);
+  }, [serverBill, bogoDiscountTotal]);
 
   const discountRows = useMemo(() => {
     if (!serverBill) return [];
-    return visibleDiscounts.filter((d) => d.amount > 0.005);
+    // Show every discount that sits between Grand Total and To pay (item deals + cart/precision + coupons).
+    // Item total strike is informational; GT is pre-discount so these rows must close the gap.
+    // BOGO excluded — it's reflected in the Item Total, not shown as a separate row.
+    return visibleDiscounts
+      .filter((d) => d.amount > 0.005 && !isBogoDiscountRow(d))
+      .map((d) => ({
+        ...d,
+        label: String(d.label ?? "").trim() || "Offer discount",
+      }));
   }, [serverBill, visibleDiscounts]);
+
+  /** Residual if listed rows don't cover discountTotal (hidden/unnamed lines). */
+  const discountRowsGap = useMemo(() => {
+    if (!serverBill) return 0;
+    const listed = discountRows.reduce((s, d) => s + (d.amount ?? 0), 0);
+    const gap =
+      // Exclude the folded BOGO amount so it never re-surfaces as an "Other offers" row.
+      serverBill.discountTotal -
+      bogoDiscountTotal -
+      listed -
+      (missedOfferUnlockDiscount > 0.005 ? missedOfferUnlockDiscount : 0);
+    return gap > 0.05 ? Math.round(gap * 100) / 100 : 0;
+  }, [serverBill, discountRows, bogoDiscountTotal, missedOfferUnlockDiscount]);
 
   const showSavingsBanner = serverBill != null && serverBill.discountTotal > 0.005;
 
@@ -426,14 +503,17 @@ export function BillSummarySheet({
                 <>
                   <BillLineRow
                     label="Item total"
-                    value={fmt(showItemTotalStrike ? serverBill.itemsNetAfterDiscounts : serverBill.itemTotal)}
                     valueNode={
                       showItemTotalStrike ? (
                         <View style={styles.deliveryValueCluster}>
-                          <CheckoutText style={styles.strikeValue}>{fmt(serverBill.itemTotal)}</CheckoutText>
-                          <CheckoutText style={styles.lineValue}>{fmt(serverBill.itemsNetAfterDiscounts)}</CheckoutText>
+                          <AnimatedAsStrike value={serverBill.itemTotal} />
+                          <AnimatedBillValue
+                            value={itemTotalNetOverride ?? serverBill.itemsNetAfterDiscounts}
+                          />
                         </View>
-                      ) : undefined
+                      ) : (
+                        <AnimatedBillValue value={serverBill.itemTotal} />
+                      )
                     }
                   />
 
@@ -496,31 +576,51 @@ export function BillSummarySheet({
                   {gstAndOtherBreakdown != null && gstAndOtherBreakdown.total > 0.005 ? (
                     <BillLineRow
                       label="GST (govt. taxes)"
-                      value={fmt(gstAndOtherBreakdown.total)}
+                      valueNode={<AnimatedBillValue value={gstAndOtherBreakdown.total} />}
                       dashedUnderline
                       onLabelPress={onGstInfoPress}
                     />
                   ) : null}
 
                   <View style={styles.sectionDivider} />
-                  <BillLineRow label="Grand Total" value={fmt(grandTotalBeforeDiscounts)} valueStyle={styles.grandTotalValue} />
+                  <BillLineRow
+                    label="Grand Total"
+                    valueNode={
+                      <AnimatedBillValue value={grandTotalBeforeDiscounts} style={styles.grandTotalValue} />
+                    }
+                  />
 
                   {discountRows.map((d, idx) => (
                     <BillLineRow
                       key={`disc-${d.ruleId ?? idx}-${d.label}`}
                       label={d.label}
-                      value={`- ${fmt(d.amount)}`}
-                      valueStyle={styles.discountValue}
+                      valueNode={<AnimatedBillValue value={d.amount} prefix="- " style={styles.discountValue} />}
                       labelAccent
                       rowStyle={styles.discountRow}
                     />
                   ))}
 
+                  {discountRowsGap > 0.005 ? (
+                    <BillLineRow
+                      label="Other offers"
+                      valueNode={
+                        <AnimatedBillValue value={discountRowsGap} prefix="- " style={styles.discountValue} />
+                      }
+                      labelAccent
+                      rowStyle={styles.discountRow}
+                    />
+                  ) : null}
+
                   {walletDeduction > 0.005 ? (
                     <BillLineRow
                       label="Using GatiCash"
-                      value={`- ${fmt(walletDeduction)}`}
-                      valueStyle={styles.walletDiscountValue}
+                      valueNode={
+                        <AnimatedBillValue
+                          value={walletDeduction}
+                          prefix="- "
+                          style={styles.walletDiscountValue}
+                        />
+                      }
                       labelAccent
                       rowStyle={styles.discountRow}
                     />
@@ -529,8 +629,9 @@ export function BillSummarySheet({
                   {missedOfferDiscount > 0.005 ? (
                     <BillLineRow
                       label={missedOfferUnlockLabel}
-                      value={`- ${fmt(missedOfferDiscount)}`}
-                      valueStyle={styles.discountValue}
+                      valueNode={
+                        <AnimatedBillValue value={missedOfferDiscount} prefix="- " style={styles.discountValue} />
+                      }
                       labelAccent
                       rowStyle={styles.discountRow}
                     />
@@ -539,17 +640,23 @@ export function BillSummarySheet({
                   {pendingWalletCredit > 0.005 ? (
                     <BillLineRow
                       label="Add to GatiCash wallet"
-                      value={`+ ${fmt(pendingWalletCredit)}`}
-                      valueStyle={styles.pendingWalletValue}
+                      valueNode={
+                        <AnimatedBillValue
+                          value={pendingWalletCredit}
+                          prefix="+ "
+                          style={styles.pendingWalletValue}
+                        />
+                      }
                       rowStyle={styles.pendingWalletRow}
                     />
                   ) : null}
 
                   <View style={styles.toPayRow}>
                     <CheckoutText style={styles.toPayLabel}>To pay</CheckoutText>
-                    <CheckoutText style={styles.toPayValue}>
-                      {fmt(hasCheckoutAdjustments ? toPayAfterWallet : serverBill.finalAmount)}
-                    </CheckoutText>
+                    <AnimatedBillValue
+                      value={hasCheckoutAdjustments ? toPayAfterWallet : serverBill.finalAmount}
+                      style={styles.toPayValue}
+                    />
                   </View>
 
                   {showSavingsBanner ? (

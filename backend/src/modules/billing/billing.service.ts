@@ -4,7 +4,13 @@ import { customerAddresses } from "../../db/schema.js";
 import { getEnv } from "../../config/env.js";
 import { getStoreBillingRates, getStoreByIdForOrder, getStoreByStoreId } from "../merchants/merchant.service.js";
 import type { NormalizedOrderItem } from "../orders/orderNormalizer.js";
-import { rewriteCartPricesAuthoritatively } from "./serverAuthoritativePricing.js";
+import { rewriteCartPricesAuthoritatively, loadMrpIneligibleMenuItemIds, loadMenuItemIdAliases } from "./serverAuthoritativePricing.js";
+import {
+  markOrderLinesDiscountEligibility,
+  cartPromoQualifyingSubtotal,
+  eligibleSubtotal,
+} from "./discountEligibility.js";
+import { getSql } from "../../db/client.js";
 import {
   loadBillingDatasetUncached,
   getRulesetVersion,
@@ -19,6 +25,12 @@ import {
   platformOfferConflictsWithSubscriptionFreeDelivery,
 } from "./platformOffersApply.js";
 import { listMerchantOffersForCheckout } from "./merchantOffersCheckout.js";
+import {
+  resolveOfferDisplaySurface,
+  parseMenuItemIdsFromMeta,
+  parseConditionsModeFromMeta,
+} from "../offers/offer-display-surface.js";
+import { buildCheckoutOfferDisplayTitle } from "../merchants/merchant-offer-headline.js";
 import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
@@ -331,9 +343,10 @@ export async function computeBillForOrder(
 
   const orderValue = itemSubtotal + addonSubtotal;
 
-  const orderLines = input.items.map((i) => {
+  const orderLinesRaw = input.items.map((i) => {
     const lineAddon = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
-    const lineTotal = i.basePrice * i.quantity + lineAddon;
+    const baseLineTotal = i.basePrice * i.quantity;
+    const lineTotal = baseLineTotal + lineAddon;
     const rawQ = Number(i.quantity);
     const quantity =
       Number.isFinite(rawQ) && rawQ > 0 ? Math.max(1, Math.floor(rawQ)) : 1;
@@ -341,7 +354,38 @@ export async function computeBillForOrder(
       menuItemId: String(i.menuItemId),
       lineTotal,
       quantity,
+      baseLineTotal,
+      addonLineTotal: lineAddon,
     };
+  });
+
+  const calcMenuNumericIds = input.items
+    .map((i) => {
+      const raw = String(i.menuItemId ?? "");
+      const base = raw.includes("::")
+        ? raw.split("::")[0]!
+        : raw.includes("_")
+          ? raw.split("_")[0]!
+          : raw;
+      const n = Number(base);
+      return Number.isFinite(n) && n > 0 ? n : NaN;
+    })
+    .filter((n) => Number.isFinite(n));
+
+  const mrpIneligibleIds = await loadMrpIneligibleMenuItemIds(
+    resolved.merchantStoreId,
+    calcMenuNumericIds
+  );
+  const menuIdAliases = await loadMenuItemIdAliases(
+    resolved.merchantStoreId,
+    calcMenuNumericIds
+  );
+  // Offer Engine v2: eligibility is server-only (MRP + item-surface). Client hints ignored.
+  const orderLines = markOrderLinesDiscountEligibility(orderLinesRaw, {
+    mrpIneligibleIds,
+    merchantOffers: dataset.merchantOffers,
+    now: new Date(),
+    extraAliasesByLineId: menuIdAliases,
   });
 
   // Master geo resolver (cascade: live → saved → reverse-geocode → state-name fallback).
@@ -388,6 +432,7 @@ export async function computeBillForOrder(
     addonSubtotal,
     addonQtyTotal,
     orderLines,
+    menuIdAliasesByLineId: menuIdAliases,
     distanceKm,
     merchantStoreId: resolved.merchantStoreId,
     merchantParentId: resolved.parentId,
@@ -501,6 +546,9 @@ export async function computeBillForOrder(
 
   const snapshot = {
     ...adjustedBilling,
+    eligibleSubtotal: adjustedBilling.eligible_subtotal,
+    orderLineEligibility: adjustedBilling.order_line_eligibility,
+    orderLinePricing: adjustedBilling.order_line_pricing,
     deliveryFeeBeforeBenefitsInr,
     ...(subscriptionDeliveryWaivedInr > 0.005
       ? { deliveryFeeWaivedInr: subscriptionDeliveryWaivedInr }
@@ -548,6 +596,11 @@ export type CheckoutOfferMerchantRow = {
   requiresCouponCode: string | null;
   minOrderAmount: number | null;
   estimatedSavingsInr: number | null;
+  /** item = Boost/BOGO on menu; sheet = Precision/cart presence. */
+  displaySurface?: "item" | "sheet" | "both";
+  offerType?: string;
+  /** boost | precision | bogo — used to block GatiCash unlock on store precision. */
+  conditionsMode?: "boost" | "precision" | "bogo" | null;
 };
 
 export type CheckoutOfferPlatformRow = {
@@ -594,11 +647,17 @@ function estimateMerchantOfferSavingsInr(
   cartSubtotal: number
 ): number | null {
   const ot = String(m.offerType).toUpperCase();
-  if (ot === "PERCENTAGE" && num(m.discountPercentage) > 0 && cartSubtotal > 0) {
-    let saving = (cartSubtotal * num(m.discountPercentage)) / 100;
-    const cap = num(m.maxDiscountAmount);
-    if (cap > 0) saving = Math.min(saving, cap);
-    return Math.round(saving);
+  if (ot === "PERCENTAGE" || ot === "CART_PERCENTAGE") {
+    if (num(m.discountPercentage) > 0 && cartSubtotal > 0) {
+      let saving = (cartSubtotal * num(m.discountPercentage)) / 100;
+      const cap = num(m.maxDiscountAmount);
+      if (cap > 0) saving = Math.min(saving, cap);
+      return Math.round(saving);
+    }
+  }
+  if (ot === "BOGO" || ot === "BUY_X_GET_Y" || ot === "BUY_N_GET_M") {
+    // Rough hint — real savings depend on cart lines / qty at apply time.
+    return null;
   }
   const fixed = num(m.discountValue);
   if (fixed > 0) return Math.round(fixed);
@@ -641,12 +700,20 @@ function describeMerchantOfferRow(m: {
   discountPercentage: number | null;
   maxDiscountAmount: number | null;
   minOrderAmount: number | null;
+  buyQuantity?: number | null;
+  getQuantity?: number | null;
 }): string {
   const parts: string[] = [];
   if (m.minOrderAmount != null && m.minOrderAmount > 0) parts.push(`Min order ₹${m.minOrderAmount}`);
   const ot = String(m.offerType).toUpperCase();
-  if (ot === "PERCENTAGE" && m.discountPercentage != null && m.discountPercentage > 0) {
-    parts.push(`${m.discountPercentage}% off`);
+  if (ot === "BOGO" || ot === "BUY_X_GET_Y" || ot === "BUY_N_GET_M") {
+    const buy = m.buyQuantity != null && m.buyQuantity > 0 ? Math.round(m.buyQuantity) : 1;
+    const get = m.getQuantity != null && m.getQuantity > 0 ? Math.round(m.getQuantity) : 1;
+    parts.push(`Buy ${buy} Get ${get}`);
+  } else if (ot === "PERCENTAGE" || ot === "CART_PERCENTAGE") {
+    if (m.discountPercentage != null && m.discountPercentage > 0) {
+      parts.push(`${m.discountPercentage}% off`);
+    }
   } else if (m.discountValue != null && m.discountValue > 0) {
     parts.push(`₹${m.discountValue} off`);
   }
@@ -690,6 +757,40 @@ function describePlatformOfferRow(o: PlatformOfferRow): string {
   return parts.join(" · ") || "Platform offer";
 }
 
+/** Checkout sheet title — fixed amounts always show ₹ (never "Flat 100 off"). */
+function platformOfferCheckoutDisplayName(o: {
+  name: string | null;
+  discountType: string | null;
+  valueNumeric: number | null;
+  maxDiscountAmount: number | null;
+}): string {
+  const dt = String(o.discountType ?? "").toUpperCase();
+  const v = num(o.valueNumeric);
+  if (dt === "FIXED" && v > 0) {
+    return `Flat ₹${Math.round(v)} Off`;
+  }
+  if (dt === "PERCENTAGE" && v > 0) {
+    const cap = num(o.maxDiscountAmount);
+    if (cap > 0) return `Flat ${Math.round(v)}% Off up to ₹${Math.round(cap)}`;
+    return `Flat ${Math.round(v)}% Off`;
+  }
+  return normalizeFlatAmountOfferTitle(o.name);
+}
+
+/** "Flat 100 off" → "Flat ₹100 Off"; leave % titles alone. */
+function normalizeFlatAmountOfferTitle(name: string | null | undefined): string {
+  const raw = String(name ?? "").trim();
+  if (!raw) return "Platform offer";
+  if (/%/.test(raw) || /₹/.test(raw)) {
+    return raw.replace(/\s+/g, " ");
+  }
+  const m = raw.match(/^flat\s+(\d+)\s*(?:rs\.?|inr)?\s*off?$/i);
+  if (m) return `Flat ₹${m[1]} Off`;
+  const m2 = raw.match(/^(\d+)\s*(?:rs\.?|inr)?\s*off$/i);
+  if (m2) return `Flat ₹${m2[1]} Off`;
+  return raw;
+}
+
 /**
  * Promotions to show on checkout: DB coupons, merchant store offers, geo-scoped platform offers.
  * Eligibility mirrors apply-time gates; final discount still comes from POST /billing/calculate.
@@ -700,6 +801,7 @@ export async function listCheckoutBillOffers(
     customerId: number;
     merchantId: string;
     addressId: number;
+    /** Promo-eligible item+addon subtotal (excludes Boost/BOGO lines). Min-order gates use this. */
     cartSubtotal: number;
     serviceType?: string;
     userSegment?: "NEW" | "EXISTING" | "ALL";
@@ -709,6 +811,8 @@ export async function listCheckoutBillOffers(
     liveCity?: string | null;
     /** @deprecated Ignored — eligibility uses cartSubtotal (items + add-ons) only. */
     qualifyingCartTotal?: number | null;
+    /** Cart menu item ids — item-scoped Boost/BOGO eligibility for the offers sheet. */
+    menuItemIds?: string[] | null;
   }
 ): Promise<
   | {
@@ -719,6 +823,15 @@ export async function listCheckoutBillOffers(
       /** Offers filtered out for this cart, each with the rejection reason. */
       platformOffersIneligible: Array<CheckoutOfferPlatformRow & { reason: string }>;
       merchantOffersIneligible: Array<CheckoutOfferMerchantRow & { reason: string; lockReason: string }>;
+      /** Offer Engine v2 — promo-eligible subtotal used for min-order gates. */
+      eligibleSubtotal: number;
+      orderLineEligibility: Array<{
+        menuItemId: string;
+        lineTotal: number;
+        quantity: number;
+        isDiscountEligible: boolean;
+        ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+      }>;
     }
   | { ok: false; code: string; message: string }
 > {
@@ -814,8 +927,61 @@ export async function listCheckoutBillOffers(
 
   const rates = await getStoreBillingRates(resolved.merchantStoreId);
   const itemPlusAddon = Math.max(0, input.cartSubtotal);
-  /** Min-order gates use item + add-on subtotal only — never fees or taxes. */
-  const grossCart = itemPlusAddon;
+
+  // Offer Engine v2: rebuild order lines + eligibility server-side for min-order gates.
+  const menuIdsRaw = (input.menuItemIds ?? []).map((id) => String(id).trim()).filter(Boolean);
+  const numericIds = menuIdsRaw
+    .map((id) => Number(id.includes("::") ? id.split("::")[0] : id.includes("_") ? id.split("_")[0] : id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const priceById = new Map<string, number>();
+  if (numericIds.length > 0) {
+    const sql = getSql();
+    const rows = await sql<Array<{ id: number; selling_price: string }>>`
+      SELECT id, selling_price::text AS selling_price
+      FROM merchant_menu_items
+      WHERE store_id = ${resolved.merchantStoreId}
+        AND id IN ${sql(numericIds)}
+    `;
+    for (const r of rows) {
+      const p = parseFloat(r.selling_price);
+      if (Number.isFinite(p) && p >= 0) priceById.set(String(r.id), p);
+    }
+  }
+
+  const orderLinesRaw =
+    menuIdsRaw.length > 0
+      ? menuIdsRaw.map((menuItemId) => {
+          const base = menuItemId.includes("::")
+            ? menuItemId.split("::")[0]!
+            : menuItemId.includes("_")
+              ? menuItemId.split("_")[0]!
+              : menuItemId;
+          const unit = priceById.get(String(base)) ?? priceById.get(menuItemId) ?? 0;
+          return { menuItemId: base, quantity: 1, lineTotal: unit };
+        })
+      : [];
+
+  const mrpIneligibleIds = await loadMrpIneligibleMenuItemIds(
+    resolved.merchantStoreId,
+    numericIds
+  );
+  const menuIdAliases = await loadMenuItemIdAliases(resolved.merchantStoreId, numericIds);
+
+  const dataset = await loadBillingDatasetUncached(db, {
+    merchantStoreId: resolved.merchantStoreId,
+    couponCode: null,
+    serviceType,
+  });
+
+  const orderLines =
+    orderLinesRaw.length > 0
+      ? markOrderLinesDiscountEligibility(orderLinesRaw, {
+          mrpIneligibleIds,
+          merchantOffers: dataset.merchantOffers,
+          now: new Date(),
+          extraAliasesByLineId: menuIdAliases,
+        })
+      : [];
 
   const deliveryFallbackRates = await getDeliveryFallbackRates();
   const deliveryDefaultBaseInr = deliveryFallbackRates.baseInr;
@@ -841,7 +1007,14 @@ export async function listCheckoutBillOffers(
     itemSubtotal: itemPlusAddon,
     addonSubtotal: 0,
     addonQtyTotal: 0,
-    orderLines: [],
+    orderLines: orderLines.map((l) => ({
+      menuItemId: l.menuItemId,
+      quantity: l.quantity,
+      lineTotal: l.lineTotal,
+      discountEligible: l.discountEligible,
+      ineligibilityReason: l.ineligibilityReason,
+    })),
+    menuIdAliasesByLineId: menuIdAliases,
     distanceKm,
     merchantStoreId: resolved.merchantStoreId,
     merchantParentId: resolved.parentId,
@@ -871,11 +1044,16 @@ export async function listCheckoutBillOffers(
     checkoutAudience: "CUSTOMER",
   };
 
-  const dataset = await loadBillingDatasetUncached(db, {
-    merchantStoreId: resolved.merchantStoreId,
-    couponCode: null,
-    serviceType,
-  });
+  // Scale eligible catalog sum to the client's cart subtotal when prices are available,
+  // so min-order matches calculate's eligible share of the real cart.
+  const catalogAll = orderLines.reduce((s, l) => s + Math.max(0, l.lineTotal), 0);
+  const catalogEligible = eligibleSubtotal(ctx);
+  let grossCart = itemPlusAddon;
+  if (orderLines.length > 0 && catalogAll > 0.005) {
+    grossCart = Math.max(0, (catalogEligible / catalogAll) * itemPlusAddon);
+  } else if (orderLines.length > 0) {
+    grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
+  }
 
   if (input.customerId > 0) {
     const offersWithCap = dataset.merchantOffers.filter(
@@ -902,41 +1080,83 @@ export async function listCheckoutBillOffers(
   const { eligible: merchantEligible, ineligible: merchantIneligible } =
     listMerchantOffersForCheckout(ctx, dataset, grossCart);
 
-  const merchantOffers: CheckoutOfferMerchantRow[] = merchantEligible.map((m) => ({
-    id: m.id,
-    title: m.title,
-    summary: describeMerchantOfferRow(m),
-    autoApply: m.autoApply !== false,
-    requiresCouponCode:
-      m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
-        ? String(m.couponCode).trim()
-        : null,
-    minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
-    estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
-  }));
+  const merchantOffers: CheckoutOfferMerchantRow[] = merchantEligible.map((m) => {
+    const menuItemIds = parseMenuItemIdsFromMeta(m.metadata);
+    const conditionsMode = parseConditionsModeFromMeta(m.metadata);
+    return {
+      id: m.id,
+      title: buildCheckoutOfferDisplayTitle({
+        type: m.offerType,
+        offerTitle: m.title,
+        discountPct: m.discountPercentage,
+        discountVal: m.discountValue,
+        maxDiscount: m.maxDiscountAmount,
+        buyQty: m.buyQuantity,
+        getQty: m.getQuantity,
+        conditionsMode,
+      }),
+      summary: describeMerchantOfferRow(m),
+      autoApply: m.autoApply !== false,
+      requiresCouponCode:
+        m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
+          ? String(m.couponCode).trim()
+          : null,
+      minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+      estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
+      displaySurface: resolveOfferDisplaySurface({
+        offerType: m.offerType,
+        offerSubType: m.offerSubType,
+        menuItemIds,
+        conditionsMode,
+      }),
+      offerType: m.offerType,
+      conditionsMode,
+    };
+  });
 
   const merchantOffersIneligible: Array<
     CheckoutOfferMerchantRow & { reason: string; lockReason: string }
-  > = merchantIneligible.map((m) => ({
-    id: m.id,
-    title: m.title,
-    summary: describeMerchantOfferRow(m),
-    autoApply: m.autoApply !== false,
-    requiresCouponCode:
-      m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
-        ? String(m.couponCode).trim()
-        : null,
-    minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
-    estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
-    reason: m.reason,
-    lockReason: m.lockReason,
-  }));
+  > = merchantIneligible.map((m) => {
+    const menuItemIds = parseMenuItemIdsFromMeta(m.metadata);
+    const conditionsMode = parseConditionsModeFromMeta(m.metadata);
+    return {
+      id: m.id,
+      title: buildCheckoutOfferDisplayTitle({
+        type: m.offerType,
+        offerTitle: m.title,
+        discountPct: m.discountPercentage,
+        discountVal: m.discountValue,
+        maxDiscount: m.maxDiscountAmount,
+        buyQty: m.buyQuantity,
+        getQty: m.getQuantity,
+        conditionsMode,
+      }),
+      summary: describeMerchantOfferRow(m),
+      autoApply: m.autoApply !== false,
+      requiresCouponCode:
+        m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
+          ? String(m.couponCode).trim()
+          : null,
+      minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+      estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
+      displaySurface: resolveOfferDisplaySurface({
+        offerType: m.offerType,
+        offerSubType: m.offerSubType,
+        menuItemIds,
+        conditionsMode,
+      }),
+      offerType: m.offerType,
+      conditionsMode,
+      reason: m.reason,
+      lockReason: m.lockReason,
+    };
+  });
 
   const { eligible: platformRows, rejections: platformRejections } =
     listEligiblePlatformOffersForCheckoutWithReasons(ctx, dataset, grossCart);
   const platformOffers: CheckoutOfferPlatformRow[] = platformRows.map((o) => ({
     id: o.id,
-    name: o.name ?? null,
+    name: platformOfferCheckoutDisplayName(o),
     offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
     summary: describePlatformOfferRow(o),
     estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
@@ -946,20 +1166,25 @@ export async function listCheckoutBillOffers(
   // style hints (instead of the offer being hidden entirely).
   const rejectionById = new Map<number, string>();
   for (const r of platformRejections) rejectionById.set(r.id, r.reason);
-  const platformOffersIneligible: Array<CheckoutOfferPlatformRow & { reason: string }> =
-    dataset.platformOffers
+  const platformOffersIneligible: Array<
+    CheckoutOfferPlatformRow & { reason: string; minCartAmount?: number | null }
+  > = dataset.platformOffers
       .filter((o) => rejectionById.has(o.id))
-      .map((o) => ({
-        id: o.id,
-        name: o.name ?? null,
-        offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
-        summary: describePlatformOfferRow(o),
-        estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
-        reason: formatPlatformOfferLockReason(
-          rejectionById.get(o.id) ?? "",
-          grossCart
-        ),
-      }));
+      .map((o) => {
+        const tech = rejectionById.get(o.id) ?? "";
+        const minMatch = tech.match(/minCart=(\d+(?:\.\d+)?)/);
+        const minCartAmount =
+          minMatch && Number.isFinite(Number(minMatch[1])) ? Number(minMatch[1]) : null;
+        return {
+          id: o.id,
+          name: platformOfferCheckoutDisplayName(o),
+          offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
+          summary: describePlatformOfferRow(o),
+          estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
+          reason: formatPlatformOfferLockReason(tech, grossCart),
+          minCartAmount,
+        };
+      });
 
   // Diagnostic logging — helps debug "no offers showing" issues by showing each filter step.
   // Logs are tagged so they're easy to grep: `grep checkout-offers` in server output.
@@ -1002,6 +1227,14 @@ export async function listCheckoutBillOffers(
     merchantOffersIneligible,
     platformOffers,
     platformOffersIneligible,
+    eligibleSubtotal: Math.round(grossCart * 100) / 100,
+    orderLineEligibility: orderLines.map((l) => ({
+      menuItemId: l.menuItemId,
+      lineTotal: l.lineTotal,
+      quantity: l.quantity,
+      isDiscountEligible: l.discountEligible !== false,
+      ineligibilityReason: l.ineligibilityReason ?? null,
+    })),
   };
 }
 

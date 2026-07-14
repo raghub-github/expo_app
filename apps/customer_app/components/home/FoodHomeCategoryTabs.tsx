@@ -1,12 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -19,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
+import { AppText } from "@/components/AppText";
 
 export type FoodHomeCategoryTabLayout = {
   itemW: number;
@@ -166,7 +160,7 @@ function AnimatedExploreBar({ height }: { height: number }) {
 
   return (
     <Animated.View style={[styles.exploreTab, barStyle, { height }]}>
-      <Text style={styles.exploreText}>Explore </Text>
+      <AppText style={styles.exploreText}>Explore </AppText>
       <Animated.Text style={[styles.exploreChevron, chevronStyle]}>›</Animated.Text>
     </Animated.View>
   );
@@ -239,13 +233,13 @@ function MealsUnderExploreCard({
       >
         <View style={styles.mealsCardBody}>
           <View style={styles.mealsRibbon}>
-            <Text style={styles.mealsRibbonText} numberOfLines={1}>
+            <AppText style={styles.mealsRibbonText} numberOfLines={1}>
               MEALS UNDER
-            </Text>
+            </AppText>
           </View>
-          <Text style={styles.mealsPrice} numberOfLines={1}>
+          <AppText style={styles.mealsPrice} numberOfLines={1}>
             ₹{maxPrice}
-          </Text>
+          </AppText>
         </View>
         <AnimatedExploreBar height={exploreBarH} />
       </View>
@@ -277,10 +271,9 @@ export function FoodHomeCategoryTabs({
     onActiveIdChange?.(id);
   };
 
-  const { itemW, columnGap, circle, pagePadLeft, pagePadRight, trailingSlack } = layout;
+  const { itemW, columnGap, circle, pagePadLeft, pagePadRight } = layout;
   const mealsCardH = Math.round(circle * 1.34);
   const tabMinHeight = circle + 38;
-  const pageWidth = windowWidth;
   const resolvedMaxPrice = useMemo(() => {
     if (Number.isFinite(underPriceMaxPrice) && underPriceMaxPrice > 0) {
       return Math.trunc(underPriceMaxPrice);
@@ -297,14 +290,6 @@ export function FoodHomeCategoryTabs({
     for (const item of items) list.push({ kind: "category", item });
     return list;
   }, [items, showUnderPriceTab]);
-
-  const pages = useMemo(() => {
-    const chunks: TabEntry[][] = [];
-    for (let i = 0; i < entries.length; i += GRID_FIRST_CATEGORY_PAGE_COLUMNS) {
-      chunks.push(entries.slice(i, i + GRID_FIRST_CATEGORY_PAGE_COLUMNS));
-    }
-    return chunks.length > 0 ? chunks : [[{ kind: "all" } as const]];
-  }, [entries]);
 
   const renderTab = (entry: TabEntry, key: string) => {
     if (entry.kind === "under") {
@@ -335,12 +320,12 @@ export function FoodHomeCategoryTabs({
             layout={layout}
             fallbackIcon="apps-outline"
           />
-          <Text
+          <AppText
             style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
             numberOfLines={2}
           >
             {allTabLabel}
-          </Text>
+          </AppText>
           {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
         </TouchableOpacity>
       );
@@ -363,12 +348,12 @@ export function FoodHomeCategoryTabs({
           cacheKey={`tab-category-${cat.id}`}
           layout={layout}
         />
-        <Text
+        <AppText
           style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
           numberOfLines={2}
         >
           {cat.name}
-        </Text>
+        </AppText>
         {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
       </TouchableOpacity>
     );
@@ -377,45 +362,33 @@ export function FoodHomeCategoryTabs({
   return (
     <ScrollView
       horizontal
-      pagingEnabled
+      nestedScrollEnabled
       showsHorizontalScrollIndicator={false}
       decelerationRate="fast"
-      snapToAlignment="start"
-      contentContainerStyle={styles.content}
+      delaysContentTouches={false}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={[
+        styles.content,
+        {
+          paddingLeft: pagePadLeft,
+          paddingRight: pagePadRight,
+          gap: columnGap,
+        },
+      ]}
     >
-      {pages.map((page, pageIndex) => (
-        <View
-          key={`page-${pageIndex}`}
-          style={[
-            styles.page,
-            {
-              width: pageWidth,
-              paddingLeft: pagePadLeft,
-              paddingRight: pagePadRight,
-              gap: columnGap,
-            },
-          ]}
-        >
-          {page.map((entry, index) =>
-            renderTab(entry, `${pageIndex}-${entry.kind === "category" ? entry.item.id : entry.kind}-${index}`)
-          )}
-          {page.length === GRID_FIRST_CATEGORY_PAGE_COLUMNS && trailingSlack > 0 ? (
-            <View style={{ width: trailingSlack }} />
-          ) : null}
-        </View>
-      ))}
+      {entries.map((entry, index) =>
+        renderTab(entry, `${entry.kind === "category" ? entry.item.id : entry.kind}-${index}`)
+      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
-    paddingTop: 4,
-    paddingBottom: 2,
-  },
-  page: {
     flexDirection: "row",
     alignItems: "flex-start",
+    paddingTop: 2,
+    paddingBottom: 0,
   },
   tab: {
     alignItems: "center",

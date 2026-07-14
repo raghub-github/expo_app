@@ -3,40 +3,24 @@ import type {
   GeoHierarchyLevel,
   RideCustomerPricingRow,
   RideVehiclePricingType,
-  RiderDropSlabRow,
-  RiderPickupSlabRow,
   RiderPayoutServiceType,
+  ServicePayoutRuleRow,
 } from "./types.js";
 
-function mapPickupRow(r: Record<string, unknown>): RiderPickupSlabRow {
+function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
   return {
     id: Number(r.id),
+    serviceType: String(r.service_type) as RiderPayoutServiceType,
     geoLevel: String(r.geo_level),
     geoRefId: String(r.geo_ref_id),
-    vehicleType: r.vehicle_type ? (String(r.vehicle_type) as RideVehiclePricingType) : null,
-    minKm: Number(r.min_km),
-    maxKm: r.max_km == null ? null : Number(r.max_km),
-    baseFare: r.base_fare == null ? null : Number(r.base_fare),
-    pickupPerKm: Number(r.pickup_per_km),
-    minCharge: r.min_charge == null ? null : Number(r.min_charge),
+    riderPercentage: Number(r.rider_percentage),
+    platformPercentage: Number(r.platform_percentage),
     waitingChargePerMin: r.waiting_charge_per_min == null ? null : Number(r.waiting_charge_per_min),
-    waitingStartAfter: Number(r.waiting_start_after ?? 0),
+    waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
     priority: Number(r.priority ?? 100),
     isActive: r.is_active === true,
-  };
-}
-
-function mapDropRow(r: Record<string, unknown>): RiderDropSlabRow {
-  return {
-    id: Number(r.id),
-    geoLevel: String(r.geo_level),
-    geoRefId: String(r.geo_ref_id),
-    vehicleType: r.vehicle_type ? (String(r.vehicle_type) as RideVehiclePricingType) : null,
-    minKm: Number(r.min_km),
-    maxKm: r.max_km == null ? null : Number(r.max_km),
-    dropPerKm: Number(r.drop_per_km),
-    priority: Number(r.priority ?? 100),
-    isActive: r.is_active === true,
+    effectiveFrom: r.effective_from == null ? null : String(r.effective_from),
+    effectiveTo: r.effective_to == null ? null : String(r.effective_to),
   };
 }
 
@@ -59,203 +43,65 @@ async function findEffectiveGeoNode(
   return null;
 }
 
-async function loadFoodPickupAt(level: string, refId: string): Promise<RiderPickupSlabRow[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT * FROM food_rider_pickup_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL
-    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
-  `;
-  return (Array.isArray(rows) ? rows : []).map((r) => mapPickupRow(r as Record<string, unknown>));
-}
-
-async function loadFoodDropAt(level: string, refId: string): Promise<RiderDropSlabRow[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT * FROM food_rider_drop_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL
-    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
-  `;
-  return (Array.isArray(rows) ? rows : []).map((r) => mapDropRow(r as Record<string, unknown>));
-}
-
-async function loadParcelPickupAt(level: string, refId: string): Promise<RiderPickupSlabRow[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT * FROM parcel_rider_pickup_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL
-    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
-  `;
-  return (Array.isArray(rows) ? rows : []).map((r) => mapPickupRow(r as Record<string, unknown>));
-}
-
-async function loadParcelDropAt(level: string, refId: string): Promise<RiderDropSlabRow[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT * FROM parcel_rider_drop_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL
-    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
-  `;
-  return (Array.isArray(rows) ? rows : []).map((r) => mapDropRow(r as Record<string, unknown>));
-}
-
-async function loadRidePickupAt(
+async function payoutRuleExists(
   level: string,
   refId: string,
-  vehicleType: RideVehiclePricingType
-): Promise<RiderPickupSlabRow[]> {
+  service: RiderPayoutServiceType,
+  now: Date
+): Promise<boolean> {
   const sql = getSql();
-  const rows = await sql`
-    SELECT * FROM ride_rider_pickup_slabs
+  // postgres.js with prepare:false cannot bind Date as text → ERR_INVALID_ARG_TYPE.
+  const nowIso = now.toISOString();
+  const rows = await sql<{ ok: number }[]>`
+    SELECT 1 AS ok FROM service_payout_rules
     WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND vehicle_type = ${vehicleType}::ride_vehicle_pricing_type
-      AND is_active = true AND deleted_at IS NULL
-    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
+      AND service_type = ${service} AND is_active = true AND deleted_at IS NULL
+      AND (effective_from IS NULL OR effective_from <= ${nowIso}::timestamptz)
+      AND (effective_to IS NULL OR effective_to >= ${nowIso}::timestamptz)
+    LIMIT 1
   `;
-  return (Array.isArray(rows) ? rows : []).map((r) => mapPickupRow(r as Record<string, unknown>));
+  return rows.length > 0;
 }
 
-async function loadRideDropAt(
+async function loadTopPayoutRuleAt(
   level: string,
   refId: string,
-  vehicleType: RideVehiclePricingType
-): Promise<RiderDropSlabRow[]> {
+  service: RiderPayoutServiceType,
+  now: Date
+): Promise<ServicePayoutRuleRow | null> {
   const sql = getSql();
+  const nowIso = now.toISOString();
   const rows = await sql`
-    SELECT * FROM ride_rider_drop_slabs
+    SELECT * FROM service_payout_rules
     WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND vehicle_type = ${vehicleType}::ride_vehicle_pricing_type
-      AND is_active = true AND deleted_at IS NULL
-    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
+      AND service_type = ${service} AND is_active = true AND deleted_at IS NULL
+      AND (effective_from IS NULL OR effective_from <= ${nowIso}::timestamptz)
+      AND (effective_to IS NULL OR effective_to >= ${nowIso}::timestamptz)
+    ORDER BY priority DESC, id ASC
+    LIMIT 1
   `;
-  return (Array.isArray(rows) ? rows : []).map((r) => mapDropRow(r as Record<string, unknown>));
+  const row = Array.isArray(rows) ? rows[0] : undefined;
+  return row ? mapRuleRow(row as Record<string, unknown>) : null;
 }
 
-async function foodPickupExists(level: string, refId: string): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql<{ ok: number }[]>`
-    SELECT 1 AS ok FROM food_rider_pickup_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-async function foodDropExists(level: string, refId: string): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql<{ ok: number }[]>`
-    SELECT 1 AS ok FROM food_rider_drop_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-async function parcelPickupExists(level: string, refId: string): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql<{ ok: number }[]>`
-    SELECT 1 AS ok FROM parcel_rider_pickup_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-async function parcelDropExists(level: string, refId: string): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql<{ ok: number }[]>`
-    SELECT 1 AS ok FROM parcel_rider_drop_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND is_active = true AND deleted_at IS NULL LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-async function ridePickupExists(level: string, refId: string, vehicleType: RideVehiclePricingType): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql<{ ok: number }[]>`
-    SELECT 1 AS ok FROM ride_rider_pickup_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND vehicle_type = ${vehicleType}::ride_vehicle_pricing_type
-      AND is_active = true AND deleted_at IS NULL LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-async function rideDropExists(level: string, refId: string, vehicleType: RideVehiclePricingType): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql<{ ok: number }[]>`
-    SELECT 1 AS ok FROM ride_rider_drop_slabs
-    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
-      AND vehicle_type = ${vehicleType}::ride_vehicle_pricing_type
-      AND is_active = true AND deleted_at IS NULL LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-export async function loadEffectiveRiderPickupSlabs(args: {
+/**
+ * Rider Fare Engine v3.0: resolve the effective service_payout_rules row for a
+ * geo node, via nearest-ancestor inheritance (geo_pricing_chain_steps), same
+ * semantics as the deprecated slab tables.
+ */
+export async function loadEffectiveServicePayoutRule(args: {
   level: GeoHierarchyLevel;
   refId: string;
   service: RiderPayoutServiceType;
-  vehicleType?: RideVehiclePricingType | null;
-}): Promise<{ applied: { level: string; refId: string } | null; slabs: RiderPickupSlabRow[] }> {
-  if (args.service === "ride") {
-    const vt = args.vehicleType ?? "2_wheeler";
-    const applied = await findEffectiveGeoNode(args.level, args.refId, (l, id) =>
-      ridePickupExists(l, id, vt)
-    );
-    if (!applied) return { applied: null, slabs: [] };
-    return { applied, slabs: await loadRidePickupAt(applied.level, applied.refId, vt) };
-  }
-  if (args.service === "parcel") {
-    const applied = await findEffectiveGeoNode(args.level, args.refId, parcelPickupExists);
-    if (!applied) return { applied: null, slabs: [] };
-    return { applied, slabs: await loadParcelPickupAt(applied.level, applied.refId) };
-  }
-  const applied = await findEffectiveGeoNode(args.level, args.refId, foodPickupExists);
-  if (!applied) return { applied: null, slabs: [] };
-  return { applied, slabs: await loadFoodPickupAt(applied.level, applied.refId) };
-}
-
-export async function loadEffectiveRiderDropSlabs(args: {
-  level: GeoHierarchyLevel;
-  refId: string;
-  service: RiderPayoutServiceType;
-  vehicleType?: RideVehiclePricingType | null;
-}): Promise<{ applied: { level: string; refId: string } | null; slabs: RiderDropSlabRow[] }> {
-  if (args.service === "ride") {
-    const vt = args.vehicleType ?? "2_wheeler";
-    const applied = await findEffectiveGeoNode(args.level, args.refId, (l, id) =>
-      rideDropExists(l, id, vt)
-    );
-    if (!applied) return { applied: null, slabs: [] };
-    return { applied, slabs: await loadRideDropAt(applied.level, applied.refId, vt) };
-  }
-  if (args.service === "parcel") {
-    const applied = await findEffectiveGeoNode(args.level, args.refId, parcelDropExists);
-    if (!applied) return { applied: null, slabs: [] };
-    return { applied, slabs: await loadParcelDropAt(applied.level, applied.refId) };
-  }
-  const applied = await findEffectiveGeoNode(args.level, args.refId, foodDropExists);
-  if (!applied) return { applied: null, slabs: [] };
-  return { applied, slabs: await loadFoodDropAt(applied.level, applied.refId) };
-}
-
-export async function hasRiderPickupDropSlabsConfigured(args: {
-  level: GeoHierarchyLevel;
-  refId: string;
-  service: RiderPayoutServiceType;
-  vehicleType?: RideVehiclePricingType | null;
-}): Promise<boolean> {
-  const [pickup, drop] = await Promise.all([
-    loadEffectiveRiderPickupSlabs(args),
-    loadEffectiveRiderDropSlabs(args),
-  ]);
-  return pickup.slabs.length > 0 || drop.slabs.length > 0;
+  now?: Date;
+}): Promise<{ applied: { level: string; refId: string } | null; rule: ServicePayoutRuleRow | null }> {
+  const now = args.now ?? new Date();
+  const applied = await findEffectiveGeoNode(args.level, args.refId, (l, id) =>
+    payoutRuleExists(l, id, args.service, now)
+  );
+  if (!applied) return { applied: null, rule: null };
+  const rule = await loadTopPayoutRuleAt(applied.level, applied.refId, args.service, now);
+  return { applied, rule };
 }
 
 export async function riderHasActiveGmitraMax(riderId: number): Promise<boolean> {

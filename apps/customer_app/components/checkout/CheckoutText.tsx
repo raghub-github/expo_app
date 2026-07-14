@@ -36,7 +36,10 @@ export function CheckoutText({ style, bold, children, ...rest }: Props) {
 
   if (hasComplexChildren(children)) {
     return (
-      <Text style={segmentBase} {...rest}>
+      <Text
+        style={[segmentBase, { fontFamily: segmentFontFamily("alpha", isBold) }]}
+        {...rest}
+      >
         {children}
       </Text>
     );
@@ -67,12 +70,16 @@ export function CheckoutText({ style, bold, children, ...rest }: Props) {
     );
   }
 
+  const inheritedColor = segmentBase.color;
   return (
     <Text style={segmentBase} {...rest}>
       {segments.map((seg, index) => (
         <Text
           key={`${index}-${seg.value.slice(0, 8)}`}
-          style={{ fontFamily: segmentFontFamily(seg.kind, isBold) }}
+          style={[
+            { fontFamily: segmentFontFamily(seg.kind, isBold) },
+            inheritedColor != null ? { color: inheritedColor } : null,
+          ]}
         >
           {seg.value}
         </Text>

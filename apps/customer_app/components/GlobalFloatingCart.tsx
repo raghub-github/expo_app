@@ -24,7 +24,6 @@ import {
 import { useRouter, useSegments, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
   SlideInUp,
@@ -32,10 +31,12 @@ import Animated, {
 } from "react-native-reanimated";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCartStore } from "@/store/cartStore";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useOrderStore } from "@/store/orderStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
 import type { ActiveOrder } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
 import { merchantService } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
@@ -43,6 +44,7 @@ import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
+import { StoreText } from "@/components/store/StoreText";
 import { customerTabBarOffset } from "@/components/CustomerTabBar";
 import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT } from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
@@ -58,6 +60,13 @@ const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
 
 /** Bottom sheet primary accent (GatiMitra-style; brand red token). */
 const SHEET_BRAND_RED = GatiMitraColors.closedRed;
+
+/** Floating View Cart fill — matches menu ADD green, not mint gradient. */
+const FLOAT_CART_GREEN = "#137243";
+const FLOAT_CART_RADIUS = 10;
+/** Soft sage wash — readable contrast vs white page + green CTA. */
+const FLOAT_BAR_BG = "#E8F5EE";
+const FLOAT_BAR_BORDER = "rgba(19, 114, 67, 0.22)";
 
 /** Show on: /home, /home/merchant/*, /home/category/*, /search. */
 function useIsFoodServicePage(): boolean {
@@ -117,6 +126,14 @@ function useHideFloatingCart(): boolean {
   if (segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0) {
     return true;
   }
+  // Checkout owns the screen — never show the floating cart (incl. route settle lag).
+  if (segments[0] === "checkout") return true;
+  if (
+    typeof pathname === "string" &&
+    (pathname === "/checkout" || pathname.startsWith("/checkout/"))
+  ) {
+    return true;
+  }
   // Meals-under-price uses per-card "View cart" → checkout sheet; no dock pill.
   if (typeof pathname === "string" && pathname.startsWith("/home/meals-under-price")) {
     return true;
@@ -171,6 +188,11 @@ export function GlobalFloatingCart() {
   const hideFloatingCart = useHideFloatingCart();
   const suppressMealsUnderFloating = useMealsUnderPriceCartUiStore((s) => s.suppressFloatingCart);
   const checkoutSheetVisible = useCheckoutSheetStore((s) => s.visible);
+  /**
+   * Hide cart immediately on View Cart press — pathname still points at the previous
+   * food route for a few frames while checkout mounts, which caused a flicker.
+   */
+  const [hideForCheckoutNav, setHideForCheckoutNav] = useState(false);
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
@@ -280,12 +302,13 @@ export function GlobalFloatingCart() {
   const hasActiveOrder = trackingOrders.length > 0;
   /** Hide track pill on order sub-routes — tracking UI is already on-screen or irrelevant. */
   const showActiveOrderTracking = hasActiveOrder && !hideFloatingOrderTrackingPill;
-  /** Cart bar only on food-service routes — never on Profile / Orders / Home tabs. */
+  /** Cart bar only on food-service routes — never on Profile / Orders / Home tabs / checkout. */
   const showFloatingFoodCart =
     hasCart &&
     !hideFloatingCart &&
     !suppressMealsUnderFloating &&
     !checkoutSheetVisible &&
+    !hideForCheckoutNav &&
     isFoodServicePage;
   /** Paged dock when tracking + (cart on food page or multiple orders). */
   const showScrollDock =
@@ -323,10 +346,23 @@ export function GlobalFloatingCart() {
     void prefetchSubscriptionPlans(queryClient);
   }, [session, hasCart, queryClient]);
 
+  useEffect(() => {
+    const onCheckout =
+      typeof pathname === "string" &&
+      (pathname === "/checkout" || pathname.startsWith("/checkout/"));
+    if (onCheckout) {
+      setHideForCheckoutNav(true);
+      return;
+    }
+    // Left checkout (back to food browse) — allow the floating cart again.
+    setHideForCheckoutNav(false);
+  }, [pathname]);
+
   const handleCartPress = () => {
     if (isCartStoreClosed) return;
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
+    setHideForCheckoutNav(true);
     void prefetchSubscriptionPlans(queryClient);
     router.push(CHECKOUT_PATH as any);
   };
@@ -334,7 +370,7 @@ export function GlobalFloatingCart() {
   /** Store inner page (merchant menu). */
   const handleViewMenuPress = () => {
     if (!merchantId) return;
-    router.push({ pathname: "/home/merchant/[id]", params: { id: merchantId } });
+    navigateToMerchant(router, queryClient, merchantId);
   };
 
   const handleDismissCartPress = () => {
@@ -382,8 +418,10 @@ export function GlobalFloatingCart() {
           accessibilityRole="button"
           accessibilityLabel="All carts"
         >
-          <Text style={styles.allCartsTabText}>All carts</Text>
-          <Ionicons name="caret-up" size={12} color={GatiMitraColors.emerald} />
+          <StoreText style={styles.allCartsTabText} bold>
+            All carts
+          </StoreText>
+          <Ionicons name="caret-up" size={12} color={FLOAT_CART_GREEN} />
         </Pressable>
       ) : null}
 
@@ -409,12 +447,18 @@ export function GlobalFloatingCart() {
             )}
           </View>
           <View style={styles.gmLeftTextCol}>
-            <Text style={[styles.gmStoreName, compact && styles.gmStoreNameCompact]} numberOfLines={1}>
+            <StoreText
+              style={[styles.gmStoreName, compact && styles.gmStoreNameCompact]}
+              bold
+              numberOfLines={1}
+            >
               {merchantName ?? "Restaurant"}
-            </Text>
+            </StoreText>
             <View style={styles.gmViewMenuRow}>
-              <Text style={styles.gmViewMenuText}>View Menu</Text>
-              <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.emerald} />
+              <StoreText style={styles.gmViewMenuText} bold>
+                View Menu
+              </StoreText>
+              <Ionicons name="chevron-forward" size={10} color={FLOAT_CART_GREEN} />
             </View>
           </View>
         </Pressable>
@@ -431,25 +475,30 @@ export function GlobalFloatingCart() {
           accessibilityState={{ disabled: isCartStoreClosed }}
           accessibilityLabel={isCartStoreClosed ? "Store closed, cart unavailable" : "View cart"}
         >
-          <LinearGradient
-            colors={
+          <View
+            style={[
+              styles.gmViewCartFill,
               isCartStoreClosed
                 ? cartOpenSoon
-                  ? (GatiMitraColors.mintGradient as unknown as [string, string])
-                  : (["#9CA3AF", "#6B7280"] as [string, string])
-                : (GatiMitraColors.checkoutGradient as unknown as [string, string])
-            }
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.gmViewCartGradient}
+                  ? styles.gmViewCartFillOpenSoon
+                  : styles.gmViewCartFillClosed
+                : null,
+            ]}
+            pointerEvents="none"
           >
-            <Text style={[styles.gmViewCartTitle, compact && styles.gmViewCartTitleCompact]}>
+            <StoreText
+              style={[styles.gmViewCartTitle, compact && styles.gmViewCartTitleCompact]}
+              bold
+            >
               {isCartStoreClosed ? cartClosedCta.title : "View Cart"}
-            </Text>
-            <Text style={[styles.gmViewCartSub, compact && styles.gmViewCartSubCompact]}>
+            </StoreText>
+            <StoreText
+              style={[styles.gmViewCartSub, compact && styles.gmViewCartSubCompact]}
+              bold={!isCartStoreClosed}
+            >
               {isCartStoreClosed ? cartClosedCta.sub : itemLabel}
-            </Text>
-          </LinearGradient>
+            </StoreText>
+          </View>
         </TouchableOpacity>
 
         <View style={[styles.gmRightActions, cartRemoveExpanded && styles.gmRightActionsExpanded]}>
@@ -470,7 +519,9 @@ export function GlobalFloatingCart() {
               accessibilityRole="button"
               accessibilityLabel="Confirm remove cart"
             >
-              <Text style={[styles.gmRemoveText, compact && styles.gmRemoveTextCompact]}>Remove</Text>
+              <StoreText style={[styles.gmRemoveText, compact && styles.gmRemoveTextCompact]} bold>
+                Remove
+              </StoreText>
             </Pressable>
           ) : null}
         </View>
@@ -716,12 +767,14 @@ function AllCartsSheetModal({
                     )}
                   </View>
                   <View style={styles.sheetCartMid}>
-                    <Text style={styles.sheetCartName} numberOfLines={1}>
+                    <StoreText style={styles.sheetCartName} bold numberOfLines={1}>
                       {merchantName ?? "Restaurant"}
-                    </Text>
+                    </StoreText>
                     <Pressable style={styles.sheetViewMenuRow} onPress={onViewMenu} hitSlop={6}>
-                      <Text style={styles.sheetMenuLinkText}>View Menu</Text>
-                      <Ionicons name="chevron-forward" size={14} color={SHEET_BRAND_RED} />
+                      <StoreText style={styles.sheetMenuLinkText} bold>
+                        View Menu
+                      </StoreText>
+                      <Ionicons name="chevron-forward" size={10} color={FLOAT_CART_GREEN} />
                     </Pressable>
                   </View>
                     <View style={[styles.sheetCartActions, rowRemoveExpanded && styles.sheetCartActionsExpanded]}>
@@ -731,25 +784,24 @@ function AllCartsSheetModal({
                         disabled={isStoreClosed}
                         style={[styles.sheetViewCartBtn, isStoreClosed && styles.gmViewCartCtaClosed]}
                       >
-                        <LinearGradient
-                          colors={
+                        <View
+                          style={[
+                            styles.sheetViewCartFill,
                             isStoreClosed
                               ? cartOpenSoon
-                                ? (GatiMitraColors.mintGradient as unknown as [string, string])
-                                : (["#9CA3AF", "#6B7280"] as [string, string])
-                              : (GatiMitraColors.checkoutGradient as unknown as [string, string])
-                          }
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={styles.sheetViewCartGradient}
+                                ? styles.gmViewCartFillOpenSoon
+                                : styles.gmViewCartFillClosed
+                              : null,
+                          ]}
+                          pointerEvents="none"
                         >
-                          <Text style={styles.sheetViewCartBtnTitle}>
+                          <StoreText style={styles.sheetViewCartBtnTitle} bold>
                             {isStoreClosed ? closedCta.title : "View Cart"}
-                          </Text>
-                          <Text style={styles.sheetViewCartBtnSub}>
+                          </StoreText>
+                          <StoreText style={styles.sheetViewCartBtnSub} bold={!isStoreClosed}>
                             {isStoreClosed ? closedCta.sub : itemLabel}
-                          </Text>
-                        </LinearGradient>
+                          </StoreText>
+                        </View>
                       </TouchableOpacity>
                       <Pressable
                         style={styles.sheetRowClose}
@@ -837,24 +889,24 @@ const styles = StyleSheet.create({
   },
   allCartsTabText: {
     fontSize: 12,
-    fontWeight: "700",
-    color: GatiMitraColors.emerald,
+    fontFamily: StoreFonts.loraBold,
+    color: FLOAT_CART_GREEN,
     letterSpacing: 0.2,
   },
   gmBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
+    backgroundColor: FLOAT_BAR_BG,
+    borderRadius: 16,
     paddingLeft: 10,
     paddingRight: 6,
     paddingVertical: 8,
     gap: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#ECECEC",
+    borderWidth: 1,
+    borderColor: FLOAT_BAR_BORDER,
   },
   gmBarCompact: {
-    borderRadius: 32,
+    borderRadius: 14,
     paddingVertical: 6,
     paddingLeft: 8,
   },
@@ -896,7 +948,7 @@ const styles = StyleSheet.create({
   },
   gmStoreName: {
     fontSize: 14,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
     color: GatiMitraColors.textPrimary,
   },
   gmStoreNameCompact: {
@@ -905,22 +957,22 @@ const styles = StyleSheet.create({
   gmViewMenuRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 1,
     marginTop: 2,
   },
   gmViewMenuText: {
     fontSize: 12,
-    fontWeight: "600",
-    color: GatiMitraColors.textSecondary,
+    fontFamily: StoreFonts.loraBold,
+    color: FLOAT_CART_GREEN,
   },
   gmViewCartCta: {
-    borderRadius: 26,
+    borderRadius: FLOAT_CART_RADIUS,
     overflow: "hidden",
-    minWidth: 108,
+    minWidth: 96,
   },
   gmViewCartCtaCompact: {
-    minWidth: 96,
-    borderRadius: 22,
+    minWidth: 88,
+    borderRadius: FLOAT_CART_RADIUS,
   },
   gmViewCartCtaClosed: {
     opacity: 0.58,
@@ -928,35 +980,45 @@ const styles = StyleSheet.create({
   dockPillClosed: {
     opacity: 0.58,
   },
-  gmViewCartGradient: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+  gmViewCartFill: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 48,
+    minHeight: 42,
+    backgroundColor: FLOAT_CART_GREEN,
+    borderRadius: FLOAT_CART_RADIUS,
+  },
+  gmViewCartFillOpenSoon: {
+    backgroundColor: "#16A34A",
+  },
+  gmViewCartFillClosed: {
+    backgroundColor: "#6B7280",
   },
   gmViewCartTitle: {
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 13,
+    fontFamily: StoreFonts.loraBold,
     color: "#FFFFFF",
   },
   gmViewCartTitleCompact: {
-    fontSize: 13,
+    fontSize: 12,
   },
   gmViewCartSub: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.92)",
+    fontSize: 10,
+    fontFamily: StoreFonts.loraBold,
+    color: "rgba(255,255,255,0.95)",
     marginTop: 1,
   },
   gmViewCartSubCompact: {
-    fontSize: 10,
+    fontSize: 9,
   },
   gmCloseBtn: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "rgba(255,255,255,0.85)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: FLOAT_BAR_BORDER,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -990,7 +1052,7 @@ const styles = StyleSheet.create({
   },
   gmRemoveText: {
     fontSize: 14,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
     color: SHEET_BRAND_RED,
     letterSpacing: 0.2,
   },
@@ -1133,19 +1195,19 @@ const styles = StyleSheet.create({
   },
   sheetCartName: {
     fontSize: 15,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
     color: GatiMitraColors.textPrimary,
   },
   sheetViewMenuRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 1,
     marginTop: 3,
   },
   sheetMenuLinkText: {
     fontSize: 12,
-    fontWeight: "700",
-    color: SHEET_BRAND_RED,
+    fontFamily: StoreFonts.loraBold,
+    color: FLOAT_CART_GREEN,
   },
   sheetCartActions: {
     flexDirection: "row",
@@ -1159,26 +1221,28 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   sheetViewCartBtn: {
-    borderRadius: 999,
+    borderRadius: FLOAT_CART_RADIUS,
     overflow: "hidden",
     minWidth: 102,
   },
-  sheetViewCartGradient: {
+  sheetViewCartFill: {
     paddingHorizontal: 14,
     paddingVertical: 9,
     alignItems: "center",
     justifyContent: "center",
     minHeight: 46,
+    backgroundColor: FLOAT_CART_GREEN,
+    borderRadius: FLOAT_CART_RADIUS,
   },
   sheetViewCartBtnTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
     color: "#FFFFFF",
   },
   sheetViewCartBtnSub: {
     fontSize: 10,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.92)",
+    fontFamily: StoreFonts.loraBold,
+    color: "rgba(255,255,255,0.95)",
     marginTop: 1,
   },
   sheetRowClose: {

@@ -1,5 +1,5 @@
 /**
- * DB-driven item customization bottom sheet — GatiMitra-style UI, GatiMitra mint accents.
+ * DB-driven item customization bottom sheet — GatiMitra-style UI; CTA/controls use cartAction green.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +38,11 @@ import {
   formatMenuOptionDisplayName,
   formatMenuPortionLabel,
 } from "@/lib/format-menu-portion-label";
+import {
+  estimateBoostUnitPrice,
+  formatOfferRupee,
+  type ItemOfferDisplay,
+} from "@/lib/itemOfferDisplay";
 
 const SHEET_MAX_HEIGHT_RATIO = 0.84;
 
@@ -60,6 +65,8 @@ export type ItemCustomizationSheetProps = {
   onAddCompanionItem?: (item: MenuItem) => void;
   /** Pre-select variant/addons/qty when editing from checkout cart. */
   initialSelection?: ItemCustomizationInitialSelection | null;
+  /** Item-surface Boost / BOGO — size rows show strike / badge. */
+  itemOffer?: ItemOfferDisplay | null;
   onAdd: (params: {
     menuItemId: string;
     name: string;
@@ -120,6 +127,12 @@ type CustomizationOptionRowProps = {
   sizeValue?: string | null;
   sizeUnit?: string | null;
   price: number;
+  /** Catalog price to strike when Boost applies. */
+  strikePrice?: number | null;
+  /** Payable price after Boost (shown instead of `price` when set). */
+  offerPrice?: number | null;
+  /** Compact BOGO chip next to the price. */
+  bogoLabel?: string | null;
   selected: boolean;
   disabled?: boolean;
   singleSelect: boolean;
@@ -134,6 +147,9 @@ function CustomizationOptionRow({
   sizeValue,
   sizeUnit,
   price,
+  strikePrice = null,
+  offerPrice = null,
+  bogoLabel = null,
   selected,
   disabled = false,
   singleSelect,
@@ -142,7 +158,10 @@ function CustomizationOptionRow({
   highlight = false,
   onPress,
 }: CustomizationOptionRowProps) {
-  const showPrice = price > 0;
+  const showOfferStrike =
+    offerPrice != null && strikePrice != null && strikePrice > offerPrice + 0.001;
+  const displayPayable = showOfferStrike ? offerPrice! : price;
+  const showPrice = displayPayable > 0 || price > 0;
   const portionLabel = formatMenuPortionLabel(sizeValue, sizeUnit);
   const a11yLabel = formatMenuOptionDisplayName(name, sizeValue, sizeUnit);
 
@@ -224,7 +243,25 @@ function CustomizationOptionRow({
         <View style={styles.optionCenter}>{labelLine}</View>
 
         <View style={styles.optionTrailing}>
-          {showPrice ? <Text style={styles.optionPrice}>₹{Math.round(price)}</Text> : null}
+          {showPrice ? (
+            <View style={styles.optionPriceCol}>
+              {bogoLabel ? (
+                <View style={styles.bogoChip}>
+                  <Text style={styles.bogoChipText} numberOfLines={1}>
+                    {bogoLabel}
+                  </Text>
+                </View>
+              ) : null}
+              {showOfferStrike ? (
+                <View style={styles.optionPriceStrikeRow}>
+                  <Text style={styles.optionPriceStrike}>{formatOfferRupee(strikePrice!)}</Text>
+                  <Text style={styles.optionPriceOffer}>{formatOfferRupee(displayPayable)}</Text>
+                </View>
+              ) : (
+                <Text style={styles.optionPrice}>{formatOfferRupee(displayPayable)}</Text>
+              )}
+            </View>
+          ) : null}
           {control}
         </View>
       </View>
@@ -270,6 +307,7 @@ export function ItemCustomizationSheet({
   storeMenu = [],
   onAddCompanionItem,
   initialSelection = null,
+  itemOffer = null,
   onAdd,
 }: ItemCustomizationSheetProps) {
   const insets = useSafeAreaInsets();
@@ -356,6 +394,11 @@ export function ItemCustomizationSheet({
     return v ? v.price : displayConfig.variants[0]?.price ?? item.price;
   }, [displayConfig, selectedVariantId, item.price]);
 
+  const boostVariantUnit = useMemo(
+    () => estimateBoostUnitPrice(variantPrice, itemOffer),
+    [variantPrice, itemOffer]
+  );
+
   const addonsTotal = useMemo(() => {
     if (!displayConfig?.customizations) return 0;
     let total = 0;
@@ -368,7 +411,10 @@ export function ItemCustomizationSheet({
     return total;
   }, [displayConfig, selectedAddons]);
 
-  const totalPrice = (variantPrice + addonsTotal) * quantity;
+  const payableUnit = (boostVariantUnit ?? variantPrice) + addonsTotal;
+  const totalPrice = payableUnit * quantity;
+  const catalogTotalPrice = (variantPrice + addonsTotal) * quantity;
+  const showCtaStrike = boostVariantUnit != null && boostVariantUnit < variantPrice - 0.001;
 
   const requiredVariantSelected = useMemo(() => {
     if (!displayConfig?.variants?.length) return true;
@@ -462,13 +508,15 @@ export function ItemCustomizationSheet({
       displayConfig?.variants?.length && selectedVariantId
         ? displayConfig.variants.find((v) => v.id === selectedVariantId)
         : null;
+    const catalogUnit = variantPrice + addonsTotal;
     const baseMenuItemId = String(item.menuItemId != null ? item.menuItemId : item.id);
     onAdd({
       menuItemId: displayConfig?.variants?.length
         ? `${baseMenuItemId}_${selectedVariantId ?? ""}_${addonIds.sort().join(",")}`
         : baseMenuItemId,
       name: item.name,
-      price: totalPrice / quantity,
+      // Catalog all-in — Boost is display-only; checkout/billing re-apply from offers.
+      price: catalogUnit,
       quantity,
       isVeg: item.isVeg,
       basePrice: variant ? variant.price : (displayConfig?.item?.price ?? item.price),
@@ -591,22 +639,36 @@ export function ItemCustomizationSheet({
                     <View style={styles.sectionBlock}>
                       <SectionHeader
                         title="Choose size"
-                        subtitle={sectionSubtitle(true, 1)}
+                        subtitle={
+                          itemOffer?.kind === "bogo"
+                            ? `${sectionSubtitle(true, 1)} · ${itemOffer.label}`
+                            : sectionSubtitle(true, 1)
+                        }
                         required
                       />
                       <View style={styles.optionList}>
-                        {displayConfig.variants.map((v) => (
-                          <CustomizationOptionRow
-                            key={v.id}
-                            name={v.name}
-                            sizeValue={v.sizeValue}
-                            sizeUnit={v.sizeUnit}
-                            price={v.price}
-                            selected={selectedVariantId === v.id}
-                            singleSelect
-                            onPress={() => setSelectedVariantId(v.id)}
-                          />
-                        ))}
+                        {displayConfig.variants.map((v) => {
+                          const boostUnit = estimateBoostUnitPrice(v.price, itemOffer);
+                          const showStrike =
+                            boostUnit != null && boostUnit < v.price - 0.001;
+                          return (
+                            <CustomizationOptionRow
+                              key={v.id}
+                              name={v.name}
+                              sizeValue={v.sizeValue}
+                              sizeUnit={v.sizeUnit}
+                              price={v.price}
+                              strikePrice={showStrike ? Math.round(v.price) : null}
+                              offerPrice={showStrike ? boostUnit : null}
+                              bogoLabel={
+                                itemOffer?.kind === "bogo" ? itemOffer.label : null
+                              }
+                              selected={selectedVariantId === v.id}
+                              singleSelect
+                              onPress={() => setSelectedVariantId(v.id)}
+                            />
+                          );
+                        })}
                       </View>
                     </View>
                   ) : null}
@@ -700,7 +762,7 @@ export function ItemCustomizationSheet({
                         <Ionicons
                           name="remove"
                           size={20}
-                          color={quantity <= 1 ? StoreTheme.textMuted : StoreTheme.accentMintDark}
+                          color={quantity <= 1 ? StoreTheme.textMuted : StoreTheme.cartAction}
                         />
                       </TouchableOpacity>
                       <Text style={styles.qtyValue}>{quantity}</Text>
@@ -709,7 +771,7 @@ export function ItemCustomizationSheet({
                         onPress={() => setQuantity((q) => q + 1)}
                         hitSlop={6}
                       >
-                        <Ionicons name="add" size={20} color={StoreTheme.accentMintDark} />
+                        <Ionicons name="add" size={20} color={StoreTheme.cartAction} />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -728,10 +790,26 @@ export function ItemCustomizationSheet({
                           : "Add item"}
                     </Text>
                     {!isStoreClosed && canAdd ? (
-                      <Text style={styles.addBtnSub}>
-                        ₹{Math.round(totalPrice)}
-                        {quantity > 1 ? ` · ${quantity} × ₹${Math.round(totalPrice / quantity)}` : ""}
-                      </Text>
+                      showCtaStrike ? (
+                        <View style={styles.addBtnPriceRow}>
+                          <Text style={styles.addBtnSubStrike}>
+                            {formatOfferRupee(catalogTotalPrice)}
+                          </Text>
+                          <Text style={styles.addBtnSub}>
+                            {formatOfferRupee(totalPrice)}
+                            {quantity > 1
+                              ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
+                              : ""}
+                          </Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.addBtnSub}>
+                          {formatOfferRupee(totalPrice)}
+                          {quantity > 1
+                            ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
+                            : ""}
+                        </Text>
+                      )
                     ) : null}
                   </TouchableOpacity>
                 </View>
@@ -1028,11 +1106,11 @@ const styles = StyleSheet.create({
     flexWrap: "nowrap",
   },
   optionRowCardSelected: {
-    borderColor: StoreTheme.accentMint,
-    backgroundColor: StoreTheme.accentMintSoft,
+    borderColor: StoreTheme.cartAction,
+    backgroundColor: "#ECFDF5",
   },
   optionRowCardHighlight: {
-    borderColor: "rgba(34, 197, 94, 0.35)",
+    borderColor: "rgba(21, 128, 61, 0.35)",
     backgroundColor: "#F6FEF9",
   },
   optionRowDisabled: {
@@ -1114,6 +1192,52 @@ const styles = StyleSheet.create({
     textAlign: "right",
     flexShrink: 0,
   },
+  optionPriceCol: {
+    alignItems: "flex-end",
+    gap: 2,
+    flexShrink: 0,
+  },
+  optionPriceStrikeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  optionPriceStrike: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: StoreTheme.textMuted,
+    textDecorationLine: "line-through",
+  },
+  optionPriceOffer: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: StoreTheme.offerBlue,
+  },
+  bogoChip: {
+    backgroundColor: StoreTheme.accentMintSoft,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    maxWidth: 88,
+    marginBottom: 2,
+  },
+  bogoChipText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: StoreTheme.cartAction,
+    letterSpacing: 0.2,
+  },
+  addBtnPriceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  addBtnSubStrike: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.65)",
+    textDecorationLine: "line-through",
+  },
   radioOuter: {
     width: 22,
     height: 22,
@@ -1124,13 +1248,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   radioOuterSelected: {
-    borderColor: StoreTheme.accentMint,
+    borderColor: StoreTheme.cartAction,
   },
   radioInner: {
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: StoreTheme.accentMint,
+    backgroundColor: StoreTheme.cartAction,
   },
   mostOrderedBadge: {
     position: "absolute",
@@ -1138,7 +1262,7 @@ const styles = StyleSheet.create({
     left: -4,
     right: -4,
     zIndex: 2,
-    backgroundColor: StoreTheme.accentMint,
+    backgroundColor: StoreTheme.cartAction,
     borderRadius: 3,
     paddingHorizontal: 4,
     paddingVertical: 2,
@@ -1156,14 +1280,14 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 4,
     borderWidth: 2,
-    borderColor: StoreTheme.accentMint,
+    borderColor: StoreTheme.cartAction,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#fff",
   },
   checkboxOuterSelected: {
-    backgroundColor: StoreTheme.accentMint,
-    borderColor: StoreTheme.accentMint,
+    backgroundColor: StoreTheme.cartAction,
+    borderColor: StoreTheme.cartAction,
   },
   checkboxOuterDisabled: {
     opacity: 0.4,
@@ -1203,11 +1327,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1.5,
-    borderColor: StoreTheme.accentMint,
+    borderColor: StoreTheme.cartAction,
     borderRadius: 12,
     paddingVertical: 6,
     paddingHorizontal: 8,
-    backgroundColor: StoreTheme.accentMintSoft,
+    backgroundColor: "#ECFDF5",
     gap: 4,
   },
   qtyBtnCircle: {
@@ -1218,7 +1342,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(34, 197, 94, 0.35)",
+    borderColor: "rgba(21, 128, 61, 0.35)",
   },
   qtyBtnCircleDisabled: {
     backgroundColor: "#F9FAFB",
@@ -1233,7 +1357,7 @@ const styles = StyleSheet.create({
   },
   addBtn: {
     flex: 1,
-    backgroundColor: StoreTheme.accentMint,
+    backgroundColor: StoreTheme.cartAction,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,
@@ -1243,7 +1367,7 @@ const styles = StyleSheet.create({
     minHeight: 52,
     ...Platform.select({
       ios: {
-        shadowColor: StoreTheme.accentMintDark,
+        shadowColor: StoreTheme.cartActionPressed,
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.28,
         shadowRadius: 4,
@@ -1252,7 +1376,7 @@ const styles = StyleSheet.create({
     }),
   },
   addBtnDisabled: {
-    backgroundColor: "#BBF7D0",
+    backgroundColor: "#86EFAC",
     opacity: 0.75,
     ...Platform.select({
       ios: { shadowOpacity: 0 },
@@ -1266,7 +1390,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   addBtnTextDisabled: {
-    color: StoreTheme.accentMintDark,
+    color: StoreTheme.cartActionPressed,
   },
   addBtnSub: {
     fontSize: 13,

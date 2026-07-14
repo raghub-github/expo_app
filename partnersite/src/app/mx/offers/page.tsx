@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import React, { useState, useEffect, Suspense, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
@@ -9,14 +9,17 @@ import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
 import { fetchStoreById, fetchStoreByName, fetchMenuCategories } from '@/lib/database'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
-import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, Copy, Search, Check, Sparkles, Truck, Layers, Package } from 'lucide-react'
+import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, ChevronLeft, ChevronRight, Copy, Search, Check, Sparkles, Truck, Layers, Package, RotateCcw, Minus } from 'lucide-react'
 import { toast } from 'sonner'
+import { ConfirmModal } from '@/components/ConfirmModal'
 import { OfferTrackCard } from './offer-track-card'
+import noRunningOffersTarget from '@/assets/offers/no-running-offers-target.png'
 import {
   countOffersForTrackFilter,
   formatOfferActorDisplay,
   offerMatchesTrackFilter,
   offerWasUpdated,
+  isOfferCampaignExpired,
   type OfferTrackFilter,
 } from './offer-lifecycle'
 import {
@@ -25,7 +28,25 @@ import {
   campaignDateToValidTillIso,
   toLocalDateInputValue,
   normalizeTimeColumnForInput,
+  resolveMenuItemSelection,
 } from './offer-utils'
+import {
+  OFFER_WIZARD_STEPS,
+  OFFER_NAV_STEPS,
+  OFFER_STEP_LABELS,
+  OFFER_PROMO_CHOICES,
+  RECOMMENDED_PERCENTAGE_OFFERS,
+  RECOMMENDED_BOGO_OFFERS,
+  DISCOUNT_SLIDER_MIN,
+  DISCOUNT_SLIDER_MAX,
+  DISCOUNT_SLIDER_STEP,
+  BOOST_SLIDER_MAX,
+  BOOST_SLIDER_STEP,
+  BOOST_POPULAR_PERCENT,
+  type OfferWizardStep,
+  type OfferPublishMode,
+  type OfferCreatePath,
+} from './offer-form-constants'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,6 +58,8 @@ interface MerchantStore {
 }
 
 interface MenuItem {
+  /** Numeric PK — used to resolve legacy offer applicability IDs. */
+  id?: number;
   item_id: string;
   item_name: string;
   category_type: string;
@@ -44,6 +67,8 @@ interface MenuItem {
   actual_price: number;
   in_stock: boolean;
   category_id?: number;
+  /** Resolved category label — set at fetch time so UI never flashes "Other". */
+  category_name?: string;
 }
 
 /** Upload offer banner image to R2 via API (one image per offer; design path docs/merchants/{parent}/stores/{storeId}/offers/{offerId}.ext) */
@@ -68,7 +93,7 @@ async function uploadOfferImageViaApi(
   return data?.url ?? null;
 }
 
-/** Fetch offers via API (service role + merchant auth — same merchant_offers table as agent dashboard). */
+/** Fetch offers via API (service role + merchant auth â€” same merchant_offers table as agent dashboard). */
 async function fetchOffersViaApi(
   storeId: string
 ): Promise<{ offers: DbOffer[]; storeName: string | null; storeCode: string | null }> {
@@ -97,31 +122,86 @@ async function fetchOffersViaApi(
   }
 }
 
-/** Fetch menu items via API (same as menu page; bypasses RLS and returns consistent shape) */
-async function fetchMenuItemsForOffers(storeId: string): Promise<MenuItem[]> {
-  try {
-    const res = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}`, { credentials: 'include' });
-    if (!res.ok) return [];
-    const raw = await res.json();
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map((item: Record<string, unknown>) => ({
-      item_id: String(item.item_id ?? item.id ?? ''),
-      item_name: String(item.item_name ?? ''),
-      category_type: String(item.food_type ?? item.category_type ?? 'VEG'),
-      food_category_item: String(item.food_type ?? item.cuisine_type ?? '-'),
-      actual_price: Number(item.selling_price ?? item.base_price ?? 0),
-      in_stock: item.in_stock !== false,
-      category_id: item.category_id != null ? Number(item.category_id) : undefined,
-    })).filter((m: MenuItem) => m.item_id);
-  } catch {
-    return [];
-  }
-}
-
 interface MenuCategory {
   id: number;
   category_name: string;
   display_order?: number;
+}
+
+/** Fetch menu items via API (same as menu page; bypasses RLS and returns consistent shape) */
+async function fetchMenuItemsForOffers(storeId: string): Promise<MenuItem[]> {
+  try {
+    const [itemsRes, categories] = await Promise.all([
+      fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}&view=list`, {
+        credentials: 'include',
+      }),
+      fetchMenuCategories(storeId),
+    ])
+    if (!itemsRes.ok) return []
+    const raw = await itemsRes.json()
+    const list = Array.isArray(raw) ? raw : []
+    const catById = new Map<number, string>()
+    for (const c of categories || []) {
+      const id = Number((c as MenuCategory).id)
+      const name = String((c as MenuCategory).category_name || '').trim()
+      if (Number.isFinite(id) && name) catById.set(id, name)
+    }
+    return list
+      .map((item: Record<string, unknown>) => {
+        const categoryId =
+          item.category_id != null && item.category_id !== ''
+            ? Number(item.category_id)
+            : undefined
+        const fromJoin =
+          typeof item.category_name === 'string' ? item.category_name.trim() : ''
+        return {
+          id:
+            item.id != null && Number.isFinite(Number(item.id))
+              ? Number(item.id)
+              : undefined,
+          item_id: String(item.item_id ?? item.id ?? ''),
+          item_name: String(item.item_name ?? ''),
+          category_type: String(item.food_type ?? item.category_type ?? 'VEG'),
+          food_category_item: String(item.food_type ?? item.cuisine_type ?? '-'),
+          actual_price: Number(item.selling_price ?? item.base_price ?? 0),
+          in_stock: item.in_stock !== false,
+          category_id: Number.isFinite(categoryId as number) ? categoryId : undefined,
+          category_name:
+            (categoryId != null ? catById.get(categoryId) : undefined) ||
+            fromJoin ||
+            undefined,
+        }
+      })
+      .filter((m: MenuItem) => m.item_id)
+  } catch {
+    return []
+  }
+}
+
+/** Fetch items + categories together so the Applies-to list never flashes "Other". */
+async function fetchMenuCatalogForOffers(
+  storeId: string
+): Promise<{ items: MenuItem[]; categories: MenuCategory[] }> {
+  const [items, categoriesRaw] = await Promise.all([
+    fetchMenuItemsForOffers(storeId),
+    fetchMenuCategories(storeId),
+  ])
+  const categories: MenuCategory[] = (categoriesRaw || []).map((c: Record<string, unknown>) => ({
+    id: Number(c.id),
+    category_name: String(c.category_name ?? '').trim() || 'Other',
+    display_order: c.display_order != null ? Number(c.display_order) : undefined,
+  })).filter((c) => Number.isFinite(c.id))
+
+  // Backfill any item still missing a name from the fresh category list
+  const catById = new Map(categories.map((c) => [c.id, c.category_name]))
+  const enriched = items.map((item) => ({
+    ...item,
+    category_name:
+      item.category_name ||
+      (item.category_id != null ? catById.get(item.category_id) : undefined),
+  }))
+
+  return { items: enriched, categories }
 }
 
 const OFFER_TYPES: { type: OfferType | 'BUY_N_GET_M' | 'COUPON'; label: string; icon: React.ReactNode }[] = [
@@ -135,18 +215,24 @@ const OFFER_TYPES: { type: OfferType | 'BUY_N_GET_M' | 'COUPON'; label: string; 
   { type: 'COUPON', label: 'Coupon code', icon: <Tag size={18} className="text-rose-600" /> },
 ]
 
-const APPLICABILITY_OPTIONS: { value: ApplicabilityType | 'ALL_ORDERS' | 'SPECIFIC_ITEM'; label: string }[] = [
+const APPLICABILITY_OPTIONS: {
+  value: ApplicabilityType | 'ALL_ORDERS' | 'SPECIFIC_ITEM'
+  label: string
+  disabled?: boolean
+  hint?: string
+}[] = [
   { value: 'ALL', label: 'All items' },
   { value: 'SPECIFIC_ITEMS_SET', label: 'Specific items' },
   { value: 'CATEGORY', label: 'Categories' },
-  { value: 'CART', label: 'Cart level' },
-  { value: 'DELIVERY', label: 'Delivery' },
+  { value: 'CART', label: 'Cart level', disabled: true, hint: 'Coming soon' },
+  { value: 'DELIVERY', label: 'Delivery', disabled: true, hint: 'Coming soon' },
 ]
 
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'] as const
-type Step = 'basic' | 'type' | 'applicability' | 'conditions' | 'stackability'
-const STEPS: Step[] = ['basic', 'type', 'applicability', 'conditions', 'stackability']
-const STEP_LABELS: Record<Step, string> = { basic: 'Basic info', type: 'Offer type', applicability: 'Where it applies', conditions: 'Conditions', stackability: 'Stacking & priority' }
+type Step = OfferWizardStep
+const STEPS: Step[] = OFFER_WIZARD_STEPS
+const NAV_STEPS: Step[] = OFFER_NAV_STEPS
+const STEP_LABELS: Record<Step, string> = OFFER_STEP_LABELS
 
 function BodyPortal({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false)
@@ -168,13 +254,39 @@ function OffersContent() {
   const [ownerDisplayName, setOwnerDisplayName] = useState<string | null>(null)
   const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("all")
   const [expandedOfferCards, setExpandedOfferCards] = useState<Record<string, boolean>>({})
+  const [expandedMenuCats, setExpandedMenuCats] = useState<Record<string, boolean>>({})
+  const [startDateMode, setStartDateMode] = useState<'today' | 'tomorrow' | 'custom'>('today')
+  const [conditionsMode, setConditionsMode] = useState<'boost' | 'precision'>('boost')
+  /** First-screen path: Precision | Percentage(Boost) | BOGO */
+  const [createPath, setCreatePath] = useState<OfferCreatePath>('boost')
+  const isPrecisionPath = createPath === 'precision' || conditionsMode === 'precision'
+  /** Precision skips Applies to — Conditions is the first wizard step. */
+  const wizardSteps = useMemo(
+    () => (isPrecisionPath ? STEPS.filter((s) => s !== 'applicability') : STEPS),
+    [isPrecisionPath]
+  )
+  const navSteps = useMemo(
+    () => (isPrecisionPath ? NAV_STEPS.filter((s) => s !== 'applicability') : NAV_STEPS),
+    [isPrecisionPath]
+  )
+  const [deactivateTarget, setDeactivateTarget] = useState<{
+    offerId: string
+    title: string
+  } | null>(null)
+  const [activateTarget, setActivateTarget] = useState<{
+    offerId: string
+    title: string
+  } | null>(null)
+  const [isDeactivating, setIsDeactivating] = useState(false)
+  const [isActivating, setIsActivating] = useState(false)
   
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [showModal, setShowModal] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
-  const [step, setStep] = useState<Step>('basic')
-  const [activeTab, setActiveTab] = useState<'basic' | 'type' | 'applicability' | 'conditions' | 'stackability'>('basic')
+  const [step, setStep] = useState<Step>('choose')
+  const [activeTab, setActiveTab] = useState<OfferWizardStep>('choose')
+  const [publishMode, setPublishMode] = useState<OfferPublishMode>('publish')
   const [sheetVisible, setSheetVisible] = useState(false)
   
   const [formData, setFormData] = useState({
@@ -216,6 +328,7 @@ function OffersContent() {
   const [filteredMenuItems, setFilteredMenuItems] = useState<MenuItem[]>([])
   const [generatedCouponCode, setGeneratedCouponCode] = useState<string>('')
   const [isGeneratingCoupon, setIsGeneratingCoupon] = useState(false)
+  const [selectedRecommendedId, setSelectedRecommendedId] = useState<string | null>(null)
   
   // Refs for handling clicks outside
   const menuItemSuggestionsRef = useRef<HTMLDivElement>(null)
@@ -223,6 +336,19 @@ function OffersContent() {
   const modalContentRef = useRef<HTMLDivElement>(null)
   const offerTypeRef = useRef<HTMLDivElement>(null)
   const applyToRef = useRef<HTMLDivElement>(null)
+
+  // Lock shell scroll so only the offers list scrolls (avoids bottom white gap).
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const html = document.documentElement
+    const body = document.body
+    html.classList.add('mx-no-page-scroll')
+    body.classList.add('mx-no-page-scroll')
+    return () => {
+      html.classList.remove('mx-no-page-scroll')
+      body.classList.remove('mx-no-page-scroll')
+    }
+  }, [])
 
   // FIX: Create controlled input handlers to prevent overwriting
   const handleInputChange = (field: keyof typeof formData) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -303,14 +429,11 @@ function OffersContent() {
         if (cancelled) return
         setOffers(offersData)
 
-        const [items, categories] = await Promise.all([
-          fetchMenuItemsForOffers(storeId),
-          fetchMenuCategories(storeId),
-        ])
+        const { items, categories } = await fetchMenuCatalogForOffers(storeId)
         if (cancelled) return
-        setMenuItems(items || [])
-        setFilteredMenuItems(items || [])
-        setMenuCategories(categories || [])
+        setMenuItems(items)
+        setFilteredMenuItems(items)
+        setMenuCategories(categories)
       } catch (error) {
         if (cancelled) return
         console.error('Error loading offers:', error)
@@ -397,6 +520,105 @@ function OffersContent() {
 
   const displayStoreName = storeName ?? store?.store_name ?? null
 
+  /** Auto priority: higher discount / BOGO value → higher priority. */
+  const autoPriority = useMemo(() => {
+    if (formData.offer_type === 'BUY_X_GET_Y' || formData.offer_type === 'BUY_N_GET_M') {
+      const buy = Math.max(1, parseInt(formData.buy_quantity || '1', 10) || 1)
+      const get = Math.max(1, parseInt(formData.get_quantity || '1', 10) || 1)
+      return Math.round((get / (buy + get)) * 100)
+    }
+    if (formData.offer_type === 'PERCENTAGE' || formData.offer_type === 'COUPON') {
+      const pct = parseFloat(formData.discount_value || formData.discount_percentage || '0')
+      return Number.isFinite(pct) ? Math.round(Math.min(100, Math.max(0, pct))) : 0
+    }
+    if (formData.offer_type === 'FLAT') {
+      const amt = parseFloat(formData.discount_value || '0')
+      return Number.isFinite(amt) ? Math.min(100, Math.round(amt / 5)) : 0
+    }
+    return 0
+  }, [
+    formData.offer_type,
+    formData.buy_quantity,
+    formData.get_quantity,
+    formData.discount_value,
+    formData.discount_percentage,
+  ])
+
+  const merchantReviewSummary = useMemo(() => {
+    const buy = Math.max(1, parseInt(formData.buy_quantity || '1', 10) || 1)
+    const get = Math.max(1, parseInt(formData.get_quantity || '1', 10) || 1)
+    const pct = parseFloat(formData.discount_value || formData.discount_percentage || '0')
+    const mov = formData.min_order_amount
+    const cap = formData.max_discount_amount
+    const isBogo =
+      formData.offer_type === 'BUY_X_GET_Y' || formData.offer_type === 'BUY_N_GET_M'
+
+    let headline = formData.offer_title || 'Your offer'
+    let customerSees = ''
+    let equivalent = ''
+
+    if (isBogo) {
+      const equivPct = Math.round((get / (buy + get)) * 100)
+      headline = `Buy ${buy} Get ${get} Free`
+      customerSees =
+        get === 1 && buy === 1
+          ? 'Customers will get one item free when they buy one.'
+          : `Customers will get ${get} item${get > 1 ? 's' : ''} free when they buy ${buy}.`
+      equivalent = `This is equivalent to a ${equivPct}% discount.`
+    } else if (formData.offer_type === 'PERCENTAGE' && pct > 0) {
+      headline = cap
+        ? `${pct}% Off up to ₹${cap}`
+        : `Flat ${pct}% Off`
+      customerSees = cap
+        ? `Customers save ${pct}% on eligible items, up to ₹${cap}.`
+        : `Customers get a flat ${pct}% discount on eligible items.`
+      equivalent = mov ? `Applies when order value is at least ₹${mov}.` : 'No minimum order value required.'
+    } else if (formData.offer_type === 'FLAT' && pct > 0) {
+      headline = `Flat ₹${formData.discount_value} Off`
+      customerSees = `Customers get ₹${formData.discount_value} off on eligible orders.`
+      equivalent = mov ? `Min order ₹${mov}.` : 'No minimum order value required.'
+    } else {
+      customerSees = 'Complete the previous steps to see how this offer looks to customers.'
+      equivalent = ''
+    }
+
+    const selectedCatalogIds = resolveMenuItemSelection(formData.menu_item_ids, menuItems)
+    const appliesLabel =
+      formData.applicability_type === 'ALL'
+        ? `All menu items (${menuItems.length})`
+        : formData.applicability_type === 'SPECIFIC_ITEMS_SET'
+          ? `${selectedCatalogIds.length} selected item${selectedCatalogIds.length === 1 ? '' : 's'}`
+          : formData.applicability_type === 'CATEGORY'
+            ? `${formData.category_ids.length} categor${formData.category_ids.length === 1 ? 'y' : 'ies'}`
+            : formData.applicability_type === 'CART'
+              ? 'Entire cart'
+              : formData.applicability_type === 'DELIVERY'
+                ? 'Delivery fee'
+                : 'Selected items'
+
+    const daysLabel =
+      formData.applicable_on_days.length === 0
+        ? 'Every day'
+        : formData.applicable_on_days.map((d) => d.slice(0, 3)).join(', ')
+    const timeLabel =
+      formData.applicable_time_start && formData.applicable_time_end
+        ? `${formData.applicable_time_start} – ${formData.applicable_time_end}`
+        : 'All day'
+
+    return {
+      headline,
+      customerSees,
+      equivalent,
+      appliesLabel,
+      daysLabel,
+      timeLabel,
+      mov,
+      cap,
+      isBogo,
+      pct,
+    }
+  }, [formData, menuItems])
+
   const offerActorDisplayOpts = useMemo(
     () => ({ ownerDisplayName }),
     [ownerDisplayName]
@@ -476,18 +698,6 @@ function OffersContent() {
     return () => clearTimeout(t)
   }, [showModal])
 
-  useEffect(() => {
-    if (!showModal) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowModal(false)
-        resetForm()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showModal])
-
   const generateCoupon = () => {
     setIsGeneratingCoupon(true)
 
@@ -554,13 +764,40 @@ function OffersContent() {
   const handleOpenModal = (offer?: Offer) => {
     if (offer) {
       setEditingId(offer.offer_id)
-      const meta = (offer.offer_metadata || {}) as { category_ids?: number[]; tiers?: { min: number; discount: number }[]; menu_item_ids?: string[] }
+      const meta = (offer.offer_metadata || {}) as {
+        category_ids?: number[]
+        tiers?: { min: number; discount: number }[]
+        menu_item_ids?: string[]
+        conditions_mode?: 'boost' | 'precision'
+        create_path?: 'boost' | 'precision' | 'bogo'
+      }
+      const hasItems = (offer.menu_item_ids ?? meta.menu_item_ids ?? []).length > 0
+      const isBogoType =
+        offer.offer_type === 'BUY_X_GET_Y' ||
+        offer.offer_type === 'BUY_N_GET_M' ||
+        offer.offer_type === 'BOGO' ||
+        meta.create_path === 'bogo'
+      const mode: 'boost' | 'precision' =
+        meta.create_path === 'precision' || meta.conditions_mode === 'precision'
+          ? 'precision'
+          : meta.create_path === 'boost' || meta.conditions_mode === 'boost'
+            ? 'boost'
+            : hasItems || offer.offer_sub_type === 'SPECIFIC_ITEM'
+              ? 'boost'
+              : 'precision'
+      setConditionsMode(isBogoType ? 'boost' : mode)
       setFormData({
         offer_title: offer.offer_title,
         offer_description: offer.offer_description || '',
         offer_type: offer.offer_type as OfferType | 'BUY_N_GET_M' | 'COUPON',
-        offer_sub_type: offer.offer_sub_type || 'ALL_ORDERS',
-        applicability_type: (offer.offer_sub_type === 'SPECIFIC_ITEM' ? 'SPECIFIC_ITEMS_SET' : offer.offer_sub_type === 'ALL_ORDERS' ? 'ALL' : (offer as any).applicability_type) || 'ALL',
+        offer_sub_type: offer.offer_sub_type || (hasItems ? 'SPECIFIC_ITEM' : 'ALL_ORDERS'),
+        applicability_type: hasItems
+          ? 'SPECIFIC_ITEMS_SET'
+          : offer.offer_sub_type === 'SPECIFIC_ITEM'
+            ? 'SPECIFIC_ITEMS_SET'
+            : offer.offer_sub_type === 'ALL_ORDERS'
+              ? 'ALL'
+              : ((offer as any).applicability_type as ApplicabilityType) || 'ALL',
         menu_item_ids: offer.menu_item_ids ?? meta.menu_item_ids ?? [],
         category_ids: meta.category_ids || [],
         discount_value: offer.discount_value?.toString() ?? '',
@@ -584,12 +821,44 @@ function OffersContent() {
         priority: offer.priority?.toString() ?? '0',
         tiered_tiers: (meta.tiers || []).map((t: { min: number; discount: number }) => ({ min: String(t.min), discount: String(t.discount) })),
       })
+      const d = Number(offer.discount_value ?? offer.discount_percentage ?? NaN)
+      const mov = Number(offer.min_order_amount ?? NaN)
+      const cap = offer.max_discount_amount != null ? Number(offer.max_discount_amount) : null
+      const matched = RECOMMENDED_PERCENTAGE_OFFERS.find(
+        (p) =>
+          p.discount === d &&
+          p.mov === mov &&
+          (p.maxDiscount ?? null) === (Number.isFinite(cap as number) ? cap : null)
+      )
+      setSelectedRecommendedId(matched?.id ?? null)
       setImagePreview(offer.image_url ?? offer.offer_image_url ?? null)
       if (offer.offer_type === 'COUPON' || offer.coupon_code) {
         setGeneratedCouponCode(offer.coupon_code || '')
       }
+      const fromYmd = toLocalDateInputValue(offer.valid_from)
+      const today = new Date()
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+      const tom = new Date(today)
+      tom.setDate(tom.getDate() + 1)
+      const tomStr = `${tom.getFullYear()}-${String(tom.getMonth() + 1).padStart(2, '0')}-${String(tom.getDate()).padStart(2, '0')}`
+      setStartDateMode(fromYmd === todayStr ? 'today' : fromYmd === tomStr ? 'tomorrow' : 'custom')
+      if (isBogoType) {
+        setCreatePath('bogo')
+      } else if (mode === 'precision') {
+        setCreatePath('precision')
+      } else {
+        setCreatePath('boost')
+      }
     } else {
       setEditingId(null)
+      const today = new Date()
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+      const till = new Date(today)
+      till.setDate(till.getDate() + 1)
+      const tillStr = `${till.getFullYear()}-${String(till.getMonth() + 1).padStart(2, '0')}-${String(till.getDate()).padStart(2, '0')}`
+      setStartDateMode('today')
+      setConditionsMode('boost')
+      setCreatePath('boost')
       setFormData({
         offer_title: '',
         offer_description: '',
@@ -605,8 +874,8 @@ function OffersContent() {
         max_order_amount: '',
         buy_quantity: '',
         get_quantity: '',
-        valid_from: '',
-        valid_till: '',
+        valid_from: todayStr,
+        valid_till: tillStr,
         coupon_code: '',
         auto_apply: true,
         first_order_only: false,
@@ -621,6 +890,7 @@ function OffersContent() {
       })
       setImagePreview(null)
       setGeneratedCouponCode('')
+      setSelectedRecommendedId(null)
     }
     setImageFile(null)
     setShowOfferTypeDropdown(false)
@@ -628,20 +898,29 @@ function OffersContent() {
     setShowMenuItemSuggestions(false)
     setMenuItemSearch('')
     setShowModal(true)
-    setActiveTab('basic')
-    setStep('basic')
-    // Refetch menu items when opening modal so "Specific items" selection has fresh data
+    // New offer: pick promo type first. Edit: Applies to (Precision skips to Conditions).
+    if (offer) {
+      const meta = (offer.offer_metadata as { conditions_mode?: string } | null) ?? {}
+      const startAt = meta.conditions_mode === 'precision' ? 'conditions' : 'applicability'
+      setActiveTab(startAt)
+      setStep(startAt)
+    } else {
+      setActiveTab('choose')
+      setStep('choose')
+    }
+    // Refetch menu catalog when opening modal so names + items arrive together
     if (storeId) {
-      void fetchMenuItemsForOffers(storeId)
-        .then((items) => {
+      void fetchMenuCatalogForOffers(storeId)
+        .then(({ items, categories }) => {
           setMenuItems(items)
           setFilteredMenuItems(items)
+          setMenuCategories(categories)
         })
         .catch(() => {})
     }
   }
 
-  const handleSaveOffer = async () => {
+  const handleSaveOffer = async (mode: OfferPublishMode = publishMode) => {
     if (!store || !store.id) {
       toast.error('Store context not loaded. Please reload the page.')
       return
@@ -673,7 +952,12 @@ function OffersContent() {
 
     // Applicability validation
     const applicabilityType = formData.applicability_type || (formData.offer_sub_type === 'SPECIFIC_ITEM' ? 'SPECIFIC_ITEMS_SET' : 'ALL')
-    if ((applicabilityType === 'SPECIFIC_ITEMS_SET' || formData.offer_sub_type === 'SPECIFIC_ITEM') && formData.menu_item_ids.length === 0) {
+    const isPrecisionOffer = createPath === 'precision' || conditionsMode === 'precision'
+    if (
+      !isPrecisionOffer &&
+      (applicabilityType === 'SPECIFIC_ITEMS_SET' || formData.offer_sub_type === 'SPECIFIC_ITEM') &&
+      resolveMenuItemSelection(formData.menu_item_ids, menuItems).length === 0
+    ) {
       toast.error('Please select at least one menu item when applying to specific items')
       return
     }
@@ -688,6 +972,7 @@ function OffersContent() {
 
     switch (formData.offer_type) {
       case 'BUY_N_GET_M':
+      case 'BUY_X_GET_Y':
         if (!formData.buy_quantity || !formData.get_quantity) {
           isValid = false
           errorMessage = 'Buy quantity and Get quantity are required'
@@ -698,9 +983,9 @@ function OffersContent() {
           isValid = false
           errorMessage = 'Discount percentage is required'
         }
-        if (parseFloat(formData.discount_value) < 0 || parseFloat(formData.discount_value) > 100) {
+        if (parseFloat(formData.discount_value) < 10 || parseFloat(formData.discount_value) > 100) {
           isValid = false
-          errorMessage = 'Discount percentage must be between 0 and 100'
+          errorMessage = 'Discount percentage must be between 10 and 100'
         }
         break
       case 'FLAT':
@@ -743,27 +1028,56 @@ function OffersContent() {
 
     try {
       const applicabilityType = formData.applicability_type || (formData.offer_sub_type === 'SPECIFIC_ITEM' ? 'SPECIFIC_ITEMS_SET' : 'ALL')
+      const isPrecisionSave = createPath === 'precision' || conditionsMode === 'precision'
+      const isBogoSave =
+        formData.offer_type === 'BUY_X_GET_Y' ||
+        formData.offer_type === 'BUY_N_GET_M' ||
+        formData.offer_type === 'BOGO'
+      const resolvedMenuIds = resolveMenuItemSelection(formData.menu_item_ids, menuItems)
+      const isSpecificItems =
+        !isPrecisionSave &&
+        (applicabilityType === 'SPECIFIC_ITEMS_SET' || formData.offer_sub_type === 'SPECIFIC_ITEM') &&
+        resolvedMenuIds.length > 0
+      const savedMode: 'boost' | 'precision' | null = isBogoSave
+        ? null
+        : isPrecisionSave
+          ? 'precision'
+          : 'boost'
       const offerPayload: any = {
         store_id: storeId || store.id,
         offer_title: formData.offer_title,
         offer_description: formData.offer_description || null,
         offer_type: formData.offer_type,
-        offer_sub_type: formData.offer_sub_type,
-        menu_item_ids: (applicabilityType === 'SPECIFIC_ITEMS_SET' || formData.offer_sub_type === 'SPECIFIC_ITEM') && formData.menu_item_ids.length > 0 ? formData.menu_item_ids : null,
+        offer_sub_type: isPrecisionSave
+          ? 'ALL_ORDERS'
+          : isSpecificItems
+            ? 'SPECIFIC_ITEM'
+            : formData.offer_sub_type || 'ALL_ORDERS',
+        menu_item_ids: isPrecisionSave ? [] : isSpecificItems ? resolvedMenuIds : [],
         discount_value: formData.discount_value !== '' ? formData.discount_value : null,
         discount_percentage: formData.offer_type === 'PERCENTAGE' && formData.discount_value !== '' ? formData.discount_value : null,
         max_discount_amount: formData.max_discount_amount !== '' ? formData.max_discount_amount : null,
         min_order_amount: formData.min_order_amount !== '' ? formData.min_order_amount : null,
         max_order_amount: formData.max_order_amount !== '' ? formData.max_order_amount : null,
-        buy_quantity: formData.buy_quantity ? parseInt(formData.buy_quantity, 10) : null,
-        get_quantity: formData.get_quantity ? parseInt(formData.get_quantity, 10) : null,
+        buy_quantity:
+          formData.offer_type === 'BUY_X_GET_Y' || formData.offer_type === 'BUY_N_GET_M'
+            ? parseInt(formData.buy_quantity || '1', 10)
+            : formData.buy_quantity
+              ? parseInt(formData.buy_quantity, 10)
+              : null,
+        get_quantity:
+          formData.offer_type === 'BUY_X_GET_Y' || formData.offer_type === 'BUY_N_GET_M'
+            ? parseInt(formData.get_quantity || '1', 10)
+            : formData.get_quantity
+              ? parseInt(formData.get_quantity, 10)
+              : null,
         coupon_code: (formData.offer_type === 'COUPON' ? generatedCouponCode : formData.coupon_code) || null,
         valid_from: campaignDateToValidFromIso(formData.valid_from),
         valid_till: campaignDateToValidTillIso(formData.valid_till),
-        is_active: true,
+        is_active: mode === 'draft' ? false : true,
         auto_apply: formData.auto_apply,
         is_stackable: formData.is_stackable,
-        priority: parseInt(formData.priority, 10) || 0,
+        priority: autoPriority,
         per_order_limit: 1,
         first_order_only: formData.first_order_only,
         max_uses_total: formData.max_uses_total !== '' ? parseInt(formData.max_uses_total, 10) : null,
@@ -772,9 +1086,22 @@ function OffersContent() {
         applicable_time_start: formData.applicable_time_start || null,
         applicable_time_end: formData.applicable_time_end || null,
         max_discount_per_order: formData.max_discount_amount !== '' ? formData.max_discount_amount : null,
-        offer_metadata: formData.offer_type === 'TIERED' && formData.tiered_tiers.length > 0
-          ? { tiers: formData.tiered_tiers.map(t => ({ min: Number(t.min), discount: Number(t.discount) })), category_ids: formData.category_ids.length ? formData.category_ids : undefined }
-          : (formData.category_ids.length ? { category_ids: formData.category_ids } : {}),
+        lifecycle_status: mode === 'draft' ? 'DRAFT' : undefined,
+        publish_mode: mode,
+        offer_metadata: (() => {
+          const meta: Record<string, unknown> = {
+            create_path: isBogoSave ? 'bogo' : isPrecisionSave ? 'precision' : 'boost',
+          }
+          if (savedMode) meta.conditions_mode = savedMode
+          meta.menu_item_ids = isPrecisionSave ? [] : isSpecificItems ? formData.menu_item_ids : []
+          if (formData.offer_type === 'TIERED' && formData.tiered_tiers.length > 0) {
+            meta.tiers = formData.tiered_tiers.map(t => ({ min: Number(t.min), discount: Number(t.discount) }))
+            if (formData.category_ids.length) meta.category_ids = formData.category_ids
+          } else if (!isPrecisionSave && formData.category_ids.length) {
+            meta.category_ids = formData.category_ids
+          }
+          return meta
+        })(),
       }
 
       let result: Offer | null = null
@@ -839,7 +1166,13 @@ function OffersContent() {
           }
           return [normalized, ...prev];
         });
-        toast.success(editingId ? 'Offer updated successfully!' : 'Offer created successfully!');
+        toast.success(
+          editingId
+            ? 'Offer updated successfully!'
+            : mode === 'draft'
+              ? 'Offer saved as draft'
+              : 'Offer published successfully!'
+        );
         setPageTab('track');
         setShowModal(false);
         resetForm();
@@ -854,22 +1187,69 @@ function OffersContent() {
     }
   }
 
-  const handleDeleteOffer = async (offerId: string) => {
-    if (!confirm('Are you sure you want to delete this offer?')) return
+  const requestDeactivateOffer = (offerId: string, title: string) => {
+    setDeactivateTarget({ offerId, title })
+  }
+
+  const requestActivateOffer = (offerId: string, title: string) => {
+    setActivateTarget({ offerId, title })
+  }
+
+  const handleDeactivateOffer = async () => {
+    if (!deactivateTarget) return
+    setIsDeactivating(true)
     try {
-      const res = await fetch(`/api/merchant/offers/${encodeURIComponent(offerId)}`, {
-        method: 'DELETE',
+      const res = await fetch(`/api/merchant/offers/${encodeURIComponent(deactivateTarget.offerId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
+        body: JSON.stringify({ action: 'deactivate' }),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        throw new Error(err.error || 'Delete failed')
+        throw new Error(err.error || 'Deactivate failed')
       }
-      setOffers(prev => prev.filter(offer => offer.offer_id !== offerId))
-      toast.success('Offer deleted successfully!')
+      const updated = await res.json()
+      const normalized = normalizeOfferFromApi(updated as Record<string, unknown>)
+      setOffers(prev =>
+        prev.map(offer => (offer.offer_id === deactivateTarget.offerId ? normalized : offer))
+      )
+      toast.success('Offer deactivated')
+      setDeactivateTarget(null)
     } catch (e) {
-      console.error('Delete offer:', e)
-      toast.error('Failed to delete offer')
+      console.error('Deactivate offer:', e)
+      toast.error('Failed to deactivate offer')
+    } finally {
+      setIsDeactivating(false)
+    }
+  }
+
+  const handleActivateOffer = async () => {
+    if (!activateTarget) return
+    setIsActivating(true)
+    try {
+      const res = await fetch(`/api/merchant/offers/${encodeURIComponent(activateTarget.offerId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'activate' }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Activate failed')
+      }
+      const updated = await res.json()
+      const normalized = normalizeOfferFromApi(updated as Record<string, unknown>)
+      setOffers(prev =>
+        prev.map(offer => (offer.offer_id === activateTarget.offerId ? normalized : offer))
+      )
+      toast.success('Offer activated')
+      setActivateTarget(null)
+    } catch (e) {
+      console.error('Activate offer:', e)
+      toast.error(e instanceof Error ? e.message : 'Failed to activate offer')
+    } finally {
+      setIsActivating(false)
     }
   }
 
@@ -906,31 +1286,203 @@ function OffersContent() {
     setImageFile(null)
     setImagePreview(null)
     setEditingId(null)
-    setActiveTab('basic')
-    setStep('basic')
+    setActiveTab('choose')
+    setStep('choose')
     setShowOfferTypeDropdown(false)
     setShowApplyToDropdown(false)
     setShowMenuItemSuggestions(false)
     setMenuItemSearch('')
     setGeneratedCouponCode('')
+    setSelectedRecommendedId(null)
+    setStartDateMode('today')
+    setConditionsMode('boost')
+    setCreatePath('boost')
   }
 
   const toggleMenuItemSelection = (itemId: string) => {
-    setFormData(prev => {
+    setFormData((prev) => {
+      const isAllMode = prev.applicability_type === 'ALL'
+      // From "All items": unchecking one switches to Specific with every other item selected
+      if (isAllMode) {
+        const remaining = menuItems.map((m) => m.item_id).filter((id) => id !== itemId)
+        return {
+          ...prev,
+          applicability_type: 'SPECIFIC_ITEMS_SET' as ApplicabilityType,
+          offer_sub_type: 'SPECIFIC_ITEM',
+          menu_item_ids: remaining,
+        }
+      }
+
       const isSelected = prev.menu_item_ids.includes(itemId)
-      if (isSelected) {
+      const nextIds = isSelected
+        ? prev.menu_item_ids.filter((id) => id !== itemId)
+        : [...prev.menu_item_ids, itemId]
+
+      // If every menu item is selected again, switch back to All items
+      if (
+        menuItems.length > 0 &&
+        nextIds.length === menuItems.length &&
+        menuItems.every((m) => nextIds.includes(m.item_id))
+      ) {
         return {
           ...prev,
-          menu_item_ids: prev.menu_item_ids.filter(id => id !== itemId)
+          applicability_type: 'ALL' as ApplicabilityType,
+          offer_sub_type: 'ALL_ORDERS',
+          menu_item_ids: [],
         }
-      } else {
-        return {
-          ...prev,
-          menu_item_ids: [...prev.menu_item_ids, itemId]
-        }
+      }
+
+      return {
+        ...prev,
+        applicability_type: 'SPECIFIC_ITEMS_SET' as ApplicabilityType,
+        offer_sub_type: 'SPECIFIC_ITEM',
+        menu_item_ids: nextIds,
       }
     })
   }
+
+  const setSelectedMenuItemIds = (nextIds: string[]) => {
+    const unique = [...new Set(nextIds)]
+    if (
+      menuItems.length > 0 &&
+      unique.length === menuItems.length &&
+      menuItems.every((m) => unique.includes(m.item_id))
+    ) {
+      setFormData((prev) => ({
+        ...prev,
+        applicability_type: 'ALL',
+        offer_sub_type: 'ALL_ORDERS',
+        menu_item_ids: [],
+      }))
+      return
+    }
+    setFormData((prev) => ({
+      ...prev,
+      applicability_type: 'SPECIFIC_ITEMS_SET',
+      offer_sub_type: 'SPECIFIC_ITEM',
+      menu_item_ids: unique,
+    }))
+  }
+
+  const selectAllMenuItems = () => {
+    setFormData((prev) => ({
+      ...prev,
+      applicability_type: 'ALL',
+      offer_sub_type: 'ALL_ORDERS',
+      menu_item_ids: [],
+    }))
+  }
+
+  const unselectAllMenuItems = () => {
+    setFormData((prev) => ({
+      ...prev,
+      applicability_type: 'SPECIFIC_ITEMS_SET',
+      offer_sub_type: 'SPECIFIC_ITEM',
+      menu_item_ids: [],
+    }))
+  }
+
+  const toggleCategoryItemSelection = (categoryItemIds: string[], selectAll: boolean) => {
+    if (selectAll) {
+      const base =
+        formData.applicability_type === 'ALL'
+          ? menuItems.map((m) => m.item_id)
+          : formData.menu_item_ids
+      setSelectedMenuItemIds([...new Set([...base, ...categoryItemIds])])
+    } else {
+      const base =
+        formData.applicability_type === 'ALL'
+          ? menuItems.map((m) => m.item_id)
+          : formData.menu_item_ids
+      const remove = new Set(categoryItemIds)
+      setSelectedMenuItemIds(base.filter((id) => !remove.has(id)))
+    }
+  }
+
+  const menuItemsGroupedByCategory = useMemo(() => {
+    const q = menuItemSearch.trim().toLowerCase()
+    const visible = menuItems.filter((item) => {
+      if (!isItemEligibleForCurrentOffer(item)) return false
+      if (!q) return true
+      return item.item_name.toLowerCase().includes(q)
+    })
+
+    const catNameById = new Map<number, string>()
+    for (const c of menuCategories) {
+      const id = Number(c.id)
+      if (Number.isFinite(id) && c.category_name) catNameById.set(id, c.category_name)
+    }
+
+    const catName = (item: MenuItem) => {
+      if (item.category_id != null) {
+        const fromState = catNameById.get(Number(item.category_id))
+        if (fromState) return fromState
+      }
+      if (item.category_name?.trim()) return item.category_name.trim()
+      return 'Other'
+    }
+
+    const map = new Map<string, { key: string; name: string; items: MenuItem[] }>()
+    for (const item of visible) {
+      const key = item.category_id != null ? `c-${item.category_id}` : 'other'
+      const name = catName(item)
+      const bucket = map.get(key) ?? { key, name, items: [] }
+      // Prefer a real name if this bucket was created as "Other" earlier
+      if (bucket.name === 'Other' && name !== 'Other') bucket.name = name
+      bucket.items.push(item)
+      map.set(key, bucket)
+    }
+
+    // Prefer category display order from menuCategories
+    const ordered: { key: string; name: string; items: MenuItem[] }[] = []
+    for (const cat of menuCategories) {
+      const bucket = map.get(`c-${cat.id}`)
+      if (bucket) {
+        bucket.name = cat.category_name || bucket.name
+        ordered.push(bucket)
+      }
+      map.delete(`c-${cat.id}`)
+    }
+    for (const bucket of map.values()) ordered.push(bucket)
+    return ordered
+  }, [menuItems, menuCategories, menuItemSearch, formData.offer_type, offersByItemId])
+
+  const resolvedSelectedMenuIds = useMemo(
+    () => resolveMenuItemSelection(formData.menu_item_ids, menuItems),
+    [formData.menu_item_ids, menuItems]
+  )
+  const resolvedSelectedMenuIdSet = useMemo(
+    () => new Set(resolvedSelectedMenuIds),
+    [resolvedSelectedMenuIds]
+  )
+
+  // Prune / remap legacy PK ids onto catalog item_id once menu is loaded.
+  useEffect(() => {
+    if (!showModal || menuItems.length === 0) return
+    if (formData.applicability_type !== 'SPECIFIC_ITEMS_SET') return
+    if (formData.menu_item_ids.length === 0) return
+    const resolved = resolveMenuItemSelection(formData.menu_item_ids, menuItems)
+    const prevSet = new Set(formData.menu_item_ids.map((id) => String(id).trim()))
+    const same =
+      resolved.length === prevSet.size && resolved.every((id) => prevSet.has(id))
+    if (same) return
+    setFormData((prev) => ({
+      ...prev,
+      menu_item_ids: resolved,
+    }))
+  }, [showModal, menuItems, formData.applicability_type, formData.menu_item_ids])
+
+  const selectedMenuCount =
+    formData.applicability_type === 'ALL' ? menuItems.length : resolvedSelectedMenuIds.length
+  const allMenuSelected =
+    menuItems.length > 0 &&
+    (formData.applicability_type === 'ALL' ||
+      menuItems.every((m) => resolvedSelectedMenuIdSet.has(m.item_id)))
+  const noneMenuSelected =
+    formData.applicability_type !== 'ALL' && resolvedSelectedMenuIds.length === 0
+
+  const isMenuItemSelected = (itemId: string) =>
+    formData.applicability_type === 'ALL' || resolvedSelectedMenuIdSet.has(itemId)
 
   const getMenuItemName = (itemId: string) => {
     const item = menuItems.find(mi => mi.item_id === itemId)
@@ -1003,7 +1555,24 @@ function OffersContent() {
     setFormData(prev => ({
       ...prev,
       applicability_type: value,
-      offer_sub_type: value === 'ALL' ? 'ALL_ORDERS' : value === 'SPECIFIC_ITEMS_SET' ? 'SPECIFIC_ITEM' : prev.offer_sub_type,
+      offer_sub_type:
+        value === 'ALL'
+          ? 'ALL_ORDERS'
+          : value === 'SPECIFIC_ITEMS_SET'
+            ? 'SPECIFIC_ITEM'
+            : value === 'CATEGORY'
+              ? 'CATEGORY'
+              : value === 'CART'
+                ? 'CART'
+                : value === 'DELIVERY'
+                  ? 'DELIVERY'
+                  : prev.offer_sub_type,
+      // Clear the other selection when switching modes
+      ...(value === 'CATEGORY'
+        ? { menu_item_ids: [] as string[] }
+        : value === 'SPECIFIC_ITEMS_SET' || value === 'ALL'
+          ? { category_ids: [] as number[] }
+          : { menu_item_ids: [] as string[], category_ids: [] as number[] }),
     }))
     setShowApplyToDropdown(false)
   }
@@ -1044,10 +1613,391 @@ function OffersContent() {
     }))
   }
 
+  const setScheduleDays = (days: string[]) => {
+    setFormData((prev) => ({ ...prev, applicable_on_days: days }))
+  }
+
+  const WEEKDAY_KEYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY']
+  const WEEKEND_KEYS = ['SATURDAY', 'SUNDAY']
+  const allDaysSelected =
+    formData.applicable_on_days.length === 0 ||
+    formData.applicable_on_days.length === DAYS_OF_WEEK.length
+  const weekdaysSelected =
+    WEEKDAY_KEYS.every((d) => formData.applicable_on_days.includes(d)) &&
+    formData.applicable_on_days.length === WEEKDAY_KEYS.length
+  const weekendSelected =
+    WEEKEND_KEYS.every((d) => formData.applicable_on_days.includes(d)) &&
+    formData.applicable_on_days.length === WEEKEND_KEYS.length
+
+  const formatTimeLabel = (t: string) => {
+    if (!t) return null
+    const [h, m] = t.split(':').map(Number)
+    if (Number.isNaN(h)) return t
+    const ampm = h >= 12 ? 'PM' : 'AM'
+    const hour12 = h % 12 || 12
+    return `${hour12}:${String(m ?? 0).padStart(2, '0')} ${ampm}`
+  }
+
+  const scheduleSummary = (() => {
+    const days =
+      formData.applicable_on_days.length === 0
+        ? 'Every day'
+        : formData.applicable_on_days.length === 7
+          ? 'Every day'
+          : weekdaysSelected
+            ? 'Weekdays'
+            : weekendSelected
+              ? 'Weekends'
+              : formData.applicable_on_days.map((d) => d.slice(0, 3)).join(', ')
+    const start = formatTimeLabel(formData.applicable_time_start)
+    const end = formatTimeLabel(formData.applicable_time_end)
+    const time =
+      start && end ? `${start} – ${end}` : start ? `From ${start}` : end ? `Until ${end}` : 'All day'
+    return { days, time }
+  })()
+
+  const toLocalYmd = (d: Date) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  const formatDayMonth = (ymd: string) => {
+    if (!ymd) return 'Select date'
+    const d = new Date(`${ymd}T12:00:00`)
+    if (Number.isNaN(d.getTime())) return ymd
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  }
+  const todayYmd = toLocalYmd(new Date())
+  const addDaysYmd = (ymd: string, days: number) => {
+    const d = new Date(`${ymd}T12:00:00`)
+    if (Number.isNaN(d.getTime())) return ymd
+    d.setDate(d.getDate() + days)
+    return toLocalYmd(d)
+  }
+  const addMonthsYmd = (ymd: string, months: number) => {
+    const d = new Date(`${ymd}T12:00:00`)
+    if (Number.isNaN(d.getTime())) return ymd
+    d.setMonth(d.getMonth() + months)
+    return toLocalYmd(d)
+  }
+  const tomorrowYmd = addDaysYmd(todayYmd, 1)
+  const dayAfterTomorrowYmd = addDaysYmd(todayYmd, 2)
+  const applyStartDatePreset = (mode: 'today' | 'tomorrow' | 'custom', customYmd?: string) => {
+    if (mode === 'today') {
+      setStartDateMode('today')
+      setFormData((prev) => ({
+        ...prev,
+        valid_from: todayYmd,
+        valid_till: tomorrowYmd,
+      }))
+      return
+    }
+    if (mode === 'tomorrow') {
+      setStartDateMode('tomorrow')
+      setFormData((prev) => ({
+        ...prev,
+        valid_from: tomorrowYmd,
+        valid_till: dayAfterTomorrowYmd,
+      }))
+      return
+    }
+    // Custom chip: start today, end = same day next month. Manual date edits pass customYmd.
+    setStartDateMode('custom')
+    if (customYmd) {
+      setFormData((prev) => ({
+        ...prev,
+        valid_from: customYmd,
+        valid_till:
+          prev.valid_till && prev.valid_till >= customYmd
+            ? prev.valid_till
+            : addDaysYmd(customYmd, 1),
+      }))
+      return
+    }
+    setFormData((prev) => ({
+      ...prev,
+      valid_from: todayYmd,
+      valid_till: addMonthsYmd(todayYmd, 1),
+    }))
+  }
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
     toast.success('Copied to clipboard!')
   }
+
+  const handlePromoChoice = (choice: (typeof OFFER_PROMO_CHOICES)[number]) => {
+    const path: OfferCreatePath =
+      choice.id === 'precision' ? 'precision' : choice.id === 'bogo' ? 'bogo' : 'boost'
+    setCreatePath(path)
+    setConditionsMode(path === 'precision' ? 'precision' : 'boost')
+    setFormData((prev) => ({
+      ...prev,
+      offer_type: choice.offerType,
+      buy_quantity: choice.buyQuantity,
+      get_quantity: choice.getQuantity,
+      offer_title: prev.offer_title.trim() || choice.title,
+      // Precision is always whole-menu - no item picking.
+      ...(path === 'precision'
+        ? {
+            applicability_type: 'ALL' as ApplicabilityType,
+            offer_sub_type: 'ALL_ORDERS',
+            menu_item_ids: [] as string[],
+            category_ids: [] as number[],
+          }
+        : {}),
+    }))
+    // Precision skips Applies to - go straight to Conditions.
+    const firstStep = path === 'precision' ? 'conditions' : 'applicability'
+    setActiveTab(firstStep)
+    setStep(firstStep)
+    if (storeId) {
+      void fetchMenuCatalogForOffers(storeId)
+        .then(({ items, categories }) => {
+          setMenuItems(items)
+          setFilteredMenuItems(items)
+          setMenuCategories(categories)
+        })
+        .catch(() => {})
+    }
+  }
+
+  const goPrevStep = () => {
+    const idx = navSteps.indexOf(activeTab)
+    if (idx <= 0) return
+    // Editing: don't go back to choose
+    if (editingId && navSteps[idx - 1] === 'choose') return
+    // From Conditions on Precision create: Previous returns to choose type
+    const prev = navSteps[idx - 1]
+    setActiveTab(prev)
+  }
+
+  /** Per-step required fields - Next stays disabled until these pass. */
+  const canProceedFromCurrentStep = (() => {
+    switch (activeTab) {
+      case 'applicability': {
+        // Precision is whole-menu only — no item selection required.
+        if (createPath === 'precision' || conditionsMode === 'precision') {
+          return true
+        }
+        if (formData.applicability_type === 'SPECIFIC_ITEMS_SET' || formData.offer_sub_type === 'SPECIFIC_ITEM') {
+          return resolvedSelectedMenuIds.length > 0
+        }
+        if (formData.applicability_type === 'CATEGORY') {
+          return formData.category_ids.length > 0
+        }
+        // ALL / CART / DELIVERY
+        return Boolean(formData.applicability_type)
+      }
+      case 'conditions': {
+        if (formData.offer_type === 'BUY_X_GET_Y' || formData.offer_type === 'BUY_N_GET_M') {
+          const buy = parseInt(formData.buy_quantity || '', 10)
+          const get = parseInt(formData.get_quantity || '', 10)
+          return Number.isFinite(buy) && buy >= 1 && Number.isFinite(get) && get >= 1
+        }
+        if (
+          formData.offer_type === 'PERCENTAGE' ||
+          formData.offer_type === 'FLAT' ||
+          formData.offer_type === 'COUPON'
+        ) {
+          const n = parseFloat(formData.discount_value || formData.discount_percentage || '')
+          if (!Number.isFinite(n) || n <= 0) return false
+          if (formData.offer_type === 'PERCENTAGE') return n >= DISCOUNT_SLIDER_MIN && n <= 100
+          return true
+        }
+        return true
+      }
+      case 'schedule':
+        // Days/times optional (empty = all days / all day)
+        return true
+      case 'review':
+        return Boolean(formData.offer_title.trim() && formData.valid_from && formData.valid_till)
+      default:
+        return true
+    }
+  })()
+
+  const nextStepBlockedReason = (() => {
+    if (canProceedFromCurrentStep) return null
+    switch (activeTab) {
+      case 'applicability':
+        if (formData.applicability_type === 'CATEGORY') return 'Select at least one category'
+        return 'Select at least one menu item'
+      case 'conditions':
+        if (formData.offer_type === 'BUY_X_GET_Y' || formData.offer_type === 'BUY_N_GET_M') {
+          return 'Set buy and get quantities'
+        }
+        return `Set a discount of at least ${DISCOUNT_SLIDER_MIN}%`
+      default:
+        return 'Fill required fields to continue'
+    }
+  })()
+
+  const goNextStep = () => {
+    if (!canProceedFromCurrentStep) return
+    const idx = navSteps.indexOf(activeTab)
+    if (idx < 0 || idx >= navSteps.length - 1) return
+    if (activeTab === 'choose') return
+    let next = navSteps[idx + 1]
+    // Safety: never land on Applies to for Precision
+    if (isPrecisionPath && next === 'applicability') {
+      next = 'conditions'
+    }
+    // Auto-fill validity window if merchant skipped basic info
+    if (next === 'review' && (!formData.valid_from || !formData.valid_till)) {
+      const today = new Date()
+      const till = new Date()
+      till.setDate(till.getDate() + 30)
+      const toInput = (d: Date) => d.toISOString().slice(0, 10)
+      setFormData((prev) => ({
+        ...prev,
+        valid_from: prev.valid_from || toInput(today),
+        valid_till: prev.valid_till || toInput(till),
+        priority: String(autoPriority),
+      }))
+    } else {
+      setFormData((prev) => ({ ...prev, priority: String(autoPriority) }))
+    }
+    setActiveTab(next)
+  }
+
+  const applyRecommendedOffer = (preset: (typeof RECOMMENDED_PERCENTAGE_OFFERS)[number]) => {
+    setSelectedRecommendedId(preset.id)
+    setFormData((prev) => ({
+      ...prev,
+      offer_type: 'PERCENTAGE',
+      discount_value: String(preset.discount),
+      discount_percentage: String(preset.discount),
+      max_discount_amount: preset.maxDiscount != null ? String(preset.maxDiscount) : '',
+      min_order_amount: String(preset.mov),
+      offer_title: prev.offer_title.trim() || preset.label,
+    }))
+  }
+
+  const applyCustomDiscountPercent = (percent: number) => {
+    const clamped = Math.min(DISCOUNT_SLIDER_MAX, Math.max(DISCOUNT_SLIDER_MIN, percent))
+    setSelectedRecommendedId(null)
+    setFormData((prev) => ({
+      ...prev,
+      offer_type: prev.offer_type === 'BUY_X_GET_Y' || prev.offer_type === 'BUY_N_GET_M' ? prev.offer_type : 'PERCENTAGE',
+      discount_value: String(clamped),
+      discount_percentage: String(clamped),
+    }))
+  }
+
+  const resetConditionsDiscount = () => {
+    setSelectedRecommendedId(null)
+    setFormData((prev) => ({
+      ...prev,
+      discount_value: '',
+      discount_percentage: '',
+      max_discount_amount: '',
+      min_order_amount: '',
+    }))
+  }
+
+  const hasDiscountValue =
+    formData.discount_value !== '' || formData.discount_percentage !== ''
+  const discountPercentValue = (() => {
+    if (!hasDiscountValue) return 0
+    const n = parseFloat(formData.discount_value || formData.discount_percentage || '0')
+    if (Number.isNaN(n)) return 0
+    return Math.min(DISCOUNT_SLIDER_MAX, Math.max(DISCOUNT_SLIDER_MIN, n))
+  })()
+  const discountSliderFillPct = (discountPercentValue / DISCOUNT_SLIDER_MAX) * 100
+  const discountSliderIsMin = hasDiscountValue && discountPercentValue <= DISCOUNT_SLIDER_MIN
+  const discountSliderAccent = !hasDiscountValue
+    ? '#d1d5db'
+    : discountSliderIsMin
+      ? '#ef4444'
+      : '#22c55e'
+  const discountSliderTrackRest = !hasDiscountValue
+    ? '#e5e7eb'
+    : discountSliderIsMin
+      ? '#fecaca'
+      : '#dcfce7'
+
+  const boostDiscountValue = (() => {
+    if (!hasDiscountValue) return 0
+    const n = parseFloat(formData.discount_value || formData.discount_percentage || '0')
+    if (Number.isNaN(n)) return 0
+    return Math.min(BOOST_SLIDER_MAX, Math.max(0, n))
+  })()
+  const boostSliderFillPct = (boostDiscountValue / BOOST_SLIDER_MAX) * 100
+  const boostSliderIsMin = boostDiscountValue > 0 && boostDiscountValue <= DISCOUNT_SLIDER_MIN
+  const boostSliderAccent =
+    boostDiscountValue <= 0
+      ? '#d1d5db'
+      : boostSliderIsMin
+        ? '#ef4444'
+        : '#22c55e'
+  const boostSliderTrackRest =
+    boostDiscountValue <= 0
+      ? '#e5e7eb'
+      : boostSliderIsMin
+        ? '#fecaca'
+        : '#dcfce7'
+  const applyBoostDiscountPercent = (percent: number) => {
+    const stepped = Math.round(percent / BOOST_SLIDER_STEP) * BOOST_SLIDER_STEP
+    const clamped = Math.min(BOOST_SLIDER_MAX, Math.max(DISCOUNT_SLIDER_MIN, stepped))
+    applyCustomDiscountPercent(clamped)
+  }
+
+  const boostPreviewPool = useMemo(() => {
+    const priced = menuItems.filter((m) => Number(m.actual_price) > 0)
+    if (formData.applicability_type === 'ALL') return priced
+    if (!resolvedSelectedMenuIds.length) return []
+    const idSet = new Set(resolvedSelectedMenuIds)
+    return priced.filter((m) => idSet.has(m.item_id))
+  }, [menuItems, formData.applicability_type, resolvedSelectedMenuIds])
+
+  const boostPreviewItems = useMemo(() => {
+    const arr = [...boostPreviewPool]
+    if (arr.length <= 3) return arr
+    let seed = 0
+    for (const it of arr) {
+      for (let i = 0; i < it.item_id.length; i++) {
+        seed = (seed * 31 + it.item_id.charCodeAt(i)) >>> 0
+      }
+    }
+    const next = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0
+      return seed / 0xffffffff
+    }
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(next() * (i + 1))
+      ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    }
+    return arr.slice(0, 3)
+  }, [boostPreviewPool])
+
+  const boostMaxCap = (() => {
+    const n = parseFloat(formData.max_discount_amount || '')
+    return Number.isFinite(n) && n > 0 ? n : null
+  })()
+
+  const conditionsPreviewLabel = (() => {
+    if (!hasDiscountValue) {
+      return {
+        title: 'Set your discount',
+        subtitle: 'Pick a recommended offer or drag the slider',
+      }
+    }
+    const pct = discountPercentValue
+    const mov = formData.min_order_amount
+    const cap = formData.max_discount_amount
+    if (cap) {
+      return {
+        title: `${pct}% Off up to ₹${cap}`,
+        subtitle: mov ? `On minimum order value of ₹${mov}` : 'No minimum order value',
+      }
+    }
+    return {
+      title: `Flat ${pct}% Off`,
+      subtitle: mov ? `On minimum order value of ₹${mov}` : 'No minimum order value',
+    }
+  })()
 
   const handleOfferTypeChange = (type: OfferType | 'BUY_N_GET_M' | 'COUPON') => {
     setFormData(prev => ({ ...prev, offer_type: type }))
@@ -1076,7 +2026,7 @@ function OffersContent() {
     <>
       <MXLayoutWhite restaurantName={displayStoreName || store?.store_name || "Offers"} restaurantId={storeId || ""}>
         <PartnerPageHeader title="Offers" breadcrumbs={offerHeaderBreadcrumbs} />
-        <div className="flex h-full min-h-0 flex-col bg-white overflow-hidden">
+        <div className="flex h-full min-h-0 flex-col bg-gray-50 overflow-hidden">
           <div className="shrink-0 border-b border-gray-200 bg-white px-4 pt-4 sm:px-5 sm:pt-5 md:px-6 md:pt-6">
             <div className="mt-1 flex gap-8 text-sm">
               <button
@@ -1104,8 +2054,8 @@ function OffersContent() {
             </div>
 
             {pageTab === "track" && offers.length > 0 ? (
-              <div className="pb-4 pt-3 border-t border-gray-100">
-                <div className="flex items-center gap-3 mb-4">
+              <div className="pb-3 pt-3 border-t border-gray-100">
+                <div className="flex items-center gap-3 mb-3">
                   <div className="flex-1 h-px bg-gray-200" />
                   <span className="text-[11px] font-semibold tracking-wider text-gray-500 uppercase shrink-0">
                     Offer campaigns
@@ -1144,46 +2094,42 @@ function OffersContent() {
             ) : null}
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
-            {pageTab === "create" ? (
-              <div className="py-6">
-                <div className="rounded-lg border border-gray-200 bg-white p-6 max-w-3xl mx-auto">
-                  <div className="flex flex-col items-center justify-center gap-3 text-center">
-                    <p className="text-sm text-gray-700 font-medium">Create offers</p>
-                    <p className="text-sm text-gray-500">
-                      Click below to start creating a new offer for {displayStoreName || "your store"}.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenModal()}
-                      className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                    >
-                      <Plus size={16} className="shrink-0" />
-                      Create offer
-                    </button>
-                  </div>
+          <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar bg-gray-50 px-4 sm:px-5 md:px-6 pt-3 pb-4 sm:pt-4 w-full min-w-0">
+            {pageTab === "create" || offers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center min-h-[min(520px,70dvh)] px-6 py-10 text-center">
+                <div className="mb-7 flex h-40 w-40 items-center justify-center rounded-full bg-emerald-50/80">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={typeof noRunningOffersTarget === 'string' ? noRunningOffersTarget : noRunningOffersTarget.src}
+                    alt=""
+                    width={128}
+                    height={128}
+                    className="h-32 w-32 object-contain bg-transparent"
+                  />
                 </div>
-              </div>
-            ) : offers.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/80 py-12 text-center max-w-xl mx-auto">
-                <p className="text-sm font-medium text-gray-700">No offers yet</p>
-                <p className="text-xs text-gray-500 mt-1">Create your first campaign to start tracking performance.</p>
+                <h2 className="text-[22px] font-extrabold tracking-tight text-gray-900">
+                  {pageTab === "create" && offers.length > 0 ? "Create Offers" : "No Running Offers"}
+                </h2>
+                <p className="mt-3 max-w-sm text-[15px] leading-relaxed text-gray-500">
+                  {pageTab === "create" && offers.length > 0
+                    ? `Start a new discount offer for ${displayStoreName || "your store"} and attract more customers.`
+                    : "Create your first discount offer to get started and attract more customers!"}
+                </p>
                 <button
                   type="button"
-                  onClick={() => setPageTab("create")}
-                  className="mt-4 inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                  onClick={() => handleOpenModal()}
+                  className="mt-7 inline-flex min-w-[220px] items-center justify-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-7 py-3.5 text-[15px] font-bold text-white shadow-sm hover:from-emerald-600 hover:to-teal-500 transition-colors"
                 >
-                  <Plus size={16} className="shrink-0" />
-                  Create offer
+                  {offers.length > 0 ? "Create Offer" : "Create Your First Offer"}
                 </button>
               </div>
             ) : filteredTrackOffers.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/80 py-12 text-center max-w-xl mx-auto">
+              <div className="rounded-xl border border-dashed border-gray-300 bg-white py-12 text-center max-w-xl mx-auto">
                 <p className="text-sm font-medium text-gray-700">No offers in this filter</p>
                 <p className="text-xs text-gray-500 mt-1">Try another campaign filter above.</p>
               </div>
             ) : (
-              <div className="flex flex-col gap-3 w-full min-w-0">
+              <div className="flex flex-col gap-3 w-full min-w-0 pb-1">
                 {filteredTrackOffers.map((offer, index) => {
                   const offerKey = offer.offer_id || String(index);
                   return (
@@ -1195,7 +2141,18 @@ function OffersContent() {
                       expanded={expandedOfferCards[offerKey] ?? true}
                       onToggleExpand={() => toggleOfferCardExpanded(offerKey)}
                       onEdit={() => handleOpenModal(offer)}
-                      onDelete={() => handleDeleteOffer(offer.offer_id)}
+                      onDeactivate={
+                        offer.is_active !== false
+                          ? () => requestDeactivateOffer(offer.offer_id, offer.offer_title)
+                          : undefined
+                      }
+                      onActivate={
+                        (offer.is_active === false ||
+                          (offer as { lifecycle_status?: string }).lifecycle_status === 'DISABLED') &&
+                        !isOfferCampaignExpired(offer)
+                          ? () => requestActivateOffer(offer.offer_id, offer.offer_title)
+                          : undefined
+                      }
                       onCopyCoupon={copyToClipboard}
                       getMenuItemName={getMenuItemName}
                     />
@@ -1207,16 +2164,14 @@ function OffersContent() {
         </div>
 
 
-        {/* Create/Edit Right Sheet — 5-step enterprise offer wizard */}
+        {/* Create/Edit Right Sheet â€” 5-step enterprise offer wizard */}
         {(showModal || sheetVisible) && (
           <BodyPortal>
             <div className="fixed inset-0 z-[9999]">
-              {/* Overlay */}
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={() => { setShowModal(false); resetForm(); }}
-                className={`fixed inset-0 bg-black/35 backdrop-blur-md transition-opacity duration-200 ${
+              {/* Overlay â€” backdrop does not close the sheet */}
+              <div
+                aria-hidden="true"
+                className={`fixed inset-0 bg-black/35 backdrop-blur-md transition-opacity duration-200 pointer-events-auto ${
                   showModal ? "opacity-100" : "opacity-0"
                 }`}
               />
@@ -1233,9 +2188,9 @@ function OffersContent() {
                 }`}
               >
               {/* Header */}
-              <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white">
+              <div className="flex-shrink-0 flex items-center justify-between px-5 py-2.5 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white">
                 <div>
-                  <h2 className="text-lg font-bold text-gray-900">{editingId ? 'Edit Offer' : 'Create Offer'}</h2>
+                  <h2 className="text-base font-bold text-gray-900">{editingId ? 'Edit Offer' : 'Create Offer'}</h2>
                   {editingId && editingOffer ? (
                     <div className="mt-2 space-y-1 text-xs text-gray-600">
                       <p>
@@ -1261,9 +2216,7 @@ function OffersContent() {
                         </strong>
                       </p>
                     </div>
-                  ) : (
-                    <p className="text-xs text-gray-500 mt-0.5">Creating from Merchant Portal</p>
-                  )}
+                  ) : null}
                 </div>
                 <button
                   onClick={() => { setShowModal(false); resetForm(); }}
@@ -1274,27 +2227,29 @@ function OffersContent() {
                 </button>
               </div>
 
-              {/* Step progress (scrollable to avoid overlap) */}
-              <div className="flex-shrink-0 px-4 pt-3 pb-2 bg-white border-b border-gray-100 overflow-x-auto hide-scrollbar">
+              {/* Step progress - hidden on choose-type screen */}
+              {activeTab !== 'choose' && (
+              <div className="flex-shrink-0 px-4 pt-1.5 pb-1.5 bg-white border-b border-gray-100 overflow-x-auto hide-scrollbar">
                 <div className="flex gap-1 min-w-max">
-                  {STEPS.map((s, i) => (
+                  {wizardSteps.map((s, i) => (
                     <button
                       key={s}
                       type="button"
                       onClick={() => {
+                        if (isPrecisionPath && s === 'applicability') return
                         setActiveTab(s)
-                        // Refetch menu items when entering applicability step so selection list is current
                         if (s === 'applicability' && storeId) {
-                          fetchMenuItemsForOffers(storeId).then((items) => {
+                          fetchMenuCatalogForOffers(storeId).then(({ items, categories }) => {
                             setMenuItems(items)
                             setFilteredMenuItems(items)
+                            setMenuCategories(categories)
                           }).catch(() => {})
                         }
                       }}
-                      className={`flex-none min-w-[120px] max-w-[140px] py-2 px-2 rounded-lg text-[10px] font-semibold transition-all whitespace-nowrap overflow-hidden text-ellipsis ${
+                      className={`flex-none min-w-[120px] max-w-[140px] py-1.5 px-2 rounded-lg text-[10px] font-semibold transition-all whitespace-nowrap overflow-hidden text-ellipsis ${
                         activeTab === s
                           ? 'bg-orange-500 text-white shadow-md'
-                          : i < STEPS.indexOf(activeTab)
+                          : i < wizardSteps.indexOf(activeTab)
                             ? 'bg-emerald-100 text-emerald-800'
                             : 'bg-gray-100 text-gray-500'
                       }`}
@@ -1306,10 +2261,68 @@ function OffersContent() {
                   ))}
                 </div>
               </div>
+              )}
 
-              {/* Form Content - Scrollable */}
-              <div ref={modalContentRef} className="flex-1 overflow-y-auto hide-scrollbar">
-                <form className="px-5 py-4" autoComplete="off" onSubmit={e => { e.preventDefault(); handleSaveOffer(); }}>
+              {/* Form: scrollable body + sticky footer */}
+              <form
+                className="flex-1 min-h-0 flex flex-col"
+                autoComplete="off"
+                onSubmit={e => { e.preventDefault(); void handleSaveOffer(publishMode); }}
+              >
+              <div ref={modalContentRef} className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-5 py-3 flex flex-col">
+                  {/* Step 0: Choose promo type */}
+                  {activeTab === 'choose' && (
+                    <div className="space-y-4">
+                      <div>
+                        <h3 className="text-base font-bold text-gray-900">Choose promo discount type.</h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Select how you want to discount. You can fine-tune details in the next steps.
+                        </p>
+                      </div>
+                      <div className="space-y-3">
+                        {OFFER_PROMO_CHOICES.map((choice) => {
+                          const isBogo = choice.id === 'bogo'
+                          const isPrecision = choice.id === 'precision'
+                          return (
+                            <button
+                              key={choice.id}
+                              type="button"
+                              onClick={() => handlePromoChoice(choice)}
+                              className="w-full flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3.5 py-3.5 text-left hover:border-violet-300 hover:bg-violet-50/60 transition-colors group"
+                            >
+                              <div
+                                className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg ${
+                                  isPrecision
+                                    ? 'bg-gradient-to-br from-indigo-500 to-blue-700'
+                                    : isBogo
+                                      ? 'bg-gradient-to-br from-violet-600 to-purple-700'
+                                      : 'bg-gradient-to-br from-orange-400 to-amber-500'
+                                }`}
+                              >
+                                {isPrecision ? (
+                                  <span className="text-[9px] font-black leading-tight text-center text-white px-0.5">
+                                    PRECI<br />SION
+                                  </span>
+                                ) : isBogo ? (
+                                  <span className="text-[8px] font-black leading-tight text-center text-yellow-300 px-0.5">
+                                    BUY 1<br />GET 1
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-black text-white leading-none">30%<br />Off</span>
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-semibold text-gray-900 group-hover:text-violet-800">{choice.title}</p>
+                                <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{choice.description}</p>
+                              </div>
+                              <ChevronRight size={18} className="shrink-0 text-gray-300 group-hover:text-violet-600" />
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Step 1: Basic info */}
                   {activeTab === 'basic' && (
                     <div className="space-y-4">
@@ -1341,7 +2354,7 @@ function OffersContent() {
                                 Remove image
                               </button>
                             </div>
-                            <p className="text-xs text-gray-400">One image per offer. Recommended: 800×400px</p>
+                            <p className="text-xs text-gray-400">One image per offer. Recommended: 800Ã—400px</p>
                           </div>
                         ) : (
                           <div>
@@ -1349,7 +2362,7 @@ function OffersContent() {
                             <button type="button" onClick={() => offerImageInputRef.current?.click()} className="inline-flex px-4 py-2 bg-gradient-to-r from-orange-500 to-red-500 text-white text-xs font-bold rounded-xl hover:from-orange-600 hover:to-red-600 transition-all shadow-md">
                               Choose image
                             </button>
-                            <p className="text-xs text-gray-400 mt-1">Recommended: 800×400px. One image per offer.</p>
+                            <p className="text-xs text-gray-400 mt-1">Recommended: 800Ã—400px. One image per offer.</p>
                           </div>
                         )}
                       </div>
@@ -1511,333 +2524,1230 @@ function OffersContent() {
 
                   {/* Step 3: Applicability */}
                   {activeTab === 'applicability' && (
-                    <div className="space-y-4">
-                      <div className="rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200/80 p-3 mb-2">
-                        <h3 className="text-sm font-bold text-emerald-900 mb-0.5">Where it applies</h3>
-                        <p className="text-xs text-emerald-700">All items, specific items, categories, cart, or delivery</p>
-                      </div>
-                      <div className="relative" ref={applyToRef}>
-                        <label className="block text-xs font-bold text-gray-700 mb-1.5">Apply to *</label>
-                        <button type="button" onClick={() => { setShowApplyToDropdown(!showApplyToDropdown); setShowOfferTypeDropdown(false); setShowMenuItemSuggestions(false); }} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-left flex items-center justify-between bg-white hover:bg-gray-50">
-                          <span className="text-sm font-medium text-gray-900">{getApplyToDisplay(formData.applicability_type)}</span>
-                          <ChevronDown size={16} className={`text-gray-500 ${showApplyToDropdown ? 'rotate-180' : ''}`} />
-                        </button>
-                        {showApplyToDropdown && (
-                          <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-xl shadow-xl">
-                            {APPLICABILITY_OPTIONS.map((opt) => (
-                              <div key={opt.value} onClick={() => toggleApplicability(opt.value as ApplicabilityType)} className={`px-3 py-2.5 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 flex items-center justify-between ${formData.applicability_type === opt.value ? 'bg-orange-50' : ''}`}>
-                                <span className="text-sm font-medium text-gray-900">{opt.label}</span>
-                                {formData.applicability_type === opt.value && <Check size={16} className="text-green-600" />}
-                              </div>
-                            ))}
+                    <div className="flex flex-col gap-3 min-h-0 h-full">
+                      {createPath === 'precision' || conditionsMode === 'precision' ? (
+                        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 space-y-2">
+                          <p className="text-sm font-bold text-indigo-950">Precision · whole menu</p>
+                          <p className="text-xs text-indigo-800 leading-relaxed">
+                            Precision offers apply at checkout / offer sheet on all menu items. Item
+                            selection is not available for this offer type.
+                          </p>
+                          <p className="text-xs font-semibold text-indigo-900">
+                            Applies to: All items ({menuItems.length} menu item
+                            {menuItems.length === 1 ? '' : 's'})
+                          </p>
+                        </div>
+                      ) : (
+                      <>
+                      {/* Apply to + Search in one row */}
+                      <div className="flex flex-col sm:flex-row gap-2 sm:items-end flex-shrink-0">
+                        <div className="relative flex-1 min-w-0" ref={applyToRef}>
+                          <label className="block text-xs font-bold text-gray-700 mb-1.5">Apply to *</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowApplyToDropdown(!showApplyToDropdown)
+                              setShowOfferTypeDropdown(false)
+                            }}
+                            className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-left flex items-center justify-between bg-white hover:bg-gray-50"
+                          >
+                            <span className="text-sm font-medium text-gray-900 truncate">
+                              {getApplyToDisplay(formData.applicability_type)}
+                            </span>
+                            <ChevronDown
+                              size={16}
+                              className={`text-gray-500 shrink-0 ${showApplyToDropdown ? 'rotate-180' : ''}`}
+                            />
+                          </button>
+                          {showApplyToDropdown && (
+                            <div className="absolute z-50 w-full mt-1.5 bg-white border border-gray-200 rounded-2xl shadow-lg shadow-gray-200/80 p-1.5 overflow-hidden">
+                              {APPLICABILITY_OPTIONS.map((opt) => {
+                                const selected = formData.applicability_type === opt.value
+                                const disabled = Boolean(opt.disabled)
+                                return (
+                                  <button
+                                    key={opt.value}
+                                    type="button"
+                                    disabled={disabled}
+                                    onClick={() => {
+                                      if (disabled) return
+                                      toggleApplicability(opt.value as ApplicabilityType)
+                                    }}
+                                    className={`w-full px-3 py-2.5 rounded-xl flex items-center justify-between gap-2 text-left transition-colors ${
+                                      disabled
+                                        ? 'cursor-not-allowed opacity-50'
+                                        : selected
+                                          ? 'bg-orange-50 text-orange-900'
+                                          : 'hover:bg-gray-50 text-gray-900'
+                                    }`}
+                                  >
+                                    <span className="flex items-center gap-2 min-w-0">
+                                      <span
+                                        className={`text-sm font-medium truncate ${
+                                          disabled ? 'text-gray-400' : selected ? 'text-orange-900' : 'text-gray-900'
+                                        }`}
+                                      >
+                                        {opt.label}
+                                      </span>
+                                      {opt.hint && (
+                                        <span className="shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-400">
+                                          {opt.hint}
+                                        </span>
+                                      )}
+                                    </span>
+                                    {selected && !disabled && (
+                                      <Check size={15} className="text-orange-500 shrink-0" />
+                                    )}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        {(formData.applicability_type === 'ALL' ||
+                          formData.applicability_type === 'SPECIFIC_ITEMS_SET') && (
+                          <div className="relative flex-1 min-w-0">
+                            <label className="block text-xs font-bold text-gray-700 mb-1.5 sm:invisible">
+                              Search
+                            </label>
+                            <Search
+                              size={14}
+                              className="absolute left-3 bottom-[13px] text-gray-400 pointer-events-none"
+                            />
+                            <input
+                              type="text"
+                              value={menuItemSearch}
+                              onChange={(e) => setMenuItemSearch(e.target.value)}
+                              className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl focus:border-orange-500 focus:ring-2 focus:ring-orange-100 text-sm"
+                              placeholder="Search menu items..."
+                            />
                           </div>
                         )}
                       </div>
-                      {(formData.applicability_type === 'SPECIFIC_ITEMS_SET' || formData.offer_sub_type === 'SPECIFIC_ITEM') && (
-                        <div className="space-y-2">
-                          <label className="block text-xs font-bold text-gray-700 mb-1.5">
-                            Select Menu Items *
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 flex-shrink-0">
+                        <p className="text-xs text-gray-600">
+                          {formData.applicability_type === 'ALL' ? (
+                            <>
+                              Total result:{' '}
+                              <strong className="text-gray-900">{menuItems.length}</strong> menu
+                              item{menuItems.length === 1 ? '' : 's'}
+                            </>
+                          ) : formData.applicability_type === 'SPECIFIC_ITEMS_SET' ? (
+                            <>
+                              Total result:{' '}
+                              <strong className="text-gray-900">{selectedMenuCount}</strong>{' '}
+                              selected of {menuItems.length}
+                            </>
+                          ) : formData.applicability_type === 'CATEGORY' ? (
+                            <>
+                              Total result:{' '}
+                              <strong className="text-gray-900">{formData.category_ids.length}</strong>{' '}
+                              selected of {menuCategories.length}
+                            </>
+                          ) : formData.applicability_type === 'CART' ? (
+                            <>
+                              Total result: <strong className="text-gray-900">1</strong> cart-level
+                              offer
+                            </>
+                          ) : formData.applicability_type === 'DELIVERY' ? (
+                            <>
+                              Total result: <strong className="text-gray-900">1</strong> delivery fee
+                              waiver
+                            </>
+                          ) : (
+                            <>
+                              Total result: <strong className="text-gray-900">0</strong>
+                            </>
+                          )}
+                        </p>
+
+                        {(formData.applicability_type === 'ALL' ||
+                          formData.applicability_type === 'SPECIFIC_ITEMS_SET') &&
+                          menuItems.length > 0 && (
+                          <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 cursor-pointer select-none">
+                            <span>{allMenuSelected ? 'Unselect all' : 'Select all'}</span>
+                            <input
+                              type="checkbox"
+                              checked={allMenuSelected}
+                              ref={(el) => {
+                                if (el) {
+                                  el.indeterminate = !allMenuSelected && !noneMenuSelected
+                                }
+                              }}
+                              onChange={() => {
+                                if (allMenuSelected) unselectAllMenuItems()
+                                else selectAllMenuItems()
+                              }}
+                              className="h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-400"
+                            />
                           </label>
-                          
-                          {/* Selected Items Display */}
-                          {formData.menu_item_ids.length > 0 && (
-                            <div className="mb-2">
-                              <div className="text-xs font-semibold text-gray-600 mb-1">Selected Items ({formData.menu_item_ids.length}):</div>
-                              <div className="flex flex-wrap gap-1">
-                                {formData.menu_item_ids.map(itemId => (
-                                  <div
-                                    key={itemId}
-                                    className="flex items-center gap-1 bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs"
-                                  >
-                                    <span>{getMenuItemName(itemId)}</span>
+                        )}
+
+                        {formData.applicability_type === 'CATEGORY' &&
+                          menuCategories.length > 0 && (
+                          <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 cursor-pointer select-none">
+                            <span>
+                              {formData.category_ids.length === menuCategories.length
+                                ? 'Unselect all'
+                                : 'Select all'}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={
+                                menuCategories.length > 0 &&
+                                formData.category_ids.length === menuCategories.length
+                              }
+                              ref={(el) => {
+                                if (el) {
+                                  const n = formData.category_ids.length
+                                  el.indeterminate = n > 0 && n < menuCategories.length
+                                }
+                              }}
+                              onChange={() => {
+                                const allSelected =
+                                  formData.category_ids.length === menuCategories.length
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  category_ids: allSelected
+                                    ? []
+                                    : menuCategories.map((c) => c.id),
+                                }))
+                              }}
+                              className="h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-400"
+                            />
+                          </label>
+                        )}
+                      </div>
+
+                      {/* Item accordion list — only for All / Specific items */}
+                      {(formData.applicability_type === 'ALL' ||
+                        formData.applicability_type === 'SPECIFIC_ITEMS_SET') && (
+                        <div className="border border-gray-200 rounded-xl overflow-hidden bg-white flex-1 min-h-[200px] max-h-[calc(100dvh-280px)] overflow-y-auto">
+                          {menuItemsGroupedByCategory.length === 0 ? (
+                            <div className="px-3 py-8 text-center text-sm text-gray-500">
+                              {menuItems.length === 0
+                                ? 'No menu items available for this store.'
+                                : 'No items match your search.'}
+                            </div>
+                          ) : (
+                            menuItemsGroupedByCategory.map((group) => {
+                              const expanded = expandedMenuCats[group.key] ?? false
+                              const ids = group.items.map((i) => i.item_id)
+                              const selectedInCat = ids.filter((id) => isMenuItemSelected(id)).length
+                              const allInCat = selectedInCat === ids.length && ids.length > 0
+                              return (
+                                <div key={group.key} className="border-b border-gray-100 last:border-b-0">
+                                  <div className="flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50">
                                     <button
                                       type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        toggleMenuItemSelection(itemId)
-                                      }}
-                                      className="text-green-800 hover:text-green-900"
+                                      onClick={() =>
+                                        setExpandedMenuCats((prev) => ({
+                                          ...prev,
+                                          [group.key]: !expanded,
+                                        }))
+                                      }
+                                      className="flex flex-1 items-center gap-2 min-w-0 text-left"
                                     >
-                                      ×
+                                      {expanded ? (
+                                        <ChevronDown size={16} className="text-gray-500 shrink-0" />
+                                      ) : (
+                                        <ChevronRight size={16} className="text-gray-500 shrink-0" />
+                                      )}
+                                      <span className="text-sm font-semibold text-gray-900 truncate">
+                                        {group.name} ({group.items.length})
+                                      </span>
                                     </button>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Search Input */}
-                          <div className="relative">
-                            <div className="relative">
-                              <Search size={14} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                              <input
-                                type="text"
-                                value={menuItemSearch}
-                                onChange={(e) => {
-                                  setMenuItemSearch(e.target.value)
-                                  setShowMenuItemSuggestions(true)
-                                }}
-                                onFocus={() => setShowMenuItemSuggestions(true)}
-                                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:border-orange-500 focus:ring-2 focus:ring-orange-100 text-sm"
-                                placeholder="Search menu items..."
-                              />
-                            </div>
-                            
-                            {/* Combined Suggestions Dropdown */}
-                            {showMenuItemSuggestions && (
-                              <div 
-                                ref={menuItemSuggestionsRef}
-                                className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl hide-scrollbar max-h-60 overflow-y-auto"
-                              >
-                                {filteredMenuItems.length === 0 ? (
-                                  <div className="px-3 py-4 text-center text-sm text-gray-500">
-                                    No menu items found
-                                  </div>
-                                ) : (
-                                  filteredMenuItems.map(item => {
-                                    const isSelected = formData.menu_item_ids.includes(item.item_id)
-                                    const stats = offersByItemId.get(item.item_id)
-                                    const hasActiveOffer = (stats?.activeCount ?? 0) > 0
-                                    if (!isItemEligibleForCurrentOffer(item)) {
-                                      // Skip ineligible items for current flat discount configuration.
-                                      return null
-                                    }
-                                    return (
-                                      <div
-                                        key={item.item_id}
-                                        onClick={(e) => {
-                                          e.stopPropagation()
-                                          toggleMenuItemSelection(item.item_id)
-                                          if (!menuItemSearch) {
-                                            // Only close if not searching
-                                            setShowMenuItemSuggestions(false)
+                                    <label
+                                      className="flex items-center gap-1.5 shrink-0 text-xs text-gray-600 cursor-pointer"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <span className="hidden sm:inline">
+                                        {allInCat ? 'Unselect all' : 'Select all'}
+                                      </span>
+                                      <input
+                                        type="checkbox"
+                                        checked={allInCat}
+                                        ref={(el) => {
+                                          if (el) {
+                                            el.indeterminate =
+                                              selectedInCat > 0 && selectedInCat < ids.length
                                           }
                                         }}
-                                        className={`px-3 py-2.5 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 flex items-center justify-between ${
-                                          isSelected ? 'bg-green-50' : ''
-                                        }`}
-                                      >
-                                        <div className="flex-1 min-w-0 mr-2">
-                                          <div className="flex items-center gap-2">
-                                            <div className="text-sm font-medium text-gray-900 truncate">
-                                              {item.item_name}
-                                            </div>
-                                            <span className="text-[10px] font-mono text-gray-500">
-                                              #{item.item_id}
-                                            </span>
-                                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                              item.category_type === 'NON_VEG' 
-                                                ? 'bg-red-100 text-red-800' 
-                                                : item.category_type === 'VEG'
-                                                ? 'bg-green-100 text-green-800'
-                                                : 'bg-gray-100 text-gray-800'
-                                            }`}>
-                                              {item.category_type}
-                                            </span>
-                                          </div>
-                                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-600">
-                                            <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 font-medium">
-                                              ₹{item.actual_price}
-                                            </span>
-                                            <span className="inline-flex items-center rounded-full bg-gray-50 px-2 py-0.5">
-                                              {item.food_category_item}
-                                            </span>
-                                            {stats && stats.totalCount > 0 && (
+                                        onChange={() =>
+                                          toggleCategoryItemSelection(ids, !allInCat)
+                                        }
+                                        className="h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-400"
+                                      />
+                                    </label>
+                                  </div>
+
+                                  {expanded && (
+                                    <div className="bg-gray-50/50 border-t border-gray-100">
+                                      {group.items.map((item) => {
+                                        const selected = isMenuItemSelected(item.item_id)
+                                        const isVeg =
+                                          item.category_type === 'VEG' ||
+                                          item.food_category_item === 'VEG'
+                                        return (
+                                          <label
+                                            key={item.item_id}
+                                            className="flex items-center gap-3 px-3 py-2.5 pl-9 border-b border-gray-100 last:border-b-0 cursor-pointer hover:bg-white"
+                                          >
+                                            <span
+                                              className={`h-4 w-4 shrink-0 rounded-sm border-2 flex items-center justify-center ${
+                                                isVeg
+                                                  ? 'border-emerald-600'
+                                                  : 'border-red-600'
+                                              }`}
+                                              title={isVeg ? 'Veg' : 'Non-veg'}
+                                            >
                                               <span
-                                                className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
-                                                  hasActiveOffer
-                                                    ? 'bg-amber-100 text-amber-800'
-                                                    : 'bg-emerald-50 text-emerald-700'
+                                                className={`h-2 w-2 rounded-full ${
+                                                  isVeg ? 'bg-emerald-600' : 'bg-red-600'
                                                 }`}
-                                              >
-                                                {hasActiveOffer
-                                                  ? `${stats.activeCount} active offer${stats.activeCount > 1 ? 's' : ''}`
-                                                  : `${stats.totalCount} mapped offer${stats.totalCount > 1 ? 's' : ''}`}
-                                              </span>
-                                            )}
-                                          </div>
-                                        </div>
-                                        {isSelected && (
-                                          <Check size={16} className="text-green-600 flex-shrink-0 ml-2" />
-                                        )}
-                                      </div>
-                                    )
-                                  })
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          
-                          {/* Instructions + refresh when empty */}
-                          <div className="flex flex-wrap items-center gap-2 mt-1">
-                            <p className="text-xs text-gray-500">
-                              {menuItems.length > 0 ? `Found ${menuItems.length} menu items. Search or click to select.` : 'No menu items available for this store.'}
-                            </p>
-                            {menuItems.length === 0 && storeId && (
-                              <button
-                                type="button"
-                                onClick={() => fetchMenuItemsForOffers(storeId).then((items) => { setMenuItems(items); setFilteredMenuItems(items); }).catch(() => toast.error('Could not load menu items'))}
-                                className="text-xs font-medium text-orange-600 hover:text-orange-700"
-                              >
-                                Refresh items
-                              </button>
-                            )}
-                          </div>
+                                              />
+                                            </span>
+                                            <span className="min-w-0 flex-1 text-sm font-medium text-gray-900 truncate">
+                                              {item.item_name}
+                                            </span>
+                                            <input
+                                              type="checkbox"
+                                              checked={selected}
+                                              onChange={() =>
+                                                toggleMenuItemSelection(item.item_id)
+                                              }
+                                              className="h-4 w-4 shrink-0 rounded border-gray-300 text-orange-500 focus:ring-orange-400"
+                                            />
+                                          </label>
+                                        )
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })
+                          )}
                         </div>
                       )}
+
                       {formData.applicability_type === 'CATEGORY' && (
-                        <div className="space-y-2">
-                          <label className="block text-xs font-bold text-gray-700 mb-1.5">Select categories *</label>
-                          <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1">
-                            {menuCategories.map(cat => (
-                              <label key={cat.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
-                                <input type="checkbox" checked={formData.category_ids.includes(cat.id)} onChange={() => toggleCategory(cat.id)} className="rounded border-gray-300 text-orange-500" />
-                                <span className="text-sm font-medium text-gray-900">{cat.category_name}</span>
+                        <div className="flex-1 min-h-[200px] max-h-[calc(100dvh-280px)] overflow-y-auto border border-gray-200 rounded-xl bg-white divide-y divide-gray-100">
+                          {menuCategories.map((cat) => {
+                            const count = menuItems.filter((m) => m.category_id === cat.id).length
+                            return (
+                              <label
+                                key={cat.id}
+                                className="flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer"
+                              >
+                                <ChevronRight size={14} className="text-gray-400 shrink-0" />
+                                <span className="flex-1 text-sm font-semibold text-gray-900">
+                                  {cat.category_name} ({count})
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={formData.category_ids.includes(cat.id)}
+                                  onChange={() => toggleCategory(cat.id)}
+                                  className="h-4 w-4 rounded border-gray-300 text-orange-500"
+                                />
                               </label>
-                            ))}
-                            {menuCategories.length === 0 && <p className="text-xs text-gray-500 p-2">No categories found.</p>}
-                          </div>
+                            )
+                          })}
+                          {menuCategories.length === 0 && (
+                            <p className="text-xs text-gray-500 p-3">No categories found.</p>
+                          )}
                         </div>
+                      )}
+                      </>
                       )}
                     </div>
                   )}
 
                   {/* Step 4: Conditions */}
                   {activeTab === 'conditions' && (
-                    <div className="space-y-4">
-                      <div className="rounded-xl bg-gradient-to-r from-sky-50 to-blue-50 border border-sky-200/80 p-3 mb-2">
-                        <h3 className="text-sm font-bold text-sky-900 mb-0.5">Conditions</h3>
-                        <p className="text-xs text-sky-700">Min order, first order, usage limits, time & days</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-700 mb-1.5">Minimum order value (₹)</label>
-                        <input type="text" value={formData.min_order_amount} onChange={handleNumberInputChange('min_order_amount')} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm" placeholder="Optional" />
-                      </div>
-                      <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
-                        <span className="text-xs font-semibold text-gray-700">First order only</span>
-                        <button type="button" onClick={() => setFormData(prev => ({ ...prev, first_order_only: !prev.first_order_only }))} className={`relative w-11 h-6 rounded-full transition-colors ${formData.first_order_only ? 'bg-orange-500' : 'bg-gray-300'}`}>
-                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${formData.first_order_only ? 'translate-x-5' : 'translate-x-0'}`} />
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-700 mb-1.5">Max uses total</label>
-                          <input type="text" value={formData.max_uses_total} onChange={handleNumberInputChange('max_uses_total')} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm" placeholder="Optional" />
+                    <div className="space-y-5">
+                      {/* Boost % only (BOGO is a separate choose-type path) */}
+                      {createPath === 'boost' && (
+                            <div className="space-y-3">
+                              {/* Discount Value */}
+                              <div className="rounded-2xl border border-gray-200 bg-white p-3.5 space-y-3">
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-8 h-8 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center">
+                                    <Percent size={14} className="text-gray-700" />
+                                  </div>
+                                  <div>
+                                    <h3 className="text-sm font-bold text-gray-900">Discount Value</h3>
+                                    <p className="text-[11px] font-semibold text-emerald-700">Boost</p>
+                                  </div>
+                                </div>
+                                <div className="relative pt-7 pb-8">
+                                  {boostDiscountValue > 0 && (
+                                    <div
+                                      className="absolute top-0 -translate-x-1/2 pointer-events-none"
+                                      style={{ left: `${boostSliderFillPct}%` }}
+                                    >
+                                      <div
+                                        className="relative text-white text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap"
+                                        style={{ backgroundColor: boostSliderAccent }}
+                                      >
+                                        {boostDiscountValue}%
+                                        <span
+                                          className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent"
+                                          style={{ borderTopColor: boostSliderAccent }}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={BOOST_SLIDER_MAX}
+                                    step={BOOST_SLIDER_STEP}
+                                    value={boostDiscountValue}
+                                    onChange={(e) =>
+                                      applyBoostDiscountPercent(Number(e.target.value))
+                                    }
+                                    className={`offer-discount-slider w-full h-2.5 rounded-full appearance-none cursor-pointer ${
+                                      boostDiscountValue <= 0
+                                        ? 'offer-discount-slider--idle'
+                                        : boostSliderIsMin
+                                          ? 'offer-discount-slider--red'
+                                          : 'offer-discount-slider--green'
+                                    }`}
+                                    style={{
+                                      background: `linear-gradient(to right, ${boostSliderAccent} 0%, ${boostSliderAccent} ${boostSliderFillPct}%, ${boostSliderTrackRest} ${boostSliderFillPct}%, ${boostSliderTrackRest} 100%)`,
+                                    }}
+                                  />
+                                  <div className="flex justify-between mt-2 px-0.5">
+                                    {Array.from(
+                                      { length: Math.floor(BOOST_SLIDER_MAX / BOOST_SLIDER_STEP) + 1 },
+                                      (_, i) => i * BOOST_SLIDER_STEP
+                                    ).map((tick) => (
+                                      <span
+                                        key={tick}
+                                        className={`text-[8px] font-medium text-center ${
+                                          tick > 0 && tick < DISCOUNT_SLIDER_MIN
+                                            ? 'text-gray-300'
+                                            : 'text-gray-400'
+                                        }`}
+                                      >
+                                        {tick}%
+                                      </span>
+                                    ))}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => applyBoostDiscountPercent(BOOST_POPULAR_PERCENT)}
+                                    className="absolute bottom-0 -translate-x-1/2 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-800"
+                                    style={{ left: `${(BOOST_POPULAR_PERCENT / BOOST_SLIDER_MAX) * 100}%` }}
+                                  >
+                                    🔥 Popular
+                                  </button>
+                                </div>
+                              </div>
+
+                              {boostPreviewItems.length > 0 && boostDiscountValue > 0 && (
+                                <div className="rounded-2xl border border-gray-200 bg-white p-3.5 shadow-sm space-y-2.5">
+                                  <p className="text-center text-xs font-semibold text-gray-500">
+                                    Selected items ({boostPreviewPool.length})
+                                  </p>
+                                  {boostPreviewItems.map((item) => {
+                                    const original = Number(item.actual_price) || 0
+                                    let off = (original * boostDiscountValue) / 100
+                                    if (boostMaxCap != null) off = Math.min(off, boostMaxCap)
+                                    const after = Math.max(0, Math.round((original - off) * 100) / 100)
+                                    const fmt = (n: number) => {
+                                      const r = Math.round(n * 10) / 10
+                                      return `₹${Number.isInteger(r) ? r : r.toFixed(1)}`
+                                    }
+                                    return (
+                                      <div
+                                        key={item.item_id}
+                                        className="flex items-center justify-between gap-3"
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                                          <span
+                                            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[2px] border border-emerald-600"
+                                            aria-hidden
+                                          >
+                                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
+                                          </span>
+                                          <span className="text-sm font-semibold text-gray-900 truncate">
+                                            {item.item_name}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                          <span className="text-xs text-gray-400 line-through">
+                                            {fmt(original)}
+                                          </span>
+                                          <span className="text-sm font-extrabold text-pink-600">
+                                            {fmt(after)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                      {/* Precision path — checkout / sheet offers (no Boost|BOGO toggle) */}
+                      {createPath === 'precision' && (
+                            <>
+                          {/* Recommended Offers */}
+                          <div>
+                            <h3 className="text-sm font-bold text-gray-900 mb-2">
+                              Recommended Offers For You
+                            </h3>
+                            <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-0.5 -mx-1 px-1">
+                              {RECOMMENDED_PERCENTAGE_OFFERS.map((preset) => {
+                                const selected = selectedRecommendedId === preset.id
+                                return (
+                                  <button
+                                    key={preset.id}
+                                    type="button"
+                                    onClick={() => applyRecommendedOffer(preset)}
+                                    className={`flex-none w-[104px] rounded-lg overflow-hidden border text-left transition-all ${
+                                      selected
+                                        ? 'border-violet-600 ring-2 ring-violet-200 shadow-sm'
+                                        : 'border-gray-200 hover:border-violet-300'
+                                    }`}
+                                  >
+                                    <div className="px-2 py-2 bg-gradient-to-b from-white to-gray-50 min-h-[40px] flex items-center">
+                                      <span className="text-[10px] font-bold text-gray-900 leading-tight">
+                                        {preset.label}
+                                      </span>
+                                    </div>
+                                    <div
+                                      className={`px-2 py-1 text-[9px] font-semibold tracking-wide ${
+                                        selected
+                                          ? 'bg-violet-600 text-white'
+                                          : 'bg-gray-100 text-gray-600'
+                                      }`}
+                                    >
+                                      MOV ₹{preset.mov}
+                                    </div>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Create Custom Offers */}
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <h3 className="text-sm font-bold text-gray-900">Create Custom Offers</h3>
+                              <button
+                                type="button"
+                                onClick={resetConditionsDiscount}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-violet-700"
+                              >
+                                <RotateCcw size={12} />
+                                Reset All
+                              </button>
+                            </div>
+
+                            <div className="rounded-2xl border border-gray-200 bg-white p-3.5 space-y-4">
+                              {/* Preview badge — compact; neutral until a discount is set */}
+                              <div
+                                className={`mx-auto max-w-[240px] rounded-xl border px-3 py-2 text-center shadow-sm ${
+                                  hasDiscountValue
+                                    ? 'border-emerald-100 bg-gradient-to-b from-emerald-50 to-white'
+                                    : 'border-gray-200 bg-gradient-to-b from-gray-50 to-white'
+                                }`}
+                              >
+                                <p
+                                  className={`text-sm font-bold leading-tight ${
+                                    hasDiscountValue ? 'text-emerald-600' : 'text-gray-500'
+                                  }`}
+                                >
+                                  {conditionsPreviewLabel.title}
+                                </p>
+                                <p className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                                  {conditionsPreviewLabel.subtitle}
+                                </p>
+                              </div>
+
+                              {/* Discount percentage slider */}
+                              <div>
+                                <label className="block text-xs font-semibold text-gray-700 mb-3">
+                                  Discount percentage
+                                </label>
+                                <div className="relative pt-7 pb-1">
+                                  {/* Value bubble — only after a discount is chosen */}
+                                  {hasDiscountValue && (
+                                    <div
+                                      className="absolute top-0 -translate-x-1/2 pointer-events-none"
+                                      style={{ left: `${discountSliderFillPct}%` }}
+                                    >
+                                      <div
+                                        className="relative text-white text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap"
+                                        style={{ backgroundColor: discountSliderAccent }}
+                                      >
+                                        {discountPercentValue}%
+                                        <span
+                                          className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent"
+                                          style={{ borderTopColor: discountSliderAccent }}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={DISCOUNT_SLIDER_MAX}
+                                    step={DISCOUNT_SLIDER_STEP}
+                                    value={discountPercentValue}
+                                    onChange={(e) =>
+                                      applyCustomDiscountPercent(Number(e.target.value))
+                                    }
+                                    className={`offer-discount-slider w-full h-2 rounded-full appearance-none cursor-pointer ${
+                                      !hasDiscountValue
+                                        ? 'offer-discount-slider--idle'
+                                        : discountSliderIsMin
+                                          ? 'offer-discount-slider--red'
+                                          : 'offer-discount-slider--green'
+                                    }`}
+                                    style={{
+                                      background: hasDiscountValue
+                                        ? `linear-gradient(to right, ${discountSliderAccent} 0%, ${discountSliderAccent} ${discountSliderFillPct}%, ${discountSliderTrackRest} ${discountSliderFillPct}%, ${discountSliderTrackRest} 100%)`
+                                        : `linear-gradient(to right, ${discountSliderTrackRest} 0%, ${discountSliderTrackRest} 100%)`,
+                                    }}
+                                  />
+
+                                  <div className="flex justify-between mt-2 px-0.5">
+                                    {Array.from(
+                                      {
+                                        length:
+                                          Math.floor(DISCOUNT_SLIDER_MAX / 10) + 1,
+                                      },
+                                      (_, i) => i * 10
+                                    ).map((tick) => (
+                                      <span
+                                        key={tick}
+                                        className={`text-[9px] font-medium w-4 text-center ${
+                                          tick > 0 && tick < DISCOUNT_SLIDER_MIN
+                                            ? 'text-gray-300'
+                                            : 'text-gray-400'
+                                        }`}
+                                      >
+                                        {tick}
+                                      </span>
+                                    ))}
+                                  </div>
+                                  <p className="text-[10px] text-gray-400 mt-1.5">
+                                    After selecting, minimum discount is {DISCOUNT_SLIDER_MIN}%
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* MOV + max cap */}
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                                    Min order value (₹)
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={formData.min_order_amount}
+                                    onChange={(e) => {
+                                      setSelectedRecommendedId(null)
+                                      handleNumberInputChange('min_order_amount')(e)
+                                    }}
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                                    placeholder="e.g. 149"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                                    Max discount (₹)
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={formData.max_discount_amount}
+                                    onChange={(e) => {
+                                      setSelectedRecommendedId(null)
+                                      handleNumberInputChange('max_discount_amount')(e)
+                                    }}
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                                    placeholder="Optional cap"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                            </>
+                      )}
+
+                      {(createPath === 'bogo') && (
+                        <div className="space-y-4">
+                          {(() => {
+                            const buyQty = Math.max(1, parseInt(formData.buy_quantity || '1', 10) || 1)
+                            const getQty = Math.max(1, parseInt(formData.get_quantity || '1', 10) || 1)
+                            const equivPct = Math.round((getQty / (buyQty + getQty)) * 100)
+                            const selectedBogoId = RECOMMENDED_BOGO_OFFERS.find(
+                              (p) => p.buy === buyQty && p.get === getQty
+                            )?.id
+                            const adjustQty = (field: 'buy_quantity' | 'get_quantity', delta: number) => {
+                              setFormData((prev) => {
+                                const cur = Math.max(1, parseInt(prev[field] || '1', 10) || 1)
+                                return { ...prev, [field]: String(Math.min(10, Math.max(1, cur + delta))) }
+                              })
+                            }
+                            return (
+                              <>
+                                {/* Hero preview */}
+                                <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-600 via-purple-600 to-fuchsia-600 p-4 text-white shadow-lg shadow-violet-200/60 overflow-hidden relative">
+                                  <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/10" />
+                                  <div className="absolute -left-4 -bottom-8 h-20 w-20 rounded-full bg-white/10" />
+                                  <div className="relative flex items-start gap-3">
+                                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 backdrop-blur-sm border border-white/20">
+                                      <Gift size={20} className="text-yellow-300" />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-100/90">
+                                        Customer offer
+                                      </p>
+                                      <p className="text-xl font-black leading-tight mt-0.5">
+                                        Buy {buyQty} Get {getQty} Free
+                                      </p>
+                                      <p className="text-xs text-violet-100 mt-1.5 leading-snug">
+                                        Customers will get {getQty} item{getQty > 1 ? 's' : ''} free when they
+                                        buy {buyQty}. This is equivalent to{' '}
+                                        <span className="font-bold text-yellow-300">{equivPct}% discount</span>.
+                                      </p>
+                                    </div>
+                                    <div className="shrink-0 rounded-xl bg-white/15 border border-white/20 px-2.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold text-violet-100">≈ OFF</p>
+                                      <p className="text-lg font-black text-yellow-300 leading-none">{equivPct}%</p>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Recommended BOGO */}
+                                <div>
+                                  <h3 className="text-sm font-bold text-gray-900 mb-2">
+                                    Recommended BOGO offers
+                                  </h3>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {RECOMMENDED_BOGO_OFFERS.map((preset) => {
+                                      const selected = selectedBogoId === preset.id
+                                      return (
+                                        <button
+                                          key={preset.id}
+                                          type="button"
+                                          onClick={() =>
+                                            setFormData((prev) => ({
+                                              ...prev,
+                                              buy_quantity: String(preset.buy),
+                                              get_quantity: String(preset.get),
+                                              offer_title: prev.offer_title.trim() || preset.label,
+                                            }))
+                                          }
+                                          className={`rounded-xl border px-3 py-2.5 text-left transition-all ${
+                                            selected
+                                              ? 'border-violet-600 bg-violet-50 ring-2 ring-violet-200'
+                                              : 'border-gray-200 bg-white hover:border-violet-300 hover:bg-violet-50/40'
+                                          }`}
+                                        >
+                                          <p className="text-xs font-bold text-gray-900">{preset.label}</p>
+                                          <p
+                                            className={`text-[10px] font-semibold mt-0.5 ${
+                                              selected ? 'text-violet-700' : 'text-gray-500'
+                                            }`}
+                                          >
+                                            {preset.hint}
+                                          </p>
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+
+                                {/* Custom quantities */}
+                                <div className="rounded-2xl border border-gray-200 bg-white p-3.5 space-y-3.5">
+                                  <div className="flex items-center justify-between">
+                                    <h3 className="text-sm font-bold text-gray-900">Customize quantities</h3>
+                                    <span className="text-[10px] font-semibold text-violet-600 bg-violet-50 px-2 py-0.5 rounded-full">
+                                      ≈ {equivPct}% off
+                                    </span>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-3">
+                                    {(
+                                      [
+                                        { field: 'buy_quantity' as const, label: 'Buy', value: buyQty },
+                                        { field: 'get_quantity' as const, label: 'Get free', value: getQty },
+                                      ] as const
+                                    ).map((row) => (
+                                      <div
+                                        key={row.field}
+                                        className="rounded-xl border border-gray-200 bg-gray-50/80 p-2.5"
+                                      >
+                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                                          {row.label}
+                                        </p>
+                                        <div className="flex items-center justify-between gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => adjustQty(row.field, -1)}
+                                            className="flex h-8 w-8 items-center justify-center rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-violet-50 hover:border-violet-200 hover:text-violet-700"
+                                            aria-label={`Decrease ${row.label}`}
+                                          >
+                                            <Minus size={14} />
+                                          </button>
+                                          <span className="text-lg font-black text-gray-900 tabular-nums w-6 text-center">
+                                            {row.value}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => adjustQty(row.field, 1)}
+                                            className="flex h-8 w-8 items-center justify-center rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-violet-50 hover:border-violet-200 hover:text-violet-700"
+                                            aria-label={`Increase ${row.label}`}
+                                          >
+                                            <Plus size={14} />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  <div>
+                                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                                      Min order value (₹)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={formData.min_order_amount}
+                                      onChange={handleNumberInputChange('min_order_amount')}
+                                      className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                                      placeholder="Optional"
+                                    />
+                                  </div>
+                                </div>
+                              </>
+                            )
+                          })()}
                         </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-700 mb-1.5">Max per user</label>
-                          <input type="text" value={formData.max_uses_per_user} onChange={handleNumberInputChange('max_uses_per_user')} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm" placeholder="Optional" />
+                      )}
+
+                    </div>
+                  )}
+
+                  {/* Step 5: Schedule */}
+                  {activeTab === 'schedule' && (
+                    <div className="space-y-3">
+                      <p className="text-xs text-gray-500">
+                        Starts {formatDayMonth(formData.valid_from || todayYmd)}
+                        {' · '}
+                        {scheduleSummary.days}
+                        {' · '}
+                        {scheduleSummary.time}
+                      </p>
+
+                      {/* Start / end dates */}
+                      <div className="rounded-xl border border-gray-200 bg-white p-3 space-y-2.5">
+                        <p className="text-sm font-semibold text-gray-900">Start date</p>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {(
+                            [
+                              { id: 'today' as const, label: 'Today', sub: formatDayMonth(todayYmd) },
+                              { id: 'tomorrow' as const, label: 'Tomorrow', sub: formatDayMonth(tomorrowYmd) },
+                              {
+                                id: 'custom' as const,
+                                label: 'Custom',
+                                sub:
+                                  startDateMode === 'custom' && formData.valid_from
+                                    ? formatDayMonth(formData.valid_from)
+                                    : 'Pick date',
+                              },
+                            ] as const
+                          ).map((opt) => {
+                            const selected = startDateMode === opt.id
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => applyStartDatePreset(opt.id)}
+                                className={`rounded-lg border px-2 py-2 text-center ${
+                                  selected
+                                    ? 'border-gray-900 bg-gray-900 text-white'
+                                    : 'border-gray-200 bg-white text-gray-800 hover:border-gray-400'
+                                }`}
+                              >
+                                <span className="block text-xs font-semibold">{opt.label}</span>
+                                <span
+                                  className={`block text-[10px] mt-0.5 ${
+                                    selected ? 'text-gray-300' : 'text-gray-500'
+                                  }`}
+                                >
+                                  {opt.sub}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1">
+                              Start
+                            </label>
+                            <input
+                              type="date"
+                              value={formData.valid_from || todayYmd}
+                              min={todayYmd}
+                              onChange={(e) => applyStartDatePreset('custom', e.target.value)}
+                              className="w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1">
+                              End date *
+                            </label>
+                            <input
+                              type="date"
+                              value={formData.valid_till}
+                              min={formData.valid_from || todayYmd}
+                              onChange={handleInputChange('valid_till')}
+                              className="w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm"
+                            />
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-700 mb-1.5">Applicable days</label>
+
+                      {/* Days */}
+                      <div className="rounded-xl border border-gray-200 bg-white p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-gray-900">Applicable days</p>
+                          <button
+                            type="button"
+                            onClick={() => setScheduleDays([])}
+                            className="text-[10px] font-medium text-gray-500 hover:text-gray-800"
+                          >
+                            Clear
+                          </button>
+                        </div>
                         <div className="flex flex-wrap gap-1">
-                          {DAYS_OF_WEEK.map(d => (
-                            <button key={d} type="button" onClick={() => toggleDay(d)} className={`px-2 py-1.5 rounded-lg text-xs font-medium ${formData.applicable_on_days.includes(d) ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-600'}`}>
-                              {d.slice(0, 3)}
+                          {[
+                            {
+                              id: 'all',
+                              label: 'All days',
+                              active: allDaysSelected && formData.applicable_on_days.length === 0,
+                              onClick: () => setScheduleDays([]),
+                            },
+                            {
+                              id: 'weekdays',
+                              label: 'Weekdays',
+                              active: weekdaysSelected,
+                              onClick: () => setScheduleDays([...WEEKDAY_KEYS]),
+                            },
+                            {
+                              id: 'weekend',
+                              label: 'Weekend',
+                              active: weekendSelected,
+                              onClick: () => setScheduleDays([...WEEKEND_KEYS]),
+                            },
+                          ].map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={preset.onClick}
+                              className={`px-2 py-1 rounded-md text-[10px] font-medium ${
+                                preset.active
+                                  ? 'bg-gray-900 text-white'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                              }`}
+                            >
+                              {preset.label}
                             </button>
                           ))}
                         </div>
-                        <p className="text-xs text-gray-500 mt-1">Leave empty for all days</p>
+                        <div className="grid grid-cols-7 gap-1">
+                          {DAYS_OF_WEEK.map((d) => {
+                            const explicitlySelected = formData.applicable_on_days.includes(d)
+                            const isEmptyMeansAll = formData.applicable_on_days.length === 0
+                            return (
+                              <button
+                                key={d}
+                                type="button"
+                                onClick={() => {
+                                  if (isEmptyMeansAll) setScheduleDays([d])
+                                  else toggleDay(d)
+                                }}
+                                className={`py-2 rounded-md text-[10px] font-semibold ${
+                                  explicitlySelected || isEmptyMeansAll
+                                    ? 'bg-gray-800 text-white'
+                                    : 'bg-gray-50 text-gray-500 border border-gray-100 hover:bg-gray-100'
+                                }`}
+                                title={d}
+                              >
+                                {d.slice(0, 3)}
+                              </button>
+                            )
+                          })}
+                        </div>
                       </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-700 mb-1.5">Time start</label>
-                          <input type="time" value={formData.applicable_time_start} onChange={e => setFormData(prev => ({ ...prev, applicable_time_start: e.target.value }))} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm" />
+
+                      {/* Hours */}
+                      <div className="rounded-xl border border-gray-200 bg-white p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold text-gray-900">Active hours</p>
+                          <span className="text-[10px] text-gray-400">Optional · blank = all day</span>
                         </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-700 mb-1.5">Time end</label>
-                          <input type="time" value={formData.applicable_time_end} onChange={e => setFormData(prev => ({ ...prev, applicable_time_end: e.target.value }))} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm" />
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1">Starts</label>
+                            <input
+                              type="time"
+                              value={formData.applicable_time_start}
+                              onChange={(e) =>
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  applicable_time_start: e.target.value,
+                                }))
+                              }
+                              className="w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1">Ends</label>
+                            <input
+                              type="time"
+                              value={formData.applicable_time_end}
+                              onChange={(e) =>
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  applicable_time_end: e.target.value,
+                                }))
+                              }
+                              className="w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm"
+                            />
+                          </div>
                         </div>
+                        {(formData.applicable_time_start || formData.applicable_time_end) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFormData((prev) => ({
+                                ...prev,
+                                applicable_time_start: '',
+                                applicable_time_end: '',
+                              }))
+                            }
+                            className="text-[10px] font-medium text-gray-500 hover:text-gray-800"
+                          >
+                            Clear hours
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
 
-                  {/* Step 5: Stackability */}
-                  {activeTab === 'stackability' && (
+                  {/* Step: Review */}
+                  {activeTab === 'review' && (
                     <div className="space-y-4">
-                      <div className="rounded-xl bg-gradient-to-r from-indigo-50 to-violet-50 border border-indigo-200/80 p-3 mb-2">
-                        <h3 className="text-sm font-bold text-indigo-900 mb-0.5">Stacking & priority</h3>
-                        <p className="text-xs text-indigo-700">Allow combining with other offers and set priority</p>
-                      </div>
-                      <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
-                        <span className="text-xs font-semibold text-gray-700">Allow stacking with other offers</span>
-                        <button type="button" onClick={() => setFormData(prev => ({ ...prev, is_stackable: !prev.is_stackable }))} className={`relative w-11 h-6 rounded-full transition-colors ${formData.is_stackable ? 'bg-orange-500' : 'bg-gray-300'}`}>
-                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${formData.is_stackable ? 'translate-x-5' : 'translate-x-0'}`} />
-                        </button>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-700 mb-1.5">Priority (higher = applied first when non-stackable)</label>
-                        <input type="number" value={formData.priority} onChange={e => setFormData(prev => ({ ...prev, priority: e.target.value }))} className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm" min={0} placeholder="0" />
-                      </div>
-                      <div className="border border-gray-200 rounded-xl overflow-hidden bg-gradient-to-br from-white to-gray-50">
-                        <div className="px-4 py-3 bg-gray-100 border-b border-gray-200">
-                          <h4 className="text-sm font-bold text-gray-900">Summary</h4>
+                      {/* Customer-facing offer preview */}
+                      <div
+                        className={`rounded-2xl p-4 text-white shadow-lg overflow-hidden relative ${
+                          merchantReviewSummary.isBogo
+                            ? 'bg-gradient-to-br from-violet-600 via-purple-600 to-fuchsia-600 shadow-violet-200/50'
+                            : 'bg-gradient-to-br from-orange-500 via-rose-500 to-red-500 shadow-orange-200/50'
+                        }`}
+                      >
+                        <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/10" />
+                        <div className="absolute -left-4 bottom-0 h-16 w-16 rounded-full bg-white/10" />
+                        <div className="relative">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-white/80">
+                            What customers will see
+                          </p>
+                          <p className="text-2xl font-black leading-tight mt-1">
+                            {merchantReviewSummary.headline}
+                          </p>
+                          <p className="text-sm text-white/90 mt-2 leading-snug">
+                            {merchantReviewSummary.customerSees}
+                          </p>
+                          {merchantReviewSummary.equivalent && (
+                            <p className="text-xs font-semibold text-yellow-200 mt-1.5">
+                              {merchantReviewSummary.equivalent}
+                            </p>
+                          )}
                         </div>
-                        <div className="p-4 space-y-2 text-sm">
-                          <div className="flex justify-between"><span className="text-gray-600">Title</span><span className="font-semibold">{formData.offer_title || '—'}</span></div>
-                          <div className="flex justify-between"><span className="text-gray-600">Type</span><span className="font-semibold">{getOfferTypeDisplay(formData.offer_type)}</span></div>
-                          <div className="flex justify-between"><span className="text-gray-600">Applies to</span><span className="font-semibold">{getApplyToDisplay(formData.applicability_type)}</span></div>
-                          {formData.valid_from && formData.valid_till && <div className="flex justify-between"><span className="text-gray-600">Valid</span><span className="font-semibold">{formData.valid_from} → {formData.valid_till}</span></div>}
-                          {formData.is_stackable && <span className="inline-block px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-xs font-semibold">Stackable</span>}
+                      </div>
+
+                      {/* Details */}
+                      <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
+                        <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                          <h4 className="text-sm font-bold text-gray-900">Offer details</h4>
+                          <span className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                            Priority auto · {autoPriority}
+                          </span>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {[
+                            { label: 'Offer name', value: formData.offer_title || '—' },
+                            {
+                              label: 'Offer type',
+                              value:
+                                formData.offer_type === 'BUY_X_GET_Y' ||
+                                formData.offer_type === 'BUY_N_GET_M' ||
+                                formData.offer_type === 'BOGO'
+                                  ? getOfferTypeDisplay(formData.offer_type)
+                                  : createPath === 'precision' || conditionsMode === 'precision'
+                                    ? 'Precision'
+                                    : 'Boost',
+                            },
+                            {
+                              label: 'Applies to',
+                              value:
+                                createPath === 'precision' || conditionsMode === 'precision'
+                                  ? 'All menu items (Precision)'
+                                  : merchantReviewSummary.appliesLabel,
+                            },
+                            ...(merchantReviewSummary.mov
+                              ? [{ label: 'Min order value', value: `₹${merchantReviewSummary.mov}` }]
+                              : []),
+                            ...(merchantReviewSummary.cap
+                              ? [{ label: 'Max discount', value: `₹${merchantReviewSummary.cap}` }]
+                              : []),
+                            {
+                              label: 'Schedule',
+                              value: `${merchantReviewSummary.daysLabel} · ${merchantReviewSummary.timeLabel}`,
+                            },
+                          ].map((row) => (
+                            <div
+                              key={row.label}
+                              className="flex items-start justify-between gap-3 px-4 py-2.5"
+                            >
+                              <span className="text-xs text-gray-500 shrink-0">{row.label}</span>
+                              <span className="text-xs font-semibold text-gray-900 text-right">
+                                {row.value}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Validity dates — needed for publish */}
+                      <div className="rounded-2xl border border-gray-200 bg-white p-3.5 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <Calendar size={14} className="text-orange-500" />
+                          <p className="text-sm font-bold text-gray-900">Validity period</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="block text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                              Starts
+                            </label>
+                            <input
+                              type="date"
+                              value={formData.valid_from}
+                              onChange={handleInputChange('valid_from')}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-sm"
+                              min={new Date().toISOString().split('T')[0]}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                              Ends
+                            </label>
+                            <input
+                              type="date"
+                              value={formData.valid_till}
+                              onChange={handleInputChange('valid_till')}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-sm"
+                              min={formData.valid_from || new Date().toISOString().split('T')[0]}
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Navigation Buttons */}
-                  <div className="flex items-center justify-between gap-2 pt-6 mt-6 border-t border-gray-200">
+              </div>
+
+                  {/* Navigation Buttons — sticky footer */}
+                  {activeTab !== 'choose' && (
+                  <div className="flex-shrink-0 flex items-center justify-between gap-2 px-5 py-3 border-t border-gray-200 bg-white">
                     <div>
-                      {activeTab !== 'basic' && (
+                      {(activeTab !== 'applicability' || !editingId) && (
                         <button
                           type="button"
-                          className="px-4 py-2.5 rounded-xl bg-gray-100 border border-gray-200 text-gray-700 hover:bg-gray-200 transition-all text-xs font-bold"
-                          onClick={() => setActiveTab(STEPS[STEPS.indexOf(activeTab) - 1])}
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gray-100 border border-gray-200 text-gray-700 hover:bg-gray-200 transition-all text-xs font-bold"
+                          onClick={goPrevStep}
                         >
-                          ← Previous
+                          <ChevronLeft size={14} strokeWidth={2.5} />
+                          Previous
                         </button>
                       )}
                     </div>
                     <div className="flex gap-2">
-                      {activeTab !== 'stackability' && (
-                        <button
-                          type="button"
-                          className="px-4 py-2.5 rounded-xl bg-gray-800 text-white hover:bg-gray-900 transition-all text-xs font-bold"
-                          onClick={() => setActiveTab(STEPS[STEPS.indexOf(activeTab) + 1])}
-                        >
-                          Next →
-                        </button>
-                      )}
-                      {activeTab === 'stackability' && (
-                        <button
-                          type="submit"
-                          disabled={isSaving || !formData.offer_title.trim() || !formData.valid_from || !formData.valid_till ||
-                            (formData.applicability_type === 'SPECIFIC_ITEMS_SET' && formData.menu_item_ids.length === 0) ||
-                            (formData.applicability_type === 'CATEGORY' && formData.category_ids.length === 0) ||
-                            (formData.offer_type === 'COUPON' && !generatedCouponCode)}
-                          className={`px-6 py-2.5 rounded-xl font-bold text-white transition-all text-xs ${
-                            isSaving || !formData.offer_title.trim() || !formData.valid_from || !formData.valid_till ||
-                            (formData.applicability_type === 'SPECIFIC_ITEMS_SET' && formData.menu_item_ids.length === 0) ||
-                            (formData.applicability_type === 'CATEGORY' && formData.category_ids.length === 0) ||
-                            (formData.offer_type === 'COUPON' && !generatedCouponCode)
-                              ? 'bg-orange-300 cursor-not-allowed'
-                              : 'bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 shadow-lg hover:shadow-xl'
-                          }`}
-                        >
-                          {isSaving ? (
-                            <span className="flex items-center gap-1">
-                              <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />
-                              Saving...
-                            </span>
-                          ) : (
-                            editingId ? 'Update Offer' : 'Create Offer'
+                      {activeTab !== 'review' && (
+                        <div className="flex flex-col items-end gap-1">
+                          <button
+                            type="button"
+                            disabled={!canProceedFromCurrentStep}
+                            title={nextStepBlockedReason ?? undefined}
+                            className={`inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl transition-all text-xs font-bold ${
+                              canProceedFromCurrentStep
+                                ? 'bg-gray-800 text-white hover:bg-gray-900'
+                                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                            }`}
+                            onClick={goNextStep}
+                          >
+                            Next
+                            <ChevronRight size={14} strokeWidth={2.5} />
+                          </button>
+                          {nextStepBlockedReason && (
+                            <p className="text-[10px] text-gray-400 max-w-[200px] text-right">
+                              {nextStepBlockedReason}
+                            </p>
                           )}
-                        </button>
+                        </div>
+                      )}
+                      {activeTab === 'review' && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isSaving || !formData.offer_title.trim() || !formData.valid_from || !formData.valid_till}
+                            onClick={() => { setPublishMode('draft'); void handleSaveOffer('draft'); }}
+                            className="px-4 py-2.5 rounded-xl bg-white border border-gray-300 text-gray-800 hover:bg-gray-50 text-xs font-bold disabled:opacity-50"
+                          >
+                            Save draft
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={isSaving || !formData.offer_title.trim() || !formData.valid_from || !formData.valid_till ||
+                              (formData.applicability_type === 'SPECIFIC_ITEMS_SET' && resolvedSelectedMenuIds.length === 0) ||
+                              (formData.applicability_type === 'CATEGORY' && formData.category_ids.length === 0) ||
+                              (formData.offer_type === 'COUPON' && !generatedCouponCode)}
+                            onClick={() => setPublishMode('publish')}
+                            className={`px-6 py-2.5 rounded-xl font-bold text-white transition-all text-xs ${
+                              isSaving || !formData.offer_title.trim() || !formData.valid_from || !formData.valid_till ||
+                              (formData.applicability_type === 'SPECIFIC_ITEMS_SET' && resolvedSelectedMenuIds.length === 0) ||
+                              (formData.applicability_type === 'CATEGORY' && formData.category_ids.length === 0) ||
+                              (formData.offer_type === 'COUPON' && !generatedCouponCode)
+                                ? 'bg-orange-300 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 shadow-lg hover:shadow-xl'
+                            }`}
+                          >
+                            {isSaving ? (
+                              <span className="flex items-center gap-1">
+                                <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />
+                                Publishing...
+                              </span>
+                            ) : (
+                              editingId ? 'Update & publish' : 'Publish offer'
+                            )}
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
-                </form>
-              </div>
+                  )}
+              </form>
             </div>
             </div>
           </BodyPortal>
@@ -1852,8 +3762,102 @@ function OffersContent() {
           .hide-scrollbar::-webkit-scrollbar {
             display: none; /* Chrome, Safari and Opera */
           }
+
+          .offer-discount-slider {
+            outline: none;
+          }
+
+          .offer-discount-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 9999px;
+            background: #ef4444;
+            border: 3px solid #fff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+            cursor: pointer;
+            margin-top: -6px;
+          }
+
+          .offer-discount-slider--idle::-webkit-slider-thumb {
+            background: #9ca3af;
+          }
+
+          .offer-discount-slider--green::-webkit-slider-thumb {
+            background: #22c55e;
+          }
+
+          .offer-discount-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 9999px;
+            background: #ef4444;
+            border: 3px solid #fff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+            cursor: pointer;
+          }
+
+          .offer-discount-slider--idle::-moz-range-thumb {
+            background: #9ca3af;
+          }
+
+          .offer-discount-slider--green::-moz-range-thumb {
+            background: #22c55e;
+          }
+
+          .offer-discount-slider::-webkit-slider-runnable-track {
+            height: 8px;
+            border-radius: 9999px;
+          }
+
+          .offer-discount-slider::-moz-range-track {
+            height: 8px;
+            border-radius: 9999px;
+            background: transparent;
+          }
         `}</style>
       </MXLayoutWhite>
+
+      <ConfirmModal
+        isOpen={!!deactivateTarget}
+        title="Deactivate this offer?"
+        message={
+          deactivateTarget
+            ? `“${deactivateTarget.title}” will be deactivated. Customers will no longer see discounted prices from it.`
+            : 'Customers will no longer see discounted prices from this offer.'
+        }
+        confirmLabel="Deactivate"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={isDeactivating}
+        onClose={() => {
+          if (!isDeactivating) setDeactivateTarget(null)
+        }}
+        onConfirm={() => {
+          void handleDeactivateOffer()
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={!!activateTarget}
+        title="Activate this offer?"
+        message={
+          activateTarget
+            ? `“${activateTarget.title}” will go live again for customers (within its validity dates).`
+            : 'This offer will go live again for customers.'
+        }
+        confirmLabel="Activate"
+        cancelLabel="Cancel"
+        variant="default"
+        isLoading={isActivating}
+        onClose={() => {
+          if (!isActivating) setActivateTarget(null)
+        }}
+        onConfirm={() => {
+          void handleActivateOffer()
+        }}
+      />
     </>
   )
 }

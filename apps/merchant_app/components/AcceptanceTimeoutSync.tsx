@@ -9,16 +9,18 @@ import { GatiMitraMerchant } from "@/constants/theme";
 const syncedStoreIds = new Set<number>();
 
 /**
- * On app open, flush expired unaccepted orders and show a dismissible toast.
+ * On app open / resume / when pending created orders exist, flush expired
+ * unaccepted orders via the backend (single cancel authority) and toast if any.
  */
 export default function AcceptanceTimeoutSync() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
-  const { refetch } = useOrdersContext();
+  const { refetch, orders } = useOrdersContext();
   const storeId = selectedStore?.id ?? null;
   const runningRef = useRef(false);
   const [toast, setToast] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSyncAtRef = useRef(0);
 
   const dismissToast = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -26,35 +28,54 @@ export default function AcceptanceTimeoutSync() {
     setToast(null);
   }, []);
 
-  const runSync = useCallback(async () => {
-    if (!token || !storeId) return;
-    if (runningRef.current) return;
-    if (syncedStoreIds.has(storeId)) return;
-
-    runningRef.current = true;
-    try {
-      const { cancelled } = await syncAcceptanceTimeout(storeId, token);
-      syncedStoreIds.add(storeId);
-      if (cancelled > 0) {
-        await refetch();
-        const msg =
-          cancelled === 1
-            ? "1 order was auto-cancelled (acceptance window expired)"
-            : `${cancelled} orders were auto-cancelled (acceptance window expired)`;
-        setToast(msg);
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => setToast(null), 8000);
+  const runSync = useCallback(
+    async (opts?: { force?: boolean }) => {
+      if (!token || !storeId) return;
+      if (runningRef.current) return;
+      const now = Date.now();
+      if (!opts?.force && syncedStoreIds.has(storeId) && now - lastSyncAtRef.current < 20_000) {
+        return;
       }
-    } catch {
-      /* Backend timeout worker owns cancellation; sync is for UX toast only. */
-    } finally {
-      runningRef.current = false;
-    }
-  }, [token, storeId, refetch]);
+
+      runningRef.current = true;
+      try {
+        const { cancelled } = await syncAcceptanceTimeout(storeId, token);
+        syncedStoreIds.add(storeId);
+        lastSyncAtRef.current = Date.now();
+        if (cancelled > 0) {
+          await refetch();
+          const msg =
+            cancelled === 1
+              ? "1 order was auto-cancelled (acceptance window expired)"
+              : `${cancelled} orders were auto-cancelled (acceptance window expired)`;
+          setToast(msg);
+          if (timerRef.current) clearTimeout(timerRef.current);
+          timerRef.current = setTimeout(() => setToast(null), 8000);
+        }
+      } catch {
+        /* Backend timeout worker owns cancellation; sync is for UX toast only. */
+      } finally {
+        runningRef.current = false;
+      }
+    },
+    [token, storeId, refetch]
+  );
 
   useEffect(() => {
-    void runSync();
+    void runSync({ force: true });
   }, [runSync]);
+
+  const hasPendingCreated = orders.some(
+    (o) => o.status === "created" && !o.id.startsWith("core-")
+  );
+
+  useEffect(() => {
+    if (!hasPendingCreated) return undefined;
+    const id = setInterval(() => {
+      void runSync({ force: true });
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [hasPendingCreated, runSync]);
 
   useEffect(() => () => dismissToast(), [dismissToast]);
 

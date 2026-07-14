@@ -6,6 +6,9 @@ import { getEnv } from "../../config/env.js";
 import { getRoute } from "../distance/distance.service.js";
 import { resolveRiderPayoutQuote } from "../rider-payout-pricing/resolveRiderPayoutQuote.js";
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
+import { loadEffectiveDeliveryRateSlabs } from "../delivery-slab-pricing/deliverySlabPricing.repository.js";
+import { calculateProgressiveSlabAmount } from "../delivery-slab-pricing/deliverySlabPricing.service.js";
+import type { DeliveryServiceType } from "../delivery-slab-pricing/types.js";
 
 const vehicleTypeSchema = z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]);
 
@@ -29,6 +32,10 @@ function mapService(raw: string): "food" | "parcel" | "ride" {
   if (raw === "parcel") return "parcel";
   if (raw === "person_ride" || raw === "ride") return "ride";
   return "food";
+}
+
+function toDeliveryServiceType(service: "food" | "parcel" | "ride"): DeliveryServiceType {
+  return service === "ride" ? ("person_ride" as DeliveryServiceType) : service;
 }
 
 export async function riderPayoutRoutes(app: FastifyInstance) {
@@ -92,11 +99,40 @@ export async function riderPayoutRoutes(app: FastifyInstance) {
         routeCached = route.cached;
       }
 
+      const service = mapService(body.serviceType);
+
+      // Rider Fare Engine v3.0: rider payout is a percentage of the customer
+      // fare. This endpoint has no specific order, so estimate the customer
+      // fare from the customer delivery-slab engine for the same geo/distance.
+      const customerSlabs = await loadEffectiveDeliveryRateSlabs(db, {
+        geoLevel: body.geoLevel,
+        geoRefId: body.geoRefId,
+        serviceType: toDeliveryServiceType(service),
+        actorType: "customer",
+      });
+      const customerCalc =
+        customerSlabs.length > 0
+          ? calculateProgressiveSlabAmount({
+              distanceKm: pickupKm + dropKm,
+              slabs: customerSlabs,
+              waitingMinutes: 0,
+              applyRiderExtras: false,
+            })
+          : null;
+      const customerFare = customerCalc?.ok ? customerCalc.quote.finalAmount : 0;
+
+      if (customerFare <= 0) {
+        return reply.status(400).send({
+          error: "NO_CUSTOMER_FARE",
+          message: "Could not estimate a customer fare for this route",
+        });
+      }
+
       const calc = await resolveRiderPayoutQuote({
-        db,
         level: body.geoLevel,
         refId: body.geoRefId,
-        service: mapService(body.serviceType),
+        service,
+        customerFare,
         pickupKm,
         dropKm,
         waitingMinutes: body.waitingMinutes,

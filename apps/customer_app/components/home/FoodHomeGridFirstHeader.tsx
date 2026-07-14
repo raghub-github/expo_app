@@ -3,13 +3,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
@@ -30,6 +24,7 @@ import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
 import { useAuthStore } from "@/store/authStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { AppText } from "@/components/AppText";
 
 /** Location row height in grid-first hero header (search sits below). */
 export const GRID_FIRST_LOCATION_ROW_H = 56;
@@ -158,14 +153,14 @@ export function FoodHomeGridFirstHeader({
           onPress={onLocationPress}
         >
           <View style={styles.locationTitleRow}>
-            <Text style={styles.locationPrimary} numberOfLines={1}>
+            <AppText style={styles.locationPrimary} numberOfLines={1}>
               {locationPrimary}
-            </Text>
+            </AppText>
             <Ionicons name="chevron-down" size={16} color="#FFFFFF" />
           </View>
-          <Text style={styles.locationSecondary} numberOfLines={1}>
+          <AppText style={styles.locationSecondary} numberOfLines={1}>
             {locationSecondary}
-          </Text>
+          </AppText>
         </TouchableOpacity>
 
         <View style={styles.topActions}>
@@ -178,9 +173,9 @@ export function FoodHomeGridFirstHeader({
               accessibilityLabel={`${subscriptionName} membership`}
             >
               <Ionicons name="ribbon" size={11} color="#B45309" />
-              <Text style={styles.subscriptionText} numberOfLines={1}>
+              <AppText style={styles.subscriptionText} numberOfLines={1}>
                 {subscriptionName}
-              </Text>
+              </AppText>
             </TouchableOpacity>
           ) : null}
           <GatiCashHeaderPill variant="gridFirst" />
@@ -193,7 +188,7 @@ export function FoodHomeGridFirstHeader({
             {avatarUri ? (
               <Image source={{ uri: avatarUri }} style={styles.avatarImg} contentFit="cover" />
             ) : (
-              <Text style={styles.avatarInitials}>{initials}</Text>
+              <AppText style={styles.avatarInitials}>{initials}</AppText>
             )}
           </TouchableOpacity>
         </View>
@@ -209,9 +204,9 @@ export function FoodHomeGridFirstHeader({
           onPress={onSearchPress}
         >
           <Ionicons name="search" size={20} color={SEARCH_ICON} />
-          <Text style={styles.searchPlaceholder} numberOfLines={1}>
+          <AppText style={styles.searchPlaceholder} numberOfLines={1}>
             {PLACEHOLDERS[placeholderIndex]}
-          </Text>
+          </AppText>
           <Animated.View style={micStyle}>
             <Ionicons name="mic" size={18} color={SEARCH_ICON} />
           </Animated.View>
@@ -219,7 +214,7 @@ export function FoodHomeGridFirstHeader({
 
         <View style={styles.vegCol}>
           <View style={styles.vegLabelBadge}>
-            <Text style={styles.vegLabel}>VEG</Text>
+            <AppText style={styles.vegLabel}>VEG</AppText>
           </View>
           <TouchableOpacity
             style={[styles.vegToggle, vegOnly && styles.vegToggleOn]}

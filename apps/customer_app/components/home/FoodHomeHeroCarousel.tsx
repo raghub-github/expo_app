@@ -3,20 +3,13 @@
  */
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  NativeSyntheticEvent,
-  NativeScrollEvent,
-  Dimensions,
-} from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, NativeSyntheticEvent, NativeScrollEvent, useWindowDimensions } from "react-native";
 import { Video, ResizeMode } from "expo-av";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { GridFirstHeroMediaItem } from "@/lib/gridFirstHeroMedia";
 import type { HomeBannerOffer } from "@/services/offers.service";
@@ -24,14 +17,19 @@ import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
 import { prefetchFoodHomeImageUri } from "@/lib/prefetchGridFirstHeroMedia";
+import { AppText } from "@/components/AppText";
+import {
+  GridFirstDefaultHeroBg,
+  GRID_FIRST_DEFAULT_HERO_BASE,
+} from "@/components/home/GridFirstDefaultHeroBg";
+import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
+import type { MerchantSummary } from "@/services/merchant.service";
 
-const { width: SCREEN_W } = Dimensions.get("window");
 const PROMO_AUTO_MS = 5200;
 /** Sky / status-bar tint for grid-first hero (keep in sync with home status bar). */
 export const GRID_FIRST_SKY_TOP = "#7DD3FC";
-/** Warm fallback while hero media loads — avoids blue→banner flash under status bar. */
-export const GRID_FIRST_HERO_PLACEHOLDER = "#F3E8D4";
-const SKY_TOP = GRID_FIRST_SKY_TOP;
+/** Warm fallback while hero media loads — Swiggy-style cream. */
+export const GRID_FIRST_HERO_PLACEHOLDER = GRID_FIRST_DEFAULT_HERO_BASE;
 const FOOD_PROMO_ASSET_KEYS = [CX.home.promoOffer, CX.home.promoOffer2] as const;
 /** Header row + search — overlay height on hero (excl. status bar). */
 export const GRID_FIRST_HEADER_OVERLAY_H = 122;
@@ -100,7 +98,8 @@ function merchantOfferHeroUrl(offer: HomeBannerOffer): string | null {
 
 function buildSlides(
   heroMedia: GridFirstHeroMediaItem[],
-  offers: HomeBannerOffer[]
+  offers: HomeBannerOffer[],
+  merchantFallbackUris: string[] = []
 ): Slide[] {
   const merchantOffers = offers.filter((o) => o.kind === "merchant" && o.store_id?.trim());
 
@@ -114,10 +113,16 @@ function buildSlides(
           : undefined;
       const cta = offer ? merchantOfferCta(offer) : null;
       const fallbackUrl =
-        !media.mediaUrl && offer ? merchantOfferHeroUrl(offer) ?? defaultPromoHeroUrl(index) : null;
+        !media.mediaUrl && offer
+          ? merchantOfferHeroUrl(offer) ??
+            merchantFallbackUris[index % Math.max(merchantFallbackUris.length, 1)] ??
+            defaultPromoHeroUrl(index)
+          : !media.mediaUrl
+            ? merchantFallbackUris[index] ?? defaultPromoHeroUrl(index)
+            : null;
       return {
         ...media,
-        mediaUrl: media.mediaUrl ?? fallbackUrl,
+        mediaUrl: media.mediaUrl ?? fallbackUrl ?? null,
         cta,
         storeId: cta && offer?.store_id?.trim() ? offer.store_id.trim() : "",
       };
@@ -141,19 +146,41 @@ function buildSlides(
       return {
         id: `offer-${offer.id}`,
         kind: "image" as const,
-        mediaUrl: merchantOfferHeroUrl(offer) ?? defaultPromoHeroUrl(index),
+        mediaUrl:
+          merchantOfferHeroUrl(offer) ??
+          merchantFallbackUris[index % Math.max(merchantFallbackUris.length, 1)] ??
+          defaultPromoHeroUrl(index),
         cta,
         storeId: cta && offer.store_id?.trim() ? offer.store_id.trim() : "",
       };
     });
   }
 
-  return mapWithOffers([{ id: "hero-sky", kind: "image" as const, mediaUrl: defaultPromoHeroUrl(0) }]);
+  // No admin hero media — use nearby restaurant food photos (Swiggy-style), then promo assets.
+  if (merchantFallbackUris.length > 0) {
+    return merchantFallbackUris.slice(0, 6).map((uri, index) => ({
+      id: `merchant-hero-${index}`,
+      kind: "image" as const,
+      mediaUrl: uri,
+      cta: null,
+      storeId: "",
+    }));
+  }
+
+  const promo = defaultPromoHeroUrl(0);
+  if (promo) {
+    return mapWithOffers([{ id: "hero-promo", kind: "image" as const, mediaUrl: promo }]);
+  }
+
+  // Patterned cream slide — no remote image required.
+  return [{ id: "hero-default-pattern", kind: "image", mediaUrl: null, cta: null, storeId: "" }];
 }
 
 type Props = {
   heroMedia?: GridFirstHeroMediaItem[];
   offers?: HomeBannerOffer[];
+  /** Nearby store banners — used when state has no grid_first hero media. */
+  merchantFallbacks?: MerchantSummary[];
   embeddedInSky?: boolean;
   immersive?: boolean;
   topInset?: number;
@@ -161,6 +188,7 @@ type Props = {
 
 function HeroMediaSlide({
   slide,
+  slideWidth,
   slideHeight,
   imageFailed,
   onImageError,
@@ -169,6 +197,7 @@ function HeroMediaSlide({
   immersive = false,
 }: {
   slide: Slide;
+  slideWidth: number;
   slideHeight: number;
   imageFailed: boolean;
   onImageError: () => void;
@@ -178,10 +207,19 @@ function HeroMediaSlide({
 }) {
   const hasMedia = !!slide.mediaUrl && !imageFailed;
   const hasCta = !!slide.cta?.trim();
-  const placeholderBg = immersive ? GRID_FIRST_HERO_PLACEHOLDER : SKY_TOP;
+  const [imageReady, setImageReady] = useState(false);
+
+  useEffect(() => {
+    setImageReady(false);
+  }, [slide.mediaUrl, slide.id]);
 
   const content = (
     <>
+      {/* Branded warm backdrop is the ONLY placeholder — never an animated shimmer skeleton
+          (spec: the hero must never show a loading skeleton). It paints instantly and the
+          real image fades in over it when decoded, so there is no white/grey/shimmer flash. */}
+      <GridFirstDefaultHeroBg />
+
       {slide.kind === "video" && hasMedia ? (
         <Video
           source={{ uri: slide.mediaUrl! }}
@@ -195,17 +233,16 @@ function HeroMediaSlide({
       ) : hasMedia ? (
         <Image
           source={{ uri: slide.mediaUrl! }}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, { opacity: imageReady ? 1 : 0 }]}
           contentFit="cover"
           cachePolicy="memory-disk"
           priority="high"
           transition={0}
           recyclingKey={slide.mediaUrl!}
+          onLoad={() => setImageReady(true)}
           onError={onImageError}
         />
-      ) : (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: placeholderBg }]} />
-      )}
+      ) : null}
 
       {hasCta ? (
         <View style={styles.ctaWrap}>
@@ -215,7 +252,7 @@ function HeroMediaSlide({
             onPress={onPress}
             accessibilityRole="button"
           >
-            <Text style={styles.ctaText}>{slide.cta}</Text>
+            <AppText style={styles.ctaText}>{slide.cta}</AppText>
             <Ionicons name="chevron-forward" size={13} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
@@ -224,7 +261,7 @@ function HeroMediaSlide({
   );
 
   return (
-    <View style={[styles.slide, { width: SCREEN_W, height: slideHeight }]}>
+    <View style={[styles.slide, { width: slideWidth, height: slideHeight }]}>
       {content}
     </View>
   );
@@ -233,12 +270,15 @@ function HeroMediaSlide({
 export function FoodHomeHeroCarousel({
   heroMedia = [],
   offers = [],
+  merchantFallbacks = [],
   embeddedInSky = false,
   immersive = false,
   topInset = 0,
 }: Props) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   useAppAssetsStore((s) => s.assets);
+  const { width: windowWidth } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set());
@@ -247,7 +287,23 @@ export function FoodHomeHeroCarousel({
     ? gridFirstSkySectionHeight(topInset)
     : 232;
 
-  const slides = useMemo(() => buildSlides(heroMedia, offers), [heroMedia, offers]);
+  const merchantFallbackUris = useMemo(() => {
+    const uris: string[] = [];
+    const seen = new Set<string>();
+    for (const m of merchantFallbacks) {
+      const uri = resolveMerchantBannerUri(m);
+      if (!uri || seen.has(uri)) continue;
+      seen.add(uri);
+      uris.push(uri);
+      if (uris.length >= 6) break;
+    }
+    return uris;
+  }, [merchantFallbacks]);
+
+  const slides = useMemo(
+    () => buildSlides(heroMedia, offers, merchantFallbackUris),
+    [heroMedia, offers, merchantFallbackUris]
+  );
 
   useLayoutEffect(() => {
     for (const slide of slides) {
@@ -271,33 +327,40 @@ export function FoodHomeHeroCarousel({
     const timer = setInterval(() => {
       setActiveIndex((prev) => {
         const next = (prev + 1) % slides.length;
-        scrollRef.current?.scrollTo({ x: next * SCREEN_W, animated: true });
+        scrollRef.current?.scrollTo({ x: next * windowWidth, animated: true });
         return next;
       });
     }, PROMO_AUTO_MS);
     return () => clearInterval(timer);
-  }, [slides.length]);
+  }, [slides.length, windowWidth]);
 
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
-    const idx = Math.round(x / SCREEN_W);
+    const idx = Math.round(x / windowWidth);
     setActiveIndex(idx);
-  }, []);
+  }, [windowWidth]);
 
   const onPress = (slide: Slide) => {
     if (slide.storeId) {
-      router.push({ pathname: "/home/merchant/[id]", params: { id: slide.storeId } });
+      navigateToMerchant(router, queryClient, slide.storeId);
     }
   };
 
   if (slides.length === 0) {
     if (!immersive) return null;
     return (
-      <View style={[styles.wrap, { height: slideHeight, backgroundColor: GRID_FIRST_HERO_PLACEHOLDER }]} />
+      <View style={[styles.wrap, { height: slideHeight }]}>
+        <GridFirstDefaultHeroBg />
+      </View>
     );
   }
 
   const backdropUri = slides[0]?.kind === "image" ? slides[0].mediaUrl : null;
+  const [backdropReady, setBackdropReady] = useState(false);
+
+  useEffect(() => {
+    setBackdropReady(false);
+  }, [backdropUri]);
 
   return (
     <View
@@ -309,28 +372,32 @@ export function FoodHomeHeroCarousel({
       ]}
     >
       {immersive ? (
-        backdropUri ? (
-          <Image
-            source={{ uri: backdropUri }}
-            style={StyleSheet.absoluteFillObject}
-            contentFit="cover"
-            cachePolicy="memory-disk"
-            priority="high"
-            transition={0}
-            recyclingKey={`backdrop-${backdropUri}`}
-          />
-        ) : (
-          <View
-            style={[StyleSheet.absoluteFillObject, { backgroundColor: GRID_FIRST_HERO_PLACEHOLDER }]}
-          />
-        )
+        <>
+          {/* Instant branded backdrop — no shimmer. Backdrop image fades in over it. */}
+          <GridFirstDefaultHeroBg />
+          {backdropUri ? (
+            <Image
+              source={{ uri: backdropUri }}
+              style={[StyleSheet.absoluteFillObject, { opacity: backdropReady ? 1 : 0 }]}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              priority="high"
+              transition={0}
+              recyclingKey={`backdrop-${backdropUri}`}
+              onLoad={() => setBackdropReady(true)}
+            />
+          ) : null}
+        </>
       ) : null}
       <ScrollView
         ref={scrollRef}
         horizontal
         pagingEnabled
+        nestedScrollEnabled
         decelerationRate="fast"
         showsHorizontalScrollIndicator={false}
+        delaysContentTouches={false}
+        keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
         style={immersive ? StyleSheet.absoluteFillObject : undefined}
@@ -340,6 +407,7 @@ export function FoodHomeHeroCarousel({
           <HeroMediaSlide
             key={slide.id}
             slide={slide}
+            slideWidth={windowWidth}
             slideHeight={slideHeight}
             onPress={() => onPress(slide)}
             imageFailed={failedIds.has(slide.id)}

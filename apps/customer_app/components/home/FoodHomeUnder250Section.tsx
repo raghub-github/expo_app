@@ -22,13 +22,13 @@ export function FoodHomeUnder250Section({ title, items, loading, onPressItem }: 
     <View style={styles.wrap}>
       <Text style={styles.heading}>{title}</Text>
       {loading ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled delaysContentTouches={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.row}>
           {Array.from({ length: 4 }).map((_, i) => (
             <GMSkeleton key={i} style={styles.skeletonCard} />
           ))}
         </ScrollView>
       ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled delaysContentTouches={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.row}>
           {items.map((item) => {
             const uri = toAbsoluteImageUrl(item.imageUrl);
             return (

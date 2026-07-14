@@ -9,7 +9,8 @@ import { appendCancellationTimeline } from "@/lib/orderCancellationTimeline";
 import { recordOrderCancellation } from "@/lib/record-order-cancellation";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
-const AUTO_CANCEL_REASON = "Auto Cancelled";
+const AUTO_CANCEL_REASON = "MERCHANT_ACCEPT_TIMEOUT";
+const AUTO_CANCEL_LABEL = "Auto Cancelled";
 
 type Sql = ReturnType<typeof postgres>;
 type TimeoutLog = {
@@ -29,7 +30,9 @@ async function fetchExpiredAcceptanceTargets(
   merchantStoreId: number,
   limit = 200
 ): Promise<CancelledRow[]> {
-  return (await sql`
+  // Do not UPDATE orders_core in the same statement as orders_food — the food
+  // cancellation BEFORE trigger already writes core (Postgres 27000 otherwise).
+  const rows = (await sql`
     WITH cfg AS (
       SELECT
         store_type,
@@ -48,7 +51,24 @@ async function fetchExpiredAcceptanceTargets(
       WHERE f.merchant_store_id = ${merchantStoreId}
         AND upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
         AND f.cancelled_at IS NULL
-        AND (NOW() - f.created_at) > make_interval(mins => COALESCE(cfg.win_m, 5))
+        AND f.accepted_at IS NULL
+        AND (
+          (
+            f.merchant_acceptance_deadline_at IS NOT NULL
+            AND f.merchant_acceptance_deadline_at <= NOW()
+          )
+          OR (
+            f.merchant_acceptance_deadline_at IS NULL
+            AND f.merchant_acceptance_window_seconds IS NOT NULL
+            AND f.merchant_acceptance_window_seconds > 0
+            AND (f.created_at + make_interval(secs => f.merchant_acceptance_window_seconds::double precision)) <= NOW()
+          )
+          OR (
+            f.merchant_acceptance_deadline_at IS NULL
+            AND (f.merchant_acceptance_window_seconds IS NULL OR f.merchant_acceptance_window_seconds <= 0)
+            AND (f.created_at + make_interval(mins => COALESCE(cfg.win_m, 5))) <= NOW()
+          )
+        )
       ORDER BY f.created_at ASC
       LIMIT ${limit}
     ),
@@ -58,40 +78,47 @@ async function fetchExpiredAcceptanceTargets(
         order_status = 'CANCELLED',
         cancelled_at = NOW(),
         rejected_reason = ${AUTO_CANCEL_REASON},
-        cancelled_by_label = ${AUTO_CANCEL_REASON},
+        cancelled_by_label = ${AUTO_CANCEL_LABEL},
         cancelled_by_type = 'system',
         cancellation_details = jsonb_build_object(
           'version', 1,
           'source', 'system',
           'action_source', 'system',
           'cancel_mode', 'auto',
+          'reason_code', ${AUTO_CANCEL_REASON}::text,
           'rejected_reason', ${AUTO_CANCEL_REASON}::text,
-          'cancelled_by_label', ${AUTO_CANCEL_REASON}::text
+          'cancelled_by_label', ${AUTO_CANCEL_LABEL}::text
         ),
+        merchant_acceptance_timeout_processed_at = NOW(),
         updated_at = NOW()
       FROM targets t
       WHERE f.id = t.food_id
         AND upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
         AND f.cancelled_at IS NULL
       RETURNING f.order_id AS core_id, f.id AS food_id, f.merchant_store_id
-    ),
-    upd_core AS (
-      UPDATE orders_core c
-      SET
-        status = 'cancelled',
-        current_status = 'CANCELLED',
-        cancelled_at = NOW(),
-        cancelled_by = 'SYSTEM',
-        updated_at = NOW()
-      FROM upd_food u
-      WHERE c.id = u.core_id
-        AND c.cancelled_at IS NULL
-      RETURNING c.id AS core_id, c.grand_total
     )
     SELECT f.core_id, f.food_id, f.merchant_store_id, c.grand_total
     FROM upd_food f
-    JOIN upd_core c ON c.core_id = f.core_id
+    JOIN orders_core c ON c.id = f.core_id
   `) as CancelledRow[];
+
+  const coreIds = rows
+    .map((r) => Number(r.core_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (coreIds.length > 0) {
+    await sql`
+      UPDATE orders_core
+      SET
+        status = 'cancelled',
+        current_status = 'CANCELLED',
+        cancelled_at = COALESCE(cancelled_at, NOW()),
+        cancelled_by = COALESCE(NULLIF(BTRIM(cancelled_by), ''), 'SYSTEM'),
+        updated_at = NOW()
+      WHERE id = ANY(${coreIds})
+    `;
+  }
+
+  return rows;
 }
 
 async function finalizeCancelledRows(
@@ -133,7 +160,7 @@ async function finalizeCancelledRows(
           cancelledBy: "SYSTEM",
           displayReason: AUTO_CANCEL_REASON,
           cancelledByType: "system",
-          cancelledByLabel: AUTO_CANCEL_REASON,
+          cancelledByLabel: AUTO_CANCEL_LABEL,
           actionSource: "system",
           cancelMode: "auto",
           previousStatus: "CREATED",

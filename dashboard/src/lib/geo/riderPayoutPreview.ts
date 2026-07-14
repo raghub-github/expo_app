@@ -1,27 +1,24 @@
 /**
  * Client-side rider payout preview — delegates to shared slab pricing engine.
+ * Rider Fare Engine v3.0: rider payout is a percentage of customer fare.
  */
 
 import {
-  calcRiderPreviewBreakdown,
-  type PickupSlab,
-  type DropSlab,
-  type RiderPreviewBreakdown,
+  calcServicePayoutRulePreviewBreakdown,
+  type ServicePayoutRulePreviewInput,
+  type ServicePayoutRulePreviewBreakdown,
 } from "@/lib/pricing/slabPricingEngine";
 import type { AppliedPreviewSurge, PreviewSurgeDefinition, PreviewSurgeTimeSlot } from "./riderSurgePreview";
 
-export type PreviewPickupSlab = PickupSlab & { id: number };
-export type PreviewDropSlab = DropSlab & { id: number };
+export type RiderPayoutPreviewBreakdown = ServicePayoutRulePreviewBreakdown;
 
-export type RiderPayoutPreviewBreakdown = RiderPreviewBreakdown;
+export type { AppliedPreviewSurge, PreviewSurgeDefinition, PreviewSurgeTimeSlot, ServicePayoutRulePreviewInput };
 
-export type { AppliedPreviewSurge, PreviewSurgeDefinition, PreviewSurgeTimeSlot };
-
-export function previewRiderPayoutBreakdown(args: {
+export function previewServicePayoutBreakdown(args: {
+  customerFare: number;
   pickupKm: number;
   dropKm: number;
-  pickupSlabs: PreviewPickupSlab[];
-  dropSlabs: PreviewDropSlab[];
+  rule: ServicePayoutRulePreviewInput;
   waitingMinutes?: number;
   riderHasGmitraMax?: boolean;
   service: "food" | "parcel" | "ride";
@@ -32,10 +29,5 @@ export function previewRiderPayoutBreakdown(args: {
   maxTotalSurgeAmount?: number | null;
   forceActiveSurgeIds?: number[];
 }): RiderPayoutPreviewBreakdown | null {
-  return calcRiderPreviewBreakdown(args);
-}
-
-export function previewRiderPayout(args: Parameters<typeof previewRiderPayoutBreakdown>[0]): number {
-  const breakdown = previewRiderPayoutBreakdown(args);
-  return breakdown?.finalAmount ?? 0;
+  return calcServicePayoutRulePreviewBreakdown(args);
 }

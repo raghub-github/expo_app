@@ -1,19 +1,10 @@
 import {
-  calcPickupPayout,
-  calcDropPayout,
-  calcRiderPayoutBreakdown,
+  calcServicePayoutRuleSplit,
   calcWaitingCharge as sharedWaitingCharge,
-  type PickupSlab,
-  type DropSlab,
+  type ServicePayoutRule,
 } from "@gatimitra/slab-pricing";
-import type {
-  RiderDropSlabRow,
-  RiderPickupSlabRow,
-  RiderPayoutLegSegment,
-  RiderPayoutQuote,
-} from "./types.js";
+import type { RiderPayoutQuote, ServicePayoutRuleRow } from "./types.js";
 import type { AppliedRiderSurge } from "../rider-surge/types.js";
-import { validateDropSlabSet, validatePickupSlabSet } from "./validation.js";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -27,48 +18,24 @@ export function calculateWaitingCharge(args: {
   return sharedWaitingCharge(args.waitingMinutes, args.startAfterMinutes, args.chargePerMin);
 }
 
-function toPickupSlabs(slabs: RiderPickupSlabRow[]): PickupSlab[] {
-  return slabs.map((s) => ({
-    id: s.id,
-    minKm: s.minKm,
-    maxKm: s.maxKm,
-    baseFare: s.baseFare,
-    pickupPerKm: s.pickupPerKm,
-    minCharge: s.minCharge,
-    waitingChargePerMin: s.waitingChargePerMin,
-    waitingStartAfter: s.waitingStartAfter,
-    priority: s.priority,
-    isActive: s.isActive,
-  }));
+function toRule(row: ServicePayoutRuleRow): ServicePayoutRule {
+  return {
+    riderPercentage: row.riderPercentage,
+    platformPercentage: row.platformPercentage,
+  };
 }
 
-function toDropSlabs(slabs: RiderDropSlabRow[]): DropSlab[] {
-  return slabs.map((s) => ({
-    id: s.id,
-    minKm: s.minKm,
-    maxKm: s.maxKm,
-    dropPerKm: s.dropPerKm,
-    priority: s.priority,
-    isActive: s.isActive,
-  }));
-}
-
-function mapLegSegments(segments: { slabId?: number; minKm: number; maxKm: number | null; coveredKm: number; rate: number; amount: number }[]): RiderPayoutLegSegment[] {
-  return segments.map((s) => ({
-    slabId: s.slabId ?? 0,
-    minKm: s.minKm,
-    maxKm: s.maxKm,
-    segmentKm: s.coveredKm,
-    perKmRate: s.rate,
-    segmentAmount: s.amount,
-  }));
-}
-
-export function calculateRiderPickupDropPayout(args: {
+/**
+ * Rider Fare Engine v3.0: rider payout = rule.riderPercentage of customerFare,
+ * split pickup/drop purely by distance ratio (pickupKm / totalKm — no
+ * guardrails, no fixed ratios), plus waiting charge and surge added on top.
+ * No slab lookup — the rule and customerFare are the only pricing inputs.
+ */
+export function calculatePercentageRiderPayout(args: {
+  customerFare: number;
   pickupKm: number;
   dropKm: number;
-  pickupSlabs: RiderPickupSlabRow[];
-  dropSlabs: RiderDropSlabRow[];
+  rule: ServicePayoutRuleRow;
   waitingMinutes?: number;
   riderHasGmitraMax?: boolean;
   surgeWaitMaxOnly?: boolean;
@@ -80,78 +47,65 @@ export function calculateRiderPickupDropPayout(args: {
 }): { ok: true; quote: RiderPayoutQuote } | { ok: false; code: string; message: string } {
   const pickupKm = Math.max(0, args.pickupKm);
   const dropKm = Math.max(0, args.dropKm);
+  const customerFare = Math.max(0, args.customerFare);
 
-  const pickupErrs = validatePickupSlabSet(args.pickupSlabs, pickupKm);
-  if (pickupErrs.length > 0) {
-    return { ok: false, code: pickupErrs[0]!.code, message: pickupErrs[0]!.message };
-  }
-  const dropErrs = validateDropSlabSet(args.dropSlabs, dropKm);
-  if (dropErrs.length > 0) {
-    return { ok: false, code: dropErrs[0]!.code, message: dropErrs[0]!.message };
+  if (customerFare <= 0) {
+    return { ok: false, code: "NO_CUSTOMER_FARE", message: "Customer fare is required to derive rider payout" };
   }
 
-  const pickupSlabs = toPickupSlabs(args.pickupSlabs);
-  const dropSlabs = toDropSlabs(args.dropSlabs);
-
-  const breakdown = calcRiderPayoutBreakdown({
+  const split = calcServicePayoutRuleSplit({
+    customerFare,
     pickupKm,
     dropKm,
-    pickupSlabs,
-    dropSlabs,
-    waitingMinutes: args.waitingMinutes,
-    riderHasGmitraMax: args.riderHasGmitraMax,
-    surgeWaitMaxOnly: args.surgeWaitMaxOnly,
-    appliedSurges: args.appliedSurges,
-    rawSurgeTotal: args.rawSurgeTotal,
-    surgeTotal: args.surgeTotal,
-    surgeCapped: args.surgeCapped,
+    rule: toRule(args.rule),
   });
 
-  if (!breakdown) {
-    return { ok: false, code: "EMPTY", message: "No rider slabs configured" };
-  }
+  const surgeBlocked = args.surgeWaitMaxOnly === true && args.riderHasGmitraMax !== true;
+  const waitingMinutes = surgeBlocked ? 0 : Math.max(0, args.waitingMinutes ?? 0);
+  const waitingAmount =
+    waitingMinutes > 0 && args.rule.waitingChargePerMin
+      ? calculateWaitingCharge({
+          waitingMinutes,
+          chargePerMin: args.rule.waitingChargePerMin,
+          startAfterMinutes: args.rule.waitingFreeMinutes,
+        })
+      : 0;
 
-  const pickupLeg = calcPickupPayout({
-    pickupKm,
-    slabs: pickupSlabs,
-    waitingMinutes: args.waitingMinutes,
-    extrasAllowed: breakdown.gmitraMaxExtrasAllowed,
-  });
-  const dropLeg = calcDropPayout({ dropKm, slabs: dropSlabs });
+  const appliedSurges = surgeBlocked ? [] : args.appliedSurges ?? [];
+  const surgeTotal = surgeBlocked ? 0 : args.surgeTotal ?? 0;
+  const rawSurgeTotal = surgeBlocked ? 0 : args.rawSurgeTotal ?? 0;
 
-  const sortedPickup = [...args.pickupSlabs].sort(
-    (a, b) =>
-      a.minKm - b.minKm ||
-      (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
-      b.priority - a.priority ||
-      a.id - b.id
-  );
-  const firstPickup = sortedPickup[0]!;
+  const pickupAmount = round2(split.pickupAmount + waitingAmount);
+  const dropAmount = round2(split.dropAmount);
+  const finalAmount = round2(pickupAmount + dropAmount + surgeTotal);
 
   return {
     ok: true,
     quote: {
       pickupKm: round2(pickupKm),
       dropKm: round2(dropKm),
-      baseFareApplied: breakdown.baseFare,
-      pickupSegments: pickupLeg ? mapLegSegments(pickupLeg.segments) : [],
-      dropSegments: dropLeg ? mapLegSegments(dropLeg.segments) : [],
-      pickupAmount: breakdown.pickupAmount,
-      dropAmount: breakdown.dropAmount,
-      waitingMinutes: round2(Math.max(0, args.waitingMinutes ?? 0)),
-      waitingStartAfter: firstPickup.waitingStartAfter ?? 0,
-      waitingAmount: breakdown.waitingAmount,
-      subtotalBeforeSurge: breakdown.subtotalBeforeSurge,
-      appliedSurges: breakdown.appliedSurges as AppliedRiderSurge[],
-      rawSurgeTotal: breakdown.rawSurgeTotal,
-      surgeTotal: breakdown.surgeTotal,
-      surgeCapped: breakdown.surgeCapped,
+      customerFare: split.customerFare,
+      riderPercentage: args.rule.riderPercentage,
+      platformPercentage: args.rule.platformPercentage,
+      platformRevenue: split.platformRevenue,
+      ruleId: args.rule.id,
+      rulePriority: args.rule.priority,
+      pickupRatio: split.pickupRatio,
+      dropRatio: split.dropRatio,
+      pickupAmount,
+      dropAmount,
+      waitingMinutes: round2(waitingMinutes),
+      waitingAmount,
+      subtotalBeforeSurge: round2(pickupAmount + dropAmount),
+      appliedSurges,
+      rawSurgeTotal,
+      surgeTotal,
+      surgeCapped: args.surgeCapped === true,
       maxTotalSurgeAmount: args.maxTotalSurgeAmount ?? null,
       surgeWaitMaxOnly: args.surgeWaitMaxOnly === true,
       riderGmitraMaxApplied: args.riderHasGmitraMax === true,
-      minChargeApplied: breakdown.minChargeApplied,
-      finalAmount: breakdown.finalAmount,
-      pricingEngine: "rider_pickup_drop_v2",
+      finalAmount,
+      pricingEngine: "rider_percentage_v3",
     },
   };
 }

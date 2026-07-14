@@ -15,7 +15,7 @@ import { isCatalogOptionEligibleForTrip } from "./rideEligibility.service.js";
 import { applyBikeLiteCustomerFare } from "./rideCustomerFare.js";
 import { formatRideCustomerRateCardSummary, formatRideWaitingChargeNote } from "./rideRateCardDisplay.js";
 import { resolveRidePickupFreeWaitMinutes } from "../../lib/ride-pickup-wait.js";
-import { loadEffectiveRiderPickupSlabs } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
+import { loadEffectiveServicePayoutRule } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
 
 export async function quoteCustomerRideFare(args: {
   pickupLat: number;
@@ -199,20 +199,12 @@ export async function quoteCustomerRideFare(args: {
     });
     let perMin = 0;
     if (pricingGeo) {
-      const { slabs: pickupSlabs } = await loadEffectiveRiderPickupSlabs({
+      const { rule } = await loadEffectiveServicePayoutRule({
         level: pricingGeo.level,
         refId: pricingGeo.refId,
         service: "ride",
-        vehicleType: pricingVehicle,
       });
-      const sortedPickup = [...pickupSlabs].sort(
-        (a, b) =>
-          a.minKm - b.minKm ||
-          (a.maxKm ?? 1e9) - (b.maxKm ?? 1e9) ||
-          b.priority - a.priority ||
-          a.id - b.id
-      );
-      perMin = sortedPickup[0]?.waitingChargePerMin ?? 0;
+      perMin = rule?.waitingChargePerMin ?? 0;
     } else {
       const fallbackSlabs = await loadFallbackCustomerSlabs({
         service: "person_ride",

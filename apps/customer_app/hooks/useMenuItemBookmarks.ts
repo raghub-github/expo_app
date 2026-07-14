@@ -5,6 +5,14 @@ import { useAuthStore } from "@/store/authStore";
 
 export const MENU_ITEM_BOOKMARKS_QUERY_KEY = ["menu-item-bookmarks"] as const;
 
+/**
+ * Stable empty-array reference — `query.data ?? []` would otherwise allocate a NEW
+ * array every render while unauthenticated/loading, breaking the useMemo below on
+ * every render and making every consumer of bookmarkMenuItemIdSet (every menu row's
+ * onBookmark callback) unstable, defeating React.memo for the whole menu list.
+ */
+const EMPTY_BOOKMARKS: BookmarkedMenuItem[] = [];
+
 export function useMenuItemBookmarks(storeId?: string | null) {
   const session = useAuthStore((s) => s.session);
   const isAuthenticated = Boolean(session?.accessToken);
@@ -18,7 +26,7 @@ export function useMenuItemBookmarks(storeId?: string | null) {
     staleTime: 60 * 1000,
   });
 
-  const bookmarkedItems = query.data ?? [];
+  const bookmarkedItems = query.data ?? EMPTY_BOOKMARKS;
   const bookmarkMenuItemIdSet = useMemo(
     () => new Set(bookmarkedItems.map((item) => item.menuItemId)),
     [bookmarkedItems]

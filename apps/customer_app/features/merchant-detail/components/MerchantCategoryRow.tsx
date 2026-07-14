@@ -1,6 +1,5 @@
 import React, { useCallback } from "react";
-import { Text, TouchableOpacity, StyleSheet } from "react-native";
-import { ScrollView } from "react-native-gesture-handler";
+import { Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { StoreTheme } from "@/constants/storeTheme";
 import type { MerchantCategoryChip } from "../types";
 import { CATEGORY_ROW_HEIGHT } from "../constants/layout";
@@ -30,6 +29,7 @@ export const MerchantCategoryRow = React.memo(function MerchantCategoryRow({
       directionalLockEnabled
       showsHorizontalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
+      delaysContentTouches={false}
       contentContainerStyle={styles.scroll}
       style={styles.wrap}
     >

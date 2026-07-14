@@ -40,6 +40,11 @@ import {
   resolveOrdersCorePk,
   writeOrderItemCommissionSnapshots,
 } from "../commission/writeOrderCommissionSnapshots.js";
+import {
+  buildCtmLineInputsFromFrozenItems,
+  writeMerchantCtmPricingSnapshots,
+  ensureMerchantCtmPricingSnapshotsForOrder,
+} from "../commission/writeMerchantCtmPricingSnapshots.js";
 import { resolveStoreCommission, type ResolvedCommission } from "../commission/commission.resolver.js";
 import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
 import { formatAddressLabelEnum } from "../../lib/order-delivery-details.js";
@@ -80,6 +85,112 @@ export function sanitizeOptional<T>(v: T): T | null {
 export function sanitizeNumeric(value: number): string {
   if (value == null || Number.isNaN(value) || !Number.isFinite(value)) return "0";
   return Math.max(0, value).toFixed(2);
+}
+
+/**
+ * Resolve frozen per-line effective pricing from billing snapshot (Offer Engine SSOT).
+ * Exported so EVERY order-placement path freezes the SAME applied_offer_* columns onto
+ * orders_core_items — the single source of truth the CTM snapshot projects from. No path may
+ * insert bare order lines and rely on later inference; that is what made a BOGO persist as NONE.
+ */
+export function orderLinePricingFieldsFromSnapshot(
+  snap: Record<string, unknown> | null | undefined,
+  menuItemId: string,
+  lineIndex: number,
+  quantity: number,
+  catalogLineTotal: number,
+): {
+  effectiveUnitPrice: string | null;
+  effectiveLineTotal: string | null;
+  offerDiscountAmount: string | null;
+  appliedOfferId: number | null;
+  appliedOfferLabel: string | null;
+  appliedOfferType: string | null;
+  ineligibilityReason: string | null;
+  isDiscountEligible: boolean | undefined;
+} {
+  const pricingRaw =
+    (Array.isArray(snap?.order_line_pricing) && snap?.order_line_pricing) ||
+    (Array.isArray(snap?.orderLinePricing) && snap?.orderLinePricing) ||
+    [];
+  const eligRaw =
+    (Array.isArray(snap?.order_line_eligibility) && snap?.order_line_eligibility) ||
+    (Array.isArray(snap?.orderLineEligibility) && snap?.orderLineEligibility) ||
+    [];
+
+  const rows = pricingRaw as Array<Record<string, unknown>>;
+  const byIndex = rows[lineIndex];
+  const mid = String(menuItemId ?? "").trim();
+  const byId =
+    mid.length > 0
+      ? rows.find((r) => String(r.menuItemId ?? r.menu_item_id ?? "").trim() === mid)
+      : undefined;
+  const row = byIndex ?? byId;
+
+  const eligRows = eligRaw as Array<Record<string, unknown>>;
+  const eligRow =
+    eligRows[lineIndex] ??
+    (mid
+      ? eligRows.find((r) => String(r.menuItemId ?? r.menu_item_id ?? "").trim() === mid)
+      : undefined);
+
+  let isDiscountEligible: boolean | undefined;
+  if (eligRow) {
+    if (typeof eligRow.isDiscountEligible === "boolean") isDiscountEligible = eligRow.isDiscountEligible;
+    else if (typeof eligRow.discountEligible === "boolean") isDiscountEligible = eligRow.discountEligible;
+  }
+  if (row && typeof row.isDiscountEligible === "boolean") {
+    isDiscountEligible = row.isDiscountEligible;
+  }
+
+  const ineligibilityReason = (() => {
+    const r = row?.ineligibilityReason ?? row?.ineligibility_reason
+      ?? eligRow?.ineligibilityReason ?? eligRow?.ineligibility_reason;
+    const s = r != null ? String(r).trim() : "";
+    return s || null;
+  })();
+
+  if (!row) {
+    return {
+      effectiveUnitPrice: null,
+      effectiveLineTotal: null,
+      offerDiscountAmount: null,
+      appliedOfferId: null,
+      appliedOfferLabel: null,
+      appliedOfferType: null,
+      ineligibilityReason,
+      isDiscountEligible,
+    };
+  }
+
+  const catalog = asNumber(row.catalogLineTotal ?? row.catalog_line_total ?? catalogLineTotal);
+  const disc = Math.max(0, asNumber(row.offerDiscountAmount ?? row.offer_discount_amount ?? 0));
+  let effective = asNumber(row.effectiveLineTotal ?? row.effective_line_total);
+  if (!Number.isFinite(effective) || effective < 0) {
+    effective = Math.max(0, catalog - disc);
+  }
+  const qty = Math.max(1, quantity);
+  const unit = Math.round((effective / qty) * 100) / 100;
+  const offerIdRaw = row.appliedOfferId ?? row.applied_offer_id;
+  const offerId =
+    offerIdRaw != null && Number.isFinite(Number(offerIdRaw)) && Number(offerIdRaw) > 0
+      ? Math.floor(Number(offerIdRaw))
+      : null;
+  const labelRaw = row.appliedOfferLabel ?? row.applied_offer_label;
+  const typeRaw = row.appliedOfferType ?? row.applied_offer_type;
+
+  return {
+    effectiveUnitPrice: disc > 0.005 || Math.abs(effective - catalog) > 0.005
+      ? sanitizeNumeric(unit)
+      : sanitizeNumeric(catalog / qty),
+    effectiveLineTotal: sanitizeNumeric(effective),
+    offerDiscountAmount: sanitizeNumeric(disc),
+    appliedOfferId: offerId,
+    appliedOfferLabel: labelRaw != null && String(labelRaw).trim() ? String(labelRaw).trim() : null,
+    appliedOfferType: typeRaw != null && String(typeRaw).trim() ? String(typeRaw).trim() : null,
+    ineligibilityReason,
+    isDiscountEligible,
+  };
 }
 
 function asNumber(v: unknown): number {
@@ -483,6 +594,78 @@ export type CreatePendingResult =
   | { ok: true; pendingId: string; amount: number; currency: string }
   | { ok: false; code: string; message: string };
 
+/**
+ * A DB error that is a transient CONNECTION/network drop (not a data/constraint problem), so the
+ * exact same write is safe to retry. Seen in prod as intermittent checkout 500s ("Failed query:
+ * insert into pending_orders …") when the remote Postgres connection is reset mid-insert of the
+ * large billing_snapshot row — postgres.js surfaces this as "Premature close" / CONNECTION_ENDED,
+ * never as a constraint violation.
+ */
+function isTransientDbConnectionError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } };
+  const code = String(e?.code ?? e?.cause?.code ?? "").toUpperCase();
+  const transientCodes = new Set([
+    "ECONNRESET", "EPIPE", "ETIMEDOUT", "ENETUNREACH", "ENOTFOUND",
+    "CONNECTION_ENDED", "CONNECTION_CLOSED", "CONNECTION_DESTROYED", "CONNECTION_CONNECT_TIMEOUT",
+    "08000", "08001", "08003", "08004", "08006", "08007", // SQLSTATE connection exceptions
+    "57P01", "57P02", "57P03", // admin shutdown / crash shutdown / cannot connect now
+  ]);
+  if (transientCodes.has(code)) return true;
+  const msg = String(e?.message ?? e?.cause?.message ?? "").toLowerCase();
+  return (
+    msg.includes("premature close") ||
+    msg.includes("connection terminated") ||
+    msg.includes("connection ended") ||
+    msg.includes("econnreset") ||
+    msg.includes("write after end") ||
+    msg.includes("timeout")
+  );
+}
+
+/**
+ * Persist the pending_orders row, retrying ONLY on transient connection drops. The pendingId is
+ * generated once by the caller, so a retry re-uses it: if a prior attempt actually committed but
+ * its ack was lost, the retry hits a unique(pending_id) violation — which we treat as success (the
+ * row is already there). Constraint/data errors are never retried; they surface immediately.
+ */
+async function insertPendingOrderRow(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  values: typeof pendingOrders.$inferInsert
+): Promise<void> {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await db.insert(pendingOrders).values(values);
+      return;
+    } catch (err) {
+      const code = String(
+        (err as { code?: string; cause?: { code?: string } })?.code ??
+          (err as { cause?: { code?: string } })?.cause?.code ??
+          ""
+      );
+      // 23505 = unique_violation. The only unique column here is pending_id, so this means our own
+      // earlier (connection-dropped) attempt already committed the row — idempotent success.
+      if (code === "23505") {
+        console.warn(
+          "[orders] pending insert saw unique pending_id on retry — row already persisted, treating as success"
+        );
+        return;
+      }
+      if (attempt < maxAttempts && isTransientDbConnectionError(err)) {
+        const backoffMs = 120 * attempt;
+        console.warn(
+          `[orders] pending_orders insert transient DB error (attempt ${attempt}/${maxAttempts}); retrying in ${backoffMs}ms:`,
+          (err as { cause?: { message?: string }; message?: string })?.cause?.message ??
+            (err as { message?: string })?.message
+        );
+        await new Promise((r) => setTimeout(r, backoffMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export async function createPendingOrder(
   db: PostgresJsDatabase<Record<string, unknown>>,
   input: PendingOrderInput
@@ -741,7 +924,7 @@ export async function createPendingOrder(
       : {}),
   };
 
-  await db.insert(pendingOrders).values({
+  await insertPendingOrderRow(db, {
     pendingId,
     customerId,
     merchantStoreId,
@@ -938,9 +1121,43 @@ export async function finalizeOrder(
         finalizedAt: new Date(),
       });
 
-      const itemInserts = items.map((i) => {
+      const eligibilityByMenuId = new Map<string, boolean>();
+      const snapElig =
+        (pending.billingSnapshot as Record<string, unknown> | null)?.order_line_eligibility ??
+        (pending.billingSnapshot as Record<string, unknown> | null)?.orderLineEligibility;
+      if (Array.isArray(snapElig)) {
+        for (const row of snapElig) {
+          if (row == null || typeof row !== "object") continue;
+          const r = row as Record<string, unknown>;
+          const id = String(r.menuItemId ?? "").trim();
+          if (!id) continue;
+          const flag =
+            typeof r.isDiscountEligible === "boolean"
+              ? r.isDiscountEligible
+              : typeof r.discountEligible === "boolean"
+                ? r.discountEligible
+                : undefined;
+          if (flag !== undefined) eligibilityByMenuId.set(id, flag);
+        }
+      }
+
+      const billingSnapRec = (pending.billingSnapshot as Record<string, unknown> | null) ?? null;
+      const itemInserts = items.map((i, lineIndex) => {
         const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
         const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
+        const pricing = orderLinePricingFieldsFromSnapshot(
+          billingSnapRec,
+          String(i.menuItemId),
+          lineIndex,
+          i.quantity,
+          lineTotal,
+        );
+        const elig =
+          pricing.isDiscountEligible ??
+          eligibilityByMenuId.get(String(i.menuItemId)) ??
+          (typeof (i as { isDiscountEligible?: boolean }).isDiscountEligible === "boolean"
+            ? (i as { isDiscountEligible?: boolean }).isDiscountEligible
+            : undefined);
         return {
           orderId: orderIdText,
           menuItemId: i.menuItemId,
@@ -957,6 +1174,14 @@ export async function finalizeOrder(
           addonPrice: sanitizeNumeric(addonPerUnit),
           totalPrice: sanitizeNumeric(lineTotal),
           itemSnapshot: i.itemSnapshot ?? undefined,
+          isDiscountEligible: elig,
+          effectiveUnitPrice: pricing.effectiveUnitPrice,
+          effectiveLineTotal: pricing.effectiveLineTotal,
+          offerDiscountAmount: pricing.offerDiscountAmount,
+          appliedOfferId: pricing.appliedOfferId,
+          appliedOfferLabel: pricing.appliedOfferLabel,
+          appliedOfferType: pricing.appliedOfferType,
+          ineligibilityReason: pricing.ineligibilityReason,
         };
       });
 
@@ -1005,6 +1230,39 @@ export async function finalizeOrder(
         orderIdNum ?? undefined,
         storeCommission,
       );
+
+      if (orderIdNum != null && orderIdNum > 0) {
+        // Project each CTM line from its OWN just-frozen orders_core_items row (itemInserts[i] ↔
+        // insertedItems[i], same insert order) — never a cross-item match against the billing
+        // array. One item's offer can never leak onto another's snapshot.
+        const ctmLines = buildCtmLineInputsFromFrozenItems(
+          insertedItems.map((r, i) => {
+            const ins = itemInserts[i]!;
+            return {
+              orderItemId: Number(r.id),
+              menuItemId: ins.menuItemId != null ? Number(ins.menuItemId) : null,
+              quantity: ins.quantity,
+              catalogLineTotal: Number(ins.totalPrice ?? 0),
+              offerDiscountAmount: Number(ins.offerDiscountAmount ?? 0),
+              appliedOfferType: ins.appliedOfferType ?? null,
+              appliedOfferLabel: ins.appliedOfferLabel ?? null,
+              appliedOfferId: ins.appliedOfferId ?? null,
+              isItemPromo:
+                String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+            };
+          })
+        );
+        await writeMerchantCtmPricingSnapshots(
+          tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+          {
+            coreOrderId: orderIdNum,
+            commissionPercent: storeCommission?.percent ?? 0,
+            billingSnapshot: billingSnapRec,
+            lines: ctmLines,
+            commission: storeCommission,
+          }
+        );
+      }
 
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
@@ -1096,6 +1354,16 @@ export async function finalizeOrder(
       }).catch((e) => {
         console.warn("[weather] post-finalize snapshot skipped:", (e as Error).message);
       });
+
+      // Guarantee Merchant CTM rows exist even if in-txn write was skipped/partial.
+      void ensureMerchantCtmPricingSnapshotsForOrder(
+        db as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        {
+          coreOrderId: Number(orderCorePk),
+          orderIdText,
+          commissionPercent: storeCommission?.percent ?? 0,
+        }
+      );
     }
   } catch (err: unknown) {
     const e = err as {
@@ -1477,9 +1745,37 @@ export async function finalizePendingOrderFromWebhook(
         finalizedAt: new Date(),
       });
 
-      const itemInserts = items.map((i) => {
+      const eligibilityByMenuIdWh = new Map<string, boolean>();
+      const snapEligWh =
+        (pending.billing_snapshot as Record<string, unknown> | null)?.order_line_eligibility ??
+        (pending.billing_snapshot as Record<string, unknown> | null)?.orderLineEligibility;
+      if (Array.isArray(snapEligWh)) {
+        for (const row of snapEligWh) {
+          if (row == null || typeof row !== "object") continue;
+          const r = row as Record<string, unknown>;
+          const id = String(r.menuItemId ?? "").trim();
+          if (!id) continue;
+          const flag =
+            typeof r.isDiscountEligible === "boolean"
+              ? r.isDiscountEligible
+              : typeof r.discountEligible === "boolean"
+                ? r.discountEligible
+                : undefined;
+          if (flag !== undefined) eligibilityByMenuIdWh.set(id, flag);
+        }
+      }
+
+      const billingSnapWh = (pending.billing_snapshot as Record<string, unknown> | null) ?? null;
+      const itemInserts = items.map((i, lineIndex) => {
         const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
         const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
+        const pricing = orderLinePricingFieldsFromSnapshot(
+          billingSnapWh,
+          String(i.menuItemId),
+          lineIndex,
+          i.quantity,
+          lineTotal,
+        );
         return {
           orderId: orderIdText,
           menuItemId: i.menuItemId,
@@ -1496,6 +1792,15 @@ export async function finalizePendingOrderFromWebhook(
           addonPrice: sanitizeNumeric(addonPerUnit),
           totalPrice: sanitizeNumeric(lineTotal),
           itemSnapshot: i.itemSnapshot ?? undefined,
+          isDiscountEligible:
+            pricing.isDiscountEligible ?? eligibilityByMenuIdWh.get(String(i.menuItemId)),
+          effectiveUnitPrice: pricing.effectiveUnitPrice,
+          effectiveLineTotal: pricing.effectiveLineTotal,
+          offerDiscountAmount: pricing.offerDiscountAmount,
+          appliedOfferId: pricing.appliedOfferId,
+          appliedOfferLabel: pricing.appliedOfferLabel,
+          appliedOfferType: pricing.appliedOfferType,
+          ineligibilityReason: pricing.ineligibilityReason,
         };
       });
 
@@ -1543,6 +1848,38 @@ export async function finalizePendingOrderFromWebhook(
         storeCommissionWebhook,
       );
 
+      if (orderIdNumWebhook != null && orderIdNumWebhook > 0) {
+        // Same leak-proof projection as the finalize path: each CTM line comes from its own
+        // frozen orders_core_items row (itemInserts[i] ↔ insertedItems[i]).
+        const ctmLines = buildCtmLineInputsFromFrozenItems(
+          insertedItems.map((r, i) => {
+            const ins = itemInserts[i]!;
+            return {
+              orderItemId: Number(r.id),
+              menuItemId: ins.menuItemId != null ? Number(ins.menuItemId) : null,
+              quantity: ins.quantity,
+              catalogLineTotal: Number(ins.totalPrice ?? 0),
+              offerDiscountAmount: Number(ins.offerDiscountAmount ?? 0),
+              appliedOfferType: ins.appliedOfferType ?? null,
+              appliedOfferLabel: ins.appliedOfferLabel ?? null,
+              appliedOfferId: ins.appliedOfferId ?? null,
+              isItemPromo:
+                String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+            };
+          })
+        );
+        await writeMerchantCtmPricingSnapshots(
+          tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+          {
+            coreOrderId: orderIdNumWebhook,
+            commissionPercent: storeCommissionWebhook?.percent ?? 0,
+            billingSnapshot: billingSnapWh,
+            lines: ctmLines,
+            commission: storeCommissionWebhook,
+          }
+        );
+      }
+
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
         paymentGateway: "razorpay",
@@ -1580,6 +1917,17 @@ export async function finalizePendingOrderFromWebhook(
 
     if (!result.ok) {
       return { ok: false, code: result.code };
+    }
+
+    if (result.orderId && result.orderCorePk != null && Number.isFinite(result.orderCorePk)) {
+      void ensureMerchantCtmPricingSnapshotsForOrder(
+        db as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        {
+          coreOrderId: Number(result.orderCorePk),
+          orderIdText: String(result.orderId),
+          commissionPercent: undefined,
+        }
+      );
     }
 
     if (result.orderId && result.pendingIdValue) {

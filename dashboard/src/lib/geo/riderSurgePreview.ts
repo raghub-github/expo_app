@@ -75,6 +75,8 @@ export function resolvePreviewSurges(args: {
   baseFareForPct: number;
   now?: Date;
   forceActiveSurgeIds?: number[];
+  /** Calculator mode: a surge is only ever applied when explicitly present in forceActiveSurgeIds — no time-window or always-on auto-detection. */
+  onlyForceActive?: boolean;
 }): {
   appliedSurges: AppliedPreviewSurge[];
   rawSurgeTotal: number;
@@ -114,7 +116,7 @@ export function resolvePreviewSurges(args: {
 
     const slots = slotsBySurge.get(def.id) ?? [];
     let active = forceIds?.has(def.id) === true;
-    if (!active) {
+    if (!active && !args.onlyForceActive) {
       if (slots.length > 0) {
         active = slots.some((s) => isTimeInSlot(now, s));
       } else {

@@ -5,7 +5,6 @@ import {
 } from "@/services/merchant.service";
 import {
   hydrateMerchantMenuQuery,
-  hasMemoryMerchantMenu,
   MERCHANT_DETAIL_GC_MS,
   MERCHANT_DETAIL_QUERY_KEY,
   MERCHANT_DETAIL_STALE_MS,
@@ -20,6 +19,9 @@ import {
 } from "@/lib/merchantHeroWarmCache";
 import { resolveMerchantCarouselBannerUri } from "@/lib/merchantBanner";
 import { prefetchStoreOffersFromLocationStore } from "@/lib/prefetchStoreOffers";
+import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
+import { seedStoreOffersQueryIfCached } from "@/lib/storeOffersCache";
+import { useLocationStore } from "@/store/locationStore";
 
 export {
   MERCHANT_DETAIL_QUERY_KEY,
@@ -112,13 +114,22 @@ export function prefetchMerchantDetail(
 
   void hydrateMerchantMenuQuery(queryClient, merchantId);
 
+  const { address, coords } = useLocationStore.getState();
+  seedStoreOffersQueryIfCached(queryClient, merchantId, {
+    pincode: address?.pincode,
+    state: address?.state,
+    city: address?.city,
+    lat: coords?.latitude,
+    lng: coords?.longitude,
+  });
+
   void queryClient.prefetchQuery({
     queryKey: STORE_LIVE_STATUS_QUERY_KEY(merchantId),
     queryFn: () => merchantService.getStoreLiveStatusSnapshot(merchantId),
     staleTime: 30_000,
   });
 
-  prefetchStoreOffersFromLocationStore(queryClient, merchantId);
+  prefetchStoreOffersFromLocationStore(queryClient, merchantId, { force: true });
 
   const placeholder = getMerchantDetailPlaceholder(queryClient, merchantId);
   if (placeholder && !queryClient.getQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId))) {
@@ -134,9 +145,9 @@ export function prefetchMerchantDetail(
     warmMerchantHeroImage(merchantId, resolveMerchantCarouselBannerUri(summary));
   }
 
-  if (hasMemoryMerchantMenu(merchantId)) {
-    void syncMerchantMenuInBackground(queryClient, merchantId);
-    return;
+  const cachedMenu = readSyncMerchantMenu(merchantId);
+  if (cachedMenu?.menu?.length) {
+    void prefetchMenuItemImagesForMenu(cachedMenu.menu);
   }
 
   void syncMerchantMenuInBackground(queryClient, merchantId);

@@ -9,7 +9,7 @@ import {
   loadCoreDbItemsByOrderTextIds,
   resolvePartnerOrderItems,
 } from '@/lib/partnerFoodOrderItems';
-import { merchantFundedDiscountFromBilling } from '@/lib/merchant-billing-discount';
+import { annotateMerchantItemsWithItemOffers, merchantFundedDiscountFromBilling } from '@/lib/merchant-billing-discount';
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
@@ -322,64 +322,122 @@ export async function GET(req: NextRequest) {
         let items = resolvePartnerOrderItems(core, food, rawItemsByOrderTextId);
         const orderText = String(core.order_id ?? '').trim();
         const snaps = orderText ? snapshotsByOrderText.get(orderText) ?? [] : [];
-        const { items: merchantMapped, merchantSubtotal } = applyMerchantBaseToOrderItems(
-          items.map((it) => ({
-            ...it,
-            qty: it.quantity,
-            price: it.total,
-            total: it.total,
-            base_amount: it.baseAmount,
-            baseAmount: it.baseAmount,
-            customizations_total: it.customizationsTotal,
-            customizationsTotal: it.customizationsTotal,
-            customization_lines: it.customizationLines,
-            customizationLines: it.customizationLines,
-          })),
-          snaps
-        );
-        items = items.map((it, i) => {
-          const m = merchantMapped[i];
-          if (!m) return it;
-          const qty = Math.max(1, it.quantity || 1);
-          const lineTotal = Number(m.total ?? m.price ?? it.total);
-          const oldBase =
-            Number(it.baseAmount) > 0.005
-              ? Number(it.baseAmount)
-              : Number(it.capturedBaseAmount) > 0.005
-                ? Number(it.capturedBaseAmount)
-                : 0;
-          const oldCust =
-            Number(it.customizationsTotal) > 0.005
-              ? Number(it.customizationsTotal)
-              : Number(it.capturedAddonAmount) > 0.005
-                ? Number(it.capturedAddonAmount)
-                : 0;
-          const oldLine =
-            oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
-          const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
-          const newBase = merchantMenuRupee(oldBase * factor);
-          const newCust = merchantMenuRupee(oldCust * factor);
-          const finalLine = merchantMenuRupee(newBase + newCust) || lineTotal;
-          return {
-            ...it,
-            baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
-            customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
-            capturedBaseAmount:
-              it.capturedBaseAmount != null
-                ? merchantMenuRupee(Number(it.capturedBaseAmount) * factor)
-                : undefined,
-            capturedAddonAmount:
-              it.capturedAddonAmount != null
-                ? merchantMenuRupee(Number(it.capturedAddonAmount) * factor)
-                : undefined,
-            customizationLines: it.customizationLines?.map((l) => ({
-              ...l,
-              amount: merchantMenuRupee((Number(l.amount) || 0) * factor),
+        const allCtmFrozen =
+          items.length > 0 && items.every((it) => it.ctmFromSnapshot === true);
+
+        if (!allCtmFrozen) {
+          const { items: merchantMapped } = applyMerchantBaseToOrderItems(
+            items.map((it) => ({
+              ...it,
+              qty: it.quantity,
+              price: it.total,
+              total: it.total,
+              base_amount: it.baseAmount,
+              baseAmount: it.baseAmount,
+              customizations_total: it.customizationsTotal,
+              customizationsTotal: it.customizationsTotal,
+              customization_lines: it.customizationLines,
+              customizationLines: it.customizationLines,
             })),
-            total: finalLine,
-            price: finalLine / qty,
+            snaps
+          );
+          items = items.map((it, i) => {
+            const m = merchantMapped[i];
+            if (!m) return it;
+            const qty = Math.max(1, it.quantity || 1);
+            const lineTotal = Number(m.total ?? m.price ?? it.total);
+            const oldBase =
+              Number(it.baseAmount) > 0.005
+                ? Number(it.baseAmount)
+                : Number(it.capturedBaseAmount) > 0.005
+                  ? Number(it.capturedBaseAmount)
+                  : 0;
+            const oldCust =
+              Number(it.customizationsTotal) > 0.005
+                ? Number(it.customizationsTotal)
+                : Number(it.capturedAddonAmount) > 0.005
+                  ? Number(it.capturedAddonAmount)
+                  : 0;
+            const oldLine =
+              oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
+            const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
+            const newBase = merchantMenuRupee(oldBase * factor);
+            const newCust = merchantMenuRupee(oldCust * factor);
+            const finalLine = merchantMenuRupee(newBase + newCust) || lineTotal;
+            return {
+              ...it,
+              baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
+              customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
+              capturedBaseAmount:
+                it.capturedBaseAmount != null
+                  ? merchantMenuRupee(Number(it.capturedBaseAmount) * factor)
+                  : undefined,
+              capturedAddonAmount:
+                it.capturedAddonAmount != null
+                  ? merchantMenuRupee(Number(it.capturedAddonAmount) * factor)
+                  : undefined,
+              customizationLines: it.customizationLines?.map((l) => ({
+                ...l,
+                amount: merchantMenuRupee((Number(l.amount) || 0) * factor),
+              })),
+              total: finalLine,
+              price: finalLine / qty,
+              menu_item_id: it.menuItemId ?? null,
+            };
+          });
+        } else {
+          items = items.map((it) => {
+            const qty = Math.max(1, it.quantity || 1);
+            const gross = Number(it.catalogLineTotal ?? it.total) || 0;
+            const net = Number(it.netLineTotal ?? gross) || gross;
+            const promo =
+              it.isItemPromo === true ||
+              (it.offerDiscount != null && it.offerDiscount > 0.005);
+            return {
+              ...it,
+              // Display net CTM as line total; keep catalogLineTotal for strike-through.
+              total: promo ? net : gross,
+              price: (promo ? net : gross) / qty,
+              menu_item_id: it.menuItemId ?? null,
+            };
+          });
+        }
+
+        const billingSnapEarly =
+          core.billing_snapshot && typeof core.billing_snapshot === 'object'
+            ? (core.billing_snapshot as Record<string, unknown>)
+            : null;
+        if (!allCtmFrozen) {
+          type AnnotatedLine = {
+            catalog_line_total?: number;
+            net_line_total?: number;
+            offer_discount?: number;
+            offer_label?: string | null;
+            is_item_promo?: boolean;
+            applied_offer_type?: string | null;
           };
-        });
+          const annotated = annotateMerchantItemsWithItemOffers(
+            items.map((it) => ({
+              ...it,
+              price: it.total,
+              menu_item_id: it.menuItemId ?? null,
+            })),
+            billingSnapEarly
+          ) as AnnotatedLine[];
+          items = items.map((it, i) => {
+            const a = annotated[i];
+            if (!a) return it;
+            return {
+              ...it,
+              catalogLineTotal: a.catalog_line_total,
+              netLineTotal: a.net_line_total,
+              offerDiscount: a.offer_discount,
+              offerLabel: a.offer_label,
+              isItemPromo: a.is_item_promo,
+              appliedOfferType: a.applied_offer_type ?? it.appliedOfferType,
+            };
+          });
+        }
 
         const riderId =
           core.rider_id != null
@@ -416,19 +474,57 @@ export async function GET(req: NextRequest) {
             ? (core.billing_snapshot as Record<string, unknown>)
             : null;
         const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+        const merchantSubtotal = items.reduce((s, it) => s + (Number(it.total) || 0), 0);
+        const ctmNetSum = items.reduce(
+          (s, it) => s + (Number(it.netLineTotal ?? it.total) || 0),
+          0
+        );
+        const ctmDiscSum = items.reduce((s, it) => s + (Number(it.offerDiscount) || 0), 0);
+        const precisionFromCore = Math.max(
+          0,
+          Number((core as { merchant_precision_discount?: unknown }).merchant_precision_discount) || 0
+        );
+        const precisionOnLines = items.reduce((s, it) => {
+          const t = String(it.appliedOfferType ?? '').toUpperCase().replace(/[-\s]+/g, '_');
+          if (t === 'PRECISION' || t === 'CART_PERCENTAGE' || t === 'CART_FLAT') {
+            return s + (Number(it.offerDiscount) || 0);
+          }
+          // Eligible non–item-promo money disc is usually cart/precision when CTM typed it loosely.
+          if (
+            it.isItemPromo !== true &&
+            (Number(it.offerDiscount) || 0) > 0.005 &&
+            !/BOOST|BOGO|BUY_/.test(t)
+          ) {
+            return s + (Number(it.offerDiscount) || 0);
+          }
+          return s;
+        }, 0);
+        const missingPrecision = allCtmFrozen
+          ? Math.max(0, precisionFromCore - precisionOnLines)
+          : 0;
+        // Bill discount line = cart precision only. BOOST is already inside netLineTotal —
+        // putting ctmDiscSum here would double-subtract BOOST from CTM totals.
+        const resolvedDisc = allCtmFrozen ? precisionFromCore : merchantDiscount;
+        const resolvedTotal = allCtmFrozen
+          ? Math.max(0, ctmNetSum - missingPrecision + (customerPricing.packaging || 0))
+          : 0;
+
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
-          discount: merchantDiscount,
-          total: 0,
+          discount: resolvedDisc,
+          total: resolvedTotal,
         });
         const pricing = {
           subtotal: bill.itemsSubtotal,
           packaging: bill.packaging,
           taxes: 0,
-          discount: merchantDiscount,
+          discount: resolvedDisc,
           total: bill.total,
         };
+        void ctmDiscSum;
+        // Frozen SSOT precision discount — pass-through for UI rendering (never recomputed downstream).
+        const merchantPrecisionDiscount = precisionFromCore;
         const displayItemCount = computeOrderItemQuantityCount({
           items,
           food_items_count: food?.food_items_count != null ? Number(food.food_items_count) : null,
@@ -476,6 +572,7 @@ export async function GET(req: NextRequest) {
             core.total_ctm != null && core.total_ctm !== ''
               ? Number(core.total_ctm)
               : bill.total,
+          merchant_precision_discount: merchantPrecisionDiscount,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,
           is_high_value: food?.is_high_value ?? false,

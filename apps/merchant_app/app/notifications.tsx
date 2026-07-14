@@ -207,7 +207,7 @@ export default function NotificationsScreen() {
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
   const { notifications, markAllAsRead, markAsRead, removeNotification, loading } = useNotifications();
-  const { orders } = useOrders();
+  const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const [selected, setSelected] = useState<MerchantNotification | null>(null);
   const modalVisible = selected != null;
@@ -236,6 +236,9 @@ export default function NotificationsScreen() {
             const api = await fetchFoodOrder(storeId, foodId, token);
             order = mapApiOrder(api);
           }
+        }
+        if (order) {
+          upsertOrder(order);
         }
         if (order?.status === "created" && !order.id.startsWith("core-")) {
           openIncomingOrderSheet(order);

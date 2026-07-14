@@ -4,7 +4,7 @@ import { ItemVegMark } from "@/components/order/ItemVegMark";
 import type { LineItem } from "@/hooks/useOrders";
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
 import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
-import { formatMerchantRs, merchantLineTotalForFoodItem } from "@/lib/merchant-line-total";
+import { formatMerchantRs, merchantFoodItemCatalogAndNet } from "@/lib/merchant-line-total";
 
 type Props = {
   item: LineItem;
@@ -26,6 +26,9 @@ export function OrderCardItemRow({
 }: Props) {
   const hasCust = lineItemHasCustomizations(item);
   const expandable = showExpandChevron && hasCust;
+  const { catalog, net, showStrike, offerBadge, offerKind } = merchantFoodItemCatalogAndNet(
+    item as ApiFoodOrderItem
+  );
 
   return (
     <Pressable
@@ -39,6 +42,24 @@ export function OrderCardItemRow({
     >
       <ItemVegMark vegNonveg={item.vegNonveg ?? orderVeg} name={item.name} size={14} />
       <View style={styles.body}>
+        {offerBadge ? (
+          <View
+            style={[
+              styles.offerPill,
+              offerKind === "bogo" ? styles.offerPillBogo : styles.offerPillBoost,
+            ]}
+          >
+            <Text
+              style={[
+                styles.offerPillText,
+                offerKind === "bogo" ? styles.offerPillTextBogo : null,
+              ]}
+              numberOfLines={1}
+            >
+              {offerBadge}
+            </Text>
+          </View>
+        ) : null}
         <View style={styles.titleRow}>
           <Text style={styles.itemLabel} onPress={onItemNamePress} suppressHighlighting={false}>
             {item.qty} x{" "}
@@ -55,9 +76,10 @@ export function OrderCardItemRow({
         <Ionicons name="chevron-down" size={18} color="#0F766E" style={styles.chevron} />
       ) : null}
       {showPrice ? (
-        <Text style={styles.price}>
-          {formatMerchantRs(merchantLineTotalForFoodItem(item as ApiFoodOrderItem))}
-        </Text>
+        <View style={styles.priceCol}>
+          {showStrike ? <Text style={styles.priceStrike}>{formatMerchantRs(catalog)}</Text> : null}
+          <Text style={styles.price}>{formatMerchantRs(net)}</Text>
+        </View>
       ) : null}
     </Pressable>
   );
@@ -111,6 +133,43 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#0F766E",
     letterSpacing: 0.2,
+  },
+  offerPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginBottom: 2,
+    maxWidth: "100%",
+  },
+  offerPillBoost: {
+    backgroundColor: "#FFFBEB",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#FDE68A",
+  },
+  offerPillBogo: {
+    backgroundColor: "#ECFDF5",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#A7F3D0",
+  },
+  offerPillText: {
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+    color: "#92400E",
+  },
+  offerPillTextBogo: {
+    color: "#166534",
+  },
+  priceCol: {
+    alignItems: "flex-end",
+    flexShrink: 0,
+  },
+  priceStrike: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
   },
   price: {
     fontSize: 13,

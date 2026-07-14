@@ -19,6 +19,45 @@ type RiderAppConfig = {
   mapboxToken?: string;
 };
 
+/** Same public project as merchant_app / eas.json — Send SMS hook lives here. */
+const CANONICAL_SUPABASE_URL = "https://uoxkwznciiibubtiiffh.supabase.co";
+const CANONICAL_SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVveGt3em5jaWlpYnVidGlpZmZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc1NDM2OTQsImV4cCI6MjA4MzExOTY5NH0.r61tUqHUEDp4ia9tyY8IJHB-6acRcbVsZo3s8T3v8_Q";
+
+/** Retired / unresolvable projects that break OTP with "Network request failed". */
+const DEAD_SUPABASE_HOSTS = new Set(["mjfnzmepmeqemcoakjkw.supabase.co"]);
+
+function resolveSupabaseProject(
+  url: string | null,
+  anonKey: string | null
+): { supabaseUrl: string | null; supabaseAnonKey: string | null } {
+  if (!url || !anonKey) {
+    return { supabaseUrl: url, supabaseAnonKey: anonKey };
+  }
+  let host = "";
+  try {
+    host = new URL(url).host.toLowerCase();
+  } catch {
+    return {
+      supabaseUrl: CANONICAL_SUPABASE_URL,
+      supabaseAnonKey: CANONICAL_SUPABASE_ANON_KEY,
+    };
+  }
+  if (DEAD_SUPABASE_HOSTS.has(host)) {
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[RiderEnv] Ignoring dead Supabase host ${host}; using merchant project ${CANONICAL_SUPABASE_URL}`
+      );
+    }
+    return {
+      supabaseUrl: CANONICAL_SUPABASE_URL,
+      supabaseAnonKey: CANONICAL_SUPABASE_ANON_KEY,
+    };
+  }
+  return { supabaseUrl: url, supabaseAnonKey: anonKey };
+}
+
 /** Android emulator: localhost -> 10.0.2.2; legacy :30000/:4000 -> :3000. */
 function resolveApiBaseUrl(raw: string): string {
   let trimmed = raw.replace(/\/+$/, "");
@@ -52,12 +91,16 @@ export function getRiderAppConfig(): RiderAppConfig {
     {};
 
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
-  const supabaseUrl =
+  const rawSupabaseUrl =
     asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_URL) ??
     asNonEmptyString(extra.EXPO_PUBLIC_SUPABASE_URL);
-  const supabaseAnonKey =
+  const rawSupabaseAnonKey =
     asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY) ??
     asNonEmptyString(extra.EXPO_PUBLIC_SUPABASE_ANON_KEY);
+  const { supabaseUrl, supabaseAnonKey } = resolveSupabaseProject(
+    rawSupabaseUrl,
+    rawSupabaseAnonKey
+  );
   const phoneOtpBackendRaw =
     asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
     asNonEmptyString(extra.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND);

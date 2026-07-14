@@ -3,7 +3,10 @@
 import { useMemo, useRef, useEffect, useState } from 'react';
 import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-detail';
 import type { OrderItemsPricing } from '@/lib/orderItemsPayload';
-import { customerDiscountFromOrderPricing } from '@/lib/orderItemsPayload';
+import {
+  customerDiscountFromOrderPricing,
+  customerDeliveryFromOrderPricing,
+} from '@/lib/orderItemsPayload';
 import type { OrderDiscountOfferSource } from '@/lib/merchant-billing-discount';
 
 interface OrderForPaymentCard {
@@ -36,6 +39,8 @@ interface PaymentDetailsProps {
   paymentDetail?: OrderPaymentDetail | null;
   /** Loaded from items API — used to correct merchant amount when payment detail is stale. */
   orderItemsPricing?: OrderItemsPricing | null;
+  /** Kick items fetch so discount / delivery appear without waiting on slow paymentDetail. */
+  onPrefetchOrderItems?: () => void;
 }
 
 const formatCurrency = (value?: number | null) => {
@@ -329,8 +334,13 @@ export default function PaymentDetails({
   orderRefunds = [],
   paymentDetail = null,
   orderItemsPricing = null,
+  onPrefetchOrderItems,
 }: PaymentDetailsProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  useEffect(() => {
+    onPrefetchOrderItems?.();
+  }, [onPrefetchOrderItems]);
 
   const hasRefundRecords = orderRefunds.length > 0;
   const totalRefundFromRefunds = orderRefunds.reduce(
@@ -341,10 +351,8 @@ export default function PaymentDetails({
   const resolved = useMemo(() => {
     const customerFromItems = orderItemsPricing?.customer?.totalOrderAmount;
     const merchantFromItems = orderItemsPricing?.totalOrderAmount;
-    const deliveryFromItems =
-      orderItemsPricing?.customer?.deliveryFee ??
-      orderItemsPricing?.deliveryFee ??
-      null;
+    const itemsDiscount = customerDiscountFromOrderPricing(orderItemsPricing);
+    const itemsDelivery = customerDeliveryFromOrderPricing(orderItemsPricing);
 
     const pickMerchantAmount = (
       apiCtm: number | null | undefined,
@@ -365,6 +373,44 @@ export default function PaymentDetails({
       return merchantFromItems ?? apiCtm ?? null;
     };
 
+    const pickDiscount = (
+      apiAmount: number | null | undefined,
+      apiSource: OrderDiscountOfferSource | null | undefined
+    ) => {
+      // Prefer items billing_snapshot path — available as soon as items prefetch lands.
+      if (itemsDiscount.amount != null && itemsDiscount.amount > 0) {
+        return {
+          amount: itemsDiscount.amount,
+          offerSource: itemsDiscount.offerSource ?? apiSource ?? null,
+        };
+      }
+      return {
+        amount: apiAmount ?? null,
+        offerSource: apiSource ?? null,
+      };
+    };
+
+    const pickDelivery = (
+      apiFee: number | null | undefined,
+      apiQuoted: number | null | undefined,
+      apiWaived: boolean | undefined
+    ) => {
+      if (itemsDelivery.amount != null || itemsDelivery.waived) {
+        return {
+          amount: itemsDelivery.amount,
+          quoted: itemsDelivery.quoted,
+          waived: itemsDelivery.waived,
+        };
+      }
+      const waived = Boolean(apiWaived);
+      const quoted = apiQuoted ?? null;
+      const amount =
+        waived && quoted != null && quoted > 0
+          ? quoted
+          : apiFee ?? (quoted != null && quoted > 0 ? quoted : null);
+      return { amount, quoted, waived };
+    };
+
     if (paymentDetail) {
       const isRefunded =
         hasRefundRecords ||
@@ -374,19 +420,24 @@ export default function PaymentDetails({
         paymentDetail.totalAmount ??
         (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null);
       const totalCtm = pickMerchantAmount(paymentDetail.totalCtm, totalCtc);
-      const deliveryFee =
-        paymentDetail.deliveryFee ??
-        (deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null);
-      const itemsDiscount = customerDiscountFromOrderPricing(orderItemsPricing);
+      const discount = pickDiscount(
+        paymentDetail.totalDiscountGranted,
+        paymentDetail.discountOfferSource
+      );
+      const delivery = pickDelivery(
+        paymentDetail.deliveryFee,
+        paymentDetail.deliveryFeeQuoted,
+        paymentDetail.deliveryFeeWaived
+      );
       return {
         totalAmount: totalCtc,
         totalCtm,
         totalCashbackEarned: paymentDetail.totalCashbackEarned,
-        totalDiscountGranted:
-          paymentDetail.totalDiscountGranted ?? itemsDiscount.amount,
-        discountOfferSource:
-          paymentDetail.discountOfferSource ?? itemsDiscount.offerSource,
-        deliveryFee,
+        totalDiscountGranted: discount.amount,
+        discountOfferSource: discount.offerSource,
+        deliveryFee: delivery.amount,
+        deliveryFeeQuoted: delivery.quoted,
+        deliveryFeeWaived: delivery.waived,
         source: paymentDetail.source,
         paymentMode: paymentDetail.paymentMode,
         partialRefunded: paymentDetail.partialRefunded,
@@ -410,16 +461,18 @@ export default function PaymentDetails({
       (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null) ??
       null;
 
-    const fallbackDiscount = customerDiscountFromOrderPricing(orderItemsPricing);
+    const discount = pickDiscount(null, null);
+    const delivery = pickDelivery(null, null, false);
 
     return {
       totalAmount: totalCtc,
       totalCtm: pickMerchantAmount(null, totalCtc),
       totalCashbackEarned: null,
-      totalDiscountGranted: fallbackDiscount.amount,
-      discountOfferSource: fallbackDiscount.offerSource,
-      deliveryFee:
-        deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null,
+      totalDiscountGranted: discount.amount,
+      discountOfferSource: discount.offerSource,
+      deliveryFee: delivery.amount,
+      deliveryFeeQuoted: delivery.quoted,
+      deliveryFeeWaived: delivery.waived,
       source: order.orderSource ? order.orderSource.toString() : '—',
       paymentMode: order.paymentMethod ? order.paymentMethod.toString().toUpperCase() : '—',
       partialRefunded: false,
@@ -442,8 +495,7 @@ export default function PaymentDetails({
           pointsUsed: null,
           ctm: pickMerchantAmount(null, totalCtc),
           cashbackEarned: null,
-          deliveryFee:
-            deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null,
+          deliveryFee: delivery.amount,
           pgName: null,
           pgTransactionId: null,
           couponCode: null,
@@ -509,9 +561,20 @@ export default function PaymentDetails({
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Delivery Fee:</span>{' '}
-            <span className="text-gati-text-primary font-medium">
-              {formatCurrency(resolved.deliveryFee)}
-            </span>
+            {resolved.deliveryFeeWaived &&
+            resolved.deliveryFeeQuoted != null &&
+            resolved.deliveryFeeQuoted > 0 ? (
+              <span className="text-gati-text-primary font-medium inline-flex items-center gap-1.5">
+                <span className="line-through text-slate-400 decoration-slate-400">
+                  {formatCurrency(resolved.deliveryFeeQuoted)}
+                </span>
+                <span>₹0.00</span>
+              </span>
+            ) : (
+              <span className="text-gati-text-primary font-medium">
+                {formatCurrency(resolved.deliveryFee)}
+              </span>
+            )}
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Source:</span>{' '}
@@ -569,7 +632,7 @@ export default function PaymentDetails({
         summary={{
           totalAmount: resolved.totalAmount,
           totalCtm: resolved.totalCtm,
-          deliveryFee: resolved.deliveryFee,
+          deliveryFee: resolved.deliveryFeeWaived ? 0 : resolved.deliveryFee,
           totalCashbackEarned: resolved.totalCashbackEarned,
         }}
       />

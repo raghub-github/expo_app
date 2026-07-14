@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { ChevronDown, UtensilsCrossed } from 'lucide-react';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import {
   formatOrderRs,
-  merchantLineTotalForItem,
+  merchantItemCatalogAndNet,
   orderItemCustomizationRows,
   orderItemHasBreakdown,
   orderItemVariantLabel,
@@ -54,6 +54,8 @@ type Props = {
   totalItemCount?: number;
   /** Total line rows in the order (for +N more); when preview uses maxItems. */
   totalLineCount?: number;
+  /** Optional control aligned to the top-right of the ORDER ITEMS header (e.g. View rider). */
+  headerRight?: ReactNode;
 };
 
 export function MerchantOrderItemsList({
@@ -68,6 +70,7 @@ export function MerchantOrderItemsList({
   showUtensilsBanner = true,
   totalItemCount,
   totalLineCount,
+  headerRight,
 }: Props) {
   const [breakdownItem, setBreakdownItem] = useState<NormalizedOrderLineItem | null>(null);
   const preview = maxItems != null && maxItems > 0 ? items.slice(0, maxItems) : items;
@@ -96,9 +99,12 @@ export function MerchantOrderItemsList({
       ) : null}
 
       {!compact ? (
-        <p className="mb-2 text-xs font-extrabold tracking-wide text-gray-500">
-          ORDER ITEMS ({headerCount})
-        </p>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <p className="text-xs font-extrabold tracking-wide text-gray-500">
+            ORDER ITEMS ({headerCount})
+          </p>
+          {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
+        </div>
       ) : null}
 
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
@@ -107,7 +113,13 @@ export function MerchantOrderItemsList({
         ) : (
           preview.map((item, i) => {
             const qty = Math.max(1, item.quantity || 1);
-            const lineTotal = merchantLineTotalForItem(item);
+            const {
+              catalog: catalogTotal,
+              net: netTotal,
+              showStrike: showOfferStrike,
+              offerBadge,
+              offerKind,
+            } = merchantItemCatalogAndNet(item);
             const clickable = orderItemHasBreakdown(item);
             const custRowsAll = orderItemCustomizationRows(item);
             const custHidden =
@@ -121,25 +133,49 @@ export function MerchantOrderItemsList({
             return (
               <div
                 key={`${item.name}-${i}`}
-                className={`${compact ? 'px-2.5 py-1.5' : 'px-3 py-2'} ${
-                  i < preview.length - 1 ? 'border-b border-gray-100' : ''
+                className={`${compact ? 'px-2.5 py-2' : 'px-3 py-2'} ${
+                  i < preview.length - 1 ? 'border-b border-stone-100' : ''
                 }`}
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 flex-1 items-start gap-2">
-                    <VegMark vegNonveg={item.vegNonveg} name={item.name} />
+                <div
+                  className={`flex justify-between gap-3 ${
+                    compact ? 'items-center' : 'items-start'
+                  }`}
+                >
+                  <div
+                    className={`flex min-w-0 flex-1 gap-2 ${
+                      compact ? 'items-center' : 'items-start'
+                    }`}
+                  >                    <VegMark vegNonveg={item.vegNonveg} name={item.name} />
                     <div className="min-w-0 flex-1">
+                      {offerBadge ? (
+                        <span
+                          className={`mb-0.5 inline-flex max-w-full items-center rounded-md px-1.5 py-0.5 text-[9px] font-bold leading-tight tracking-wide ${
+                            offerKind === "bogo"
+                              ? "bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/70"
+                              : "bg-amber-100 text-amber-950 ring-1 ring-amber-300/70"
+                          }`}
+                        >
+                          <span className="truncate">{offerBadge}</span>
+                        </span>
+                      ) : null}
                       {onItemClick ? (
                         <button
                           type="button"
                           onClick={() => onItemClick(item)}
-                          className="text-left text-sm font-bold text-gray-900 underline decoration-gray-400 underline-offset-2 hover:decoration-blue-500"
+                          className={`block text-left font-semibold text-stone-900 underline decoration-stone-300 underline-offset-2 hover:decoration-emerald-600 ${
+                            compact ? 'text-[13px]' : 'text-sm font-bold'
+                          }`}
                         >
-                          {qty} × {item.name || `Item ${i + 1}`}
+                          <span className="incoming-num">{qty}</span> × {item.name || `Item ${i + 1}`}
                         </button>
                       ) : (
-                        <span className="text-sm font-bold text-gray-900">
-                          {qty} × {item.name || `Item ${i + 1}`}
+                        <span
+                          className={`block font-semibold text-stone-900 ${
+                            compact ? 'text-[13px]' : 'text-sm font-bold'
+                          }`}
+                        >
+                          <span className="incoming-num">{qty}</span> × {item.name || `Item ${i + 1}`}
                         </span>
                       )}
                       {variantLabel ? (
@@ -181,15 +217,29 @@ export function MerchantOrderItemsList({
                     <button
                       type="button"
                       onClick={() => setBreakdownItem(item)}
-                      className="inline-flex shrink-0 items-center gap-0.5 border-b-2 border-blue-600 pb-0.5 text-sm font-bold tabular-nums text-blue-600 hover:text-blue-700"
+                      className="incoming-num inline-flex shrink-0 flex-col items-end gap-0.5 border-b-2 border-emerald-600 pb-0.5 text-sm font-bold text-emerald-700 hover:text-emerald-800"
                       aria-label={`View price breakdown for ${item.name}`}
                     >
-                      {formatOrderRs(lineTotal)}
-                      <ChevronDown size={14} className="opacity-80" />
+                      {showOfferStrike ? (
+                        <span className="text-[11px] font-semibold text-stone-400 line-through">
+                          {formatOrderRs(catalogTotal)}
+                        </span>
+                      ) : null}
+                      <span className="inline-flex items-center gap-0.5">
+                        {formatOrderRs(netTotal)}
+                        <ChevronDown size={14} className="opacity-80" />
+                      </span>
                     </button>
                   ) : (
-                    <span className="shrink-0 text-sm font-bold tabular-nums text-gray-900">
-                      {formatOrderRs(lineTotal)}
+                    <span className="incoming-num inline-flex shrink-0 flex-col items-end self-center">
+                      {showOfferStrike ? (
+                        <span className="text-[11px] font-semibold text-stone-400 line-through">
+                          {formatOrderRs(catalogTotal)}
+                        </span>
+                      ) : null}
+                      <span className="text-sm font-bold tabular-nums text-stone-900">
+                        {formatOrderRs(netTotal)}
+                      </span>
                     </span>
                   )}
                 </div>

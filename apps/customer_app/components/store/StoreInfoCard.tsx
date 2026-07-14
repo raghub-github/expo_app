@@ -9,8 +9,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
-import { OfferHoldEraseText } from "./OfferHoldEraseText";
-import { StoreOfferBadgeIcon } from "./StoreInnerContinueCartBar";
+import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
 
 export type StoreInfoCardProps = {
   name: string;
@@ -79,6 +78,7 @@ export function StoreInfoCard({
           totalReviews={totalReviews}
           showReviewHint
           size="md"
+          onPillPress={onRatingHintPress}
           onReviewHintPress={onRatingHintPress}
         />
       </View>
@@ -121,25 +121,31 @@ export function StoreInfoCard({
       {showOfferRow ? (
         <>
           <View style={styles.divider} />
-          <View style={styles.offerRow}>
-            <StoreOfferBadgeIcon size={24} />
-            <OfferHoldEraseText
-              texts={offerTexts}
-              onPress={onOffersPress}
-            />
+          <TouchableOpacity
+            style={styles.offerRow}
+            onPress={onOffersPress}
+            activeOpacity={0.7}
+            disabled={!onOffersPress}
+          >
+            {/* Same slide-up ticker as list-card MerchantOfferRow (not wipe/write). */}
+            {offerTexts.length > 0 ? (
+              <MerchantOfferRow texts={offerTexts} style={styles.offerTicker} />
+            ) : (
+              <View style={styles.offerTicker} />
+            )}
             {offerCount > 0 ? (
-              <TouchableOpacity style={styles.offerCountWrap} onPress={onOffersPress} activeOpacity={0.7}>
+              <View style={styles.offerCountWrap}>
                 <Text style={styles.offerCount}>
                   {offerCount} {offerCount === 1 ? "offer" : "offers"}
                 </Text>
                 <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
-              </TouchableOpacity>
+              </View>
             ) : offerTexts.length > 0 || reserveOfferRow ? (
-              <TouchableOpacity style={styles.offerCountWrap} onPress={onOffersPress} activeOpacity={0.7}>
+              <View style={styles.offerCountWrap}>
                 <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
-              </TouchableOpacity>
+              </View>
             ) : null}
-          </View>
+          </TouchableOpacity>
         </>
       ) : null}
     </View>
@@ -255,10 +261,15 @@ const styles = StyleSheet.create({
     gap: 8,
     minHeight: 28,
   },
+  offerTicker: {
+    flex: 1,
+    minWidth: 0,
+  },
   offerCountWrap: {
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
+    flexShrink: 0,
   },
   offerCount: {
     fontSize: 13,

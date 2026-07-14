@@ -27,6 +27,16 @@ export type NormalizedOrderLineItem = {
   capturedBaseAmount?: number;
   capturedAddonAmount?: number;
   hasCustomizations?: boolean;
+  /** Merchant catalog line before item Boost. */
+  catalogLineTotal?: number;
+  /** After restaurant item-offer share. */
+  netLineTotal?: number;
+  offerDiscount?: number;
+  offerLabel?: string | null;
+  isItemPromo?: boolean;
+  appliedOfferType?: string | null;
+  /** Frozen from merchant_ctm_pricing_snapshot. */
+  ctmFromSnapshot?: boolean;
 };
 
 export type OrderPricingBreakdown = {
@@ -182,6 +192,34 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
         Boolean(row.hasCustomizations) ||
         (customizationLines?.length ?? 0) > 0 ||
         (customizations?.length ?? 0) > 0,
+      catalogLineTotal:
+        row.catalog_line_total != null
+          ? Number(row.catalog_line_total)
+          : row.catalogLineTotal != null
+            ? Number(row.catalogLineTotal)
+            : undefined,
+      netLineTotal:
+        row.net_line_total != null
+          ? Number(row.net_line_total)
+          : row.netLineTotal != null
+            ? Number(row.netLineTotal)
+            : undefined,
+      offerDiscount:
+        row.offer_discount != null
+          ? Number(row.offer_discount)
+          : row.offerDiscount != null
+            ? Number(row.offerDiscount)
+            : undefined,
+      offerLabel:
+        (row.offer_label as string | null | undefined) ??
+        (row.offerLabel as string | null | undefined) ??
+        null,
+      isItemPromo: Boolean(row.is_item_promo ?? row.isItemPromo),
+      appliedOfferType:
+        (row.applied_offer_type as string | null | undefined) ??
+        (row.appliedOfferType as string | null | undefined) ??
+        null,
+      ctmFromSnapshot: Boolean(row.ctm_from_snapshot ?? row.ctmFromSnapshot),
     };
   });
 }

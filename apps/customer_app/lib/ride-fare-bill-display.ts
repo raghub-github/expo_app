@@ -9,9 +9,11 @@ export type RideFareBillApiResponse = {
   convenienceFee: number;
   taxTotal: number;
   tipAmount: number;
-  charges: Array<{ label?: string; amount?: number; kind?: string }>;
-  discounts: Array<{ label?: string; amount?: number }>;
-  taxes: Array<{ label?: string; amount?: number }>;
+  charges: Array<{ label?: string; amount?: number; kind?: string; hidden?: boolean }>;
+  discounts: Array<{ label?: string; amount?: number; hidden?: boolean }>;
+  taxes: Array<{ label?: string; amount?: number; hidden?: boolean }>;
+  breakdownSteps?: Array<{ step?: string; amount?: number }>;
+  rulesetVersion?: number;
 };
 
 function num(v: unknown): number {
@@ -141,7 +143,14 @@ export function rideFareBillFromBillingSnapshot(input: {
   }
 
   if (taxes.length === 0 && taxTotal > 0.005) {
-    taxes = [{ label: "GST", amount: taxTotal }];
+    const hasGranularGst = rawCharges.some((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const label = String((entry as { label?: string }).label ?? "").toLowerCase();
+      return label.includes("gst on") || label.includes("tax on");
+    });
+    if (!hasGranularGst) {
+      taxes = [{ label: "GST", amount: taxTotal }];
+    }
   }
 
   const draftBill: RideFareBillApiResponse = {
@@ -221,66 +230,254 @@ export function buildRideFareBillSummaryLines(
 ): { lines: RidePaymentFareLine[]; payableTotal: number } {
   const lines: RidePaymentFareLine[] = [];
   const seen = new Set<string>();
+  const stepLabels = new Set<string>();
 
-  const push = (label: string, amount: number, emphasis = false) => {
-    if (amount <= 0.005 && !emphasis) return;
-    const labelLower = label.toLowerCase();
-    if (labelLower.includes("tip") && lines.some((l) => l.label.toLowerCase().includes("tip"))) {
+  const normalizeLabel = (label: string) => label.trim().toLowerCase();
+
+  const push = (
+    label: string,
+    amount: number,
+    opts?: { emphasis?: boolean; isDiscount?: boolean }
+  ) => {
+    const rounded = Math.round(amount * 100) / 100;
+    if (rounded <= 0.005 && !opts?.emphasis) return;
+    const labelLower = normalizeLabel(label);
+    if (labelLower.includes("tip") && lines.some((l) => normalizeLabel(l.label).includes("tip"))) {
       return;
     }
-    const key = `${label}:${amount}:${emphasis}`;
+    const key = `${labelLower}:${rounded}:${opts?.isDiscount ? "d" : "c"}:${opts?.emphasis ? "t" : "n"}`;
     if (seen.has(key)) return;
     seen.add(key);
+    stepLabels.add(labelLower);
     lines.push({
-      label,
-      amount: Math.round(amount * 100) / 100,
-      emphasis,
+      label: label.trim() || "Charge",
+      amount: rounded,
+      emphasis: opts?.emphasis,
+      isDiscount: opts?.isDiscount,
     });
   };
 
   push("Ride fare", bill.rideFare);
 
-  const waiting = Math.max(0, num(extras?.waitingCharge));
-  const surge = Math.max(0, num(extras?.surgeCharge));
-  if (waiting > 0) push("Waiting charges", waiting);
-  if (surge > 0) push("Surge pricing", surge);
+  const breakdownSteps = bill.breakdownSteps ?? [];
+  if (breakdownSteps.length > 0) {
+    for (const step of breakdownSteps) {
+      const label = String(step.step ?? "").trim();
+      const amount = num(step.amount);
+      if (!label) continue;
+      const labelLower = normalizeLabel(label);
+      if (labelLower.includes("tip")) continue;
+      if (amount < -0.005) {
+        push(label, Math.abs(amount), { isDiscount: true });
+      } else if (amount > 0.005) {
+        push(label, amount);
+      }
+    }
+  } else {
+    for (const row of bill.charges ?? []) {
+      if (row.hidden) continue;
+      if (row.kind === "tax" || row.kind === "discount") continue;
+      const label = String(row.label ?? "").trim();
+      const labelLower = normalizeLabel(label);
+      if (!label || labelLower.includes("tip")) continue;
+      if (labelLower.includes("gst") || labelLower.includes("tax")) continue;
+      push(label, num(row.amount));
+    }
 
-  for (const row of bill.charges ?? []) {
-    if (row.kind === "tax") continue;
-    const label = String(row.label ?? "").trim();
-    push(label || "Charge", num(row.amount));
+    const visibleTaxes = (bill.taxes ?? []).filter((row) => !row.hidden);
+    const hasGranularGst = visibleTaxes.some((row) => {
+      const labelLower = normalizeLabel(String(row.label ?? ""));
+      return labelLower.includes("gst on") || labelLower.includes("tax on");
+    });
+
+    for (const row of visibleTaxes) {
+      const label = String(row.label ?? "GST").trim() || "GST";
+      const amount = num(row.amount);
+      if (amount <= 0.005) continue;
+      const labelLower = normalizeLabel(label);
+      if (
+        hasGranularGst &&
+        (labelLower === "gst" || labelLower === "gst & taxes") &&
+        Math.abs(amount - bill.taxTotal) < 0.05
+      ) {
+        continue;
+      }
+      push(label, amount);
+    }
   }
 
-  for (const row of bill.taxes ?? []) {
-    const label = String(row.label ?? "GST").trim() || "GST";
+  for (const row of bill.charges ?? []) {
+    if (row.hidden) continue;
+    if (row.kind === "tax" || row.kind === "discount") continue;
+    const label = String(row.label ?? "").trim();
+    const labelLower = normalizeLabel(label);
+    if (!label || labelLower.includes("tip")) continue;
+    if (stepLabels.has(labelLower)) continue;
+    if (labelLower.includes("gst") || labelLower.includes("tax")) continue;
     push(label, num(row.amount));
   }
 
+  const waiting = Math.max(0, num(extras?.waitingCharge));
+  const surge = Math.max(0, num(extras?.surgeCharge));
+  if (waiting > 0 && ![...stepLabels].some((l) => l.includes("waiting"))) {
+    push("Waiting charges", waiting);
+  }
+  if (surge > 0 && ![...stepLabels].some((l) => l.includes("surge"))) {
+    push("Surge pricing", surge);
+  }
+
   if (bill.tipAmount > 0.005) {
-    const tipInCharges = (bill.charges ?? []).some((row) => {
-      const label = String(row.label ?? "").toLowerCase();
-      return label.includes("tip");
-    });
-    if (!tipInCharges) {
-      push("Captain tip", bill.tipAmount);
-    }
+    push("Captain tip", bill.tipAmount);
   }
 
-  const discountRows = bill.discounts ?? [];
-  if (discountRows.length > 0) {
-    for (const row of discountRows) {
-      const label = String(row.label ?? "Discount").trim() || "Discount";
-      const amount = num(row.amount);
-      if (amount > 0.005) {
-        lines.push({ label, amount, isDiscount: true });
+  const hasDiscountLine = lines.some((line) => line.isDiscount);
+  if (!hasDiscountLine) {
+    const discountRows = bill.discounts ?? [];
+    if (discountRows.length > 0) {
+      for (const row of discountRows) {
+        if (row.hidden) continue;
+        const label = String(row.label ?? "Discount").trim() || "Discount";
+        const amount = num(row.amount);
+        if (amount > 0.005) push(label, amount, { isDiscount: true });
       }
+    } else if (bill.discountTotal > 0.005) {
+      push("Discount applied", bill.discountTotal, { isDiscount: true });
     }
-  } else if (bill.discountTotal > 0.005) {
-    lines.push({ label: "Discount applied", amount: bill.discountTotal, isDiscount: true });
   }
 
-  const payableTotal = computeRideFarePayableTotal(bill, extras);
-  push("Total fare", payableTotal, true);
+  const payableTotal =
+    bill.finalAmount > 0.005
+      ? Math.round(bill.finalAmount * 100) / 100
+      : computeRideFarePayableTotal(bill, extras);
+
+  push("Total fare", payableTotal, { emphasis: true });
 
   return { lines, payableTotal };
+}
+
+export type RideGstBreakdownLine = {
+  key: string;
+  label: string;
+  amount: number;
+};
+
+export type RideCheckoutCompactBill = {
+  rideFare: number;
+  bookingFee: number;
+  gstTotal: number;
+  gstLines: RideGstBreakdownLine[];
+  grandTotal: number;
+  discounts: Array<{ label: string; amount: number }>;
+  extraLines: Array<{ label: string; amount: number }>;
+  payableTotal: number;
+};
+
+function isRideTaxLabel(label: string): boolean {
+  const lower = label.trim().toLowerCase();
+  return lower.includes("gst") || lower.includes("tax");
+}
+
+function isRideTipLabel(label: string): boolean {
+  return label.trim().toLowerCase().includes("tip");
+}
+
+/** Zomato-style checkout bill — ride fare, booking fee, GST total + popup breakdown lines. */
+export function buildRideCheckoutCompactBill(
+  bill: RideFareBillApiResponse,
+  extras?: { waitingCharge?: number; surgeCharge?: number }
+): RideCheckoutCompactBill {
+  const normalizeLabel = (label: string) => label.trim().toLowerCase();
+  const rideFare = Math.round(bill.rideFare * 100) / 100;
+
+  let bookingFee = 0;
+  for (const row of bill.charges ?? []) {
+    if (row.hidden || row.kind === "tax" || row.kind === "discount") continue;
+    const label = String(row.label ?? "").trim();
+    if (!label || isRideTipLabel(label) || isRideTaxLabel(label)) continue;
+    const labelLower = normalizeLabel(label);
+    if (labelLower.includes("waiting") || labelLower.includes("surge")) continue;
+    bookingFee += num(row.amount);
+  }
+  bookingFee = Math.round(bookingFee * 100) / 100;
+
+  const visibleTaxes = (bill.taxes ?? []).filter((row) => !row.hidden);
+  const hasGranularGst = visibleTaxes.some((row) => {
+    const labelLower = normalizeLabel(String(row.label ?? ""));
+    return labelLower.includes("gst on") || labelLower.includes("tax on");
+  });
+
+  const gstLines: RideGstBreakdownLine[] = [];
+  for (const row of visibleTaxes) {
+    const label = String(row.label ?? "GST").trim() || "GST";
+    const amount = num(row.amount);
+    if (amount <= 0.005) continue;
+    const labelLower = normalizeLabel(label);
+    if (
+      hasGranularGst &&
+      (labelLower === "gst" || labelLower === "gst & taxes") &&
+      Math.abs(amount - bill.taxTotal) < 0.05
+    ) {
+      continue;
+    }
+    gstLines.push({
+      key: labelLower,
+      label,
+      amount: Math.round(amount * 100) / 100,
+    });
+  }
+
+  const gstFromLines = Math.round(gstLines.reduce((sum, row) => sum + row.amount, 0) * 100) / 100;
+  const gstTotal =
+    bill.taxTotal > 0.005
+      ? Math.round(bill.taxTotal * 100) / 100
+      : gstFromLines;
+
+  const extraLines: Array<{ label: string; amount: number }> = [];
+  const waiting = Math.max(0, num(extras?.waitingCharge));
+  const surge = Math.max(0, num(extras?.surgeCharge));
+  if (waiting > 0.005) {
+    extraLines.push({ label: "Waiting charges", amount: Math.round(waiting * 100) / 100 });
+  }
+  if (surge > 0.005) {
+    extraLines.push({ label: "Surge pricing", amount: Math.round(surge * 100) / 100 });
+  }
+  if (bill.tipAmount > 0.005) {
+    extraLines.push({
+      label: "Captain tip",
+      amount: Math.round(bill.tipAmount * 100) / 100,
+    });
+  }
+
+  const discounts: Array<{ label: string; amount: number }> = [];
+  for (const row of bill.discounts ?? []) {
+    if (row.hidden) continue;
+    const amount = num(row.amount);
+    if (amount <= 0.005) continue;
+    discounts.push({
+      label: String(row.label ?? "Discount").trim() || "Discount",
+      amount: Math.round(amount * 100) / 100,
+    });
+  }
+  if (discounts.length === 0 && bill.discountTotal > 0.005) {
+    discounts.push({
+      label: "Discount applied",
+      amount: Math.round(bill.discountTotal * 100) / 100,
+    });
+  }
+
+  const payableTotal =
+    bill.finalAmount > 0.005
+      ? Math.round(bill.finalAmount * 100) / 100
+      : computeRideFarePayableTotal(bill, extras);
+
+  return {
+    rideFare,
+    bookingFee,
+    gstTotal,
+    gstLines,
+    grandTotal: payableTotal,
+    discounts,
+    extraLines,
+    payableTotal,
+  };
 }

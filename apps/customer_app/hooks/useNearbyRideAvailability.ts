@@ -33,7 +33,7 @@ export function useNearbyRideAvailability(
       geoHints?.pickupState ?? null,
       rideType ?? null,
     ],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       getRideAvailability({
         pickupLat: pickupLat!,
         pickupLng: pickupLng!,
@@ -41,9 +41,13 @@ export function useNearbyRideAvailability(
         pickupPincode: geoHints?.pickupPincode,
         pickupState: geoHints?.pickupState,
         rideType: rideType ?? undefined,
+        signal,
       }),
     enabled,
-    refetchInterval: 12_000,
-    staleTime: 8_000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+    retry: 1,
+    // Don't leave the book sheet stuck on a spinner if the API hangs.
+    networkMode: "online",
   });
 }

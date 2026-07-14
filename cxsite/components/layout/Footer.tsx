@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { GATIMITRA_TAGLINE } from '@/lib/brandTagline'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import ParcelServiceControl from '@/components/common/ParcelServiceControl'
+import { resolveAndroidDownloadUrl, resolveIosDownloadUrl } from '@/lib/appDownload'
+import { AppleStoreIcon, GooglePlayIcon } from '@/components/common/StoreBrandIcons'
 import {
   Home,
   UtensilsCrossed,
@@ -41,6 +43,9 @@ type LinkItem = {
 };
 
 export default function Footer() {
+  const androidUrl = resolveAndroidDownloadUrl()
+  const iosUrl = resolveIosDownloadUrl()
+
   const quickLinks: LinkItem[] = [
     { icon: <Home size={14} />, text: "Home", href: "/" },
     { icon: <UtensilsCrossed size={14} />, text: "Food Delivery", href: "/order" },
@@ -143,22 +148,26 @@ export default function Footer() {
                 <p className="text-[#b0b0d0] text-[13px] mb-2 font-medium">Download our app</p>
                 <div className="flex flex-col gap-2">
                   <a
-                    href="#"
+                    href={androidUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     aria-label="Get it on Google Play"
                     className="bg-white/15 rounded-lg px-3 py-2 flex items-center gap-2 cursor-pointer transition-all border border-white/10 hover:bg-gradient-to-br hover:from-emerald-500/30 hover:to-violet-600/30 hover:-translate-y-0.5 hover:border-emerald-400"
                   >
-                    <i className="fab fa-google-play text-base"></i>
+                    <GooglePlayIcon className="h-5 w-5 shrink-0 text-white" />
                     <div className="flex flex-col">
                       <span className="text-[10px] opacity-80">GET IT ON</span>
                       <span className="text-sm font-bold">Google Play</span>
                     </div>
                   </a>
                   <a
-                    href="#"
+                    href={iosUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     aria-label="Download on the App Store"
                     className="bg-white/15 rounded-lg px-3 py-2 flex items-center gap-2 cursor-pointer transition-all border border-white/10 hover:bg-gradient-to-br hover:from-emerald-500/30 hover:to-violet-600/30 hover:-translate-y-0.5 hover:border-emerald-400"
                   >
-                    <i className="fab fa-apple text-base"></i>
+                    <AppleStoreIcon className="h-5 w-5 shrink-0 text-white" />
                     <div className="flex flex-col">
                       <span className="text-[10px] opacity-80">Download on the</span>
                       <span className="text-sm font-bold">App Store</span>

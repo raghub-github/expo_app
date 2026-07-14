@@ -1,6 +1,7 @@
 /**
  * Push + realtime delivery for filtered dispatch offers.
  * Always driven by order-assignment-engine eligibility — never broadcast to all riders.
+ * Fare/earnings come from Rider Fare Engine v3.0 (service_payout_rules %).
  */
 
 import { and, eq } from "drizzle-orm";
@@ -9,6 +10,10 @@ import { expoPushTokens } from "../db/schema.js";
 import { publishRiderEvent } from "../modules/realtime/publish.js";
 import { send as sendNotification } from "../modules/notifications/notificationService.js";
 import type { DispatchOrderTarget, EligibleDispatchRider } from "./order-assignment-engine.js";
+import {
+  buildDispatchOfferRiderEarnings,
+  type DispatchOfferRiderEarnings,
+} from "./build-dispatch-offer-rider-earnings.js";
 
 const SERVICE_LABEL: Record<DispatchOrderTarget["serviceType"], string> = {
   food: "Food delivery",
@@ -42,11 +47,44 @@ export type DispatchOfferPayload = {
   waveNumber: number;
   pickupDistanceMeters: number;
   effectiveRadiusMeters: number;
+  /** Rider Fare Engine v3.0 — same fields as GET /orders/available */
+  estimatedEarning?: number;
+  baseEarning?: number;
+  waitingEarning?: number;
+  surgeEarning?: number;
+  appliedSurges?: { name: string; amount: number }[];
+  customerTipAmount?: number;
+  totalEarning?: number;
+  pickupDistanceKm?: number;
+  tripDistanceKm?: number;
+  totalDistanceKm?: number;
+  pricingEngine?: "rider_percentage_v3";
 };
 
 function toCategory(serviceType: DispatchOrderTarget["serviceType"]): "food" | "parcel" | "ride" {
   if (serviceType === "person_ride") return "ride";
   return serviceType;
+}
+
+function attachEarnings(
+  payload: DispatchOfferPayload,
+  earnings: DispatchOfferRiderEarnings | null
+): DispatchOfferPayload {
+  if (!earnings) return payload;
+  return {
+    ...payload,
+    estimatedEarning: earnings.estimatedEarning,
+    baseEarning: earnings.baseEarning,
+    waitingEarning: earnings.waitingEarning,
+    surgeEarning: earnings.surgeEarning,
+    appliedSurges: earnings.appliedSurges,
+    customerTipAmount: earnings.customerTipAmount,
+    totalEarning: earnings.totalEarning,
+    pickupDistanceKm: earnings.pickupDistanceKm,
+    tripDistanceKm: earnings.tripDistanceKm,
+    totalDistanceKm: earnings.totalDistanceKm,
+    pricingEngine: earnings.pricingEngine,
+  };
 }
 
 /** Notify one eligible rider via push + rider websocket channel. */
@@ -58,16 +96,38 @@ export async function notifyRiderDispatchOffer(
   const label = SERVICE_LABEL[target.serviceType];
   const dist = formatDistanceKm(rider.distanceMeters);
 
-  const payload: DispatchOfferPayload = {
-    type: "dispatch_offer",
-    orderId: target.orderId,
-    formattedOrderId: target.formattedOrderId,
-    serviceType: target.serviceType,
-    category: toCategory(target.serviceType),
-    waveNumber: target.waveNumber,
-    pickupDistanceMeters: Math.round(rider.distanceMeters),
-    effectiveRadiusMeters: target.effectiveRadiusMeters,
-  };
+  let earnings: DispatchOfferRiderEarnings | null = null;
+  try {
+    earnings = await buildDispatchOfferRiderEarnings({
+      orderCoreId: target.orderCoreId,
+      serviceType: target.serviceType,
+      riderId: rider.riderId,
+      riderLat: rider.lat,
+      riderLng: rider.lng,
+      pickupDistanceMeters: rider.distanceMeters,
+    });
+  } catch (err) {
+    console.warn(
+      "[dispatch] offer payout failed",
+      target.orderId,
+      rider.riderId,
+      (err as Error).message
+    );
+  }
+
+  const payload = attachEarnings(
+    {
+      type: "dispatch_offer",
+      orderId: target.orderId,
+      formattedOrderId: target.formattedOrderId,
+      serviceType: target.serviceType,
+      category: toCategory(target.serviceType),
+      waveNumber: target.waveNumber,
+      pickupDistanceMeters: Math.round(rider.distanceMeters),
+      effectiveRadiusMeters: target.effectiveRadiusMeters,
+    },
+    earnings
+  );
 
   await publishRiderEvent(rider.riderId, {
     ...payload,
@@ -75,6 +135,11 @@ export async function notifyRiderDispatchOffer(
 
   const tokens = await loadRiderPushTokens(rider.riderId);
   if (tokens.length === 0) return;
+
+  const earningLabel =
+    earnings != null && earnings.estimatedEarning > 0
+      ? `₹${earnings.estimatedEarning}`
+      : "";
 
   await sendNotification({
     templateCode: "RIDER_DISPATCH_OFFER",
@@ -86,6 +151,8 @@ export async function notifyRiderDispatchOffer(
       pickupDistance: dist,
       serviceType: target.serviceType,
       waveNumber: target.waveNumber,
+      estimatedEarning: earningLabel,
+      earningAmount: earnings?.estimatedEarning != null ? String(earnings.estimatedEarning) : "",
     },
     target: { device_tokens: tokens },
     metadata: {
@@ -94,6 +161,12 @@ export async function notifyRiderDispatchOffer(
       orderId: target.orderId,
       pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
       category: toCategory(target.serviceType),
+      ...(earnings?.estimatedEarning != null
+        ? {
+            estimatedEarning: String(earnings.estimatedEarning),
+            pricingEngine: "rider_percentage_v3",
+          }
+        : {}),
     },
   });
 }

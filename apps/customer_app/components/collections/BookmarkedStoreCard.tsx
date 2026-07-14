@@ -3,7 +3,9 @@ import { View, Text, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity 
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import type { BookmarkedMerchantRow } from "@/lib/bookmarkedMerchants";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
 import { setStoreBookmark } from "@/services/merchant.service";
@@ -21,6 +23,7 @@ type Props = {
 
 export function BookmarkedStoreCard({ merchant, onRemoved }: Props) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { syncBookmark } = useStoreBookmarkMutations();
   const [removing, setRemoving] = useState(false);
 
@@ -28,8 +31,8 @@ export function BookmarkedStoreCard({ merchant, onRemoved }: Props) {
   const offerText = merchant.offerText?.trim();
 
   const handleOpen = useCallback(() => {
-    router.push({ pathname: "/home/merchant/[id]", params: { id: merchant.id } });
-  }, [merchant.id, router]);
+    navigateToMerchant(router, queryClient, merchant.id, merchant);
+  }, [merchant, queryClient, router]);
 
   const handleUnbookmark = useCallback(async () => {
     if (removing) return;

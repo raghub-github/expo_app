@@ -1,4 +1,5 @@
 import type { BillContext, ConditionRow, MutableBillState } from "./types.js";
+import { cartPromoQualifyingSubtotal } from "./discountEligibility.js";
 
 function num(v: unknown): number | null {
   if (v == null) return null;
@@ -94,13 +95,19 @@ export function ruleConditionsPass(
   conditions: ConditionRow[],
   ctx: BillContext,
   state: MutableBillState,
-  itemPlusAddon: number
+  itemPlusAddon: number,
+  opts?: { useEligibleSubtotalForOrderValue?: boolean }
 ): boolean {
   if (conditions.length === 0) return true;
   const afterDisc = Math.max(0, itemPlusAddon - state.discountTotal);
+  const eligible = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
   for (const c of conditions) {
-    const meta = c.valueJson as { use_after_discount?: boolean } | null;
-    const orderVal = meta?.use_after_discount === true ? afterDisc : itemPlusAddon;
+    const meta = c.valueJson as { use_after_discount?: boolean; use_eligible_subtotal?: boolean } | null;
+    let orderVal = itemPlusAddon;
+    if (meta?.use_after_discount === true) orderVal = afterDisc;
+    else if (opts?.useEligibleSubtotalForOrderValue === true || meta?.use_eligible_subtotal === true) {
+      orderVal = eligible;
+    }
     if (!evaluateCondition(c, ctx, orderVal)) return false;
   }
   return true;

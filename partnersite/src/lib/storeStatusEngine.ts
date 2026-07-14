@@ -92,7 +92,8 @@ function minutesSinceMidnightInTz(now: Date): number {
     timeZone: TZ,
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    // hourCycle alone (no hour12) — see nowInStoreTz in merchantStoreNextOpenIso.ts for why.
+    hourCycle: "h23",
   }).formatToParts(now);
   const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
   const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);

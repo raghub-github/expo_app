@@ -296,10 +296,15 @@ export function parseRideDeliveredBill(
   const snap = (order.billingSnapshot ?? {}) as Record<string, unknown>;
   const tip = Math.max(0, billNum(snap.tip_amount) || Number(order.tipAmount ?? 0));
   const waitingCharge = resolveBillingSnapshotWaitingCharge(snap);
+  const platformFee = billNum(snap.platform_fee);
+  const convenienceFee = billNum(snap.convenience_fee);
+  const taxTotal = billNum(snap.tax_total);
   const additionalCharges = Math.max(
     0,
-    billNum(snap.misc_fee) +
-      billNum(snap.convenience_fee) +
+    platformFee +
+      convenienceFee +
+      taxTotal +
+      billNum(snap.misc_fee) +
       billNum(snap.small_order_fee) +
       billNum(snap.additional_charge) +
       billNum(snap.extra_charge)
@@ -425,11 +430,19 @@ function rideBillingFeeLines(snap: Record<string, unknown>): RidePaymentFareLine
     }
   }
 
-  if (lines.length === 0) {
-    pushLine("Booking fee", billNum(snap.platform_fee));
-    pushLine("Convenience charges", billNum(snap.convenience_fee));
-    pushLine("GST", billNum(snap.tax_total));
-  }
+  const hasBookingFee = lines.some((line) => {
+    const lower = line.label.toLowerCase();
+    return lower.includes("platform") || lower.includes("booking");
+  });
+  const hasConvenience = lines.some((line) => line.label.toLowerCase().includes("convenience"));
+  const hasTax = lines.some((line) => {
+    const lower = line.label.toLowerCase();
+    return lower.includes("gst") || lower.includes("tax");
+  });
+
+  if (!hasBookingFee) pushLine("Booking fee", billNum(snap.platform_fee));
+  if (!hasConvenience) pushLine("Convenience charges", billNum(snap.convenience_fee));
+  if (!hasTax) pushLine("GST & taxes", billNum(snap.tax_total));
 
   return lines;
 }

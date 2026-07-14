@@ -201,7 +201,9 @@ export async function creditRiderOrderEarningOnDelivered(
       c.distance_km,
       c.checkout_metadata,
       r.ride_type,
-      r.pickup_wait_seconds
+      r.pickup_wait_seconds,
+      r.estimated_fare,
+      r.final_fare
     FROM orders_core c
     LEFT JOIN orders_ride r ON r.order_id = c.id
     WHERE c.id = ${coreId}
@@ -223,6 +225,8 @@ export async function creditRiderOrderEarningOnDelivered(
     checkout_metadata?: unknown;
     ride_type?: string | null;
     pickup_wait_seconds?: number | null;
+    estimated_fare?: unknown;
+    final_fare?: unknown;
   } | undefined;
 
   if (!row) {
@@ -258,19 +262,26 @@ export async function creditRiderOrderEarningOnDelivered(
         Number.isFinite(waitSec) && waitSec > 0 ? Math.max(0, Math.round(waitSec / 60)) : 0;
       const rideGeo =
         payoutService === "ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
-      const geoPayout = await resolveOrderRiderPayoutAmount({
-        service: payoutService,
-        pickupLat: Number(row.pickup_lat),
-        pickupLng: Number(row.pickup_lon),
-        dropLat: Number(row.drop_lat),
-        dropLng: Number(row.drop_lon),
-        dropKm: tripKm,
-        riderId,
-        rideCatalogCode: row.ride_type,
-        waitingMinutes: payoutService === "ride" ? waitingMinutes : undefined,
-        pincode: rideGeo.pickupPincode,
-        state: rideGeo.pickupState,
-      });
+      const customerFare = Number(
+        row.final_fare ?? row.estimated_fare ?? row.fare_amount ?? 0
+      );
+      const geoPayout =
+        Number.isFinite(customerFare) && customerFare > 0
+          ? await resolveOrderRiderPayoutAmount({
+              service: payoutService,
+              customerFare,
+              pickupLat: Number(row.pickup_lat),
+              pickupLng: Number(row.pickup_lon),
+              dropLat: Number(row.drop_lat),
+              dropLng: Number(row.drop_lon),
+              dropKm: tripKm,
+              riderId,
+              rideCatalogCode: row.ride_type,
+              waitingMinutes: payoutService === "ride" ? waitingMinutes : undefined,
+              pincode: rideGeo.pickupPincode,
+              state: rideGeo.pickupState,
+            })
+          : null;
       if (geoPayout != null && geoPayout > 0) {
         deliveryFee = geoPayout;
       } else {

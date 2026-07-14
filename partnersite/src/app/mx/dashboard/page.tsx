@@ -14,7 +14,8 @@ import {
   PARTNER_STORE_OPERATIONS_REFRESH_EVENT,
   type PartnerStoreOperationsRefreshDetail,
 } from '@/lib/partnerStoreOperationsRefresh'
-import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
+import { toastStoreOperationsPostFailure, isOutsideOperatingHoursStoreOpsError } from '@/lib/storeOperationsPostFeedback'
+import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursModal'
 import {
   Power,
   Loader2,
@@ -424,6 +425,7 @@ function DashboardContent() {
   const [closureDate, setClosureDate] = useState<string>('')
   const [closureTime, setClosureTime] = useState<string>('12:00')
   const [showToggleOnWarning, setShowToggleOnWarning] = useState(false)
+  const [showOutsideHoursModal, setShowOutsideHoursModal] = useState(false)
   const [toggleOnLoading, setToggleOnLoading] = useState(false)
   const [showStatusModal, setShowStatusModal] = useState(false)
   const [modalStatus, setModalStatus] = useState<{ status: string; reason?: string }>({ status: '', reason: '' })
@@ -692,30 +694,28 @@ function DashboardContent() {
     return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
   }, [storeId, fetchStoreOperations])
 
-  // Poll store-operations: faster near slot/break boundaries, otherwise every 30s (React Query handles initial fetch).
+  // Poll store-operations: faster near slot/break boundaries (including just after one passes,
+  // so the store flips OPEN/CLOSED on its own without a manual refresh), otherwise every 30s.
   useEffect(() => {
     if (!storeId) return
     let timer: ReturnType<typeof setTimeout> | undefined
+    const nextDelay = () => {
+      const transitionMs = nextScheduleTransitionAt
+        ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
+        : null
+      // "Near boundary" covers both approaching a transition AND just having passed one — a
+      // transition time in the recent past (e.g. the tab was backgrounded) still needs fast
+      // retries until the fetch catches up; anything older than 2 min falls back to slow polling
+      // so a stuck/stale timestamp can't cause an infinite fast-poll loop.
+      const nearBoundary = transitionMs != null && transitionMs > -120_000 && transitionMs <= 120_000
+      return nearBoundary ? Math.max(3_000, Math.min(Math.max(transitionMs!, 0) + 500, 15_000)) : 30_000
+    }
     const schedulePoll = () => {
       void refetchStoreOperations().finally(() => {
-        const transitionMs = nextScheduleTransitionAt
-          ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
-          : null
-        const delay =
-          transitionMs != null && transitionMs > 0 && transitionMs <= 120_000
-            ? Math.max(3_000, Math.min(transitionMs + 500, 15_000))
-            : 30_000
-        timer = setTimeout(schedulePoll, delay)
+        timer = setTimeout(schedulePoll, nextDelay())
       })
     }
-    const transitionMs = nextScheduleTransitionAt
-      ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
-      : null
-    const initialDelay =
-      transitionMs != null && transitionMs > 0 && transitionMs <= 120_000
-        ? Math.max(3_000, Math.min(transitionMs + 500, 15_000))
-        : 30_000
-    timer = setTimeout(schedulePoll, initialDelay)
+    timer = setTimeout(schedulePoll, nextDelay())
     return () => {
       if (timer) clearTimeout(timer)
     }
@@ -965,6 +965,10 @@ function DashboardContent() {
       toast.error('Today is scheduled closed. Update Outlet Timings to open on this day.')
       return
     }
+    if (!isStoreOpen && withinOperatingHours === false) {
+      setShowOutsideHoursModal(true)
+      return
+    }
     if (isStoreOpen) {
       setShowClosePopup(true)
       setToggleClosureType(null)
@@ -988,7 +992,12 @@ function DashboardContent() {
         toast.success('Store is now OPEN. Orders are being accepted!')
         await fetchStoreOperations()
       } else {
-        toastStoreOperationsPostFailure(res, data, 'Failed to open store')
+        if (isOutsideOperatingHoursStoreOpsError(data)) {
+          setShowToggleOnWarning(false)
+          setShowOutsideHoursModal(true)
+        } else {
+          toastStoreOperationsPostFailure(res, data, 'Failed to open store')
+        }
         await fetchStoreOperations()
       }
     } catch {
@@ -1307,6 +1316,11 @@ function DashboardContent() {
           </div>
         </div>
       )}
+      <OutsideOperatingHoursModal
+        open={showOutsideHoursModal}
+        onClose={() => setShowOutsideHoursModal(false)}
+        storeId={storeId}
+      />
       <MXLayoutWhite
         restaurantName={store?.store_name || 'Dashboard'}
         restaurantId={storeId || ''}

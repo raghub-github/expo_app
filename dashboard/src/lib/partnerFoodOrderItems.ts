@@ -9,7 +9,7 @@ import {
 import { enrichRawOrderItemFromCoreRow } from '@/lib/order-item-customisation';
 
 const CORE_ITEM_SELECT =
-  'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot';
+  'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot, applied_offer_type, applied_offer_label, offer_discount_amount';
 
 type CoreItemRow = Parameters<typeof mapCoreDbItemsToRaw>[0][number];
 type CoreAddonRow = {
@@ -99,6 +99,48 @@ export async function loadCoreDbItemsByOrderTextIds(
     }
   }
 
+  const ctmByItemId = new Map<
+    number,
+    {
+      gross_value: number;
+      merchant_offer_discount: number;
+      net_ctm_value: number;
+      merchant_offer_type: string | null;
+      merchant_offer_name: string | null;
+    }
+  >();
+  if (itemIds.length > 0) {
+    const { data: ctmRows, error: ctmErr } = await db
+      .from('merchant_ctm_pricing_snapshot')
+      .select(
+        'order_item_id, gross_value, merchant_offer_discount, net_ctm_value, merchant_offer_type, merchant_offer_name'
+      )
+      .in('order_item_id', itemIds);
+    if (!ctmErr && ctmRows?.length) {
+      for (const r of ctmRows) {
+        const id = Number((r as { order_item_id: number }).order_item_id);
+        if (!Number.isFinite(id)) continue;
+        ctmByItemId.set(id, {
+          gross_value: Number((r as { gross_value: unknown }).gross_value) || 0,
+          merchant_offer_discount:
+            Number((r as { merchant_offer_discount: unknown }).merchant_offer_discount) || 0,
+          net_ctm_value: Number((r as { net_ctm_value: unknown }).net_ctm_value) || 0,
+          merchant_offer_type:
+            ((r as { merchant_offer_type?: string | null }).merchant_offer_type as string | null) ??
+            null,
+          merchant_offer_name:
+            ((r as { merchant_offer_name?: string | null }).merchant_offer_name as string | null) ??
+            null,
+        });
+      }
+    } else if (ctmErr) {
+      console.error(
+        '[merchant-ctm] failed to load merchant_ctm_pricing_snapshot — reload PostgREST schema or check RLS:',
+        ctmErr.message ?? ctmErr
+      );
+    }
+  }
+
   const grouped = new Map<string, CoreItemRow[]>();
   for (const row of coreItemRows) {
     const r = row as CoreItemRow & { order_id: string };
@@ -119,6 +161,51 @@ export async function loadCoreDbItemsByOrderTextIds(
         lineIndex: i,
         raw: raw[i],
       });
+      const ctm = ctmByItemId.get(Number(rows[i].id));
+      const row = rows[i] as CoreItemRow & {
+        applied_offer_type?: string | null;
+        applied_offer_label?: string | null;
+        offer_discount_amount?: string | number | null;
+      };
+      const frozenType = String(row.applied_offer_type ?? '').trim() || null;
+      const frozenLabel = String(row.applied_offer_label ?? '').trim() || null;
+      if (ctm && ctm.gross_value > 0.005) {
+        const qty = Math.max(1, Number(raw[i]?.quantity) || 1);
+        const offerTypeRaw = String(ctm.merchant_offer_type ?? frozenType ?? '').trim();
+        const offerTypeNorm = offerTypeRaw.toUpperCase().replace(/[-\s]+/g, '_');
+        const isNone = !offerTypeNorm || offerTypeNorm === 'NONE';
+        const isBogo =
+          offerTypeNorm === 'BOGO' ||
+          offerTypeNorm === 'BUY_X_GET_Y' ||
+          offerTypeNorm === 'BUY_N_GET_M';
+        const moneyPromo = ctm.merchant_offer_discount > 0.005;
+        const offerName =
+          String(ctm.merchant_offer_name ?? '').trim() || frozenLabel || null;
+        // Type alone is enough (BOGO often has ₹0 line discount; Boost may omit name).
+        const hasMerchantOffer = !isNone;
+        const displayNet = moneyPromo ? ctm.net_ctm_value : ctm.gross_value;
+        raw[i] = {
+          ...raw[i],
+          total: displayNet,
+          total_price: displayNet,
+          price: displayNet / qty,
+          catalog_line_total: ctm.gross_value,
+          net_line_total: isBogo ? ctm.gross_value : ctm.net_ctm_value,
+          offer_discount: moneyPromo ? ctm.merchant_offer_discount : 0,
+          offer_label: hasMerchantOffer ? offerName : null,
+          is_item_promo: moneyPromo || isBogo,
+          applied_offer_type: hasMerchantOffer ? offerTypeRaw || null : null,
+          ctm_from_snapshot: true,
+        };
+      } else if (frozenType && frozenType.toUpperCase() !== 'NONE') {
+        raw[i] = {
+          ...raw[i],
+          offer_label: frozenLabel,
+          applied_offer_type: frozenType,
+          is_item_promo: true,
+          offer_discount: Number(row.offer_discount_amount) || 0,
+        };
+      }
     }
     out.set(oid, raw);
   }
@@ -187,6 +274,13 @@ export function resolvePartnerOrderItems(
           imageUrl: dbLine.imageUrl ?? it.imageUrl,
           total: dbLine.total > 0 ? dbLine.total : it.total,
           price: dbLine.price > 0 ? dbLine.price : it.price,
+          catalogLineTotal: dbLine.catalogLineTotal ?? it.catalogLineTotal,
+          netLineTotal: dbLine.netLineTotal ?? it.netLineTotal,
+          offerDiscount: dbLine.offerDiscount ?? it.offerDiscount,
+          offerLabel: dbLine.offerLabel ?? it.offerLabel,
+          isItemPromo: dbLine.isItemPromo || it.isItemPromo,
+          appliedOfferType: dbLine.appliedOfferType ?? it.appliedOfferType,
+          ctmFromSnapshot: dbLine.ctmFromSnapshot || it.ctmFromSnapshot,
         };
       });
       if (enriched.length > items.length) items = enriched;

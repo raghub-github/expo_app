@@ -381,29 +381,38 @@ export async function resolveStoreDeliveryQuote(
         if (geoRefId) {
           const pickupKm = input.riderPickupKm ?? 0;
           const dropKm = input.riderDropKm ?? distanceKm;
-          const riderQuote = await resolveRiderPayoutQuote({
-            db: getDb(),
-            level: geoLevel,
-            refId: geoRefId,
-            service:
-              serviceTypeSlab === "parcel"
-                ? "parcel"
-                : serviceTypeSlab === "person_ride"
-                  ? "ride"
-                  : "food",
-            pickupKm,
-            dropKm,
-            waitingMinutes: input.riderWaitingMinutes ?? 0,
-            riderId: input.riderId,
-            vehicleType: input.rideVehicleType ?? null,
-          });
+          // Rider Fare Engine v3.0: rider payout is a percentage of the
+          // customer's fare, so resolve the customer-side quote for this
+          // same store/drop/distance first (route is cached, so this is
+          // cheap) rather than duplicating the customer slab-walk logic here.
+          const customerQuote = await resolveStoreDeliveryQuote({ ...input, actor: "customer" });
+          const customerFare = customerQuote.ok ? customerQuote.quote.delivery_fee : 0;
+          const riderQuote =
+            customerFare > 0
+              ? await resolveRiderPayoutQuote({
+                  level: geoLevel,
+                  refId: geoRefId,
+                  service:
+                    serviceTypeSlab === "parcel"
+                      ? "parcel"
+                      : serviceTypeSlab === "person_ride"
+                        ? "ride"
+                        : "food",
+                  customerFare,
+                  pickupKm,
+                  dropKm,
+                  waitingMinutes: input.riderWaitingMinutes ?? 0,
+                  riderId: input.riderId,
+                  vehicleType: input.rideVehicleType ?? null,
+                })
+              : { ok: false as const, code: "NO_CUSTOMER_FARE", message: "" };
           if (riderQuote.ok) {
             slabQuote = {
               distanceKm: riderQuote.quote.pickupKm + riderQuote.quote.dropKm,
-              slabId: riderQuote.quote.pickupSegments[0]?.slabId ?? riderQuote.quote.dropSegments[0]?.slabId ?? 0,
+              slabId: riderQuote.quote.ruleId,
               minKm: 0,
               maxKm: null,
-              baseFareApplied: riderQuote.quote.baseFareApplied,
+              baseFareApplied: 0,
               perKmRate: 0,
               rawDistanceAmount: riderQuote.quote.pickupAmount + riderQuote.quote.dropAmount,
               preMinChargeTotal: riderQuote.quote.subtotalBeforeSurge,

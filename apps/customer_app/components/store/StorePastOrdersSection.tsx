@@ -5,17 +5,19 @@ import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreText } from "./StoreText";
+import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { StorePastOrderRow, type PastOrderItem } from "./StorePastOrderRow";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 export type StorePastOrdersSectionProps = {
   items: PastOrderItem[];
-  getQty: (itemId: string, menuItemId?: number) => number;
+  merchantId: string;
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
   isStoreClosed?: boolean;
+  itemOfferById?: Map<string, ItemOfferDisplay>;
 };
 
 function StackedThumbnails({ items }: { items: PastOrderItem[] }) {
@@ -42,11 +44,12 @@ function StackedThumbnails({ items }: { items: PastOrderItem[] }) {
 
 export function StorePastOrdersSection({
   items,
-  getQty,
+  merchantId,
   onAdd,
   onIncrement,
   onDecrement,
   isStoreClosed,
+  itemOfferById,
 }: StorePastOrdersSectionProps) {
   const [expanded, setExpanded] = useState(true);
   const [showAll, setShowAll] = useState(false);
@@ -56,6 +59,13 @@ export function StorePastOrdersSection({
   const visible = showAll ? items : items.slice(0, 3);
   const hiddenCount = items.length - 3;
   const hiddenItems = items.slice(3);
+
+  const resolveOffer = (menuItem: MenuItem) =>
+    itemOfferById?.get(menuItem.id) ??
+    (menuItem.menuItemId != null
+      ? itemOfferById?.get(String(menuItem.menuItemId))
+      : undefined) ??
+    null;
 
   return (
     <View style={styles.section}>
@@ -79,11 +89,12 @@ export function StorePastOrdersSection({
             <StorePastOrderRow
               key={po.menuItem.id}
               item={po}
-              quantity={getQty(po.menuItem.id, po.menuItem.menuItemId)}
+              merchantId={merchantId}
               onAdd={onAdd}
               onIncrement={onIncrement}
               onDecrement={onDecrement}
               isStoreClosed={isStoreClosed}
+              itemOffer={resolveOffer(po.menuItem)}
             />
           ))}
           {!showAll && hiddenCount > 0 ? (

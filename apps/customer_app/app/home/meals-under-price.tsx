@@ -47,6 +47,7 @@ import {
   buildMealsUnderPriceShareUrl,
 } from "@/lib/mealsUnderPriceShare";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import {
   fetchUserAppCategoriesWithCache,
@@ -481,9 +482,9 @@ export default function MealsUnderPriceScreen() {
 
   const openStore = useCallback(
     (storePublicId: string) => {
-      router.push({ pathname: "/home/merchant/[id]", params: { id: storePublicId } });
+      navigateToMerchant(router, queryClient, storePublicId);
     },
-    [router]
+    [router, queryClient]
   );
 
   const showEmpty =

@@ -26,6 +26,12 @@ export type MerchantOrderItemLike = {
   captured_addon_amount?: number;
   customization_lines?: Array<{ amount?: number; kind?: string; name?: string }>;
   has_customizations?: boolean;
+  catalog_line_total?: number;
+  net_line_total?: number;
+  offer_discount?: number;
+  offer_label?: string | null;
+  is_item_promo?: boolean;
+  applied_offer_type?: string | null;
 };
 
 function num(v: unknown): number {
@@ -250,6 +256,18 @@ export function scaleMerchantOrderItemBreakdown(
       ...l,
       amount: merchantMenuRupee(num(l.amount) * factor),
     })),
+    catalog_line_total:
+      item.catalog_line_total != null
+        ? merchantMenuRupee(num(item.catalog_line_total) * factor)
+        : finalLine,
+    net_line_total:
+      item.net_line_total != null
+        ? merchantMenuRupee(num(item.net_line_total) * factor)
+        : undefined,
+    offer_discount:
+      item.offer_discount != null
+        ? merchantMenuRupee(num(item.offer_discount) * factor)
+        : undefined,
   };
 }
 

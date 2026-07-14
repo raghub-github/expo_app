@@ -28,6 +28,11 @@ import {
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import {
+  resolveOfferDisplaySurface,
+  parseMenuItemIdsFromMeta,
+  parseConditionsModeFromMeta,
+} from "./offer-display-surface.js";
 
 /** Merchant upload is stored in merchant_offers.offer_image_url (R2 proxy path or https URL). */
 function resolveMerchantOfferImageUrl(
@@ -104,7 +109,14 @@ function n(v: unknown): number | null {
   return Number.isFinite(x) ? x : null;
 }
 
-function buildOfferLabel(type: string, discountPct: number | null, discountVal: number | null, maxDiscount: number | null): string {
+function buildOfferLabel(
+  type: string,
+  discountPct: number | null,
+  discountVal: number | null,
+  maxDiscount: number | null,
+  buyQty?: number | null,
+  getQty?: number | null,
+): string {
   const t = String(type ?? "").toUpperCase();
   if ((t === "PERCENTAGE" || t === "CART_PERCENTAGE") && discountPct != null && discountPct > 0) {
     return `${Math.round(discountPct)}% OFF`;
@@ -113,8 +125,11 @@ function buildOfferLabel(type: string, discountPct: number | null, discountVal: 
     return `₹${Math.round(discountVal)} OFF`;
   }
   if (t === "FREE_DELIVERY") return "Free Delivery";
-  if (t === "BOGO") return "Buy 1 Get 1";
-  if (t === "BUY_X_GET_Y" || t === "BUY_N_GET_M") return "Buy More Save More";
+  if (t === "BOGO" || t === "BUY_X_GET_Y" || t === "BUY_N_GET_M") {
+    const buy = buyQty != null && buyQty > 0 ? Math.round(buyQty) : 1;
+    const get = getQty != null && getQty > 0 ? Math.round(getQty) : 1;
+    return `Buy ${buy} Get ${get}`;
+  }
   if (t === "BUNDLE") return "Bundle Deal";
   if (t === "TIERED") return "Spend More Save More";
   if (t === "COUPON") return "Coupon";
@@ -184,6 +199,7 @@ async function resolveStoreInternalId(storeId: string): Promise<number | null> {
 
 async function fetchMerchantOffers(storeInternalId: number) {
   const db = getDb();
+  const sqlClient = getSql();
   const now = new Date();
   const rows = await db
     .select({
@@ -191,16 +207,21 @@ async function fetchMerchantOffers(storeInternalId: number) {
       offerId:             merchantOffers.offerId,
       offerTitle:          merchantOffers.offerTitle,
       offerType:           merchantOffers.offerType,
+      offerSubType:        merchantOffers.offerSubType,
       discountValue:       merchantOffers.discountValue,
       discountPercentage:  merchantOffers.discountPercentage,
       maxDiscountAmount:   merchantOffers.maxDiscountAmount,
       minOrderAmount:      merchantOffers.minOrderAmount,
+      buyQuantity:         merchantOffers.buyQuantity,
+      getQuantity:         merchantOffers.getQuantity,
       couponCode:          merchantOffers.couponCode,
       firstOrderOnly:      merchantOffers.firstOrderOnly,
       newUserOnly:         merchantOffers.newUserOnly,
       autoApply:           merchantOffers.autoApply,
       displayPriority:     merchantOffers.displayPriority,
       priority:            merchantOffers.priority,
+      offerMetadata:       merchantOffers.offerMetadata,
+      lifecycleStatus:     merchantOffers.lifecycleStatus,
     })
     .from(merchantOffers)
     .where(
@@ -209,29 +230,102 @@ async function fetchMerchantOffers(storeInternalId: number) {
         eq(merchantOffers.isActive, true),
         lte(merchantOffers.validFrom, now),
         gte(merchantOffers.validTill, now),
+        // Prefer ACTIVE/SCHEDULED when lifecycle column is populated; allow legacy null/empty.
+        sql`COALESCE(${merchantOffers.lifecycleStatus}, 'ACTIVE') IN ('ACTIVE', 'SCHEDULED')`,
       )
     )
     .orderBy(sql`${merchantOffers.displayPriority} DESC NULLS LAST`, asc(merchantOffers.id));
+
+  // Applicability table holds resolved menu PKs — merge so client can match item_id OR pk.
+  const offerPks = rows.map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
+  const idsByOfferPk = new Map<number, string[]>();
+  if (offerPks.length > 0) {
+    try {
+      const appRows = await sqlClient`
+        SELECT
+          a.offer_id,
+          a.menu_item_id,
+          m.item_id
+        FROM merchant_offer_applicability a
+        LEFT JOIN merchant_menu_items m ON m.id = a.menu_item_id
+        WHERE a.offer_id = ANY(${offerPks})
+          AND a.menu_item_id IS NOT NULL
+      `;
+      for (const row of appRows as Array<{
+        offer_id: number | string;
+        menu_item_id: number | string | null;
+        item_id: string | null;
+      }>) {
+        const oid = Number(row.offer_id);
+        if (!Number.isFinite(oid)) continue;
+        const list = idsByOfferPk.get(oid) ?? [];
+        if (row.menu_item_id != null) list.push(String(row.menu_item_id));
+        if (row.item_id) list.push(String(row.item_id).trim());
+        idsByOfferPk.set(oid, list);
+      }
+    } catch {
+      // Table may be missing on older DBs — metadata-only fallback.
+    }
+  }
 
   return rows.map((r) => {
     const discPct  = n(r.discountPercentage);
     const discVal  = n(r.discountValue);
     const maxDisc  = n(r.maxDiscountAmount);
     const minOrder = n(r.minOrderAmount);
+    const buyQty   = r.buyQuantity != null ? Number(r.buyQuantity) : null;
+    const getQty   = r.getQuantity != null ? Number(r.getQuantity) : null;
     const type     = String(r.offerType ?? "PERCENTAGE");
+    const meta =
+      r.offerMetadata && typeof r.offerMetadata === "object"
+        ? (r.offerMetadata as Record<string, unknown>)
+        : {};
+    const fromMeta = parseMenuItemIdsFromMeta(meta) ?? [];
+    const fromApp = idsByOfferPk.get(Number(r.id)) ?? [];
+    const mergedIds = [...new Set([...fromMeta, ...fromApp].map((x) => String(x).trim()).filter(Boolean))];
+    const menuItemIds = mergedIds.length > 0 ? mergedIds : null;
+
+    let conditionsMode = parseConditionsModeFromMeta(meta);
+    const offerSubType =
+      r.offerSubType ??
+      (menuItemIds?.length ? "SPECIFIC_ITEM" : "ALL_ORDERS");
+
+    // Respect stored Boost / Precision / create_path. Legacy null: item-scoped → boost, else precision.
+    const isPctOrFlat = type === "PERCENTAGE" || type === "FLAT";
+    if (isPctOrFlat && conditionsMode == null) {
+      const createPath = String(meta.create_path ?? "").toLowerCase();
+      if (createPath === "boost" || createPath === "precision") {
+        conditionsMode = createPath;
+      } else {
+        conditionsMode = menuItemIds?.length ? "boost" : "precision";
+      }
+    }
+
+    const displaySurface = resolveOfferDisplaySurface({
+      offerType: type,
+      offerSubType,
+      menuItemIds,
+      conditionsMode,
+    });
     return {
       id:           r.id,
       offer_id:     r.offerId ?? null,
       title:        r.offerTitle,
       offer_type:   type,
+      offer_sub_type: offerSubType,
       coupon_code:  r.couponCode ?? null,
       auto_apply:   r.autoApply ?? true,
-      label:        buildOfferLabel(type, discPct, discVal, maxDisc),
+      label:        buildOfferLabel(type, discPct, discVal, maxDisc, buyQty, getQty),
       sub_label:    buildOfferSublabel(minOrder, maxDisc, r.firstOrderOnly ?? false, r.newUserOnly ?? false),
       discount_percentage: discPct,
       discount_value:      discVal,
       max_discount_amount: maxDisc,
       min_order_amount:    minOrder,
+      buy_quantity: buyQty,
+      get_quantity: getQty,
+      menu_item_ids: menuItemIds,
+      conditions_mode: conditionsMode,
+      display_surface: displaySurface,
     };
   });
 }
@@ -288,6 +382,10 @@ async function fetchPlatformOffers(
   const result: Array<{
     id: number; name: string | null; offer_kind: string;
     label: string; sub_label: string; is_geo_bound: boolean;
+    discount_type: string | null;
+    value: number | null;
+    max_discount_amount: number | null;
+    min_order_amount: number | null;
   }> = [];
 
   for (const o of rows) {
@@ -328,6 +426,10 @@ async function fetchPlatformOffers(
       label:      buildPlatformLabel(kind, o.discountType, value, maxDisc),
       sub_label:  minOrder != null && minOrder > 0 ? `on orders above ₹${Math.round(minOrder)}` : "",
       is_geo_bound: isGeoBound,
+      discount_type: o.discountType ?? null,
+      value,
+      max_discount_amount: maxDisc,
+      min_order_amount: minOrder,
     });
   }
 
@@ -828,6 +930,7 @@ export async function offersRoutes(app: FastifyInstance) {
               offer_id:            z.string().nullable(),
               title:               z.string(),
               offer_type:          z.string(),
+              offer_sub_type:      z.string().nullable().optional(),
               coupon_code:         z.string().nullable(),
               auto_apply:          z.boolean(),
               label:               z.string(),
@@ -836,6 +939,11 @@ export async function offersRoutes(app: FastifyInstance) {
               discount_value:      z.number().nullable(),
               max_discount_amount: z.number().nullable(),
               min_order_amount:    z.number().nullable(),
+              buy_quantity:        z.number().nullable().optional(),
+              get_quantity:        z.number().nullable().optional(),
+              menu_item_ids:       z.array(z.string()).nullable().optional(),
+              conditions_mode:     z.enum(["boost", "precision"]).nullable().optional(),
+              display_surface:     z.enum(["item", "sheet", "both"]).optional(),
             })),
             platform_offers: z.array(z.object({
               id:           z.number(),
@@ -844,6 +952,10 @@ export async function offersRoutes(app: FastifyInstance) {
               label:        z.string(),
               sub_label:    z.string(),
               is_geo_bound: z.boolean(),
+              discount_type: z.string().nullable().optional(),
+              value: z.number().nullable().optional(),
+              max_discount_amount: z.number().nullable().optional(),
+              min_order_amount: z.number().nullable().optional(),
             })),
           }),
           404: z.object({ error: z.string() }),

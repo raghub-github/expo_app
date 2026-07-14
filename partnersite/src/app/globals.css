@@ -488,6 +488,27 @@ body.mx-no-page-scroll .mx-main-scroll {
   transition: transform 0.35s ease-out;
 }
 
+/* Incoming order accept modal — Lora (copy) + Poppins (digits) */
+.partner-incoming-modal {
+  font-family: var(--font-incoming-lora), Georgia, "Times New Roman", serif;
+  color: #1c1917;
+}
+.partner-incoming-modal .incoming-num {
+  font-family: var(--font-incoming-poppins), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.partner-incoming-modal .incoming-items {
+  border: 1px solid #e7e5e4;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+.partner-incoming-modal .incoming-items > div {
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
 @media print {
   body {
     background: white !important;

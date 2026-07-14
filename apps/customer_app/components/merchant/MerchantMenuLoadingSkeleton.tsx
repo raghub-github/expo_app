@@ -1,9 +1,9 @@
 import React from "react";
-import { View, StyleSheet } from "react-native";
+import { View, Text, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useMerchantLoadingMessage } from "@/hooks/useMerchantLoadingMessage";
-import { MerchantLoadingTypewriterText } from "@/components/merchant/MerchantLoadingTypewriterText";
+import { MerchantLoadingWave } from "@/components/merchant/MerchantLoadingWave";
 import { StoreTheme } from "@/constants/storeTheme";
 
 export type MerchantMenuLoadingSkeletonProps = {
@@ -24,21 +24,33 @@ export function MerchantMenuLoadingSkeleton({
   edgeToEdge = false,
 }: MerchantMenuLoadingSkeletonProps) {
   const insets = useSafeAreaInsets();
+  const screenH = Dimensions.get("screen").height;
   const message = useMerchantLoadingMessage(merchantId, startMessageIndex);
   const isScreen = variant === "screen";
+  const topPad = isScreen && edgeToEdge ? insets.top : 0;
+  /** Keep text above home indicator; white background still paints to the screen edge. */
+  const bottomPad = isScreen ? Math.max(insets.bottom, 12) : 0;
 
   return (
     <View
       style={[
         styles.root,
         isScreen ? styles.rootScreen : styles.rootInline,
-        isScreen && edgeToEdge ? { paddingTop: insets.top } : null,
+        // Modal shutter: paint full device height so no grey strip under the sheet.
+        isScreen && edgeToEdge ? { height: screenH, minHeight: screenH } : null,
+        isScreen && !edgeToEdge ? styles.rootScreenFlex : null,
       ]}
     >
-      <View style={[styles.skeletonContent, isScreen ? styles.skeletonContentScreen : null]}>
+      <View
+        style={[
+          styles.skeletonContent,
+          isScreen ? styles.skeletonContentScreen : null,
+          isScreen ? { paddingTop: topPad } : null,
+        ]}
+      >
         {isScreen ? <GMSkeleton style={styles.heroBlock} /> : null}
-        {Array.from({ length: isScreen ? 5 : 4 }).map((_, i) => (
-          <View key={i} style={styles.row}>
+        {Array.from({ length: isScreen ? 4 : 3 }).map((_, i) => (
+          <View key={i} style={[styles.row, isScreen && styles.rowPad]}>
             <View style={styles.rowLeft}>
               <GMSkeleton style={styles.lineLg} />
               <GMSkeleton style={styles.lineMd} />
@@ -49,25 +61,35 @@ export function MerchantMenuLoadingSkeleton({
         ))}
       </View>
 
-      <View
-        style={[
-          styles.messageFooter,
-          isScreen ? styles.messageFooterScreen : styles.messageFooterInline,
-          isScreen && edgeToEdge ? { paddingBottom: Math.max(insets.bottom, 12) } : { paddingBottom: insets.bottom },
-        ]}
-        pointerEvents="none"
-      >
-        <MerchantLoadingTypewriterText text={message} />
-      </View>
+      {message.trim() ? (
+        <View
+          style={[
+            styles.messageFooter,
+            isScreen
+              ? [styles.messageFooterScreen, { paddingBottom: bottomPad }]
+              : styles.messageFooterInline,
+          ]}
+          pointerEvents="none"
+        >
+          <MerchantLoadingWave />
+          <Text style={styles.messageText} numberOfLines={3}>
+            {message}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
-    backgroundColor: StoreTheme.background,
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
   },
   rootScreen: {
+    width: "100%",
+  },
+  rootScreenFlex: {
     flex: 1,
   },
   rootInline: {
@@ -76,22 +98,26 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   skeletonContent: {
-    paddingHorizontal: 16,
     gap: 22,
+    paddingHorizontal: 16,
   },
   skeletonContentScreen: {
-    flex: 1,
-    paddingTop: 8,
+    flexGrow: 1,
+    paddingBottom: 120,
+    paddingHorizontal: 0,
   },
   heroBlock: {
     width: "100%",
     height: 168,
-    borderRadius: 12,
+    borderRadius: 0,
   },
   row: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 14,
+  },
+  rowPad: {
+    paddingHorizontal: 16,
   },
   rowLeft: {
     flex: 1,
@@ -120,16 +146,30 @@ const styles = StyleSheet.create({
   },
   messageFooter: {
     alignItems: "center",
+    justifyContent: "flex-end",
     paddingHorizontal: 20,
-    paddingTop: 10,
-    flexShrink: 0,
     width: "100%",
+    backgroundColor: "#FFFFFF",
   },
   messageFooterScreen: {
-    marginTop: "auto",
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingTop: 4,
   },
   messageFooterInline: {
     marginTop: 24,
     paddingBottom: 32,
+    paddingHorizontal: 16,
+  },
+  messageText: {
+    textAlign: "center",
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "600",
+    color: StoreTheme.textSecondary,
+    minHeight: 44,
+    width: "100%",
   },
 });

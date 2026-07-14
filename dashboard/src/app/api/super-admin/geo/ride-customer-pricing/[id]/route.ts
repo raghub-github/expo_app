@@ -6,7 +6,7 @@ import {
   listRideCustomerPricing,
   softDeleteRideCustomerPricing,
   updateRideCustomerPricing,
-} from "@/lib/db/operations/rider-payout-slabs-admin";
+} from "@/lib/db/operations/ride-customer-pricing-admin";
 import { validateDeliveryRateSlabSet } from "@/lib/geo/deliveryRateSlabAdminValidation";
 
 export const runtime = "nodejs";

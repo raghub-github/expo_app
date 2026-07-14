@@ -23,6 +23,9 @@ export function installErrorSuppression() {
     "`setPositionAsync` is not supported with edge-to-edge enabled",
     "`setBackgroundColorAsync` is not supported with edge-to-edge enabled",
     "[expo-av]: Expo AV has been deprecated",
+    // @supabase/auth-js logs TypeError: Network request failed before returning AuthRetryableFetchError
+    "Network request failed",
+    "TypeError: Network request failed",
   ]);
 
   const rejectionHandler = (event: PromiseRejectionEvent) => {
@@ -49,6 +52,14 @@ export function installErrorSuppression() {
     const message = String(args[0] || "");
 
     if (isBenignKeepAwakeMessage(message)) {
+      return;
+    }
+
+    // Supabase Auth retryable fetch noise (handled by riderAuthService → user-facing error)
+    if (
+      message.includes("Network request failed") ||
+      (message.includes("TypeError") && message.includes("Network request failed"))
+    ) {
       return;
     }
     

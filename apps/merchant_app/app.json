@@ -29,7 +29,6 @@
         "backgroundColor": "#16A34A"
       },
       "package": "com.gatimitra.partner",
-      "googleServicesFile": "./google-services.json",
       "permissions": [
         "READ_SMS",
         "RECEIVE_SMS",
@@ -42,7 +41,7 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "single"
     },
     "plugins": [
       "expo-router",

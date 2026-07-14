@@ -17,6 +17,7 @@ import {
   Share,
   Alert,
   InteractionManager,
+  StatusBar,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
@@ -25,27 +26,34 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useSharedValue } from "react-native-reanimated";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { merchantService, type MenuItem, type MerchantSummary, setMenuItemBookmark } from "@/services/merchant.service";
+import { merchantService, type MenuItem, type MerchantSummary, type OrderedTogetherPair, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
-import {
-  buildStoreOpenStatusLabel,
-} from "@/lib/storeOpenStatusLabel";
-import { formatNextOpenTime, toTimestamp } from "@/lib/storeScheduleUi";
-import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
+import { buildItemOfferDisplayMap, offerPriority, offerTargetsItem, isItemSurface } from "@/lib/itemOfferDisplay";
+import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
+import { getSellingPrice } from "@/components/store/storeMenuUtils";
 import {
   STORE_OFFERS_STALE_MS,
   buildStoreOffersQueryKey,
-  filterVisibleStoreOffers,
+  filterOffersForStoreSheet,
+  countStoreOffersForBadge,
   getSyncStoreOffers,
   offerTextsFromStoreOffers,
   prefetchStoreOffersFromLocationStore,
+  syncStoreOffersInBackground,
 } from "@/lib/prefetchStoreOffers";
+import { getStoreOffersCachedAt, writePersistedStoreOffers } from "@/lib/storeOffersCache";
+import {
+  getMyOrdersCachedAt,
+  readSyncMyOrders,
+  seedMyOrdersStoreQueryIfCached,
+  writeCachedMyOrders,
+} from "@/lib/myOrdersCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
 import { useMenuItemBookmarks, useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
-import { addressService } from "@/services/address.service";
+import { addressService, type Address } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
@@ -69,6 +77,7 @@ import {
 import { syncMerchantMenuInBackground } from "@/lib/merchantMenuSync";
 import { useStoreDetailLiveStatus } from "@/hooks/useStoreDetailLiveStatus";
 import { useMerchantMenuRealtime } from "@/hooks/useMerchantMenuRealtime";
+import { useStoreOffersRealtime } from "@/hooks/useStoreOffersRealtime";
 import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
 import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
 import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
@@ -115,45 +124,72 @@ import {
 } from "@/features/merchant-detail/lib/flashListScroll";
 import { useMerchantScrollAnimation } from "@/features/merchant-detail/hooks/useMerchantScrollAnimation";
 import { useMerchantScrollChromeState } from "@/features/merchant-detail/hooks/useMerchantScrollChromeState";
-import { MERCHANT_FLOATING_UI_LIFT } from "@/constants/layout";
-import { resolveStoreContinueBarHeight, MerchantMenuCartSheet } from "@/components/store/MerchantMenuCartSheet";
+import {
+  DEFAULT_STATUS_BAR_HEIGHT,
+  MERCHANT_FLOATING_UI_LIFT,
+  resolveTabBarBottomInset,
+} from "@/constants/layout";
+import { resolveStoreContinueBarHeight } from "@/components/store/MerchantMenuCartSheet";
+import { MerchantCartDock } from "@/components/store/MerchantCartDock";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
+import { useRenderCount } from "@/hooks/useRenderCount";
 import {
   MENU_FAB_HEIGHT,
-  MENU_SCROLL_STICKY_OFFSET,
-  MERCHANT_HEADER_TOP_GUTTER,
   HEADER_IMAGE_HEIGHT,
   SCREEN_WIDTH_EXPORT,
   FILTER_BAR_HEIGHT,
   STICKY_SEARCH_ROW_HEIGHT,
+  merchantHeaderTopGutter,
+  merchantHeroActionsTopPad,
+  menuScrollStickyOffset,
 } from "@/features/merchant-detail/constants/layout";
 import type { MerchantFlashListItem, MenuSection } from "@/features/merchant-detail/types";
 import {
   StoreMenuSheet,
   type MenuSheetScrollTarget,
   type StoreMenuSheetSection,
+  type StoreMenuSheetOfferRow,
 } from "@/components/store/StoreMenuSheet";
 import { StoreOffersSheet } from "@/components/store/StoreOffersSheet";
 import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
 import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
-import { orderService } from "@/services/order.service";
-import { billingService } from "@/services/billing.service";
-import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import { orderService, type OrderSummary } from "@/services/order.service";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
-import {
-  formatStoreCartOfferBannerText,
-  resolveBestEligibleCheckoutOffer,
-} from "@/hooks/useCouponAvailablePrompt";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
+import { MERCHANT_NAV_SHUTTER_SLIDE_MS } from "@/components/MerchantNavTransitionShutter";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const MENU_SEARCH_DEBOUNCE_MS = 200;
 
-/** Avoid cart dock jumping when live safe-area insets hydrate after first paint. */
+/**
+ * Stable empty-object reference — `orderedTogetherRecs?.byAnchorItemId ?? {}` would
+ * otherwise allocate a NEW object every render while the query hasn't resolved, which
+ * invalidated pairingCompanionItems (and, downstream, the whole flashListData memo) on
+ * every single render regardless of any actual cart/menu change.
+ */
+const EMPTY_CO_PURCHASE_MAP: Record<string, OrderedTogetherPair[]> = {};
+/**
+ * Same rationale as EMPTY_CO_PURCHASE_MAP: `useQuery`'s destructuring default
+ * (`data: x = []`) allocates a NEW array every render while the query hasn't resolved,
+ * which invalidates every memo that depends on it (highlyReorderedIds -> sections ->
+ * flashListData, or filteredSimilarMerchants) on every single render during that window.
+ */
+const EMPTY_ADDRESSES: Address[] = [];
+const EMPTY_MY_ORDERS: OrderSummary[] = [];
+const EMPTY_SIMILAR_MERCHANTS: MerchantSummary[] = [];
+
+/** Stable bottom inset — seed from launch metrics so Continue doesn't jump after ~1 min. */
 const CART_DOCK_BOTTOM_INSET_SEED = initialWindowMetrics?.insets.bottom ?? 0;
+/** Stable top inset — never trust a transient 0 while immersive (status-bar overlap). */
+const SAFE_TOP_SEED = Math.max(
+  initialWindowMetrics?.insets.top ?? 0,
+  Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0,
+  DEFAULT_STATUS_BAR_HEIGHT
+);
 
 export default function MerchantDetailScreen() {
+  useRenderCount("MerchantDetailScreen");
   const { id, openCart, focusItemId } = useLocalSearchParams<{
     id: string;
     openCart?: string;
@@ -161,17 +197,34 @@ export default function MerchantDetailScreen() {
   }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const cartDockBottomInset = Math.max(insets.bottom, CART_DOCK_BOTTOM_INSET_SEED);
-  const merchantId = id ?? "";
-  const navLoadingMessageIndex = useMerchantNavTransitionStore((s) =>
-    s.merchantId === merchantId ? s.loadingMessageIndex : undefined
+  // OS nav inset only (no 48dp Android fallback) — locked to max(seed, live) so it
+  // never shrinks to 0 later (top overlap) or grows from 0 (bottom gap).
+  const cartDockBottomInset = resolveTabBarBottomInset(
+    Math.max(insets.bottom, CART_DOCK_BOTTOM_INSET_SEED)
   );
+  // Prefer root spacer; if immersive left it off, pad locally so buttons never hit the status bar.
+  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
+  const safeTopWhenImmersive = Math.max(insets.top, SAFE_TOP_SEED);
+  const topPad = hideStatusBarSpacer ? safeTopWhenImmersive : 0;
+  const headerTopGutter = merchantHeaderTopGutter(topPad);
+  const scrollStickyOffset = menuScrollStickyOffset(topPad);
+  const heroActionsTopPad = merchantHeroActionsTopPad(topPad);
+  const merchantId = id ?? "";
+  // Capture once at mount so shutter + page share the same sentence after hide().
+  const [loadingMessageIndex] = useState(() => {
+    const nav = useMerchantNavTransitionStore.getState();
+    if (nav.merchantId === (id ?? "") || nav.active) {
+      return nav.loadingMessageIndex;
+    }
+    return undefined;
+  });
   const scrollListRef = useRef<MerchantScrollListHandle>(null);
   const menuScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
   const [filtersSheetVisible, setFiltersSheetVisible] = useState(false);
   const [menuSheetVisible, setMenuSheetVisible] = useState(false);
+  const [selectedMenuOfferId, setSelectedMenuOfferId] = useState<string | null>(null);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const debouncedMenuSearchQuery = useDebouncedValue(menuSearchQuery, MENU_SEARCH_DEBOUNCE_MS);
   const [optionsSheetVisible, setOptionsSheetVisible] = useState(false);
@@ -181,7 +234,11 @@ export default function MerchantDetailScreen() {
   const [customizationSheetVisible, setCustomizationSheetVisible] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<MenuItem | null>(null);
   const focusItemHandledRef = useRef<string | null>(null);
-  const pendingMenuNavRef = useRef<StoreMenuSheetSection | null>(null);
+  const pendingMenuNavRef = useRef<{
+    scrollTarget: MenuSheetScrollTarget;
+    highlightItemId?: string | null;
+    offerKey?: string | null;
+  } | null>(null);
   const [highlightedMenuItemKey, setHighlightedMenuItemKey] = useState<string | null>(null);
   /** Last menu row that received an add — pairing strip renders directly below it. */
   const [pairingAnchorKey, setPairingAnchorKey] = useState<string | null>(null);
@@ -211,20 +268,31 @@ export default function MerchantDetailScreen() {
 
   const setStoreScrollOffset = useMerchantScrollStore((s) => s.setStoreScrollOffset);
   const setScrollY = useMerchantScrollStore((s) => s.setScrollY);
-  const savedScrollOffset = useMerchantScrollStore((s) => s.getStoreScrollOffset(merchantId));
   const didRestoreScrollRef = useRef(false);
-  const userMenuScrollStarted = useSharedValue(savedScrollOffset > 0);
+  /** Snapshot of saved offset at merchant open — never re-read after user scrolls. */
+  const restoreOffsetRef = useRef(0);
+  const userInterruptedRestoreRef = useRef(false);
+  const scrollRestoreTaskRef = useRef<{ cancel: () => void } | null>(null);
+  /** Late-loading "Your Orders" / combo above the fold must not insert after the user scrolls. */
+  const suppressLatePastOrdersRef = useRef(false);
+  const suppressLateComboRef = useRef(false);
+  const pastOrderCountRef = useRef(0);
+  const comboCountRef = useRef(0);
+  const userMenuScrollStarted = useSharedValue(false);
 
-  // Arm scroll-restore ONCE per store. Re-arming on every `savedScrollOffset`
-  // change (which `onScrollEnd` writes on every scroll settle) turned the
-  // one-shot restore into a feedback loop: restore → scrollTo → onScrollEnd →
-  // savedScrollOffset changes → re-arm → restore … which made the menu jump up
-  // and down a few seconds after load. Only reset when the store actually
-  // changes; the user's own scrolling must not re-trigger a restore.
+  // Reset scroll-restore + late-insert gates only when the store changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    userMenuScrollStarted.value = savedScrollOffset > 0;
+    const initial = useMerchantScrollStore.getState().getStoreScrollOffset(merchantId);
+    restoreOffsetRef.current = initial;
+    userInterruptedRestoreRef.current = false;
+    suppressLatePastOrdersRef.current = false;
+    suppressLateComboRef.current = false;
     didRestoreScrollRef.current = false;
+    scrollRestoreTaskRef.current?.cancel();
+    scrollRestoreTaskRef.current = null;
+    userMenuScrollStarted.value = initial > 0;
+    useMerchantScrollStore.getState().setScrollY(0);
   }, [merchantId]);
 
   const cancelScheduledMenuScroll = useCallback(() => {
@@ -234,6 +302,17 @@ export default function MerchantDetailScreen() {
     menuScrollTimersRef.current = [];
     scrollListRef.current?.cancelPendingScroll();
   }, []);
+
+  const onUserTakeOverMenuScroll = useCallback(() => {
+    userInterruptedRestoreRef.current = true;
+    scrollRestoreTaskRef.current?.cancel();
+    scrollRestoreTaskRef.current = null;
+    // If these sections have not mounted yet, never insert them after the user
+    // has scrolled — inserting above the viewport jumps them back to "Your Orders".
+    if (pastOrderCountRef.current === 0) suppressLatePastOrdersRef.current = true;
+    if (comboCountRef.current === 0) suppressLateComboRef.current = true;
+    cancelScheduledMenuScroll();
+  }, [cancelScheduledMenuScroll]);
 
   useEffect(() => () => cancelScheduledMenuScroll(), [cancelScheduledMenuScroll]);
 
@@ -246,7 +325,7 @@ export default function MerchantDetailScreen() {
   } = useMerchantScrollAnimation({
     headerSearchExpandedSv,
     userMenuScrollStarted,
-    onBeginDrag: cancelScheduledMenuScroll,
+    onBeginDrag: onUserTakeOverMenuScroll,
     onScrollEnd: (y) => {
       setStoreScrollOffset(merchantId, y);
       setScrollY(y);
@@ -264,21 +343,35 @@ export default function MerchantDetailScreen() {
     heroBannerHeight,
   });
 
+  useLayoutEffect(() => {
+    useScreenChromeStore.setState({
+      statusBarBackground: "#FFFFFF",
+      statusBarStyle: "dark",
+      hideStatusBarSpacer: false,
+    });
+  }, [merchantId]);
+
   useFocusEffect(
     useCallback(() => {
+      // Keep the root status-bar strip — never draw under the system bar on this screen.
       useScreenChromeStore.setState({
         statusBarBackground: "#FFFFFF",
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
       });
+      // Same freshness strategy as Food Home cards: refetch offers on focus (silent).
+      if (merchantId) {
+        void syncStoreOffersInBackground(queryClient, merchantId);
+      }
       return () => {
         useScreenChromeStore.getState().resetStatusBarBackground();
       };
-    }, [])
+    }, [merchantId, queryClient])
   );
 
   const queryClient = useQueryClient();
   useMerchantMenuRealtime(merchantId, queryClient);
+  useStoreOffersRealtime(merchantId, queryClient);
 
   const { bookmarkMenuItemIdSet } = useMenuItemBookmarks(merchantId);
   const { syncMenuItemBookmark } = useMenuItemBookmarkMutations();
@@ -286,6 +379,7 @@ export default function MerchantDetailScreen() {
   useLayoutEffect(() => {
     if (!merchantId) return;
     seedMerchantMenuQueryIfCached(queryClient, merchantId);
+    seedMyOrdersStoreQueryIfCached(queryClient, merchantId);
   }, [merchantId, queryClient]);
 
   useEffect(() => {
@@ -295,12 +389,16 @@ export default function MerchantDetailScreen() {
 
   const { data: liveStatusSnapshot } = useStoreDetailLiveStatus(merchantId);
 
-  const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
+  const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(
+    () => !!readSyncMerchantMenu(merchantId)?.menu?.length
+  );
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
-      setSecondaryQueriesReady(true);
-    });
-    return () => task.cancel();
+    const warm = !!readSyncMerchantMenu(merchantId)?.menu?.length;
+    setSecondaryQueriesReady(warm);
+    if (warm) return;
+    // Cache miss: unlock secondary work on next frame (don't wait for InteractionManager).
+    const id = requestAnimationFrame(() => setSecondaryQueriesReady(true));
+    return () => cancelAnimationFrame(id);
   }, [merchantId]);
 
   const { data: merchant, isPending, isFetching, isError, refetch } = useQuery({
@@ -321,28 +419,76 @@ export default function MerchantDetailScreen() {
   const hasCachedMenu = (merchant?.menu?.length ?? 0) > 0;
   const menuPending = !hasCachedMenu && (isPending || isFetching);
 
-  const [listLaidOut, setListLaidOut] = useState(false);
+  // Warm revisit: treat list as laid out immediately so shutter can hide without waiting onLayout.
+  const [listLaidOut, setListLaidOut] = useState(() => hasCachedMenu);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (hasCachedMenu) {
+      setListLaidOut(true);
+      return;
+    }
     setListLaidOut(false);
-  }, [merchantId]);
+  }, [merchantId, hasCachedMenu]);
 
   useEffect(() => {
-    if (!merchant || menuPending) return;
-    const fallback = setTimeout(() => setListLaidOut(true), 700);
+    if (listLaidOut || !merchant || menuPending) return;
+    const fallback = setTimeout(() => setListLaidOut(true), 120);
     return () => clearTimeout(fallback);
-  }, [merchant, menuPending]);
+  }, [merchant, menuPending, listLaidOut]);
 
   const handleListLayout = useCallback(() => {
     setListLaidOut(true);
   }, []);
 
-  const contentReady = !!merchant && !menuPending && listLaidOut;
+  /**
+   * Drop the nav shutter as soon as the store shell can paint (list-card placeholder
+   * is enough). Waiting on full menu fetch kept the shutter up for the whole API
+   * timeout (~30s) and blocked back.
+   */
+  const contentReady = !!merchant;
 
   useEffect(() => {
     if (!contentReady) return;
-    useMerchantNavTransitionStore.getState().hide();
-  }, [contentReady]);
+    const nav = useMerchantNavTransitionStore.getState();
+    if (!nav.active) return;
+    if (nav.merchantId && nav.merchantId !== merchantId) return;
+    // Keep shutter up for the slide window so the Modal is actually visible.
+    const elapsed = Date.now() - (nav.shownAt || Date.now());
+    const wait = Math.max(0, MERCHANT_NAV_SHUTTER_SLIDE_MS + 40 - elapsed);
+    let raf1: number | null = null;
+    let raf2: number | null = null;
+    const t = setTimeout(() => {
+      // The elapsed-time wait alone can fire before the native stack push has actually
+      // become the frontmost view (Modal dismissal and router.push are two independent
+      // native operations, not synchronized in JS — most visible on Android). Confirm
+      // this screen has committed at least one more frame, and that any in-flight
+      // interactions (the push transition) have settled, before dropping the shutter.
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          InteractionManager.runAfterInteractions(() => {
+            useMerchantNavTransitionStore.getState().hide();
+          });
+        });
+      });
+    }, wait);
+    return () => {
+      clearTimeout(t);
+      if (raf1 != null) cancelAnimationFrame(raf1);
+      if (raf2 != null) cancelAnimationFrame(raf2);
+    };
+  }, [contentReady, merchantId]);
+
+  // Hard cap — never leave the shutter covering the UI (or trapping back).
+  useEffect(() => {
+    if (!merchantId) return;
+    const t = setTimeout(() => {
+      const nav = useMerchantNavTransitionStore.getState();
+      if (nav.active && (!nav.merchantId || nav.merchantId === merchantId)) {
+        nav.hide();
+      }
+    }, 1600);
+    return () => clearTimeout(t);
+  }, [merchantId]);
 
   useEffect(() => {
     if (!merchantId) return;
@@ -358,16 +504,31 @@ export default function MerchantDetailScreen() {
 
   useEffect(() => {
     if (!merchantId || !hasCachedMenu || didRestoreScrollRef.current) return;
-    if (savedScrollOffset <= 0) return;
+    const offset = restoreOffsetRef.current;
+    if (offset <= 0) {
+      didRestoreScrollRef.current = true;
+      return;
+    }
     const task = InteractionManager.runAfterInteractions(() => {
+      if (userInterruptedRestoreRef.current || didRestoreScrollRef.current) return;
+      // User already moved the list — never yank them back to the saved offset
+      // (often "Your Orders"), which felt like a redirect after scroll-stop.
+      if (scrollY.value > 24 && Math.abs(scrollY.value - offset) > 40) {
+        didRestoreScrollRef.current = true;
+        return;
+      }
       userMenuScrollStarted.value = true;
-      scrollFlashListToOffset(scrollListRef, savedScrollOffset, false);
-      scrollY.value = savedScrollOffset;
-      setScrollY(savedScrollOffset);
+      scrollFlashListToOffset(scrollListRef, offset, false);
+      scrollY.value = offset;
+      setScrollY(offset);
       didRestoreScrollRef.current = true;
     });
-    return () => task.cancel();
-  }, [merchantId, hasCachedMenu, savedScrollOffset, scrollY, setScrollY, userMenuScrollStarted]);
+    scrollRestoreTaskRef.current = task;
+    return () => {
+      task.cancel();
+      if (scrollRestoreTaskRef.current === task) scrollRestoreTaskRef.current = null;
+    };
+  }, [merchantId, hasCachedMenu, scrollY, setScrollY, userMenuScrollStarted]);
 
   useEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
@@ -462,7 +623,7 @@ export default function MerchantDetailScreen() {
     staleTime: 0,
   });
 
-  const { data: addresses = [] } = useQuery({
+  const { data: addresses = EMPTY_ADDRESSES } = useQuery({
     queryKey: ["addresses"],
     queryFn: () => addressService.getAddresses(),
     staleTime: 60 * 1000,
@@ -564,7 +725,7 @@ export default function MerchantDetailScreen() {
 
   useLayoutEffect(() => {
     if (!merchantId) return;
-    prefetchStoreOffersFromLocationStore(queryClient, merchantId);
+    prefetchStoreOffersFromLocationStore(queryClient, merchantId, { force: true });
   }, [merchantId, queryClient]);
 
   const {
@@ -572,8 +733,8 @@ export default function MerchantDetailScreen() {
     isPending: storeOffersPending,
   } = useQuery({
     queryKey: storeOffersQueryKey,
-    queryFn: () =>
-      offersService.getStoreOffers({
+    queryFn: async () => {
+      const data = await offersService.getStoreOffers({
         storeId: merchantId,
         pincode,
         state,
@@ -581,27 +742,60 @@ export default function MerchantDetailScreen() {
         lat: offerLat,
         lng: offerLng,
         serviceType: "FOOD",
-      }),
+      });
+      void writePersistedStoreOffers(merchantId, data, offerGeo);
+      return data;
+    },
     enabled: !!merchantId,
     staleTime: STORE_OFFERS_STALE_MS,
     retry: 1,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     placeholderData: (previousData) => previousData,
     initialData: syncStoreOffers,
+    // Mirror Food Home merchants list: disk/RQ seed is immediately stale so network refresh runs.
+    initialDataUpdatedAt: syncStoreOffers
+      ? (getStoreOffersCachedAt(merchantId) ?? Date.now() - STORE_OFFERS_STALE_MS)
+      : undefined,
   });
 
-  const visibleOffers = useMemo(
-    () => filterVisibleStoreOffers(storeOffersData),
+  const sheetOffers = useMemo(
+    () => filterOffersForStoreSheet(storeOffersData),
     [storeOffersData]
   ) as (MerchantOfferItem | PlatformOfferItem)[];
 
-  const { data: myOrders = [] } = useQuery({
+  const storeOffersBadgeCount = useMemo(
+    () => countStoreOffersForBadge(storeOffersData),
+    [storeOffersData]
+  );
+
+  const itemOfferById = useMemo(() => {
+    const merchantOffers = storeOffersData?.merchant_offers ?? [];
+    const catalog = (merchant?.menu ?? []).map((m) => ({
+      id: m.id,
+      menuItemId: m.menuItemId ?? null,
+      price: getSellingPrice(m),
+    }));
+    return buildItemOfferDisplayMap(merchantOffers, catalog);
+  }, [storeOffersData?.merchant_offers, merchant?.menu]);
+
+  const cachedMyOrders = useMemo(() => readSyncMyOrders(), [merchantId]);
+
+  const { data: myOrders = EMPTY_MY_ORDERS } = useQuery({
     queryKey: ["my-orders-store", merchantId],
-    queryFn: () => orderService.getMyOrders({ limit: 40 }),
-    enabled: !!merchantId && secondaryQueriesReady,
+    queryFn: async () => {
+      const orders = await orderService.getMyOrders({ limit: 40 });
+      void writeCachedMyOrders(orders);
+      return orders;
+    },
+    enabled: !!merchantId && (secondaryQueriesReady || !!cachedMyOrders?.length),
     staleTime: 2 * 60 * 1000,
+    initialData: cachedMyOrders,
+    initialDataUpdatedAt: getMyOrdersCachedAt(),
+    placeholderData: (previous) => previous ?? cachedMyOrders,
   });
 
-  const { data: similarMerchants = [] } = useQuery({
+  const { data: similarMerchants = EMPTY_SIMILAR_MERCHANTS } = useQuery({
     queryKey: ["similar-merchants", merchantId, coords?.latitude, coords?.longitude],
     queryFn: () =>
       merchantService.getMerchants({
@@ -643,6 +837,14 @@ export default function MerchantDetailScreen() {
     return out;
   }, [myOrders, merchant?.menu, merchant?.name, merchantId]);
 
+  pastOrderCountRef.current = pastOrderItems.length;
+
+  /** Stable list input — empty if user scrolled before past orders arrived. */
+  const pastOrdersForList = useMemo((): PastOrderItem[] => {
+    if (suppressLatePastOrdersRef.current) return [];
+    return pastOrderItems;
+  }, [pastOrderItems]);
+
   const ratingInsight = useMemo(() => {
     const ratingSource = displayMerchant ?? merchant;
     const storeName = (merchant?.name ?? "").toLowerCase().trim();
@@ -683,8 +885,13 @@ export default function MerchantDetailScreen() {
     () => mapOrderedTogetherPairsToCombos(merchant?.menu ?? [], orderedTogetherRecs?.pairs ?? []),
     [merchant?.menu, orderedTogetherRecs?.pairs]
   );
+  comboCountRef.current = comboPairs.length;
+  const comboPairsForList = useMemo(() => {
+    if (suppressLateComboRef.current) return [];
+    return comboPairs;
+  }, [comboPairs]);
 
-  const coPurchaseByAnchorId = orderedTogetherRecs?.byAnchorItemId ?? {};
+  const coPurchaseByAnchorId = orderedTogetherRecs?.byAnchorItemId ?? EMPTY_CO_PURCHASE_MAP;
 
   const pairingCompanionItems = useMemo(() => {
     if (!pairingAnchorKey || !merchant?.menu?.length) return [];
@@ -770,118 +977,80 @@ export default function MerchantDetailScreen() {
   );
   const addItem = useCartStore((s) => s.addItem);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
-  const cartItems = useCartStore((s) => s.items) ?? [];
   const cartMerchantId = useCartStore((s) => s.merchantId);
-  const syncCartPrices = useCartStore((s) => s.syncPricesFromMap);
   const isCartForThisMerchant = merchantCartMatchesRoute(cartMerchantId, merchantId);
 
-  const cartSubtotalForOffers = useMemo(() => {
-    if (!isCartForThisMerchant) return 0;
-    return (cartItems ?? []).reduce((s, i) => {
-      const base = cartLineBaseUnitPrice(i);
-      const line = base * i.quantity;
-      const addonLine = (i.addons ?? []).reduce(
-        (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
-        0
-      );
-      return s + line + addonLine;
-    }, 0);
-  }, [cartItems, isCartForThisMerchant]);
-
-  const checkoutOffersQuery = useQuery({
-    queryKey: [
-      "billing-checkout-offers",
-      merchantId,
-      resolvedDeliveryAddress?.id,
-      cartSubtotalForOffers,
-      pincode,
-      state,
-    ],
-    queryFn: () =>
-      billingService.getCheckoutOffers({
-        merchantId: merchantId!,
-        addressId: String(resolvedDeliveryAddress!.id),
-        cartSubtotal: cartSubtotalForOffers,
-        serviceType: "FOOD",
-        pincode,
-        state,
-        city,
-      }),
-    enabled:
-      !!merchantId &&
-      !!resolvedDeliveryAddress &&
-      isCartForThisMerchant &&
-      cartItems.length > 0,
-    staleTime: 60 * 1000,
-  });
-
-  const storeCartOfferBannerText = useMemo(() => {
-    if (!isCartForThisMerchant || cartItems.length === 0) return null;
-    const best = resolveBestEligibleCheckoutOffer(
-      checkoutOffersQuery.data,
-      cartSubtotalForOffers
-    );
-    if (!best) return null;
-    return formatStoreCartOfferBannerText(best);
-  }, [
-    isCartForThisMerchant,
-    cartItems.length,
-    checkoutOffersQuery.data,
-    cartSubtotalForOffers,
-  ]);
-
-  // Keep the floating-cart total in sync with the live menu — if commission
-  // changed since the user added an item, the cart price for those items
-  // updates as soon as the menu fetch returns fresh values.
-  useEffect(() => {
-    if (!merchant?.menu || cartItems.length === 0 || !isCartForThisMerchant) return;
-    const priceById: Record<string, number> = {};
-    for (const m of merchant.menu) {
-      if (typeof m.price === "number" && Number.isFinite(m.price)) {
-        priceById[m.id] = m.price;
-      }
-    }
-    if (Object.keys(priceById).length > 0) syncCartPrices(priceById);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [merchant?.menu, syncCartPrices, isCartForThisMerchant, cartItems.length]);
+  /**
+   * Narrow selector — avoid re-rendering the whole (non-virtualized, full-mount) menu
+   * host on every cart line change. Line *count* only changes on first-add of a new
+   * dish or last-unit-removed, unlike total quantity/price which change on every +/-
+   * tap — so this is safe to read here just to gate the Continue dock's visibility.
+   * The dock's own totals/price/offer-banner selectors live in MerchantCartDock so a
+   * quantity tap only re-renders that small component, not this whole screen.
+   */
+  const cartLineCount = useCartStore((s) =>
+    merchantCartMatchesRoute(s.merchantId, merchantId) ? s.items.length : 0
+  );
 
   const getQty = useCallback(
     (itemId: string, menuItemId?: number) => {
-      if (!isCartForThisMerchant) return 0;
+      const { items, merchantId: mid } = useCartStore.getState();
+      if (!merchantCartMatchesRoute(mid, merchantId)) return 0;
       const numId = menuItemId != null ? String(menuItemId) : null;
-      return cartItems.reduce((sum, i) => {
+      return items.reduce((sum, i) => {
         if (i.menuItemId === itemId || i.menuItemId.startsWith(itemId + "_")) return sum + i.quantity;
         if (numId != null && (i.menuItemId === numId || i.menuItemId.startsWith(numId + "_"))) return sum + i.quantity;
         return sum;
       }, 0);
     },
-    [isCartForThisMerchant, cartItems]
+    [merchantId]
   );
 
   const handleAddItem = useCallback(
     (item: MenuItem) => {
-      if (!merchant) return;
+      // Never no-op after optimistic UI — menu rows only render when we have an id.
+      const storeName = (merchant?.name ?? "Restaurant").trim() || "Restaurant";
+      if (!merchantId) return;
       const needsCustomization = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
       if (needsCustomization) {
+        setCustomizationItem(item);
+        setCustomizationSheetVisible(true);
         void prefetchMenuItemFullConfig(
           queryClient,
           merchantId,
           resolveFullConfigItemId(item)
         );
-        setCustomizationItem(item);
-        setCustomizationSheetVisible(true);
-      } else {
-        setPairingAnchorKey(item.listRowKey ?? item.id);
-        addItem(merchantId, merchant.name, {
+        return;
+      }
+      // Minimal sync cart write — eligibility / pairing deferred so UI stays snappy.
+      addItem(
+        merchantId,
+        storeName,
+        {
           menuItemId: String(item.menuItemId != null ? item.menuItemId : item.id),
           name: item.name,
           price: item.price,
           isVeg: item.isVeg,
           imageUrl: item.imageUrl ?? null,
-        }, 1, cartMerchantBannerUrl);
-      }
+        },
+        1,
+        cartMerchantBannerUrl
+      );
+      const pairingKey = item.listRowKey ?? item.id;
+      const offer =
+        itemOfferById.get(item.id) ??
+        (item.menuItemId != null ? itemOfferById.get(String(item.menuItemId)) : undefined) ??
+        null;
+      // Defer list-mutating work so ADD→stepper paint is never blocked by a remount.
+      requestAnimationFrame(() => {
+        setPairingAnchorKey(pairingKey);
+        useCartStore.getState().syncDiscountEligibility({
+          [String(item.menuItemId != null ? item.menuItemId : item.id)]:
+            computeIsDiscountEligible(item, offer),
+        });
+      });
     },
-    [merchantId, merchant?.name, merchant, addItem, cartMerchantBannerUrl, queryClient]
+    [merchantId, merchant?.name, addItem, cartMerchantBannerUrl, queryClient, itemOfferById]
   );
 
   const handleAddCombo = useCallback(
@@ -969,6 +1138,13 @@ export default function MerchantDetailScreen() {
       imageUrl?: string | null;
     }) => {
       if (!merchant) return;
+      const offerKey = customizationItem?.id;
+      const offer =
+        (offerKey ? itemOfferById.get(offerKey) : null) ??
+        (customizationItem?.menuItemId != null
+          ? itemOfferById.get(String(customizationItem.menuItemId))
+          : null) ??
+        null;
       addItem(merchantId, merchant.name, {
         menuItemId: params.menuItemId,
         name: params.name,
@@ -981,17 +1157,19 @@ export default function MerchantDetailScreen() {
         variantSizeUnit: params.variantSizeUnit,
         addons: params.addons,
         imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
+        isDiscountEligible: computeIsDiscountEligible(customizationItem, offer),
       }, params.quantity, cartMerchantBannerUrl);
       setCustomizationSheetVisible(false);
       setCustomizationItem(null);
     },
-    [merchantId, merchant, addItem, customizationItem, cartMerchantBannerUrl]
+    [merchantId, merchant, addItem, customizationItem, cartMerchantBannerUrl, itemOfferById]
   );
   const getCartLineIdForItem = useCallback(
     (itemId: string, menuItemId?: number): string | null => {
-      if (!isCartForThisMerchant) return null;
+      const { items, merchantId: mid } = useCartStore.getState();
+      if (!merchantCartMatchesRoute(mid, merchantId)) return null;
       const numId = menuItemId != null ? String(menuItemId) : null;
-      const line = cartItems.find(
+      const line = items.find(
         (i) =>
           i.menuItemId === itemId ||
           i.menuItemId.startsWith(itemId + "_") ||
@@ -999,15 +1177,39 @@ export default function MerchantDetailScreen() {
       );
       return line?.menuItemId ?? null;
     },
-    [isCartForThisMerchant, cartItems]
+    [merchantId]
+  );
+
+  const findMenuItemForCart = useCallback(
+    (itemId: string, menuItemId?: number): MenuItem | null => {
+      const menu = merchant?.menu;
+      if (!menu?.length) return null;
+      const numId = menuItemId != null ? String(menuItemId) : null;
+      return (
+        menu.find(
+          (m) =>
+            m.id === itemId ||
+            m.listRowKey === itemId ||
+            (numId != null &&
+              ((m.menuItemId != null && String(m.menuItemId) === numId) || m.id === numId))
+        ) ?? null
+      );
+    },
+    [merchant?.menu]
   );
 
   const handleIncrement = useCallback(
     (itemId: string, menuItemId?: number) => {
       const lineId = getCartLineIdForItem(itemId, menuItemId);
-      if (lineId) updateQuantity(lineId, 1);
+      if (lineId) {
+        updateQuantity(lineId, 1);
+        return;
+      }
+      // Optimistic UI can be ahead of the store for one frame — never drop a + tap.
+      const item = findMenuItemForCart(itemId, menuItemId);
+      if (item) handleAddItem(item);
     },
-    [getCartLineIdForItem, updateQuantity]
+    [findMenuItemForCart, getCartLineIdForItem, handleAddItem, updateQuantity]
   );
   const handleDecrement = useCallback(
     (itemId: string, menuItemId?: number) => {
@@ -1040,18 +1242,10 @@ export default function MerchantDetailScreen() {
     [merchant?.menu]
   );
 
-  function scheduleMenuScroll(run: () => void) {
-    if (userMenuScrollStarted.value) return;
-    cancelScheduledMenuScroll();
-    InteractionManager.runAfterInteractions(() => {
-      if (userMenuScrollStarted.value) return;
-      run();
-    });
-  }
-
   useEffect(() => {
     focusItemHandledRef.current = null;
     setHighlightedMenuItemKey(null);
+    setSelectedMenuOfferId(null);
     pendingMenuNavRef.current = null;
   }, [merchantId]);
 
@@ -1067,9 +1261,6 @@ export default function MerchantDetailScreen() {
     const n = (merchant?.name ?? "menu").trim();
     return n.length > 0 ? `Search in ${n}` : "Search menu";
   }, [merchant?.name]);
-
-  const totalInCart = (cartItems ?? []).reduce((n, i) => n + i.quantity, 0);
-  const cartTotal = (cartItems ?? []).reduce((n, i) => n + i.price * i.quantity, 0);
 
   const openOffersSheet = useCallback(() => setOffersSheetVisible(true), []);
   const closeOffersSheet = useCallback(() => setOffersSheetVisible(false), []);
@@ -1095,9 +1286,6 @@ export default function MerchantDetailScreen() {
     liveStatusSnapshot?.nextCloseAt ??
     (merchant as { nextCloseAt?: string | number | null } | undefined)?.nextCloseAt ??
     null;
-  const scheduleTickEnabled =
-    toTimestamp(merchantNextOpenAt) != null || toTimestamp(merchantNextCloseAt) != null;
-  const scheduleNow = useScheduleTick(scheduleTickEnabled);
 
   const merchantLiveStatus =
     merchant != null ? resolveMerchantLiveStatus(merchant, {}) : "CLOSED";
@@ -1106,7 +1294,7 @@ export default function MerchantDetailScreen() {
   const isStoreClosedForStatus =
     merchant != null && effectiveLiveStatus === "CLOSED";
 
-  const showStoreContinueBar = isCartForThisMerchant && totalInCart > 0;
+  const showStoreContinueBar = cartLineCount > 0 && isCartForThisMerchant;
 
   /** Reserve offer strip height immediately so dock never overlaps menu on first paint. */
   const reserveCartDockOfferStrip = showStoreContinueBar;
@@ -1130,54 +1318,34 @@ export default function MerchantDetailScreen() {
     router.push("/checkout");
   }, [isStoreClosedForStatus, router]);
 
-  const openStatusLabel = useMemo(
-    () =>
-      buildStoreOpenStatusLabel({
-        isOpen: merchant != null && !isStoreClosedForStatus,
-        nextOpenAt: merchantNextOpenAt,
-        nextCloseAt: merchantNextCloseAt,
-        nowMs: scheduleNow,
-      }),
-    [
-      merchant,
-      isStoreClosedForStatus,
-      merchantNextOpenAt,
-      merchantNextCloseAt,
-      scheduleNow,
-    ]
-  );
-
-  const closedBannerMessage = useMemo(() => {
-    if (!merchant || !isStoreClosedForStatus) return null;
-    if (openStatusLabel.label === "Open soon" && openStatusLabel.sub) {
-      return `Opening soon — browse the menu. ${openStatusLabel.sub} remaining.`;
-    }
-    if (merchantNextOpenAt) {
-      return `Closed for now — browse the menu. ${formatNextOpenTime(toTimestamp(merchantNextOpenAt)!)}.`;
-    }
-    return "Closed for now — you can still browse the menu. Ordering resumes when we open.";
-  }, [merchant, isStoreClosedForStatus, openStatusLabel, merchantNextOpenAt]);
+  /**
+   * Stable boolean, NOT a live countdown string — the closed banner's live "opens/closes
+   * in Xm" text is computed inside MerchantClosedBanner itself (which owns its own 1s
+   * tick). This used to be a ticking string threaded through buildFlashListData, which
+   * invalidated the whole list's memo — and re-rendered every row — every second.
+   */
+  const showClosedBanner = merchant != null && isStoreClosedForStatus;
 
   const { data: flashListData, indexMap: flashIndexMap } = useMemo(
     () =>
       buildFlashListData({
         sections,
-        pastOrderItems,
-        comboPairs,
+        pastOrderItems: pastOrdersForList,
+        comboPairs: comboPairsForList,
         sectionStartingPrice,
-        visibleOffersCount: visibleOffers.length,
-        closedBannerMessage,
+        visibleOffersCount: storeOffersBadgeCount,
+        showClosedBanner,
         menuPending,
         pairingAnchorKey,
         pairingCompanionItems,
       }),
     [
       sections,
-      pastOrderItems,
-      comboPairs,
+      pastOrdersForList,
+      comboPairsForList,
       sectionStartingPrice,
-      visibleOffers.length,
-      closedBannerMessage,
+      storeOffersBadgeCount,
+      showClosedBanner,
       menuPending,
       pairingAnchorKey,
       pairingCompanionItems,
@@ -1194,11 +1362,13 @@ export default function MerchantDetailScreen() {
         setTimeout(() => setHighlightedMenuItemKey(null), 2600);
       }
 
-      scheduleMenuScroll(() => {
-        scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, MENU_SCROLL_STICKY_OFFSET);
+      // Always scroll from Menu sheet / deep-link — do not gate on prior user scroll.
+      cancelScheduledMenuScroll();
+      requestAnimationFrame(() => {
+        scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, scrollStickyOffset);
       });
     },
-    [flashIndexMap]
+    [flashIndexMap, cancelScheduledMenuScroll]
   );
 
   useEffect(() => {
@@ -1209,7 +1379,10 @@ export default function MerchantDetailScreen() {
     if (sections.length === 0) return;
 
     pendingMenuNavRef.current = null;
-    scheduleMenuScroll(() => scrollToMenuTarget(pending.scrollTarget));
+    if (pending.offerKey) setSelectedMenuOfferId(pending.offerKey);
+    requestAnimationFrame(() =>
+      scrollToMenuTarget(pending.scrollTarget, pending.highlightItemId ?? null)
+    );
   }, [sections, filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]);
 
   useEffect(() => {
@@ -1223,21 +1396,19 @@ export default function MerchantDetailScreen() {
     focusItemHandledRef.current = target;
     setHighlightedMenuItemKey(target);
 
-    if (userMenuScrollStarted.value) return;
-
     const scrollToItem = () => {
-      if (userMenuScrollStarted.value) return;
-      scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, MENU_SCROLL_STICKY_OFFSET);
+      scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, scrollStickyOffset);
     };
 
-    const t1 = setTimeout(scrollToItem, 400);
+    // One frame — no InteractionManager / scroll-started gate (felt like multi-tap lag).
+    const t1 = requestAnimationFrame(scrollToItem);
     const clearHighlight = setTimeout(() => setHighlightedMenuItemKey(null), 2600);
 
     return () => {
-      clearTimeout(t1);
+      cancelAnimationFrame(t1);
       clearTimeout(clearHighlight);
     };
-  }, [focusItemId, sections, flashIndexMap, userMenuScrollStarted]);
+  }, [focusItemId, sections, flashIndexMap]);
 
   useEffect(() => {
     if (openCart !== "1" || !merchantId || !isCartForThisMerchant) {
@@ -1279,6 +1450,108 @@ export default function MerchantDetailScreen() {
     { id: "items_missing", label: "Items are missing in the menu" },
     { id: "other", label: "I have some other issue" },
   ] as const;
+
+  const menuSheetOfferRows = useMemo((): StoreMenuSheetOfferRow[] => {
+    const menu = merchant?.menu ?? [];
+    // Menu modal is for jumping to offer items — Boost / BOGO only. Precision is checkout/sheet.
+    const merchantOffers = (storeOffersData?.merchant_offers ?? []).filter((o) => {
+      if (o.conditions_mode === "precision") return false;
+      if (!isItemSurface(o)) return false;
+      return !/\bfree\s*del(ivery)?\b/i.test(`${o.label ?? ""} ${o.sub_label ?? ""}`);
+    });
+    const sorted = [...merchantOffers].sort((a, b) => {
+      const pd = offerPriority(b) - offerPriority(a);
+      if (pd !== 0) return pd;
+      const discA = Number(a.discount_percentage ?? a.discount_value ?? 0);
+      const discB = Number(b.discount_percentage ?? b.discount_value ?? 0);
+      return discB - discA;
+    });
+
+    const rows: StoreMenuSheetOfferRow[] = [];
+    for (const offer of sorted) {
+      const matched = menu.filter((m) => {
+        if (m.inStock === false) return false;
+        return offerTargetsItem(offer, {
+          id: m.id,
+          menuItemId: m.menuItemId ?? null,
+          price: getSellingPrice(m),
+        });
+      });
+      const first = matched[0] ?? null;
+      if (!first) continue;
+      rows.push({
+        id: `mo-${offer.id}`,
+        title: offer.label || offer.title || "Offer",
+        subtitle: offer.sub_label || null,
+        count: matched.length,
+        scrollTarget: {
+          kind: "menu-item",
+          itemId: first.id,
+          menuItemId: first.menuItemId ?? undefined,
+        },
+        highlightItemId: first.id,
+      });
+    }
+    return rows;
+  }, [storeOffersData?.merchant_offers, merchant?.menu]);
+
+  const selectedMenuOfferNumericId = useMemo(() => {
+    if (!selectedMenuOfferId?.startsWith("mo-")) return null;
+    const n = Number(selectedMenuOfferId.slice(3));
+    return Number.isFinite(n) ? n : null;
+  }, [selectedMenuOfferId]);
+
+  const handleMenuSheetSelect = useCallback(
+    (section: StoreMenuSheetSection) => {
+      setMenuSheetVisible(false);
+      setSelectedMenuOfferId(null);
+
+      const needsFilterReset =
+        filter !== "all" ||
+        menuSearchQuery.trim().length > 0 ||
+        hasActiveAdvancedFilters(advancedFilters);
+
+      if (needsFilterReset) {
+        pendingMenuNavRef.current = { scrollTarget: section.scrollTarget };
+        setFilter("all");
+        setMenuSearchQuery("");
+        setAdvancedFilters(DEFAULT_STORE_MENU_FILTERS);
+        return;
+      }
+
+      pendingMenuNavRef.current = null;
+      scrollToMenuTarget(section.scrollTarget);
+    },
+    [filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]
+  );
+
+  const handleMenuSheetOfferSelect = useCallback(
+    (offer: StoreMenuSheetOfferRow) => {
+      setMenuSheetVisible(false);
+      setSelectedMenuOfferId(offer.id);
+
+      const needsFilterReset =
+        filter !== "all" ||
+        menuSearchQuery.trim().length > 0 ||
+        hasActiveAdvancedFilters(advancedFilters);
+
+      if (needsFilterReset) {
+        pendingMenuNavRef.current = {
+          scrollTarget: offer.scrollTarget,
+          highlightItemId: offer.highlightItemId,
+          offerKey: offer.id,
+        };
+        setFilter("all");
+        setMenuSearchQuery("");
+        setAdvancedFilters(DEFAULT_STORE_MENU_FILTERS);
+        return;
+      }
+
+      pendingMenuNavRef.current = null;
+      scrollToMenuTarget(offer.scrollTarget, offer.highlightItemId);
+    },
+    [filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]
+  );
 
   const menuSheetSections = useMemo((): StoreMenuSheetSection[] => {
     const rows: StoreMenuSheetSection[] = [];
@@ -1331,29 +1604,6 @@ export default function MerchantDetailScreen() {
     };
   }, [catalogSections]);
 
-  const handleMenuSheetSelect = useCallback(
-    (section: StoreMenuSheetSection) => {
-      setMenuSheetVisible(false);
-
-      const needsFilterReset =
-        filter !== "all" ||
-        menuSearchQuery.trim().length > 0 ||
-        hasActiveAdvancedFilters(advancedFilters);
-
-      if (needsFilterReset) {
-        pendingMenuNavRef.current = section;
-        setFilter("all");
-        setMenuSearchQuery("");
-        setAdvancedFilters(DEFAULT_STORE_MENU_FILTERS);
-        return;
-      }
-
-      pendingMenuNavRef.current = null;
-      scheduleMenuScroll(() => scrollToMenuTarget(section.scrollTarget));
-    },
-    [filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]
-  );
-
   const distanceKm = routeResult?.distanceKm ?? listCachedDistanceKm ?? null;
   const storeEtaLabel = useMemo(() => {
     if (storeQuote?.duration_min != null && Number.isFinite(storeQuote.duration_min)) {
@@ -1377,6 +1627,8 @@ export default function MerchantDetailScreen() {
   }, [merchant, distanceKm, storeQuote]);
 
   const goBackFromMerchant = useCallback(() => {
+    useMerchantNavTransitionStore.getState().hide();
+    useScreenChromeStore.getState().resetStatusBarBackground();
     safeRouterBack(router, FOOD_HOME_FALLBACK);
   }, [router]);
 
@@ -1403,6 +1655,22 @@ export default function MerchantDetailScreen() {
     setFiltersSheetVisible(false);
   }, []);
 
+  /**
+   * Stable hero-action handlers object — passed to the (now memoized) full-mount menu list.
+   * An inline `{…}` literal here re-created a new object on every screen re-render, which
+   * defeated MerchantDetailFlashList's React.memo and forced the whole mounted menu to
+   * reconcile on every cart Add. All four handlers are already useCallback-stable.
+   */
+  const heroActions = useMemo(
+    () => ({
+      onBack: handleHeroBack,
+      onSearch: openMerchantSearch,
+      onGroupOrder: handleHeroGroupOrder,
+      onOptions: openOptionsSheet,
+    }),
+    [handleHeroBack, openMerchantSearch, handleHeroGroupOrder, openOptionsSheet]
+  );
+
   if (!merchantId) {
     return (
       <View style={styles.centered}>
@@ -1411,6 +1679,8 @@ export default function MerchantDetailScreen() {
     );
   }
 
+  // Only full-screen skeleton when we have zero merchant shell (no list placeholder).
+  // With a placeholder, paint the real page — menu rows load via menuPending in the list.
   const showInitialLoader = !merchant && (isPending || isFetching);
 
   if (showInitialLoader) {
@@ -1418,7 +1688,8 @@ export default function MerchantDetailScreen() {
       <View style={styles.container}>
         <MerchantMenuLoadingSkeleton
           merchantId={merchantId}
-          startMessageIndex={navLoadingMessageIndex}
+          startMessageIndex={loadingMessageIndex}
+          edgeToEdge
         />
       </View>
     );
@@ -1450,7 +1721,8 @@ export default function MerchantDetailScreen() {
       <View style={styles.container}>
         <MerchantMenuLoadingSkeleton
           merchantId={merchantId}
-          startMessageIndex={navLoadingMessageIndex}
+          startMessageIndex={loadingMessageIndex}
+          edgeToEdge
         />
       </View>
     );
@@ -1461,7 +1733,7 @@ export default function MerchantDetailScreen() {
   return (
     <GestureHandlerRootView style={styles.container}>
       <MerchantStickyChrome
-        topGutter={MERCHANT_HEADER_TOP_GUTTER}
+        topGutter={headerTopGutter}
         stickySearchStyle={stickySearchStyle}
         stickySearchBgStyle={stickySearchBgStyle}
         pointerEvents={headerSearchExpanded ? "auto" : "box-none"}
@@ -1534,8 +1806,11 @@ export default function MerchantDetailScreen() {
         distanceKm={distanceKm}
         storeEtaLabel={storeEtaLabel}
         scheduledSlotLabel={scheduledSlotLabel}
+        isStoreClosedForStatus={isStoreClosedForStatus}
+        merchantNextOpenAt={merchantNextOpenAt}
+        merchantNextCloseAt={merchantNextCloseAt}
         offerTickerTexts={offerTickerTexts}
-        visibleOffersCount={visibleOffers.length}
+        visibleOffersCount={storeOffersBadgeCount}
         reserveOfferRow={reserveOfferRow}
         onInfoPress={handleMerchantInfoPress}
         onOffersPress={openOffersSheet}
@@ -1555,36 +1830,24 @@ export default function MerchantDetailScreen() {
         onCouponPress={openOffersSheet}
         similarMerchants={filteredSimilarMerchants}
         highlightedMenuItemKey={highlightedMenuItemKey}
+        highlightedOfferId={selectedMenuOfferNumericId}
         highlyReorderedIds={highlyReorderedIds}
         bookmarkMenuItemIdSet={bookmarkMenuItemIdSet}
         onBookmark={handleBookmarkMenuItem}
         onShare={handleShareMenuItem}
         resolveMenuItemPk={resolveMenuItemPk}
         showHeroActions={heroActionsVisible}
-        heroActions={{
-          onBack: handleHeroBack,
-          onSearch: openMerchantSearch,
-          onGroupOrder: handleHeroGroupOrder,
-          onOptions: openOptionsSheet,
-        }}
+        heroActionsTopPad={heroActionsTopPad}
+        heroActions={heroActions}
         onListLayout={handleListLayout}
-      />
-
-      <MerchantFloatingFab
-        bottom={
-          showStoreContinueBar
-            ? resolveStoreContinueBarHeight(reserveCartDockOfferStrip, cartDockBottomInset) + 14
-            : 36 + cartDockBottomInset / 2 + MERCHANT_FLOATING_UI_LIFT
-        }
-        onPress={() => setMenuSheetVisible(true)}
-        animatedStyle={fabStyle}
+        itemOfferById={itemOfferById}
       />
 
       <StoreOffersSheet
         visible={offersSheetVisible}
         onClose={closeOffersSheet}
         storeName={merchant.name}
-        offers={visibleOffers}
+        offers={sheetOffers}
       />
 
       <StoreFilterSheet
@@ -1619,6 +1882,9 @@ export default function MerchantDetailScreen() {
         onClose={() => setMenuSheetVisible(false)}
         sections={menuSheetSections}
         onSelectSection={handleMenuSheetSelect}
+        offerRows={menuSheetOfferRows}
+        onSelectOffer={handleMenuSheetOfferSelect}
+        selectedOfferId={selectedMenuOfferId}
         largeOrderSection={menuSheetLargeOrder}
       />
 
@@ -1688,6 +1954,13 @@ export default function MerchantDetailScreen() {
           isStoreClosed={isStoreClosedForStatus}
           storeMenu={merchant?.menu ?? []}
           onAddCompanionItem={handleAddItem}
+          itemOffer={
+            itemOfferById.get(customizationItem.id) ??
+            (customizationItem.menuItemId != null
+              ? itemOfferById.get(String(customizationItem.menuItemId))
+              : undefined) ??
+            null
+          }
           onAdd={handleCustomizationAdd}
         />
       )}
@@ -1715,17 +1988,31 @@ export default function MerchantDetailScreen() {
 
       {showStoreContinueBar ? (
         <View style={styles.cartDock} pointerEvents="box-none">
-          <MerchantMenuCartSheet
-            items={cartItems}
-            totalCount={totalInCart}
+          <MerchantCartDock
+            merchantId={merchantId}
+            merchantMenu={merchant?.menu}
+            resolvedDeliveryAddress={resolvedDeliveryAddress}
+            pincode={pincode}
+            state={state}
+            city={city}
+            isStoreClosedForStatus={isStoreClosedForStatus}
             onContinue={handleStoreCartContinue}
-            disabled={isStoreClosedForStatus}
-            isStoreClosed={isStoreClosedForStatus}
-            offerBannerText={storeCartOfferBannerText}
             bottomInset={cartDockBottomInset}
             reserveOfferStrip={reserveCartDockOfferStrip}
           />
         </View>
+      ) : null}
+
+      {!menuSheetVisible ? (
+        <MerchantFloatingFab
+          bottom={
+            showStoreContinueBar
+              ? resolveStoreContinueBarHeight(reserveCartDockOfferStrip, cartDockBottomInset) + 14
+              : 36 + cartDockBottomInset / 2 + MERCHANT_FLOATING_UI_LIFT
+          }
+          onPress={() => setMenuSheetVisible(true)}
+          animatedStyle={fabStyle}
+        />
       ) : null}
     </GestureHandlerRootView>
   );

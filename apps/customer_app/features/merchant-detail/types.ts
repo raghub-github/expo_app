@@ -38,7 +38,7 @@ export type MerchantListItemType =
 export type MerchantFlashListItem =
   | { type: "hero"; key: "hero" }
   | { type: "info"; key: "info" }
-  | { type: "closed_banner"; key: "closed_banner"; message: string }
+  | { type: "closed_banner"; key: "closed_banner" }
   | { type: "filter_bar"; key: "filter_bar" }
   | { type: "category_bar"; key: "category_bar" }
   | {

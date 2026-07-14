@@ -24,6 +24,12 @@ export type ApiFoodOrderItem = {
   captured_base_amount?: number;
   captured_addon_amount?: number;
   has_customizations?: boolean;
+  catalog_line_total?: number;
+  net_line_total?: number;
+  offer_discount?: number;
+  offer_label?: string | null;
+  is_item_promo?: boolean;
+  applied_offer_type?: string | null;
 };
 
 export type ApiFoodOrderPricing = {
@@ -75,6 +81,8 @@ export type ApiFoodOrder = {
   rider_store_wait_anchor_at?: string | null;
   grand_total: number;
   food_items_total_value?: number | null;
+  /** Frozen SSOT precision discount (orders_core.merchant_precision_discount) — pass-through, never recomputed. */
+  merchant_precision_discount?: number | null;
   pricing?: ApiFoodOrderPricing | null;
   billing_snapshot?: Record<string, unknown> | null;
   payment_status?: string | null;
@@ -110,6 +118,27 @@ export type ApiFoodOrder = {
   merchant_response_deadline_at?: string | null;
   merchant_response_timeout_seconds?: number | null;
 };
+
+/**
+ * Mint a Supabase-compatible realtime token scoped to the merchant's stores.
+ * The app passes it to supabase.realtime.setAuth() so postgres_changes on
+ * orders_core/orders_food are delivered under RLS.
+ */
+export async function fetchRealtimeAuthToken(
+  token: string
+): Promise<{ token: string; expiresIn: number; storeIds: number[] }> {
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/realtime-auth`, token);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || "realtime_auth_failed");
+  }
+  const data = (await res.json()) as { token: string; expiresIn?: number; storeIds?: number[] };
+  return {
+    token: data.token,
+    expiresIn: Number(data.expiresIn) || 3300,
+    storeIds: Array.isArray(data.storeIds) ? data.storeIds : [],
+  };
+}
 
 export async function fetchFoodOrders(
   storeId: number,

@@ -446,7 +446,20 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
     ledgerTotal
   );
 
-  if (earnings.totalEarning <= 0) {
+  // Pending dispatch: never surface customer fare as rider earning.
+  // Rider Fare Engine v3.0 (applyGeoSlabRiderEarnings) fills the real payout.
+  const hasFrozenPayout =
+    (ledgerTotal != null && ledgerTotal > 0) ||
+    (Number.isFinite(Number(row.riderEarning)) && Number(row.riderEarning) > 0);
+  if (!hasFrozenPayout) {
+    const tipRounded = resolveCustomerTipAmount(row.customerTipAmount ?? row.tipAmount);
+    earnings = {
+      baseEarning: 0,
+      customerTipAmount: tipRounded > 0 ? tipRounded : undefined,
+      totalEarning: tipRounded,
+      estimatedEarning: 0,
+    };
+  } else if (earnings.totalEarning <= 0) {
     const tipRounded = resolveCustomerTipAmount(row.customerTipAmount);
     earnings = {
       baseEarning: 0,
@@ -575,7 +588,19 @@ function resolveOrderPaymentFields(row: {
 
 function mapFoodRow(row: FoodRow, ledgerTotal?: number | null): RiderOrderSummary {
   const payment = resolveOrderPaymentFields(row);
-  const earnings = resolveRiderOrderEarnings(row, ledgerTotal);
+  let earnings = resolveRiderOrderEarnings(row, ledgerTotal);
+  const hasFrozenPayout =
+    (ledgerTotal != null && ledgerTotal > 0) ||
+    (Number.isFinite(Number(row.riderEarning)) && Number(row.riderEarning) > 0);
+  if (!hasFrozenPayout) {
+    const tipRounded = resolveCustomerTipAmount(row.tipAmount);
+    earnings = {
+      baseEarning: 0,
+      customerTipAmount: tipRounded > 0 ? tipRounded : undefined,
+      totalEarning: tipRounded,
+      estimatedEarning: 0,
+    };
+  }
   const canonicalId = row.orderId?.trim() || row.formattedOrderId?.trim() || "";
   const pickupPin = resolvePickupCoordinates(
     row.pickupLat,
@@ -1056,7 +1081,19 @@ type ParcelRow = {
 
 function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSummary {
   const payment = resolveOrderPaymentFields(row);
-  const earnings = resolveRiderOrderEarnings(row, ledgerTotal);
+  let earnings = resolveRiderOrderEarnings(row, ledgerTotal);
+  const hasFrozenPayout =
+    (ledgerTotal != null && ledgerTotal > 0) ||
+    (Number.isFinite(Number(row.riderEarning)) && Number(row.riderEarning) > 0);
+  if (!hasFrozenPayout) {
+    const tipRounded = resolveCustomerTipAmount(row.tipAmount);
+    earnings = {
+      baseEarning: 0,
+      customerTipAmount: tipRounded > 0 ? tipRounded : undefined,
+      totalEarning: tipRounded,
+      estimatedEarning: 0,
+    };
+  }
   const canonicalId = row.orderId?.trim() || row.formattedOrderId?.trim() || "";
   return {
     id: canonicalId,
@@ -1084,14 +1121,34 @@ function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSu
   };
 }
 
+/**
+ * Rider Fare Engine v3.0: rider payout is a percentage of the customer's
+ * fare, so we must read the fare directly from orders_core/orders_ride here
+ * rather than deriving it from RiderOrderSummary — that type is serialized
+ * verbatim to rider-facing API responses (see getAvailableOrdersForRider),
+ * and must never carry the customer's fare amount.
+ */
+async function resolveCustomerFareForPayout(
+  orderCoreId: number,
+  service: "food" | "parcel" | "ride"
+): Promise<number> {
+  const { resolveCustomerFareForRiderPayout } = await import(
+    "../../lib/build-dispatch-offer-rider-earnings.js"
+  );
+  return resolveCustomerFareForRiderPayout(orderCoreId, service);
+}
+
 async function applyGeoSlabRiderEarnings(
   order: RiderOrderSummary,
-  ctx: { riderId: number; riderLat: number; riderLng: number },
+  ctx: { riderId: number; riderLat: number; riderLng: number; orderCoreId: number },
   rideCheckoutMetadata?: unknown
 ): Promise<RiderOrderSummary> {
   const service =
     order.category === "ride" ? "ride" : order.category === "parcel" ? "parcel" : "food";
   try {
+    const customerFare = await resolveCustomerFareForPayout(ctx.orderCoreId, service);
+    if (customerFare <= 0) return order;
+
     const bookingTripKm =
       service === "ride"
         ? rideTripDistanceFromCheckoutMetadata(rideCheckoutMetadata) ??
@@ -1102,6 +1159,7 @@ async function applyGeoSlabRiderEarnings(
 
     const payout = await resolveOrderRiderPayoutBreakdown({
       service,
+      customerFare,
       pickupLat: order.pickup.lat,
       pickupLng: order.pickup.lng,
       dropLat: order.delivery.lat,
@@ -1176,7 +1234,7 @@ async function hydrateDispatchPoolOrder(
     if (!row?.orderId) return null;
     return applyGeoSlabRiderEarnings(
       enrichOrderDistances(mapRideRow(row as RideRow), riderLat, riderLng),
-      { riderId, riderLat, riderLng },
+      { riderId, riderLat, riderLng, orderCoreId: entry.orderCoreId },
       row.checkoutMetadata
     );
   }
@@ -1216,7 +1274,7 @@ async function hydrateDispatchPoolOrder(
     if (!row?.orderId) return null;
     return applyGeoSlabRiderEarnings(
       enrichOrderDistances(mapFoodRow(row), riderLat, riderLng),
-      { riderId, riderLat, riderLng }
+      { riderId, riderLat, riderLng, orderCoreId: entry.orderCoreId }
     );
   }
 
@@ -1249,7 +1307,7 @@ async function hydrateDispatchPoolOrder(
   if (!row?.orderId) return null;
   return applyGeoSlabRiderEarnings(
     enrichOrderDistances(mapParcelRow(row), riderLat, riderLng),
-    { riderId, riderLat, riderLng }
+    { riderId, riderLat, riderLng, orderCoreId: entry.orderCoreId }
   );
 }
 
@@ -2330,6 +2388,7 @@ async function acceptFoodOrderForRider(
         riderId,
         riderLat: ctx.lat,
         riderLng: ctx.lng,
+        orderCoreId: preCheck.id,
       });
       await persistRideRiderPayoutFromSummary(preCheck.id, {
         baseEarning: withEarnings.baseEarning,
@@ -2712,7 +2771,7 @@ async function acceptRideOrderForRider(
       );
       const withEarnings = await applyGeoSlabRiderEarnings(
         withDistances,
-        { riderId, riderLat: ctx.lat, riderLng: ctx.lng },
+        { riderId, riderLat: ctx.lat, riderLng: ctx.lng, orderCoreId: preCheck.id },
         metaRow?.checkoutMetadata
       );
       await persistRideRiderPayoutFromSummary(preCheck.id, {
@@ -4665,6 +4724,18 @@ function runFoodDeliveryPostCommitEffects(input: {
           orderId: orderIdText,
           status: "DELIVERED",
         })
+      );
+      sideTasks.push(
+        (async () => {
+          const { clearMerchantStoreOrderNotificationsByOrderRef } = await import(
+            "../../lib/clear-merchant-order-notifications.js"
+          );
+          await clearMerchantStoreOrderNotificationsByOrderRef(getSql(), {
+            merchantStoreId,
+            orderIdText,
+            formattedOrderId: orderIdText,
+          });
+        })()
       );
     }
 

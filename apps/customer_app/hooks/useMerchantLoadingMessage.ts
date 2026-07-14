@@ -8,8 +8,11 @@ function resolveLoadingMessage(
   merchantId: string | undefined,
   startIndex?: number
 ): string {
-  if (startIndex != null) {
-    return MERCHANT_MENU_LOADING_MESSAGES[startIndex] ?? MERCHANT_MENU_LOADING_MESSAGES[0];
+  if (startIndex != null && startIndex >= 0) {
+    return (
+      MERCHANT_MENU_LOADING_MESSAGES[startIndex % MERCHANT_MENU_LOADING_MESSAGES.length] ??
+      MERCHANT_MENU_LOADING_MESSAGES[0]
+    );
   }
   if (!merchantId?.trim()) {
     return MERCHANT_MENU_LOADING_MESSAGES[0];
@@ -20,7 +23,7 @@ function resolveLoadingMessage(
 
 /**
  * One loading sentence per skeleton session — no in-session rotation.
- * Next store open picks the following sentence from the list.
+ * Next store open advances to the next sentence (global counter).
  */
 export function useMerchantLoadingMessage(
   merchantId: string | undefined,

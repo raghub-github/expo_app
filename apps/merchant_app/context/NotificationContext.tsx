@@ -8,6 +8,7 @@ import {
   deleteStoreNotification,
 } from "@/services/storeNotificationsApi";
 import type { StoreNotificationRow } from "@/services/storeNotificationsApi";
+import { getSupabaseAuth } from "@/lib/supabaseClient";
 
 export type NotificationType = "order" | "store" | "system" | "earning";
 
@@ -168,6 +169,31 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     void fetchNotifications();
   }, [fetchNotifications]);
+
+  // When backend auto-clears "New order!" on deliver/cancel, drop the row without waiting for poll.
+  useEffect(() => {
+    if (!storeId) return;
+    const supabase = getSupabaseAuth();
+    if (!supabase) return;
+    const ch = supabase
+      .channel(`merchant_store_notifs:${storeId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "merchant_store_notifications",
+          filter: `store_id=eq.${storeId}`,
+        },
+        () => {
+          void fetchNotifications();
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+  }, [storeId, fetchNotifications]);
 
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,

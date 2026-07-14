@@ -1,71 +1,83 @@
-import { useLayoutEffect, useState } from "react";
-import { Modal, StyleSheet, useWindowDimensions } from "react-native";
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
+import { useEffect } from "react";
+import {
+  BackHandler,
+  Modal,
+  Platform,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import { useRouter } from "expo-router";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 
-/** Zomato-style slide-in duration — skeleton enters from the right edge. */
+/** Min time shutter stays up after show (slide feel). */
 export const MERCHANT_NAV_SHUTTER_SLIDE_MS = 280;
 
+/** Absolute max — never trap the user. */
+const SHUTTER_MAX_MS = 1600;
+
 /**
- * Full-screen merchant skeleton shutter on store-card tap.
- * Uses Modal so it renders above the native stack (sibling overlays sit underneath).
+ * System Modal (animation none) — sits above the native stack so the skeleton
+ * covers home the same frame as tap. Absolute Views were painted under the
+ * navigator on Android, so the shutter never appeared until too late.
  */
 export function MerchantNavTransitionShutter() {
-  const { width } = useWindowDimensions();
+  const router = useRouter();
+  const { height } = useWindowDimensions();
   const active = useMerchantNavTransitionStore((s) => s.active);
   const merchantId = useMerchantNavTransitionStore((s) => s.merchantId);
   const loadingMessageIndex = useMerchantNavTransitionStore((s) => s.loadingMessageIndex);
-  const [mounted, setMounted] = useState(false);
-  const translateX = useSharedValue(width);
 
-  useLayoutEffect(() => {
-    if (active) {
-      setMounted(true);
-      translateX.value = width;
-      translateX.value = withTiming(0, {
-        duration: MERCHANT_NAV_SHUTTER_SLIDE_MS,
-        easing: Easing.out(Easing.cubic),
-      });
-      return;
-    }
+  useEffect(() => {
+    if (!active) return;
+    const t = setTimeout(() => {
+      useMerchantNavTransitionStore.getState().hide();
+    }, SHUTTER_MAX_MS);
+    return () => clearTimeout(t);
+  }, [active, merchantId]);
 
-    // Instant dismiss — store page is ready underneath; slide-out exposed a white gap.
-    setMounted(false);
-  }, [active, translateX, width]);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }));
-
-  if (!mounted) return null;
+  useEffect(() => {
+    if (!active || Platform.OS !== "android") return;
+    const onHardwareBack = () => {
+      useMerchantNavTransitionStore.getState().hide();
+      useScreenChromeStore.getState().resetStatusBarBackground();
+      safeRouterBack(router, FOOD_HOME_FALLBACK);
+      return true;
+    };
+    const sub = BackHandler.addEventListener("hardwareBackPress", onHardwareBack);
+    return () => sub.remove();
+  }, [active, router]);
 
   return (
     <Modal
-      visible
+      visible={active}
       animationType="none"
       transparent={false}
       statusBarTranslucent
-      onRequestClose={() => useMerchantNavTransitionStore.getState().hide()}
+      presentationStyle="fullScreen"
+      onRequestClose={() => {
+        useMerchantNavTransitionStore.getState().hide();
+        useScreenChromeStore.getState().resetStatusBarBackground();
+        safeRouterBack(router, FOOD_HOME_FALLBACK);
+      }}
     >
-      <Animated.View style={[styles.layer, animatedStyle]}>
+      <View style={[styles.host, { minHeight: height }]} collapsable={false}>
         <MerchantMenuLoadingSkeleton
+          key={`nav-load-${loadingMessageIndex}-${merchantId ?? ""}`}
           merchantId={merchantId ?? undefined}
           startMessageIndex={loadingMessageIndex}
           edgeToEdge
         />
-      </Animated.View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  layer: {
+  host: {
     flex: 1,
     backgroundColor: "#FFFFFF",
   },

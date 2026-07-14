@@ -14,11 +14,13 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { StoreFonts } from "@/constants/storeTypography";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
-import { StoreMenuAddButton, StoreMenuQtyStepper, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
+import { StoreMenuInstantCartControl, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
 import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { formatOfferRupee, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { MENU_ITEM_ROW_HEIGHT } from "@/features/merchant-detail/constants/layout";
 
 export type StoreMenuItemRowProps = {
   item: MenuItem;
@@ -35,6 +37,8 @@ export type StoreMenuItemRowProps = {
   goesWithName?: string | null;
   onBookmark?: (item: MenuItem) => void;
   onShare?: (item: MenuItem) => void;
+  /** Live merchant offer for this item (Boost % / BOGO). */
+  itemOffer?: ItemOfferDisplay | null;
 };
 
 const IMAGE_SIZE = 118;
@@ -53,9 +57,9 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   goesWithName = null,
   onBookmark,
   onShare,
+  itemOffer = null,
 }: StoreMenuItemRowProps) {
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
-  const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
   const imageUri = useMemo(
     () => (item.imageUrl?.trim() ? (toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl) : null),
     [item.imageUrl]
@@ -63,20 +67,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const imageWasPrefetched = imageUri ? isMenuItemImagePrefetched(imageUri) : false;
   const [imageFailed, setImageFailed] = useState(false);
 
-  const isCustomisable = item.hasVariants || item.hasAddons || item.hasCustomizations;
-  const displayQty = optimisticQty ?? cartQty;
-
-  useEffect(() => {
-    if (optimisticQty != null && cartQty >= optimisticQty) {
-      setOptimisticQty(null);
-    }
-  }, [cartQty, optimisticQty]);
-
-  useEffect(() => {
-    if (cartQty === 0) {
-      setOptimisticQty(null);
-    }
-  }, [cartQty]);
+  const isCustomisable = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
 
   useEffect(() => {
     setImageFailed(false);
@@ -84,25 +75,18 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 
   const handleAdd = useCallback(() => {
     if (isStoreClosed) return;
-
-    if (!isCustomisable) {
-      setOptimisticQty((prev) => (prev ?? cartQty) + 1);
-    }
-
     onAdd(item);
-  }, [cartQty, isCustomisable, isStoreClosed, item, onAdd]);
+  }, [isStoreClosed, item, onAdd]);
 
   const handleIncrementPress = useCallback(() => {
     if (isStoreClosed) return;
-    setOptimisticQty((prev) => (prev ?? cartQty) + 1);
     onIncrement(item.id, item.menuItemId);
-  }, [cartQty, isStoreClosed, item.id, item.menuItemId, onIncrement]);
+  }, [isStoreClosed, item.id, item.menuItemId, onIncrement]);
 
   const handleDecrementPress = useCallback(() => {
     if (isStoreClosed) return;
-    setOptimisticQty((prev) => Math.max(0, (prev ?? cartQty) - 1));
     onDecrement(item.id, item.menuItemId);
-  }, [cartQty, isStoreClosed, item.id, item.menuItemId, onDecrement]);
+  }, [isStoreClosed, item.id, item.menuItemId, onDecrement]);
 
   const handleBookmarkPress = useCallback(() => {
     if (!onBookmark) return;
@@ -118,7 +102,17 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
-  const showDiscount = basePrice != null && basePrice > sellingPrice;
+  const catalogMrpDiscount = basePrice != null && basePrice > sellingPrice;
+  const offerUnitPrice =
+    itemOffer?.kind !== "bogo" && itemOffer?.offerPrice != null ? itemOffer.offerPrice : null;
+  const showOfferPrice =
+    offerUnitPrice != null && offerUnitPrice < sellingPrice - 0.001;
+  const showDiscount = showOfferPrice || catalogMrpDiscount;
+  const strikeAmount = showOfferPrice
+    ? Math.round(itemOffer?.strikePrice ?? sellingPrice)
+    : basePrice!;
+  const payableAmount = showOfferPrice ? offerUnitPrice! : sellingPrice;
+  const showCouponIneligibleNote = catalogMrpDiscount && !showOfferPrice;
   const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
   const spicy = isItemSpicy(item);
@@ -136,10 +130,24 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
                 </View>
               ) : null}
             </View>
-            <Text style={styles.name} numberOfLines={3}>
+            <Text style={styles.name} numberOfLines={2}>
               {item.name}
             </Text>
           </View>
+
+          {itemOffer?.kind === "bogo" ? (
+            <View style={styles.offerBadgeSlot}>
+              <View style={styles.bogoBadge}>
+                <Text style={styles.bogoBadgeText}>{itemOffer.label}</Text>
+              </View>
+            </View>
+          ) : itemOffer ? (
+            <View style={styles.offerBadgeSlot}>
+              <View style={styles.boostBadge}>
+                <Text style={styles.boostBadgeText}>{itemOffer.label}</Text>
+              </View>
+            </View>
+          ) : null}
 
           {isHighlyReordered ? (
             <View style={styles.reorderRow}>
@@ -152,17 +160,19 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 
           <View style={styles.priceBlock}>
             {showDiscount ? (
-              <>
-                <Text style={styles.basePriceStrike}>₹{Math.round(basePrice!)}</Text>
-                <Text style={styles.discountPrice}>Get for ₹{Math.round(sellingPrice)}</Text>
-              </>
+              <View style={styles.priceOfferRow}>
+                <Text style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</Text>
+                <Text style={styles.discountPrice}>
+                  {showOfferPrice ? `Get for ${formatOfferRupee(payableAmount)}` : formatOfferRupee(payableAmount)}
+                </Text>
+              </View>
             ) : (
-              <Text style={styles.basePrice}>₹{Math.round(sellingPrice)}</Text>
+              <Text style={styles.basePrice}>{formatOfferRupee(sellingPrice)}</Text>
             )}
           </View>
 
           {item.description ? (
-            <Text style={styles.desc} numberOfLines={3}>
+            <Text style={styles.desc} numberOfLines={2}>
               {item.description}
               {item.description.length > 80 ? (
                 <Text style={styles.moreLink}> ...more</Text>
@@ -170,86 +180,82 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             </Text>
           ) : null}
 
-          {showDiscount ? (
+          {showCouponIneligibleNote ? (
             <Text style={styles.couponNote}>NOT ELIGIBLE FOR COUPONS</Text>
           ) : null}
-
-          <View style={styles.actionIcons} collapsable={false}>
-            <Pressable
-              style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
-              hitSlop={12}
-              onPress={handleBookmarkPress}
-              disabled={!onBookmark}
-              accessibilityRole="button"
-              accessibilityLabel={isBookmarked ? "Remove bookmark" : "Bookmark dish"}
-            >
-              <Ionicons
-                name={isBookmarked ? "bookmark" : "bookmark-outline"}
-                size={16}
-                color={isBookmarked ? StoreTheme.accentMint : StoreTheme.textSecondary}
-              />
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
-              hitSlop={12}
-              onPress={handleSharePress}
-              disabled={!onShare}
-              accessibilityRole="button"
-              accessibilityLabel="Share dish"
-            >
-              <Ionicons
-                name="share-social-outline"
-                size={16}
-                color={StoreTheme.accentMint}
-              />
-            </Pressable>
-          </View>
         </View>
 
         <View style={styles.rightCol} collapsable={false}>
-          <View style={styles.imageStack} collapsable={false}>
-            <View style={styles.imageWrap} pointerEvents="none">
-              {showRemoteImage ? (
-                <>
-                  {!imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
-                  <Image
-                    source={{ uri: imageUri! }}
-                    style={styles.image}
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    recyclingKey={item.id}
-                    transition={0}
-                    priority={imageWasPrefetched ? "normal" : "low"}
-                    allowDownscaling
-                    onError={() => setImageFailed(true)}
-                  />
-                </>
-              ) : (
-                <MenuItemImagePlaceholder />
-              )}
-              {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
-            </View>
-
-            <View style={styles.addSlot} collapsable={false}>
-              {displayQty === 0 ? (
-                <StoreMenuAddButton
-                  onPress={handleAdd}
-                  disabled={isStoreClosed}
-                  accessibilityLabel={`Add ${item.name} to cart`}
+          <View style={styles.imageWrap} pointerEvents="none">
+            {showRemoteImage ? (
+              <>
+                {!imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
+                <Image
+                  source={{ uri: imageUri! }}
+                  style={styles.image}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  recyclingKey={item.id}
+                  transition={0}
+                  priority={imageWasPrefetched ? "normal" : "low"}
+                  allowDownscaling
+                  onError={() => setImageFailed(true)}
                 />
-              ) : (
-                <StoreMenuQtyStepper
-                  quantity={displayQty}
-                  disabled={isStoreClosed}
-                  onIncrement={handleIncrementPress}
-                  onDecrement={handleDecrementPress}
-                  accessibilityLabel={`${item.name} quantity`}
-                />
-              )}
-            </View>
+              </>
+            ) : (
+              <MenuItemImagePlaceholder />
+            )}
+            {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
+            {isCustomisable ? (
+              <View style={styles.customisableOnImage} pointerEvents="none">
+                <Text style={styles.customisableOnImageText}>customisable</Text>
+              </View>
+            ) : null}
           </View>
+          <View style={styles.addSlot} collapsable={false}>
+            <StoreMenuInstantCartControl
+              itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
+              quantity={cartQty}
+              disabled={isStoreClosed}
+              onAdd={handleAdd}
+              onIncrement={handleIncrementPress}
+              onDecrement={handleDecrementPress}
+              accessibilityLabel={`${item.name} quantity`}
+            />
+          </View>
+        </View>
+      </View>
 
-          {isCustomisable ? <Text style={styles.customisable}>customisable</Text> : null}
+      <View style={styles.bottomActionRow} collapsable={false}>
+        <View style={styles.actionIcons} collapsable={false}>
+          <Pressable
+            style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
+            hitSlop={12}
+            onPress={handleBookmarkPress}
+            disabled={!onBookmark}
+            accessibilityRole="button"
+            accessibilityLabel={isBookmarked ? "Remove bookmark" : "Bookmark dish"}
+          >
+            <Ionicons
+              name={isBookmarked ? "bookmark" : "bookmark-outline"}
+              size={16}
+              color={isBookmarked ? StoreTheme.accentMint : StoreTheme.textSecondary}
+            />
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
+            hitSlop={12}
+            onPress={handleSharePress}
+            disabled={!onShare}
+            accessibilityRole="button"
+            accessibilityLabel="Share dish"
+          >
+            <Ionicons
+              name="share-social-outline"
+              size={16}
+              color={StoreTheme.accentMint}
+            />
+          </Pressable>
         </View>
       </View>
       {showDivider ? <View style={styles.divider} /> : null}
@@ -263,7 +269,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 20,
     paddingBottom: 6,
-    minHeight: 172,
+    minHeight: MENU_ITEM_ROW_HEIGHT,
+    overflow: "visible",
   },
   wrapHighlighted: {
     backgroundColor: StoreTheme.accentMintSoft,
@@ -314,6 +321,43 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 6,
   },
+  offerBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  offerBadgeSlot: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+    minHeight: 22,
+  },
+  bogoBadge: {
+    backgroundColor: "#ECFDF5",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#86EFAC",
+  },
+  bogoBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#15803D",
+  },
+  boostBadge: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#93C5FD",
+  },
+  boostBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#1D4ED8",
+  },
   reorderBarTrack: {
     width: 28,
     height: 3,
@@ -336,6 +380,12 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     marginTop: 2,
   },
+  priceOfferRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "baseline",
+    gap: 8,
+  },
   basePrice: {
     fontFamily: StoreFonts.poppinsBold,
     fontSize: 18,
@@ -353,7 +403,6 @@ const styles = StyleSheet.create({
     fontFamily: StoreFonts.poppinsBold,
     fontSize: 17,
     color: StoreTheme.linkBlue,
-    marginTop: 2,
     letterSpacing: -0.15,
   },
   desc: {
@@ -377,10 +426,9 @@ const styles = StyleSheet.create({
   actionIcons: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 12,
     zIndex: 4,
     elevation: 4,
-    alignSelf: "flex-start",
+    alignSelf: "center",
   },
   circleBtn: {
     width: 34,
@@ -398,12 +446,9 @@ const styles = StyleSheet.create({
   },
   rightCol: {
     width: IMAGE_SIZE,
-    alignItems: "center",
-    paddingBottom: 2,
-  },
-  imageStack: {
-    width: IMAGE_SIZE,
     alignItems: "stretch",
+    zIndex: 1,
+    gap: 8,
   },
   imageWrap: {
     width: IMAGE_SIZE,
@@ -427,26 +472,46 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.35)",
     borderRadius: 12,
   },
+  customisableOnImage: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    right: 6,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  customisableOnImageText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    textTransform: "lowercase",
+    letterSpacing: 0.15,
+    textShadowColor: "rgba(0,0,0,0.55)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+    flexShrink: 0,
+  },
+  bottomActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    marginTop: 10,
+    minHeight: 34,
+    gap: 12,
+  },
   addSlot: {
-    marginTop: 8,
-    width: "100%",
-    height: MENU_ADD_CONTROL_HEIGHT,
+    width: IMAGE_SIZE,
     minHeight: MENU_ADD_CONTROL_HEIGHT,
-    zIndex: 12,
-    elevation: 12,
+    zIndex: 2,
     alignItems: "stretch",
     justifyContent: "center",
   },
-  customisable: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: StoreTheme.textMuted,
-    marginTop: 8,
-    textAlign: "center",
-    textTransform: "lowercase",
-  },
   divider: {
-    marginTop: 20,
+    marginTop: 16,
     borderBottomWidth: 1,
     borderStyle: "dotted",
     borderColor: StoreTheme.borderDotted,

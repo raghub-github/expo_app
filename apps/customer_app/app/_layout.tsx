@@ -63,6 +63,8 @@ import { ensureMapboxSearchReady } from "@/services/location.service";
 import { restoreAndPrefetchLocationWeather } from "@/hooks/useLocationWeather";
 import { prefetchHomeScreenData } from "@/lib/prefetchHomeScreenData";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
+import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
+import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
@@ -84,6 +86,12 @@ void (async () => {
   }
 })();
 
+// Warm the order-tracking map's rider marker icon cache at startup — on a cold
+// session this asset download + base64 encode is slow enough to lose the race
+// against navigating straight to the tracking screen after placing the first
+// order, which otherwise shows "Map unavailable" until the icon finally resolves.
+void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike"));
+
 // Suppress benign console warnings
 LogBox.ignoreLogs([
   "Unable to activate keep awake",
@@ -104,6 +112,8 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 60 * 1000,
+      gcTime: 30 * 60 * 1000,
+      refetchOnWindowFocus: false,
       retry: (failureCount, error) => {
         if (failureCount >= 3) return false;
         const status = (error as { status?: number })?.status;
@@ -147,11 +157,9 @@ export default function RootLayout() {
   const hydrateLocation = useLocationStore((s) => s.hydrate);
 
   const ready = fontsLoaded && hydrated && cartHydrated;
-  const homeStartupReady =
-    !session ||
-    startupTimedOut ||
-    (homeImagesPrefetched && homeDataPrefetched);
-  const appReady = ready && homeStartupReady;
+  // Never block first paint on home prefetch — cache-first screens paint instantly;
+  // prefetchHomeScreenData / AppAssetsPrefetch continue in background.
+  const appReady = ready;
 
   const handleSplashExitComplete = useCallback(() => {
     setSplashExited(true);
@@ -255,7 +263,6 @@ export default function RootLayout() {
               <LanguageSync />
               <CustomerSystemChrome />
               <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
-              <MerchantNavTransitionShutter />
               <CheckoutBottomSheetHost />
               <GlobalFloatingCart />
               <LocationModalWrapper />
@@ -270,6 +277,8 @@ export default function RootLayout() {
               <ProfilePrefetch />
               <WalletBalancePrefetch />
               <SubscriptionPlansPrefetch />
+              {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
+              <MerchantNavTransitionShutter />
             </>
           ) : null}
           {!splashExited ? (

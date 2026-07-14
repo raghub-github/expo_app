@@ -17,6 +17,21 @@ async function resolveMerchantGrossForWallet(
   ordersFoodId: number
 ): Promise<number> {
   const db = getSql();
+  // Merchant CTM snapshot (net of merchant-funded offers) is the source of truth for
+  // what the merchant is actually owed. order_settlement_breakdown.merchant_gross is
+  // written from that snapshot at placement time (writeMerchantCtmPricingSnapshots).
+  const ctmRows = await db`
+    SELECT merchant_gross
+    FROM order_settlement_breakdown
+    WHERE order_id = ${ordersCoreId}
+    LIMIT 1
+  `;
+  const ctmRow = ctmRows[0] as { merchant_gross?: unknown } | undefined;
+  const fromCtm = num(ctmRow?.merchant_gross);
+  if (fromCtm > 0) return round2(fromCtm);
+
+  // Legacy fallback for orders placed before order_settlement_breakdown was populated
+  // from the CTM snapshot — preserves backward compatibility for completed orders.
   const rows = await db`
     SELECT f.food_items_total_value
     FROM orders_core c

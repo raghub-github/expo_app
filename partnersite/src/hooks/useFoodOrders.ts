@@ -57,6 +57,8 @@ export interface OrdersFoodRow {
   item_total?: number | null;
   addon_total?: number | null;
   grand_total?: number | null;
+  /** Frozen SSOT precision discount (orders_core.merchant_precision_discount) — pass-through, never recomputed. */
+  merchant_precision_discount?: number | null;
   pricing?: {
     subtotal: number;
     packaging: number;

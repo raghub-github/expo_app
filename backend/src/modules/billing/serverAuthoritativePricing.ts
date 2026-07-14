@@ -157,3 +157,60 @@ export async function rewriteCartPricesAuthoritatively(
     return { ...it, basePrice: rewrittenBase, addons: rewrittenAddons };
   });
 }
+
+/**
+ * Menu item IDs whose catalog MRP (base_price) is above selling_price —
+ * already discounted; not eligible for further cart/coupon promos.
+ */
+export async function loadMrpIneligibleMenuItemIds(
+  storeId: number,
+  menuItemIds: number[]
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const ids = Array.from(new Set(menuItemIds.filter((n) => Number.isFinite(n) && n > 0)));
+  if (ids.length === 0) return out;
+  const sql = getSql();
+  const rows = await sql<
+    Array<{ id: number; selling_price: string; base_price: string | null }>
+  >`
+    SELECT id, selling_price::text AS selling_price, base_price::text AS base_price
+    FROM merchant_menu_items
+    WHERE id IN ${sql(ids)}
+      AND store_id = ${storeId}
+  `;
+  for (const r of rows) {
+    const selling = parseFloat(r.selling_price);
+    const base = r.base_price != null ? parseFloat(r.base_price) : NaN;
+    if (Number.isFinite(selling) && Number.isFinite(base) && base > selling + 0.001) {
+      out.add(String(r.id));
+    }
+  }
+  return out;
+}
+
+/**
+ * Map cart menu PK → catalog item_id (+ reverse) so Boost offers that target
+ * merchant `item_id` strings still match billing lines keyed by numeric PK.
+ */
+export async function loadMenuItemIdAliases(
+  storeId: number,
+  menuItemIds: number[]
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const ids = Array.from(new Set(menuItemIds.filter((n) => Number.isFinite(n) && n > 0)));
+  if (ids.length === 0) return out;
+  const sql = getSql();
+  const rows = await sql<Array<{ id: number; item_id: string | null }>>`
+    SELECT id, item_id
+    FROM merchant_menu_items
+    WHERE id IN ${sql(ids)}
+      AND store_id = ${storeId}
+  `;
+  for (const r of rows) {
+    const pk = String(r.id);
+    const itemId = r.item_id != null ? String(r.item_id).trim() : "";
+    const aliases = itemId && itemId !== pk ? [itemId] : [];
+    if (aliases.length) out.set(pk, aliases);
+  }
+  return out;
+}

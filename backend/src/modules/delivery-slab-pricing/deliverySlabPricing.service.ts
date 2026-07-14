@@ -1,12 +1,7 @@
 import {
   calcCustomerSlabPrice,
-  calcRiderPayoutBreakdown,
   calcWaitingCharge,
-  calcPickupPayout,
-  calcDropPayout,
   type CustomerSlab,
-  type PickupSlab,
-  type DropSlab,
   type CumulativeSegment,
 } from "@gatimitra/slab-pricing";
 import type { DeliveryRateSlabRow, ProgressiveSlabQuote } from "./types.js";

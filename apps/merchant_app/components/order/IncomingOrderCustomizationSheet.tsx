@@ -7,7 +7,7 @@ import {
   foodOrderAddonRows,
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
-import { merchantLineTotalForFoodItem, formatMerchantRs } from "@/lib/merchant-line-total";
+import { merchantFoodItemCatalogAndNet, formatMerchantRs } from "@/lib/merchant-line-total";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 
 function lineItemToApiItem(item: LineItem): ApiFoodOrderItem {
@@ -25,6 +25,12 @@ function lineItemToApiItem(item: LineItem): ApiFoodOrderItem {
     captured_base_amount: item.captured_base_amount,
     captured_addon_amount: item.captured_addon_amount,
     has_customizations: item.has_customizations,
+    catalog_line_total: item.catalog_line_total,
+    net_line_total: item.net_line_total,
+    offer_discount: item.offer_discount,
+    offer_label: item.offer_label,
+    is_item_promo: item.is_item_promo,
+    applied_offer_type: item.applied_offer_type,
   };
 }
 
@@ -47,7 +53,7 @@ export function IncomingOrderCustomizationSheet({
   const qty = Math.max(1, item.qty || 1);
   const variantLabel = foodOrderVariantLabel(apiItem);
   const addonRows = foodOrderAddonRows(apiItem);
-  const lineTotal = merchantLineTotalForFoodItem(apiItem);
+  const { catalog, net, showStrike, offerBadge } = merchantFoodItemCatalogAndNet(apiItem);
   const custTotal =
     apiItem.customizations_total ??
     addonRows.reduce((s, r) => s + (r.amount ?? 0), 0);
@@ -70,7 +76,17 @@ export function IncomingOrderCustomizationSheet({
             <Text style={styles.itemQtyName} numberOfLines={3}>
               {qty} × {item.name}
             </Text>
-            <Text style={styles.itemLinePrice}>{formatMerchantRs(item.price)}</Text>
+            {offerBadge ? (
+              <Text style={styles.offerLabel} numberOfLines={1}>
+                {offerBadge}
+              </Text>
+            ) : null}
+            <View style={styles.priceRow}>
+              {showStrike ? (
+                <Text style={styles.itemLinePriceStrike}>{formatMerchantRs(catalog)}</Text>
+              ) : null}
+              <Text style={styles.itemLinePrice}>{formatMerchantRs(net)}</Text>
+            </View>
           </View>
         </View>
 
@@ -177,6 +193,23 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#059669",
     fontVariant: ["tabular-nums"],
+  },
+  itemLinePriceStrike: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textTertiary,
+    textDecorationLine: "line-through",
+    fontVariant: ["tabular-nums"],
+  },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  offerLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#B45309",
   },
   sectionLabel: {
     fontSize: 11,

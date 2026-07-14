@@ -1,4 +1,9 @@
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
+import {
+  formatBoostOfferBadge,
+  isBogoOfferType,
+  resolveMerchantOfferBadge,
+} from "@/lib/merchant-offer-display";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -46,6 +51,17 @@ function baseTotal(item: ApiFoodOrderItem): number {
 
 /** Line total from API (merchant-partner); fallback base + add-ons when price missing. */
 export function merchantLineTotalForFoodItem(item: ApiFoodOrderItem): number {
+  if (
+    item.net_line_total != null &&
+    item.catalog_line_total != null &&
+    item.net_line_total < item.catalog_line_total - 0.005
+  ) {
+    return menuRupee(item.net_line_total);
+  }
+  if (item.catalog_line_total != null && item.catalog_line_total > 0.005) {
+    return menuRupee(item.catalog_line_total);
+  }
+
   const fromApi = round2(Number(item.price) || 0);
   if (fromApi > 0.005) return menuRupee(fromApi);
 
@@ -53,6 +69,62 @@ export function merchantLineTotalForFoodItem(item: ApiFoodOrderItem): number {
   const cust = addonTotal(item);
   if (base > 0.005 || cust > 0.005) return menuRupee(base + cust);
   return 0;
+}
+
+/** Catalog vs effective selling price from frozen order snapshot. */
+export function merchantFoodItemCatalogAndNet(item: ApiFoodOrderItem): {
+  catalog: number;
+  net: number;
+  showStrike: boolean;
+  offerBadge: string | null;
+  offerKind: "bogo" | "boost" | "other" | null;
+} {
+  const lineTotal = merchantLineTotalForFoodItem(item);
+  const hasCatalog =
+    item.catalog_line_total != null && item.catalog_line_total > 0.005;
+  const catalog = hasCatalog ? menuRupee(item.catalog_line_total!) : lineTotal;
+
+  let net = catalog;
+  if (item.net_line_total != null && Number.isFinite(item.net_line_total)) {
+    net = menuRupee(item.net_line_total);
+  } else if (
+    item.is_item_promo &&
+    item.offer_discount != null &&
+    item.offer_discount > 0.005
+  ) {
+    net = menuRupee(Math.max(0, catalog - item.offer_discount));
+  } else if (!hasCatalog) {
+    net = lineTotal;
+  }
+
+  const { kind, badge } = resolveMerchantOfferBadge({
+    offerType: item.applied_offer_type,
+    offerLabel: item.offer_label,
+  });
+
+  // BOGO: same gross & net — badge only (no strikethrough).
+  if (kind === "bogo" || isBogoOfferType(item.applied_offer_type)) {
+    return {
+      catalog,
+      net: catalog,
+      showStrike: false,
+      offerBadge: badge,
+      offerKind: "bogo",
+    };
+  }
+
+  const showStrike = net < catalog - 0.005;
+  return {
+    catalog,
+    net,
+    showStrike,
+    offerBadge: showStrike
+      ? badge ?? (kind === "boost" ? formatBoostOfferBadge() : item.offer_label ?? null)
+      : kind === "boost"
+        ? badge ?? formatBoostOfferBadge()
+        : null,
+    offerKind: kind,
+  };
 }
 
 export function merchantItemLineParts(item: ApiFoodOrderItem) {
@@ -132,6 +204,3 @@ export function merchantBasePriceForLineItem(item: {
   if (stored > cust + 0.005) return menuRupee(stored - cust);
   return stored > 0.005 ? menuRupee(stored) : 0;
 }
-
-export { merchantOrderBillTotal } from "@/lib/resolveMerchantOrderTotal";
-export type { MerchantOrderTotalInput } from "@/lib/resolveMerchantOrderTotal";

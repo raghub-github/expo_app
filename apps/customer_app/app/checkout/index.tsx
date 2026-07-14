@@ -71,6 +71,7 @@ import { useCheckoutPresentation } from "@/lib/checkoutPresentation";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useAnimatedCount } from "@/hooks/useAnimatedCount";
 import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebration";
 import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import { BillSummarySheet } from "@/components/checkout/BillSummarySheet";
@@ -83,6 +84,8 @@ import {
   resolveMissedOfferWalletCompensation,
   missedOfferKeyForCandidate,
   listMissedOfferWalletCandidates,
+  isMerchantPrecisionOfferBlockedFromGatiCash,
+  liveUnlockGapInr,
   type MissedOfferWalletCompensation,
 } from "@/lib/checkout-missed-offer-wallet";
 import {
@@ -99,14 +102,32 @@ import {
   type CouponAvailablePrompt,
 } from "@/hooks/useCouponAvailablePrompt";
 import {
+  friendlyCheckoutDiscountLabel,
   isSubscriptionBenefitDiscount,
   splitCheckoutDiscounts,
 } from "@/lib/checkout-discount-display";
+import {
+  buildBillingCalculateParams,
+  buildBillingCalculateQueryKey,
+  type BillingCalculateKeyParams,
+} from "@/lib/billingCalculateQuery";
 import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
 import { useAuthStore } from "@/store/authStore";
 import { walletService } from "@/services/wallet.service";
 import { DeliveryPartnerInstructionSheet } from "@/components/address/DeliveryPartnerInstructionSheet";
-import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import { cartAddonTotalPerUnit, cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import {
+  buildItemOfferDisplayMap,
+  estimateBoostUnitPrice,
+  formatOfferRupee,
+  type ItemOfferDisplay,
+} from "@/lib/itemOfferDisplay";
+import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
+import {
+  buildStoreOffersQueryKey,
+  STORE_OFFERS_STALE_MS,
+} from "@/lib/prefetchStoreOffers";
+import { offersService } from "@/services/offers.service";
 import {
   prefetchMenuItemFullConfig,
   prefetchMenuItemFullConfigsForMenu,
@@ -129,9 +150,83 @@ import {
 
 /** Wait before POST /billing/calculate after tip/donation slider moves. */
 const BILLING_INPUT_DEBOUNCE_MS = 400;
+/**
+ * Wait before re-hitting billing-calculate / checkout-offers after a quantity +/- tap —
+ * coalesces rapid taps into one network round trip instead of one per tap. The displayed
+ * total does NOT wait on this: see the optimistic `toPayAmount` overlay below, which
+ * updates instantly from the last confirmed server bill + the client-known price delta.
+ */
+const CART_QTY_BILLING_DEBOUNCE_MS = 300;
+/** Hold-to-repeat stepper timing — pause before repeat starts, then repeat interval. */
+const STEPPER_HOLD_DELAY_MS = 400;
+const STEPPER_REPEAT_MS = 120;
 
 function roundBillAmount(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** Stable empty-array reference — `data: addresses = []` would otherwise allocate a new
+ * array every render while the query hasn't resolved, invalidating any memo keyed on it. */
+const EMPTY_ADDRESSES: Address[] = [];
+
+/** Effective per-unit price (post Boost/BOGO override + addons) — same math used for
+ * each row's own "Get for" price, kept here so the optimistic total delta never diverges
+ * from what each line already displays. */
+function effectiveCartLineUnitPrice(
+  item: CartItem,
+  itemOfferById: Map<string, ItemOfferDisplay>
+): number {
+  const baseId = cartItemBaseId(item.menuItemId);
+  const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+  const catalogBase =
+    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
+  const addonPerUnit = cartAddonTotalPerUnit(item);
+  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
+  if (boostBase != null && boostBase < catalogBase - 0.001) {
+    return Math.round(boostBase + addonPerUnit);
+  }
+  return Math.round(catalogBase + addonPerUnit);
+}
+
+/** Sum of effectiveCartLineUnitPrice × quantity across a cart snapshot. */
+function effectiveCartValue(
+  cartItems: CartItem[],
+  itemOfferById: Map<string, ItemOfferDisplay>
+): number {
+  return cartItems.reduce(
+    (sum, item) => sum + effectiveCartLineUnitPrice(item, itemOfferById) * item.quantity,
+    0
+  );
+}
+
+/** Full item+addon cart value — shared by the instant (live) and debounced (network) views. */
+function computeFullCartSubtotal(cartItems: CartItem[]): number {
+  return cartItems.reduce((s, i) => {
+    const base = cartLineBaseUnitPrice(i);
+    const line = base * i.quantity;
+    const addonLine = (i.addons ?? []).reduce(
+      (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
+      0
+    );
+    return s + line + addonLine;
+  }, 0);
+}
+
+/** Checkout-offer-eligible base (lines without item Boost/BOGO) — shared live/debounced. */
+function computeEligibleCheckoutSubtotal(
+  cartItems: CartItem[],
+  itemOfferById: Map<string, ItemOfferDisplay>
+): number {
+  let sum = 0;
+  for (const item of cartItems) {
+    const baseId = cartItemBaseId(item.menuItemId);
+    const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+    if (itemOffer != null) continue;
+    if (item.isDiscountEligible === false) continue;
+    const unit = cartLineBaseUnitPrice(item) + cartAddonTotalPerUnit(item);
+    sum += unit * item.quantity;
+  }
+  return Math.max(0, Math.round(sum * 100) / 100);
 }
 
 function normalizePlanHexColor(hex: string | null | undefined, fallback = "#059669"): string {
@@ -244,6 +339,11 @@ const CX = {
   textSecondary: "#666666",
 } as const;
 
+/** Place Order CTA — solid forest green (never LinearGradient; paints reliably on Android). */
+const CHECKOUT_CTA_GREEN = "#137243";
+const CHECKOUT_CTA_GREEN_WAIT = "#0F5132";
+const CHECKOUT_CTA_GREEN_MUTED = "#6B7280";
+
 /** Matches checkout header strip — synced with root status bar via screenChromeStore. */
 const CHECKOUT_HEADER_BG = "#F8F8F8";
 
@@ -333,6 +433,59 @@ function findMenuItemByCartBaseId(
   return menu.find(
     (m) => m.id === baseId || (m.menuItemId != null && String(m.menuItemId) === baseId)
   );
+}
+
+/** Shared by the live (order-payload) and debounced (billing-preview) snapshots below —
+ * keeping one function means the two can never silently diverge in shape. */
+function buildItemsWithSnapshots(
+  cartItems: CartItem[],
+  merchantMenu: import("@/services/merchant.service").MenuItem[] | undefined
+) {
+  return cartItems.map((i) => {
+    const bid = cartItemBaseId(i.menuItemId);
+    const menuItem = findMenuItemByCartBaseId(merchantMenu, bid);
+    const categoryName =
+      (menuItem as { categoryName?: string } | undefined)?.categoryName ??
+      (menuItem as { category_name?: string } | undefined)?.category_name;
+    const rawPack =
+      (menuItem as { packaging_charges?: number; packagingCharges?: number } | undefined)
+        ?.packaging_charges ??
+      (menuItem as { packagingCharges?: number } | undefined)?.packagingCharges;
+    const packNum = rawPack != null ? Number(rawPack) : NaN;
+    const snap: Record<string, unknown> = { isVeg: i.isVeg };
+    if (i.variantName) snap.variant_name = i.variantName;
+    if (i.variantSizeValue) snap.variant_size_value = i.variantSizeValue;
+    if (i.variantSizeUnit) snap.variant_size_unit = i.variantSizeUnit;
+    if (categoryName) snap.category_name = categoryName;
+    if (Number.isFinite(packNum) && packNum > 0) {
+      snap.packaging_enabled = true;
+      snap.packaging_charges = packNum;
+    }
+    return {
+      menuItemId: bid,
+      itemName: i.name,
+      quantity: i.quantity,
+      basePrice: cartLineBaseUnitPrice(i),
+      variantId: i.variantId ?? null,
+      variantName: i.variantName ?? null,
+      isDiscountEligible: i.isDiscountEligible,
+      addons: (i.addons ?? [])
+        .filter((a) => {
+          const id = String(a.addonId ?? "").trim();
+          return id.length > 0 && id !== "0";
+        })
+        .map((a) => ({
+          addonId: String(a.addonId).trim(),
+          customizationId: a.customizationId ?? null,
+          addonName: a.addonName,
+          addonPrice: a.addonPrice,
+          quantity: a.quantity,
+          addon_size_value: a.addonSizeValue ?? undefined,
+          addon_size_unit: a.addonSizeUnit ?? undefined,
+        })),
+      itemSnapshot: snap,
+    };
+  });
 }
 
 function isCartItemCustomizable(
@@ -459,9 +612,9 @@ const restaurantNoteMarqueeStyles = StyleSheet.create({
   },
 });
 
-/** Footer delivery / takeaway — active segment + shell border (mint, matches checkout CTAs). */
-const DELIVERY_TOGGLE_ACTIVE = CX.mint;
-const DELIVERY_TOGGLE_BORDER = "rgba(45, 181, 160, 0.38)";
+/** Footer delivery / takeaway — active segment matches Place Order CTA green. */
+const DELIVERY_TOGGLE_ACTIVE = CHECKOUT_CTA_GREEN;
+const DELIVERY_TOGGLE_BORDER = "rgba(19, 114, 67, 0.38)";
 
 /**
  * Footer row: fixed-width toggle + flex CTA (`footerCtaFlex`) so the row never overflows.
@@ -482,6 +635,219 @@ const CHECKOUT_SCROLL_FOOTER_BASE = 108;
 const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 76;
 /** Breathing room so `BrandingFooter` tagline + watermark sit fully above the fixed footer. */
 const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
+
+type CheckoutCartLineItem = CartItem & {
+  imageUrl: string | null;
+  checkoutSubtext: string | null;
+  catalogMrp: number | null;
+};
+
+type CheckoutCartLineRowProps = {
+  item: CheckoutCartLineItem;
+  itemOfferById: Map<string, ItemOfferDisplay>;
+  serverLineEligibilityById: Map<
+    string,
+    { isDiscountEligible: boolean; ineligibilityReason: "ITEM_PROMO" | "MRP" | null }
+  >;
+  onEdit: (item: CartItem) => void;
+  onIncrement: (menuItemId: string) => void;
+  onDecrement: (menuItemId: string) => void;
+};
+
+/**
+ * One cart line in the checkout order summary — quantity stepper + price. Memoized so a
+ * quantity tap on ONE line only re-renders that line, not the other ~10-20 lines in the
+ * cart or anything else on this 8000-line screen. `onIncrement`/`onDecrement` must be
+ * stable (menuItemId-parameterized dispatchers, not fresh per-row closures) for this to
+ * actually bail out — see `handleIncrementCartLine`/`handleDecrementCartLine` below.
+ */
+const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
+  item,
+  itemOfferById,
+  serverLineEligibilityById,
+  onEdit,
+  onIncrement,
+  onDecrement,
+}: CheckoutCartLineRowProps) {
+  const sub = item.checkoutSubtext;
+  const baseId = cartItemBaseId(item.menuItemId);
+  const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+  const catalogBase =
+    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
+  const addonPerUnit = cartAddonTotalPerUnit(item);
+  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
+  const showOfferPrice = boostBase != null && boostBase < catalogBase - 0.001;
+  const catalogAllIn = Math.round(catalogBase + addonPerUnit);
+  const offerAllIn = showOfferPrice ? Math.round(boostBase! + addonPerUnit) : catalogAllIn;
+  const catalogLineTotalRounded = catalogAllIn * item.quantity;
+  const mrpLineTotal =
+    item.catalogMrp != null && item.catalogMrp > catalogBase
+      ? Math.round(item.catalogMrp + addonPerUnit) * item.quantity
+      : null;
+  const showMrpStrike = !showOfferPrice && mrpLineTotal != null;
+  const strikeLineTotal = showOfferPrice
+    ? catalogLineTotalRounded
+    : showMrpStrike
+      ? mrpLineTotal!
+      : null;
+  const netLineTotal = showOfferPrice ? offerAllIn * item.quantity : catalogLineTotalRounded;
+  const showStrikeRow = strikeLineTotal != null && strikeLineTotal > netLineTotal;
+  const serverElig =
+    serverLineEligibilityById.get(baseId) ?? serverLineEligibilityById.get(item.menuItemId);
+  // Boost/BOGO on the line → always show; server ITEM_PROMO reinforces.
+  const showCheckoutOfferIneligible =
+    itemOffer?.kind === "bogo" || showOfferPrice || serverElig?.ineligibilityReason === "ITEM_PROMO";
+  const fmtLine = formatOfferRupee;
+
+  const handleEditPress = useCallback(() => onEdit(item), [onEdit, item]);
+
+  /** Blocks double-fire if pressIn fires twice for one gesture (no recycling risk here —
+   * this row is a stable instance per item.menuItemId, not reused across items). */
+  const stepperHandledRef = useRef(false);
+  const runStepperOnce = useCallback((fn: () => void) => {
+    if (stepperHandledRef.current) return;
+    stepperHandledRef.current = true;
+    fn();
+    setTimeout(() => {
+      stepperHandledRef.current = false;
+    }, 90);
+  }, []);
+  const handleDecPress = useCallback(
+    () => runStepperOnce(() => onDecrement(item.menuItemId)),
+    [runStepperOnce, onDecrement, item.menuItemId]
+  );
+  const handleIncPress = useCallback(
+    () => runStepperOnce(() => onIncrement(item.menuItemId)),
+    [runStepperOnce, onIncrement, item.menuItemId]
+  );
+
+  /** Hold-to-repeat: first tap fires immediately (above), then holding auto-repeats
+   * every STEPPER_REPEAT_MS after an initial STEPPER_HOLD_DELAY_MS pause. */
+  const repeatTimersRef = useRef<{
+    timeout: ReturnType<typeof setTimeout> | null;
+    interval: ReturnType<typeof setInterval> | null;
+  }>({ timeout: null, interval: null });
+  const clearRepeatTimers = useCallback(() => {
+    const t = repeatTimersRef.current;
+    if (t.timeout) clearTimeout(t.timeout);
+    if (t.interval) clearInterval(t.interval);
+    t.timeout = null;
+    t.interval = null;
+  }, []);
+  useEffect(() => clearRepeatTimers, [clearRepeatTimers]);
+  const startHoldRepeat = useCallback(
+    (step: () => void) => {
+      clearRepeatTimers();
+      repeatTimersRef.current.timeout = setTimeout(() => {
+        repeatTimersRef.current.interval = setInterval(step, STEPPER_REPEAT_MS);
+      }, STEPPER_HOLD_DELAY_MS);
+    },
+    [clearRepeatTimers]
+  );
+  const handleDecPressIn = useCallback(() => {
+    handleDecPress();
+    startHoldRepeat(() => onDecrement(item.menuItemId));
+  }, [handleDecPress, startHoldRepeat, onDecrement, item.menuItemId]);
+  const handleIncPressIn = useCallback(() => {
+    handleIncPress();
+    startHoldRepeat(() => onIncrement(item.menuItemId));
+  }, [handleIncPress, startHoldRepeat, onIncrement, item.menuItemId]);
+
+  const animatedQuantity = Math.round(useAnimatedCount(item.quantity));
+  const animatedNetLineTotal = useAnimatedCount(netLineTotal);
+  const animatedStrikeLineTotal = useAnimatedCount(strikeLineTotal ?? netLineTotal);
+  const animatedCatalogLineTotal = useAnimatedCount(catalogLineTotalRounded);
+
+  return (
+    <View style={styles.orderItemRow}>
+      <View style={styles.orderItemDietWrap}>
+        <DietIndicator isVeg={item.isVeg} />
+      </View>
+      <View style={styles.orderItemMid}>
+        <View style={styles.orderItemNameRow}>
+          <CheckoutText style={styles.orderItemName} numberOfLines={2}>
+            {item.name}
+          </CheckoutText>
+          {itemOffer?.kind === "bogo" ? (
+            <View style={styles.orderItemBogoPill} accessibilityLabel={itemOffer.label}>
+              <CheckoutText style={styles.orderItemBogoPillText} numberOfLines={1}>
+                {itemOffer.label}
+              </CheckoutText>
+            </View>
+          ) : null}
+        </View>
+        {sub ? (
+          <CheckoutText style={styles.orderItemCustom} numberOfLines={2}>
+            {sub}
+          </CheckoutText>
+        ) : null}
+        <TouchableOpacity
+          style={styles.orderItemEditRow}
+          onPress={handleEditPress}
+          activeOpacity={0.7}
+          hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+          accessibilityLabel="Edit item"
+        >
+          <CheckoutText style={styles.orderItemEditText}>Edit</CheckoutText>
+          <Ionicons
+            name="chevron-forward"
+            size={11}
+            color={CX.mint}
+            style={styles.orderItemEditChevron}
+          />
+        </TouchableOpacity>
+        {showCheckoutOfferIneligible ? (
+          <CheckoutText style={styles.orderItemIneligible}>
+            NOT ELIGIBLE FOR CHECKOUT OFFERS
+          </CheckoutText>
+        ) : null}
+      </View>
+      <View style={styles.orderItemRightCol}>
+        <View style={styles.orderItemStepperPill}>
+          <Pressable
+            onPressIn={handleDecPressIn}
+            onPressOut={clearRepeatTimers}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            style={styles.qtyBtnSmall}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Decrease quantity"
+          >
+            <CheckoutText style={styles.qtyGlyph}>−</CheckoutText>
+          </Pressable>
+          <CheckoutText style={styles.qtyValueSmall}>{animatedQuantity}</CheckoutText>
+          <Pressable
+            onPressIn={handleIncPressIn}
+            onPressOut={clearRepeatTimers}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            style={styles.qtyBtnSmall}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Increase quantity"
+          >
+            <CheckoutText style={styles.qtyGlyph}>+</CheckoutText>
+          </Pressable>
+        </View>
+        {showStrikeRow ? (
+          <View style={styles.orderItemPriceCol}>
+            <CheckoutText style={styles.orderItemLinePriceStrike}>
+              {fmtLine(animatedStrikeLineTotal)}
+            </CheckoutText>
+            <CheckoutText style={styles.orderItemLinePriceOffer}>
+              {fmtLine(animatedNetLineTotal)}
+            </CheckoutText>
+          </View>
+        ) : (
+          <CheckoutText style={styles.orderItemLinePrice}>
+            {fmtLine(animatedCatalogLineTotal)}
+          </CheckoutText>
+        )}
+      </View>
+    </View>
+  );
+});
 
 export default function CheckoutScreen() {
   const router = useRouter();
@@ -508,7 +874,29 @@ export default function CheckoutScreen() {
     void prefetchSubscriptionPlans(queryClient);
   }, [queryClient]);
 
-  const { items, merchantId, merchantName, updateQuantity, clearCart, syncPricesFromMap } = useCartStore();
+  /**
+   * Narrow selectors — the un-selected `useCartStore()` used to subscribe this whole
+   * ~8000-line screen to every store field (stashedCarts, hydrated, merchantBannerUrl,
+   * etc.), not just the ones actually used here, so unrelated store writes re-rendered
+   * the entire page.
+   */
+  const items = useCartStore((s) => s.items);
+  const merchantId = useCartStore((s) => s.merchantId);
+  const merchantName = useCartStore((s) => s.merchantName);
+  const updateQuantity = useCartStore((s) => s.updateQuantity);
+  const clearCart = useCartStore((s) => s.clearCart);
+  const syncPricesFromMap = useCartStore((s) => s.syncPricesFromMap);
+  const syncDiscountEligibility = useCartStore((s) => s.syncDiscountEligibility);
+  /** Stable per-line dispatchers — required for CheckoutCartLineRow's React.memo to bail
+   * on rows other than the one actually tapped (see component definition above). */
+  const handleIncrementCartLine = useCallback(
+    (menuItemId: string) => updateQuantity(menuItemId, 1),
+    [updateQuantity]
+  );
+  const handleDecrementCartLine = useCallback(
+    (menuItemId: string) => updateQuantity(menuItemId, -1),
+    [updateQuantity]
+  );
   const handleCheckoutBack = useCallback(() => {
     if (isCheckoutSheet && onSheetClose) {
       onSheetClose();
@@ -580,6 +968,11 @@ export default function CheckoutScreen() {
   const [donationScope, setDonationScope] = useState<DonationScope>("every_order");
   const [receiverDraftName, setReceiverDraftName] = useState("");
   const [receiverDraftMobile, setReceiverDraftMobile] = useState("");
+  /** Order contact — defaults to logged-in profile; override only if user edits this checkout. */
+  const [checkoutReceiverName, setCheckoutReceiverName] = useState("");
+  const [checkoutReceiverMobile, setCheckoutReceiverMobile] = useState("");
+  /** Once true, do not re-seed from profile for this checkout session. */
+  const receiverManuallyEditedRef = useRef(false);
   const [deliveryPartnerNote, setDeliveryPartnerNote] = useState("");
   const [instrLeaveWithGuard, setInstrLeaveWithGuard] = useState(false);
   const [instrAvoidCalling, setInstrAvoidCalling] = useState(false);
@@ -606,6 +999,8 @@ export default function CheckoutScreen() {
   const [selectedPlatformOfferId, setSelectedPlatformOfferId] = useState<number | null>(null);
   const [selectedMerchantOfferId, setSelectedMerchantOfferId] = useState<number | null>(null);
   const [forceNoAutoOffer, setForceNoAutoOffer] = useState(false);
+  /** True only after user taps Apply / enters coupon — keeps that pick until they remove it. */
+  const [checkoutOfferUserPinned, setCheckoutOfferUserPinned] = useState(false);
   const [currentLocationDisplay, setCurrentLocationDisplay] = useState<{ label: string; fullAddress: string } | null>(null);
   const [currentLocationCoords, setCurrentLocationCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [donationPreset, setDonationPreset] = useState<5 | 10 | 15 | 20 | "custom" | null>(null);
@@ -625,7 +1020,7 @@ export default function CheckoutScreen() {
   /** Latest checkout ETA preview — read in order-success callbacks (mutations defined above useMemo). */
   const checkoutDeliveryEtaRef = useRef({ label: "", etaMaxMinutes: 0 });
 
-  const { data: addresses = [], isLoading: addressesLoading } = useQuery({
+  const { data: addresses = EMPTY_ADDRESSES, isLoading: addressesLoading } = useQuery({
     queryKey: ["addresses"],
     queryFn: () => addressService.getAddresses(),
   });
@@ -702,15 +1097,23 @@ export default function CheckoutScreen() {
   );
 
   const checkoutReceiverSummary = useMemo(() => {
-    const name = selectedAddress?.contactName?.trim() || userProfile?.full_name?.trim() || "";
-    const mobile = selectedAddress?.contactMobile?.trim() || userProfile?.mobile_number?.trim() || "";
-    return formatCheckoutReceiverLine(name, mobile);
-  }, [
-    selectedAddress?.contactName,
-    selectedAddress?.contactMobile,
-    userProfile?.full_name,
-    userProfile?.mobile_number,
-  ]);
+    return formatCheckoutReceiverLine(checkoutReceiverName, checkoutReceiverMobile);
+  }, [checkoutReceiverName, checkoutReceiverMobile]);
+
+  const hasCheckoutReceiverDetails =
+    checkoutReceiverName.trim().length > 0 && checkoutReceiverMobile.trim().length > 0;
+
+  const profileContactName = userProfile?.full_name?.trim() || "";
+  const profileContactMobile = userProfile?.mobile_number?.trim() || "";
+
+  // Every checkout visit: use logged-in profile name + number until the user
+  // manually edits contact for this order. Never prefer address.contact* —
+  // that stores past one-off receivers and caused stale wrong names.
+  useEffect(() => {
+    if (receiverManuallyEditedRef.current) return;
+    if (profileContactName) setCheckoutReceiverName(profileContactName);
+    if (profileContactMobile) setCheckoutReceiverMobile(profileContactMobile);
+  }, [profileContactName, profileContactMobile]);
 
   /** Load saved rider instructions from the selected address (JSON array on customer_addresses). */
   useEffect(() => {
@@ -958,6 +1361,53 @@ export default function CheckoutScreen() {
     staleTime: 0,
   });
 
+  const storeOffersGeo = useMemo(
+    () => ({
+      pincode: liveLocationAddress?.pincode ?? selectedAddress?.pincode ?? null,
+      state: liveLocationAddress?.state ?? selectedAddress?.state ?? null,
+      city: liveLocationAddress?.city ?? selectedAddress?.city ?? null,
+      lat: sessionCoords?.latitude ?? null,
+      lng: sessionCoords?.longitude ?? null,
+    }),
+    [
+      liveLocationAddress?.pincode,
+      liveLocationAddress?.state,
+      liveLocationAddress?.city,
+      selectedAddress?.pincode,
+      selectedAddress?.state,
+      selectedAddress?.city,
+      sessionCoords?.latitude,
+      sessionCoords?.longitude,
+    ]
+  );
+
+  const { data: storeOffersData } = useQuery({
+    queryKey: buildStoreOffersQueryKey(merchantId ?? "", storeOffersGeo),
+    queryFn: () =>
+      offersService.getStoreOffers({
+        storeId: merchantId!,
+        pincode: storeOffersGeo.pincode?.trim() || undefined,
+        state: storeOffersGeo.state?.trim() || undefined,
+        city: storeOffersGeo.city?.trim() || undefined,
+        lat: storeOffersGeo.lat ?? undefined,
+        lng: storeOffersGeo.lng ?? undefined,
+        serviceType: "FOOD",
+      }),
+    enabled: !!merchantId,
+    staleTime: STORE_OFFERS_STALE_MS,
+  });
+
+  const itemOfferById = useMemo(() => {
+    const offers = storeOffersData?.merchant_offers ?? [];
+    if (offers.length === 0 || !merchant?.menu?.length) return new Map();
+    const catalog = merchant.menu.map((m) => ({
+      id: m.id,
+      menuItemId: m.menuItemId ?? null,
+      price: m.price,
+    }));
+    return buildItemOfferDisplayMap(offers, catalog);
+  }, [storeOffersData?.merchant_offers, merchant?.menu]);
+
   useEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
     prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
@@ -1007,6 +1457,22 @@ export default function CheckoutScreen() {
     // syncPricesFromMap reads the latest items via the store getter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [merchant?.menu, syncPricesFromMap]);
+
+  useEffect(() => {
+    if (!merchant?.menu || items.length === 0) return;
+    const eligibleById: Record<string, boolean> = {};
+    for (const line of items) {
+      const baseId = cartItemBaseId(line.menuItemId);
+      const menuItem = findMenuItemByCartBaseId(merchant.menu, baseId);
+      const offer =
+        itemOfferById.get(line.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+      const eligible = computeIsDiscountEligible(menuItem, offer);
+      eligibleById[line.menuItemId] = eligible;
+      eligibleById[baseId] = eligible;
+    }
+    syncDiscountEligibility(eligibleById);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [merchant?.menu, itemOfferById, syncDiscountEligibility, items.length]);
 
   const checkoutCartBannerUrl = useMemo(() => {
     if (!merchant) return null;
@@ -1130,27 +1596,22 @@ export default function CheckoutScreen() {
     [router]
   );
 
-  const updateReceiverContactMutation = useMutation({
-    mutationFn: (args: {
-      id: number;
-      contactName: string | null;
-      contactMobile: string | null;
-    }) => addressService.updateAddress(args.id, { contactName: args.contactName, contactMobile: args.contactMobile }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
-    },
-  });
-
   const openReceiverSheet = useCallback(() => {
     if (!selectedAddress) return;
     setReceiverDraftName(
-      selectedAddress.contactName?.trim() || userProfile?.full_name?.trim() || ""
+      checkoutReceiverName.trim() || profileContactName || ""
     );
     setReceiverDraftMobile(
-      selectedAddress.contactMobile?.trim() || userProfile?.mobile_number?.trim() || ""
+      checkoutReceiverMobile.trim() || profileContactMobile || ""
     );
     setReceiverSheetVisible(true);
-  }, [selectedAddress, userProfile?.full_name, userProfile?.mobile_number]);
+  }, [
+    selectedAddress,
+    checkoutReceiverName,
+    checkoutReceiverMobile,
+    profileContactName,
+    profileContactMobile,
+  ]);
 
   const pickReceiverFromContacts = useCallback(async () => {
     try {
@@ -1175,18 +1636,16 @@ export default function CheckoutScreen() {
     if (!selectedAddress) return;
     const contactName = receiverDraftName.trim() || null;
     const contactMobile = receiverDraftMobile.trim().replace(/\s+/g, "") || null;
-    try {
-      idempotencyKeyRef.current = null;
-      await updateReceiverContactMutation.mutateAsync({
-        id: selectedAddress.id,
-        contactName,
-        contactMobile,
-      });
-      setReceiverSheetVisible(false);
-    } catch {
-      Alert.alert("Could not save", "Please try again.");
+    if (!contactName || !contactMobile) {
+      Alert.alert("Receiver details", "Please enter both name and mobile number.");
+      return;
     }
-  }, [selectedAddress, receiverDraftName, receiverDraftMobile, updateReceiverContactMutation]);
+    // This-order override only — next checkout still seeds from logged-in profile.
+    receiverManuallyEditedRef.current = true;
+    setCheckoutReceiverName(contactName);
+    setCheckoutReceiverMobile(contactMobile);
+    setReceiverSheetVisible(false);
+  }, [selectedAddress, receiverDraftName, receiverDraftMobile]);
 
   const routeDistanceQuery = useQuery({
     queryKey: [
@@ -1224,19 +1683,33 @@ export default function CheckoutScreen() {
     );
   }, [selectedAddress, currentLocationCoords]);
 
-  /** Client-side estimate — checkout-offers prefers server bill subtotal when loaded. */
-  const clientCartSubtotalForOffers = useMemo(
-    () =>
-      items.reduce((s, i) => {
-        const base = cartLineBaseUnitPrice(i);
-        const line = base * i.quantity;
-        const addonLine = (i.addons ?? []).reduce(
-          (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
-          0
-        );
-        return s + line + addonLine;
-      }, 0),
-    [items]
+  /** Full item+addon cart — listing API scales eligible share from this. */
+  const clientFullCartSubtotal = useMemo(() => computeFullCartSubtotal(items), [items]);
+
+  /**
+   * Optimistic checkout-offer base — only lines without item Boost/BOGO.
+   * Never fall back to full cart when every line already has an item promo
+   * (that incorrectly unlocked coupons / missed-offer sheets).
+   */
+  const clientEligibleCheckoutSubtotal = useMemo(
+    () => computeEligibleCheckoutSubtotal(items, itemOfferById),
+    [items, itemOfferById]
+  );
+
+  /**
+   * Debounced cart snapshot — only this (not live `items`) feeds the network-bound
+   * billing/offers queries below, so rapid +/- taps coalesce into one request instead
+   * of one per tap. Everything the user actually SEES (quantity, per-line price, the
+   * optimistic grand total further down) still reacts to live `items` instantly.
+   */
+  const debouncedItems = useDebouncedValue(items, CART_QTY_BILLING_DEBOUNCE_MS);
+  const debouncedClientFullCartSubtotal = useMemo(
+    () => computeFullCartSubtotal(debouncedItems),
+    [debouncedItems]
+  );
+  const debouncedClientEligibleCheckoutSubtotal = useMemo(
+    () => computeEligibleCheckoutSubtotal(debouncedItems, itemOfferById),
+    [debouncedItems, itemOfferById]
   );
 
   const tipValue = useMemo(
@@ -1335,113 +1808,69 @@ export default function CheckoutScreen() {
     [windowHeight]
   );
 
-  const itemsWithSnapshots = useMemo(() => {
-    const baseId = (menuItemId: string) =>
-      menuItemId.includes("_") ? menuItemId.split("_")[0]! : menuItemId;
-    return items.map((i) => {
-      const bid = baseId(i.menuItemId);
-      const menuItem = findMenuItemByCartBaseId(merchant?.menu, bid);
-      const categoryName =
-        (menuItem as { categoryName?: string } | undefined)?.categoryName ??
-        (menuItem as { category_name?: string } | undefined)?.category_name;
-      const rawPack =
-        (menuItem as { packaging_charges?: number; packagingCharges?: number } | undefined)
-          ?.packaging_charges ??
-        (menuItem as { packagingCharges?: number } | undefined)?.packagingCharges;
-      const packNum = rawPack != null ? Number(rawPack) : NaN;
-      const snap: Record<string, unknown> = { isVeg: i.isVeg };
-      if (i.variantName) snap.variant_name = i.variantName;
-      if (i.variantSizeValue) snap.variant_size_value = i.variantSizeValue;
-      if (i.variantSizeUnit) snap.variant_size_unit = i.variantSizeUnit;
-      if (categoryName) snap.category_name = categoryName;
-      if (Number.isFinite(packNum) && packNum > 0) {
-        snap.packaging_enabled = true;
-        snap.packaging_charges = packNum;
-      }
-      return {
-        menuItemId: bid,
-        itemName: i.name,
-        quantity: i.quantity,
-        basePrice: cartLineBaseUnitPrice(i),
-        variantId: i.variantId ?? null,
-        variantName: i.variantName ?? null,
-        addons: (i.addons ?? [])
-          .filter((a) => {
-            const id = String(a.addonId ?? "").trim();
-            return id.length > 0 && id !== "0";
-          })
-          .map((a) => ({
-            addonId: String(a.addonId).trim(),
-            customizationId: a.customizationId ?? null,
-            addonName: a.addonName,
-            addonPrice: a.addonPrice,
-            quantity: a.quantity,
-            addon_size_value: a.addonSizeValue ?? undefined,
-            addon_size_unit: a.addonSizeUnit ?? undefined,
-          })),
-        itemSnapshot: snap,
-      };
-    });
-  }, [items, merchant?.menu]);
+  /**
+   * Order-payload snapshot — ALWAYS built from the live cart, never the debounced one.
+   * This is what actually gets submitted to the server on "Place Order"; it must never
+   * lag behind a quantity tap the user just made.
+   */
+  const itemsWithSnapshots = useMemo(
+    () => buildItemsWithSnapshots(items, merchant?.menu),
+    [items, merchant?.menu]
+  );
+
+  /**
+   * Same snapshot shape, but built from the debounced cart — used ONLY to feed the
+   * billing-preview network call's key/body, so rapid +/- taps coalesce into one
+   * request instead of firing on every tap. Never used for order submission.
+   */
+  const debouncedItemsWithSnapshots = useMemo(
+    () => buildItemsWithSnapshots(debouncedItems, merchant?.menu),
+    [debouncedItems, merchant?.menu]
+  );
 
   const billingCartKey = useMemo(
     () =>
       JSON.stringify(
-        itemsWithSnapshots.map((i) => ({
+        debouncedItemsWithSnapshots.map((i) => ({
           id: i.menuItemId,
           q: i.quantity,
           p: i.basePrice,
           v: i.variantId ?? null,
+          e: i.isDiscountEligible !== false,
           a: (i.addons ?? []).map((ad) => [ad.addonId, ad.quantity, ad.addonPrice]),
         }))
       ),
-    [itemsWithSnapshots]
+    [debouncedItemsWithSnapshots]
   );
 
+  const billingCalculateKeyParams: BillingCalculateKeyParams = {
+    merchantId,
+    addressId: selectedAddress?.id != null ? String(selectedAddress.id) : null,
+    billingCartKey,
+    tipAmount: debouncedTipForBilling,
+    donationAmount: debouncedDonationForBilling,
+    couponCode: appliedCouponCode,
+    selectedPlatformOfferId,
+    selectedMerchantOfferId,
+    forceNoAutoOffer,
+    subscriptionOptIn,
+    subscriptionBillingCycle,
+    subscriptionPlanId: checkoutPlan?.id,
+    deliveryType,
+  };
+
   const billingQuery = useQuery({
-    queryKey: [
-      "billing-calculate",
-      merchantId,
-      selectedAddress?.id,
-      billingCartKey,
-      debouncedTipForBilling,
-      debouncedDonationForBilling,
-      appliedCouponCode,
-      selectedPlatformOfferId,
-      selectedMerchantOfferId,
-      forceNoAutoOffer,
-      subscriptionOptIn,
-      subscriptionBillingCycle,
-      checkoutPlan?.id,
-      deliveryType,
-    ],
+    queryKey: buildBillingCalculateQueryKey(billingCalculateKeyParams),
     queryFn: ({ signal }) =>
       billingService.calculateBill(
-        {
-          merchantId: merchantId!,
-          addressId: String(selectedAddress!.id),
-          items: itemsWithSnapshots,
-          tipAmount: debouncedTipForBilling,
-          donationAmount: debouncedDonationForBilling,
-          couponCode: appliedCouponCode ?? undefined,
-          selectedPlatformOfferId,
-          selectedMerchantOfferId,
-          forceNoAutoOffer,
-          serviceType: "FOOD",
-          subscriptionOptIn: showSubscriptionPromo ? subscriptionOptIn : undefined,
-          subscriptionPlanId: showSubscriptionPromo && subscriptionOptIn ? checkoutPlan?.id : undefined,
-          subscriptionBillingCycle:
-            showSubscriptionPromo && subscriptionOptIn ? subscriptionBillingCycle : undefined,
-          deliveryType,
-          ...(selectedAddress?.city != null && String(selectedAddress.city).trim() !== ""
-            ? { cityName: String(selectedAddress.city).trim() }
-            : {}),
-          ...(merchant?.latitude != null &&
-            merchant?.longitude != null && {
-              pickupLat: Number(merchant.latitude),
-              pickupLon: Number(merchant.longitude),
-            }),
-        },
+        buildBillingCalculateParams({
+          ...billingCalculateKeyParams,
+          items: debouncedItemsWithSnapshots,
+          showSubscriptionPromo,
+          cityName: selectedAddress?.city,
+          pickupLat: merchant?.latitude != null ? Number(merchant.latitude) : undefined,
+          pickupLon: merchant?.longitude != null ? Number(merchant.longitude) : undefined,
+        }),
         { signal }
       ),
     enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
@@ -1461,15 +1890,32 @@ export default function CheckoutScreen() {
 
   const serverBill = billingQuery.data ?? null;
 
-  /** Authoritative item + add-on subtotal for offer min-cart gates (matches POST /billing/calculate). */
+  /**
+   * Offer Engine v2 — prefer server eligibleSubtotal (never invent from client flags).
+   * While loading, use only Boost/BOGO-free lines — never full cart.
+   */
   const cartSubtotalForOffers = useMemo(() => {
-    if (serverBill) {
-      const serverItems = (serverBill.itemTotal ?? 0) + (serverBill.addonTotal ?? 0);
-      if (serverItems > 0.005) return serverItems;
-    }
-    return clientCartSubtotalForOffers;
-  }, [serverBill, clientCartSubtotalForOffers]);
+    const fromBill = serverBill?.eligibleSubtotal;
+    if (fromBill != null && Number.isFinite(fromBill) && fromBill >= 0) return fromBill;
+    return clientEligibleCheckoutSubtotal;
+  }, [serverBill?.eligibleSubtotal, clientEligibleCheckoutSubtotal]);
 
+  const serverLineEligibilityById = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        isDiscountEligible: boolean;
+        ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+      }
+    >();
+    for (const row of serverBill?.orderLineEligibility ?? []) {
+      map.set(String(row.menuItemId), {
+        isDiscountEligible: row.isDiscountEligible,
+        ineligibilityReason: row.ineligibilityReason ?? null,
+      });
+    }
+    return map;
+  }, [serverBill?.orderLineEligibility]);
   /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
   const serverDistanceKm = serverBill?.distanceKm ?? null;
   /** Distance shown to user in checkout, always backend-computed. */
@@ -1488,12 +1934,151 @@ export default function CheckoutScreen() {
     [serverBill?.discounts]
   );
 
+  /** Offer IDs that are menu Boost/BOGO — folded into Item total strike, not listed again. */
+  const itemSurfaceMerchantOfferIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const o of storeOffersData?.merchant_offers ?? []) {
+      const type = String(o.offer_type ?? "").toUpperCase();
+      if (type === "BOGO" || type === "BUY_X_GET_Y" || type === "BUY_N_GET_M") {
+        ids.add(o.id);
+        continue;
+      }
+      if (o.conditions_mode === "precision") continue;
+      if (
+        type === "CART_PERCENTAGE" ||
+        type === "CART_FLAT" ||
+        type === "FREE_DELIVERY" ||
+        type === "COUPON" ||
+        type === "TIERED" ||
+        type === "BUNDLE"
+      ) {
+        continue;
+      }
+      if (type === "PERCENTAGE" || type === "FLAT") {
+        if (o.conditions_mode === "boost" || o.conditions_mode == null) ids.add(o.id);
+      }
+    }
+    return ids;
+  }, [storeOffersData?.merchant_offers]);
+
+  const merchantItemDiscountTotal = useMemo(() => {
+    let sum = 0;
+    for (const d of visibleDiscounts) {
+      const id = d.meta?.merchantOfferId;
+      if (typeof id === "number" && itemSurfaceMerchantOfferIds.has(id)) {
+        sum += d.amount ?? 0;
+      }
+    }
+    return sum;
+  }, [visibleDiscounts, itemSurfaceMerchantOfferIds]);
+
+  /**
+   * Item total after Boost — whole rupees, same as menu "Get for" / line prices.
+   * The billing API's own item total (net of item-surface discounts) is authoritative
+   * once available; the catalog/offer-config estimate below only covers the brief
+   * window before the first billing response resolves, so the item list doesn't
+   * flash from struck to unstruck prices while billingQuery is still in flight.
+   */
+  const itemTotalNetOverride = useMemo(() => {
+    if (serverBill && merchantItemDiscountTotal > 0.05) {
+      return Math.max(0, Math.round(serverBill.itemTotal - merchantItemDiscountTotal));
+    }
+
+    let hasOfferLine = false;
+    let net = 0;
+    for (const item of items) {
+      const baseId = cartItemBaseId(item.menuItemId);
+      const itemOffer =
+        itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+      const catalogBase =
+        item.basePrice != null && item.basePrice > 0
+          ? item.basePrice
+          : cartLineBaseUnitPrice(item);
+      const addonPerUnit = cartAddonTotalPerUnit(item);
+      const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
+      if (boostBase != null && boostBase < catalogBase - 0.001) {
+        hasOfferLine = true;
+        net += Math.round(boostBase + addonPerUnit) * item.quantity;
+      } else {
+        net += Math.round(catalogBase + addonPerUnit) * item.quantity;
+      }
+    }
+    return hasOfferLine ? Math.max(0, Math.round(net)) : null;
+  }, [items, itemOfferById, serverBill, merchantItemDiscountTotal]);
+
+  /**
+   * Per Boost/item-deal offerId → rupees saved, read straight from the billing API
+   * response (same source + filter as merchantItemDiscountTotal above) — never
+   * re-derived from catalog price + offer config, which can silently drift from
+   * what the billing engine actually computed (caps, rounding, targeting).
+   */
+  const itemDealSavingsByOfferId = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const d of visibleDiscounts) {
+      const id = d.meta?.merchantOfferId;
+      if (typeof id === "number" && itemSurfaceMerchantOfferIds.has(id)) {
+        map[id] = (map[id] ?? 0) + (d.amount ?? 0);
+      }
+    }
+    return map;
+  }, [visibleDiscounts, itemSurfaceMerchantOfferIds]);
+
+  const billVisibleDiscounts = useMemo(() => {
+    if (itemSurfaceMerchantOfferIds.size === 0) return visibleDiscounts;
+    return visibleDiscounts.filter((d) => {
+      const id = d.meta?.merchantOfferId;
+      if (typeof id === "number" && itemSurfaceMerchantOfferIds.has(id)) return false;
+      return true;
+    });
+  }, [visibleDiscounts, itemSurfaceMerchantOfferIds]);
+
   const { subscriptionBenefits: subscriptionBenefitDiscounts, checkoutPromos: checkoutPromoDiscounts } =
     useMemo(() => splitCheckoutDiscounts(visibleDiscounts), [visibleDiscounts]);
+
+  /**
+   * checkoutPromoDiscounts includes item-surface Boost/BOGO (always-on, independent of
+   * the "exactly one cart-level promo" rule) — every consumer that needs "the currently
+   * active cart-level promo" (Precision / Platform / coupon) must use THIS list instead,
+   * or an always-on Boost discount (usually larger) wins the "primary"/id lookups and
+   * masks whichever cart-level offer is actually selected. Single source of truth for
+   * that filter — do not re-implement it inline elsewhere.
+   */
+  const cartLevelCheckoutPromoDiscounts = useMemo(
+    () =>
+      checkoutPromoDiscounts.filter((d) => {
+        const mid = d.meta?.merchantOfferId;
+        return !(typeof mid === "number" && itemSurfaceMerchantOfferIds.has(mid));
+      }),
+    [checkoutPromoDiscounts, itemSurfaceMerchantOfferIds]
+  );
 
   const subscriptionBenefitSavings = useMemo(
     () => subscriptionBenefitDiscounts.reduce((sum, d) => sum + (d.amount ?? 0), 0),
     [subscriptionBenefitDiscounts]
+  );
+
+  /** Debounced — this query is read-only (fetches available offers, doesn't submit
+   * anything), so it's safe to fully key off the debounced cart like billingQuery. */
+  const checkoutCartMenuItemIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const line of debouncedItems) {
+      const raw = String(line.menuItemId ?? "").trim();
+      if (!raw) continue;
+      const base = cartItemBaseId(raw) || raw;
+      const qty = Math.max(1, Math.floor(Number(line.quantity) || 1));
+      // Repeat id by qty so checkout-offers catalog share matches cart (API uses qty=1 per id token).
+      for (let i = 0; i < qty; i++) ids.push(base);
+    }
+    return ids;
+  }, [debouncedItems]);
+
+  const checkoutCartQtyFingerprint = useMemo(
+    () =>
+      debouncedItems
+        .map((i) => `${cartItemBaseId(i.menuItemId)}:${i.quantity}`)
+        .sort()
+        .join("|"),
+    [debouncedItems]
   );
 
   const checkoutOffersQuery = useQuery({
@@ -1501,31 +2086,60 @@ export default function CheckoutScreen() {
       "billing-checkout-offers",
       merchantId,
       selectedAddress?.id,
-      cartSubtotalForOffers,
+      debouncedClientFullCartSubtotal,
+      debouncedClientEligibleCheckoutSubtotal,
+      checkoutCartQtyFingerprint,
       livePincode,
       liveState,
       subscriptionBenefitSavings,
-      selectedPlatformOfferId,
-      selectedMerchantOfferId,
+      // selectedPlatformOfferId/selectedMerchantOfferId intentionally excluded — the
+      // request (billingService.getCheckoutOffers below) never sends them, so keying on
+      // them only forced pointless refetches every time the offer selection changed.
+      checkoutCartMenuItemIds.join(","),
     ],
-    queryFn: () =>
-      billingService.getCheckoutOffers({
+    queryFn: async () => {
+      const cartSubtotal = debouncedClientFullCartSubtotal;
+      const data = await billingService.getCheckoutOffers({
         merchantId: merchantId!,
         addressId: String(selectedAddress!.id),
-        cartSubtotal: cartSubtotalForOffers,
+        cartSubtotal,
         serviceType: "FOOD",
         pincode: livePincode,
         state: liveState,
         city: liveCity,
-      }),
-    enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
-    staleTime: 60 * 1000,
+        menuItemIds: checkoutCartMenuItemIds,
+      });
+      // Live unlock math must use eligible checkout base (not full cart).
+      return { ...data, fetchedCartSubtotal: debouncedClientEligibleCheckoutSubtotal };
+    },
+    enabled: !!merchantId && !!selectedAddress && items.length > 0,
+    staleTime: couponSheetVisible ? 0 : 5_000,
+    placeholderData: keepPreviousData,
+    refetchOnMount: "always",
   });
 
+  /**
+   * Live eligible checkout base (excludes item-deal lines). Prefer client over listing
+   * `eligibleSubtotal` so GatiCash / unlock UI don't use a stale or qty-skewed server share.
+   */
+  const cartSubtotalForOffersResolved = useMemo(() => {
+    if (clientEligibleCheckoutSubtotal > 0.005) return clientEligibleCheckoutSubtotal;
+    const fromOffers = checkoutOffersQuery.data?.eligibleSubtotal;
+    if (fromOffers != null && Number.isFinite(fromOffers) && fromOffers >= 0) return fromOffers;
+    return cartSubtotalForOffers;
+  }, [
+    clientEligibleCheckoutSubtotal,
+    checkoutOffersQuery.data?.eligibleSubtotal,
+    cartSubtotalForOffers,
+  ]);
+
+  /** At least one cart rupee can receive checkout coupons / platform cart offers. */
+  const hasEligibleCheckoutOfferBase = cartSubtotalForOffersResolved > 0.005;
+
   const primaryCheckoutDiscount = useMemo(() => {
-    if (checkoutPromoDiscounts.length === 0) return null;
-    return [...checkoutPromoDiscounts].sort((a, b) => b.amount - a.amount)[0];
-  }, [checkoutPromoDiscounts]);
+    if (cartLevelCheckoutPromoDiscounts.length === 0) return null;
+    return [...cartLevelCheckoutPromoDiscounts].sort((a, b) => b.amount - a.amount)[0];
+  }, [cartLevelCheckoutPromoDiscounts]);
 
   const couponDiscountAmount = useMemo(() => {
     if (!appliedCouponCode || !primaryCheckoutDiscount) return 0;
@@ -1535,28 +2149,117 @@ export default function CheckoutScreen() {
     return primaryCheckoutDiscount.amount;
   }, [primaryCheckoutDiscount, appliedCouponCode, appliedCouponLabel]);
 
-  const checkoutSavingsTotal =
-    serverBill && serverBill.discountTotal > 0.005 ? serverBill.discountTotal : 0;
-
-  const missedOffersFingerprint = useMemo(
-    () =>
-      listMissedOfferWalletCandidates(checkoutOffersQuery.data, cartSubtotalForOffers)
-        .map((c) => `${c.source}:${c.id}`)
-        .join("|"),
-    [checkoutOffersQuery.data, cartSubtotalForOffers]
+  const itemDealSavingsTotal = useMemo(
+    () => Object.values(itemDealSavingsByOfferId).reduce((sum, n) => sum + n, 0),
+    [itemDealSavingsByOfferId]
   );
 
-  const missedOfferWalletComp = useMemo(
-    () =>
-      resolveMissedOfferWalletCompensation(
-        checkoutOffersQuery.data,
-        merchantId,
-        cartSubtotalForOffers,
-        deliveryType,
-        selectedMissedOfferKey
-      ),
-    [checkoutOffersQuery.data, merchantId, cartSubtotalForOffers, deliveryType, selectedMissedOfferKey]
-  );
+  /** Match on-screen bill discount rows + item Boost/Get-for savings (folded out of bill list). */
+  const checkoutSavingsTotal = useMemo(() => {
+    const billSave = billVisibleDiscounts.reduce((s, d) => s + (Number(d.amount) || 0), 0);
+    const itemSave = Math.max(merchantItemDiscountTotal, itemDealSavingsTotal);
+    const subSave = subscriptionBenefitSavings;
+    return Math.max(0, Math.round((billSave + itemSave + subSave) * 100) / 100);
+  }, [
+    billVisibleDiscounts,
+    merchantItemDiscountTotal,
+    itemDealSavingsTotal,
+    subscriptionBenefitSavings,
+  ]);
+
+  const missedOffersFingerprint = useMemo(() => {
+    if (!hasEligibleCheckoutOfferBase) return "";
+    return listMissedOfferWalletCandidates(
+      checkoutOffersQuery.data,
+      cartSubtotalForOffersResolved
+    )
+      .map((c) => `${c.source}:${c.id}`)
+      .join("|");
+  }, [
+    hasEligibleCheckoutOfferBase,
+    checkoutOffersQuery.data,
+    cartSubtotalForOffersResolved,
+  ]);
+
+  const missedOfferWalletComp = useMemo(() => {
+    if (!hasEligibleCheckoutOfferBase) return null;
+    return resolveMissedOfferWalletCompensation(
+      checkoutOffersQuery.data,
+      merchantId,
+      cartSubtotalForOffersResolved,
+      deliveryType,
+      selectedMissedOfferKey
+    );
+  }, [
+    hasEligibleCheckoutOfferBase,
+    checkoutOffersQuery.data,
+    merchantId,
+    cartSubtotalForOffersResolved,
+    deliveryType,
+    selectedMissedOfferKey,
+  ]);
+
+  /**
+   * Best eligible store cart / precision offer — auto-apply + hide GatiCash unlock card.
+   * Any non-item SPECIAL OFFERS row (not coupon-gated) qualifies — not only conditionsMode=precision.
+   */
+  const eligibleStorePrecisionOffer = useMemo(() => {
+    const offers = checkoutOffersQuery.data;
+    if (!offers || !hasEligibleCheckoutOfferBase) return null;
+
+    const isCartSheetOffer = (o: {
+      displaySurface?: string | null;
+      autoApply?: boolean;
+      requiresCouponCode?: string | null;
+    }) =>
+      o.displaySurface !== "item" &&
+      o.autoApply !== false &&
+      !o.requiresCouponCode;
+
+    const score = (o: { estimatedSavingsInr?: number | null }) => o.estimatedSavingsInr ?? 0;
+
+    const fromEligible = (offers.merchantOffers ?? []).filter(isCartSheetOffer);
+    if (fromEligible.length > 0) {
+      // Prefer precision-tagged rows when several cart offers exist.
+      const precisionFirst = [...fromEligible].sort((a, b) => {
+        const ap = isMerchantPrecisionOfferBlockedFromGatiCash(a) ? 1 : 0;
+        const bp = isMerchantPrecisionOfferBlockedFromGatiCash(b) ? 1 : 0;
+        if (bp !== ap) return bp - ap;
+        return score(b) - score(a);
+      });
+      return precisionFirst[0] ?? null;
+    }
+
+    const fetched = offers.fetchedCartSubtotal ?? cartSubtotalForOffersResolved;
+    const liveReady = (offers.merchantOffersIneligible ?? [])
+      .filter(isCartSheetOffer)
+      .map((o) => {
+        const gap = liveUnlockGapInr({
+          reason: o.reason,
+          lockReason: o.lockReason,
+          minOrderAmount: o.minOrderAmount,
+          cartSubtotal: cartSubtotalForOffersResolved,
+          fetchedCartSubtotal: fetched,
+        });
+        return { o, gap };
+      })
+      .filter((x) => x.gap <= 0)
+      .map((x) => x.o);
+    if (liveReady.length === 0) return null;
+    return [...liveReady].sort((a, b) => score(b) - score(a))[0] ?? null;
+  }, [
+    checkoutOffersQuery.data,
+    hasEligibleCheckoutOfferBase,
+    cartSubtotalForOffersResolved,
+  ]);
+
+  const hideGatiCashUnlockCard = Boolean(eligibleStorePrecisionOffer) && !missedOfferWalletPending;
+
+  // Auto-apply of the best eligible merchant Precision offer happens server-side
+  // (checkoutExclusiveOffer.ts, whenever selectedMerchantOfferId/selectedPlatformOfferId
+  // are both null) — the client never soft-selects/echoes an id back into billingQuery's
+  // params for the auto case. This avoids both a guaranteed second billing-calculate
+  // round trip and a stale client-held id going silently out of sync with eligibility.
 
   useEffect(() => {
     pendingMissedOfferWalletRef.current = null;
@@ -1570,8 +2273,10 @@ export default function CheckoutScreen() {
     if (missedOfferWalletPending && pendingMissedOfferWalletRef.current) {
       return pendingMissedOfferWalletRef.current;
     }
+    // Store precision eligible/applied → hide unlock card (change via offers sheet).
+    if (hideGatiCashUnlockCard) return null;
     return missedOfferWalletComp;
-  }, [missedOfferWalletPending, missedOfferWalletComp]);
+  }, [missedOfferWalletPending, missedOfferWalletComp, hideGatiCashUnlockCard]);
 
   const missedOfferWalletPendingAmount = useMemo(() => {
     if (!missedOfferWalletPending || !displayMissedOfferWalletComp) return 0;
@@ -1579,11 +2284,12 @@ export default function CheckoutScreen() {
   }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
 
   const openMissedOfferUnlockSheet = useCallback(() => {
+    if (!hasEligibleCheckoutOfferBase) return;
     if (missedOfferWalletComp?.key) {
       setSelectedMissedOfferKey(missedOfferWalletComp.key);
     }
     setMissedOfferSheetVisible(true);
-  }, [missedOfferWalletComp?.key]);
+  }, [hasEligibleCheckoutOfferBase, missedOfferWalletComp?.key]);
 
   const handleMissedOfferAddMoreItems = useCallback(() => {
     setMissedOfferSheetVisible(false);
@@ -1596,7 +2302,14 @@ export default function CheckoutScreen() {
 
   const handleUnlockMissedOfferFromSheet = useCallback(
     (source: "platform" | "merchant", offerId: number) => {
-      if (!merchantId) return;
+      if (!merchantId || !hasEligibleCheckoutOfferBase) return;
+      // Store precision offers cannot be unlocked with GatiCash.
+      if (source === "merchant") {
+        const row =
+          checkoutOffersQuery.data?.merchantOffersIneligible?.find((o) => o.id === offerId) ??
+          checkoutOffersQuery.data?.merchantOffers?.find((o) => o.id === offerId);
+        if (row && isMerchantPrecisionOfferBlockedFromGatiCash(row)) return;
+      }
       const key = missedOfferKeyForCandidate({ source, id: offerId }, merchantId);
 
       if (missedOfferWalletPending) {
@@ -1612,11 +2325,20 @@ export default function CheckoutScreen() {
         const nextComp = resolveMissedOfferWalletCompensation(
           checkoutOffersQuery.data,
           merchantId,
-          cartSubtotalForOffers,
+          cartSubtotalForOffersResolved,
           deliveryType,
           key
         );
         if (!nextComp) return;
+
+        // One checkout promo at a time — drop coupon / platform / merchant (membership stays).
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+        setSelectedPlatformOfferId(null);
+        setSelectedMerchantOfferId(null);
+        setForceNoAutoOffer(true);
+        setCheckoutOfferUserPinned(false);
+        setCouponCelebrationVisible(false);
 
         pendingMissedOfferWalletRef.current = nextComp;
         setSelectedMissedOfferKey(key);
@@ -1633,26 +2355,37 @@ export default function CheckoutScreen() {
     },
     [
       merchantId,
+      hasEligibleCheckoutOfferBase,
       missedOfferWalletPending,
       authSession,
       checkoutOffersQuery.data,
-      cartSubtotalForOffers,
+      cartSubtotalForOffersResolved,
       deliveryType,
     ]
   );
 
   const handleSelectMissedOfferWallet = useCallback(() => {
+    if (!hasEligibleCheckoutOfferBase) return;
     if (!missedOfferWalletComp || missedOfferWalletPending) return;
     if (!authSession) {
       Alert.alert("Sign in required", "Please sign in to add GatiCash for this offer.");
       return;
     }
+    // One checkout promo at a time — drop coupon / platform / merchant (membership stays).
+    setAppliedCouponCode(null);
+    setAppliedCouponLabel(null);
+    setSelectedPlatformOfferId(null);
+    setSelectedMerchantOfferId(null);
+    setForceNoAutoOffer(true);
+    setCheckoutOfferUserPinned(false);
+    setCouponCelebrationVisible(false);
+
     pendingMissedOfferWalletRef.current = missedOfferWalletComp;
     setMissedOfferWalletPending(true);
     setSelectedMissedOfferKey(missedOfferWalletComp.key);
     setMissedOfferCelebration(missedOfferWalletComp);
     setMissedOfferSheetVisible(false);
-  }, [missedOfferWalletComp, missedOfferWalletPending, authSession]);
+  }, [hasEligibleCheckoutOfferBase, missedOfferWalletComp, missedOfferWalletPending, authSession]);
 
   const handleRemoveMissedOfferWallet = useCallback(() => {
     pendingMissedOfferWalletRef.current = null;
@@ -1660,6 +2393,8 @@ export default function CheckoutScreen() {
     setSelectedMissedOfferKey(null);
     setMissedOfferSheetVisible(false);
     setMissedOfferCelebration(null);
+    setForceNoAutoOffer(false);
+    setCheckoutOfferUserPinned(false);
   }, []);
 
   const fulfillPendingMissedOfferWallet = useCallback(async () => {
@@ -1674,25 +2409,25 @@ export default function CheckoutScreen() {
   }, [checkoutOffersQuery.data?.coupons, appliedCouponCode]);
 
   const appliedPlatformOfferId = useMemo(() => {
-    for (const d of checkoutPromoDiscounts) {
+    for (const d of cartLevelCheckoutPromoDiscounts) {
       const id = d.meta?.platformOfferId;
       if (typeof id === "number" && id > 0) return id;
     }
-    return billingQuery.isFetching ? selectedPlatformOfferId : null;
-  }, [checkoutPromoDiscounts, billingQuery.isFetching, selectedPlatformOfferId]);
+    return selectedPlatformOfferId;
+  }, [cartLevelCheckoutPromoDiscounts, selectedPlatformOfferId]);
 
   const appliedMerchantOfferId = useMemo(() => {
-    for (const d of checkoutPromoDiscounts) {
+    for (const d of cartLevelCheckoutPromoDiscounts) {
       const id = d.meta?.merchantOfferId;
       if (typeof id === "number" && id > 0) return id;
     }
-    return billingQuery.isFetching ? selectedMerchantOfferId : null;
-  }, [checkoutPromoDiscounts, billingQuery.isFetching, selectedMerchantOfferId]);
+    return selectedMerchantOfferId;
+  }, [cartLevelCheckoutPromoDiscounts, selectedMerchantOfferId]);
 
   const appliedDiscountRows = useMemo(
     () =>
       (primaryCheckoutDiscount ? [primaryCheckoutDiscount] : []).map((d) => ({
-        label: d.label,
+        label: friendlyCheckoutDiscountLabel(d.label),
         amount: d.amount,
         platformOfferId:
           typeof d.meta?.platformOfferId === "number" ? (d.meta.platformOfferId as number) : null,
@@ -1712,8 +2447,12 @@ export default function CheckoutScreen() {
   );
 
   const offersAppliedHeadline = useMemo(() => {
+    if (!hasEligibleCheckoutOfferBase) {
+      return "Item deals already applied — checkout coupons not available";
+    }
+
     if (missedOfferWalletPending && displayMissedOfferWalletComp) {
-      return `${displayMissedOfferWalletComp.offerTitle} unlocked`;
+      return `${friendlyCheckoutDiscountLabel(displayMissedOfferWalletComp.offerTitle)} unlocked`;
     }
 
     const subLabel = subscriptionBenefitDiscounts[0]?.label;
@@ -1721,13 +2460,14 @@ export default function CheckoutScreen() {
 
     if (primaryCheckoutDiscount) {
       const promoSave = primaryCheckoutDiscount.amount;
+      const promoLabel = friendlyCheckoutDiscountLabel(primaryCheckoutDiscount.label);
       if (subSave > 0.005 && subLabel) {
-        return `You saved ₹${Math.round(promoSave + subSave)} with ${primaryCheckoutDiscount.label} + free delivery`;
+        return `You saved ₹${Math.round(promoSave + subSave)} with ${promoLabel} + free delivery`;
       }
       if (promoSave > 0.005) {
-        return `You saved ₹${Math.round(promoSave)} with ${primaryCheckoutDiscount.label}`;
+        return `You saved ₹${Math.round(promoSave)} with ${promoLabel}`;
       }
-      return `${primaryCheckoutDiscount.label} applied!`;
+      return `${promoLabel} applied!`;
     }
 
     if (subSave > 0.005 && subLabel) {
@@ -1735,7 +2475,7 @@ export default function CheckoutScreen() {
     }
 
     if (appliedCouponCode) {
-      return `${appliedCouponLabel ?? appliedCouponCode} applied`;
+      return `${friendlyCheckoutDiscountLabel(appliedCouponLabel ?? appliedCouponCode)} applied`;
     }
 
     if (featuredCoupon) {
@@ -1744,6 +2484,7 @@ export default function CheckoutScreen() {
 
     return "Apply a coupon to save on this order";
   }, [
+    hasEligibleCheckoutOfferBase,
     primaryCheckoutDiscount,
     subscriptionBenefitDiscounts,
     subscriptionBenefitSavings,
@@ -1770,104 +2511,122 @@ export default function CheckoutScreen() {
   const hasCheckoutOfferSavings =
     hasAppliedCheckoutPromo || subscriptionBenefitSavings > 0.005 || hasMissedOfferUnlocked;
 
-  /** Align coupon/offer picker with server bill — one checkout promo at a time (subscription free delivery stacks). */
+  /**
+   * Reconcile a USER-PINNED promo (set only by applyCouponCode/applyPlatformOfferById/
+   * applyMerchantOfferById below) against the server bill. Auto mode never writes
+   * selectedPlatformOfferId/selectedMerchantOfferId here — those stay null by
+   * construction, and the backend re-picks the best eligible merchant Precision offer
+   * fresh on every billing-calculate call (never platform). The applied-offer display
+   * (bill summary, chip, offers-sheet "Applied" badge) reads serverBill.discounts
+   * directly, so there is nothing to mirror back for the auto case.
+   */
   useEffect(() => {
     if (!serverBill || billingQuery.isFetching) return;
+    if (!hasEligibleCheckoutOfferBase) return;
 
-    const { checkoutPromos } = splitCheckoutDiscounts(serverBill.discounts ?? []);
-    if (checkoutPromos.length === 0) {
-      if (forceNoAutoOffer) {
-        if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
-        if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
+    // GatiCash unlock is the active checkout promo — don't re-attach coupon/platform/merchant.
+    if (missedOfferWalletPending) {
+      if (appliedCouponCode) {
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+      }
+      if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
+      if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
+      setCheckoutOfferUserPinned(false);
+      return;
+    }
+
+    if (!checkoutOfferUserPinned) return;
+
+    // Never sync Boost/BOGO (item-surface) into selectedMerchantOfferId — that drops cart precision.
+    const checkoutPromos = cartLevelCheckoutPromoDiscounts;
+    const primary =
+      checkoutPromos.length > 0 ? [...checkoutPromos].sort((a, b) => b.amount - a.amount)[0] : null;
+
+    if (selectedPlatformOfferId != null) {
+      const platformId =
+        primary && typeof primary.meta?.platformOfferId === "number"
+          ? (primary.meta.platformOfferId as number)
+          : null;
+      if (platformId != null) {
+        if (selectedPlatformOfferId !== platformId) setSelectedPlatformOfferId(platformId);
+        return;
+      }
+      // Only drop the pin once checkoutOffersQuery confirms it's genuinely gone — a
+      // single bill response with no match can be a transient debounce-window blip.
+      const stillListed = (checkoutOffersQuery.data?.platformOffers ?? []).some(
+        (o) => o.id === selectedPlatformOfferId
+      );
+      if (!stillListed && !checkoutOffersQuery.isFetching) {
+        setSelectedPlatformOfferId(null);
+        setCheckoutOfferUserPinned(false);
+        setCouponApplyError("Your platform offer is no longer available and was removed.");
+      }
+      return;
+    }
+
+    if (selectedMerchantOfferId != null) {
+      const merchantId =
+        primary && typeof primary.meta?.merchantOfferId === "number"
+          ? (primary.meta.merchantOfferId as number)
+          : null;
+      if (merchantId != null) {
+        // Backend may have fallen back to a different eligible merchant offer — follow it.
+        if (selectedMerchantOfferId !== merchantId) setSelectedMerchantOfferId(merchantId);
         if (appliedCouponCode) {
           setAppliedCouponCode(null);
           setAppliedCouponLabel(null);
         }
         return;
       }
-
-      // Membership free delivery is not a checkout promo — never keep ghost coupon codes.
-      if (appliedCouponCode) {
-        setAppliedCouponCode(null);
-        setAppliedCouponLabel(null);
-      }
-
-      if (subscriptionBenefitDiscounts.length === 0) {
-        if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
-        if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
+      const stillListed = (checkoutOffersQuery.data?.merchantOffers ?? []).some(
+        (o) => o.id === selectedMerchantOfferId
+      );
+      if (!stillListed && !checkoutOffersQuery.isFetching) {
+        setSelectedMerchantOfferId(null);
+        setCheckoutOfferUserPinned(false);
+        setCouponApplyError("Your store offer is no longer available and was removed.");
       }
       return;
     }
 
-    const primary = [...checkoutPromos].sort((a, b) => b.amount - a.amount)[0];
-    if (isSubscriptionBenefitDiscount(primary)) return;
-
-    const platformId =
-      typeof primary.meta?.platformOfferId === "number" ? (primary.meta.platformOfferId as number) : null;
-    const merchantId =
-      typeof primary.meta?.merchantOfferId === "number" ? (primary.meta.merchantOfferId as number) : null;
-    const couponCode =
-      typeof primary.meta?.code === "string"
-        ? String(primary.meta.code).trim()
-        : primary.label.replace(/^coupon\s+/i, "").trim();
-
-    if (platformId != null) {
-      if (selectedPlatformOfferId !== platformId) setSelectedPlatformOfferId(platformId);
-      if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
-      if (appliedCouponCode) {
+    // Pinned coupon only (no platform/merchant id).
+    if (appliedCouponCode) {
+      const couponApplied = checkoutPromos.some((d) => !isSubscriptionBenefitDiscount(d));
+      if (!couponApplied) {
         setAppliedCouponCode(null);
         setAppliedCouponLabel(null);
+        setCheckoutOfferUserPinned(false);
       }
-      setForceNoAutoOffer(false);
-      return;
-    }
-
-    if (merchantId != null) {
-      if (selectedMerchantOfferId !== merchantId) setSelectedMerchantOfferId(merchantId);
-      if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
-      if (appliedCouponCode) {
-        setAppliedCouponCode(null);
-        setAppliedCouponLabel(null);
-      }
-      setForceNoAutoOffer(false);
-      return;
-    }
-
-    if (couponCode && !isSubscriptionBenefitDiscount(primary)) {
-      if (appliedCouponCode?.toUpperCase() !== couponCode.toUpperCase()) {
-        setAppliedCouponCode(couponCode);
-        setAppliedCouponLabel(couponCode);
-      }
-      if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
-      if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
-      setForceNoAutoOffer(false);
     }
   }, [
     serverBill,
     billingQuery.isFetching,
     billingQuery.dataUpdatedAt,
+    hasEligibleCheckoutOfferBase,
     selectedPlatformOfferId,
     selectedMerchantOfferId,
     appliedCouponCode,
-    forceNoAutoOffer,
-    subscriptionBenefitDiscounts.length,
+    checkoutOfferUserPinned,
+    missedOfferWalletPending,
+    cartLevelCheckoutPromoDiscounts,
+    checkoutOffersQuery.data,
+    checkoutOffersQuery.isFetching,
   ]);
 
-  /** Surface when an explicitly picked platform/store promo did not land on the bill. */
+  /** Surface when a user-pinned platform/store promo did not land on this bill (transient). */
   useEffect(() => {
     if (!serverBill || billingQuery.isFetching) return;
-    const { checkoutPromos } = splitCheckoutDiscounts(serverBill.discounts ?? []);
+    const checkoutPromos = cartLevelCheckoutPromoDiscounts;
     if (selectedPlatformOfferId != null) {
       const applied = checkoutPromos.some(
         (d) =>
           typeof d.meta?.platformOfferId === "number" &&
           d.meta.platformOfferId === selectedPlatformOfferId
       );
-      if (!applied) {
-        setCouponApplyError("This offer could not be applied. Check minimum order or try another offer.");
-      } else {
-        setCouponApplyError(null);
-      }
+      setCouponApplyError(
+        applied ? null : "This offer could not be applied. Check minimum order or try another offer."
+      );
       return;
     }
     if (selectedMerchantOfferId != null) {
@@ -1876,11 +2635,9 @@ export default function CheckoutScreen() {
           typeof d.meta?.merchantOfferId === "number" &&
           d.meta.merchantOfferId === selectedMerchantOfferId
       );
-      if (!applied) {
-        setCouponApplyError("This store offer could not be applied. Check eligibility or try another offer.");
-      } else {
-        setCouponApplyError(null);
-      }
+      setCouponApplyError(
+        applied ? null : "This store offer could not be applied. Check eligibility or try another offer."
+      );
     }
   }, [
     serverBill,
@@ -1888,39 +2645,62 @@ export default function CheckoutScreen() {
     billingQuery.dataUpdatedAt,
     selectedPlatformOfferId,
     selectedMerchantOfferId,
+    cartLevelCheckoutPromoDiscounts,
   ]);
 
   const applyCouponCode = useCallback((code: string, label?: string) => {
+    if (!hasEligibleCheckoutOfferBase) {
+      setCouponApplyError("Add items without item deals to use checkout offers");
+      return;
+    }
     const trimmed = code.trim();
     if (!trimmed) return;
     setCouponApplyError(null);
+    // Replace any other checkout promo (platform / merchant / GatiCash unlock). Membership stays.
     setSelectedPlatformOfferId(null);
     setSelectedMerchantOfferId(null);
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    setSelectedMissedOfferKey(null);
+    setMissedOfferCelebration(null);
     setForceNoAutoOffer(false);
+    setCheckoutOfferUserPinned(true);
     setAppliedCouponCode(trimmed);
     setAppliedCouponLabel(label ?? trimmed);
     setCouponCodeInput("");
     setCouponSheetVisible(false);
     setCouponCelebrationCode(trimmed);
     setCouponCelebrationVisible(true);
-  }, []);
+  }, [hasEligibleCheckoutOfferBase]);
 
-  const applyPlatformOfferById = useCallback((offerId: number, _name: string | null) => {
+  const applyPlatformOfferById = useCallback((offerId: number, name: string | null) => {
+    if (!hasEligibleCheckoutOfferBase) return;
     setAppliedCouponCode(null);
     setAppliedCouponLabel(null);
     setSelectedMerchantOfferId(null);
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    setSelectedMissedOfferKey(null);
+    setMissedOfferCelebration(null);
     setSelectedPlatformOfferId(offerId);
     setForceNoAutoOffer(false);
+    setCheckoutOfferUserPinned(true);
     setCouponApplyError(null);
     setCouponSheetVisible(false);
-    setCouponCelebrationCode("");
-    setCouponCelebrationVisible(false);
-  }, []);
+    setCouponCelebrationCode(name?.trim() || "Offer");
+    setCouponCelebrationVisible(true);
+  }, [hasEligibleCheckoutOfferBase]);
 
   const applyMerchantOfferById = useCallback((offerId: number, couponCode?: string | null) => {
+    if (!hasEligibleCheckoutOfferBase) return;
     setSelectedPlatformOfferId(null);
     setAppliedCouponLabel(null);
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    setSelectedMissedOfferKey(null);
+    setMissedOfferCelebration(null);
     setForceNoAutoOffer(false);
+    setCheckoutOfferUserPinned(true);
     setSelectedMerchantOfferId(offerId);
     if (couponCode?.trim()) {
       setAppliedCouponCode(couponCode.trim());
@@ -1928,7 +2708,13 @@ export default function CheckoutScreen() {
       setAppliedCouponCode(null);
     }
     setCouponSheetVisible(false);
-  }, []);
+    const offerTitle =
+      checkoutOffersQuery.data?.merchantOffers.find((o) => o.id === offerId)?.title ??
+      checkoutOffersQuery.data?.merchantOffersIneligible?.find((o) => o.id === offerId)?.title ??
+      "Offer";
+    setCouponCelebrationCode(offerTitle);
+    setCouponCelebrationVisible(true);
+  }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data]);
 
   const consumePendingCheckoutOffer = useCheckoutOfferStore((s) => s.consumePending);
 
@@ -1951,9 +2737,10 @@ export default function CheckoutScreen() {
   const couponAvailablePrompt = useCouponAvailablePrompt({
     offersData: checkoutOffersQuery.data,
     offersFetching: checkoutOffersQuery.isFetching,
-    cartSubtotal: cartSubtotalForOffers,
+    cartSubtotal: cartSubtotalForOffersResolved,
     hasAppliedOffer: hasAppliedCheckoutOffer,
     blocked:
+      !hasEligibleCheckoutOfferBase ||
       checkoutVariant === "sheet" ||
       couponSheetVisible ||
       couponCelebrationVisible ||
@@ -1981,8 +2768,26 @@ export default function CheckoutScreen() {
   );
 
   useEffect(() => {
+    if (!hasEligibleCheckoutOfferBase && couponSheetVisible) {
+      setCouponSheetVisible(false);
+    }
+  }, [hasEligibleCheckoutOfferBase, couponSheetVisible]);
+
+  useEffect(() => {
+    if (!hasEligibleCheckoutOfferBase) {
+      setMissedOfferSheetVisible(false);
+      return;
+    }
+    // Precision eligible → no GatiCash unlock nudge (user can open offers sheet).
+    if (hideGatiCashUnlockCard) {
+      setMissedOfferSheetVisible(false);
+      return;
+    }
+    if (!missedOffersFingerprint) {
+      setMissedOfferSheetVisible(false);
+      return;
+    }
     if (
-      !missedOffersFingerprint ||
       missedOfferWalletPending ||
       checkoutOffersQuery.isLoading ||
       billingQuery.isLoading ||
@@ -1998,6 +2803,8 @@ export default function CheckoutScreen() {
     const timer = setTimeout(() => setMissedOfferSheetVisible(true), 700);
     return () => clearTimeout(timer);
   }, [
+    hasEligibleCheckoutOfferBase,
+    hideGatiCashUnlockCard,
     missedOffersFingerprint,
     missedOfferWalletPending,
     checkoutOffersQuery.isLoading,
@@ -2013,29 +2820,58 @@ export default function CheckoutScreen() {
     setAppliedCouponLabel(null);
     setSelectedPlatformOfferId(null);
     setSelectedMerchantOfferId(null);
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    setSelectedMissedOfferKey(null);
+    setMissedOfferCelebration(null);
     setForceNoAutoOffer(true);
+    setCheckoutOfferUserPinned(false);
     setCouponCelebrationVisible(false);
   }, []);
+
+  /** Drop checkout coupons / unlock when cart has no discount-eligible base. */
+  useEffect(() => {
+    if (hasEligibleCheckoutOfferBase) return;
+    setMissedOfferSheetVisible(false);
+    if (
+      appliedCouponCode ||
+      selectedPlatformOfferId != null ||
+      selectedMerchantOfferId != null ||
+      missedOfferWalletPending
+    ) {
+      removeAllCheckoutOffers();
+    }
+  }, [
+    hasEligibleCheckoutOfferBase,
+    appliedCouponCode,
+    selectedPlatformOfferId,
+    selectedMerchantOfferId,
+    missedOfferWalletPending,
+    removeAllCheckoutOffers,
+  ]);
 
   const removeAppliedCoupon = useCallback(() => {
     setAppliedCouponCode(null);
     setAppliedCouponLabel(null);
-    if (!selectedPlatformOfferId && !selectedMerchantOfferId) setForceNoAutoOffer(true);
+    setCheckoutOfferUserPinned(false);
+    setForceNoAutoOffer(false);
     setCouponCelebrationVisible(false);
-  }, [selectedPlatformOfferId, selectedMerchantOfferId]);
+  }, []);
 
   const removeAppliedPlatformOffer = useCallback(() => {
     setSelectedPlatformOfferId(null);
-    if (!appliedCouponCode && !selectedMerchantOfferId) setForceNoAutoOffer(true);
+    setCheckoutOfferUserPinned(false);
+    setForceNoAutoOffer(false);
     if (!appliedCouponCode) setCouponCelebrationVisible(false);
-  }, [appliedCouponCode, selectedMerchantOfferId]);
+  }, [appliedCouponCode]);
 
   const removeAppliedMerchantOffer = useCallback(() => {
     setSelectedMerchantOfferId(null);
-    if (!appliedCouponCode && !selectedPlatformOfferId) setForceNoAutoOffer(true);
-  }, [appliedCouponCode, selectedPlatformOfferId]);
+    setCheckoutOfferUserPinned(false);
+    setForceNoAutoOffer(false);
+  }, []);
 
-  const showItemTotalStrike = false;
+  const showItemTotalStrike = itemTotalNetOverride != null && itemTotalNetOverride > 0;
 
   const deliveryFeeStrikeAmount = useMemo(() => {
     if (!serverBill || deliveryType !== "delivery") return null;
@@ -2226,7 +3062,8 @@ export default function CheckoutScreen() {
     [footerBottomInset, showGatiCashWalletBar]
   );
 
-  const toPayAmount = useMemo(() => {
+  /** Authoritative total from the last SETTLED server bill (not a mid-flight placeholder). */
+  const confirmedToPayAmount = useMemo(() => {
     if (serverBill == null) return undefined;
     const walletAdd =
       missedOfferWalletPending && missedOfferWalletPendingAmount > 0.005
@@ -2248,11 +3085,63 @@ export default function CheckoutScreen() {
     missedOfferWalletPending,
     missedOfferWalletPendingAmount,
   ]);
-  /** GatiMitra-style strikethrough total when discounts apply (list ≈ payable + discounts). */
+
+  /**
+   * Snapshot of the cart + confirmed total at the moment billing last SETTLED (i.e. not
+   * while a refetch triggered by this cart is still in flight — `keepPreviousData` would
+   * otherwise make `confirmedToPayAmount` look "fresh" while it's actually still the
+   * PRE-tap value). Only updates once `billingQuery` has finished fetching.
+   */
+  const lastSettledBillRef = useRef<{ items: CartItem[]; toPayAmount: number } | null>(null);
+  useEffect(() => {
+    if (confirmedToPayAmount == null || billingQuery.isFetching) return;
+    lastSettledBillRef.current = { items, toPayAmount: confirmedToPayAmount };
+  }, [confirmedToPayAmount, billingQuery.isFetching, items]);
+
+  /**
+   * Instant, optimistic grand total. As soon as `items` changes (a +/- tap, remove, or
+   * clear), this recomputes IMMEDIATELY from the last settled bill plus the exact known
+   * price delta of that change — it does not wait for `billingQuery`'s debounced network
+   * round trip. Once that round trip resolves, `confirmedToPayAmount` catches up and this
+   * snaps to the authoritative value (silently, usually identical; only visibly corrects
+   * itself in the rare case where the tap crossed a delivery-fee/discount threshold whose
+   * exact rule lives server-side). This is purely a DISPLAY value — order submission
+   * (`baseOrderPayload`) always sends the live cart and is priced authoritatively by the
+   * server at that time, so an optimistic estimate here can never cause a wrong charge.
+   */
+  const toPayAmount = useMemo(() => {
+    if (confirmedToPayAmount == null) return undefined;
+    const snapshot = lastSettledBillRef.current;
+    if (!snapshot || snapshot.items === items) return confirmedToPayAmount;
+    const delta =
+      effectiveCartValue(items, itemOfferById) - effectiveCartValue(snapshot.items, itemOfferById);
+    return Math.max(0, roundBillAmount(snapshot.toPayAmount + delta));
+  }, [confirmedToPayAmount, items, itemOfferById]);
+  /** List price strike — only when payable is actually lower (hide when wallet top-up inflates total). */
   const gmStrikethroughTotal = useMemo(() => {
-    if (!serverBill || serverBill.discountTotal <= 0.005) return null;
-    return serverBill.finalAmount + serverBill.discountTotal;
-  }, [serverBill]);
+    if (toPayAmount == null || checkoutSavingsTotal <= 0.005) return null;
+    const walletAdd =
+      missedOfferWalletPending && missedOfferWalletPendingAmount > 0.005
+        ? missedOfferWalletPendingAmount
+        : 0;
+    // Wallet add makes bold total higher than food bill — don't show a misleading strike.
+    if (walletAdd > 0.005) return null;
+    const list = Math.round((toPayAmount + checkoutSavingsTotal) * 100) / 100;
+    if (list <= toPayAmount + 0.005) return null;
+    return list;
+  }, [
+    toPayAmount,
+    checkoutSavingsTotal,
+    missedOfferWalletPending,
+    missedOfferWalletPendingAmount,
+  ]);
+  /** Smooth count animation for the grand total — shared by the "Total Bill" teaser and
+   * the Place Order CTA so both numbers always read the same value at the same instant.
+   * `ready` snaps the first real bill straight in instead of visibly counting up from
+   * the 0 placeholder used before billingQuery resolves. */
+  const billingReady = serverBill != null;
+  const animatedToPayAmount = useAnimatedCount(toPayAmount ?? 0, 260, billingReady);
+  const animatedGmStrikethroughTotal = useAnimatedCount(gmStrikethroughTotal ?? 0, 260, billingReady);
   const hasValidPayment = paymentMethod !== "cod" && ["upi", "card", "wallet"].includes(paymentMethod);
   const canPlaceOrder =
     !isStoreClosed &&
@@ -2260,9 +3149,8 @@ export default function CheckoutScreen() {
     !!selectedAddress &&
     !!merchantId &&
     hasValidPayment &&
-    billingQuery.isSuccess &&
     serverBill != null &&
-    !billingQuery.isPlaceholderData;
+    (billingQuery.isSuccess || billingQuery.isPlaceholderData);
 
   const baseOrderPayload = useMemo(() => {
     if (!merchantId || !selectedAddress) return null;
@@ -2298,6 +3186,8 @@ export default function CheckoutScreen() {
         }),
       checkoutMetadata: {
         leaveAtDoor,
+        receiverContactName: checkoutReceiverName.trim() || null,
+        receiverContactMobile: checkoutReceiverMobile.trim() || null,
         deliveryInstructionsList: buildDeliveryInstructionsList({
           note: deliveryPartnerNote,
           leaveAtDoor,
@@ -2349,6 +3239,8 @@ export default function CheckoutScreen() {
     checkoutPlan,
     showSubscriptionPromo,
     leaveAtDoor,
+    checkoutReceiverName,
+    checkoutReceiverMobile,
     deliveryPartnerNote,
     instrLeaveWithGuard,
     instrAvoidCalling,
@@ -2383,8 +3275,8 @@ export default function CheckoutScreen() {
         merchantInstructionsList: restaurantNote.trim() ? [restaurantNote.trim()] : [],
         deliveryAddress: selectedAddress.fullAddress,
         deliveryAddressLabel: selectedAddress.label,
-        deliveryContactName: selectedAddress.contactName ?? null,
-        deliveryContactPhone: selectedAddress.contactMobile ?? null,
+        deliveryContactName: checkoutReceiverName.trim() || profileContactName || null,
+        deliveryContactPhone: checkoutReceiverMobile.trim() || profileContactMobile || null,
         merchantName: merchantName ?? undefined,
         merchantPublicName: merchantName ?? null,
         merchantPublicStoreId: merchantId ?? null,
@@ -2395,6 +3287,10 @@ export default function CheckoutScreen() {
     [
       queryClient,
       selectedAddress,
+      checkoutReceiverName,
+      checkoutReceiverMobile,
+      profileContactName,
+      profileContactMobile,
       deliveryPartnerNote,
       leaveAtDoor,
       instrLeaveWithGuard,
@@ -2578,6 +3474,14 @@ export default function CheckoutScreen() {
   const handlePlaceOrderPress = useCallback(async () => {
     if (deliveryType === "self_pickup") return;
     if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) return;
+    if (!checkoutReceiverName.trim() || !checkoutReceiverMobile.trim()) {
+      Alert.alert(
+        "Contact details required",
+        "Please add your name and mobile number before placing the order.",
+        [{ text: "Add details", onPress: () => openReceiverSheet() }]
+      );
+      return;
+    }
     if (hasValidPayment) {
       setRazorpayCreating(true);
       try {
@@ -2634,7 +3538,19 @@ export default function CheckoutScreen() {
     } else {
       placeOrder.mutate(undefined);
     }
-  }, [deliveryType, canPlaceOrder, baseOrderPayload, placeOrder, finalizeOrder.isPending, razorpayCreating, hasValidPayment, merchantId]);
+  }, [
+    deliveryType,
+    canPlaceOrder,
+    baseOrderPayload,
+    placeOrder,
+    finalizeOrder.isPending,
+    razorpayCreating,
+    hasValidPayment,
+    merchantId,
+    checkoutReceiverName,
+    checkoutReceiverMobile,
+    openReceiverSheet,
+  ]);
 
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
@@ -2768,15 +3684,21 @@ export default function CheckoutScreen() {
         ...i,
         imageUrl: null as string | null,
         checkoutSubtext: cartItemSubline(i) || null,
+        catalogMrp: null as number | null,
       }));
     }
     return items.map((cartItem) => {
       const baseId = cartItemBaseId(cartItem.menuItemId);
       const menuItem = findMenuItemByCartBaseId(merchant.menu, baseId);
+      const mrp =
+        menuItem?.basePrice != null && menuItem.basePrice > menuItem.price
+          ? menuItem.basePrice
+          : null;
       return {
         ...cartItem,
         imageUrl: menuItem?.imageUrl ?? null,
         checkoutSubtext: cartItemSubline(cartItem) || null,
+        catalogMrp: mrp,
       };
     });
   }, [items, merchant?.menu]);
@@ -3132,9 +4054,9 @@ export default function CheckoutScreen() {
         </Animated.View>
       )}
 
-      {checkoutSavingsTotal > 0 ? (
+      {checkoutSavingsTotal > 0.005 ? (
         <View style={styles.checkoutSavingsTag}>
-          <CheckoutText style={styles.checkoutSavingsTagText}>
+          <CheckoutText style={styles.checkoutSavingsTagText} bold>
             🥳 You saved ₹{checkoutSavingsTotal.toFixed(0)} on this order
           </CheckoutText>
         </View>
@@ -3156,68 +4078,17 @@ export default function CheckoutScreen() {
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION)} style={styles.section}>
           <View style={styles.checkoutFullBleedSection}>
             <View style={styles.orderItemsPreview}>
-              {itemsWithImage.map((item) => {
-                const sub = item.checkoutSubtext;
-                const lineTotal = item.price * item.quantity;
-                const priceLabel =
-                  Math.abs(lineTotal - Math.round(lineTotal)) < 0.01
-                    ? `₹${Math.round(lineTotal)}`
-                    : `₹${lineTotal.toFixed(2)}`;
-                return (
-                  <View key={item.menuItemId} style={styles.orderItemRow}>
-                    <View style={styles.orderItemDietWrap}>
-                      <DietIndicator isVeg={item.isVeg} />
-                    </View>
-                    <View style={styles.orderItemMid}>
-                      <CheckoutText style={styles.orderItemName} numberOfLines={2}>
-                        {item.name}
-                      </CheckoutText>
-                      {sub ? (
-                        <CheckoutText style={styles.orderItemCustom} numberOfLines={2}>
-                          {sub}
-                        </CheckoutText>
-                      ) : null}
-                      <TouchableOpacity
-                        style={styles.orderItemEditRow}
-                        onPress={() => handleEditCartItem(item)}
-                        activeOpacity={0.7}
-                        hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-                        accessibilityLabel="Edit item"
-                      >
-                        <CheckoutText style={styles.orderItemEditText}>Edit</CheckoutText>
-                        <Ionicons
-                          name="chevron-forward"
-                          size={11}
-                          color={CX.mint}
-                          style={styles.orderItemEditChevron}
-                        />
-                      </TouchableOpacity>
-                    </View>
-                    <View style={styles.orderItemRightCol}>
-                      <View style={styles.orderItemStepperPill}>
-                        <TouchableOpacity
-                          onPress={() => updateQuantity(item.menuItemId, -1)}
-                          style={styles.qtyBtnSmall}
-                          hitSlop={6}
-                          accessibilityLabel="Decrease quantity"
-                        >
-                          <CheckoutText style={styles.qtyGlyph}>−</CheckoutText>
-                        </TouchableOpacity>
-                        <CheckoutText style={styles.qtyValueSmall}>{item.quantity}</CheckoutText>
-                        <TouchableOpacity
-                          onPress={() => updateQuantity(item.menuItemId, 1)}
-                          style={styles.qtyBtnSmall}
-                          hitSlop={6}
-                          accessibilityLabel="Increase quantity"
-                        >
-                          <CheckoutText style={styles.qtyGlyph}>+</CheckoutText>
-                        </TouchableOpacity>
-                      </View>
-                      <CheckoutText style={styles.orderItemLinePrice}>{priceLabel}</CheckoutText>
-                    </View>
-                  </View>
-                );
-              })}
+              {itemsWithImage.map((item) => (
+                <CheckoutCartLineRow
+                  key={item.menuItemId}
+                  item={item}
+                  itemOfferById={itemOfferById}
+                  serverLineEligibilityById={serverLineEligibilityById}
+                  onEdit={handleEditCartItem}
+                  onIncrement={handleIncrementCartLine}
+                  onDecrement={handleDecrementCartLine}
+                />
+              ))}
             </View>
             <ScrollView
               horizontal
@@ -3438,7 +4309,8 @@ export default function CheckoutScreen() {
             ) : null}
 
             <View style={styles.offersAppliedRow}>
-              {hasAppliedCheckoutPromo || hasMissedOfferUnlocked ? (
+              {hasEligibleCheckoutOfferBase &&
+              (hasAppliedCheckoutPromo || hasMissedOfferUnlocked) ? (
                 <View style={styles.offersGreenTick}>
                   <Ionicons name="checkmark" size={14} color="#fff" />
                 </View>
@@ -3456,19 +4328,21 @@ export default function CheckoutScreen() {
                     {offersAppliedSubline}
                   </CheckoutText>
                 ) : null}
-                <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
-                  <CheckoutText style={styles.offersLearnMore}>View all coupons ›</CheckoutText>
-                </TouchableOpacity>
+                {hasEligibleCheckoutOfferBase ? (
+                  <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
+                    <CheckoutText style={styles.offersLearnMore}>View all coupons ›</CheckoutText>
+                  </TouchableOpacity>
+                ) : null}
               </View>
-              {hasMissedOfferUnlocked ? (
+              {hasEligibleCheckoutOfferBase && hasMissedOfferUnlocked ? (
                 <TouchableOpacity onPress={handleRemoveMissedOfferWallet} hitSlop={8} activeOpacity={0.7}>
                   <CheckoutText style={styles.offersRemoveRed}>Remove</CheckoutText>
                 </TouchableOpacity>
-              ) : hasAppliedCheckoutPromo ? (
+              ) : hasEligibleCheckoutOfferBase && hasAppliedCheckoutPromo ? (
                 <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
                   <CheckoutText style={styles.offersRemoveRed}>Remove</CheckoutText>
                 </TouchableOpacity>
-              ) : (
+              ) : hasEligibleCheckoutOfferBase ? (
                 <TouchableOpacity
                   style={styles.offersApplyOutline}
                   onPress={() => {
@@ -3479,12 +4353,14 @@ export default function CheckoutScreen() {
                 >
                   <CheckoutText style={styles.offersApplyOutlineText}>APPLY</CheckoutText>
                 </TouchableOpacity>
-              )}
+              ) : null}
             </View>
           </View>
         </Animated.View>
 
-        {displayMissedOfferWalletComp ? (
+
+
+        {displayMissedOfferWalletComp && hasEligibleCheckoutOfferBase ? (
           <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(50)} style={styles.section}>
             <CheckoutMissedOfferWalletCard
               offer={displayMissedOfferWalletComp}
@@ -3535,7 +4411,7 @@ export default function CheckoutScreen() {
                 >
                   <View style={styles.deliveryAddrTitleRow}>
                     <View style={styles.deliveryAddrTitleTextWrap}>
-                      <CheckoutText style={styles.deliveryAddrLabel} numberOfLines={1}>
+                      <CheckoutText style={styles.deliveryAddrLabel} numberOfLines={2}>
                         <CheckoutText style={styles.deliveryAddrPre}>Delivery at </CheckoutText>
                         <CheckoutText style={styles.deliveryAddrName}>
                           {selectedAddress?.label ?? currentLocationDisplay?.label ?? "—"}
@@ -3591,12 +4467,20 @@ export default function CheckoutScreen() {
                   style={[styles.gmCardPad, styles.checkoutReceiverRow]}
                   onPress={openReceiverSheet}
                   activeOpacity={0.75}
-                  disabled={!selectedAddress}
+                  accessibilityLabel="Edit name and phone number"
+                  accessibilityHint="Shows your contact for this order. Tap to change."
                 >
                   <Ionicons name="call-outline" size={20} color={GatiMitraColors.textSecondary} />
-                  <CheckoutText style={styles.checkoutReceiverText} numberOfLines={1}>
-                    {checkoutReceiverSummary}
-                  </CheckoutText>
+                  <View style={styles.checkoutReceiverTextCol}>
+                    <CheckoutText style={styles.checkoutReceiverText} numberOfLines={1}>
+                      {checkoutReceiverSummary}
+                    </CheckoutText>
+                    {!hasCheckoutReceiverDetails ? (
+                      <CheckoutText style={styles.checkoutReceiverHint} numberOfLines={1}>
+                        Required before placing order
+                      </CheckoutText>
+                    ) : null}
+                  </View>
                   <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
                 </TouchableOpacity>
               </>
@@ -3617,10 +4501,10 @@ export default function CheckoutScreen() {
                     <>
                       <View style={styles.gmBillPriceCluster}>
                         {gmStrikethroughTotal != null ? (
-                          <CheckoutText style={styles.gmBillStrike}>₹{gmStrikethroughTotal.toFixed(2)}</CheckoutText>
+                          <CheckoutText style={styles.gmBillStrike}>₹{animatedGmStrikethroughTotal.toFixed(2)}</CheckoutText>
                         ) : null}
                         <CheckoutText style={styles.gmBillFinal}>
-                          {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                          {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
                         </CheckoutText>
                         {checkoutSavingsTotal > 0.005 ? (
                           <View style={styles.gmSavedPill}>
@@ -3723,7 +4607,10 @@ export default function CheckoutScreen() {
       <CouponApplyCelebration
         visible={couponCelebrationVisible}
         couponCode={couponCelebrationCode}
-        savedAmount={couponDiscountAmount}
+        // primaryCheckoutDiscount reflects whichever promo is currently active (coupon,
+        // Precision, or Platform) — couponDiscountAmount alone would show 0 for the
+        // latter two since it only matches against appliedCouponCode.
+        savedAmount={primaryCheckoutDiscount?.amount ?? couponDiscountAmount}
         onDismiss={() => setCouponCelebrationVisible(false)}
       />
 
@@ -3736,7 +4623,7 @@ export default function CheckoutScreen() {
       />
 
       <MissedOfferUnlockSheet
-        visible={missedOfferSheetVisible}
+        visible={missedOfferSheetVisible && hasEligibleCheckoutOfferBase}
         offer={missedOfferWalletComp}
         bottomInset={insets.bottom}
         pending={missedOfferWalletPending}
@@ -3758,11 +4645,12 @@ export default function CheckoutScreen() {
         visible={couponSheetVisible}
         onClose={() => setCouponSheetVisible(false)}
         bottomInset={insets.bottom}
-        loading={checkoutOffersQuery.isLoading}
-        error={checkoutOffersQuery.isError}
+        loading={false}
+        error={checkoutOffersQuery.isError && !checkoutOffersQuery.data}
         data={checkoutOffersQuery.data}
         merchantId={merchantId}
-        cartSubtotal={cartSubtotalForOffers}
+        cartSubtotal={clientEligibleCheckoutSubtotal}
+        itemDealSavingsByOfferId={itemDealSavingsByOfferId}
         pendingMissedOfferKey={
           missedOfferWalletPending && displayMissedOfferWalletComp
             ? displayMissedOfferWalletComp.key
@@ -3896,78 +4784,93 @@ export default function CheckoutScreen() {
           </View>
           <View style={styles.footerCtaCol}>
           {isStoreClosed ? (
-            <View style={styles.footerCtaSlotDisabled}>
-              <CheckoutText style={styles.ctaDisabledText}>Store closed</CheckoutText>
+            <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
+              <CheckoutText style={styles.ctaSolidTitle} bold>
+                Store closed
+              </CheckoutText>
             </View>
           ) : items.length === 0 ? (
-            <View style={styles.footerCtaSlotDisabled}>
-              <CheckoutText style={styles.ctaDisabledText}>Add items</CheckoutText>
+            <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
+              <CheckoutText style={styles.ctaSolidTitle} bold>
+                Add items
+              </CheckoutText>
             </View>
           ) : deliveryType === "self_pickup" ? (
-            <View style={styles.footerCtaSlotDisabled}>
-              <CheckoutText style={styles.ctaDisabledText}>Coming Soon</CheckoutText>
-            </View>
-          ) : !canPlaceOrder ? (
-            <View style={styles.footerCtaSlotDisabled}>
-              <View style={styles.ctaDisabledSplit}>
-                <View style={styles.ctaLeftPart}>
-                  <CheckoutText style={styles.ctaDisabledAmount} numberOfLines={1}>
-                    {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
-                  </CheckoutText>
-                  <CheckoutText style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</CheckoutText>
-                </View>
-                <View style={styles.ctaRightPartDisabled}>
-                  <CheckoutText style={styles.ctaDisabledLabel} numberOfLines={1}>Place Order</CheckoutText>
-                  <CheckoutText style={styles.ctaDisabledHint} numberOfLines={1}>
-                    {!selectedAddress
-                      ? "Check address"
-                      : billingQuery.isError
-                        ? "Bill error"
-                        : billingQuery.isLoading
-                          ? "Loading bill…"
-                          : billingQuery.isPlaceholderData && billingQuery.isFetching
-                            ? "Updating bill…"
-                            : !serverBill
-                              ? "Waiting for bill"
-                              : "Select payment"}
-                  </CheckoutText>
-                </View>
-              </View>
+            <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
+              <CheckoutText style={styles.ctaSolidTitle} bold>
+                Coming Soon
+              </CheckoutText>
             </View>
           ) : (
             <Pressable
-              style={({ pressed }) => [
-                styles.footerCtaSlot,
-                pressed && styles.ctaTouchPressed,
-              ]}
-              onPress={handlePlaceOrderPress}
-              disabled={placeOrder.isPending || finalizeOrder.isPending || razorpayCreating}
+              onPress={() => {
+                if (!canPlaceOrder) {
+                  const reason = !selectedAddress
+                    ? "Add a delivery address to place your order."
+                    : billingQuery.isError
+                      ? "Could not load the bill. Pull to refresh or try again."
+                      : billingQuery.isLoading || (billingQuery.isPlaceholderData && billingQuery.isFetching)
+                        ? "Updating your bill — try again in a moment."
+                        : !serverBill
+                          ? "Waiting for the bill to load."
+                          : "Select a payment method to continue.";
+                  Alert.alert("Almost there", reason);
+                  return;
+                }
+                handlePlaceOrderPress();
+              }}
+              disabled={
+                canPlaceOrder &&
+                (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating)
+              }
+              accessibilityRole="button"
+              accessibilityLabel={canPlaceOrder ? "Place order" : "Place order unavailable"}
+              style={({ pressed }) => [styles.ctaSolidPressable, pressed && styles.ctaTouchPressed]}
             >
-              <LinearGradient
-                colors={[CX.mintGradient[0], CX.mintGradient[1]]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.ctaGradient}
+              <View
+                style={[styles.ctaSolid, !canPlaceOrder && styles.ctaSolidWaiting]}
+                collapsable={false}
               >
-                <View style={styles.ctaLeftPart}>
-                  <CheckoutText style={styles.ctaTotalAmount} numberOfLines={1}>
-                    {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                <View style={styles.ctaSolidLeft}>
+                  <CheckoutText style={styles.ctaSolidAmount} bold numberOfLines={1}>
+                    {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
                   </CheckoutText>
-                  <CheckoutText style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</CheckoutText>
+                  <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
+                    TOTAL
+                  </CheckoutText>
                 </View>
-                <View style={styles.ctaRightPart}>
-                  {placeOrder.isPending || finalizeOrder.isPending || razorpayCreating ? (
-                    <View style={styles.ctaRightPartRow}>
-                      <ActivityIndicator color="#fff" size="small" />
-                    </View>
+                <View style={styles.ctaSolidRight}>
+                  {canPlaceOrder &&
+                  (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
                   ) : (
-                    <View style={styles.ctaRightPartRow}>
-                      <CheckoutText style={styles.ctaLabel} numberOfLines={1}>Place Order</CheckoutText>
-                      <Ionicons name="chevron-forward" size={18} color="#fff" />
-                    </View>
+                    <>
+                      <View style={styles.ctaSolidRightRow}>
+                        <CheckoutText style={styles.ctaSolidTitle} bold numberOfLines={1}>
+                          Place Order
+                        </CheckoutText>
+                        {canPlaceOrder ? (
+                          <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
+                        ) : null}
+                      </View>
+                      {!canPlaceOrder ? (
+                        <CheckoutText style={styles.ctaSolidHint} bold numberOfLines={1}>
+                          {!selectedAddress
+                            ? "Check address"
+                            : billingQuery.isError
+                              ? "Bill error"
+                              : billingQuery.isLoading ||
+                                  (billingQuery.isPlaceholderData && billingQuery.isFetching)
+                                ? "Loading bill…"
+                                : !serverBill
+                                  ? "Waiting for bill"
+                                  : "Select payment"}
+                        </CheckoutText>
+                      ) : null}
+                    </>
                   )}
                 </View>
-              </LinearGradient>
+              </View>
             </Pressable>
           )}
           </View>
@@ -3993,6 +4896,14 @@ export default function CheckoutScreen() {
           isStoreClosed={isStoreClosed}
           storeMenu={merchant?.menu}
           initialSelection={editingCartItemId ? editingCartSelection : null}
+          itemOffer={
+            itemOfferById.get(customizationSheetItem.id) ??
+            (customizationSheetItem.menuItemId != null
+              ? itemOfferById.get(String(customizationSheetItem.menuItemId))
+              : undefined) ??
+            itemOfferById.get(String(customizationSheetItem.id)) ??
+            null
+          }
           onAdd={(params) => {
             if (editingCartItemId) {
               updateQuantity(editingCartItemId, -999);
@@ -4363,7 +5274,7 @@ export default function CheckoutScreen() {
           <Pressable style={styles.noteSheetDim} onPress={() => setReceiverSheetVisible(false)} />
           <View style={[styles.noteSheetCard, styles.receiverSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
             <View style={styles.noteSheetTitleRow}>
-              <CheckoutText style={styles.noteSheetTitle}>Update receiver details</CheckoutText>
+              <CheckoutText style={styles.noteSheetTitle}>Your contact for this order</CheckoutText>
               <TouchableOpacity
                 onPress={() => setReceiverSheetVisible(false)}
                 hitSlop={12}
@@ -4414,7 +5325,6 @@ export default function CheckoutScreen() {
             </View>
             <TouchableOpacity
               activeOpacity={0.92}
-              disabled={updateReceiverContactMutation.isPending}
               onPress={() => void saveReceiverDetails()}
             >
               <LinearGradient
@@ -4423,11 +5333,7 @@ export default function CheckoutScreen() {
                 end={{ x: 1, y: 0 }}
                 style={styles.receiverSubmitBtn}
               >
-                {updateReceiverContactMutation.isPending ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <CheckoutText style={styles.receiverSubmitBtnText}>Submit</CheckoutText>
-                )}
+                <CheckoutText style={styles.receiverSubmitBtnText}>Submit</CheckoutText>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -4682,8 +5588,12 @@ export default function CheckoutScreen() {
         billSubscriptionCharges={billSubscriptionCharges}
         gstAndOtherBreakdown={gstAndOtherBreakdown}
         onGstInfoPress={() => setGstBreakdownModalVisible(true)}
-        visibleDiscounts={visibleDiscounts}
+        visibleDiscounts={visibleDiscounts.map((d) => ({
+          ...d,
+          label: friendlyCheckoutDiscountLabel(d.label),
+        }))}
         showItemTotalStrike={showItemTotalStrike}
+        itemTotalNetOverride={itemTotalNetOverride}
         gatiCashApplyAmount={gatiCashApplyAmount}
         missedOfferWalletPendingAmount={missedOfferWalletPendingAmount}
         missedOfferUnlockDiscount={missedOfferUnlockDiscount}
@@ -4699,8 +5609,8 @@ export default function CheckoutScreen() {
         visible={razorpayModalVisible && !!razorpayOrderParams}
         orderParams={razorpayOrderParams}
         prefill={{
-          contact: selectedAddress?.contactMobile ?? null,
-          name: selectedAddress?.contactName ?? null,
+          contact: checkoutReceiverMobile.trim() || profileContactMobile || null,
+          name: checkoutReceiverName.trim() || profileContactName || null,
           email: null,
         }}
         onSuccess={handleRazorpaySuccess}
@@ -5291,11 +6201,18 @@ const styles = StyleSheet.create({
     paddingTop: 2,
   },
   orderItemMid: { flex: 1, minWidth: 0, paddingRight: 8 },
+  orderItemNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+  },
   orderItemName: {
     fontSize: 15,
     fontWeight: "700",
     color: "#1C1C1C",
     lineHeight: 20,
+    flexShrink: 1,
   },
   orderItemCustom: {
     fontSize: 12,
@@ -5313,6 +6230,29 @@ const styles = StyleSheet.create({
   },
   orderItemEditText: { fontSize: 12, fontWeight: "600", color: CX.mint },
   orderItemEditChevron: { marginLeft: -1, marginTop: 1 },
+  orderItemBogoPill: {
+    flexShrink: 0,
+    backgroundColor: "#ECFDF5",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#86EFAC",
+  },
+  orderItemBogoPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#15803D",
+    letterSpacing: 0.2,
+  },
+  orderItemIneligible: {
+    marginTop: 6,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+    color: "#9CA3AF",
+    textTransform: "uppercase",
+  },
   orderItemRightCol: {
     alignItems: "flex-end",
     flexShrink: 0,
@@ -5355,6 +6295,26 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#1C1C1C",
     marginTop: 8,
+    textAlign: "right",
+  },
+  orderItemPriceCol: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 6,
+  },
+  orderItemLinePriceStrike: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+    textAlign: "right",
+  },
+  orderItemLinePriceOffer: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#2563EB",
     textAlign: "right",
   },
   checkoutActionRowScroll: {
@@ -6551,11 +7511,20 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 10,
   },
-  checkoutReceiverText: {
+  checkoutReceiverTextCol: {
     flex: 1,
+    minWidth: 0,
+  },
+  checkoutReceiverText: {
     fontSize: 14,
     fontWeight: "600",
     color: GatiMitraColors.textPrimary,
+  },
+  checkoutReceiverHint: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#B45309",
   },
   receiverSheetCard: { paddingTop: 8 },
   receiverSheetAddr: {
@@ -7374,6 +8343,81 @@ const styles = StyleSheet.create({
   },
   footerPayLabel: { fontSize: 11, fontWeight: "600", color: GatiMitraColors.textPrimary, flexShrink: 1 },
   footerPayChevron: { flexShrink: 0 },
+  /** Hit target only — paint lives on `ctaSolid` View. */
+  ctaSolidPressable: {
+    width: "100%",
+    alignSelf: "stretch",
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
+    overflow: "hidden",
+    minHeight: 52,
+  },
+  ctaSolid: {
+    width: "100%",
+    minHeight: 52,
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
+    backgroundColor: CHECKOUT_CTA_GREEN,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  ctaSolidWaiting: {
+    backgroundColor: CHECKOUT_CTA_GREEN_WAIT,
+  },
+  ctaSolidMuted: {
+    backgroundColor: CHECKOUT_CTA_GREEN_MUTED,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  ctaSolidLeft: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "flex-start",
+    justifyContent: "center",
+  },
+  ctaSolidRight: {
+    flexShrink: 0,
+    marginLeft: 8,
+    maxWidth: "55%",
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  ctaSolidRightRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  ctaSolidAmount: {
+    fontSize: 15,
+    fontFamily: "Lora_700Bold",
+    color: "#FFFFFF",
+  },
+  ctaSolidTotal: {
+    fontSize: 10,
+    fontFamily: "Lora_700Bold",
+    color: "rgba(255,255,255,0.92)",
+    marginTop: 1,
+  },
+  ctaSolidTitle: {
+    fontSize: 13,
+    fontFamily: "Lora_700Bold",
+    color: "#FFFFFF",
+  },
+  ctaSolidHint: {
+    fontSize: 9,
+    fontFamily: "Lora_700Bold",
+    color: "rgba(255,255,255,0.9)",
+    marginTop: 2,
+    textAlign: "right",
+  },
+  footerCtaPressable: {
+    width: "100%",
+    alignSelf: "stretch",
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
+    overflow: "hidden",
+    minHeight: 50,
+  },
   footerCtaSlot: {
     width: "100%",
     alignSelf: "stretch",
@@ -7385,7 +8429,7 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "stretch",
     borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
-    backgroundColor: "#9ca3af",
+    backgroundColor: CHECKOUT_CTA_GREEN_MUTED,
     justifyContent: "center",
     alignItems: "stretch",
     minHeight: 50,
@@ -7413,39 +8457,40 @@ const styles = StyleSheet.create({
   ctaDisabled: {
     paddingVertical: 16,
     borderRadius: CARD_RADIUS,
-    backgroundColor: "#9ca3af",
+    backgroundColor: CHECKOUT_CTA_GREEN_MUTED,
     alignItems: "center",
   },
-  ctaDisabledText: { fontSize: 15, fontWeight: "700", color: "#fff", textAlign: "center" },
+  ctaDisabledText: { fontSize: 15, fontFamily: "Lora_700Bold", color: "#FFFFFF", textAlign: "center" },
   ctaDisabledSplit: {
-    flex: 1,
     width: "100%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingVertical: 9,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
+    minHeight: 50,
   },
-  ctaDisabledAmount: { fontSize: 14, fontWeight: "800", color: "#fff" },
-  ctaDisabledLabel: { fontSize: 12, fontWeight: "700", color: "#fff" },
-  ctaDisabledHint: { fontSize: 9, color: "rgba(255,255,255,0.9)", marginTop: 1, textAlign: "right" },
+  ctaDisabledAmount: { fontSize: 14, fontFamily: "Lora_700Bold", color: "#FFFFFF" },
+  ctaDisabledTotalLabel: { fontSize: 9, fontFamily: "Lora_700Bold", color: "rgba(255,255,255,0.92)", marginTop: 1 },
+  ctaDisabledLabel: { fontSize: 12, fontFamily: "Lora_700Bold", color: "#FFFFFF" },
+  ctaDisabledHint: { fontSize: 9, fontFamily: "Lora_700Bold", color: "rgba(255,255,255,0.92)", marginTop: 1, textAlign: "right" },
   ctaTouch: { borderRadius: CARD_RADIUS, overflow: "hidden", ...GatiMitraColors.cardShadowSoft },
-  ctaTouchPressed: { opacity: 0.96 },
+  ctaTouchPressed: { opacity: 0.92 },
   ctaGradient: {
-    flex: 1,
     width: "100%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingVertical: 9,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     overflow: "hidden",
     minHeight: 50,
+    backgroundColor: CHECKOUT_CTA_GREEN,
   },
   ctaLeftPart: { flex: 1, minWidth: 0, alignItems: "flex-start", justifyContent: "center" },
-  ctaTotalAmount: { fontSize: 14, fontWeight: "800", color: "#fff" },
-  ctaTotalLabel: { fontSize: 9, color: "rgba(255,255,255,0.9)", marginTop: 1 },
+  ctaTotalAmount: { fontSize: 14, fontFamily: "Lora_700Bold", color: "#FFFFFF" },
+  ctaTotalLabel: { fontSize: 9, fontFamily: "Lora_700Bold", color: "rgba(255,255,255,0.92)", marginTop: 1 },
   ctaRightPart: {
     flexShrink: 0,
     flexGrow: 0,
@@ -7466,8 +8511,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 2,
   },
-  ctaLabel: { fontSize: 12, fontWeight: "700", color: "#fff" },
-  ctaAmount: { fontSize: 15, fontWeight: "800", color: "#fff" },
+  ctaLabel: { fontSize: 12, fontFamily: "Lora_700Bold", color: "#FFFFFF" },
+  ctaAmount: { fontSize: 15, fontFamily: "Lora_700Bold", color: "#FFFFFF" },
   couponModalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.4)",

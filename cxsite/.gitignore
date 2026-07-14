@@ -24,7 +24,10 @@ public/img/
 !public/img/fav.png
 !public/img/logoo.png
 !public/img/onlylogo.png
+# Synced from `img/` by scripts/sync-public-img.mjs (also whitelisted for local deploys).
 !public/img/dnscreen.png
+!public/img/ride.png
+!public/img/bikeride-phone.png
 
 # production
 /build

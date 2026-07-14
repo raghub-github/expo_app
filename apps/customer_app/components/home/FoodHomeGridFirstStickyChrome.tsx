@@ -70,7 +70,9 @@ export function FoodHomeGridFirstStickyChrome({
 
   useAnimatedReaction(
     () =>
-      enableCategorySticky && scrollY.value >= categoryStickAt.value - STICK_FADE_PX,
+      enableCategorySticky &&
+      categoryStickAt.value > 1 &&
+      scrollY.value >= categoryStickAt.value - STICK_FADE_PX,
     (on, prev) => {
       if (on !== prev) runOnJS(setCategoryStickyOn)(on);
     },
@@ -175,7 +177,7 @@ export function FoodHomeGridFirstStickyChrome({
         [0, 1],
         ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
       ),
-      elevation: showBottomChrome ? (searchOn ? 6 : 6) : 0,
+      elevation: showBottomChrome ? 6 : 0,
       shadowOpacity: showBottomChrome && !searchOn ? 0.04 : 0,
       borderBottomWidth: 0,
       transform: [

@@ -568,21 +568,26 @@ async function loadOnDutyRiderIds(
   const sqlClient = getSql();
   const serviceJson =
     requiredService != null ? JSON.stringify([requiredService]) : null;
+  // Never DISTINCT ON the full duty_logs table — that hangs under load and
+  // starves the pool (place ride Network Error + no dispatch offers).
+  // Only riders with a recent GPS ping can be dispatched; resolve their
+  // latest duty via index-friendly LATERAL.
   const rows = (await sqlClient`
-    WITH latest_duty AS (
-      SELECT DISTINCT ON (dl.rider_id)
-        dl.rider_id,
-        dl.status,
-        dl.service_types
+    SELECT DISTINCT r.id AS rider_id
+    FROM rider_current_locations rcl
+    INNER JOIN riders r ON r.id = rcl.rider_id
+    INNER JOIN LATERAL (
+      SELECT dl.status, dl.service_types
       FROM duty_logs dl
-      ORDER BY dl.rider_id, dl.timestamp DESC
-    )
-    SELECT r.id AS rider_id
-    FROM riders r
-    INNER JOIN latest_duty ld ON ld.rider_id = r.id AND ld.status = 'ON'
-    WHERE r.status = 'ACTIVE'
+      WHERE dl.rider_id = rcl.rider_id
+      ORDER BY dl.timestamp DESC
+      LIMIT 1
+    ) ld ON true
+    WHERE rcl.updated_at >= NOW() - (${RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES} * INTERVAL '1 minute')
+      AND r.status = 'ACTIVE'
       AND r.onboarding_stage = 'ACTIVE'
       AND r.deleted_at IS NULL
+      AND ld.status = 'ON'
       AND jsonb_array_length(COALESCE(ld.service_types, '[]'::jsonb)) > 0
       AND (
         ${serviceJson}::text IS NULL

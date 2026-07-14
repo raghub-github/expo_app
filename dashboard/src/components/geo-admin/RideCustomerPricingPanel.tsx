@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Layers, Loader2 } from "lucide-react";
-import type { VehicleType } from "./RiderPayoutSlabsPanel";
+import type { VehicleType } from "./rideVehicleTypes";
 import { calcRidePreviewBreakdown } from "@/lib/pricing/slabPricingEngine";
 import {
   buildSavedFingerprintMap,

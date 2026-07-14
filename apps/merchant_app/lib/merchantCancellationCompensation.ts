@@ -219,7 +219,9 @@ export function resolveCancellationMessageParts(args: {
     const split = splitCancellationEligibleMessage(fixedEligible);
     const cancelReason = rejected || split.cancelReason;
     const detail =
-      actor.kind === "auto" && cancelReason && /^auto cancel/i.test(cancelReason)
+      actor.kind === "auto" &&
+      cancelReason &&
+      (/^auto cancel/i.test(cancelReason) || /merchant_accept_timeout/i.test(cancelReason))
         ? null
         : cancelReason;
     if (detail || split.policySentence || resolvedBrandPrefix) {
@@ -236,7 +238,11 @@ export function resolveCancellationMessageParts(args: {
   const reason = rejected;
   if (resolvedBrandPrefix || reason) {
     const detail =
-      actor.kind === "auto" && reason && /^auto cancel/i.test(reason) ? null : reason;
+      actor.kind === "auto" &&
+      reason &&
+      (/^auto cancel/i.test(reason) || /merchant_accept_timeout/i.test(reason))
+        ? null
+        : reason;
     return {
       brandPrefix: detail && resolvedBrandPrefix
         ? `${resolvedBrandPrefix}:`

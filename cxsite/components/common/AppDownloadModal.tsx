@@ -1,91 +1,197 @@
 'use client'
 
-import Image from 'next/image'
+import { useCallback, useEffect, useState } from 'react'
+import {
+  CUSTOMER_APP_SCREEN_IMG,
+  RIDE_APP_SCREEN_IMG,
+  resolveAndroidDownloadUrl,
+  resolveIosDownloadUrl,
+} from '@/lib/appDownload'
+import { AppleStoreIcon, GooglePlayIcon } from '@/components/common/StoreBrandIcons'
 
 interface AppDownloadModalProps {
   isOpen: boolean
   onClose: () => void
   title?: string
   description?: string
+  /** `ride` → ride.png, `customer` → dnscreen.png (food / parcel / general). */
+  variant?: 'ride' | 'customer'
+  /** Called after link is sent successfully (modal already closed). */
+  onLinkSent?: () => void
 }
 
 export default function AppDownloadModal({
   isOpen,
   onClose,
-  title = 'Book rides in the GatiMitra App',
-  description = 'Web ride booking is currently unavailable. Please download the app to continue.',
+  title = 'Get the GatiMitra App',
+  description = 'For a better experience, please order through our mobile app.',
+  variant = 'customer',
+  onLinkSent,
 }: AppDownloadModalProps) {
+  const [downloadMode, setDownloadMode] = useState<'phone' | 'email'>('email')
+  const [downloadValue, setDownloadValue] = useState('')
+  const [status, setStatus] = useState<'idle' | 'sending' | 'error'>('idle')
+  const [errorMessage, setErrorMessage] = useState('')
+
+  useEffect(() => {
+    if (!isOpen) return
+    setDownloadMode('email')
+    setDownloadValue('')
+    setStatus('idle')
+    setErrorMessage('')
+  }, [isOpen])
+
+  const androidUrl = resolveAndroidDownloadUrl()
+  const iosUrl = resolveIosDownloadUrl()
+  const previewSrc = variant === 'customer' ? CUSTOMER_APP_SCREEN_IMG : RIDE_APP_SCREEN_IMG
+  const panelBg = variant === 'ride' ? 'bg-[#e8fffa]' : 'bg-[#18d4b3]'
+
+  const handleShare = useCallback(async () => {
+    const value = downloadValue.trim()
+    if (!value) {
+      setStatus('error')
+      setErrorMessage('Enter your email address.')
+      return
+    }
+    setStatus('sending')
+    setErrorMessage('')
+    try {
+      const res = await fetch('/api/share-app-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'email', value }),
+      })
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+      if (!res.ok || !data.ok) {
+        setStatus('error')
+        setErrorMessage(data.error || 'Could not share the app link. Please try again.')
+        return
+      }
+      onClose()
+      onLinkSent?.()
+    } catch {
+      setStatus('error')
+      setErrorMessage('Network error. Please try again.')
+    }
+  }, [downloadValue, onClose, onLinkSent])
+
   if (!isOpen) return null
 
-  const androidUrl = process.env.NEXT_PUBLIC_APP_DOWNLOAD_URL || 'https://play.google.com/store'
-  const iosUrl = process.env.NEXT_PUBLIC_IOS_APP_DOWNLOAD_URL || 'https://www.apple.com/app-store/'
-  const qrData = encodeURIComponent(androidUrl)
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${qrData}`
-
   return (
-    <div className="fixed inset-0 z-[1100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="relative w-full max-w-4xl overflow-hidden rounded-2xl border border-white/20 bg-white shadow-[0_35px_90px_-25px_rgba(0,0,0,0.55)]">
+    <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/55 p-4">
+      <div className="relative w-full max-w-4xl overflow-hidden rounded-2xl border border-neutral-200 bg-white text-gray-900 shadow-[0_30px_100px_-30px_rgba(0,0,0,0.6)]">
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close app download popup"
-          className="absolute right-7 top-6 z-10 text-gray-500 hover:text-gray-800 transition-colors"
+          className="absolute right-4 top-4 z-10 h-8 w-8 rounded-full border border-gray-200 text-gray-500 transition-colors hover:border-gray-300 hover:text-gray-800"
+          aria-label="Close download app popup"
         >
-          <i className="fas fa-times text-lg"></i>
+          <i className="fas fa-xmark" />
         </button>
 
-        <div className="grid grid-cols-1 md:grid-cols-[360px_minmax(0,1fr)] md:items-stretch">
-          {/* Same image as hero — sized with width/height so nothing gets clipped */}
-          <div className="hidden md:flex items-center justify-center bg-gradient-to-b from-[#e8fffa] to-[#f8f9ff] border-r border-gray-100 p-5">
-            <Image
-              src="/img/ride.png"
-              alt="GatiMitra ride app screens"
-              width={615}
-              height={881}
-              className="h-auto w-full max-h-[480px] object-contain"
-              sizes="360px"
-              unoptimized
-              priority
+        <div className="grid grid-cols-1 items-stretch gap-0 md:grid-cols-[340px_minmax(0,1fr)]">
+          <div
+            className={`hidden min-h-[420px] items-center justify-center self-stretch px-4 py-5 md:flex md:px-5 md:py-6 ${panelBg}`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- synced public/img asset */}
+            <img
+              src={previewSrc}
+              alt={variant === 'ride' ? 'GatiMitra ride app' : 'GatiMitra customer app'}
+              className="h-full w-full max-h-[460px] max-w-[320px] object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,0.22)]"
+              decoding="async"
+              fetchPriority="high"
             />
           </div>
 
-          <div className="flex flex-col justify-center p-6 md:p-8">
-            <h3 className="text-3xl font-bold text-gray-900 pr-8">{title}</h3>
-            <p className="mt-3 text-sm text-gray-600 leading-relaxed max-w-xl">{description}</p>
+          <div className="p-6 md:p-8">
+            <h3 className="pr-8 text-3xl font-semibold tracking-tight">{title}</h3>
+            <p className="mt-3 max-w-xl text-sm text-gray-600">{description}</p>
 
-            <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="mt-6 flex items-center gap-6 text-sm">
+              <label className="inline-flex cursor-not-allowed items-center gap-2 opacity-45">
+                <input
+                  type="radio"
+                  name="appDownloadMode"
+                  checked={false}
+                  disabled
+                  className="accent-[#e91e8c]"
+                  aria-disabled="true"
+                />
+                <span>Phone</span>
+              </label>
+              <label className="inline-flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  name="appDownloadMode"
+                  checked={downloadMode === 'email'}
+                  onChange={() => {
+                    setDownloadMode('email')
+                    setStatus('idle')
+                    setErrorMessage('')
+                  }}
+                  className="accent-[#e91e8c]"
+                />
+                <span>Email</span>
+              </label>
+            </div>
+
+            <div className="mt-3 flex flex-col gap-2.5 sm:flex-row">
+              <div className="flex w-full">
+                <input
+                  type="email"
+                  value={downloadValue}
+                  onChange={(e) => {
+                    setDownloadValue(e.target.value)
+                    if (status !== 'idle') {
+                      setStatus('idle')
+                      setErrorMessage('')
+                    }
+                  }}
+                  placeholder="you@example.com"
+                  className="h-11 w-full rounded-md border border-gray-200 px-3 text-sm outline-none focus:border-[#e91e8c]/40 focus:ring-2 focus:ring-[#e91e8c]/25"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      void handleShare()
+                    }
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleShare()}
+                disabled={status === 'sending'}
+                className="h-11 whitespace-nowrap rounded-md bg-[#e91e8c] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#d0177d] disabled:opacity-60"
+              >
+                {status === 'sending' ? 'Sending…' : 'Share App Link'}
+              </button>
+            </div>
+            {errorMessage ? (
+              <p className="mt-2 text-xs text-red-600" role="alert">
+                {errorMessage}
+              </p>
+            ) : null}
+
+            <p className="mt-5 text-xs text-gray-500">Download app from</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2.5">
               <a
                 href={androidUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#1f2937] text-white px-4 py-3 text-sm font-semibold hover:bg-[#111827] transition-colors"
+                className="inline-flex items-center gap-2 rounded-md bg-[#1f2937] px-3 py-2 text-xs font-medium text-white"
               >
-                <i className="fab fa-google-play text-base" />
-                Get it on Google Play
+                <GooglePlayIcon className="h-4 w-4 shrink-0" />
+                <span>GET IT ON Google Play</span>
               </a>
               <a
                 href={iosUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#1f2937] text-white px-4 py-3 text-sm font-semibold hover:bg-[#111827] transition-colors"
+                className="inline-flex items-center gap-2 rounded-md bg-[#1f2937] px-3 py-2 text-xs font-medium text-white"
               >
-                <i className="fab fa-apple text-base" />
-                Download on App Store
+                <AppleStoreIcon className="h-4 w-4 shrink-0" />
+                <span>Download on the App Store</span>
               </a>
-            </div>
-
-            <div className="mt-6 flex flex-col sm:flex-row items-start sm:items-center gap-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
-              <img
-                src={qrUrl}
-                alt="Download app QR code"
-                className="w-[104px] h-[104px] rounded-lg border border-gray-200 bg-white p-1"
-              />
-              <div>
-                <p className="text-sm font-semibold text-gray-900">Scan QR to download quickly</p>
-                <p className="text-xs text-gray-600 mt-1">
-                  Open your phone camera and scan this code to install the app.
-                </p>
-              </div>
             </div>
           </div>
         </div>

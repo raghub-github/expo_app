@@ -17,7 +17,34 @@ export type BillContext = {
   /** Total add-on pieces: Σ line (qty × Σ addon.quantity). */
   addonQtyTotal: number;
   /** Per-line totals for merchant offer item targeting (menu_item_ids in offer_metadata). */
-  orderLines: { menuItemId: string; lineTotal: number; quantity: number }[];
+  orderLines: {
+    menuItemId: string;
+    lineTotal: number;
+    quantity: number;
+    /** Catalog base×qty only (excludes add-ons) — Boost applies here. */
+    baseLineTotal?: number;
+    /** Add-on line total. */
+    addonLineTotal?: number;
+    /** false = already promoted (MRP / Boost / BOGO); excluded from cart/coupon bases. */
+    discountEligible: boolean;
+    /** Why the line is ineligible (null when eligible). */
+    ineligibilityReason?: "ITEM_PROMO" | "MRP" | null;
+    /** Filled by item-surface offer apply — SSOT for merchant/customer display. */
+    offerDiscountAmount?: number;
+    effectiveLineTotal?: number;
+    appliedOfferId?: number | null;
+    appliedOfferLabel?: string | null;
+    appliedOfferType?: string | null;
+    /** Merchant-configured Boost % (never derive from disc÷gross). */
+    appliedOfferDiscountPct?: number | null;
+    /** Merchant-configured flat ₹ off per unit when offer is FLAT. */
+    appliedOfferDiscountFlat?: number | null;
+  }[];
+  /**
+   * Cart menu PK → catalog item_id aliases (and similar).
+   * Required so Boost targeting matches when offers store item_id but cart sends PK.
+   */
+  menuIdAliasesByLineId?: Map<string, string[]>;
   distanceKm: number | null;
   merchantStoreId: number;
   merchantParentId: number | null;
@@ -200,6 +227,37 @@ export type BillingResult = {
   taxes: AppliedLine[];
   breakdown_steps: BreakdownStep[];
   ruleset_version: number;
+  /**
+   * Offer Engine v2 — Σ line totals where discountEligible !== false.
+   * Coupons / platform cart / precision min-order and % bases MUST use this.
+   */
+  eligible_subtotal: number;
+  /** Per-line eligibility snapshot for checkout UI + order freeze. */
+  order_line_eligibility: Array<{
+    menuItemId: string;
+    lineTotal: number;
+    quantity: number;
+    isDiscountEligible: boolean;
+    ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+  }>;
+  /**
+   * Offer Engine — finalized per-line catalog vs effective selling price after
+   * store item offers. Persisted onto orders_core_items at placement.
+   */
+  order_line_pricing: Array<{
+    menuItemId: string;
+    quantity: number;
+    catalogLineTotal: number;
+    effectiveLineTotal: number;
+    offerDiscountAmount: number;
+    appliedOfferId: number | null;
+    appliedOfferLabel: string | null;
+    appliedOfferType: string | null;
+    appliedOfferDiscountPct: number | null;
+    appliedOfferDiscountFlat: number | null;
+    isDiscountEligible: boolean;
+    ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+  }>;
 };
 
 export type ConditionRow = {

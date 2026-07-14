@@ -19,7 +19,7 @@ import {
   deleteWaitingForOrderNotifications,
 } from "@/services/storeNotificationsApi";
 
-const POLL_MS = 8000;
+const POLL_MS = 15_000;
 const RETRIGGER_DELAY_MS = 4000;
 
 function isExpoGo(): boolean {
@@ -61,10 +61,12 @@ export default function WaitingForOrderNotifier() {
   const skipRetriggerRef = useRef(false);
   const prevHadWaitingRef = useRef(false);
   const retriggerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightRef = useRef(false);
   const tokenRef = useRef(token);
   const storeIdRef = useRef(storeId);
   const isOnlineRef = useRef(isOnline);
   const refreshRef = useRef(refresh);
+  const hasWaitingRef = useRef(false);
 
   tokenRef.current = token;
   storeIdRef.current = storeId;
@@ -72,6 +74,7 @@ export default function WaitingForOrderNotifier() {
   refreshRef.current = refresh;
 
   const hasWaitingInList = notifications.some((n) => isWaitingTitle(n.title));
+  hasWaitingRef.current = hasWaitingInList;
 
   // User removed "Waiting for Order" from the sheet (delete) while still idle → ensure again after delay.
   useEffect(() => {
@@ -112,22 +115,29 @@ export default function WaitingForOrderNotifier() {
     };
   }, [hasWaitingInList]);
 
+  // Stable poll: do not depend on `refresh` / flicker `isOnline` identity — those remounted
+  // the interval and caused overlapping ensure POSTs every few hundred ms.
   useEffect(() => {
     if (!token || !storeId) return undefined;
 
     let cancelled = false;
 
     const run = async () => {
-      if (cancelled) return;
+      if (cancelled || inFlightRef.current) return;
+      inFlightRef.current = true;
       try {
-        const active = await getActiveOrdersCount(storeId, token);
+        const t = tokenRef.current;
+        const sid = storeIdRef.current;
+        if (!t || !sid) return;
+
+        const active = await getActiveOrdersCount(sid, t);
         if (cancelled) return;
 
         if (active > 0) {
           skipRetriggerRef.current = true;
           try {
-            await deleteWaitingForOrderNotifications(storeId, token);
-            void refresh();
+            await deleteWaitingForOrderNotifications(sid, t);
+            void refreshRef.current();
           } finally {
             setTimeout(() => {
               skipRetriggerRef.current = false;
@@ -136,11 +146,11 @@ export default function WaitingForOrderNotifier() {
           return;
         }
 
-        if (!isOnline) {
+        if (!isOnlineRef.current) {
           skipRetriggerRef.current = true;
           try {
-            await deleteWaitingForOrderNotifications(storeId, token);
-            void refresh();
+            await deleteWaitingForOrderNotifications(sid, t);
+            void refreshRef.current();
           } finally {
             setTimeout(() => {
               skipRetriggerRef.current = false;
@@ -149,14 +159,19 @@ export default function WaitingForOrderNotifier() {
           return;
         }
 
-        const { created } = await ensureWaitingForOrderNotification(storeId, token);
+        // Already showing waiting — no need to hammer ensure.
+        if (hasWaitingRef.current) return;
+
+        const { created } = await ensureWaitingForOrderNotification(sid, t);
         if (cancelled) return;
         if (created) {
-          void refresh();
+          void refreshRef.current();
           await maybePresentBackgroundNotice();
         }
       } catch {
         // network / auth — skip cycle
+      } finally {
+        inFlightRef.current = false;
       }
     };
 
@@ -166,7 +181,43 @@ export default function WaitingForOrderNotifier() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [token, storeId, isOnline, refresh]);
+  }, [token, storeId]);
+
+  // React quickly when online flips (interval alone can lag up to POLL_MS).
+  useEffect(() => {
+    if (!token || !storeId) return;
+    if (inFlightRef.current) return;
+    void (async () => {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
+      try {
+        if (!isOnline) {
+          skipRetriggerRef.current = true;
+          try {
+            await deleteWaitingForOrderNotifications(storeId, token);
+            void refreshRef.current();
+          } finally {
+            setTimeout(() => {
+              skipRetriggerRef.current = false;
+            }, 800);
+          }
+          return;
+        }
+        if (hasWaitingRef.current) return;
+        const active = await getActiveOrdersCount(storeId, token);
+        if (active > 0) return;
+        const { created } = await ensureWaitingForOrderNotification(storeId, token);
+        if (created) {
+          void refreshRef.current();
+          await maybePresentBackgroundNotice();
+        }
+      } catch {
+        // ignore
+      } finally {
+        inFlightRef.current = false;
+      }
+    })();
+  }, [token, storeId, isOnline]);
 
   return null;
 }

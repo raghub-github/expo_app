@@ -495,7 +495,12 @@ function nowInStoreTz(timeZone: string = STORE_TIMEZONE_DEFAULT): { dayOfWeek: n
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
-    hour12: false,
+    // `hour12: false` alone leaves hourCycle unspecified; on this ICU build it resolves to
+    // "h24" (1-24) instead of "h23" (0-23), so midnight reports hour=24 — pushing
+    // minutesSinceMidnight 1440 too high for the whole 00:00-00:59 window and making every
+    // schedule lookup think it's already past today's slots. Must set hourCycle alone —
+    // if hour12 is also present, hour12 wins per spec and hourCycle is ignored.
+    hourCycle: "h23",
   });
   const parts = formatter.formatToParts(new Date());
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
@@ -911,6 +916,75 @@ type StoreRow = {
   schedule_end_prompt_expires_at: Date | string | null;
 };
 
+type MerchantStoresOnlineRow = {
+  operational_status?: string | null;
+  is_accepting_orders?: boolean | null;
+  is_available?: boolean | null;
+  is_active?: boolean | null;
+};
+
+/** True when merchant_stores still advertises an online surface (any gate flag or OPEN). */
+export function merchantStoresRowHasStaleOnlineFlags(row: MerchantStoresOnlineRow): boolean {
+  return (
+    String(row.operational_status ?? "").trim().toUpperCase() === "OPEN" ||
+    row.is_active === true ||
+    row.is_accepting_orders === true ||
+    row.is_available === true
+  );
+}
+
+/** Schedule phase / vacation means the store must not surface as online. */
+export function schedulePhaseImpliesSurfaceClosed(
+  phase: "OFF_DAY" | "WITHIN_SLOT" | "OUTSIDE_HOURS" | "NO_HOURS",
+  activeClosureEndAtIso: string | null
+): boolean {
+  return phase !== "WITHIN_SLOT" || activeClosureEndAtIso != null;
+}
+
+/**
+ * Repair drift: UI + live_schedule_phase say closed but merchant_stores (and optionally
+ * availability) still show online. Runs on every tick write so stores are fixed even
+ * when next_schedule_transition_at is far in the future.
+ */
+async function reconcileOfflineWhenScheduleClosed(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  phase: "OFF_DAY" | "WITHIN_SLOT" | "OUTSIDE_HOURS" | "NO_HOURS",
+  activeClosureEndAtIso: string | null,
+  storeRow: MerchantStoresOnlineRow
+): Promise<void> {
+  if (!schedulePhaseImpliesSurfaceClosed(phase, activeClosureEndAtIso)) return;
+
+  if (merchantStoresRowHasStaleOnlineFlags(storeRow)) {
+    await syncMerchantStoresOnlineTriple(sql, storeId, false);
+    storeRow.operational_status = "CLOSED";
+    storeRow.is_active = false;
+    storeRow.is_accepting_orders = false;
+    storeRow.is_available = false;
+  }
+
+  await sql`
+    UPDATE merchant_store_availability
+    SET
+      is_available = FALSE,
+      is_accepting_orders = FALSE,
+      unavailable_reason = CASE
+        WHEN unavailable_reason IS NULL OR TRIM(unavailable_reason) = '' THEN 'schedule_closed'
+        ELSE unavailable_reason
+      END,
+      close_reason = COALESCE(NULLIF(TRIM(close_reason), ''), 'Outside operating hours'),
+      restriction_type = COALESCE(NULLIF(TRIM(restriction_type), ''), 'schedule'),
+      last_toggle_type = COALESCE(NULLIF(TRIM(last_toggle_type), ''), 'AUTO_CLOSE'),
+      updated_at = NOW()
+    WHERE store_id = ${storeId}
+      AND (is_available = TRUE OR is_accepting_orders = TRUE)
+      AND (
+        unavailable_reason IS NULL
+        OR unavailable_reason NOT IN ('manual_indefinite', 'forced_lock', 'vacation')
+      )
+  `;
+}
+
 /** When `operational_status` is already CLOSED but an orphan boolean stayed TRUE, strict `currentlyOpen` misses — still run close/repair. */
 function storeRowShowsStaleOnlineSignals(store: StoreRow): boolean {
   return (
@@ -1040,12 +1114,19 @@ async function evaluateAndPersistStoreScheduleState(
       nextScheduleTransitionAt = isManualCloseActive
         ? toIsoOrNull(store.manual_close_until)
         : toIsoOrNull(new Date(now.getTime() + 6 * 60 * 60 * 1000));
+      if (shouldForceScheduleClose(currentlyOpen, store)) {
+        await syncMerchantStoresOnlineTriple(sql, storeId, false);
+      }
       return;
     }
 
     if (!autoOpen) {
       statusReasonCode = "auto_open_disabled";
       nextScheduleTransitionAt = toIsoOrNull(new Date(now.getTime() + 6 * 60 * 60 * 1000));
+      if (!withinHours && shouldForceScheduleClose(currentlyOpen, store)) {
+        await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        await applyScheduleClosed(sql, storeId, log);
+      }
       return;
     }
 
@@ -1068,6 +1149,9 @@ async function evaluateAndPersistStoreScheduleState(
 
     if (shouldForceScheduleClose(currentlyOpen, store)) {
       if (isManualOverride && !isBeforeFirstSlotToday(hoursRow, dayOfWeek, minutesSinceMidnight)) {
+        if (storeRowShowsStaleOnlineSignals(store)) {
+          await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        }
         statusReasonCode = "manual_override_outside_hours";
         return;
       }
@@ -1199,6 +1283,16 @@ async function runStoreScheduleTickOnce(
           -- Backfill rows that don't yet have a live-status row written.
           -- This handles brand-new columns (migration 0381) and new stores.
           OR ms.live_status_updated_at IS NULL
+          -- Re-evaluate when schedule says closed but merchant_stores still shows online.
+          OR (
+            ms.live_schedule_phase IN ('OUTSIDE_HOURS', 'OFF_DAY', 'NO_HOURS')
+            AND (
+              COALESCE(ms.is_active, FALSE) = TRUE
+              OR COALESCE(ms.is_accepting_orders, FALSE) = TRUE
+              OR COALESCE(ms.is_available, FALSE) = TRUE
+              OR ms.operational_status = 'OPEN'::store_operational_status
+            )
+          )
         )
       ORDER BY msa.next_schedule_transition_at ASC NULLS FIRST
       LIMIT 500
@@ -1521,6 +1615,9 @@ async function syncLiveScheduleColumnsForStore(
       // leave null
     }
   }
+
+  // Align merchant_stores + availability when schedule phase is closed but flags drifted.
+  await reconcileOfflineWhenScheduleClosed(sql, storeId, phase, activeClosureEndAtIso, row);
 
   // Manual override: schedule says open, but the live flags say closed.
   // `is_accepting_orders === true` is the canonical "live open" signal

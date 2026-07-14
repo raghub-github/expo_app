@@ -32,7 +32,8 @@ import {
   parseRideDeliveredBill,
   buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
-import { buildRideFareBillSummaryLines } from "@/lib/ride-fare-bill-display";
+import { buildRideCheckoutCompactBill } from "@/lib/ride-fare-bill-display";
+import { RideCheckoutBillSummary } from "@/components/ride/RideCheckoutBillSummary";
 import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
 import { CheckoutOffersSheet } from "@/components/checkout/CheckoutOffersSheet";
 import { walletService } from "@/services/wallet.service";
@@ -115,10 +116,10 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     retry: 2,
   });
 
-  const billSummary = useMemo(() => {
+  const compactBill = useMemo(() => {
     const bill = rideFareBillQ.data;
     if (!bill?.ok) return null;
-    return buildRideFareBillSummaryLines(bill, {
+    return buildRideCheckoutCompactBill(bill, {
       waitingCharge: fareBreakdown.waitingCharge,
       surgeCharge: fareBreakdown.surgeCharge,
     });
@@ -200,11 +201,14 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
   ]);
 
   const payableTotal = useMemo(() => {
-    if (billSummary?.payableTotal != null && billSummary.payableTotal > 0) {
-      return billSummary.payableTotal;
+    if (compactBill?.payableTotal != null && compactBill.payableTotal > 0) {
+      return compactBill.payableTotal;
     }
-    return fareBreakdown.total;
-  }, [billSummary?.payableTotal, fareBreakdown.total]);
+    if (rideFareBillQ.data?.ok && rideFareBillQ.data.finalAmount > 0) {
+      return rideFareBillQ.data.finalAmount;
+    }
+    return 0;
+  }, [compactBill?.payableTotal, rideFareBillQ.data]);
 
   const { data: profile } = useProfile();
   const gatiCashBalanceQ = useQuery({
@@ -542,39 +546,11 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         <View style={styles.summaryCard}>
           <Text style={styles.sectionLabel}>BILL SUMMARY</Text>
 
-          {rideFareBillQ.isLoading && !billSummary ? (
-            <View style={styles.billLoadingRow}>
-              <ActivityIndicator size="small" color={MINT_DARK} />
-              <Text style={styles.billLoadingText}>Calculating fare…</Text>
-            </View>
-          ) : null}
-
-          {(billSummary?.lines ?? fareBreakdown.lines).map((line) => (
-            <View
-              key={`${line.label}-${line.amount}-${line.emphasis ? "t" : "n"}`}
-              style={[styles.breakdownRow, line.emphasis && styles.breakdownRowTotal]}
-            >
-              <Text style={[styles.breakdownLabel, line.emphasis && styles.breakdownLabelMuted]}>
-                {line.label}
-              </Text>
-              {line.isDiscount ? (
-                <Text style={styles.breakdownDiscount}>-{formatRideFare(line.amount)}</Text>
-              ) : (
-                <Text style={[styles.breakdownValue, line.emphasis && styles.breakdownValueMuted]}>
-                  {formatRideFare(line.amount)}
-                </Text>
-              )}
-            </View>
-          ))}
-
-          {gatiCashApplyAmount > 0.005 ? (
-            <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>GatiCash</Text>
-              <Text style={styles.breakdownDiscount}>
-                -{formatRideFare(gatiCashApplyAmount)}
-              </Text>
-            </View>
-          ) : null}
+          <RideCheckoutBillSummary
+            compactBill={compactBill}
+            loading={rideFareBillQ.isLoading}
+            gatiCashApplyAmount={gatiCashApplyAmount}
+          />
 
           <View style={styles.routeDivider} />
 
@@ -623,7 +599,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         <TouchableOpacity
           style={[styles.payBtn, payingFare && styles.payBtnDisabled]}
           onPress={() => void handlePayRideFare()}
-          disabled={payingFare}
+          disabled={payingFare || rideFareBillQ.isLoading || payableTotal <= 0}
           activeOpacity={0.9}
         >
           <LinearGradient
@@ -655,7 +631,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         visible={offersOpen}
         onClose={() => setOffersOpen(false)}
         bottomInset={insets.bottom}
-        loading={rideOffersQ.isLoading || addressesQ.isLoading}
+        loading={(rideOffersQ.isLoading || addressesQ.isLoading) && !checkoutOffersData}
         error={rideOffersQ.isError && !checkoutOffersData}
         data={checkoutOffersData}
         cartSubtotal={fareBreakdown.total}

@@ -6,6 +6,8 @@ type MerchantNavTransitionState = {
   merchantId: string | null;
   /** Message index chosen once per navigation — shared by shutter + page overlay. */
   loadingMessageIndex: number;
+  /** Wall-clock when show() ran — page waits for slide-in before hide. */
+  shownAt: number;
   show: (merchantId: string) => void;
   hide: () => void;
 };
@@ -15,10 +17,11 @@ export const useMerchantNavTransitionStore = create<MerchantNavTransitionState>(
   active: false,
   merchantId: null,
   loadingMessageIndex: 0,
+  shownAt: 0,
   show: (merchantId) => {
-    const loadingMessageIndex =
-      useMerchantLoadingMessageStore.getState().pickStartIndex(merchantId);
-    set({ active: true, merchantId, loadingMessageIndex });
+    const loadingMessageIndex = useMerchantLoadingMessageStore.getState().pickStartIndex(merchantId);
+    set({ active: true, merchantId, loadingMessageIndex, shownAt: Date.now() });
   },
-  hide: () => set({ active: false, merchantId: null, loadingMessageIndex: 0 }),
+  // Keep merchantId + loadingMessageIndex for the destination page skeleton.
+  hide: () => set({ active: false }),
 }));

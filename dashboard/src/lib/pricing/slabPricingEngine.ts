@@ -4,12 +4,10 @@
 
 import {
   calcCustomerSlabPrice,
-  calcPickupPayout,
-  calcDropPayout,
-  calcRiderPayoutBreakdown,
   calcGmitraMaxAdjustment,
   calcWaitingCharge,
   calcCumulativeDistanceCharge,
+  calcServicePayoutRuleSplit,
   getActiveSortedSlabs,
   getFirstZeroKmSlab,
   normalizeKm,
@@ -17,13 +15,10 @@ import {
   normalizeNullableMaxKm,
   toSafeNumber,
   type CustomerSlab,
-  type PickupSlab,
-  type DropSlab,
   type CustomerSlabPrice,
-  type PickupPayoutBreakdown,
-  type DropPayoutBreakdown,
   type CumulativeSegment,
-  type RiderPayoutBreakdown,
+  type ServicePayoutRule,
+  type ServicePayoutRuleSplit,
 } from "@gatimitra/slab-pricing";
 import {
   resolvePreviewSurges,
@@ -38,11 +33,7 @@ function round2(n: number): number {
 
 export type {
   CustomerSlab,
-  PickupSlab,
-  DropSlab,
   CustomerSlabPrice,
-  PickupPayoutBreakdown,
-  DropPayoutBreakdown,
   CumulativeSegment,
   AppliedPreviewSurge,
   PreviewSurgeDefinition,
@@ -51,18 +42,10 @@ export type {
 
 export type CustomerPreviewBreakdown = CustomerSlabPrice & { distanceKm: number };
 
-export type RiderPreviewBreakdown = Omit<RiderPayoutBreakdown, "appliedSurges"> & {
-  appliedSurges: AppliedPreviewSurge[];
-};
-
-export type RidePreviewBreakdown =
-  | ({ mode: "customer" } & CustomerPreviewBreakdown)
-  | ({ mode: "rider" } & RiderPreviewBreakdown);
+export type RidePreviewBreakdown = { mode: "customer" } & CustomerPreviewBreakdown;
 
 export {
   calcCustomerSlabPrice,
-  calcPickupPayout,
-  calcDropPayout,
   calcWaitingCharge,
   calcCumulativeDistanceCharge,
   calcGmitraMaxAdjustment,
@@ -85,6 +68,7 @@ export function calcSurgeAmount(input: {
   timeSlots: PreviewSurgeTimeSlot[];
   forceActiveSurgeIds?: number[];
   now?: Date;
+  onlyForceActive?: boolean;
 }): {
   appliedSurges: AppliedPreviewSurge[];
   rawSurgeTotal: number;
@@ -111,78 +95,8 @@ export function calcSurgeAmount(input: {
     baseFareForPct: input.baseFareForPct,
     forceActiveSurgeIds: input.forceActiveSurgeIds,
     now: input.now,
+    onlyForceActive: input.onlyForceActive,
   });
-}
-
-export function calcRiderPreviewBreakdown(input: {
-  pickupKm: unknown;
-  dropKm: unknown;
-  pickupSlabs: PickupSlab[];
-  dropSlabs: DropSlab[];
-  waitingMinutes?: unknown;
-  riderHasGmitraMax?: boolean;
-  service: "food" | "parcel" | "ride";
-  vehicleType?: string | null;
-  surgeDefinitions?: PreviewSurgeDefinition[];
-  surgeTimeSlots?: PreviewSurgeTimeSlot[];
-  surgeWaitMaxOnly?: boolean;
-  maxTotalSurgeAmount?: number | null;
-  forceActiveSurgeIds?: number[];
-}): RiderPreviewBreakdown | null {
-  if (input.pickupSlabs.length === 0 && input.dropSlabs.length === 0) return null;
-
-  const { extrasAllowed } = calcGmitraMaxAdjustment({
-    riderHasGmitraMax: input.riderHasGmitraMax === true,
-    surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
-  });
-
-  const pickup =
-    input.pickupSlabs.length > 0
-      ? calcPickupPayout({
-          pickupKm: input.pickupKm,
-          slabs: input.pickupSlabs,
-          waitingMinutes: input.waitingMinutes,
-          extrasAllowed,
-        })
-      : null;
-
-  const drop =
-    input.dropSlabs.length > 0
-      ? calcDropPayout({ dropKm: input.dropKm, slabs: input.dropSlabs })
-      : null;
-
-  const pickupLegTotal = pickup?.pickupPayout ?? 0;
-  const dropAmount = drop?.dropAmount ?? 0;
-  const waitingAmount = pickup?.waitingAmount ?? 0;
-  const subtotalBeforeSurge = round2(pickupLegTotal + dropAmount + waitingAmount);
-
-  const surge = calcSurgeAmount({
-    service: input.service,
-    vehicleType: input.vehicleType,
-    riderHasGmitraMax: input.riderHasGmitraMax === true,
-    surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
-    maxTotalSurgeAmount: input.maxTotalSurgeAmount ?? null,
-    baseFareForPct: subtotalBeforeSurge,
-    definitions: input.surgeDefinitions ?? [],
-    timeSlots: input.surgeTimeSlots ?? [],
-    forceActiveSurgeIds: input.forceActiveSurgeIds,
-  });
-
-  const base = calcRiderPayoutBreakdown({
-    pickupKm: input.pickupKm,
-    dropKm: input.dropKm,
-    pickupSlabs: input.pickupSlabs,
-    dropSlabs: input.dropSlabs,
-    waitingMinutes: input.waitingMinutes,
-    riderHasGmitraMax: input.riderHasGmitraMax,
-    surgeWaitMaxOnly: input.surgeWaitMaxOnly,
-    appliedSurges: surge.appliedSurges,
-    rawSurgeTotal: surge.rawSurgeTotal,
-    surgeTotal: surge.surgeTotal,
-    surgeCapped: surge.surgeCapped,
-  });
-  if (!base) return null;
-  return { ...base, appliedSurges: surge.appliedSurges };
 }
 
 export function calcCustomerPreviewBreakdown(input: {
@@ -194,34 +108,94 @@ export function calcCustomerPreviewBreakdown(input: {
   return { distanceKm: normalizeKm(input.distanceKm), ...quote };
 }
 
-export function calcRidePreviewBreakdown(
-  input:
-    | { mode: "customer"; tripKm: unknown; slabs: CustomerSlab[] }
-    | {
-        mode: "rider";
-        pickupKm: unknown;
-        dropKm: unknown;
-        pickupSlabs: PickupSlab[];
-        dropSlabs: DropSlab[];
-        waitingMinutes?: unknown;
-        riderHasGmitraMax?: boolean;
-        vehicleType?: string | null;
-        surgeDefinitions?: PreviewSurgeDefinition[];
-        surgeTimeSlots?: PreviewSurgeTimeSlot[];
-        surgeWaitMaxOnly?: boolean;
-        maxTotalSurgeAmount?: number | null;
-        forceActiveSurgeIds?: number[];
-      }
-): RidePreviewBreakdown | null {
-  if (input.mode === "customer") {
-    const customer = calcCustomerPreviewBreakdown({ distanceKm: input.tripKm, slabs: input.slabs });
-    return customer ? { mode: "customer" as const, ...customer } : null;
-  }
+export type ServicePayoutRulePreviewInput = ServicePayoutRule & {
+  waitingChargePerMin: number | null;
+  waitingFreeMinutes: number;
+};
 
-  const rider = calcRiderPreviewBreakdown({
-    ...input,
-    service: "ride",
+export type ServicePayoutRulePreviewBreakdown = ServicePayoutRuleSplit & {
+  waitingMinutes: number;
+  waitingAmount: number;
+  appliedSurges: AppliedPreviewSurge[];
+  rawSurgeTotal: number;
+  surgeTotal: number;
+  surgeCapped: boolean;
+  finalAmount: number;
+};
+
+/** Rider Fare Engine v3.0 admin preview: customer fare -> rider % split -> waiting -> surge -> platform revenue. */
+export function calcServicePayoutRulePreviewBreakdown(input: {
+  customerFare: unknown;
+  pickupKm: unknown;
+  dropKm: unknown;
+  rule: ServicePayoutRulePreviewInput;
+  waitingMinutes?: unknown;
+  riderHasGmitraMax?: boolean;
+  service: "food" | "parcel" | "ride";
+  vehicleType?: string | null;
+  surgeDefinitions?: PreviewSurgeDefinition[];
+  surgeTimeSlots?: PreviewSurgeTimeSlot[];
+  surgeWaitMaxOnly?: boolean;
+  maxTotalSurgeAmount?: number | null;
+  forceActiveSurgeIds?: number[];
+}): ServicePayoutRulePreviewBreakdown | null {
+  const customerFare = normalizeMoney(input.customerFare);
+  if (customerFare <= 0) return null;
+
+  const split = calcServicePayoutRuleSplit({
+    customerFare,
+    pickupKm: normalizeKm(input.pickupKm),
+    dropKm: normalizeKm(input.dropKm),
+    rule: input.rule,
   });
 
-  return rider ? { mode: "rider" as const, ...rider } : null;
+  const { extrasAllowed } = calcGmitraMaxAdjustment({
+    riderHasGmitraMax: input.riderHasGmitraMax === true,
+    surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
+  });
+
+  const waitingMinutes = extrasAllowed ? Math.max(0, toSafeNumber(input.waitingMinutes, 0)) : 0;
+  const waitingAmount =
+    waitingMinutes > 0 && input.rule.waitingChargePerMin
+      ? calcWaitingCharge(waitingMinutes, input.rule.waitingFreeMinutes, input.rule.waitingChargePerMin)
+      : 0;
+
+  const surge = calcSurgeAmount({
+    service: input.service,
+    vehicleType: input.vehicleType,
+    riderHasGmitraMax: input.riderHasGmitraMax === true,
+    surgeWaitMaxOnly: input.surgeWaitMaxOnly === true,
+    maxTotalSurgeAmount: input.maxTotalSurgeAmount ?? null,
+    baseFareForPct: round2(split.pickupAmount + split.dropAmount),
+    definitions: input.surgeDefinitions ?? [],
+    timeSlots: input.surgeTimeSlots ?? [],
+    forceActiveSurgeIds: input.forceActiveSurgeIds,
+    // Preview/calculator: a surge only applies when explicitly selected below, never from
+    // time-window or always-on auto-detection (that logic is for live dispatch quotes).
+    onlyForceActive: true,
+  });
+
+  const pickupAmount = round2(split.pickupAmount + waitingAmount);
+  const finalAmount = round2(pickupAmount + split.dropAmount + surge.surgeTotal);
+
+  return {
+    ...split,
+    pickupAmount,
+    waitingMinutes,
+    waitingAmount,
+    appliedSurges: surge.appliedSurges,
+    rawSurgeTotal: surge.rawSurgeTotal,
+    surgeTotal: surge.surgeTotal,
+    surgeCapped: surge.surgeCapped,
+    finalAmount,
+  };
+}
+
+export function calcRidePreviewBreakdown(input: {
+  mode: "customer";
+  tripKm: unknown;
+  slabs: CustomerSlab[];
+}): RidePreviewBreakdown | null {
+  const customer = calcCustomerPreviewBreakdown({ distanceKm: input.tripKm, slabs: input.slabs });
+  return customer ? { mode: "customer" as const, ...customer } : null;
 }

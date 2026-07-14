@@ -63,3 +63,30 @@ export function normalizeOfferFromApi(raw: Record<string, unknown> | Offer): Off
     updated_at: String(raw.updated_at ?? new Date().toISOString()),
   };
 }
+
+/**
+ * Resolve stored offer menu_item_ids (catalog item_id and/or numeric PKs)
+ * onto current menu catalog item_id strings. Used for Applies-to counts + Review.
+ */
+export function resolveMenuItemSelection(
+  selectedIds: string[] | null | undefined,
+  menuItems: Array<{ item_id: string; id?: number | null }>
+): string[] {
+  if (!selectedIds?.length || !menuItems.length) return [];
+  const byItemId = new Set(menuItems.map((m) => String(m.item_id).trim()).filter(Boolean));
+  const byPk = new Map<string, string>();
+  for (const m of menuItems) {
+    if (m.id == null) continue;
+    const pk = Number(m.id);
+    if (!Number.isFinite(pk) || pk <= 0) continue;
+    byPk.set(String(pk), String(m.item_id).trim());
+  }
+  const out = new Set<string>();
+  for (const raw of selectedIds) {
+    const s = String(raw ?? "").trim();
+    if (!s) continue;
+    if (byItemId.has(s)) out.add(s);
+    else if (byPk.has(s)) out.add(byPk.get(s)!);
+  }
+  return [...out];
+}

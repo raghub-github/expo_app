@@ -6,6 +6,7 @@ import {
   isPartnerNotificationsPanelClearedForStore,
   markPartnerNotificationsPanelCleared,
 } from '@/lib/partner-notifications-panel';
+import { purgeStaleNewOrderNotifications } from '@/lib/purge-stale-new-order-notifications';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -35,7 +36,10 @@ export async function GET(req: NextRequest) {
       console.error('[store-notifications GET]', error);
       return NextResponse.json({ error: 'Failed to load notifications' }, { status: 500 });
     }
-    const notifications = (data ?? []).map((r) => ({
+    const raw = data ?? [];
+    const purged = await purgeStaleNewOrderNotifications(db, gate.storeIdNum, raw);
+    const remaining = purged.size > 0 ? raw.filter((r) => !purged.has(String(r.id))) : raw;
+    const notifications = remaining.map((r) => ({
       id: String(r.id),
       type: r.type,
       title: r.title,

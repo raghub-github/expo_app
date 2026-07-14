@@ -8,7 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import {
-  isWithinAcceptanceWindow,
+  isWithinAcceptanceDeadline,
   loadAcceptanceWindowMinutes,
 } from '@/lib/order-acceptance-timeout-sync';
 
@@ -51,17 +51,37 @@ export async function GET(req: NextRequest) {
     }
 
     const coreIds = (rows ?? []).map((o) => Number((o as { id?: number }).id)).filter((id) => id > 0);
-    const foodByCore = new Map<number, { order_status?: string | null; created_at?: string | null }>();
+    const foodByCore = new Map<
+      number,
+      {
+        order_status?: string | null;
+        created_at?: string | null;
+        merchant_acceptance_deadline_at?: string | null;
+        merchant_acceptance_window_seconds?: number | null;
+      }
+    >();
 
     if (coreIds.length > 0) {
       const { data: foodRows } = await db
         .from('orders_food')
-        .select('order_id, order_status, created_at')
+        .select(
+          'order_id, order_status, created_at, merchant_acceptance_deadline_at, merchant_acceptance_window_seconds'
+        )
         .eq('merchant_store_id', gate.storeIdNum)
         .in('order_id', coreIds);
       for (const f of foodRows ?? []) {
         const coreId = Number((f as { order_id?: number }).order_id);
-        if (coreId > 0) foodByCore.set(coreId, f as { order_status?: string | null; created_at?: string | null });
+        if (coreId > 0) {
+          foodByCore.set(
+            coreId,
+            f as {
+              order_status?: string | null;
+              created_at?: string | null;
+              merchant_acceptance_deadline_at?: string | null;
+              merchant_acceptance_window_seconds?: number | null;
+            }
+          );
+        }
       }
     }
 
@@ -83,8 +103,17 @@ export async function GET(req: NextRequest) {
       );
       if (pipeline !== 'CREATED') continue;
 
-      const createdAt = food?.created_at ?? row.created_at ?? '';
-      if (createdAt && !isWithinAcceptanceWindow(createdAt, windowMins, nowMs)) {
+      if (
+        !isWithinAcceptanceDeadline(
+          {
+            createdAtIso: food?.created_at ?? row.created_at ?? '',
+            merchantAcceptanceDeadlineAt: food?.merchant_acceptance_deadline_at,
+            merchantAcceptanceWindowSeconds: food?.merchant_acceptance_window_seconds,
+          },
+          windowMins,
+          nowMs
+        )
+      ) {
         continue;
       }
       count += 1;

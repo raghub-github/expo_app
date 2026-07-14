@@ -342,10 +342,12 @@ app.get<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/partner-s
     return reply.code(400).send({ error: "invalid_store_id" });
   }
   try {
+    const { withDbSlot } = await import("./db/client.js");
     const { buildPartnerStoreStatusSnapshot } = await import(
       "./modules/merchant-partner/partner-store-status-snapshot.js"
     );
-    const snapshot = await buildPartnerStoreStatusSnapshot(storeId, req.log);
+    // Request-level slot is skipped for this poll path — acquire only around DB work.
+    const snapshot = await withDbSlot(() => buildPartnerStoreStatusSnapshot(storeId, req.log));
     if (!snapshot) return reply.code(404).send({ error: "store_not_found" });
     return reply.send(snapshot);
   } catch (e) {
@@ -369,6 +371,27 @@ await app.register(addressShareMeRoutes, { prefix: "/v1/me" });
 await app.register(addressSharePublicRoutes, { prefix: "/v1/public" });
 const { renderAddressShareLandingPage } = await import("./modules/addresses/address-share-page.js");
 const { sendAddressShareOgLogo } = await import("./modules/addresses/address-share-og-asset.js");
+
+// Android App Links verification. Served on link.gatimitra.com (nginx proxies
+// the whole host to backend). Android fetches this to auto-verify the domain
+// so /addr/... links open the app directly instead of a browser/chooser.
+const { buildAssetLinksJson } = await import("./lib/assetlinks.js");
+app.get("/.well-known/assetlinks.json", async (_req, reply) => {
+  const payload = buildAssetLinksJson();
+  if (!payload) {
+    // No fingerprints configured — 503 rather than publish an empty file that
+    // Android would cache as a verification failure.
+    return reply
+      .status(503)
+      .type("text/plain")
+      .send("assetlinks not configured (set ANDROID_APP_LINK_SHA256)");
+  }
+  return reply
+    .type("application/json")
+    .header("Cache-Control", "public, max-age=300")
+    .send(payload);
+});
+
 app.get("/addr/og-logo.png", async (_req, reply) => sendAddressShareOgLogo(reply));
 app.get<{ Params: { shortCode: string }; Querystring: { id?: string } }>(
   "/addr/:shortCode",
@@ -437,6 +460,8 @@ await app.register(cashfreeHeaderWebhookRoutes, { prefix: "/api" });
 await app.register(cashfreeBodySignedWebhookRoutes, { prefix: "/api" });
 
 await app.register(offersRoutes, { prefix: "/v1/offers" });
+const { pricingRoutes } = await import("./modules/pricing/pricing.routes.js");
+await app.register(pricingRoutes, { prefix: "/v1/pricing" });
 await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
 // Internal routes for in-cluster workers (payment-worker etc). Guarded by
@@ -449,6 +474,8 @@ const { financialRulesInternalRoutes } = await import(
 await app.register(financialRulesInternalRoutes, { prefix: "/v1/internal" });
 const { ordersInternalRoutes } = await import("./modules/orders/orders.internal.routes.js");
 await app.register(ordersInternalRoutes, { prefix: "/v1/internal" });
+const { offersInternalRoutes } = await import("./modules/pricing/offers.internal.routes.js");
+await app.register(offersInternalRoutes, { prefix: "/v1/internal" });
 const { weatherInternalRoutes } = await import("./modules/weather/weather.routes.js");
 await app.register(weatherInternalRoutes, { prefix: "/v1/internal" });
 

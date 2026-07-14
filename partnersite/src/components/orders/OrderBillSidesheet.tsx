@@ -12,6 +12,7 @@ import {
 import {
   formatOrderRs,
   merchantBillPartsFromItems,
+  merchantItemCatalogAndNet,
   merchantItemLineParts,
   merchantLineTotalForItem,
   orderItemCustomizationRows,
@@ -81,7 +82,7 @@ function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
     <ul className="space-y-2">
       {items.map((item, idx) => {
         const qty = Math.max(1, item.quantity || 1);
-        const lineTotal = merchantLineTotalForItem(item);
+        const { catalog, net, showStrike, offerBadge, offerKind } = merchantItemCatalogAndNet(item);
         const displayName = orderItemDisplayName(item);
         const parts = merchantItemLineParts(item);
         const custRows = orderItemCustomizationRows(item);
@@ -94,12 +95,34 @@ function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
             <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] gap-x-2">
               <div className="flex min-w-0 items-start gap-2">
                 <VegMark vegNonveg={item.vegNonveg} />
-                <span className="min-w-0 font-bold leading-snug text-gray-900">
-                  {qty} × {displayName}
-                </span>
+                <div className="min-w-0">
+                  {offerBadge ? (
+                    <span
+                      className={`mb-0.5 inline-flex max-w-full items-center rounded-full px-1.5 py-px text-[9px] font-bold leading-tight tracking-wide ${
+                        offerKind === "bogo"
+                          ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"
+                      }`}
+                    >
+                      <span className="truncate">{offerBadge}</span>
+                    </span>
+                  ) : null}
+                  <span className="block min-w-0 font-bold leading-snug text-gray-900">
+                    {qty} × {displayName}
+                  </span>
+                </div>
               </div>
               <AmountCell className="font-bold text-gray-900">
-                {formatOrderRs(lineTotal, 2)}
+                {showStrike ? (
+                  <span className="block">
+                    <span className="mr-1 text-[11px] font-medium text-gray-400 line-through">
+                      {formatOrderRs(catalog, 2)}
+                    </span>
+                    {formatOrderRs(net, 2)}
+                  </span>
+                ) : (
+                  formatOrderRs(net, 2)
+                )}
               </AmountCell>
 
               {showValueSplit ? (
@@ -243,7 +266,9 @@ export function OrderBillSidesheet({
           </div>
           {allItemsOnly ? (
             <p className="mt-1 text-[11px] text-gray-500">
-              {bill.packaging > 0 ? 'Includes packaging · ' : ''}
+              {bill.packaging > 0.005
+                ? `Packaging ${formatOrderRs(bill.packaging, 2)} · `
+                : ''}
               {bill.discount > 0 ? 'After restaurant discount' : 'Amount paid by customer'}
             </p>
           ) : null}

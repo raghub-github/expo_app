@@ -3,8 +3,12 @@ type RiderManagementBackendResult =
   | { ok: false; error: string; status: number };
 
 function backendBaseUrl(): string | null {
-  // Server-only: do not fall back to NEXT_PUBLIC_* (often the dashboard origin in dev).
-  const url = process.env.BACKEND_URL?.trim();
+  // Prefer Docker-internal URL: nginx blocks /v1/internal on the public API host.
+  // Do not fall back to NEXT_PUBLIC_* (often the dashboard origin).
+  const url =
+    process.env.BACKEND_INTERNAL_URL?.trim() ||
+    process.env.BACKEND_URL?.trim() ||
+    "";
   if (url) return url.replace(/\/$/, "");
   if (process.env.NODE_ENV === "development") return "http://127.0.0.1:3000";
   return null;
@@ -30,7 +34,8 @@ function mapBackendFailure(res: Response, json: { error?: string }): string {
   if (typeof json.error === "string" && json.error.trim()) return json.error;
   const contentType = res.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return "Could not reach rider backend. Ensure BACKEND_URL points to Fastify on port 3000 (dashboard uses 3001).";
+    // Typical when BACKEND_URL is https://api.gatimitra.com — nginx 403s /v1/internal as HTML.
+    return "Could not reach rider backend. Set BACKEND_URL (or BACKEND_INTERNAL_URL) to the Fastify service (Docker: http://backend:3000), not the public api.gatimitra.com host.";
   }
   return `Request failed (${res.status})`;
 }

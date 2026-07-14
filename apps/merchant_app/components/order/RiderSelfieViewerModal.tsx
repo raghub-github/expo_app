@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Pressable,
   Image,
+  Platform,
   useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -94,8 +95,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#FFFFFF",
     textAlign: "center",
-    textShadowColor: "rgba(0,0,0,0.45)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
+    ...Platform.select({
+      web: { textShadow: "0 1px 4px rgba(0,0,0,0.45)" },
+      default: {
+        textShadowColor: "rgba(0,0,0,0.45)",
+        textShadowOffset: { width: 0, height: 1 },
+        textShadowRadius: 4,
+      },
+    }),
   },
 });

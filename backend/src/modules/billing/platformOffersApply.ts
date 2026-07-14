@@ -6,6 +6,7 @@ import type {
   MutableBillState,
   PlatformOfferRow,
 } from "./types.js";
+import { cartPromoQualifyingSubtotal } from "./discountEligibility.js";
 
 function num(v: unknown): number {
   if (v == null) return 0;
@@ -267,11 +268,11 @@ export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext
 
   // Cart discounts (DISCOUNT, COUPON, FLAT_DISCOUNT, CASHBACK, etc.)
   if (CART_LIKE_KINDS.has(k) || k === "DISCOUNT") {
-    const base = Math.max(0, rem.items);
+    const base = Math.max(0, cartPromoQualifyingSubtotal(ctx, Math.max(0, rem.items)));
     if (base <= 0 || value <= 0) return 0;
     let amt = o.discountType === "PERCENTAGE" ? (base * value) / 100 : value;
     if (cap > 0) amt = Math.min(amt, cap);
-    return Math.max(0, Math.min(amt, base));
+    return Math.max(0, Math.min(amt, base, rem.items));
   }
 
   // Hard-to-simulate kinds (BUY_X_GET_Y, FREE_MENU_ITEM): fall back to value/cap as hint.
@@ -424,7 +425,8 @@ export function applyPlatformCartOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
+  // Min-order + % base for cart promos: only discount-eligible lines (fallback: full cart).
+  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
     const k = kindUpper(o);
@@ -504,7 +506,10 @@ export function applyPlatformCartOffers(
     return;
   }
 
-  const baseAfterDisc = Math.max(0, rem.items);
+  const baseAfterDisc = Math.max(
+    0,
+    Math.min(rem.items, cartPromoQualifyingSubtotal(ctx, itemPlusAddon))
+  );
   applyCartDiscountAmount(winner, state, rem, baseAfterDisc);
 }
 
@@ -516,7 +521,7 @@ export function applyPlatformDeliveryOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
+  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
     const k = kindUpper(o);
@@ -560,7 +565,7 @@ export function applyPlatformFeeBucketOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
+  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
     const k = kindUpper(o);

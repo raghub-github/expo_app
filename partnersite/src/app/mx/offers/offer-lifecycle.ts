@@ -210,6 +210,10 @@ export function getOfferLifecycle(offer: Offer, now: Date = new Date()): OfferLi
   const t = now.getTime();
   if (t < start.getTime()) return { phase: "upcoming", reason: "not_started" };
   if (t > end.getTime()) return { phase: "inactive", reason: "expired" };
+  const lifecycleStatus = (offer as Offer & { lifecycle_status?: string }).lifecycle_status;
+  if (lifecycleStatus === "DISABLED" || lifecycleStatus === "DRAFT") {
+    return { phase: "inactive", reason: "disabled" };
+  }
   if (offer.is_active === false) return { phase: "inactive", reason: "disabled" };
 
   if (!isApplicableOnDay(offer, now)) {
@@ -245,7 +249,7 @@ export function getOfferStatusBadge(lifecycle: OfferLifecycleResult): {
         className: "border border-gray-300 text-gray-600 bg-gray-50",
       };
     case "disabled":
-      return { label: "Inactive", className: "border border-yellow-200 text-amber-700 bg-yellow-50" };
+      return { label: "Deactivated", className: "border border-amber-200 text-amber-800 bg-amber-50" };
     default:
       return { label: "Inactive", className: "border border-gray-300 text-gray-600 bg-white" };
   }

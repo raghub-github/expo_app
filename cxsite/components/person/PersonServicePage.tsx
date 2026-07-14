@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import Image from 'next/image'
+import AppAssetImage from '@/components/common/AppAssetImage'
+import { CX } from '@/lib/appAssetKeys'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAppSelector, useAppDispatch } from '@/lib/hooks'
@@ -9,6 +10,7 @@ import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import AppDownloadModal from '@/components/common/AppDownloadModal'
+import AppLinkSentToast from '@/components/common/AppLinkSentToast'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
 import ParcelServiceControl from '@/components/common/ParcelServiceControl'
@@ -129,6 +131,7 @@ export default function PersonServicePage() {
   const [showBookingModal, setShowBookingModal] = useState(false)
   const [showScheduleModal, setShowScheduleModal] = useState(false)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
+  const [showAppLinkToast, setShowAppLinkToast] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTime, setScheduleTime] = useState('')
   const [estimatedDistance, setEstimatedDistance] = useState(5) // Default 5km
@@ -324,12 +327,12 @@ export default function PersonServicePage() {
             {/* Left Side - Image */}
             <div className="order-2 lg:order-1 flex justify-center pl-4 lg:pl-0">
               <div className="w-full h-[350px] sm:h-[420px] lg:h-[500px] relative rounded-2xl overflow-hidden shadow-2xl border border-[#16c2a5]/20">
-                <Image
-                  src="/img/ride.png"
+                <AppAssetImage
+                  assetKey={CX.ride.banner}
                   alt="Ride with GatiMitra"
-                  fill
-                  className="object-cover"
-                  priority
+                  className="absolute inset-0 h-full w-full object-cover"
+                  decoding="async"
+                  fetchPriority="high"
                 />
               </div>
             </div>
@@ -815,8 +818,12 @@ export default function PersonServicePage() {
       <AppDownloadModal
         isOpen={showAppDownloadModal}
         onClose={() => setShowAppDownloadModal(false)}
+        variant="ride"
+        title="Book rides in the GatiMitra App"
         description="Web ride booking is currently unavailable. Please download the app to book now or schedule for later."
+        onLinkSent={() => setShowAppLinkToast(true)}
       />
+      <AppLinkSentToast open={showAppLinkToast} onClose={() => setShowAppLinkToast(false)} />
 
       {/* Auth Modal */}
       {isAuthModalOpen && (

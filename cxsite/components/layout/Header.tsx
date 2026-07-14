@@ -18,6 +18,9 @@ import { locationAutoDetectErrorMessage } from '@/lib/locationAutoDetect'
 import { resolveHeaderLocationLabel } from '@/lib/webLocationPermission'
 import { isLandingHeroRoute } from '@/lib/landingHeroRoute'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import AppDownloadModal from '@/components/common/AppDownloadModal'
+import AppLinkSentToast from '@/components/common/AppLinkSentToast'
+import GetAppNavControl from '@/components/common/GetAppNavControl'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
 import { buildLocationQueryFromState, mergeLocationQuery } from '@/lib/locationQuery'
 import { useLocationPromptAutoOpen } from '@/lib/hooks/useLocationPromptAutoOpen'
@@ -278,6 +281,13 @@ export default function Header() {
   const [isBusinessDropdownOpen, setIsBusinessDropdownOpen] = useState(false)
   const [isLandingBusinessOpen, setIsLandingBusinessOpen] = useState(false)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
+  const [showAppLinkToast, setShowAppLinkToast] = useState(false)
+
+  const openAppDownloadModal = useCallback(() => {
+    setIsMobileMenuOpen(false)
+    setShowAppDownloadModal(true)
+  }, [])
   const [searchPlaceholder, setSearchPlaceholder] = useState('Search restaurants or dishes')
   const { user, isAuthenticated } = useAppSelector(state => state.auth)
     const dropdownRef = useRef<HTMLDivElement>(null)
@@ -439,9 +449,7 @@ export default function Header() {
                   )}
                 </div>
 
-                <Link href="#" className="text-text no-underline font-medium text-[14px] px-3 py-2 rounded-lg transition-all duration-200 relative flex items-center gap-1.5 hover:text-purple hover:bg-[rgba(75,42,212,0.08)]">
-                  <i className="fas fa-mobile-alt text-[13px]"></i> Get App
-                </Link>
+                <GetAppNavControl onOpen={openAppDownloadModal} tone="nav" />
 
                 {isAuthenticated && user ? (
                   <button 
@@ -537,13 +545,7 @@ export default function Header() {
                     >
                       <i className="fas fa-building mr-3 text-[14px] text-purple"></i> GatiMitra for Corporates
                     </a>
-                    <Link 
-                      href="#" 
-                      onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
-                    >
-                      <i className="fas fa-mobile-alt mr-3 text-[14px] text-purple"></i> Get App
-                    </Link>
+                    <GetAppNavControl onOpen={openAppDownloadModal} tone="drawer" />
                     {isAuthenticated && user ? (
                       <button
                         onClick={(e) => {
@@ -730,12 +732,7 @@ export default function Header() {
                         )}
                       </div>
 
-                      <Link
-                        href={LANDING_GET_APP.href}
-                        className="text-center text-[11px] font-medium leading-tight tracking-tight text-black no-underline transition-colors hover:text-[#109D4C] sm:text-[12px] lg:text-[13px] xl:text-[14px]"
-                      >
-                        {LANDING_GET_APP.label}
-                      </Link>
+                      <GetAppNavControl onOpen={openAppDownloadModal} tone="landing" />
                     </nav>
 
                     <div className="flex shrink-0 items-center justify-end gap-3 md:justify-self-end lg:gap-4">
@@ -895,6 +892,13 @@ export default function Header() {
                             {LANDING_MOBILE_LINKS.map((item) => {
                               const rowClass =
                                 'block px-5 py-3 text-[15px] font-medium text-gray-700 no-underline transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple'
+                              if (item.label === 'Get App') {
+                                return (
+                                  <div key={item.label} className="hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)]">
+                                    <GetAppNavControl onOpen={openAppDownloadModal} tone="drawer" />
+                                  </div>
+                                )
+                              }
                               const inner = (
                                 <>
                                   <i className={`fas ${item.icon} mr-3 text-[14px] text-purple`}></i> {item.label}
@@ -1078,6 +1082,15 @@ export default function Header() {
 
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       <UserProfileModal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} />
+      <AppDownloadModal
+        isOpen={showAppDownloadModal}
+        onClose={() => setShowAppDownloadModal(false)}
+        variant="customer"
+        title="Get the GatiMitra App"
+        description="For a better experience, please order through our mobile app."
+        onLinkSent={() => setShowAppLinkToast(true)}
+      />
+      <AppLinkSentToast open={showAppLinkToast} onClose={() => setShowAppLinkToast(false)} />
     </>
   )
 }

@@ -15,6 +15,7 @@ export type MerchantOfferItem = {
   offer_id: string | null;
   title: string;
   offer_type: string;
+  offer_sub_type?: string | null;
   coupon_code: string | null;
   auto_apply: boolean;
   label: string;
@@ -23,6 +24,11 @@ export type MerchantOfferItem = {
   discount_value: number | null;
   max_discount_amount: number | null;
   min_order_amount: number | null;
+  buy_quantity?: number | null;
+  get_quantity?: number | null;
+  menu_item_ids?: string[] | null;
+  conditions_mode?: "boost" | "precision" | null;
+  display_surface?: "item" | "sheet" | "both";
 };
 
 export type PlatformOfferItem = {
@@ -32,6 +38,10 @@ export type PlatformOfferItem = {
   label: string;
   sub_label: string;
   is_geo_bound: boolean;
+  discount_type?: string | null;
+  value?: number | null;
+  max_discount_amount?: number | null;
+  min_order_amount?: number | null;
 };
 
 export type StoreOffersResponse = {

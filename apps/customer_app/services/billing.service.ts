@@ -120,6 +120,15 @@ export type CalculateBillResponse = {
   taxes: BillingLine[];
   breakdownSteps: BillingBreakdownStep[];
   rulesetVersion: number;
+  /** Offer Engine v2 — coupon/platform min-order base (excludes Boost/BOGO/MRP lines). */
+  eligibleSubtotal?: number;
+  orderLineEligibility?: Array<{
+    menuItemId: string;
+    lineTotal: number;
+    quantity: number;
+    isDiscountEligible: boolean;
+    ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+  }>;
 };
 
 export type CalculateBillItemAddon = {
@@ -139,6 +148,8 @@ export type CalculateBillItem = {
   variantName?: string | null;
   addons?: CalculateBillItemAddon[];
   itemSnapshot?: Record<string, unknown> | null;
+  /** Client hint only — server recomputes discount eligibility. */
+  isDiscountEligible?: boolean;
 };
 
 export type CalculateBillPayload = {
@@ -172,6 +183,10 @@ export type CheckoutOfferMerchantRow = {
   autoApply?: boolean;
   requiresCouponCode?: string | null;
   minOrderAmount?: number | null;
+  displaySurface?: "item" | "sheet" | "both";
+  offerType?: string;
+  /** boost | precision | bogo — precision must not unlock via GatiCash. */
+  conditionsMode?: "boost" | "precision" | "bogo" | null;
 };
 
 export type CheckoutOffersResponse = {
@@ -210,7 +225,19 @@ export type CheckoutOffersResponse = {
     summary: string;
     reason: string;
     estimatedSavingsInr?: number | null;
+    minCartAmount?: number | null;
   }[];
+  /** Server-computed promo-eligible cart (Offer Engine v2). */
+  eligibleSubtotal?: number;
+  /** Cart ₹ used when this listing was fetched — live unlock math while refetching. */
+  fetchedCartSubtotal?: number;
+  orderLineEligibility?: Array<{
+    menuItemId: string;
+    lineTotal: number;
+    quantity: number;
+    isDiscountEligible: boolean;
+    ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+  }>;
 };
 
 export const billingService = {
@@ -235,6 +262,8 @@ export const billingService = {
     pincode?: string | null;
     state?: string | null;
     city?: string | null;
+    /** Cart menu item ids — needed so item-scoped store offers list as eligible. */
+    menuItemIds?: string[];
   }): Promise<CheckoutOffersResponse> {
     const { data } = await api.get<CheckoutOffersResponse>(`${BILLING_PREFIX}/checkout-offers`, {
       params: {
@@ -246,6 +275,9 @@ export const billingService = {
         ...(params.pincode ? { pincode: params.pincode } : {}),
         ...(params.state ? { state: params.state } : {}),
         ...(params.city ? { city: params.city } : {}),
+        ...(params.menuItemIds && params.menuItemIds.length > 0
+          ? { menuItemIds: params.menuItemIds.join(",") }
+          : {}),
       },
     });
     return data;

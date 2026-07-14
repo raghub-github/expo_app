@@ -1,166 +1,145 @@
 /**
- * GatiMitra grid rating — green pill + white ring straddling image bottom-left.
- * Page-colored mask notches the image corner (no floating white box).
+ * Swiggy-style rating cutout:
+ * - White pad flush left, rounded right (wraps the pill)
+ * - Green pill: full capsule (rounded both ends)
+ * Decorative only — pointerEvents none so card taps aren't stolen.
  */
 
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withSequence,
-  withSpring,
-  withTiming,
-} from "react-native-reanimated";
+import { StyleSheet, View } from "react-native";
+import Svg, { Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { ratingBadgeColors, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
+import { AppText } from "@/components/AppText";
 
 const PAGE_BG = GatiMitraColors.softBackground;
 
-/** Shared geometry — mask + pill must use the same numbers. */
 export const GRID_RATING_PILL = {
-  left: 6,
-  width: 42,
-  overhang: 9,
-  /** How far the notch bites into the image — keep low. */
-  maskHeight: 7,
-  topRightRadius: 7,
-  borderWidth: 2,
-  pillRadius: 7,
+  left: 0,
+  padW: 44,
+  padH: 24,
+  overhang: 5,
+  /** White padding around green pill. */
+  pillInset: 3,
 } as const;
 
 type Props = {
   rating: number | null | undefined;
   totalReviews?: number | null;
   imageRadius?: number;
+  pageBg?: string;
 };
 
-/** Erases bottom-left image corner so the pill looks embedded (page bg = seamless cut). */
-export function GridCardImageRatingMask({ imageRadius = 14 }: { imageRadius?: number }) {
-  const { left, width, maskHeight, topRightRadius } = GRID_RATING_PILL;
-  const cornerSize = Math.min(8, imageRadius - 4);
+/**
+ * White pad: square left edge, full semicircle on the right
+ * so the banner image curves around the rating (Swiggy match).
+ */
+function RatingCutoutPad({
+  width,
+  height,
+  color,
+}: {
+  width: number;
+  height: number;
+  color: string;
+}) {
+  const r = height / 2;
+  const d = [
+    `M 0 0`,
+    `L ${width - r} 0`,
+    `A ${r} ${r} 0 0 1 ${width - r} ${height}`,
+    `L 0 ${height}`,
+    `Z`,
+  ].join(" ");
 
   return (
-    <View style={styles.maskLayer} pointerEvents="none">
-      <View
-        style={[
-          styles.maskCorner,
-          {
-            width: cornerSize,
-            height: cornerSize,
-            borderTopRightRadius: cornerSize,
-            backgroundColor: PAGE_BG,
-          },
-        ]}
-      />
-      <View
-        style={[
-          styles.maskBridge,
-          { width: left, height: maskHeight, backgroundColor: PAGE_BG },
-        ]}
-      />
-      <View
-        style={[
-          styles.maskShelf,
-          {
-            left,
-            width: width + 4,
-            height: maskHeight,
-            borderTopRightRadius: topRightRadius,
-            backgroundColor: PAGE_BG,
-          },
-        ]}
-      />
-    </View>
+    <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
+      <Path d={d} fill={color} />
+    </Svg>
   );
 }
 
-export function GridCardRatingCutout({ rating, totalReviews }: Props) {
-  const pillScale = useSharedValue(1);
-  const pillSlide = useSharedValue(0);
+/** @deprecated */
+export function GridCardImageRatingMask(_props?: {
+  imageRadius?: number;
+  pageBg?: string;
+}) {
+  return null;
+}
 
+export function GridCardRatingCutout({
+  rating,
+  pageBg = PAGE_BG,
+}: Props) {
   const hasRating = rating != null && Number(rating) >= 0;
   const ratingValue = hasRating ? Number(rating).toFixed(1) : "New";
   const colors = ratingBadgeColors(hasRating ? Number(rating) : null);
   const onPillText = colors.low ? "#713F12" : "#FFFFFF";
-  const canTap = totalReviews != null && totalReviews > 0;
 
-  const handlePress = () => {
-    if (!canTap) return;
-    pillSlide.value = withSequence(
-      withTiming(7, { duration: 120, easing: Easing.out(Easing.quad) }),
-      withSpring(0, { damping: 14, stiffness: 280 })
-    );
-    pillScale.value = withSequence(
-      withTiming(0.92, { duration: 90 }),
-      withSpring(1, { damping: 13, stiffness: 340 })
-    );
-  };
-
-  const pillAnim = useAnimatedStyle(() => ({
-    transform: [{ translateX: pillSlide.value }, { scale: pillScale.value }],
-  }));
-
-  const { left, overhang, borderWidth, pillRadius } = GRID_RATING_PILL;
+  const { left, padW, padH, overhang, pillInset } = GRID_RATING_PILL;
 
   return (
-    <View style={[styles.pillWrap, { bottom: -overhang, left }]}>
-      <Pressable onPress={handlePress} disabled={!canTap} hitSlop={8}>
-        <Animated.View
+    <View
+      style={[
+        styles.cutoutWrap,
+        {
+          left,
+          bottom: -overhang,
+          width: padW,
+          height: padH,
+        },
+      ]}
+      pointerEvents="none"
+    >
+      <RatingCutoutPad width={padW} height={padH} color={pageBg} />
+
+      <View
+        style={[
+          styles.pillHit,
+          {
+            top: pillInset,
+            left: pillInset,
+            right: pillInset,
+            bottom: pillInset,
+          },
+        ]}
+      >
+        <View
           style={[
             styles.pill,
             {
               backgroundColor: hasRating ? colors.bg : RATING_PILL_GREEN,
-              borderRadius: pillRadius,
-              borderWidth,
             },
-            pillAnim,
           ]}
         >
-          {hasRating ? <Ionicons name="star" size={9} color={onPillText} /> : null}
-          <Text style={[styles.pillText, { color: onPillText }]}>{ratingValue}</Text>
-        </Animated.View>
-      </Pressable>
+          {hasRating ? <Ionicons name="star" size={8} color={onPillText} /> : null}
+          <AppText style={[styles.pillText, { color: onPillText }]}>{ratingValue}</AppText>
+        </View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  maskLayer: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 2,
-  },
-  maskCorner: {
-    position: "absolute",
-    left: 0,
-    bottom: 0,
-  },
-  maskBridge: {
-    position: "absolute",
-    left: 0,
-    bottom: 0,
-  },
-  maskShelf: {
-    position: "absolute",
-    bottom: 0,
-  },
-  pillWrap: {
+  cutoutWrap: {
     position: "absolute",
     zIndex: 6,
   },
+  pillHit: {
+    position: "absolute",
+  },
   pill: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
     paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderColor: "#FFFFFF",
-    minWidth: 40,
+    overflow: "hidden",
+    borderRadius: 999,
   },
   pillText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "700",
     color: "#FFFFFF",
   },

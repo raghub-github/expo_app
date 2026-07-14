@@ -7,7 +7,7 @@ const baseCtx = (): BillContext => ({
   itemSubtotal: 100,
   addonSubtotal: 0,
   addonQtyTotal: 0,
-  orderLines: [{ menuItemId: "1", lineTotal: 100, quantity: 1 }],
+  orderLines: [{ menuItemId: "1", lineTotal: 100, quantity: 1, discountEligible: true }],
   distanceKm: 3.5,
   merchantStoreId: 42,
   merchantParentId: 7,

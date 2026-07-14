@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from "react";
-import { ChevronDown, ChevronUp, Edit2, Trash2, Copy } from "lucide-react";
+import { ChevronDown, ChevronUp, Edit2, Copy, Power } from "lucide-react";
 import type { Offer } from "@/lib/database";
 import {
   formatOfferActorDisplay,
@@ -11,6 +11,7 @@ import {
   getOfferMenuItemIds,
   getOfferStatusBadge,
   hasOfferScheduleRestrictions,
+  isOfferCampaignExpired,
   offerWasUpdated,
 } from "./offer-lifecycle";
 
@@ -61,6 +62,60 @@ export function offerHeadline(offer: Offer): string {
     default:
       return offer.offer_title || "Offer";
   }
+}
+
+/** Boost / Precision apply to % and flat offers only — not BOGO. */
+export function resolveOfferConditionsMode(offer: Offer): "boost" | "precision" | null {
+  const type = String(offer.offer_type ?? "").toUpperCase();
+  // BOGO is its own create path — never label as Boost/Precision.
+  if (type === "BOGO" || type === "BUY_X_GET_Y" || type === "BUY_N_GET_M") return null;
+  if (
+    type === "CART_PERCENTAGE" ||
+    type === "CART_FLAT" ||
+    type === "FREE_DELIVERY" ||
+    type === "TIERED" ||
+    type === "BUNDLE"
+  ) {
+    return "precision";
+  }
+  if (type !== "PERCENTAGE" && type !== "FLAT" && type !== "COUPON") return null;
+
+  const meta = (offer.offer_metadata ?? {}) as Record<string, unknown>;
+  // Durable create-path wins over legacy conditions_mode stamps.
+  if (meta.create_path === "boost" || meta.create_path === "precision") {
+    return meta.create_path;
+  }
+  // Explicit merchant choice wins.
+  if (meta.conditions_mode === "boost" || meta.conditions_mode === "precision") {
+    return meta.conditions_mode;
+  }
+
+  const itemIds = getOfferMenuItemIds(offer);
+  const sub = String(offer.offer_sub_type ?? "").toUpperCase();
+  const itemScoped =
+    itemIds.length > 0 ||
+    sub === "SPECIFIC_ITEM" ||
+    sub === "SPECIFIC_ITEMS" ||
+    sub === "SELECTED_ITEM" ||
+    sub === "SELECTED_ITEMS";
+
+  // Legacy rows without conditions_mode: item-scoped → Boost, otherwise Precision.
+  if (itemScoped && (type === "PERCENTAGE" || type === "FLAT")) return "boost";
+  if (type === "PERCENTAGE" || type === "FLAT" || type === "COUPON") return "precision";
+  return null;
+}
+
+function isBogoOfferType(offer: Offer): boolean {
+  const type = String(offer.offer_type ?? "").toUpperCase();
+  return type === "BOGO" || type === "BUY_X_GET_Y" || type === "BUY_N_GET_M";
+}
+
+function offerTypeModeLabel(offer: Offer): "Boost" | "Precision" | "BOGO" | null {
+  if (isBogoOfferType(offer)) return "BOGO";
+  const mode = resolveOfferConditionsMode(offer);
+  if (mode === "boost") return "Boost";
+  if (mode === "precision") return "Precision";
+  return null;
 }
 
 function getOfferAnalytics(offer: Offer) {
@@ -168,7 +223,8 @@ export function OfferTrackCard({
   expanded,
   onToggleExpand,
   onEdit,
-  onDelete,
+  onDeactivate,
+  onActivate,
   onCopyCoupon,
   getMenuItemName,
 }: {
@@ -178,22 +234,30 @@ export function OfferTrackCard({
   expanded: boolean;
   onToggleExpand: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  onDeactivate?: () => void;
+  onActivate?: () => void;
   onCopyCoupon?: (code: string) => void;
   getMenuItemName: (id: string) => string;
 }) {
   const audited = offer as OfferWithAudit;
   const lifecycle = useMemo(() => getOfferLifecycle(offer), [offer]);
   const status = getOfferStatusBadge(lifecycle);
+  const canDeactivate = offer.is_active !== false && onDeactivate != null;
+  const canActivate =
+    onActivate != null &&
+    (offer.is_active === false || lifecycle.reason === "disabled") &&
+    !isOfferCampaignExpired(offer);
   const analytics = useMemo(() => getOfferAnalytics(offer), [offer]);
   const headline = offerHeadline(offer);
+  const typeModeLabel = offerTypeModeLabel(offer);
   const dateRange = formatOfferValidityRange(offer);
   const slotSummary = formatOfferSlotSummary(offer);
   const offerImageUrl = getOfferImageUrl(offer);
   const previewSubline =
     offer.offer_description?.trim() ||
     (offer.min_order_amount ? `on orders above ${formatInr(Number(offer.min_order_amount))}` : null);
-  const showStopped = lifecycle.phase === "inactive" && lifecycle.reason === "expired";
+  const showStopped = lifecycle.phase === "inactive" && (lifecycle.reason === "expired" || lifecycle.reason === "disabled");
+  const disabledAt = (offer as Offer & { disabled_at?: string | null }).disabled_at;
   const actorOpts = { ownerDisplayName };
   const createdByDisplay = formatOfferActorDisplay(
     audited.created_source_platform,
@@ -210,7 +274,14 @@ export function OfferTrackCard({
 
   const detailRows: { label: string; value: React.ReactNode }[] = [
     ...(showStopped
-      ? [{ label: "Stopped at:", value: formatStoppedAt(offer.updated_at || offer.valid_till) }]
+      ? [{
+          label: lifecycle.reason === "disabled" ? "Deactivated at:" : "Stopped at:",
+          value: formatStoppedAt(
+            lifecycle.reason === "disabled" && disabledAt
+              ? disabledAt
+              : offer.updated_at || offer.valid_till
+          ),
+        }]
       : []),
     { label: "", value: buildApplicableForText(offer, storeName, getMenuItemName) },
     {
@@ -267,7 +338,7 @@ export function OfferTrackCard({
   }
 
   return (
-    <article className="w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+    <article className="w-full min-w-0 shrink-0 rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
       <div className="bg-gradient-to-r from-sky-50/90 via-blue-50/50 to-white px-3 sm:px-4 py-2.5 border-b border-gray-100">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -282,16 +353,48 @@ export function OfferTrackCard({
             {offer.offer_title && offer.offer_title.toLowerCase() !== headline.toLowerCase() ? (
               <p className="text-xs text-gray-600 truncate mt-0.5">{offer.offer_title}</p>
             ) : null}
+            {typeModeLabel ? (
+              <p
+                className={`text-[11px] font-semibold mt-0.5 ${
+                  typeModeLabel === "Boost"
+                    ? "text-emerald-700"
+                    : typeModeLabel === "BOGO"
+                      ? "text-violet-700"
+                      : "text-indigo-700"
+                }`}
+              >
+                {typeModeLabel}
+              </p>
+            ) : null}
             <p className="text-[11px] text-gray-500 mt-0.5 truncate" title={dateRange}>
               {dateRange}
             </p>
           </div>
           <div className="flex items-center gap-0.5 shrink-0">
+            {canActivate ? (
+              <button
+                type="button"
+                onClick={onActivate}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100"
+                title="Activate offer"
+              >
+                <Power size={13} />
+                Activate
+              </button>
+            ) : null}
+            {canDeactivate ? (
+              <button
+                type="button"
+                onClick={onDeactivate}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                title="Deactivate offer"
+              >
+                <Power size={13} />
+                Deactivate
+              </button>
+            ) : null}
             <button type="button" onClick={onEdit} className="p-1.5 rounded-md text-blue-600 hover:bg-blue-50" title="Edit offer">
               <Edit2 size={15} />
-            </button>
-            <button type="button" onClick={onDelete} className="p-1.5 rounded-md text-red-600 hover:bg-red-50" title="Delete offer">
-              <Trash2 size={15} />
             </button>
           </div>
         </div>
@@ -304,17 +407,20 @@ export function OfferTrackCard({
       </div>
 
       {expanded ? (
-        <div className="relative border-t border-gray-100 bg-gray-50/40 px-3 py-2.5 sm:px-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="min-w-0 flex-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-gray-600">
+        <div className="border-t border-gray-100 bg-gray-50/40 px-3 py-2.5 sm:px-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 w-full sm:flex-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-gray-600">
               {detailRows.map((row, i) => (
-                <p key={i} className="min-w-0 leading-snug">
+                <p
+                  key={i}
+                  className={`min-w-0 leading-snug ${!row.label ? "sm:col-span-2" : ""}`}
+                >
                   {row.label ? (
                     <>
                       <span className="text-gray-500">{row.label}</span> {row.value}
                     </>
                   ) : (
-                    <span className="text-gray-700 sm:col-span-2 block">{row.value}</span>
+                    <span className="text-gray-700 block">{row.value}</span>
                   )}
                 </p>
               ))}
@@ -328,7 +434,7 @@ export function OfferTrackCard({
             ) : null}
           </div>
           {offer.offer_description ? (
-            <p className="mt-2 border-t border-gray-100 pt-2 text-[11px] text-gray-500 line-clamp-2 sm:pr-[188px]">
+            <p className="mt-2 border-t border-gray-100 pt-2 text-[11px] text-gray-500 line-clamp-2">
               {offer.offer_description}
             </p>
           ) : null}

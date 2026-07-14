@@ -18,10 +18,11 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useLocationStore } from "@/store/locationStore";
 import { offersService, type HomeBannerOffer } from "@/services/offers.service";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 
 const { width } = Dimensions.get("window");
 const PAD = 16;
@@ -59,6 +60,7 @@ function offerToSlide(o: HomeBannerOffer, idx: number): SlideData {
 
 export function ShopPromoBanner() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const [index, setIndex] = useState(0);
   const locationAddress = useLocationStore((s) => s.address);
@@ -143,9 +145,7 @@ export function ShopPromoBanner() {
             key={slide.id}
             activeOpacity={0.9}
             style={[styles.slideWrap, { width: BANNER_WIDTH, marginRight: SLIDE_GAP }]}
-            onPress={() =>
-              router.push({ pathname: "/home/merchant/[id]", params: { id: slide.storeId } })
-            }
+            onPress={() => navigateToMerchant(router, queryClient, slide.storeId)}
           >
             <LinearGradient
               colors={GRADIENT_SETS[slide.gradientIndex]}

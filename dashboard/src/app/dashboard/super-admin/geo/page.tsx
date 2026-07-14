@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { GeoTree, type GeoTreeFilters } from "@/components/geo-admin/GeoTree";
 import { SearchBar } from "@/components/geo-admin/SearchBar";
@@ -11,7 +12,6 @@ import { SearchChainPanel } from "@/components/geo-admin/SearchChainPanel";
 import { AddLocationForm } from "@/components/geo-admin/AddLocationForm";
 import { EditLocationModal } from "@/components/geo-admin/EditLocationModal";
 import { PlatformOfferMapModal } from "@/components/geo-admin/PlatformOfferMapModal";
-import { DeliverySlabsModal } from "@/components/geo-admin/DeliverySlabsModal";
 import { DeliveryFallbackPanel } from "@/components/geo-admin/DeliveryFallbackPanel";
 import { useGeoStatesQuery, useLazyGeoSearchQuery } from "@/store/api/geoAdminApi";
 import type { GeoChildRow, GeoSearchRow } from "@/lib/geo/geo-shared";
@@ -56,6 +56,7 @@ function searchRowToChild(r: GeoSearchRow): GeoChildRow {
 }
 
 export default function GeoSuperAdminPage() {
+  const router = useRouter();
   const searchParams = useAppSearchParams();
   const [view, setViewState] = useState<GeoView>("tree");
 
@@ -92,7 +93,6 @@ export default function GeoSuperAdminPage() {
   const [ride, setRide] = useState<ServiceTriState>(null);
   const [editRow, setEditRow] = useState<GeoChildRow | null>(null);
   const [offerMapRow, setOfferMapRow] = useState<GeoChildRow | null>(null);
-  const [slabsRow, setSlabsRow] = useState<GeoChildRow | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [flatChainRow, setFlatChainRow] = useState<GeoSearchRow | null>(null);
   const [lastQuery, setLastQuery] = useState("");
@@ -106,6 +106,15 @@ export default function GeoSuperAdminPage() {
   );
 
   const treeRemountKey = `${stateId ?? "all"}-${food}-${parcel}-${ride}`;
+
+  const navigateToDeliverySlabs = useCallback(
+    (row: GeoChildRow) => {
+      router.push(
+        `/dashboard/super-admin/geo/${row.kind}/${row.id}?name=${encodeURIComponent(row.name)}`
+      );
+    },
+    [router]
+  );
 
   const [runSearch, searchState] = useLazyGeoSearchQuery();
 
@@ -274,7 +283,7 @@ export default function GeoSuperAdminPage() {
             filters={filters}
             onEdit={setEditRow}
             onPlatformOfferMap={setOfferMapRow}
-            onDeliverySlabs={setSlabsRow}
+            onDeliverySlabs={navigateToDeliverySlabs}
           />
         ) : view === "flat" ? (
           <div className="flex min-w-0 flex-col gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-md shadow-slate-200/30 sm:rounded-2xl sm:p-5">
@@ -304,7 +313,7 @@ export default function GeoSuperAdminPage() {
                   onChainFor={setFlatChainRow}
                   onEditRow={onPickSearchRow}
                   onPlatformOfferMap={(r) => setOfferMapRow(searchRowToChild(r))}
-                  onDeliverySlabs={(r) => setSlabsRow(searchRowToChild(r))}
+                  onDeliverySlabs={(r) => navigateToDeliverySlabs(searchRowToChild(r))}
                   onDataMutated={refetchSearch}
                 />
                 <SearchChainPanel
@@ -332,7 +341,6 @@ export default function GeoSuperAdminPage() {
       )}
 
       {editRow && <EditLocationModal row={editRow} onClose={() => setEditRow(null)} />}
-      {slabsRow && <DeliverySlabsModal row={slabsRow} onClose={() => setSlabsRow(null)} />}
       {offerMapRow && (
         <PlatformOfferMapModal
           row={offerMapRow}

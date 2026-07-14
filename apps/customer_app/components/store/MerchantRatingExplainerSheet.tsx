@@ -1,16 +1,11 @@
 import React from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "./StoreBottomSheetShell";
 import { StoreTheme } from "@/constants/storeTheme";
 import { ratingBadgeColors, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
+import { AppText } from "@/components/AppText";
 
 export type MerchantRatingExplainerSheetProps = {
   visible: boolean;
@@ -45,9 +40,9 @@ function RatingPill({
     <View style={styles.ratingCol}>
       <View style={[styles.ratingPill, { backgroundColor: hasRating ? colors.bg : RATING_PILL_GREEN }]}>
         {hasRating ? <Ionicons name="star" size={11} color={textColor} /> : null}
-        <Text style={[styles.ratingPillText, { color: textColor }]}>{display}</Text>
+        <AppText style={[styles.ratingPillText, { color: textColor }]}>{display}</AppText>
       </View>
-      <Text style={styles.ratingColLabel}>{label}</Text>
+      <AppText style={styles.ratingColLabel}>{label}</AppText>
     </View>
   );
 }
@@ -75,40 +70,40 @@ export function MerchantRatingExplainerSheet({
         contentContainerStyle={styles.scrollContent}
       >
         <View style={styles.handle} />
-        <Text style={styles.title} numberOfLines={2}>
+        <AppText style={styles.title} numberOfLines={2}>
           {storeName}
-        </Text>
+        </AppText>
 
         <View style={styles.compareRow}>
           <RatingPill value={overallRating} label={reviewLabel} />
           <View style={styles.compareDivider} />
           <RatingPill
             value={forYouRating}
-            label="Rating for you"
+            label="For you"
             isNew={!userHasRatedStore}
           />
         </View>
 
-        <Text style={styles.sectionHeading}>HOW ARE RATINGS CALCULATED?</Text>
+        <AppText style={styles.sectionHeading}>HOW ARE RATINGS CALCULATED?</AppText>
 
         <View style={styles.infoRow}>
           <View style={styles.infoIconWrap}>
             <Ionicons name="star-outline" size={18} color={StoreTheme.textSecondary} />
           </View>
-          <Text style={styles.infoText}>
+          <AppText style={styles.infoText}>
             Overall ratings are powered by a proprietary algorithm, its based on weighted average
             that factors in recency and filters out spam.
-          </Text>
+          </AppText>
         </View>
 
         <View style={styles.infoRow}>
           <View style={styles.infoIconWrap}>
             <Ionicons name="heart-outline" size={18} color={StoreTheme.textSecondary} />
           </View>
-          <Text style={styles.infoText}>
+          <AppText style={styles.infoText}>
             Ratings for you are based on your past orders, and matched with customers who&apos;ve
             similar tastes and preferences.
-          </Text>
+          </AppText>
         </View>
       </ScrollView>
 
@@ -117,7 +112,7 @@ export function MerchantRatingExplainerSheet({
         onPress={onClose}
         activeOpacity={0.88}
       >
-        <Text style={styles.ctaBtnText}>Got it!</Text>
+        <AppText style={styles.ctaBtnText}>Got it!</AppText>
       </TouchableOpacity>
     </StoreBottomSheetShell>
   );
