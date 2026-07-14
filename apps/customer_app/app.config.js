@@ -73,20 +73,15 @@ module.exports = {
         },
       ],
       // Razorpay Native SDK (Standard Checkout — UPI, cards, wallets, netbanking).
-      // react-native-razorpay uses the classic React Native autolinking mechanism,
-      // so no dedicated Expo config plugin is required. Adding expo-build-properties
-      // here ensures the Android minSdk = 24 (Razorpay SDK requirement) and the
-      // Android Kotlin version is 1.9+ (also required by the SDK's checkout intent
-      // handler). This block is idempotent — safe if it appears multiple times.
-      [
-        "expo-build-properties",
-        {
-          android: {
-            minSdkVersion: 24,
-            kotlinVersion: "1.9.25",
-          },
-        },
-      ],
+      // react-native-razorpay uses the classic React Native autolinking mechanism —
+      // no dedicated Expo config plugin required. Expo SDK 54 already ships with
+      // Kotlin 1.9+ and Android minSdk 24 by default, both of which satisfy the
+      // Razorpay SDK's build requirements. No expo-build-properties override
+      // needed. Earlier attempt with `kotlinVersion: "1.9.25"` here caused the
+      // Android Gradle build to fail at android/build.gradle:11 with
+      //   "Could not get unknown property 'kotlinVersion' for
+      //    DefaultDependencyHandler"
+      // because that property name isn't plumbed through in SDK 54's plugin.
     ],
     extra: {
       ...(appJson.expo.extra || {}),
