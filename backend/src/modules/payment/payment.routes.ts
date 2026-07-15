@@ -46,6 +46,10 @@ export async function paymentRoutes(app: FastifyInstance) {
     {
       config: {
         rateLimit: false,
+        // Razorpay authenticates via X-Razorpay-Signature HMAC (verified in the
+        // handler). It has no JWT to present. The auth plugin honors this flag
+        // and returns immediately — see backend/src/plugins/auth.ts.
+        skipAuth: true,
       },
     },
     async (req, reply) => {

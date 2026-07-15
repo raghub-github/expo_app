@@ -15,6 +15,8 @@ import {
   type AppStateStatus,
 } from "react-native";
 import Constants from "expo-constants";
+import * as Device from "expo-device";
+import * as Localization from "expo-localization";
 import { useRouter } from "expo-router";
 import { Image } from "expo-image";
 import {
@@ -82,7 +84,20 @@ function PushNotificationBootstrapInner() {
   );
 
   const syncToken = useCallback(async () => {
-    if (!hydrated || !session?.accessToken || session.role !== "customer") return;
+    // Reasons we might skip — logged so devs can see WHY the token never
+    // registered from Metro / logcat instead of the previous silent no-op.
+    if (!hydrated) {
+      console.log("[push] skip: auth store not hydrated yet");
+      return;
+    }
+    if (!session?.accessToken) {
+      console.log("[push] skip: no session access token (user not logged in)");
+      return;
+    }
+    if (session.role !== "customer") {
+      console.log(`[push] skip: session role is '${session.role}', not 'customer'`);
+      return;
+    }
     await setNotificationHandlerDefaults();
     await ensureAndroidChannel({
       channelId: "customer_default",
@@ -90,16 +105,67 @@ function PushNotificationBootstrapInner() {
       lightColor: "#14b8a6",
     });
     const token = await getFreshExpoPushToken();
-    if (!token) return;
-    if (lastRegisteredRef.current === token) return;
-    const { apiBaseUrl } = getConfig();
-    const res = await registerExpoPushTokenOnBackend(apiBaseUrl, session.accessToken, {
-      expo_push_token: token,
-      device_type: deviceType(),
-    });
-    if (res.ok) {
-      lastRegisteredRef.current = token;
+    if (!token) {
+      console.warn(
+        "[push] getFreshExpoPushToken returned null — check: physical device, notification permission granted, EAS projectId in app.config.js, not running in Expo Go",
+      );
+      return;
     }
+    if (lastRegisteredRef.current === token) {
+      // Silent — already registered this exact token in this session.
+      return;
+    }
+    const { apiBaseUrl } = getConfig();
+
+    // Gather device fingerprint — best-effort. Any missing bit is sent as
+    // null; server accepts + stores what it gets. Never throw here — if
+    // even one call blows up we still want the token to register.
+    let metadata: Record<string, string | null> = {};
+    try {
+      metadata = {
+        device_model: Device.modelName ?? null,
+        device_brand: Device.brand ?? null,
+        os_name: Device.osName ?? Platform.OS,
+        os_version: Device.osVersion ?? String(Platform.Version ?? ""),
+        app_version:
+          (Constants.expoConfig?.version as string | undefined) ??
+          (Constants.expoConfig?.runtimeVersion as string | undefined) ??
+          null,
+        locale: Localization.getLocales?.()?.[0]?.languageTag ?? null,
+        timezone: Localization.getCalendars?.()?.[0]?.timeZone ?? null,
+      };
+    } catch (e) {
+      console.warn("[push] device metadata gather failed (non-fatal):", (e as Error)?.message);
+    }
+
+    // Retry with exponential backoff — a single transient failure (LAN
+    // hiccup, backend restart mid-request) shouldn't leave the user with
+    // no notifications forever. 3 attempts × up to ~7s.
+    const attempts = [0, 1500, 5000];
+    for (let i = 0; i < attempts.length; i++) {
+      if (attempts[i]) await new Promise((r) => setTimeout(r, attempts[i]));
+      const res = await registerExpoPushTokenOnBackend(apiBaseUrl, session.accessToken, {
+        expo_push_token: token,
+        device_type: deviceType(),
+        ...metadata,
+      });
+      if (res.ok) {
+        lastRegisteredRef.current = token;
+        console.log(
+          `[push] token registered (${metadata.device_model ?? "unknown device"}, ` +
+            `${metadata.os_name ?? "?"} ${metadata.os_version ?? "?"}, app ${metadata.app_version ?? "?"})`,
+        );
+        return;
+      }
+      console.warn(
+        `[push] register attempt ${i + 1}/${attempts.length} failed: status=${res.status} error=${res.error ?? "?"}`,
+      );
+      // Auth failure won't recover from retry — user needs to re-login.
+      if (res.status === 401 || res.status === 403) break;
+    }
+    console.error(
+      "[push] token registration gave up after all retries. Notifications will NOT arrive for this device until next app open.",
+    );
   }, [hydrated, session?.accessToken, session?.role]);
 
   useEffect(() => {

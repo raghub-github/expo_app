@@ -10,6 +10,16 @@ import { countTicketOutcomes, sendExpoPushWithRetry, type ExpoPushMessage } from
 const registerBodySchema = z.object({
   expo_push_token: z.string().min(10),
   device_type: z.enum(["ios", "android", "web", "unknown"]),
+  // Optional device / app / locale fingerprint (migration 0419). Older
+  // client builds don't send these — schema stays permissive so no client
+  // regresses. Server stores what it gets, leaves the rest NULL.
+  device_model: z.string().max(120).optional().nullable(),
+  device_brand: z.string().max(60).optional().nullable(),
+  os_name: z.string().max(30).optional().nullable(),
+  os_version: z.string().max(40).optional().nullable(),
+  app_version: z.string().max(20).optional().nullable(),
+  locale: z.string().max(20).optional().nullable(),
+  timezone: z.string().max(60).optional().nullable(),
 });
 
 const sendBodySchema = z.object({
@@ -185,7 +195,13 @@ export async function pushRoutes(app: FastifyInstance) {
         if (!parsed.success) {
           return reply.code(400).send({ error: "invalid_body" });
         }
-        const { expo_push_token, device_type } = parsed.data;
+        const {
+          expo_push_token,
+          device_type,
+          device_model, device_brand,
+          os_name, os_version,
+          app_version, locale, timezone,
+        } = parsed.data;
         const userId = req.auth!.sub;
         const db = getDb();
         const now = new Date();
@@ -199,6 +215,14 @@ export async function pushRoutes(app: FastifyInstance) {
             expoPushToken: expo_push_token,
             createdAt: now,
             updatedAt: now,
+            lastSeenAt: now,
+            deviceModel: device_model ?? null,
+            deviceBrand: device_brand ?? null,
+            osName: os_name ?? null,
+            osVersion: os_version ?? null,
+            appVersion: app_version ?? null,
+            locale: locale ?? null,
+            timezone: timezone ?? null,
           })
           .onConflictDoUpdate({
             target: expoPushTokens.expoPushToken,
@@ -207,10 +231,31 @@ export async function pushRoutes(app: FastifyInstance) {
               role,
               deviceType: device_type,
               updatedAt: now,
+              lastSeenAt: now,
+              // Only overwrite metadata when the client actually sent it —
+              // otherwise preserve the last known values so a downgrade to
+              // an older APK doesn't clobber richer data we already had.
+              ...(device_model ? { deviceModel: device_model } : {}),
+              ...(device_brand ? { deviceBrand: device_brand } : {}),
+              ...(os_name ? { osName: os_name } : {}),
+              ...(os_version ? { osVersion: os_version } : {}),
+              ...(app_version ? { appVersion: app_version } : {}),
+              ...(locale ? { locale } : {}),
+              ...(timezone ? { timezone } : {}),
             },
           });
 
-        req.log.info({ role, device_type, userId: userId.slice(0, 8) }, "expo_push_token_registered");
+        req.log.info(
+          {
+            role,
+            device_type,
+            userId: userId.slice(0, 8),
+            device_model: device_model ?? null,
+            os: os_name && os_version ? `${os_name} ${os_version}` : null,
+            app_version: app_version ?? null,
+          },
+          "expo_push_token_registered",
+        );
         return reply.send({ ok: true });
       }
     );

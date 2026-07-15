@@ -4842,6 +4842,18 @@ export const expoPushTokens = pgTable(
     expoPushToken: text("expo_push_token").notNull().unique(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Device / app / locale fingerprint (migration 0419). All nullable so
+    // pre-1.0.1 APKs continue to register successfully. Used for targeted
+    // sends (e.g. only app_version >= X), analytics, and locale-aware
+    // template rendering.
+    deviceModel: text("device_model"),
+    deviceBrand: text("device_brand"),
+    osName: text("os_name"),
+    osVersion: text("os_version"),
+    appVersion: text("app_version"),
+    locale: text("locale"),
+    timezone: text("timezone"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     userRoleIdx: index("expo_push_tokens_user_id_role_idx").on(t.userId, t.role),

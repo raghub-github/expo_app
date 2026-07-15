@@ -106,6 +106,15 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
   }
 
   app.addHook("preHandler", async (req) => {
+    // Route-level opt-out for endpoints that must be public even inside an
+    // auth-encapsulated scope (e.g. provider webhooks that use their own
+    // HMAC signature — Razorpay, Cashfree). Because this plugin is wrapped
+    // with fp() its hook propagates to the whole parent scope, so any route
+    // that must bypass JWT verification declares `config: { skipAuth: true }`
+    // and this early-return keeps the request unauth'd.
+    const routeCfg = req.routeOptions?.config as { skipAuth?: boolean } | undefined;
+    if (routeCfg?.skipAuth === true) return;
+
     const header = req.headers.authorization;
     if (!header) {
       if (!required) return;
