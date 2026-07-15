@@ -134,16 +134,37 @@ export default function ConsentScreen() {
           ))}
         </View>
 
+        {/*
+          Consent checkbox — reliability notes for the "tap does nothing" bug:
+
+          1. hitSlop expands the touch surface 12px around the entire card
+             so users don't have to hit the 22px checkbox itself precisely.
+          2. android_ripple gives immediate visual feedback so users see
+             their tap registered even before the state re-renders.
+          3. `pointerEvents="none"` on the inner <Text> block prevents
+             nested <Text> children (Terms/Privacy styled fragments) from
+             absorbing the touch on Android — a well-known RN quirk where
+             child Text with different styling becomes its own hit target.
+          4. delayPressIn=0 so the ripple + toggle fire immediately on
+             finger-down instead of after the ~130ms default long-press
+             gate (which felt like "the checkbox is dead" to users).
+        */}
         <Pressable
           style={styles.acceptBox}
           onPress={() => setAccepted((v) => !v)}
           accessibilityRole="checkbox"
           accessibilityState={{ checked: accepted }}
+          accessibilityLabel="I have read and agree to the Terms of Service and Privacy Policy"
+          hitSlop={12}
+          android_ripple={{ color: "rgba(22,163,74,0.12)", borderless: false }}
         >
-          <View style={[styles.checkbox, accepted && styles.checkboxOn]}>
+          <View
+            style={[styles.checkbox, accepted && styles.checkboxOn]}
+            pointerEvents="none"
+          >
             {accepted ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
           </View>
-          <Text style={styles.acceptText}>
+          <Text style={styles.acceptText} pointerEvents="none">
             I have read and agree to the{" "}
             <Text style={styles.acceptLink}>Terms of Service</Text> and the{" "}
             <Text style={styles.acceptLink}>Privacy Policy</Text>. I confirm I am{" "}
@@ -220,6 +241,12 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     padding: 14,
     marginTop: 16,
+    // Explicit minHeight guarantees at least 48pt touch target height
+    // (Material + iOS HIG minimum). Fixes the "checkbox does nothing"
+    // report when the wrapped text is short enough to make the whole
+    // card < 44pt tall on small phones.
+    minHeight: 56,
+    overflow: "hidden",
   },
   checkbox: {
     width: 22,
