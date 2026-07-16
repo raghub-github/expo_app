@@ -460,6 +460,16 @@ await app.register(verificationAdminRoutes);
 await app.register(cashfreeHeaderWebhookRoutes, { prefix: "/api" });
 await app.register(cashfreeBodySignedWebhookRoutes, { prefix: "/api" });
 
+// Admin-only refund + revoke for merchant subscription payments.
+// Handles wallet-paid (instant credit + revoke) and Razorpay-paid (initiate
+// refund via API + eager revoke; refund.processed webhook confirms).
+const { merchantSubscriptionAdminRoutes } = await import(
+  "./modules/merchant-partner/merchant-subscription.admin.routes.js"
+);
+await app.register(merchantSubscriptionAdminRoutes, {
+  prefix: "/v1/admin/merchant-subscriptions",
+});
+
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 const { pricingRoutes } = await import("./modules/pricing/pricing.routes.js");
 await app.register(pricingRoutes, { prefix: "/v1/pricing" });

@@ -205,3 +205,57 @@ export async function getPaymentDetails(paymentId: string) {
   return await razorpay.payments.fetch(paymentId);
 }
 
+export interface RefundParams {
+  paymentId: string;
+  /** Amount in paise. Omit for a full refund. */
+  amountPaise?: number;
+  /** "normal" (T+7 banking) or "optimum" (instant if available). Defaults to "normal". */
+  speed?: "normal" | "optimum";
+  /**
+   * Idempotency guard — Razorpay dedupes refunds by this receipt within a payment.
+   * We pass a stable string derived from our internal payment record id.
+   */
+  receipt: string;
+  notes?: Record<string, string>;
+}
+
+export interface RefundResponse {
+  id: string;
+  entity: string;
+  amount: number;
+  currency: string;
+  payment_id: string;
+  receipt: string | null;
+  status: string;
+  speed_requested?: string;
+  speed_processed?: string;
+  created_at: number;
+}
+
+/**
+ * Initiate a refund on a Razorpay payment. Returns the refund object.
+ *
+ * The webhook `refund.processed` will fire when Razorpay actually moves the
+ * money back to the customer's method (may take minutes for UPI, days for
+ * cards). Our admin-refund path marks the subscription REFUNDED eagerly and
+ * treats the webhook as idempotent confirmation.
+ *
+ * On duplicate receipt Razorpay throws with statusCode 400 and description
+ * "The receipt has already been used" — the caller should catch that and
+ * treat it as "refund already exists" rather than a hard error.
+ */
+export async function createRazorpayRefund(params: RefundParams): Promise<RefundResponse> {
+  const razorpay = getRazorpayInstance();
+  const payload: Record<string, unknown> = {
+    receipt: params.receipt,
+    speed: params.speed ?? "normal",
+  };
+  if (params.amountPaise != null) payload.amount = params.amountPaise;
+  if (params.notes) payload.notes = params.notes;
+  const refund = await razorpay.payments.refund(
+    params.paymentId,
+    payload as Parameters<typeof razorpay.payments.refund>[1]
+  );
+  return refund as unknown as RefundResponse;
+}
+

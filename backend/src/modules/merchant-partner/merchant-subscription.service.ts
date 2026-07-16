@@ -795,6 +795,381 @@ export async function payMerchantSubscriptionFromWallet(args: {
   };
 }
 
+/**
+ * Look up the merchant-subscription payment row that produced a given Razorpay
+ * payment id. Used by both the webhook safety net (has this payment already
+ * been activated?) and the refund path (fetch the record to refund).
+ */
+async function findSubscriptionPaymentByRazorpayId(
+  sql: ReturnType<typeof getSql>,
+  razorpayPaymentId: string
+): Promise<{
+  id: number;
+  merchant_id: number;
+  store_id: number;
+  subscription_id: number;
+  plan_id: number;
+  total_paise: number;
+  amount: number;
+  payment_gateway: string;
+  payment_status: string;
+} | null> {
+  const rows = await sql`
+    SELECT id, merchant_id, store_id, subscription_id, plan_id,
+           total_paise, amount, payment_gateway, payment_status
+    FROM subscription_payments
+    WHERE payment_gateway_id = ${razorpayPaymentId}
+      AND payment_gateway = 'RAZORPAY'
+    LIMIT 1
+  `;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: Number(r.id),
+    merchant_id: Number(r.merchant_id),
+    store_id: Number(r.store_id),
+    subscription_id: Number(r.subscription_id),
+    plan_id: Number(r.plan_id),
+    total_paise: Number(r.total_paise ?? 0),
+    amount: Number(r.amount ?? 0),
+    payment_gateway: String(r.payment_gateway),
+    payment_status: String(r.payment_status),
+  };
+}
+
+/**
+ * Webhook safety net — activate a merchant subscription from a Razorpay
+ * `payment.captured` / `order.paid` event. Called ONLY when the payment's
+ * notes carry `merchant_store_pk` + `plan_id` (which our
+ * createMerchantSubscriptionPaymentOrder attaches). Fully idempotent:
+ * if the payment row already exists (client already called verify-payment),
+ * this is a no-op.
+ *
+ * This is critical for money-safety: if the merchant's app crashes, phone
+ * dies, or network drops between "Razorpay captured payment" and
+ * "client calls /verify-payment", the subscription would never activate
+ * without this webhook fallback.
+ */
+export async function activateMerchantSubscriptionFromWebhook(args: {
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  notes: Record<string, unknown>;
+}): Promise<
+  | { ok: true; subscriptionId: number; idempotent: boolean }
+  | { ok: false; code: string; message: string }
+> {
+  const sql = getSql();
+
+  const merchantStorePk = Number(args.notes.merchant_store_pk ?? args.notes.merchantStorePk ?? 0);
+  const planId = Number(args.notes.plan_id ?? args.notes.planId ?? 0);
+  if (!merchantStorePk || !planId) {
+    return { ok: false, code: "MISSING_NOTES", message: "notes.merchant_store_pk / plan_id absent" };
+  }
+
+  // Idempotent — if the client already ran verify-payment, this row exists and
+  // we do nothing. Uses payment_gateway_id (= razorpay_payment_id) which is
+  // effectively unique per successful Razorpay payment.
+  const existing = await findSubscriptionPaymentByRazorpayId(sql, args.razorpayPaymentId);
+  if (existing) {
+    return { ok: true, subscriptionId: existing.subscription_id, idempotent: true };
+  }
+
+  // Resolve parent from the store — notes carry only store_id, not merchant_id.
+  const parentRows = await sql`
+    SELECT parent_id FROM merchant_stores WHERE id = ${merchantStorePk} LIMIT 1
+  `;
+  const parentId = Number((parentRows[0] as { parent_id?: number } | undefined)?.parent_id ?? 0);
+  if (!parentId) return { ok: false, code: "STORE_NOT_FOUND", message: "Unknown store" };
+
+  // Reuse verifyMerchantSubscriptionPayment. It re-verifies the signature but
+  // since webhooks don't carry a signature we synthesize one using the same
+  // HMAC the client would compute. Cleaner alternative: refactor verifyMerchant
+  // SubscriptionPayment to accept a "trusted" flag. Doing the HMAC here keeps
+  // the change surface tiny and reuses the exact code path a real client hits.
+  const env = getEnv();
+  if (!env.RAZORPAY_KEY_SECRET) {
+    return { ok: false, code: "GATEWAY_NOT_CONFIGURED", message: "Razorpay secret missing" };
+  }
+  const { createHmac } = await import("node:crypto");
+  const synthesizedSignature = createHmac("sha256", env.RAZORPAY_KEY_SECRET)
+    .update(`${args.razorpayOrderId}|${args.razorpayPaymentId}`)
+    .digest("hex");
+
+  const result = await verifyMerchantSubscriptionPayment({
+    storeId: merchantStorePk,
+    parentId,
+    planId,
+    razorpayOrderId: args.razorpayOrderId,
+    razorpayPaymentId: args.razorpayPaymentId,
+    razorpaySignature: synthesizedSignature,
+  });
+  if (!result.ok) {
+    return { ok: false, code: "ACTIVATION_FAILED", message: result.error };
+  }
+  return { ok: true, subscriptionId: result.subscriptionId, idempotent: false };
+}
+
+/**
+ * Admin-initiated refund + eager revoke for a merchant-subscription payment.
+ *
+ *   Wallet payments  → credit merchant_wallet AVAILABLE with a fresh idempotency
+ *                       key, mark payment REFUNDED, revoke subscription.
+ *   Razorpay payments → call Razorpay Refund API, mark payment REFUND_PENDING,
+ *                       revoke subscription eagerly. The `refund.processed`
+ *                       webhook later flips payment → REFUNDED idempotently.
+ *
+ * Revoke semantics (per product decision 2026-07-16):
+ *   Full refund → subscription_status='REFUNDED', is_active=false, immediately.
+ *   No grace period. Natural expiry also revokes (existing cron behavior).
+ *   Downgrade to a previous paid plan is NOT done automatically — the merchant
+ *   drops to Free until they subscribe again (simpler, auditable).
+ *
+ * Only admin / support / manager / super_admin roles can call this — enforced
+ * at the route layer (see merchant-subscription.admin.routes.ts).
+ */
+export async function refundMerchantSubscriptionPayment(args: {
+  paymentId: number;
+  actorSubjectId: string;
+  actorRole: string;
+  reason?: string;
+}): Promise<
+  | {
+      ok: true;
+      paymentId: number;
+      subscriptionId: number;
+      gateway: "WALLET" | "RAZORPAY";
+      /** For wallet: the new credit ledger id. For razorpay: the Razorpay refund id. */
+      refundReference: string;
+      alreadyRefunded: boolean;
+    }
+  | { ok: false; status: number; error: string }
+> {
+  const sql = getSql();
+
+  const rows = await sql`
+    SELECT id, merchant_id, store_id, subscription_id, plan_id,
+           total_paise, amount, payment_gateway, payment_gateway_id,
+           payment_status
+    FROM subscription_payments
+    WHERE id = ${args.paymentId}
+    LIMIT 1
+  `;
+  const p = rows[0] as Record<string, unknown> | undefined;
+  if (!p) return { ok: false, status: 404, error: "payment_not_found" };
+
+  const gateway = String(p.payment_gateway).toUpperCase();
+  if (gateway !== "WALLET" && gateway !== "RAZORPAY") {
+    return { ok: false, status: 400, error: `refund_unsupported_for_gateway_${gateway}` };
+  }
+
+  const paymentStatus = String(p.payment_status).toUpperCase();
+  if (paymentStatus === "REFUNDED") {
+    // Idempotent — safe to call twice; return existing refund info.
+    return {
+      ok: true,
+      paymentId: Number(p.id),
+      subscriptionId: Number(p.subscription_id),
+      gateway: gateway as "WALLET" | "RAZORPAY",
+      refundReference: `already_refunded_${p.id}`,
+      alreadyRefunded: true,
+    };
+  }
+  if (paymentStatus === "REFUND_PENDING" && gateway === "RAZORPAY") {
+    // Razorpay refund already initiated — don't double-file.
+    return {
+      ok: true,
+      paymentId: Number(p.id),
+      subscriptionId: Number(p.subscription_id),
+      gateway: "RAZORPAY",
+      refundReference: `pending_${p.id}`,
+      alreadyRefunded: true,
+    };
+  }
+  if (paymentStatus !== "PAID") {
+    return { ok: false, status: 400, error: `payment_not_refundable_status_${paymentStatus}` };
+  }
+
+  const merchantId = Number(p.merchant_id);
+  const storeId = Number(p.store_id);
+  const subscriptionId = Number(p.subscription_id);
+  const totalPaise = Number(p.total_paise ?? 0);
+  const amountRupees =
+    Number.isFinite(Number(p.amount)) && Number(p.amount) > 0
+      ? Number(p.amount)
+      : Math.round(totalPaise) / 100;
+  if (amountRupees <= 0) {
+    return { ok: false, status: 400, error: "refund_amount_zero" };
+  }
+
+  const refundIdempotencyKey = `merchant_sub_refund_${args.paymentId}`;
+  let refundReference: string;
+
+  if (gateway === "WALLET") {
+    // Credit merchant_wallet AVAILABLE. Idempotent via the ledger unique key.
+    // Metadata records who did the refund + the original payment/ledger link
+    // for audit reconstruction.
+    const [row] = await sql`
+      SELECT id FROM merchant_wallet_ledger WHERE idempotency_key = ${refundIdempotencyKey} LIMIT 1
+    `;
+    if (row) {
+      refundReference = String((row as { id: number }).id);
+    } else {
+      const wallet = await sql`
+        SELECT id FROM merchant_wallet WHERE merchant_store_id = ${storeId} LIMIT 1
+      `;
+      const walletRow = wallet[0] as { id?: number } | undefined;
+      if (!walletRow?.id) {
+        return { ok: false, status: 500, error: "wallet_not_found" };
+      }
+      const inserted = await sql<{ ledger_id: number | null }[]>`
+        SELECT merchant_wallet_credit(
+          ${walletRow.id}::bigint,
+          ${amountRupees}::numeric,
+          'SUBSCRIPTION_FEE'::wallet_transaction_category,
+          'AVAILABLE'::wallet_balance_type,
+          'SUBSCRIPTION'::wallet_reference_type,
+          ${subscriptionId}::bigint,
+          ${refundIdempotencyKey}::text,
+          ${`Refund: subscription payment #${args.paymentId}${args.reason ? ` — ${args.reason}` : ""}`}::text,
+          ${JSON.stringify({
+            entry_type: "subscription_refund",
+            balance_impact: "credit",
+            original_payment_id: args.paymentId,
+            original_gateway: "WALLET",
+            actor_role: args.actorRole,
+            actor_subject_id: args.actorSubjectId,
+            reason: args.reason ?? null,
+          })}::jsonb
+        ) AS ledger_id
+      `;
+      refundReference = String(inserted[0]?.ledger_id ?? "");
+    }
+  } else {
+    // Razorpay — initiate refund via API. Failures throw; the payment row stays
+    // in PAID state so the admin can retry after fixing the underlying cause
+    // (e.g., insufficient MID balance).
+    const { createRazorpayRefund } = await import("../../services/payment/razorpayService.js");
+    try {
+      const razorpayPaymentId = String(p.payment_gateway_id ?? "");
+      if (!razorpayPaymentId) {
+        return { ok: false, status: 500, error: "razorpay_payment_id_missing" };
+      }
+      const refund = await createRazorpayRefund({
+        paymentId: razorpayPaymentId,
+        amountPaise: totalPaise,
+        receipt: refundIdempotencyKey,
+        notes: {
+          subscription_payment_id: String(args.paymentId),
+          subscription_id: String(subscriptionId),
+          store_id: String(storeId),
+          actor_role: args.actorRole,
+          actor_subject_id: args.actorSubjectId,
+          ...(args.reason ? { reason: args.reason } : {}),
+        },
+      });
+      refundReference = String(refund.id);
+    } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
+      // Razorpay dedupes by receipt — if it's already been filed, they return
+      // a specific error we can treat as "success, already refunded".
+      if (/receipt has already been used/i.test(msg)) {
+        return {
+          ok: true,
+          paymentId: args.paymentId,
+          subscriptionId,
+          gateway: "RAZORPAY",
+          refundReference: `razorpay_duplicate_${args.paymentId}`,
+          alreadyRefunded: true,
+        };
+      }
+      return { ok: false, status: 502, error: `razorpay_refund_failed: ${msg}` };
+    }
+  }
+
+  // Mark the payment row. Wallet refund is instant → REFUNDED.
+  // Razorpay refund is async → REFUND_PENDING (webhook will flip to REFUNDED).
+  const newPaymentStatus = gateway === "WALLET" ? "REFUNDED" : "REFUND_PENDING";
+  await sql`
+    UPDATE subscription_payments
+    SET payment_status = ${newPaymentStatus},
+        notes = COALESCE(notes, '') ||
+                ${(args.reason ? `\nRefund reason: ${args.reason}` : `\nRefunded by ${args.actorRole}`)},
+        payment_gateway_response = COALESCE(payment_gateway_response, '{}'::jsonb) || ${JSON.stringify({
+          refund_reference: refundReference,
+          refunded_at: new Date().toISOString(),
+          refunded_by_role: args.actorRole,
+          refunded_by_subject_id: args.actorSubjectId,
+        })}::jsonb
+    WHERE id = ${args.paymentId}
+  `;
+
+  // Eager revoke — subscription becomes REFUNDED + is_active=false right away.
+  // Merchant loses paid features immediately. No grace period, no auto-downgrade
+  // to previous plan.
+  await sql`
+    UPDATE merchant_subscriptions
+    SET subscription_status = 'REFUNDED',
+        payment_status = 'REFUNDED',
+        is_active = false,
+        auto_renew = false,
+        updated_at = NOW()
+    WHERE id = ${subscriptionId}
+      AND merchant_id = ${merchantId}
+      AND store_id = ${storeId}
+  `;
+
+  return {
+    ok: true,
+    paymentId: args.paymentId,
+    subscriptionId,
+    gateway: gateway as "WALLET" | "RAZORPAY",
+    refundReference,
+    alreadyRefunded: false,
+  };
+}
+
+/**
+ * Webhook: `refund.processed` for a merchant-subscription Razorpay payment.
+ * The admin refund path already flipped payment → REFUND_PENDING and revoked
+ * the subscription eagerly, so this is just the idempotent flip from
+ * REFUND_PENDING → REFUNDED once Razorpay confirms the money reached the
+ * customer's method. Never revokes a subscription that wasn't already
+ * revoked here.
+ */
+export async function handleMerchantSubscriptionRefundWebhook(args: {
+  razorpayPaymentId: string;
+  razorpayRefundId: string;
+}): Promise<{ ok: boolean; matched: boolean }> {
+  const sql = getSql();
+  const found = await findSubscriptionPaymentByRazorpayId(sql, args.razorpayPaymentId);
+  if (!found) return { ok: true, matched: false };
+
+  await sql`
+    UPDATE subscription_payments
+    SET payment_status = 'REFUNDED',
+        payment_gateway_response = COALESCE(payment_gateway_response, '{}'::jsonb) || ${JSON.stringify({
+          razorpay_refund_id: args.razorpayRefundId,
+          refund_confirmed_at: new Date().toISOString(),
+          via: "razorpay_webhook",
+        })}::jsonb
+    WHERE id = ${found.id}
+  `;
+  // Ensure the subscription is revoked — usually already done by the admin
+  // path but this is our safety net when a refund is initiated directly on
+  // the Razorpay dashboard (no admin route call).
+  await sql`
+    UPDATE merchant_subscriptions
+    SET subscription_status = 'REFUNDED',
+        payment_status = 'REFUNDED',
+        is_active = false,
+        auto_renew = false,
+        updated_at = NOW()
+    WHERE id = ${found.subscription_id}
+      AND subscription_status <> 'REFUNDED'
+  `;
+  return { ok: true, matched: true };
+}
+
 async function insertSubscriptionPayment(
   sql: ReturnType<typeof getSql>,
   p: {
