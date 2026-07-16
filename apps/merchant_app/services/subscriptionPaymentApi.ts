@@ -195,6 +195,62 @@ export async function fetchMerchantSubscriptionDetails(
   return data;
 }
 
+export type MerchantRefundHistoryEntry = {
+  id: number;
+  paymentId: number;
+  subscriptionId: number;
+  storeId: number;
+  storeName: string | null;
+  planId: number | null;
+  planName: string | null;
+  planCode: string | null;
+  gateway: "WALLET" | "RAZORPAY";
+  amount: number;
+  totalPaise: number;
+  currency: string;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  reason: string;
+  initiatedAt: string;
+  completedAt: string | null;
+  failedAt: string | null;
+  failureReason: string | null;
+  // NOTE: no `actor` field — merchant-facing endpoint intentionally strips
+  // agent identity. See backend listMerchantSubscriptionRefunds(includeActor).
+};
+
+export async function fetchMerchantSubscriptionRefunds(
+  storeId: number,
+  token: string,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<{
+  items: MerchantRefundHistoryEntry[];
+  total: number;
+  hasMore: boolean;
+}> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set("limit", String(opts.limit));
+  if (opts.offset != null) qs.set("offset", String(opts.offset));
+  const url =
+    `${base()}/v1/merchant-partner/stores/${storeId}/subscription/refunds` +
+    (qs.toString() ? `?${qs.toString()}` : "");
+  const res = await authFetch(url, token, { method: "GET" });
+  const data = (await res.json()) as {
+    success?: boolean;
+    items?: MerchantRefundHistoryEntry[];
+    total?: number;
+    hasMore?: boolean;
+    error?: string;
+  };
+  if (!res.ok || !data.success) {
+    throw new Error(data.error ?? "Could not load refund history");
+  }
+  return {
+    items: data.items ?? [],
+    total: data.total ?? 0,
+    hasMore: Boolean(data.hasMore),
+  };
+}
+
 export async function updateSubscriptionAutoRenew(
   storeId: number,
   token: string,

@@ -35,6 +35,7 @@ import {
   updateSubscriptionAutoRenew,
 } from "@/services/subscriptionPaymentApi";
 import { SubscriptionCheckoutModal } from "@/components/subscription/SubscriptionCheckoutModal";
+import { SubscriptionRefundHistoryList } from "@/components/subscription/SubscriptionRefundHistoryList";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { Alert } from 'react-native';
 import { useAuth } from "@/context/AuthContext";
@@ -622,6 +623,15 @@ export default function PlansScreen() {
           />
         ))}
       </View>
+
+      {/* Refund history — merchant view (no agent identity). Only rendered
+          when we have both a store + token; otherwise the API would fail
+          with an unauthenticated fetch anyway. */}
+      {selectedStore?.id && token ? (
+        <View style={{ paddingHorizontal: H_PADDING, marginTop: 20 }}>
+          <SubscriptionRefundHistoryList storeId={selectedStore.id} token={token} />
+        </View>
+      ) : null}
 
       {checkoutPlan && token && selectedStore?.id ? (
         <SubscriptionCheckoutModal

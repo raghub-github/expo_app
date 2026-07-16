@@ -20,6 +20,7 @@ import { getEnv } from "../../config/env.js";
 import { getSql } from "../../db/client.js";
 import {
   MERCHANT_SUBSCRIPTION_REFUND_WINDOW_DAYS,
+  listMerchantSubscriptionRefunds,
   refundMerchantSubscriptionPayment,
 } from "./merchant-subscription.service.js";
 
@@ -209,6 +210,30 @@ export const merchantSubscriptionAdminRoutes: FastifyPluginAsync = async (app) =
         });
       }
     );
+
+    /**
+     * GET /v1/admin/merchant-subscriptions/refunds
+     *   Query: storeId? merchantId? paymentId? limit=50 offset=0
+     *
+     * Full refund audit trail. Admin view — INCLUDES actor identity
+     * (name, email, role, system_user_id). Filter by store, merchant, or
+     * single-payment scope. At least one filter is recommended for large
+     * datasets; unbounded queries are allowed for super-admin reports.
+     */
+    admin.get<{
+      Querystring: { storeId?: string; merchantId?: string; paymentId?: string; limit?: string; offset?: string };
+    }>("/refunds", async (req, reply) => {
+      const q = req.query ?? {};
+      const result = await listMerchantSubscriptionRefunds({
+        storeId: q.storeId ? Number(q.storeId) : undefined,
+        merchantId: q.merchantId ? Number(q.merchantId) : undefined,
+        paymentId: q.paymentId ? Number(q.paymentId) : undefined,
+        limit: q.limit ? Number(q.limit) : undefined,
+        offset: q.offset ? Number(q.offset) : undefined,
+        includeActor: true,
+      });
+      return reply.send({ success: true, ...result });
+    });
 
     /**
      * POST /v1/admin/merchant-subscriptions/payments/:paymentId/refund

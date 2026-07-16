@@ -947,6 +947,49 @@ export async function activateMerchantSubscriptionFromWebhook(args: {
  * Only admin / support / manager / super_admin roles can call this — enforced
  * at the route layer (see merchant-subscription.admin.routes.ts).
  */
+/**
+ * Best-effort actor identity enrichment for the refund audit row.
+ * Looks up system_users by id (numeric X-Actor-Subject-Id from the dashboard
+ * proxy) OR by supabase auth id / email fallback. Never throws — enrichment
+ * is a nice-to-have; the refund audit row always writes with whatever we have.
+ */
+async function enrichRefundActor(args: {
+  actorSubjectId: string;
+  actorRole: string;
+}): Promise<{
+  system_user_id: number | null;
+  email: string | null;
+  name: string | null;
+}> {
+  const sql = getSql();
+  const empty = { system_user_id: null, email: null, name: null };
+  try {
+    // Numeric string → system_users.id lookup (dashboard proxy path).
+    if (/^\d+$/.test(args.actorSubjectId)) {
+      const rows = await sql`
+        SELECT id, email, full_name
+        FROM system_users
+        WHERE id = ${Number(args.actorSubjectId)}
+        LIMIT 1
+      `;
+      const r = rows[0] as { id: number; email: string | null; full_name: string | null } | undefined;
+      if (r) {
+        return {
+          system_user_id: Number(r.id),
+          email: r.email ?? null,
+          name: r.full_name ?? null,
+        };
+      }
+    }
+    // Non-numeric → likely a supabase auth uuid from a direct-admin JWT call.
+    // We don't have a supabase→system_users mapping here in backend; return
+    // what we have. Dashboard proxy is the primary path so this is rare.
+    return empty;
+  } catch {
+    return empty;
+  }
+}
+
 export async function refundMerchantSubscriptionPayment(args: {
   paymentId: number;
   actorSubjectId: string;
@@ -1150,6 +1193,47 @@ export async function refundMerchantSubscriptionPayment(args: {
       AND store_id = ${storeId}
   `;
 
+  // Durable audit trail — one immutable row per refund (see migration 0420).
+  // Captures actor identity at write time so historical rows are stable if
+  // the agent user is later deleted or renamed. Merchant-facing endpoints
+  // strip the actor_* columns; admin-facing endpoints return them.
+  const actor = await enrichRefundActor({
+    actorSubjectId: args.actorSubjectId,
+    actorRole: args.actorRole,
+  });
+  const now = new Date();
+  const status = gateway === "WALLET" ? "COMPLETED" : "PENDING";
+  try {
+    await sql`
+      INSERT INTO merchant_subscription_refunds (
+        payment_id, subscription_id, merchant_id, store_id, plan_id,
+        gateway, amount, total_paise, currency,
+        refund_reference, wallet_ledger_id, razorpay_refund_id, razorpay_payment_id,
+        status, reason,
+        actor_subject_id, actor_system_user_id, actor_email, actor_name, actor_role,
+        initiated_at, completed_at
+      ) VALUES (
+        ${args.paymentId}, ${subscriptionId}, ${merchantId}, ${storeId}, ${Number(p.plan_id)},
+        ${gateway}, ${amountRupees}, ${totalPaise}, 'INR',
+        ${refundReference},
+        ${gateway === "WALLET" ? Number(refundReference) || null : null},
+        ${gateway === "RAZORPAY" ? refundReference : null},
+        ${gateway === "RAZORPAY" ? String(p.payment_gateway_id ?? "") : null},
+        ${status}, ${args.reason ?? `Refunded by ${args.actorRole}`},
+        ${args.actorSubjectId}, ${actor.system_user_id}, ${actor.email}, ${actor.name}, ${args.actorRole},
+        ${now.toISOString()},
+        ${status === "COMPLETED" ? now.toISOString() : null}
+      )
+      ON CONFLICT (payment_id) DO NOTHING
+    `;
+  } catch (err) {
+    // Audit insert failure MUST NOT break the refund — the wallet credit /
+    // Razorpay refund + payment status update have already succeeded. Log
+    // for ops to backfill. In practice this only fires on schema drift
+    // (e.g. migration 0420 not applied on this environment).
+    console.error("[merchant-sub] refund audit insert failed:", (err as Error)?.message ?? err);
+  }
+
   return {
     ok: true,
     paymentId: args.paymentId,
@@ -1176,6 +1260,18 @@ export async function handleMerchantSubscriptionRefundWebhook(args: {
   const found = await findSubscriptionPaymentByRazorpayId(sql, args.razorpayPaymentId);
   if (!found) return { ok: true, matched: false };
 
+  // Flip the audit row from PENDING → COMPLETED. Also stamp the razorpay
+  // refund id in case the eager insert only had our internal reference.
+  await sql`
+    UPDATE merchant_subscription_refunds
+    SET status = 'COMPLETED',
+        completed_at = NOW(),
+        razorpay_refund_id = COALESCE(razorpay_refund_id, ${args.razorpayRefundId}),
+        razorpay_payment_id = COALESCE(razorpay_payment_id, ${args.razorpayPaymentId})
+    WHERE payment_id = ${found.id}
+      AND status = 'PENDING'
+  `;
+
   await sql`
     UPDATE subscription_payments
     SET payment_status = 'REFUNDED',
@@ -1200,6 +1296,182 @@ export async function handleMerchantSubscriptionRefundWebhook(args: {
       AND subscription_status <> 'REFUNDED'
   `;
   return { ok: true, matched: true };
+}
+
+/**
+ * Load merchant subscription refund history. Two projections:
+ *   - forAdmin: includes actor_* columns (agent identity)
+ *   - forMerchant: strips actor_* — merchant does not need to know which
+ *     agent processed their refund, and exposing it is a privacy leak
+ *
+ * Scope filters (at least one required for merchant view; admin can query
+ * all with none):
+ *   - storeId
+ *   - merchantId (parent, spans all stores under one owner)
+ *   - paymentId (single-payment history — always <=1 row today)
+ *
+ * Ordered newest-first, paginated.
+ */
+type RefundRowRaw = {
+  id: number;
+  payment_id: number;
+  subscription_id: number;
+  merchant_id: number;
+  store_id: number;
+  plan_id: number | null;
+  gateway: string;
+  amount: string | number;
+  total_paise: number;
+  currency: string;
+  refund_reference: string;
+  wallet_ledger_id: number | null;
+  razorpay_refund_id: string | null;
+  razorpay_payment_id: string | null;
+  status: string;
+  reason: string;
+  actor_subject_id: string;
+  actor_system_user_id: number | null;
+  actor_email: string | null;
+  actor_name: string | null;
+  actor_role: string;
+  initiated_at: string;
+  completed_at: string | null;
+  failed_at: string | null;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  store_name: string | null;
+  store_public_id: string | null;
+  plan_name: string | null;
+  plan_code: string | null;
+};
+
+export type AdminRefundView = {
+  id: number;
+  paymentId: number;
+  subscriptionId: number;
+  merchantId: number;
+  storeId: number;
+  storePublicId: string | null;
+  storeName: string | null;
+  planId: number | null;
+  planName: string | null;
+  planCode: string | null;
+  gateway: "WALLET" | "RAZORPAY";
+  amount: number;
+  totalPaise: number;
+  currency: string;
+  refundReference: string;
+  walletLedgerId: number | null;
+  razorpayRefundId: string | null;
+  razorpayPaymentId: string | null;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  reason: string;
+  actor: {
+    subjectId: string;
+    systemUserId: number | null;
+    email: string | null;
+    name: string | null;
+    role: string;
+  };
+  initiatedAt: string;
+  completedAt: string | null;
+  failedAt: string | null;
+  failureReason: string | null;
+};
+
+export type MerchantRefundView = Omit<AdminRefundView, "actor">;
+
+function mapRefundRow(raw: RefundRowRaw, includeActor: boolean): AdminRefundView | MerchantRefundView {
+  const gateway = String(raw.gateway).toUpperCase() as "WALLET" | "RAZORPAY";
+  const base: MerchantRefundView = {
+    id: Number(raw.id),
+    paymentId: Number(raw.payment_id),
+    subscriptionId: Number(raw.subscription_id),
+    merchantId: Number(raw.merchant_id),
+    storeId: Number(raw.store_id),
+    storePublicId: raw.store_public_id != null ? String(raw.store_public_id) : null,
+    storeName: raw.store_name != null ? String(raw.store_name) : null,
+    planId: raw.plan_id != null ? Number(raw.plan_id) : null,
+    planName: raw.plan_name != null ? String(raw.plan_name) : null,
+    planCode: raw.plan_code != null ? String(raw.plan_code) : null,
+    gateway,
+    amount: Number(raw.amount),
+    totalPaise: Number(raw.total_paise),
+    currency: String(raw.currency ?? "INR"),
+    refundReference: String(raw.refund_reference),
+    walletLedgerId: raw.wallet_ledger_id != null ? Number(raw.wallet_ledger_id) : null,
+    razorpayRefundId: raw.razorpay_refund_id ?? null,
+    razorpayPaymentId: raw.razorpay_payment_id ?? null,
+    status: String(raw.status).toUpperCase() as "PENDING" | "COMPLETED" | "FAILED",
+    reason: String(raw.reason),
+    initiatedAt: String(raw.initiated_at),
+    completedAt: raw.completed_at ? String(raw.completed_at) : null,
+    failedAt: raw.failed_at ? String(raw.failed_at) : null,
+    failureReason: raw.failure_reason ?? null,
+  };
+  if (!includeActor) return base;
+  return {
+    ...base,
+    actor: {
+      subjectId: String(raw.actor_subject_id),
+      systemUserId: raw.actor_system_user_id != null ? Number(raw.actor_system_user_id) : null,
+      email: raw.actor_email ?? null,
+      name: raw.actor_name ?? null,
+      role: String(raw.actor_role),
+    },
+  } as AdminRefundView;
+}
+
+export async function listMerchantSubscriptionRefunds(args: {
+  storeId?: number;
+  merchantId?: number;
+  paymentId?: number;
+  limit?: number;
+  offset?: number;
+  includeActor: boolean;
+}): Promise<{
+  items: (AdminRefundView | MerchantRefundView)[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}> {
+  const sql = getSql();
+  const limit = Math.min(200, Math.max(1, args.limit ?? 50));
+  const offset = Math.max(0, args.offset ?? 0);
+
+  const rows = await sql`
+    SELECT
+      r.*,
+      s.store_id  AS store_public_id,
+      s.store_name,
+      p.plan_name,
+      p.plan_code
+    FROM merchant_subscription_refunds r
+    LEFT JOIN merchant_stores s ON s.id = r.store_id
+    LEFT JOIN merchant_plans  p ON p.id = r.plan_id
+    WHERE 1 = 1
+      ${args.storeId != null ? sql`AND r.store_id = ${args.storeId}` : sql``}
+      ${args.merchantId != null ? sql`AND r.merchant_id = ${args.merchantId}` : sql``}
+      ${args.paymentId != null ? sql`AND r.payment_id = ${args.paymentId}` : sql``}
+    ORDER BY r.initiated_at DESC, r.id DESC
+    LIMIT ${limit}
+    OFFSET ${offset}
+  `;
+
+  const countRows = await sql`
+    SELECT COUNT(*)::int AS total
+    FROM merchant_subscription_refunds r
+    WHERE 1 = 1
+      ${args.storeId != null ? sql`AND r.store_id = ${args.storeId}` : sql``}
+      ${args.merchantId != null ? sql`AND r.merchant_id = ${args.merchantId}` : sql``}
+      ${args.paymentId != null ? sql`AND r.payment_id = ${args.paymentId}` : sql``}
+  `;
+  const total = Number((countRows[0] as { total?: number } | undefined)?.total ?? 0);
+
+  const items = (rows as unknown as RefundRowRaw[]).map((r) => mapRefundRow(r, args.includeActor));
+  return { items, total, limit, offset, hasMore: offset + items.length < total };
 }
 
 async function insertSubscriptionPayment(
