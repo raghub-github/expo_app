@@ -1,11 +1,15 @@
 /**
  * Android App Links — Digital Asset Links (assetlinks.json).
  *
- * Served at https://link.gatimitra.com/.well-known/assetlinks.json so Android
- * can auto-verify the `link.gatimitra.com` domain declared by the Customer
- * App's intent filter (autoVerify: true). When verification succeeds Android
- * opens the app directly for https://link.gatimitra.com/addr/... links — no
+ * Served at https://gatimitra.com/.well-known/assetlinks.json so Android
+ * can auto-verify the `gatimitra.com` domain declared by the Customer App's
+ * intent filter (autoVerify: true). When verification succeeds Android opens
+ * the app directly for https://gatimitra.com/addr/... links — no
  * disambiguation chooser, no browser.
+ *
+ * Verification is scoped to the pathPrefix `/addr` in the intent filter, so
+ * other paths on gatimitra.com (marketing pages, policy docs) still open
+ * normally in the browser and do not get hijacked into the app.
  *
  * The SHA-256 signing-certificate fingerprint(s) come from env so they can be
  * rotated without a code change. With EAS + Google Play App Signing there are

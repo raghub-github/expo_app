@@ -45,7 +45,7 @@ module.exports = {
           action: "VIEW",
           autoVerify: true,
           data: [
-            { scheme: "https", host: "link.gatimitra.com", pathPrefix: "/addr" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/addr" },
             { scheme: "gatimitra", host: "address" },
           ],
           category: ["BROWSABLE", "DEFAULT"],

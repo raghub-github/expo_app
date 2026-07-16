@@ -3,14 +3,14 @@
  *
  * Incoming links do NOT match our route tree 1:1, so we normalise them here
  * before Expo Router resolves a screen. Without this, a verified Android App
- * Link like `https://link.gatimitra.com/addr/<shortCode>?id=<token>` opens the
- * app but lands on the "unmatched route" screen, because the only address
- * screen is `app/address/save.tsx` (path `/address/save`).
+ * Link like `https://gatimitra.com/addr/<shortCode>?id=<token>` opens the app
+ * but lands on the "unmatched route" screen, because the only address screen
+ * is `app/address/save.tsx` (path `/address/save`).
  *
  * Supported inputs (all funnel to the Address Save bottom sheet):
- *   https://link.gatimitra.com/addr/<shortCode>?id=<token>   (verified App Link)
- *   gatimitra://address/save?id=<token>                       (custom scheme)
- *   gatimitra://addr/<shortCode>?id=<token>                   (custom scheme, short form)
+ *   https://gatimitra.com/addr/<shortCode>?id=<token>   (verified App Link)
+ *   gatimitra://address/save?id=<token>                  (custom scheme)
+ *   gatimitra://addr/<shortCode>?id=<token>              (custom scheme, short form)
  *
  * Anything else is passed through untouched.
  *

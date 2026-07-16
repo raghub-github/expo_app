@@ -372,9 +372,10 @@ await app.register(addressSharePublicRoutes, { prefix: "/v1/public" });
 const { renderAddressShareLandingPage } = await import("./modules/addresses/address-share-page.js");
 const { sendAddressShareOgLogo } = await import("./modules/addresses/address-share-og-asset.js");
 
-// Android App Links verification. Served on link.gatimitra.com (nginx proxies
-// the whole host to backend). Android fetches this to auto-verify the domain
-// so /addr/... links open the app directly instead of a browser/chooser.
+// Android App Links verification. Served on gatimitra.com (nginx proxies
+// the exact path /.well-known/assetlinks.json and the /addr/* prefix to this
+// backend). Android fetches this to auto-verify the domain so /addr/... links
+// open the app directly instead of a browser/chooser.
 const { buildAssetLinksJson } = await import("./lib/assetlinks.js");
 app.get("/.well-known/assetlinks.json", async (_req, reply) => {
   const payload = buildAssetLinksJson();

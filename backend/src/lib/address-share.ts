@@ -34,7 +34,7 @@ export function buildAddressShareUrl(shortCode: string, token: string): string {
     return `http://localhost:${env.PORT}/addr/${shortCode}?id=${token}`;
   }
 
-  return `https://link.gatimitra.com/addr/${shortCode}?id=${token}`;
+  return `https://gatimitra.com/addr/${shortCode}?id=${token}`;
 }
 
 /** Absolute HTTPS URL for WhatsApp / Telegram link-preview image (og:image). */
