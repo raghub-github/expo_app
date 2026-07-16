@@ -838,6 +838,26 @@ async function findSubscriptionPaymentByRazorpayId(
 }
 
 /**
+ * Business rule: subscription payments can only be refunded within
+ * REFUND_WINDOW_DAYS of the payment date. Enforced server-side so a client
+ * that removes the frontend guard still can't backdate a refund.
+ *
+ * Product decision (2026-07-17): 7 days. Adjust here for any future change.
+ */
+export const MERCHANT_SUBSCRIPTION_REFUND_WINDOW_DAYS = 7;
+const MERCHANT_SUB_REFUND_WINDOW_MS =
+  MERCHANT_SUBSCRIPTION_REFUND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+function isWithinRefundWindow(paymentDate: Date | string | null): { ok: boolean; deadline: Date | null; daysSince: number } {
+  if (!paymentDate) return { ok: false, deadline: null, daysSince: Infinity };
+  const paidAt = paymentDate instanceof Date ? paymentDate : new Date(String(paymentDate));
+  if (Number.isNaN(paidAt.getTime())) return { ok: false, deadline: null, daysSince: Infinity };
+  const deadline = new Date(paidAt.getTime() + MERCHANT_SUB_REFUND_WINDOW_MS);
+  const daysSince = (Date.now() - paidAt.getTime()) / (24 * 60 * 60 * 1000);
+  return { ok: Date.now() <= deadline.getTime(), deadline, daysSince };
+}
+
+/**
  * Webhook safety net — activate a merchant subscription from a Razorpay
  * `payment.captured` / `order.paid` event. Called ONLY when the payment's
  * notes carry `merchant_store_pk` + `plan_id` (which our
@@ -949,7 +969,7 @@ export async function refundMerchantSubscriptionPayment(args: {
   const rows = await sql`
     SELECT id, merchant_id, store_id, subscription_id, plan_id,
            total_paise, amount, payment_gateway, payment_gateway_id,
-           payment_status
+           payment_status, payment_date
     FROM subscription_payments
     WHERE id = ${args.paymentId}
     LIMIT 1
@@ -962,7 +982,19 @@ export async function refundMerchantSubscriptionPayment(args: {
     return { ok: false, status: 400, error: `refund_unsupported_for_gateway_${gateway}` };
   }
 
+  // 7-day refund window — server-side enforcement so no client can bypass it.
+  // Applies to both wallet + Razorpay. Idempotent replays of already-refunded
+  // payments (below) still succeed regardless of window since no side effect.
+  const paymentDate = p.payment_date as string | Date | null;
+  const window = isWithinRefundWindow(paymentDate);
   const paymentStatus = String(p.payment_status).toUpperCase();
+  if (!["REFUNDED", "REFUND_PENDING"].includes(paymentStatus) && !window.ok) {
+    return {
+      ok: false,
+      status: 400,
+      error: "refund_window_expired",
+    };
+  }
   if (paymentStatus === "REFUNDED") {
     // Idempotent — safe to call twice; return existing refund info.
     return {
