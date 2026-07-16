@@ -2,15 +2,17 @@
  * POST /api/admin/merchant-subscriptions/payments/:paymentId/refund
  * Body: { reason?: string }
  *
- * Proxies the refund action to the backend admin route. The 7-day refund
- * window is enforced ON THE BACKEND — this proxy does not re-check it,
- * so a stale frontend cannot bypass the rule by hitting the API directly.
+ * Access:
+ *   - MERCHANT dashboard access AND REFUND action permission (or super_admin).
+ *   - View-only agents get 403 refund_permission_required.
  *
- * Auth: dashboard super-admin only (Supabase). Actor identity forwarded so
- * the backend records the audit trail (who refunded what and when).
+ * The 7-day refund window is enforced ON THE BACKEND. A stale UI cannot
+ * bypass it by hitting the API directly.
+ *
+ * Actor identity forwarded so the backend logs who did the refund.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { requireSuperAdminApi } from "@/lib/admin/require-super-admin-api";
+import { requireMerchantSubscriptionRefundApi } from "@/lib/admin/require-merchant-subscription-refund-api";
 
 export const runtime = "nodejs";
 
@@ -27,7 +29,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ paymentId: string }> }
 ) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireMerchantSubscriptionRefundApi();
   if (!gate.ok) return gate.response;
 
   const { paymentId } = await params;
@@ -45,7 +47,6 @@ export async function POST(
     );
   }
 
-  // Body is passed through as-is (only `reason` is meaningful; backend zod-parses).
   const body = await request.json().catch(() => ({}));
 
   try {
@@ -57,8 +58,8 @@ export async function POST(
         headers: {
           "Content-Type": "application/json",
           "X-Internal-Secret": secret,
-          "X-Actor-Subject-Id": String(gate.systemUserId ?? ""),
-          "X-Actor-Role": "admin",
+          "X-Actor-Subject-Id": String(gate.systemUserId),
+          "X-Actor-Role": gate.isSuperAdmin ? "super_admin" : "admin",
         },
         body: JSON.stringify(body),
       }

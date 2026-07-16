@@ -26,7 +26,9 @@ import {
   ChevronRight,
   CircleAlert,
   CreditCard,
+  Eye,
   Loader2,
+  Lock,
   RotateCcw,
   Search,
   ShieldCheck,
@@ -71,7 +73,17 @@ type ListResponse = {
   items?: PaymentRow[];
   pagination?: { total: number; limit: number; offset: number; hasMore: boolean };
   refundWindowDays?: number;
+  /** Injected by the proxy — whether the caller has REFUND action permission. */
+  canRefund?: boolean;
+  callerIsSuperAdmin?: boolean;
   error?: string;
+};
+
+type Props = {
+  /** SSR-computed refund capability so the first paint is correct. Client
+   *  refreshes from the API response after fetch. */
+  initialCanRefund: boolean;
+  initialCallerIsSuperAdmin: boolean;
 };
 
 type StatusFilter = "ALL" | "PAID" | "REFUND_PENDING" | "REFUNDED" | "FAILED";
@@ -150,7 +162,10 @@ function daysRemainingBadge(row: PaymentRow) {
   );
 }
 
-export function SubscriptionRefundsClient() {
+export function SubscriptionRefundsClient({
+  initialCanRefund,
+  initialCallerIsSuperAdmin,
+}: Props) {
   const { toast } = useToast();
 
   const [items, setItems] = useState<PaymentRow[]>([]);
@@ -159,6 +174,11 @@ export function SubscriptionRefundsClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refundWindowDays, setRefundWindowDays] = useState(7);
+  // Backend-authoritative permission. SSR seeds; API response overrides on
+  // every fetch so a permission change (grant / revoke) takes effect on the
+  // very next refresh without a full page reload.
+  const [canRefund, setCanRefund] = useState(initialCanRefund);
+  const [callerIsSuperAdmin, setCallerIsSuperAdmin] = useState(initialCallerIsSuperAdmin);
 
   const [search, setSearch] = useState("");
   const [searchDebounced, setSearchDebounced] = useState("");
@@ -201,6 +221,10 @@ export function SubscriptionRefundsClient() {
       setItems(data.items);
       setTotal(data.pagination?.total ?? data.items.length);
       if (data.refundWindowDays) setRefundWindowDays(data.refundWindowDays);
+      if (typeof data.canRefund === "boolean") setCanRefund(data.canRefund);
+      if (typeof data.callerIsSuperAdmin === "boolean") {
+        setCallerIsSuperAdmin(data.callerIsSuperAdmin);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
       setItems([]);
@@ -253,7 +277,7 @@ export function SubscriptionRefundsClient() {
     <div>
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold text-slate-900">Merchant subscription refunds</h1>
           <p className="mt-1 text-sm text-slate-500">
             Full refunds only. Wallet payments credit back to the merchant wallet; Razorpay
@@ -261,6 +285,36 @@ export function SubscriptionRefundsClient() {
             either case.{" "}
             <span className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[11px] font-medium text-indigo-700">
               <ShieldCheck size={10} /> {refundWindowDays}-day window
+            </span>{" "}
+            <span
+              className={`ml-1 inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${
+                callerIsSuperAdmin
+                  ? "border-purple-200 bg-purple-50 text-purple-700"
+                  : canRefund
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-slate-200 bg-slate-50 text-slate-600"
+              }`}
+              title={
+                callerIsSuperAdmin
+                  ? "Super admin — all actions allowed"
+                  : canRefund
+                  ? "You have refund permission on the MERCHANT dashboard"
+                  : "You have view-only access — contact a super admin to grant REFUND action"
+              }
+            >
+              {callerIsSuperAdmin ? (
+                <>
+                  <ShieldCheck size={10} /> Super admin
+                </>
+              ) : canRefund ? (
+                <>
+                  <ShieldCheck size={10} /> Refund enabled
+                </>
+              ) : (
+                <>
+                  <Eye size={10} /> View only
+                </>
+              )}
             </span>
           </p>
         </div>
@@ -274,11 +328,31 @@ export function SubscriptionRefundsClient() {
         </button>
       </div>
 
+      {/* Prominent view-only notice — agents without REFUND action should see
+          the list but understand why the Refund button isn't there. */}
+      {!canRefund ? (
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <Lock size={14} className="mt-0.5 shrink-0 text-slate-500" />
+          <div className="leading-relaxed">
+            <strong>View-only access.</strong> You can browse subscription payments but cannot
+            issue refunds. To refund, your MERCHANT dashboard access must include the{" "}
+            <code className="rounded bg-slate-200/60 px-1 py-0.5 font-mono text-[10px] text-slate-700">
+              REFUND
+            </code>{" "}
+            action. Contact a super admin from the Super Admin → User Access page to request it.
+          </div>
+        </div>
+      ) : null}
+
       {/* ── Summary tiles ─────────────────────────────────────────────────── */}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <SummaryTile label="Total on page" value={items.length} color="slate" />
         <SummaryTile label="Paid" value={stats.paid} color="emerald" />
-        <SummaryTile label="Refundable now" value={stats.refundable} color="indigo" />
+        <SummaryTile
+          label={canRefund ? "Refundable now" : "Refundable (view only)"}
+          value={stats.refundable}
+          color="indigo"
+        />
         <SummaryTile label="Refunded" value={stats.refunded + stats.pending} color="rose" />
       </div>
 
@@ -412,13 +486,23 @@ export function SubscriptionRefundsClient() {
                     </td>
                     <td className="px-3 py-2.5">{daysRemainingBadge(row)}</td>
                     <td className="px-3 py-2.5 text-right">
-                      {row.refundable ? (
+                      {row.refundable && canRefund ? (
                         <button
                           onClick={() => setRefundTarget(row)}
                           className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-xs font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50"
                         >
                           <RotateCcw size={12} /> Refund
                         </button>
+                      ) : row.refundable && !canRefund ? (
+                        // Refundable by policy, but the current agent lacks
+                        // the REFUND action. Show a lock instead of hiding —
+                        // makes the permission gate obvious.
+                        <span
+                          className="inline-flex cursor-not-allowed items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-500"
+                          title="Your role does not permit refunds. Contact a super admin."
+                        >
+                          <Lock size={10} /> Locked
+                        </span>
                       ) : row.status === "REFUNDED" || row.status === "REFUND_PENDING" ? (
                         <span className="text-[11px] text-slate-400">—</span>
                       ) : (
@@ -469,7 +553,7 @@ export function SubscriptionRefundsClient() {
         </div>
       </div>
 
-      {refundTarget ? (
+      {refundTarget && canRefund ? (
         <RefundModal
           payment={refundTarget}
           onClose={() => setRefundTarget(null)}
@@ -482,7 +566,18 @@ export function SubscriptionRefundsClient() {
                 : "Razorpay refund initiated. Subscription revoked."
             );
           }}
-          onError={(msg) => toast(msg || "Refund failed")}
+          onError={(msg) => {
+            // If the backend returned refund_permission_required mid-flow
+            // (rare — permission was revoked between page load and click),
+            // close the modal and re-hydrate state via a refresh.
+            if (msg.includes("refund_permission_required")) {
+              setCanRefund(false);
+              setRefundTarget(null);
+              toast("Refund permission was revoked. Please refresh.");
+              return;
+            }
+            toast(msg || "Refund failed");
+          }}
         />
       ) : null}
     </div>
