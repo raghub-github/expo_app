@@ -9,9 +9,11 @@ import {
   verifyRazorpaySignature,
 } from "../../services/payment/razorpayService.js";
 import {
+  buildPurchaseFromWalletIdempotencyKey,
   debitMerchantSubscriptionFee,
   isInsufficientMerchantWalletError,
 } from "../../lib/merchant-subscription-wallet.js";
+import { getWalletSummary } from "../../lib/merchant-wallet-engine.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_BILLING_DAYS = 30;
@@ -169,6 +171,17 @@ export async function createMerchantSubscriptionPaymentOrder(args: {
     currentPrice
   );
 
+  // Wallet balance is returned alongside the Razorpay order so the merchant app
+  // can render "Pay with Wallet" as enabled/disabled without a second round-trip.
+  // Errors are non-fatal — Razorpay path must not break if the wallet lookup fails.
+  let walletAvailableBalance = 0;
+  try {
+    const summary = await getWalletSummary(store.id);
+    walletAvailableBalance = Number((summary as { available_balance?: number }).available_balance ?? 0);
+  } catch {
+    walletAvailableBalance = 0;
+  }
+
   if (amountToCharge <= 0) {
     return {
       ok: true as const,
@@ -177,6 +190,7 @@ export async function createMerchantSubscriptionPaymentOrder(args: {
       creditApplied,
       amountToCharge: 0,
       plan: { id: plan.id, name: plan.plan_name, price: plan.price },
+      walletAvailableBalance,
     };
   }
 
@@ -217,6 +231,7 @@ export async function createMerchantSubscriptionPaymentOrder(args: {
     gstAmountPaise,
     creditApplied: isUpgrade ? creditApplied : undefined,
     plan: { id: plan.id, name: plan.plan_name, price: plan.price },
+    walletAvailableBalance,
   };
 }
 
@@ -504,6 +519,279 @@ export async function upgradeMerchantSubscription(args: {
     subscriptionId: newSubId,
     creditApplied,
     message: "Upgrade successful",
+  };
+}
+
+/**
+ * Pay for a merchant subscription (new or upgrade) using the merchant's wallet
+ * AVAILABLE balance. Mirrors verifyMerchantSubscriptionPayment + upgradeMerchantSubscription
+ * but replaces Razorpay signature verification with an atomic wallet debit.
+ *
+ * Idempotency: the wallet-debit key is `merchant_sub_purchase_<store>_<plan>_<YYYYMMDD>`
+ * (built by buildPurchaseFromWalletIdempotencyKey). A same-day retry (double-click,
+ * network drop, backend restart) returns the same ledger row + associated subscription,
+ * never charging twice. Repurchases on a later day get a fresh key.
+ *
+ * Failure semantics:
+ *   - wallet_insufficient  → 402; no subscription written; ledger untouched
+ *   - Race (balance drained between check and debit): subscription is marked
+ *     PAYMENT_FAILED / is_active=false and 402 is returned. Idempotency key stays
+ *     unclaimed so the merchant can retry after topping up (via earnings).
+ */
+export async function payMerchantSubscriptionFromWallet(args: {
+  storeId: number;
+  parentId: number;
+  planId: number;
+}) {
+  const sql = getSql();
+
+  const store = await loadStore(sql, args.storeId, args.parentId);
+  if (!store) return { ok: false as const, status: 404, error: "Store not found" };
+
+  const plan = await loadPlan(sql, args.planId);
+  if (!plan) return { ok: false as const, status: 404, error: "Plan not found" };
+  if (plan.price <= 0) {
+    return { ok: false as const, status: 400, error: "Use activate-free for free plans" };
+  }
+
+  const activeSub = await loadActiveSubscription(sql, store.parent_id, store.id);
+  let currentPrice = 0;
+  if (activeSub) {
+    const cur = await loadPlan(sql, activeSub.plan_id);
+    currentPrice = cur?.price ?? 0;
+    if (cur?.id === plan.id) {
+      return { ok: false as const, status: 400, error: "Already on this plan" };
+    }
+    if (currentPrice > plan.price) {
+      return { ok: false as const, status: 400, error: "Downgrade not allowed" };
+    }
+  }
+
+  const isUpgrade = !!(activeSub && activeSub.plan_id !== plan.id);
+  const { amountToCharge, creditApplied } = computeUpgradeCharge(
+    plan.price,
+    activeSub,
+    currentPrice
+  );
+
+  // Full-credit upgrade — nothing to debit; delegate to the existing free/skip path.
+  if (amountToCharge <= 0) {
+    return upgradeMerchantSubscription({
+      storeId: args.storeId,
+      parentId: args.parentId,
+      newPlanId: args.planId,
+      skipPayment: true,
+    });
+  }
+
+  const idemKey = buildPurchaseFromWalletIdempotencyKey({
+    storeId: store.id,
+    planId: plan.id,
+  });
+
+  // Idempotency fast path — if we've already debited for this key today, return
+  // the existing subscription. The ledger row's reference_id points at the
+  // subscription row created on the original request.
+  const priorLedger = await sql`
+    SELECT id, reference_id
+    FROM merchant_wallet_ledger
+    WHERE idempotency_key = ${idemKey}
+    LIMIT 1
+  `;
+  const priorLedgerRow = (priorLedger[0] as { id: number; reference_id: number } | undefined);
+  if (priorLedgerRow) {
+    const subRows = await sql`
+      SELECT id, subscription_status, is_active, expiry_date
+      FROM merchant_subscriptions
+      WHERE id = ${priorLedgerRow.reference_id}
+        AND merchant_id = ${store.parent_id}
+        AND store_id = ${store.id}
+      LIMIT 1
+    `;
+    const priorSub = subRows[0] as { id: number } | undefined;
+    if (priorSub) {
+      return {
+        ok: true as const,
+        subscriptionId: Number(priorSub.id),
+        ledgerId: Number(priorLedgerRow.id),
+        isUpgrade,
+        creditApplied,
+        idempotent: true,
+        message: "Subscription already active (idempotent replay)",
+      };
+    }
+  }
+
+  // Fail fast on obviously insufficient balance — avoids writing an orphan
+  // subscription row when the merchant clearly cannot pay. The atomic
+  // merchant_wallet_debit() below is still the source of truth if a race occurs.
+  let availableBefore = 0;
+  try {
+    const summary = await getWalletSummary(store.id);
+    availableBefore = Number((summary as { available_balance?: number }).available_balance ?? 0);
+  } catch {
+    availableBefore = 0;
+  }
+  if (availableBefore + 0.001 < amountToCharge) {
+    return {
+      ok: false as const,
+      status: 402,
+      error: "wallet_insufficient",
+      required: amountToCharge,
+      available: availableBefore,
+    };
+  }
+
+  const { gstPercent, subtotalPaise, gstAmountPaise, totalPaise } = gstBreakdown(
+    amountToCharge,
+    plan.gst_percent
+  );
+
+  const now = new Date();
+  const expiry = computeNextBillingEnd(now, plan.billing_cycle);
+
+  // Write the subscription row (new-purchase upsert OR upgrade insert).
+  let subscriptionId: number;
+  if (isUpgrade && activeSub) {
+    await sql`
+      UPDATE merchant_subscriptions SET
+        subscription_status = 'UPGRADED', is_active = false, updated_at = NOW()
+      WHERE id = ${activeSub.id}
+    `;
+    const ins = await sql`
+      INSERT INTO merchant_subscriptions (
+        merchant_id, store_id, plan_id, subscription_status, payment_status,
+        start_date, expiry_date, is_active, auto_renew, upgraded_from, credit_applied,
+        billing_start_at, billing_end_at, last_payment_date, next_billing_date
+      ) VALUES (
+        ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
+        ${now.toISOString()}, ${expiry.toISOString()}, true, false,
+        ${activeSub.id}, ${creditApplied},
+        ${now.toISOString()}, ${expiry.toISOString()},
+        ${now.toISOString()}, ${expiry.toISOString()}
+      )
+      RETURNING id
+    `;
+    subscriptionId = Number((ins[0] as { id: number }).id);
+  } else {
+    const existing = await sql`
+      SELECT id FROM merchant_subscriptions
+      WHERE merchant_id = ${store.parent_id} AND store_id = ${store.id}
+        AND subscription_status = 'ACTIVE'
+      LIMIT 1
+    `;
+    const existingId = (existing[0] as { id?: number } | undefined)?.id;
+    if (existingId) {
+      await sql`
+        UPDATE merchant_subscriptions SET
+          plan_id = ${plan.id}, subscription_status = 'ACTIVE', payment_status = 'PAID',
+          start_date = ${now.toISOString()}, expiry_date = ${expiry.toISOString()},
+          is_active = true, last_payment_date = ${now.toISOString()},
+          next_billing_date = ${expiry.toISOString()}, updated_at = NOW()
+        WHERE id = ${existingId}
+      `;
+      subscriptionId = existingId;
+    } else {
+      const ins = await sql`
+        INSERT INTO merchant_subscriptions (
+          merchant_id, store_id, plan_id, subscription_status, payment_status,
+          start_date, expiry_date, is_active, auto_renew, last_payment_date, next_billing_date
+        ) VALUES (
+          ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
+          ${now.toISOString()}, ${expiry.toISOString()}, true, false,
+          ${now.toISOString()}, ${expiry.toISOString()}
+        )
+        RETURNING id
+      `;
+      subscriptionId = Number((ins[0] as { id: number }).id);
+    }
+  }
+
+  // Atomic wallet debit. merchant_wallet_debit() is the only place that ever
+  // decrements AVAILABLE — it uses SELECT FOR UPDATE + a re-check so races
+  // between our balance read above and this call are safe.
+  let ledgerId: number;
+  try {
+    const debit = await debitMerchantSubscriptionFee({
+      storeId: store.id,
+      subscriptionId,
+      amount: amountToCharge,
+      description: `Subscription: ${plan.plan_name}${isUpgrade ? " (upgrade)" : ""}`,
+      metadata: {
+        plan_id: plan.id,
+        plan_name: plan.plan_name,
+        billing_cycle: plan.billing_cycle,
+        gst_percent: gstPercent,
+        subtotal_paise: subtotalPaise,
+        gst_amount_paise: gstAmountPaise,
+        total_paise: totalPaise,
+        is_upgrade: isUpgrade,
+        credit_applied: creditApplied,
+        source: "merchant_app_checkout",
+      },
+      idempotencySuffix: `${plan.id}_${isUpgrade ? "up" : "new"}`,
+      idempotencyKeyOverride: idemKey,
+    });
+    ledgerId = debit.ledgerId;
+  } catch (err) {
+    if (isInsufficientMerchantWalletError(err)) {
+      // Race: balance was drained after our pre-check. Roll the subscription
+      // back to a non-active state so the merchant isn't left thinking they
+      // paid. Do NOT delete the row — it may already be referenced by cascading
+      // audit/notification writes on other paths.
+      await sql`
+        UPDATE merchant_subscriptions
+        SET subscription_status = 'PAYMENT_FAILED',
+            payment_status = 'FAILED',
+            is_active = false,
+            updated_at = NOW()
+        WHERE id = ${subscriptionId}
+      `;
+      const summary = await getWalletSummary(store.id).catch(() => null);
+      const available = summary
+        ? Number((summary as { available_balance?: number }).available_balance ?? 0)
+        : 0;
+      return {
+        ok: false as const,
+        status: 402,
+        error: "wallet_insufficient",
+        required: amountToCharge,
+        available,
+      };
+    }
+    throw err;
+  }
+
+  // Record the payment. gateway="WALLET" tells downstream (reports, invoices,
+  // admin dashboards) that the funds came from the merchant's wallet, not
+  // Razorpay. gatewayId points at the ledger entry so financial auditing has
+  // a hard link from the payment row into the append-only wallet ledger.
+  await insertSubscriptionPayment(sql, {
+    merchantId: store.parent_id,
+    storeId: store.id,
+    subscriptionId,
+    planId: plan.id,
+    totalPaise,
+    subtotalPaise,
+    gstPercent,
+    gstAmountPaise,
+    gateway: "WALLET",
+    gatewayId: `wallet_ledger_${ledgerId}`,
+    notes: isUpgrade
+      ? `Wallet payment (upgrade)${creditApplied > 0 ? `, ₹${creditApplied} credit applied` : ""}`
+      : "Wallet payment",
+    now,
+    expiry,
+  });
+
+  return {
+    ok: true as const,
+    subscriptionId,
+    ledgerId,
+    isUpgrade,
+    creditApplied,
+    idempotent: false,
+    message: "Subscription activated via wallet",
   };
 }
 

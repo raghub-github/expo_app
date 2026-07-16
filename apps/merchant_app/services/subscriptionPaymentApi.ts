@@ -21,6 +21,9 @@ export type CreateSubscriptionOrderResponse = {
   creditApplied?: number;
   gstPercent?: number;
   plan?: { id: number; name: string; price: number };
+  /** Merchant wallet AVAILABLE balance in ₹ — used by the checkout modal to
+   *  render the "Pay with Wallet" option (enabled when balance ≥ amountToCharge). */
+  walletAvailableBalance?: number;
   error?: string;
 };
 
@@ -87,6 +90,53 @@ export async function upgradeSubscription(
     throw new Error(data.error ?? "Upgrade failed");
   }
   return { success: true };
+}
+
+export type PayWithWalletResponse = {
+  success: boolean;
+  subscriptionId?: number;
+  ledgerId?: number;
+  isUpgrade?: boolean;
+  creditApplied?: number;
+  idempotent?: boolean;
+  message?: string;
+  /** Set to "wallet_insufficient" when the AVAILABLE balance is short. */
+  error?: string;
+  required?: number;
+  available?: number;
+};
+
+/**
+ * Pay for a plan using the merchant's wallet AVAILABLE balance. Returns 402
+ * with error="wallet_insufficient" (plus required/available amounts) when the
+ * merchant does not have enough to cover the plan price. Idempotent — safe to
+ * retry on network failure or double-click.
+ */
+export async function payMerchantSubscriptionWithWallet(
+  storeId: number,
+  token: string,
+  planId: number
+): Promise<PayWithWalletResponse> {
+  const res = await authFetch(
+    `${base()}/v1/merchant-partner/stores/${storeId}/subscription/pay-with-wallet`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({ planId }),
+    }
+  );
+  const data = (await res.json()) as PayWithWalletResponse;
+  if (!res.ok) {
+    // 402 wallet_insufficient is a "structured error" — preserve fields so the
+    // UI can render the exact shortfall instead of a generic message.
+    return {
+      success: false,
+      error: data.error ?? "Payment failed",
+      required: data.required,
+      available: data.available,
+    };
+  }
+  return data;
 }
 
 export async function activateFreeSubscription(

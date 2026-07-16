@@ -30,9 +30,11 @@ import {
 import { ACTIVE_PLAN_CODE as FALLBACK_ACTIVE_PLAN_CODE } from "@/lib/activePlan";
 import { fetchSubscription } from "@/services/api";
 import {
+  activateFreeSubscription,
   fetchMerchantSubscriptionDetails,
   updateSubscriptionAutoRenew,
 } from "@/services/subscriptionPaymentApi";
+import { SubscriptionCheckoutModal } from "@/components/subscription/SubscriptionCheckoutModal";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { Alert } from 'react-native';
 import { useAuth } from "@/context/AuthContext";
@@ -545,12 +547,38 @@ export default function PlansScreen() {
     [currentIndex, activePlanCode, realCount, autoRenew, autoRenewLoading, handleAutoRenewChange]
   );
 
+  const [checkoutPlan, setCheckoutPlan] = useState<MerchantPlan | null>(null);
+
+  const refreshSubscriptionState = useCallback(async () => {
+    if (!token || !selectedStore?.id) return;
+    try {
+      const detail = await fetchMerchantSubscriptionDetails(selectedStore.id, token);
+      setAutoRenew(detail.subscription?.autoRenew === true);
+      const code = detail.plan?.planCode;
+      if (code) setActivePlanCode(String(code).toUpperCase());
+    } catch {
+      /* non-fatal — UI stays on last-known state until next natural refresh */
+    }
+  }, [selectedStore?.id, token]);
+
   const handleUpgrade = async (plan: MerchantPlan) => {
-    // Show coming soon message until backend endpoint is implemented
-    Alert.alert(
-      "Coming Soon",
-      "Plan upgrade functionality is being set up. Please contact support to upgrade your plan.\n\nSupport: support@gatimitra.in"
-    );
+    if (!token || !selectedStore?.id) {
+      Alert.alert("Not ready", "Please sign in and select a store before subscribing.");
+      return;
+    }
+    // Free plan → straight to activate-free (no checkout modal, no wallet debit).
+    if (Number(plan.price) === 0) {
+      try {
+        await activateFreeSubscription(selectedStore.id, token, plan.id);
+        await refreshSubscriptionState();
+        Alert.alert("Activated", `${plan.plan_name} is now active.`);
+      } catch (e) {
+        Alert.alert("Could not activate", e instanceof Error ? e.message : "Please try again.");
+      }
+      return;
+    }
+    // Paid plan → open checkout modal (Razorpay default + wallet option).
+    setCheckoutPlan(plan);
   };
 
   return (
@@ -594,6 +622,29 @@ export default function PlansScreen() {
           />
         ))}
       </View>
+
+      {checkoutPlan && token && selectedStore?.id ? (
+        <SubscriptionCheckoutModal
+          visible={!!checkoutPlan}
+          storeId={selectedStore.id}
+          planId={checkoutPlan.id}
+          planName={checkoutPlan.plan_name}
+          token={token}
+          onSuccess={async ({ via }) => {
+            setCheckoutPlan(null);
+            await refreshSubscriptionState();
+            Alert.alert(
+              "Subscription active",
+              via === "wallet"
+                ? "Paid from your wallet balance."
+                : via === "razorpay"
+                ? "Payment successful."
+                : "Plan activated."
+            );
+          }}
+          onClose={() => setCheckoutPlan(null)}
+        />
+      ) : null}
     </View>
   );
 }

@@ -5,6 +5,7 @@ import {
   activateFreeMerchantPlan,
   createMerchantSubscriptionPaymentOrder,
   getMerchantStoreSubscription,
+  payMerchantSubscriptionFromWallet,
   updateMerchantSubscriptionAutoRenew,
   upgradeMerchantSubscription,
   verifyMerchantSubscriptionPayment,
@@ -111,6 +112,43 @@ export function registerMerchantSubscriptionRoutes(protectedApp: FastifyInstance
 
       if (!result.ok) {
         return reply.code(result.status).send({ success: false, error: result.error });
+      }
+      return reply.send({ success: true, ...result });
+    }
+  );
+
+  protectedApp.post<{ Params: { storeId: string }; Body: unknown }>(
+    "/stores/:storeId/subscription/pay-with-wallet",
+    async (req, reply) => {
+      if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+        return reply.code(401).send({ success: false, error: "merchant_required" });
+      }
+      const storeId = Number(req.params.storeId);
+      if (!Number.isInteger(storeId) || storeId < 1) {
+        return reply.code(400).send({ success: false, error: "invalid_store_id" });
+      }
+      const parentId = await getPartnerParentId(req.auth.sub);
+      if (!parentId) return reply.code(403).send({ success: false, error: "merchant_not_found" });
+
+      const body = planBodySchema.parse(req.body ?? {});
+      const result = await payMerchantSubscriptionFromWallet({
+        storeId,
+        parentId,
+        planId: body.planId,
+      });
+
+      if (!result.ok) {
+        // 402 carries the "why" for the client so it can show the exact shortfall.
+        const payload =
+          result.error === "wallet_insufficient"
+            ? {
+                success: false,
+                error: result.error,
+                required: (result as { required?: number }).required,
+                available: (result as { available?: number }).available,
+              }
+            : { success: false, error: result.error };
+        return reply.code(result.status).send(payload);
       }
       return reply.send({ success: true, ...result });
     }
