@@ -1474,6 +1474,214 @@ export async function listMerchantSubscriptionRefunds(args: {
   return { items, total, limit, offset, hasMore: offset + items.length < total };
 }
 
+/**
+ * Combined subscription history — merges purchase events (from
+ * subscription_payments) with refund events (from merchant_subscription_refunds)
+ * into a single date-sorted stream. Merchant lifecycle for a store, in one call.
+ *
+ * Two projections:
+ *   - includeActor: true  → refund events include actor.* (admin/dashboard)
+ *   - includeActor: false → actor stripped (merchant app + partner site)
+ *
+ * Event types:
+ *   PURCHASE — a payment row (any status: PAID / REFUND_PENDING / REFUNDED /
+ *              FAILED / PENDING). Rendered as "Plan X purchased for ₹Y via Z".
+ *   REFUND   — a refund row (status: COMPLETED / PENDING / FAILED). Rendered
+ *              as "Refunded ₹Y to Z" with reason.
+ *
+ * Sorted newest-first by event timestamp. Paginated.
+ */
+type SubscriptionHistoryPurchase = {
+  eventType: "PURCHASE";
+  eventAt: string;
+  id: number;                     // subscription_payments.id
+  subscriptionId: number;
+  planId: number | null;
+  planName: string | null;
+  planCode: string | null;
+  amount: number;
+  totalPaise: number;
+  gstPercent: number;
+  gstAmountPaise: number;
+  gateway: string;                // RAZORPAY | WALLET | PRORATION_CREDIT
+  gatewayId: string | null;
+  status: string;                 // payment_status
+  billingPeriodStart: string | null;
+  billingPeriodEnd: string | null;
+  notes: string | null;
+};
+
+type SubscriptionHistoryRefundBase = {
+  eventType: "REFUND";
+  eventAt: string;
+  id: number;                     // merchant_subscription_refunds.id
+  paymentId: number;
+  subscriptionId: number;
+  planId: number | null;
+  planName: string | null;
+  planCode: string | null;
+  gateway: "WALLET" | "RAZORPAY";
+  amount: number;
+  totalPaise: number;
+  currency: string;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  reason: string;
+  refundReference: string;
+  walletLedgerId: number | null;
+  razorpayRefundId: string | null;
+  razorpayPaymentId: string | null;
+  initiatedAt: string;
+  completedAt: string | null;
+  failedAt: string | null;
+  failureReason: string | null;
+};
+
+export type SubscriptionHistoryAdminRefund = SubscriptionHistoryRefundBase & {
+  actor: {
+    subjectId: string;
+    systemUserId: number | null;
+    email: string | null;
+    name: string | null;
+    role: string;
+  };
+};
+
+export type SubscriptionHistoryEvent =
+  | SubscriptionHistoryPurchase
+  | SubscriptionHistoryRefundBase
+  | SubscriptionHistoryAdminRefund;
+
+export async function listMerchantSubscriptionHistory(args: {
+  storeId: number;
+  merchantId?: number;
+  includeActor: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<{
+  items: SubscriptionHistoryEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}> {
+  const sql = getSql();
+  const limit = Math.min(200, Math.max(1, args.limit ?? 50));
+  const offset = Math.max(0, args.offset ?? 0);
+
+  // Fetch purchases + refunds in parallel. Merge + sort in JS — postgres UNION
+  // would work but the two tables have different column sets; app-side merge
+  // is clearer for future maintainers.
+  const [purchaseRows, refundRows] = await Promise.all([
+    sql`
+      SELECT
+        sp.id, sp.subscription_id, sp.plan_id,
+        sp.amount, sp.total_paise,
+        sp.gst_percent_applied AS gst_percent,
+        sp.gst_amount_paise,
+        sp.payment_gateway AS gateway,
+        sp.payment_gateway_id AS gateway_id,
+        sp.payment_status AS status,
+        sp.payment_date AS event_at,
+        sp.billing_period_start,
+        sp.billing_period_end,
+        sp.notes,
+        p.plan_name, p.plan_code
+      FROM subscription_payments sp
+      LEFT JOIN merchant_plans p ON p.id = sp.plan_id
+      WHERE sp.store_id = ${args.storeId}
+        ${args.merchantId != null ? sql`AND sp.merchant_id = ${args.merchantId}` : sql``}
+      ORDER BY sp.payment_date DESC NULLS LAST, sp.id DESC
+    `,
+    sql`
+      SELECT
+        r.id, r.payment_id, r.subscription_id, r.plan_id,
+        r.gateway, r.amount, r.total_paise, r.currency,
+        r.refund_reference, r.wallet_ledger_id, r.razorpay_refund_id, r.razorpay_payment_id,
+        r.status, r.reason,
+        r.actor_subject_id, r.actor_system_user_id, r.actor_email, r.actor_name, r.actor_role,
+        r.initiated_at AS event_at,
+        r.initiated_at, r.completed_at, r.failed_at, r.failure_reason,
+        p.plan_name, p.plan_code
+      FROM merchant_subscription_refunds r
+      LEFT JOIN merchant_plans p ON p.id = r.plan_id
+      WHERE r.store_id = ${args.storeId}
+        ${args.merchantId != null ? sql`AND r.merchant_id = ${args.merchantId}` : sql``}
+      ORDER BY r.initiated_at DESC, r.id DESC
+    `.catch(() => []), // Gracefully handle missing table (migration 0420 not applied yet)
+  ]);
+
+  const purchases: SubscriptionHistoryPurchase[] = (purchaseRows as unknown as Array<Record<string, unknown>>).map((r) => ({
+    eventType: "PURCHASE",
+    eventAt: r.event_at ? new Date(String(r.event_at)).toISOString() : new Date(0).toISOString(),
+    id: Number(r.id),
+    subscriptionId: Number(r.subscription_id),
+    planId: r.plan_id != null ? Number(r.plan_id) : null,
+    planName: r.plan_name != null ? String(r.plan_name) : null,
+    planCode: r.plan_code != null ? String(r.plan_code) : null,
+    amount: Number(r.amount ?? 0),
+    totalPaise: Number(r.total_paise ?? 0),
+    gstPercent: r.gst_percent != null ? Number(r.gst_percent) : 0,
+    gstAmountPaise: r.gst_amount_paise != null ? Number(r.gst_amount_paise) : 0,
+    gateway: String(r.gateway ?? "").toUpperCase(),
+    gatewayId: r.gateway_id != null ? String(r.gateway_id) : null,
+    status: String(r.status ?? "").toUpperCase(),
+    billingPeriodStart: r.billing_period_start ? String(r.billing_period_start) : null,
+    billingPeriodEnd: r.billing_period_end ? String(r.billing_period_end) : null,
+    notes: r.notes != null ? String(r.notes) : null,
+  }));
+
+  const refunds: (SubscriptionHistoryRefundBase | SubscriptionHistoryAdminRefund)[] = (refundRows as unknown as Array<Record<string, unknown>>).map((r) => {
+    const base: SubscriptionHistoryRefundBase = {
+      eventType: "REFUND",
+      eventAt: new Date(String(r.event_at)).toISOString(),
+      id: Number(r.id),
+      paymentId: Number(r.payment_id),
+      subscriptionId: Number(r.subscription_id),
+      planId: r.plan_id != null ? Number(r.plan_id) : null,
+      planName: r.plan_name != null ? String(r.plan_name) : null,
+      planCode: r.plan_code != null ? String(r.plan_code) : null,
+      gateway: String(r.gateway).toUpperCase() as "WALLET" | "RAZORPAY",
+      amount: Number(r.amount ?? 0),
+      totalPaise: Number(r.total_paise ?? 0),
+      currency: String(r.currency ?? "INR"),
+      status: String(r.status).toUpperCase() as "PENDING" | "COMPLETED" | "FAILED",
+      reason: String(r.reason ?? ""),
+      refundReference: String(r.refund_reference ?? ""),
+      walletLedgerId: r.wallet_ledger_id != null ? Number(r.wallet_ledger_id) : null,
+      razorpayRefundId: r.razorpay_refund_id != null ? String(r.razorpay_refund_id) : null,
+      razorpayPaymentId: r.razorpay_payment_id != null ? String(r.razorpay_payment_id) : null,
+      initiatedAt: String(r.initiated_at),
+      completedAt: r.completed_at ? String(r.completed_at) : null,
+      failedAt: r.failed_at ? String(r.failed_at) : null,
+      failureReason: r.failure_reason != null ? String(r.failure_reason) : null,
+    };
+    if (!args.includeActor) return base;
+    const admin: SubscriptionHistoryAdminRefund = {
+      ...base,
+      actor: {
+        subjectId: String(r.actor_subject_id ?? ""),
+        systemUserId: r.actor_system_user_id != null ? Number(r.actor_system_user_id) : null,
+        email: r.actor_email != null ? String(r.actor_email) : null,
+        name: r.actor_name != null ? String(r.actor_name) : null,
+        role: String(r.actor_role ?? ""),
+      },
+    };
+    return admin;
+  });
+
+  const merged: SubscriptionHistoryEvent[] = [...purchases, ...refunds].sort((a, b) => {
+    // Newest first. Tie-break by eventType then id for stable order.
+    const cmp = new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime();
+    if (cmp !== 0) return cmp;
+    if (a.eventType !== b.eventType) return a.eventType === "REFUND" ? -1 : 1;
+    return b.id - a.id;
+  });
+
+  const total = merged.length;
+  const page = merged.slice(offset, offset + limit);
+  return { items: page, total, limit, offset, hasMore: offset + page.length < total };
+}
+
 async function insertSubscriptionPayment(
   sql: ReturnType<typeof getSql>,
   p: {

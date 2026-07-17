@@ -29,6 +29,7 @@ import {
 } from "@/lib/merchantPortalCloseReasons";
 import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
 import { MerchantStoreStatusCard } from "@/components/merchant/MerchantStoreStatusCard";
+import { SubscriptionHistory } from "@/components/merchants/SubscriptionHistory";
 import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
 import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
 import { SettingsNavBar } from "./SettingsSidebar";
@@ -1592,6 +1593,16 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                   })}
                 </div>
               )}
+
+              {/* Full subscription lifecycle for this store: every purchase +
+                  every refund, merged into one date-sorted timeline. Refund
+                  events include agent (actor) identity — this is the admin/
+                  agent view. Merchant-facing surfaces (partner site + merchant
+                  app) show the same data via a different endpoint that
+                  strips actor_*. */}
+              <div className="mt-6">
+                <SubscriptionHistory storeId={Number(storeId)} />
+              </div>
             </>
           )}
 

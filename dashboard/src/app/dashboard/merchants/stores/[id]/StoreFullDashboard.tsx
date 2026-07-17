@@ -37,7 +37,6 @@ import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/u
 import { MerchantMarketInsightsCard } from "@/components/merchant/MerchantMarketInsightsCard";
 import { LivePreviewInsightsPanel } from "@/components/merchant/LivePreviewInsightsPanel";
 import { BusinessReportsPanel } from "@/components/merchant/BusinessReportsPanel";
-import { SubscriptionRefundHistory } from "@/components/merchants/SubscriptionRefundHistory";
 
 function MiniSparkline({ values, className = "" }: { values: readonly number[]; className?: string }) {
   const gid = React.useId().replace(/:/g, "");
@@ -621,15 +620,6 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                 <BusinessReportsPanel storeInternalId={Number(storeId)} periodPreset="this_week" subview={reportsSubview} />
               )}
             </div>
-          </div>
-
-          {/* Subscription refund audit trail — full history with agent identity.
-              Visible to any agent with MERCHANT dashboard access (view-only for
-              those without REFUND action). Merchant-facing surfaces (partner
-              site, merchant app) show the same data via a different endpoint
-              that strips actor_* columns. */}
-          <div className="mt-6">
-            <SubscriptionRefundHistory storeId={Number(storeId)} />
           </div>
         </div>
       </div>

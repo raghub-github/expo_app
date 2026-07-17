@@ -20,6 +20,7 @@ import { getEnv } from "../../config/env.js";
 import { getSql } from "../../db/client.js";
 import {
   MERCHANT_SUBSCRIPTION_REFUND_WINDOW_DAYS,
+  listMerchantSubscriptionHistory,
   listMerchantSubscriptionRefunds,
   refundMerchantSubscriptionPayment,
 } from "./merchant-subscription.service.js";
@@ -230,6 +231,32 @@ export const merchantSubscriptionAdminRoutes: FastifyPluginAsync = async (app) =
         paymentId: q.paymentId ? Number(q.paymentId) : undefined,
         limit: q.limit ? Number(q.limit) : undefined,
         offset: q.offset ? Number(q.offset) : undefined,
+        includeActor: true,
+      });
+      return reply.send({ success: true, ...result });
+    });
+
+    /**
+     * GET /v1/admin/merchant-subscriptions/stores/:storeId/history
+     *   Query: limit=50 offset=0
+     *
+     * Combined subscription lifecycle for a single store: every purchase
+     * (subscription_payments) + every refund (merchant_subscription_refunds)
+     * merged into a date-sorted event stream. Refund events INCLUDE actor
+     * identity (agent name, email, role) — admin view.
+     */
+    admin.get<{
+      Params: { storeId: string };
+      Querystring: { limit?: string; offset?: string };
+    }>("/stores/:storeId/history", async (req, reply) => {
+      const storeId = Number(req.params.storeId);
+      if (!Number.isInteger(storeId) || storeId < 1) {
+        return reply.code(400).send({ success: false, error: "invalid_store_id" });
+      }
+      const result = await listMerchantSubscriptionHistory({
+        storeId,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        offset: req.query.offset ? Number(req.query.offset) : undefined,
         includeActor: true,
       });
       return reply.send({ success: true, ...result });

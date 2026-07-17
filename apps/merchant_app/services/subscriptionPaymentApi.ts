@@ -218,6 +218,95 @@ export type MerchantRefundHistoryEntry = {
   // agent identity. See backend listMerchantSubscriptionRefunds(includeActor).
 };
 
+export type MerchantSubscriptionHistoryPurchase = {
+  eventType: "PURCHASE";
+  eventAt: string;
+  id: number;
+  subscriptionId: number;
+  planId: number | null;
+  planName: string | null;
+  planCode: string | null;
+  amount: number;
+  totalPaise: number;
+  gstPercent: number;
+  gstAmountPaise: number;
+  gateway: string;
+  gatewayId: string | null;
+  status: string;
+  billingPeriodStart: string | null;
+  billingPeriodEnd: string | null;
+  notes: string | null;
+};
+
+export type MerchantSubscriptionHistoryRefund = {
+  eventType: "REFUND";
+  eventAt: string;
+  id: number;
+  paymentId: number;
+  subscriptionId: number;
+  planId: number | null;
+  planName: string | null;
+  planCode: string | null;
+  gateway: "WALLET" | "RAZORPAY";
+  amount: number;
+  totalPaise: number;
+  currency: string;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  reason: string;
+  refundReference: string;
+  walletLedgerId: number | null;
+  razorpayRefundId: string | null;
+  razorpayPaymentId: string | null;
+  initiatedAt: string;
+  completedAt: string | null;
+  failedAt: string | null;
+  failureReason: string | null;
+  // NOTE: no `actor` field — merchant-facing endpoint intentionally strips
+  // agent identity server-side. Type contract mirrors that guarantee.
+};
+
+export type MerchantSubscriptionHistoryEvent =
+  | MerchantSubscriptionHistoryPurchase
+  | MerchantSubscriptionHistoryRefund;
+
+/**
+ * Combined purchase + refund history for one store. Server returns them
+ * merged and sorted newest-first. Refund events never include the agent
+ * who processed them.
+ */
+export async function fetchMerchantSubscriptionHistory(
+  storeId: number,
+  token: string,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<{
+  items: MerchantSubscriptionHistoryEvent[];
+  total: number;
+  hasMore: boolean;
+}> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set("limit", String(opts.limit));
+  if (opts.offset != null) qs.set("offset", String(opts.offset));
+  const url =
+    `${base()}/v1/merchant-partner/stores/${storeId}/subscription/history` +
+    (qs.toString() ? `?${qs.toString()}` : "");
+  const res = await authFetch(url, token, { method: "GET" });
+  const data = (await res.json()) as {
+    success?: boolean;
+    items?: MerchantSubscriptionHistoryEvent[];
+    total?: number;
+    hasMore?: boolean;
+    error?: string;
+  };
+  if (!res.ok || !data.success) {
+    throw new Error(data.error ?? "Could not load subscription history");
+  }
+  return {
+    items: data.items ?? [],
+    total: data.total ?? 0,
+    hasMore: Boolean(data.hasMore),
+  };
+}
+
 export async function fetchMerchantSubscriptionRefunds(
   storeId: number,
   token: string,
