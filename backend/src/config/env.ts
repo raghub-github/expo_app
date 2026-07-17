@@ -207,7 +207,7 @@ const EnvSchema = z.object({
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   /** Public live trip share page base, e.g. https://track.gatimitra.com/trip */
   TRACK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
-  /** Public address share link base, e.g. https://link.gatimitra.com */
+  /** Public address share link base, e.g. https://gatimitra.com */
   ADDRESS_LINK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   /**
    * Android App Links verification: SHA-256 signing-cert fingerprint(s) for the

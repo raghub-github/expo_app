@@ -1,89 +1,95 @@
-# Address-Share Deep Link — Runbook (`link.gatimitra.com/addr/...`)
+# Address-Share Deep Link — Runbook (`gatimitra.com/addr/...`)
 
 Fixes the production blocker where the shared-address link opened a browser and
-showed `DNS_PROBE_FINISHED_NXDOMAIN`.
+did not open the app.
 
-## Break chain (root causes)
+## Design decision (2026-07-16)
 
-1. **DNS** — `link.gatimitra.com` had **no** A record (NXDOMAIN). `gatimitra.com`
-   resolves to the VPS; the `link` host did not.
-2. **nginx** — no `server` block for `link.gatimitra.com`; requests fell through
-   to the `default_server` (cxsite marketing site), which serves neither
-   `/addr/...` nor `/.well-known/assetlinks.json`.
-3. **assetlinks.json** — never served, so Android could not verify the App Link
-   → browser/chooser instead of opening the app.
-4. **In-app routing** — the App Link path is `/addr/<shortCode>` but the only
-   Expo Router route is `/address/save`. Even a verified link opened the app to
-   the "unmatched route" screen.
+Address-share was previously planned on a dedicated `link.gatimitra.com`
+subdomain. That plan was abandoned after it caused a full-site outage on
+2026-07-14: an nginx `server { link.gatimitra.com; }` block was merged before
+the TLS cert was issued, and nginx refused to start with error
+`cannot load certificate "/etc/letsencrypt/live/link.gatimitra.com/fullchain.pem": No such file or directory`.
+All four sites went down for the duration.
 
-## Code/config changes (in this repo — deploy via normal pipelines)
+The current design serves address-share directly under the apex `gatimitra.com`
+domain:
 
+- `https://gatimitra.com/.well-known/assetlinks.json` — Android App Links
+- `https://gatimitra.com/addr/<shortCode>?id=<token>` — landing page + app open
+- `https://gatimitra.com/addr/og-logo.png` — WhatsApp / social preview image
+
+**Why it's better**:
+- The cert for `gatimitra.com` already exists (covers apex + www)
+- No new DNS record, no separate certbot cron, no risk of orphan subdomain
+- URL is shorter and more trustworthy in WhatsApp shares
+- `pathPrefix: /addr` on the intent filter scopes App Link verification to
+  only the address paths — marketing pages under `gatimitra.com/` still open
+  normally in the browser
+
+## Code paths (all in this repo)
+
+- `apps/customer_app/app.config.js` — Android intent filter declares
+  `host: "gatimitra.com", pathPrefix: "/addr"` with `autoVerify: true`.
 - `apps/customer_app/app/+native-intent.ts` — rewrites `/addr/<code>?id=<token>`
   → `/address/save?id=<token>` (and the `gatimitra://addr/...` short form).
 - `backend/src/lib/assetlinks.ts` + `backend/src/index.ts` — serves
   `GET /.well-known/assetlinks.json` from env-configured fingerprints.
-- `infra/nginx/nginx.conf` — `link.gatimitra.com` server block → backend.
+- `infra/nginx/nginx.conf` — inside the existing `gatimitra.com` server block,
+  two `location` blocks proxy `/.well-known/assetlinks.json` and `/addr/*` to
+  the backend container; catch-all `/` still goes to cxsite.
 - `backend/src/modules/addresses/address-share-page.ts` — Play Store fallback
   (with `referrer=addr_<token>`) when the app is not installed.
 
-## Operational steps (must be done ON the VPS / DNS provider / EAS — cannot be
+## Operational steps (VPS / EAS)
 
-## done from the repo)
+### 1. Backend env vars
 
-### 1. DNS
+Add on the VPS at `/opt/gatimitra/backend/.env`:
 
-Add an A record at the DNS provider:
-
-```
-link.gatimitra.com.  A  <same IP as api.gatimitra.com>   # currently 187.77.184.108
-```
-
-Verify: `dig +short link.gatimitra.com` returns the VPS IP.
-
-### 2. TLS cert (on the VPS)
-
-```
-certbot certonly --webroot -w /var/www/certbot -d link.gatimitra.com
+```env
+ADDRESS_LINK_BASE_URL=https://gatimitra.com
+ANDROID_APP_LINK_SHA256=<SHA-256 from Play Console — colon-separated hex>
+ANDROID_APP_PACKAGE=com.gatimitra.customer
 ```
 
-Must produce `/etc/letsencrypt/live/link.gatimitra.com/fullchain.pem`. Without
-it `nginx -t` fails and the reload is skipped.
-
-### 3. assetlinks fingerprints (backend env)
-
-Get the SHA-256 signing fingerprint(s):
+Fingerprint sources (list both, comma-separated, if you have separate upload
+and app-signing keys):
 
 ```
-cd apps/customer_app && eas credentials      # Android → view the signing cert
-# or Google Play Console → Test and release → App integrity → App signing
+Google Play Console → your app → Test and release → Setup → App integrity
+  → App signing key certificate → SHA-256 certificate fingerprint
+  → Upload key certificate       → SHA-256 certificate fingerprint
 ```
 
-Set on the backend (both the Play "app signing" AND "upload" certs, comma-sep):
+### 2. Redeploy backend + nginx
 
+After pushing this repo, CI runs `backend-deploy` (recreates the backend
+container) and `cxsite-deploy` (validates + reloads nginx with `nginx -t`).
+No manual step needed on the VPS beyond confirming the deploys finished.
+
+Verify:
+
+```bash
+curl -sS https://gatimitra.com/.well-known/assetlinks.json | head -5
+# → JSON array with your package name and SHA-256, NOT 503
+
+curl -sSI https://gatimitra.com/addr/og-logo.png | head -3
+# → HTTP/2 200, content-type: image/png
 ```
-ANDROID_APP_LINK_SHA256="AA:BB:...:64hex,11:22:...:64hex"
-# ANDROID_APP_PACKAGE defaults to com.gatimitra.customer
-```
 
-Redeploy backend. Verify:
+### 3. Rebuild + ship the customer app
 
-```
-curl https://link.gatimitra.com/.well-known/assetlinks.json   # 200 JSON, not 503
-```
+The intent filter change ships inside the app binary — a new EAS build + Play
+release is required. On install, Android re-runs App Link verification against
+`gatimitra.com/.well-known/assetlinks.json` (steps 1–2 must be live first).
 
-### 4. Rebuild + ship the app
+## End-to-end verify (after Play release)
 
-The intent filter (`link.gatimitra.com`, `autoVerify: true`) and
-`+native-intent.ts` ship inside the app binary — a new EAS build + Play release
-is required. On install Android re-runs App Link verification against
-assetlinks.json (steps 1–3 must be live first).
-
-## Verify end-to-end
-
-```
-adb shell pm get-app-links com.gatimitra.customer      # link.gatimitra.com → verified
+```bash
+adb shell pm get-app-links com.gatimitra.customer      # gatimitra.com → verified
 adb shell am start -a android.intent.action.VIEW \
-  -d "https://link.gatimitra.com/addr/abc123?id=<token>"   # opens app → Save sheet
+  -d "https://gatimitra.com/addr/abc123?id=<token>"    # opens app → Save sheet
 ```
 
 ## Follow-up (not blocking)

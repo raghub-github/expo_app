@@ -159,6 +159,45 @@ export async function paymentRoutes(app: FastifyInstance) {
             });
             return reply.status(400).send({ error: "invalid_payload" });
           }
+
+          // Merchant-subscription safety net — when the order was created for a
+          // merchant plan (notes.merchant_store_pk is set by createMerchantSubscription
+          // PaymentOrder), route to the merchant-sub activation. This covers the
+          // "app crashed / phone died between capture and verify-payment" case
+          // where the client never confirms the payment. Idempotent — a no-op
+          // if the client already called verify-payment.
+          const notes = (paymentEntity?.notes ?? {}) as Record<string, unknown>;
+          if (notes && (notes.merchant_store_pk ?? notes.merchantStorePk)) {
+            const { activateMerchantSubscriptionFromWebhook } = await import(
+              "../merchant-partner/merchant-subscription.service.js"
+            );
+            const activation = await activateMerchantSubscriptionFromWebhook({
+              razorpayOrderId,
+              razorpayPaymentId,
+              notes,
+            });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: activation.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayOrderId,
+              razorpayPaymentId,
+              payload: {
+                event,
+                eventId,
+                handler: "merchant_subscription",
+                ok: activation.ok,
+                subscriptionId: activation.ok ? activation.subscriptionId : null,
+                idempotent: activation.ok ? activation.idempotent : null,
+                errorCode: activation.ok ? null : activation.code,
+                errorMessage: activation.ok ? null : activation.message,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+            // ALWAYS 200 so Razorpay stops retrying — the error is logged for ops.
+            return reply.send({ ok: activation.ok, handler: "merchant_subscription" });
+          }
+
           const result = await finalizePendingOrderFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,
@@ -277,14 +316,38 @@ export async function paymentRoutes(app: FastifyInstance) {
             refundStatus,
             gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
           });
+
+          // Also try the merchant-subscription refund handler — idempotent and
+          // scoped (matches by payment_gateway_id in subscription_payments). If
+          // this refund was for a customer order, this is a no-op (matched=false).
+          // Only run the confirmation on "processed" — created/failed do not
+          // mean money has moved yet.
+          let merchantSubMatched = false;
+          if (event === "refund.processed") {
+            try {
+              const { handleMerchantSubscriptionRefundWebhook } = await import(
+                "../merchant-partner/merchant-subscription.service.js"
+              );
+              const r = await handleMerchantSubscriptionRefundWebhook({
+                razorpayPaymentId,
+                razorpayRefundId: refundId,
+              });
+              merchantSubMatched = r.matched;
+            } catch (err) {
+              // Don't block the customer-order refund path if the merchant-sub
+              // handler blows up — log and continue.
+              req.log.warn({ err }, "merchant subscription refund webhook handler failed");
+            }
+          }
+
           await markWebhookProcessed(db, eventId);
           await logPaymentEvent(db, {
             eventType: "WEBHOOK_HANDLED_OK",
             source: "webhook",
             razorpayPaymentId,
-            payload: { event, eventId, refundId, refundStatus, durationMs: Date.now() - startedAtMs },
+            payload: { event, eventId, refundId, refundStatus, merchantSubMatched, durationMs: Date.now() - startedAtMs },
           });
-          return reply.send({ ok: true });
+          return reply.send({ ok: true, merchantSubMatched });
         }
 
         // Unhandled event type: ack + keep for audit.

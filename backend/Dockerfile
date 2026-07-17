@@ -147,6 +147,13 @@ COPY --from=build --chown=fastify:nodejs /repo/packages              ./packages
 # Drizzle migration files (used at boot if MIGRATE_ON_BOOT=true).
 COPY --from=build --chown=fastify:nodejs /repo/backend/drizzle       ./drizzle
 
+# Runtime static assets read from disk (NOT bundled by tsc):
+#   assets/address-share-og.png  — WhatsApp/social OG preview
+#   assets/invoice-signature.png — PDF invoice signature stamp
+#   assets/fonts/*.ttf           — PDF invoice fonts
+# Without this the routes above return HTTP 500 with an ENOENT.
+COPY --from=build --chown=fastify:nodejs /repo/backend/assets        ./assets
+
 USER fastify
 EXPOSE 3000
 
