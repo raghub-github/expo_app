@@ -70,12 +70,26 @@ async function baseAuth(): Promise<
     };
   }
 
-  const superAdmin = await isSuperAdmin(user.id, user.email ?? systemUser.email);
+  // Two independent super-admin signals — either is sufficient.
+  //   (1) isSuperAdmin() → goes through getUserPermissions() which combines
+  //       primary_role + assigned roles. Can occasionally miss (transient DB
+  //       error, request-level cache poisoning by a prior null lookup).
+  //   (2) Direct primary_role check on the freshly-fetched systemUser row.
+  //       Bypasses the permissions cache entirely.
+  // Empirically the check-based approach missed for a real super admin; the
+  // direct check is the reliable escape hatch.
+  const emailForCheck = (user.email ?? systemUser.email ?? "").trim();
+  const [permsSuperAdmin, primaryRoleUpper] = await Promise.all([
+    isSuperAdmin(user.id, emailForCheck).catch(() => false),
+    Promise.resolve(String(systemUser.primary_role ?? "").toUpperCase()),
+  ]);
+  const superAdmin = permsSuperAdmin || primaryRoleUpper === "SUPER_ADMIN";
+
   return {
     ok: true,
     systemUserId: systemUser.id,
     authId: user.id,
-    email: user.email ?? systemUser.email,
+    email: emailForCheck || systemUser.email,
     superAdmin,
   };
 }

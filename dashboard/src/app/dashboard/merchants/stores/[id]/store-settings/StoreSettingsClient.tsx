@@ -904,7 +904,12 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
         </div>
       )}
       <SettingsNavBar activeTab={activeTab} onTabChange={setActiveTab} />
-      <div className="flex-1 min-w-0 pt-4">
+      {/* flex-1 + min-h-0 lets this child shrink inside the flex column, and
+          overflow-y-auto makes THIS the scroll container (tab bar stays fixed
+          above). Without overflow-y-auto, content added below the fold (e.g.
+          the Subscription history block on the Plans tab) is unreachable
+          because the outer page has no scroll. */}
+      <div className="flex-1 min-h-0 min-w-0 overflow-y-auto pt-4">
         {activeTab === "timings" ? (
           <OutletTimingsPanel
             apiBase={base}
