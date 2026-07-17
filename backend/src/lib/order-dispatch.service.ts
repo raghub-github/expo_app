@@ -470,13 +470,13 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
 }
 
 /** Restart rider matching after unassign — reactivates dispatch session and re-runs wave 1. */
-export async function restartOrderDispatch(orderCoreId: number): Promise<void> {
-  if (!(await isOrderStillDispatchable(orderCoreId))) return;
+export async function restartOrderDispatch(orderCoreId: number): Promise<boolean> {
+  if (!(await isOrderStillDispatchable(orderCoreId))) return false;
   await setOrderDispatchManualHold(orderCoreId, false);
 
   const sql = getSql();
   const target = await loadDispatchOrderTarget(orderCoreId, 1);
-  if (!target) return;
+  if (!target) return false;
 
   const waveSettings = await fetchDispatchWaveSettings(target.serviceType);
   const nextWaveAt = waveSettings.enabled
@@ -503,10 +503,11 @@ export async function restartOrderDispatch(orderCoreId: number): Promise<void> {
       WHERE session_id = ${sessionId}
     `;
     await executeDispatchWave(sessionId);
-    return;
+    return true;
   }
 
   await startOrderDispatch(orderCoreId);
+  return true;
 }
 
 /** Convenience entry when only order core id is known after status transition. */
@@ -546,6 +547,18 @@ export async function processDueDispatchWaves(limit = 25): Promise<number> {
   return processed;
 }
 
+/** Eligible rider count at a wave — does not require an active dispatch session. */
+export async function countEligibleRidersForOrderAtWave(
+  orderCoreId: number,
+  waveNumber = 1
+): Promise<number> {
+  const wave = Math.max(1, waveNumber);
+  const target = await loadDispatchOrderTarget(orderCoreId, wave);
+  if (!target) return 0;
+  const eligible = await listEligibleRidersForDispatchOrder(target);
+  return eligible.length;
+}
+
 /** Audit helper — eligible rider count for an order at current wave. */
 export async function countEligibleRidersForOrder(orderCoreId: number): Promise<number> {
   const sql = getSql();
@@ -558,8 +571,5 @@ export async function countEligibleRidersForOrder(orderCoreId: number): Promise<
   `) as Array<{ current_wave: number; service_type: string }>;
 
   const wave = Math.max(1, Number(sessions[0]?.current_wave) || 1);
-  const target = await loadDispatchOrderTarget(orderCoreId, wave);
-  if (!target) return 0;
-  const eligible = await listEligibleRidersForDispatchOrder(target);
-  return eligible.length;
+  return countEligibleRidersForOrderAtWave(orderCoreId, wave);
 }

@@ -3,7 +3,9 @@
  */
 
 import type { ReactNode } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -54,7 +56,7 @@ export function DeliveryPartnerSafetyBottomSheet({ visible, onClose }: Props) {
       >
         <View style={styles.header}>
           <View style={styles.headerTextCol}>
-            <Text style={styles.headerTitle}>How do we keep our delivery partners safe?</Text>
+            <AppText style={styles.headerTitle}>How do we keep our delivery partners safe?</AppText>
           </View>
           <View style={styles.headerShieldWrap}>
             <View style={styles.headerShield}>
@@ -71,9 +73,9 @@ export function DeliveryPartnerSafetyBottomSheet({ visible, onClose }: Props) {
             >
               <View style={styles.featureIconWrap}>{feature.icon}</View>
               <View style={styles.featureTextWrap}>
-                <Text style={styles.featureTitle}>{feature.title}</Text>
+                <AppText style={styles.featureTitle}>{feature.title}</AppText>
                 {feature.subtitle ? (
-                  <Text style={styles.featureSub}>{feature.subtitle}</Text>
+                  <AppText style={styles.featureSub}>{feature.subtitle}</AppText>
                 ) : null}
               </View>
             </View>
@@ -81,7 +83,7 @@ export function DeliveryPartnerSafetyBottomSheet({ visible, onClose }: Props) {
         </View>
 
         <TouchableOpacity style={styles.ctaBtn} onPress={onClose} activeOpacity={0.88}>
-          <Text style={styles.ctaBtnText}>Ok, got it!</Text>
+          <AppText style={styles.ctaBtnText}>Ok, got it!</AppText>
         </TouchableOpacity>
       </ScrollView>
     </StoreBottomSheetShell>

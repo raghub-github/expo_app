@@ -1,12 +1,7 @@
 import React, { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantOfferItem, PlatformOfferItem } from "@/services/offers.service";
 import { formatListCardOfferFromMerchantOffer } from "@/lib/merchantOfferBadge";
@@ -121,11 +116,11 @@ function OfferCard({
           />
         </View>
         <View style={styles.cardTextCol}>
-          <Text style={styles.cardTitle}>{title}</Text>
-          {sub ? <Text style={styles.cardSub}>{sub}</Text> : null}
+          <AppText style={styles.cardTitle}>{title}</AppText>
+          {sub ? <AppText style={styles.cardSub}>{sub}</AppText> : null}
           {code ? (
             <View style={styles.codeBox}>
-              <Text style={styles.codeText}>{code}</Text>
+              <AppText style={styles.codeText}>{code}</AppText>
             </View>
           ) : null}
         </View>
@@ -142,7 +137,7 @@ function OfferCard({
           {details.map((line) => (
             <View key={line} style={styles.detailRow}>
               <Ionicons name="checkmark-circle" size={16} color={StoreTheme.reorderGreen} />
-              <Text style={styles.detailText}>{line}</Text>
+              <AppText style={styles.detailText}>{line}</AppText>
             </View>
           ))}
         </View>
@@ -175,7 +170,7 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.9}>
       <View style={styles.handle} />
-      <Text style={styles.sheetTitle}>Offers at {storeName}</Text>
+      <AppText style={styles.sheetTitle}>Offers at {storeName}</AppText>
 
       <ScrollView
         style={[styles.list, { maxHeight: scrollMaxH }]}
@@ -184,13 +179,13 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
         bounces
       >
         {empty ? (
-          <Text style={styles.empty}>No offers available for this store right now.</Text>
+          <AppText style={styles.empty}>No offers available for this store right now.</AppText>
         ) : (
           <>
             {platformOffers.length > 0 ? (
               <View style={styles.sectionBlock}>
-                <Text style={styles.sectionLabel}>SPECIAL OFFERS</Text>
-                <Text style={styles.sectionHint}>Applied automatically at checkout</Text>
+                <AppText style={styles.sectionLabel}>SPECIAL OFFERS</AppText>
+                <AppText style={styles.sectionHint}>Applied automatically at checkout</AppText>
                 {platformOffers.map((offer) => (
                   <OfferCard
                     key={`platform-${offer.id}-${offer.label}`}
@@ -203,8 +198,8 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
 
             {storeOffers.length > 0 ? (
               <View style={styles.sectionBlock}>
-                <Text style={styles.sectionLabel}>MORE OFFERS</Text>
-                <Text style={styles.sectionHint}>Bill discounts · applied at checkout</Text>
+                <AppText style={styles.sectionLabel}>MORE OFFERS</AppText>
+                <AppText style={styles.sectionHint}>Bill discounts · applied at checkout</AppText>
                 {storeOffers.map((offer) => (
                   <OfferCard key={`store-${offer.id}-${offer.label}`} offer={offer} />
                 ))}
@@ -213,10 +208,10 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
 
             {itemOffers.length > 0 ? (
               <View style={styles.sectionBlock}>
-                <Text style={styles.sectionLabel}>ITEM DEALS</Text>
-                <Text style={styles.sectionHint}>
+                <AppText style={styles.sectionLabel}>ITEM DEALS</AppText>
+                <AppText style={styles.sectionHint}>
                   Look for badges on eligible dishes
-                </Text>
+                </AppText>
                 {itemOffers.map((offer) => (
                   <OfferCard
                     key={`item-${offer.id}-${offer.label}`}

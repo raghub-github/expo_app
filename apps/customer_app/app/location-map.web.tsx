@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -17,18 +19,18 @@ export default function LocationMapScreenWeb() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Confirm location</Text>
+        <AppText style={styles.headerTitle}>Confirm location</AppText>
         <View style={styles.headerRight} />
       </View>
 
       <View style={styles.body}>
         <Ionicons name="phone-portrait-outline" size={64} color={TEXT_GRAY} />
-        <Text style={styles.title}>Map not available on web</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>Map not available on web</AppText>
+        <AppText style={styles.subtitle}>
           Please use the mobile app to select your location on the map.
-        </Text>
+        </AppText>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Text style={styles.backButtonText}>Go back</Text>
+          <AppText style={styles.backButtonText}>Go back</AppText>
         </TouchableOpacity>
       </View>
     </View>

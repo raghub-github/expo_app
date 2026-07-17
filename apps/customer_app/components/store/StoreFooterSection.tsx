@@ -1,12 +1,7 @@
 import React, { useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Image, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -52,27 +47,27 @@ export function StoreFooterSection({ similarMerchants }: StoreFooterSectionProps
                     )}
                     {offer ? (
                       <View style={styles.restOfferBadge}>
-                        <Text style={styles.restOfferText} numberOfLines={1}>
+                        <AppText style={styles.restOfferText} numberOfLines={1}>
                           {offer.toUpperCase()}
-                        </Text>
+                        </AppText>
                       </View>
                     ) : null}
                   </View>
-                  <Text style={styles.restName} numberOfLines={1}>
+                  <AppText style={styles.restName} numberOfLines={1}>
                     {m.name}
-                  </Text>
+                  </AppText>
                   {m.cuisines?.length ? (
-                    <Text style={styles.restCuisine} numberOfLines={1}>
+                    <AppText style={styles.restCuisine} numberOfLines={1}>
                       {m.cuisines.slice(0, 2).join(", ")}
-                    </Text>
+                    </AppText>
                   ) : null}
                   <View style={styles.restEtaRow}>
                     <Ionicons name="time-outline" size={12} color={StoreTheme.textSecondary} />
-                    <Text style={styles.restEta}>
+                    <AppText style={styles.restEta}>
                       {m.deliveryTime ?? (m.etaMinMinutes && m.etaMaxMinutes
                         ? `${m.etaMinMinutes}-${m.etaMaxMinutes} min`
                         : "30-40 min")}
-                    </Text>
+                    </AppText>
                   </View>
                 </TouchableOpacity>
               );
@@ -88,7 +83,7 @@ export function StoreFooterSection({ similarMerchants }: StoreFooterSectionProps
         style={styles.promoBanner}
       >
         <View style={styles.promoTextBlock}>
-          <Text style={styles.promoTitle}>Serving smiles at your doorstep</Text>
+          <AppText style={styles.promoTitle}>Serving smiles at your doorstep</AppText>
           <View style={styles.promoArrow}>
             <Ionicons name="arrow-forward" size={14} color="#fff" />
           </View>
@@ -105,8 +100,8 @@ export function StoreFooterSection({ similarMerchants }: StoreFooterSectionProps
       <View style={styles.disclaimerBlock}>
         {DISCLAIMERS.map((d) => (
           <View key={d} style={styles.bulletRow}>
-            <Text style={styles.bullet}>•</Text>
-            <Text style={styles.disclaimerText}>{d}</Text>
+            <AppText style={styles.bullet}>•</AppText>
+            <AppText style={styles.disclaimerText}>{d}</AppText>
           </View>
         ))}
       </View>
@@ -124,7 +119,7 @@ function SimilarRestaurantsHeader() {
       onPress={() => setExpanded((v) => !v)}
       activeOpacity={0.8}
     >
-      <Text style={styles.similarTitle}>Try these similar restaurants</Text>
+      <AppText style={styles.similarTitle}>Try these similar restaurants</AppText>
       <Ionicons
         name={expanded ? "chevron-up" : "chevron-down"}
         size={18}

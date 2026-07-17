@@ -1,5 +1,7 @@
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 
@@ -28,14 +30,14 @@ export function StoreSectionHeader({
         activeOpacity={0.8}
       >
         <View style={styles.textBlock}>
-          <Text style={styles.title}>{title}</Text>
+          <AppText style={styles.title}>{title}</AppText>
           {couponLink ? (
             <TouchableOpacity onPress={onCouponPress} hitSlop={8} activeOpacity={0.75}>
-              <Text style={styles.couponLink}>View coupon details</Text>
+              <AppText style={styles.couponLink}>View coupon details</AppText>
               <View style={styles.couponUnderline} />
             </TouchableOpacity>
           ) : subtitle ? (
-            <Text style={styles.subtitle}>{subtitle}</Text>
+            <AppText style={styles.subtitle}>{subtitle}</AppText>
           ) : null}
         </View>
         <Ionicons

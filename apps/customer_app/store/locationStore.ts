@@ -1,22 +1,31 @@
 /**
  * Location global state - permission, coords, reverse-geocoded address.
  *
- * Behavior:
- * - During a single app session, user can select a different location and we use it.
- * - On app restart, we restore the last explicitly selected location (saved address / pin / recent),
- *   so home header does not jump back to an older/previous location.
+ * Priority for nearby merchants / home discovery:
+ * 1. Live GPS ("current") — default on cold start and app resume
+ * 2. Explicit user-selected pin ("selected") — only after the user picks a saved
+ *    address / map pin this session
+ * 3. Saved / server active-location — checkout convenience only; never drives
+ *    merchant listing by itself
+ *
+ * Persisted "last selected" pins are NOT restored as selected on cold start so a
+ * previous city (e.g. Bihar) cannot keep showing after the user travels (e.g. Delhi).
  */
 
 import { create } from "zustand";
 import * as Location from "expo-location";
 import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { loadPersistedWeatherSnapshot } from "@/lib/weatherCacheStorage";
+import { haversineKm } from "@/lib/billSummary";
 
 /** Avoid indefinite hang from getCurrentPositionAsync (common with Highest accuracy indoors). */
 const GPS_ATTEMPT_MS = 14_000;
 const GEOCODE_MS = 10_000;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
+/** Refresh merchants when the user moves at least this far (meters). */
+export const LOCATION_SIGNIFICANT_MOVE_METERS = 350;
+/** Max age for last-known GPS fallback when a fresh fix fails. */
+const LAST_KNOWN_MAX_AGE_MS = 60_000;
 
 type PersistedSelectedLocation = {
   coords: { latitude: number; longitude: number };
@@ -52,7 +61,7 @@ async function getDeviceCoords(): Promise<{ latitude: number; longitude: number 
     }
   }
   try {
-    const lastKnown = await Location.getLastKnownPositionAsync({ maxAge: 600_000 });
+    const lastKnown = await Location.getLastKnownPositionAsync({ maxAge: LAST_KNOWN_MAX_AGE_MS });
     if (lastKnown?.coords) {
       return {
         latitude: lastKnown.coords.latitude,
@@ -82,6 +91,15 @@ async function geocodeOrFallback(longitude: number, latitude: number): Promise<R
   }
 }
 
+export function coordsMovedSignificantly(
+  a: { latitude: number; longitude: number } | null | undefined,
+  b: { latitude: number; longitude: number } | null | undefined,
+  thresholdMeters = LOCATION_SIGNIFICANT_MOVE_METERS
+): boolean {
+  if (!a || !b) return a !== b;
+  return haversineKm(a.latitude, a.longitude, b.latitude, b.longitude) * 1000 >= thresholdMeters;
+}
+
 export type LocationPermissionStatus = "undetermined" | "granted" | "denied";
 
 export type DeviceLocationReadiness = {
@@ -105,7 +123,7 @@ export async function getDeviceLocationReadiness(): Promise<DeviceLocationReadin
   };
 }
 
-/** User-chosen pin vs device GPS – selected always wins for listing until explicit "use current location". */
+/** User-chosen pin vs device GPS – selected wins for listing until explicit "use current location". */
 export type LocationSource = "selected" | "current";
 
 type LocationState = {
@@ -149,29 +167,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   hydrate: async () => {
     if (get().locationHydrated) return;
-    try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? (JSON.parse(raw) as PersistedSelectedLocation) : null;
-      if (
-        parsed &&
-        parsed.coords &&
-        typeof parsed.coords.latitude === "number" &&
-        typeof parsed.coords.longitude === "number" &&
-        parsed.address &&
-        typeof parsed.address === "object"
-      ) {
-        await loadPersistedWeatherSnapshot(parsed.coords.latitude, parsed.coords.longitude);
-        set({
-          coords: parsed.coords,
-          address: parsed.address,
-          locationSource: "selected",
-          locationHydrated: true,
-        });
-        return;
-      }
-    } catch {
-      // ignore
-    }
+    // Clear any previously persisted selected pin so cold start cannot lock onto an old city.
+    // Explicit selections are session-scoped; live GPS is the default for discovery.
+    AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
     set({ locationHydrated: true });
   },
 
@@ -195,6 +193,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           locationSheetDismissedSession: false,
         });
         const { locationSource, coords, address } = get();
+        // Keep an explicit in-session selection; otherwise always refresh live GPS.
         if (locationSource === "selected" && coords && address) {
           return;
         }
@@ -241,16 +240,19 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         address,
         savedAt: Date.now(),
       };
+      // Session backup only — hydrate() clears this on next cold start.
       AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload)).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
     }
   },
 
   requestPermissionAndFetch: async (options) => {
     const forceDevice = options?.forceDevice === true;
-    // Mark hydrated on first attempt; hydration may also come from AsyncStorage.
+    // Mark hydrated on first attempt; hydration may also come from AsyncStorage clear.
     if (!get().locationHydrated) set({ locationHydrated: true });
 
-    // If user explicitly selected a location, do not override it with GPS unless forced.
+    // If user explicitly selected a location this session, do not override with GPS unless forced.
     if (!forceDevice && get().locationSource === "selected" && get().coords && get().address) {
       return;
     }
@@ -261,9 +263,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       if (readiness.isReady) {
         set({ permissionStatus: "granted", showPermissionModal: false });
         const { latitude, longitude } = await getDeviceCoords();
-        set({ coords: { latitude, longitude } });
         const address = await geocodeOrFallback(longitude, latitude);
-        set({ address, loading: false, locationSource: "current" });
+        AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+        set({
+          coords: { latitude, longitude },
+          address,
+          loading: false,
+          locationSource: "current",
+        });
         return;
       }
       if (readiness.permissionStatus === "denied") {
@@ -302,14 +309,19 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     const forceDevice = options?.forceDevice === true;
     if (!forceDevice && get().locationSource === "selected") return;
 
-    const { permissionStatus, coords } = get();
-    if (permissionStatus !== "granted" || !coords) return;
+    const { permissionStatus } = get();
+    if (permissionStatus !== "granted") return;
     set({ loading: true, error: null });
     try {
       const { latitude, longitude } = await getDeviceCoords();
-      set({ coords: { latitude, longitude } });
       const address = await geocodeOrFallback(longitude, latitude);
-      set({ address, loading: false, locationSource: "current" });
+      AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+      set({
+        coords: { latitude, longitude },
+        address,
+        loading: false,
+        locationSource: "current",
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Location error";
       set({ error: message, loading: false });

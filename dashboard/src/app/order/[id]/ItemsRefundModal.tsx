@@ -99,6 +99,14 @@ function DiscountTagBadge({ tag }: { tag?: OrderPricingLine['discountTag'] }) {
   );
 }
 
+function MembershipBadge() {
+  return (
+    <span className="ml-1.5 inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold border bg-emerald-50 text-emerald-800 border-emerald-200">
+      Membership
+    </span>
+  );
+}
+
 function PricingBreakdownPanel({
   title,
   lines,
@@ -128,6 +136,7 @@ function PricingBreakdownPanel({
             <span className="text-slate-600 min-w-0">
               {line.label}
               {line.kind === 'discount' ? <DiscountTagBadge tag={line.discountTag} /> : null}
+              {line.rowBadge === 'membership' ? <MembershipBadge /> : null}
             </span>
             <span
               className={`font-medium tabular-nums shrink-0 ${

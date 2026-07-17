@@ -10,5 +10,8 @@ export function invalidateFoodHomeLocationQueries(queryClient: QueryClient) {
     queryClient.invalidateQueries({ queryKey: ["food-home-layout"] }),
     queryClient.invalidateQueries({ queryKey: ["geo", "services"] }),
     queryClient.invalidateQueries({ queryKey: ["weather"] }),
+    queryClient.invalidateQueries({ queryKey: ["search"] }),
+    queryClient.invalidateQueries({ queryKey: ["stores", "nearby"] }),
+    queryClient.invalidateQueries({ queryKey: ["cuisines"] }),
   ]);
 }

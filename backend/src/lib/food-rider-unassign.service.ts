@@ -11,7 +11,9 @@ import { ordersCore, ordersFood } from "../db/schema.js";
 import {
   pauseOrderDispatchForManualAssignment,
   restartOrderDispatch,
+  countEligibleRidersForOrderAtWave,
 } from "./order-dispatch.service.js";
+import { fetchDispatchWaveSettings } from "./order-dispatch-settings.js";
 import { recordDispatchAssignmentAudit } from "./rider-dispatch-assignment-audit.js";
 import { recordRiderDispatchExclusion } from "./rider-dispatch-order-exclusion.js";
 import {
@@ -234,7 +236,32 @@ export async function unassignFoodRiderAndRestartDispatch(
 /** Manual assign — run eligibility engine and send offers (excludes prior cancelled riders). */
 export async function manualAssignRiderForFoodOrder(orderCorePk: number): Promise<{
   started: boolean;
+  eligible: number;
 }> {
-  await restartOrderDispatch(orderCorePk);
-  return { started: true };
+  const started = await restartOrderDispatch(orderCorePk);
+  if (!started) {
+    throw Object.assign(new Error("Order is not ready for rider assignment"), {
+      statusCode: 409,
+      code: "order_not_dispatchable",
+    });
+  }
+
+  let maxWave = 1;
+  try {
+    const settings = await fetchDispatchWaveSettings("food");
+    maxWave = Math.max(1, settings.maxWaves);
+  } catch {
+    maxWave = 1;
+  }
+
+  // Widest wave radius — avoids false "no riders" when only wave-1 radius is empty.
+  const eligible = await countEligibleRidersForOrderAtWave(orderCorePk, maxWave);
+  if (eligible <= 0) {
+    throw Object.assign(new Error("No active rider on this locality"), {
+      statusCode: 409,
+      code: "no_active_riders_in_locality",
+    });
+  }
+
+  return { started: true, eligible };
 }

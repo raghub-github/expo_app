@@ -7,6 +7,9 @@ import { create } from "zustand";
 import { getItem, setItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
+import { captureCartDeliveryAnchor, type CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
+
+export type { CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
 
 export type CartItemAddon = {
   addonId: string;
@@ -67,6 +70,8 @@ type CartState = {
   /** Other merchants' carts kept when switching restaurant (multi-cart UI). */
   stashedCarts: Record<string, StashedMerchantCart>;
   lastUpdatedAt: number;
+  /** Delivery coords when the cart was first populated — blocks checkout after address change. */
+  deliveryAnchor: CartDeliveryAnchor | null;
   hydrated: boolean;
   addItem: (
     merchantId: string,
@@ -106,6 +111,7 @@ const defaultState = {
   items: [] as CartItem[],
   stashedCarts: {} as Record<string, StashedMerchantCart>,
   lastUpdatedAt: 0,
+  deliveryAnchor: null as CartDeliveryAnchor | null,
   hydrated: false,
 };
 
@@ -119,6 +125,7 @@ async function writeCartToStorage(state: {
   items: CartItem[];
   stashedCarts: Record<string, StashedMerchantCart>;
   lastUpdatedAt: number;
+  deliveryAnchor: CartDeliveryAnchor | null;
 }): Promise<void> {
   await setItem(
     STORAGE_KEYS.CART,
@@ -129,6 +136,7 @@ async function writeCartToStorage(state: {
       items: state.items,
       stashedCarts: state.stashedCarts,
       lastUpdatedAt: state.lastUpdatedAt,
+      deliveryAnchor: state.deliveryAnchor,
     })
   );
 }
@@ -144,6 +152,7 @@ function queueCartPersist(get: () => CartState): void {
       items,
       stashedCarts,
       lastUpdatedAt,
+      deliveryAnchor,
     } = get();
     void writeCartToStorage({
       merchantId,
@@ -152,6 +161,7 @@ function queueCartPersist(get: () => CartState): void {
       items,
       stashedCarts,
       lastUpdatedAt,
+      deliveryAnchor,
     });
   }, CART_PERSIST_DEBOUNCE_MS);
 }
@@ -168,6 +178,7 @@ function flushCartPersistNow(get: () => CartState): Promise<void> {
     items,
     stashedCarts,
     lastUpdatedAt,
+    deliveryAnchor,
   } = get();
   return writeCartToStorage({
     merchantId,
@@ -176,6 +187,7 @@ function flushCartPersistNow(get: () => CartState): Promise<void> {
     items,
     stashedCarts,
     lastUpdatedAt,
+    deliveryAnchor,
   });
 }
 
@@ -205,6 +217,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       stashedCarts,
     } = get();
     const now = Date.now();
+    const keepDeliveryAnchor = get().deliveryAnchor;
 
     if (currentMerchant && currentMerchant !== merchantId) {
       const stash: Record<string, StashedMerchantCart> = { ...stashedCarts };
@@ -227,6 +240,8 @@ export const useCartStore = create<CartState>((set, get) => ({
               line,
             )
           : [line];
+      const restoringStash = !!(restored && restored.items.length > 0);
+      const hadActiveItems = items.length > 0;
       set({
         merchantId,
         merchantName,
@@ -234,6 +249,10 @@ export const useCartStore = create<CartState>((set, get) => ({
         items: nextItems,
         stashedCarts: restStash,
         lastUpdatedAt: now,
+        deliveryAnchor:
+          hadActiveItems || restoringStash
+            ? keepDeliveryAnchor
+            : captureCartDeliveryAnchor(),
       });
       queueCartPersist(get);
       return;
@@ -241,6 +260,7 @@ export const useCartStore = create<CartState>((set, get) => ({
 
     const nextBanner = merchantBannerUrl ?? (currentMerchant === merchantId ? prevBanner : null) ?? null;
     const existing = items.find((i) => i.menuItemId === item.menuItemId);
+    const cartWasEmpty = items.length === 0;
     const next = existing
       ? items.map((i) =>
           i.menuItemId === item.menuItemId
@@ -258,6 +278,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       merchantBannerUrl: nextBanner,
       items: next,
       lastUpdatedAt: now,
+      deliveryAnchor: cartWasEmpty ? captureCartDeliveryAnchor() : keepDeliveryAnchor,
     });
     queueCartPersist(get);
   },
@@ -348,6 +369,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       items: [],
       stashedCarts: {},
       lastUpdatedAt: 0,
+      deliveryAnchor: null,
       // hydrated intentionally NOT touched — stays true
     });
     void flushCartPersistNow(get);
@@ -361,6 +383,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       merchantBannerUrl: merchantBannerUrl ?? null,
       items: items.map((i) => ({ ...i })),
       lastUpdatedAt: now,
+      deliveryAnchor: captureCartDeliveryAnchor(),
     });
     void flushCartPersistNow(get);
   },
@@ -377,6 +400,7 @@ export const useCartStore = create<CartState>((set, get) => ({
           items: CartItem[];
           stashedCarts?: Record<string, StashedMerchantCart>;
           lastUpdatedAt?: number;
+          deliveryAnchor?: CartDeliveryAnchor | null;
         };
         set({
           merchantId: parsed.merchantId ?? null,
@@ -386,6 +410,7 @@ export const useCartStore = create<CartState>((set, get) => ({
           stashedCarts:
             parsed.stashedCarts && typeof parsed.stashedCarts === "object" ? parsed.stashedCarts : {},
           lastUpdatedAt: parsed.lastUpdatedAt ?? 0,
+          deliveryAnchor: parsed.deliveryAnchor ?? null,
           hydrated: true,
         });
       } else {

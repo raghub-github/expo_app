@@ -5,21 +5,9 @@
  */
 
 import React, { useRef, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  ScrollView,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Dimensions,
-  Vibration,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, Pressable, StyleSheet, ScrollView, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Dimensions, Vibration } from "react-native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -69,14 +57,64 @@ import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 
 const { width, height } = Dimensions.get("window");
 const PAD = 16;
-const GRID_COLS = 4;
-const GRID_GAP = 8;
+/** Circular mind grid — 3 columns like polished discovery UIs. */
+const GRID_COLS = 3;
+const GRID_GAP = 14;
 const CARD_WIDTH = (width - PAD * 2 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
-const CARD_IMAGE_HEIGHT = CARD_WIDTH * 0.72;
+const CARD_IMAGE_SIZE = CARD_WIDTH;
 const SEARCH_CATEGORY_STORE_TYPE = "FOOD";
 
 const PLACEHOLDER = "Restaurant name or a dish...";
-const ACCENT_RED = "#dc2626";
+const ACCENT_RED = "#E23744";
+const SLOGAN_PINK = "#E11D8C";
+const CHIP_BORDER = "#E9D5FF";
+const CHIP_ICON = "#C026D3";
+/** Max discovery chips under the search slogan (from live categories). */
+const DISCOVERY_CHIP_LIMIT = 10;
+
+/**
+ * Mood-style chip copy — still routes to the same category.
+ * Keys match category name fragments (case-insensitive).
+ */
+const DISCOVERY_CHIP_LABEL_BY_CATEGORY: { match: string; label: string }[] = [
+  { match: "biryani", label: "Craving biryani?" },
+  { match: "pizza", label: "Pizza night?" },
+  { match: "momo", label: "Steam & dunk momos" },
+  { match: "burger", label: "Stacked burgers" },
+  { match: "thali", label: "Full thali vibes" },
+  { match: "paratha", label: "Hot stuffed parathas" },
+  { match: "rasgulla", label: "Something sweet" },
+  { match: "idli", label: "Soft idli mornings" },
+  { match: "vada", label: "Crispy vada fix" },
+  { match: "kheer", label: "Bowl of kheer" },
+  { match: "cake", label: "Slice of cake" },
+  { match: "falooda", label: "Chilled falooda" },
+  { match: "pancake", label: "Fluffy pancakes" },
+  { match: "mousse", label: "Silky mousse" },
+  { match: "sabudana", label: "Sabudana comfort" },
+  { match: "mutton", label: "Rich mutton moods" },
+  { match: "chicken", label: "Chicken cravings" },
+  { match: "dosa", label: "Crispy dosa run" },
+  { match: "noodle", label: "Noodle bowl time" },
+  { match: "pasta", label: "Pasta please" },
+  { match: "sandwich", label: "Grab a sandwich" },
+  { match: "roll", label: "Wrapped & ready" },
+  { match: "chaat", label: "Kuch chatpata" },
+  { match: "sweet", label: "Dessert detour" },
+  { match: "ice cream", label: "Cold & creamy" },
+  { match: "juice", label: "Fresh sips" },
+  { match: "coffee", label: "Coffee break" },
+  { match: "tea", label: "Chai time" },
+];
+
+function discoveryChipLabel(categoryName: string): string {
+  const key = categoryName.trim().toLowerCase();
+  if (!key) return categoryName;
+  for (const row of DISCOVERY_CHIP_LABEL_BY_CATEGORY) {
+    if (key === row.match || key.includes(row.match)) return row.label;
+  }
+  return `Try ${categoryName}`;
+}
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
   for (const r of rows) {
@@ -172,6 +210,18 @@ export default function SearchScreen() {
     }));
   }, [apiMindCategories]);
 
+  /** Discovery chips — mood copy, same category slug as mind grid. */
+  const discoveryChips = useMemo(
+    () =>
+      mindGridData.slice(0, DISCOVERY_CHIP_LIMIT).map((c) => ({
+        id: c.id,
+        label: discoveryChipLabel(c.name),
+        categoryName: c.name,
+        slug: c.slug,
+      })),
+    [mindGridData]
+  );
+
   useEffect(() => {
     if (!voiceMode) {
       const t = setTimeout(() => inputRef.current?.focus(), 400);
@@ -193,6 +243,11 @@ export default function SearchScreen() {
 
   const handleRemoveRecent = (term: string) => {
     removeRecentSearch(term);
+  };
+
+  const handleDiscoveryChipPress = (slug: string, categoryName: string) => {
+    addRecentSearch(categoryName);
+    router.push(`/home/category/${slug}`);
   };
 
   const handleCategoryPress = (slug: string) => {
@@ -224,17 +279,17 @@ export default function SearchScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={0}
       >
-      {/* Sticky header – same top spacing as Home (root layout provides status bar strip) */}
+      {/* Sticky header */}
       <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
+          <Ionicons name="arrow-back" size={22} color={GatiMitraColors.primaryMint} />
         </TouchableOpacity>
-        <View style={[styles.searchBar, GatiMitraColors.searchShadow]}>
+        <View style={styles.searchBar}>
           <TextInput
             ref={inputRef}
             style={styles.searchInput}
             placeholder={PLACEHOLDER}
-            placeholderTextColor={GatiMitraColors.textSecondary}
+            placeholderTextColor="#9CA3AF"
             value={query}
             onChangeText={setQuery}
             returnKeyType="search"
@@ -244,7 +299,7 @@ export default function SearchScreen() {
           />
           {query.length > 0 && (
             <TouchableOpacity onPress={handleClearInput} style={styles.clearBtn} hitSlop={8}>
-              <Ionicons name="close-circle" size={22} color={GatiMitraColors.textSecondary} />
+              <Ionicons name="close-circle" size={20} color="#9CA3AF" />
             </TouchableOpacity>
           )}
           <VoiceInputButton
@@ -259,22 +314,45 @@ export default function SearchScreen() {
       {showDefaultView ? (
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 8) }}
+          contentContainerStyle={styles.idleScrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Recent searches */}
+          {discoveryChips.length > 0 ? (
+            <>
+              <AppText style={styles.slogan}>Crave it, find it</AppText>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.moodChips}
+                style={styles.moodChipsScroll}
+              >
+                {discoveryChips.map((chip) => (
+                  <TouchableOpacity
+                    key={chip.id}
+                    style={styles.moodChip}
+                    onPress={() => handleDiscoveryChipPress(chip.slug, chip.categoryName)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="sparkles" size={14} color={CHIP_ICON} />
+                    <AppText style={styles.moodChipText}>{chip.label}</AppText>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </>
+          ) : null}
+
           {recentSearches.length > 0 && (
             <View style={styles.recentSection}>
               <View style={styles.recentRow}>
-                <Text style={styles.sectionTitle}>YOUR RECENT SEARCHES</Text>
+                <AppText style={styles.sectionTitle}>YOUR RECENT SEARCHES</AppText>
                 <TouchableOpacity onPress={clearRecentSearches} hitSlop={8}>
-                  <Text style={styles.clearText}>Clear</Text>
+                  <AppText style={styles.clearText}>Clear</AppText>
                 </TouchableOpacity>
               </View>
               <ScrollView
                 horizontal
-                showsHorizontalScrollIndicator={recentSearches.length > 4}
+                showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.recentChips}
               >
                 {recentSearches.map((term, index) => (
@@ -284,15 +362,22 @@ export default function SearchScreen() {
                       onPress={() => handleSelectRecent(term)}
                       activeOpacity={0.8}
                     >
-                      <Ionicons name="time-outline" size={16} color={GatiMitraColors.textSecondary} style={styles.recentChipIcon} />
-                      <Text style={styles.recentChipText}>{term}</Text>
+                      <Ionicons
+                        name="time-outline"
+                        size={15}
+                        color="#6B7280"
+                        style={styles.recentChipIcon}
+                      />
+                      <AppText style={styles.recentChipText} numberOfLines={1}>
+                        {term}
+                      </AppText>
                     </TouchableOpacity>
                     <TouchableOpacity
                       hitSlop={8}
                       onPress={() => handleRemoveRecent(term)}
                       style={styles.recentChipRemove}
                     >
-                      <Ionicons name="close-circle" size={18} color={GatiMitraColors.textSecondary} />
+                      <Ionicons name="close" size={14} color="#9CA3AF" />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -300,34 +385,34 @@ export default function SearchScreen() {
             </View>
           )}
 
-          {/* Category grid – same user_app_category API as home / category browse */}
-          <Text style={[styles.sectionTitle, styles.categoryTitle]}>WHAT'S ON YOUR MIND?</Text>
-          {mindCategoriesPending ? (
+          <AppText style={[styles.sectionTitle, styles.categoryTitle]}>WHAT'S ON YOUR MIND?</AppText>
+          {mindCategoriesPending && mindGridData.length === 0 ? (
             <View style={styles.mindGridLoading}>
               <ActivityIndicator size="small" color={GatiMitraColors.emerald} />
             </View>
           ) : (
-          <View style={styles.mindGrid}>
-            {mindGridData.map((cat) => (
-              <TouchableOpacity
-                key={cat.id}
-                style={styles.gridItem}
-                onPress={() => handleCategoryPress(cat.slug)}
-                activeOpacity={0.85}
-              >
-                <View style={styles.gridImageWrap}>
-                  <UserAppCategoryImage
-                    imageUrl={cat.imageUrl}
-                    cacheKey={`category-${cat.id}`}
-                    style={styles.gridImage}
-                  />
-                </View>
-                <Text style={styles.gridLabel} numberOfLines={2}>
-                  {cat.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+            <View style={styles.mindGrid}>
+              {mindGridData.map((cat) => (
+                <TouchableOpacity
+                  key={cat.id}
+                  style={styles.gridItem}
+                  onPress={() => handleCategoryPress(cat.slug)}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.gridImageWrap}>
+                    <UserAppCategoryImage
+                      imageUrl={cat.imageUrl}
+                      cacheKey={`category-${cat.id}`}
+                      style={styles.gridImage}
+                      contentFit="cover"
+                    />
+                  </View>
+                  <AppText style={styles.gridLabel} numberOfLines={2}>
+                    {cat.name}
+                  </AppText>
+                </TouchableOpacity>
+              ))}
+            </View>
           )}
         </ScrollView>
       ) : (
@@ -405,29 +490,29 @@ function SearchResultsList({
             resizeMode="cover"
           />
           <View style={styles.categoryCardContent}>
-            <Text style={styles.categoryCardName}>{category.name}</Text>
-            <Text style={styles.categoryCardCta}>See all restaurants</Text>
+            <AppText style={styles.categoryCardName}>{category.name}</AppText>
+            <AppText style={styles.categoryCardCta}>See all restaurants</AppText>
           </View>
           <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
         </TouchableOpacity>
       )}
 
       {/* 2. Dish results – section always present for consistent layout */}
-      <Text style={styles.resultSectionTitle}>Dishes</Text>
+      <AppText style={styles.resultSectionTitle}>Dishes</AppText>
       {dishes.length > 0 ? (
         dishes.map((d) => <DishRow key={d.id} dish={d} onPress={() => onDishPress(d)} />)
       ) : (
-        <Text style={styles.resultSectionEmpty}>No dishes found</Text>
+        <AppText style={styles.resultSectionEmpty}>No dishes found</AppText>
       )}
 
       {/* 3. Restaurant results – section always present for consistent layout */}
-      <Text style={styles.resultSectionTitle}>Restaurants</Text>
+      <AppText style={styles.resultSectionTitle}>Restaurants</AppText>
       {restaurants.length > 0 ? (
         restaurants.map((r) => (
           <RestaurantRow key={r.id} restaurant={r} onPress={onRestaurantPress} />
         ))
       ) : (
-        <Text style={styles.resultSectionEmpty}>No restaurants found</Text>
+        <AppText style={styles.resultSectionEmpty}>No restaurants found</AppText>
       )}
     </View>
   );
@@ -546,18 +631,18 @@ function SearchEmptyState({
         </Animated.View>
 
         <Animated.View style={[titleWrapAnimatedStyle, styles.emptyStateTitleWrap]}>
-          <Text style={styles.emptyStateTitle}>
+          <AppText style={styles.emptyStateTitle}>
             {variant === "no-results"
               ? "Nothing matched this search — try another craving!"
               : "Oops! Looks like you took a different turn."}
-          </Text>
+          </AppText>
         </Animated.View>
         <Animated.View style={[subtitleWrapAnimatedStyle, styles.emptyStateSubtitleWrap]}>
-          <Text style={styles.emptyStateSubtitle}>
+          <AppText style={styles.emptyStateSubtitle}>
             {variant === "no-results"
               ? "Try a different dish, restaurant, or category."
               : "We couldn't find what you're looking for.\nTry searching something else and explore more delicious options."}
-          </Text>
+          </AppText>
         </Animated.View>
 
         {onExplorePopular && (
@@ -575,7 +660,7 @@ function SearchEmptyState({
                 end={{ x: 1, y: 0 }}
                 style={styles.emptyStateButton}
               >
-                <Text style={styles.emptyStateButtonText}>Explore Popular Items</Text>
+                <AppText style={styles.emptyStateButtonText}>Explore Popular Items</AppText>
               </LinearGradient>
             </Pressable>
           </Animated.View>
@@ -600,8 +685,8 @@ function DishRow({ dish, onPress }: { dish: SearchDish; onPress: () => void }) {
         <View style={styles.resultRowImage} />
       )}
       <View style={styles.resultRowText}>
-        <Text style={styles.resultRowTitle} numberOfLines={1}>{dish.name}</Text>
-        <Text style={styles.resultRowLabel}>Dish</Text>
+        <AppText style={styles.resultRowTitle} numberOfLines={1}>{dish.name}</AppText>
+        <AppText style={styles.resultRowLabel}>Dish</AppText>
       </View>
       <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
     </TouchableOpacity>
@@ -634,11 +719,11 @@ function RestaurantRow({
         <View style={styles.resultRowImage} />
         )}
       <View style={styles.resultRowText}>
-        <Text style={styles.resultRowTitle} numberOfLines={1}>{restaurant.name}</Text>
+        <AppText style={styles.resultRowTitle} numberOfLines={1}>{restaurant.name}</AppText>
         {(restaurant.avgRating != null || (restaurant as { rating?: number }).rating != null) && (
           <View style={styles.ratingRow}>
             <Ionicons name="star" size={14} color={GatiMitraColors.emerald} />
-            <Text style={styles.ratingText}>{restaurant.avgRating ?? (restaurant as { rating?: number }).rating}</Text>
+            <AppText style={styles.ratingText}>{restaurant.avgRating ?? (restaurant as { rating?: number }).rating}</AppText>
           </View>
         )}
       </View>
@@ -662,22 +747,22 @@ const styles = StyleSheet.create({
   },
   backBtn: {
     padding: 6,
-    marginRight: 6,
+    marginRight: 4,
   },
   searchBar: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: GatiMitraColors.cardBg,
-    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    paddingVertical: 11,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
   },
   searchInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 15,
     color: GatiMitraColors.textPrimary,
     paddingVertical: 2,
     paddingHorizontal: 4,
@@ -689,21 +774,59 @@ const styles = StyleSheet.create({
   scroll: {
     flex: 1,
   },
+  idleScrollContent: {
+    flexGrow: 0,
+    paddingBottom: 8,
+  },
+  slogan: {
+    marginTop: 12,
+    marginBottom: 12,
+    paddingHorizontal: PAD + 2,
+    fontSize: 22,
+    fontWeight: "700",
+    fontStyle: "italic",
+    color: SLOGAN_PINK,
+    letterSpacing: -0.3,
+  },
+  moodChipsScroll: {
+    marginBottom: 2,
+  },
+  moodChips: {
+    paddingHorizontal: PAD,
+    gap: 10,
+    paddingBottom: 2,
+  },
+  moodChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: CHIP_BORDER,
+    backgroundColor: "#FFFFFF",
+  },
+  moodChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
+  },
   recentSection: {
-    marginTop: 10,
+    marginTop: 14,
   },
   recentRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: PAD,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
-    color: GatiMitraColors.textSecondary,
-    letterSpacing: 0.3,
+    color: "#6B7280",
+    letterSpacing: 0.6,
   },
   clearText: {
     fontSize: 14,
@@ -713,41 +836,43 @@ const styles = StyleSheet.create({
   recentChips: {
     paddingHorizontal: PAD,
     gap: 8,
-    paddingBottom: 8,
+    paddingBottom: 4,
   },
   recentChip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F5F5F5",
+    backgroundColor: "#FFFFFF",
     paddingVertical: 8,
     paddingLeft: 12,
-    paddingRight: 4,
-    borderRadius: 20,
+    paddingRight: 6,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    borderColor: "#E5E7EB",
+    maxWidth: 180,
   },
   recentChipMain: {
     flexDirection: "row",
     alignItems: "center",
-    flex: 1,
+    flexShrink: 1,
     gap: 6,
     minWidth: 0,
   },
   recentChipIcon: {
-    marginRight: 2,
+    marginRight: 0,
   },
   recentChipText: {
-    fontSize: 14,
+    fontSize: 13,
+    fontWeight: "600",
     color: GatiMitraColors.textPrimary,
-    flexShrink: 0,
+    flexShrink: 1,
   },
   recentChipRemove: {
     padding: 4,
     marginLeft: 2,
   },
   categoryTitle: {
-    marginTop: 8,
-    marginBottom: 14,
+    marginTop: 14,
+    marginBottom: 12,
     paddingHorizontal: PAD,
   },
   mindGrid: {
@@ -755,10 +880,11 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     paddingHorizontal: PAD,
     columnGap: GRID_GAP,
-    rowGap: GRID_GAP,
+    rowGap: 14,
+    paddingBottom: 4,
   },
   mindGridLoading: {
-    paddingVertical: 32,
+    paddingVertical: 24,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -767,22 +893,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   gridImageWrap: {
-    width: CARD_WIDTH,
-    height: CARD_IMAGE_HEIGHT,
-    borderRadius: 12,
-    backgroundColor: "transparent",
+    width: CARD_IMAGE_SIZE,
+    height: CARD_IMAGE_SIZE,
+    borderRadius: CARD_IMAGE_SIZE / 2,
+    backgroundColor: "#FAFAFA",
     overflow: "hidden",
-    marginBottom: 6,
+    marginBottom: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(0,0,0,0.04)",
   },
   gridImage: {
     width: "100%",
     height: "100%",
   },
   gridLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "600",
     color: GatiMitraColors.textPrimary,
     textAlign: "center",
+    lineHeight: 17,
   },
   loadingWrap: {
     paddingVertical: 48,

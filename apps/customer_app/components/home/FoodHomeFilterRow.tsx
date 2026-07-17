@@ -85,11 +85,13 @@ export function FoodHomeFilterRow({
             </TouchableOpacity>
             {showMealsUnderPriceChip ? (
               <TouchableOpacity
-                style={styles.chip}
+                style={[styles.chip, styles.chipMeals]}
                 onPress={onMealsUnderPricePress}
                 activeOpacity={0.85}
               >
-                <AppText style={styles.chipText}>{mealsUnderPriceLabel}</AppText>
+                <AppText style={[styles.chipText, styles.chipTextMeals]}>
+                  {mealsUnderPriceLabel}
+                </AppText>
               </TouchableOpacity>
             ) : null}
           </>
@@ -187,6 +189,13 @@ const styles = StyleSheet.create({
     borderColor: "#86EFAC",
   },
   chipTextNearFast: {
+    color: "#15803D",
+  },
+  chipMeals: {
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
+  },
+  chipTextMeals: {
     color: "#15803D",
   },
 });

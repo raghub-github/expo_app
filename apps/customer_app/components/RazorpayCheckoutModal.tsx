@@ -65,18 +65,9 @@
  */
 
 import { useEffect, useRef, useState, useMemo } from "react";
-import {
-  Modal,
-  View,
-  ActivityIndicator,
-  Pressable,
-  Text,
-  StatusBar,
-  Platform,
-  Linking,
-  StyleSheet,
-  BackHandler,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { Modal, View, ActivityIndicator, Pressable, StatusBar, Platform, Linking, StyleSheet, BackHandler } from "react-native";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
@@ -532,15 +523,15 @@ export function RazorpayCheckoutModal({
           >
             <Ionicons name="close" size={24} color="#0f172a" />
           </Pressable>
-          <Text style={styles.headerTitle} numberOfLines={1}>Complete payment</Text>
+          <AppText style={styles.headerTitle} numberOfLines={1}>Complete payment</AppText>
           <View style={styles.headerSpacer} />
         </View>
 
         {webviewError ? (
           <View style={styles.errorWrap}>
             <Ionicons name="alert-circle-outline" size={40} color="#dc2626" />
-            <Text style={styles.errorTitle}>Payment could not start</Text>
-            <Text style={styles.errorBody}>{webviewError}</Text>
+            <AppText style={styles.errorTitle}>Payment could not start</AppText>
+            <AppText style={styles.errorBody}>{webviewError}</AppText>
             <Pressable
               onPress={() => {
                 if (!completedRef.current) {
@@ -550,7 +541,7 @@ export function RazorpayCheckoutModal({
               }}
               style={[styles.retryBtn, { backgroundColor: theme }]}
             >
-              <Text style={styles.retryTxt}>Close</Text>
+              <AppText style={styles.retryTxt}>Close</AppText>
             </Pressable>
           </View>
         ) : (

@@ -2,7 +2,9 @@
  * GMitra Plus membership — profile & promo bottom sheet (active benefits or join pitch).
  */
 
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -75,19 +77,19 @@ export function GmitraPlusMembershipSheet({
           </View>
           <View style={styles.heroCopy}>
             <View style={styles.titleRow}>
-              <Text style={styles.planTitle}>{planName}</Text>
+              <AppText style={styles.planTitle}>{planName}</AppText>
               {active ? (
                 <View style={styles.activePill}>
                   <View style={styles.activeDot} />
-                  <Text style={styles.activePillText}>Active</Text>
+                  <AppText style={styles.activePillText}>Active</AppText>
                 </View>
               ) : null}
             </View>
-            <Text style={styles.heroSubtitle}>
+            <AppText style={styles.heroSubtitle}>
               {active
                 ? "Your membership perks are live on every eligible order."
                 : `Unlock delivery savings and member-only offers with ${planName}.`}
-            </Text>
+            </AppText>
           </View>
         </View>
       </LinearGradient>
@@ -98,49 +100,49 @@ export function GmitraPlusMembershipSheet({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {!active && description ? <Text style={styles.lead}>{description}</Text> : null}
+        {!active && description ? <AppText style={styles.lead}>{description}</AppText> : null}
 
-        <Text style={styles.sectionLabel}>{active ? "Your benefits" : "What you get"}</Text>
+        <AppText style={styles.sectionLabel}>{active ? "Your benefits" : "What you get"}</AppText>
 
         {benefitLines.map((benefit) => (
           <View key={benefit} style={styles.benefitRow}>
             <View style={[styles.benefitIconWrap, active && styles.benefitIconWrapActive]}>
               <Ionicons name={benefitIcon(benefit)} size={18} color={active ? GOLD_DARK : MINT_DARK} />
             </View>
-            <Text style={styles.benefitText}>{benefit}</Text>
+            <AppText style={styles.benefitText}>{benefit}</AppText>
           </View>
         ))}
 
         {freeDeliveryNote ? (
           <View style={styles.deliveryNoteCard}>
             <Ionicons name="navigate-circle-outline" size={20} color={MINT_DARK} />
-            <Text style={styles.deliveryNoteText}>{freeDeliveryNote}</Text>
+            <AppText style={styles.deliveryNoteText}>{freeDeliveryNote}</AppText>
           </View>
         ) : null}
 
         {active ? (
           <View style={styles.autoApplyBanner}>
             <Ionicons name="sparkles" size={16} color={GOLD_DARK} />
-            <Text style={styles.autoApplyText}>
+            <AppText style={styles.autoApplyText}>
               Benefits apply automatically — no coupon code needed at checkout.
-            </Text>
+            </AppText>
           </View>
         ) : (
-          <Text style={styles.joinHint}>
+          <AppText style={styles.joinHint}>
             Add {planName} at checkout on your next food order to start saving instantly.
-          </Text>
+          </AppText>
         )}
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 14) }]}>
         {active ? (
           <TouchableOpacity style={styles.primaryBtn} onPress={onClose} activeOpacity={0.9}>
-            <Text style={styles.primaryBtnText}>Got it</Text>
+            <AppText style={styles.primaryBtnText}>Got it</AppText>
           </TouchableOpacity>
         ) : (
           <View style={styles.footerRow}>
             <TouchableOpacity style={styles.secondaryBtn} onPress={onClose} activeOpacity={0.85}>
-              <Text style={styles.secondaryBtnText}>Not now</Text>
+              <AppText style={styles.secondaryBtnText}>Not now</AppText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.primaryBtn, styles.primaryBtnFlex]}
@@ -150,7 +152,7 @@ export function GmitraPlusMembershipSheet({
               }}
               activeOpacity={0.9}
             >
-              <Text style={styles.primaryBtnText}>Browse restaurants</Text>
+              <AppText style={styles.primaryBtnText}>Browse restaurants</AppText>
               <Ionicons name="arrow-forward" size={16} color="#fff" />
             </TouchableOpacity>
           </View>

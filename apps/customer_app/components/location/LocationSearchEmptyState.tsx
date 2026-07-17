@@ -1,14 +1,16 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 
 export function LocationSearchEmptyState() {
   return (
     <View style={styles.wrap}>
       <Ionicons name="search-outline" size={40} color="#D1D5DB" />
-      <Text style={styles.title}>No locations found</Text>
-      <Text style={styles.sub}>
+      <AppText style={styles.title}>No locations found</AppText>
+      <AppText style={styles.sub}>
         Try searching with a landmark, area, or full address.
-      </Text>
+      </AppText>
     </View>
   );
 }

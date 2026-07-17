@@ -2,7 +2,9 @@
  * Modal asking user to enable contacts permission (e.g. for Add a guest).
  */
 
-import { View, Text, Modal, TouchableOpacity, StyleSheet, Linking, Platform } from "react-native";
+import { View, Modal, TouchableOpacity, StyleSheet, Linking, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -33,23 +35,23 @@ export function ContactsPermissionModal({ visible, onDismiss }: Props) {
           <View style={styles.iconWrap}>
             <Ionicons name="people" size={48} color={GatiMitraColors.emerald} />
           </View>
-          <Text style={styles.title}>Allow contacts access</Text>
-          <Text style={styles.message}>
+          <AppText style={styles.title}>Allow contacts access</AppText>
+          <AppText style={styles.message}>
             GatiMitra needs access to your contacts so you can quickly add a guest for the ride.
-          </Text>
+          </AppText>
           <TouchableOpacity
             style={styles.primaryBtn}
             onPress={openSettings}
             activeOpacity={0.9}
           >
-            <Text style={styles.primaryBtnText}>Open Settings</Text>
+            <AppText style={styles.primaryBtnText}>Open Settings</AppText>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.secondaryBtn}
             onPress={onDismiss}
             activeOpacity={0.8}
           >
-            <Text style={styles.secondaryBtnText}>Not now</Text>
+            <AppText style={styles.secondaryBtnText}>Not now</AppText>
           </TouchableOpacity>
         </View>
       </View>

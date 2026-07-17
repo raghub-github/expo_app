@@ -1,10 +1,6 @@
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -75,8 +71,8 @@ export function RideInvoiceEmailGateSheet({
         <View style={styles.iconWrap}>
           <Ionicons name={iconName} size={28} color={GREEN} />
         </View>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.bodyText}>{body}</Text>
+        <AppText style={styles.title}>{title}</AppText>
+        <AppText style={styles.bodyText}>{body}</AppText>
 
         <TouchableOpacity
           style={[styles.primaryBtn, sending && styles.primaryBtnDisabled]}
@@ -87,12 +83,12 @@ export function RideInvoiceEmailGateSheet({
           {sending ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.primaryBtnText}>{primaryLabel}</Text>
+            <AppText style={styles.primaryBtnText}>{primaryLabel}</AppText>
           )}
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.secondaryBtn} onPress={onClose} activeOpacity={0.85}>
-          <Text style={styles.secondaryBtnText}>Not now</Text>
+          <AppText style={styles.secondaryBtnText}>Not now</AppText>
         </TouchableOpacity>
       </View>
     </StoreBottomSheetShell>

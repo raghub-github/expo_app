@@ -1,9 +1,11 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 
 export function LocationSearchSkeleton({ rows = 5 }: { rows?: number }) {
   return (
     <View style={styles.wrap}>
-      <Text style={styles.loadingLabel}>Searching locations...</Text>
+      <AppText style={styles.loadingLabel}>Searching locations...</AppText>
       {Array.from({ length: rows }).map((_, i) => (
         <View key={i} style={styles.row}>
           <View style={styles.iconSk} />

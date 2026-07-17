@@ -2,7 +2,9 @@
  * Horizontal category slider – rounded cards, active highlight.
  */
 
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { ProductCategoryId } from "./data";
@@ -41,9 +43,9 @@ export function CategorySlider({ categories, activeId, onSelect }: CategorySlide
                   color={isActive ? "#fff" : GatiMitraColors.emerald}
                 />
               </View>
-              <Text style={[styles.label, isActive && styles.labelActive]} numberOfLines={1}>
+              <AppText style={[styles.label, isActive && styles.labelActive]} numberOfLines={1}>
                 {c.name}
-              </Text>
+              </AppText>
             </TouchableOpacity>
           );
         })}

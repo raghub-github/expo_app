@@ -274,7 +274,7 @@ export default function MerchantDetails({
             Parent Merchant Id:
           </div>
           <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug">
-            <span className="font-mono">{profile?.parentMerchantId ?? "—"}</span>
+            <span>{profile?.parentMerchantId ?? "—"}</span>
             {profile?.parentMerchantId && (
               <button
                 type="button"
@@ -320,7 +320,7 @@ export default function MerchantDetails({
         <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
           <div className="text-[12px] text-gati-text-secondary font-medium">Merchant Id:</div>
           <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug">
-            <span className="font-mono">{profile?.storeCode ?? "—"}</span>
+            <span>{profile?.storeCode ?? "—"}</span>
             {profile?.storeCode && (
               <button
                 type="button"

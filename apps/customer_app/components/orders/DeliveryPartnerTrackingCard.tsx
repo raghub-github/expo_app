@@ -2,7 +2,9 @@
  * Zomato-style delivery partner card on live order tracking.
  */
 
-import { View, Text, StyleSheet, TouchableOpacity, Image, type StyleProp, type ViewStyle } from "react-native";
+import { View, StyleSheet, TouchableOpacity, Image, type StyleProp, type ViewStyle } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import type { ReactNode } from "react";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,9 +23,9 @@ const RATING_GREEN = "#256948";
 function DashedDivider() {
   return (
     <View style={styles.dashedWrap}>
-      <Text style={styles.dashedLine} numberOfLines={1}>
+      <AppText style={styles.dashedLine} numberOfLines={1}>
         - - - - - - - - - - - - - - - - - - - -
-      </Text>
+      </AppText>
     </View>
   );
 }

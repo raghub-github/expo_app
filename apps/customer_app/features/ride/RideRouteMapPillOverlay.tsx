@@ -3,14 +3,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Platform,
-  LayoutChangeEvent,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, Platform, LayoutChangeEvent } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
@@ -82,9 +77,9 @@ function RouteMarker({
         ]}
       >
         <View style={[styles.pillRoleDot, { backgroundColor: roleDotColor }]} />
-        <Text style={styles.addressText} numberOfLines={1} ellipsizeMode="tail">
+        <AppText style={styles.addressText} numberOfLines={1} ellipsizeMode="tail">
           {label}
-        </Text>
+        </AppText>
         {editable ? (
           <TouchableOpacity
             onPress={onEdit}

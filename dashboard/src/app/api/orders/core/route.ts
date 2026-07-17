@@ -8,7 +8,6 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import {
   listOrdersCore,
-  getOrderManualStatusHistory,
   getFoodDeliveryInstructions,
   getFoodOrderMeta,
   getOrderTimelineEntriesWithFallback,
@@ -21,18 +20,6 @@ import {
 } from "@/lib/db/operations/orders-core";
 import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
 import { getPersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
-import {
-  getRiderAssignmentTimeline,
-  getOrderRiderActivityLogPayload,
-  type RiderAssignmentTimelineData,
-  type RiderActivityLogPayload,
-} from "@/lib/db/operations/order-rider-assignments";
-import {
-  getOrderRiderTracking,
-  type OrderRiderTrackingPayload,
-} from "@/lib/db/operations/order-rider-tracking";
-import { fetchOrderPaymentDetail } from "@/lib/orders/order-payment-detail";
-import { listOrderPartnerChatForDashboard } from "@/lib/db/operations/order-partner-chat";
 import {
   getOrderRiderAssignmentSnapshot,
   type OrderRiderAssignmentSnapshot,
@@ -87,14 +74,6 @@ async function enrichOrdersListWithStoreMeta(
     };
   });
 }
-import { listOrderRemarks } from "@/lib/db/operations/order-remarks";
-import { listOrderRiderReconsWithRoles } from "@/lib/db/operations/order-recons";
-import { listOrderCxNotifications } from "@/lib/db/operations/order-cx-notifications";
-import {
-  serializeNotificationForApi,
-  serializeReconForApi,
-  serializeRemarkForApi,
-} from "@/lib/orders/order-sidebar-activity";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
 
@@ -119,23 +98,11 @@ function serializeTimelineEntries(entries: OrderTimelineEntry[]) {
 type SingleOrderEnrichment = {
   data: OrderCoreApiListItem[];
   merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> | null;
-  remarksCount?: number;
-  reconsCount?: number;
-  notificationsCount?: number;
-  remarks?: ReturnType<typeof serializeRemarkForApi>[];
-  recons?: ReturnType<typeof serializeReconForApi>[];
-  notifications?: ReturnType<typeof serializeNotificationForApi>[];
-  statusHistory?: Awaited<ReturnType<typeof getOrderManualStatusHistory>>;
-  paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null;
   timeline: ReturnType<typeof serializeTimelineEntries>;
-  riderTimeline: RiderAssignmentTimelineData | null;
-  riderTracking: OrderRiderTrackingPayload | null;
-  riderActivityLog: RiderActivityLogPayload | null;
-  partnerChat: Awaited<ReturnType<typeof listOrderPartnerChatForDashboard>>;
   riderDispatchUi: OrderRiderAssignmentSnapshot | null;
 };
 
-/** Detail-page enrichments (timeline, payment, merchant summary) for a single-order fetch. */
+/** Detail-page enrichments for first paint (timeline + merchant + dispatch). */
 async function enrichSingleOrderDetail(
   data: OrderCoreApiListItem[]
 ): Promise<SingleOrderEnrichment | null> {
@@ -150,37 +117,11 @@ async function enrichSingleOrderDetail(
   const storeId = first?.merchantStoreId;
 
   let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
-  let remarksCount: number | undefined;
-  let reconsCount: number | undefined;
-  let notificationsCount: number | undefined;
-  let remarksList: ReturnType<typeof serializeRemarkForApi>[] | undefined;
-  let reconsList: ReturnType<typeof serializeReconForApi>[] | undefined;
-  let notificationsList: ReturnType<typeof serializeNotificationForApi>[] | undefined;
-  let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
-  let paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null = null;
   let timeline: ReturnType<typeof serializeTimelineEntries> = [];
-  let riderTimeline: RiderAssignmentTimelineData | null = null;
-  let riderTracking: OrderRiderTrackingPayload | null = null;
-  let riderActivityLog: RiderActivityLogPayload | null = null;
-  let partnerChat: Awaited<ReturnType<typeof listOrderPartnerChatForDashboard>> = {
-    messages: [],
-    chatClosed: false,
-  };
   let riderDispatchUi: OrderRiderAssignmentSnapshot | null = null;
 
   if (orderId != null && Number.isFinite(orderId)) {
     const firstRow = first as {
-      orderId?: string | null;
-      formattedOrderId?: string | null;
-      merchantStoreId?: number | null;
-      orderType?: string;
-      orderSource?: string | null;
-      paymentStatus?: string | null;
-      paymentMethod?: string | null;
-      grandTotal?: string | number | null;
-      itemTotal?: string | number | null;
-      addonTotal?: string | number | null;
-      tipAmount?: string | number | null;
       riderId?: number | null;
     };
 
@@ -192,33 +133,17 @@ async function enrichSingleOrderDetail(
     });
 
     const storeIdNum = storeId != null && Number.isFinite(storeId) ? storeId : null;
-    const riderIdForTimeline =
-      firstRow.riderId != null && Number.isFinite(Number(firstRow.riderId))
-        ? Number(firstRow.riderId)
-        : null;
 
+    // First-paint enrichments only. Payment, sidebar, rider map/chat load client-side.
     const [
       summary,
-      remarksRows,
-      reconsRows,
-      notificationsRows,
-      history,
       deliveryInstructions,
       detailExtra,
-      paymentDetailResult,
       timelineEntries,
-      riderTimelineResult,
-      riderTrackingResult,
-      riderActivityLogResult,
       foodOrderMetaResult,
-      partnerChatResult,
       riderDispatchUiResult,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
-      listOrderRemarks(orderId),
-      listOrderRiderReconsWithRoles(orderId),
-      listOrderCxNotifications(orderId),
-      getOrderManualStatusHistory(orderId),
       first?.orderType === "food"
         ? getFoodDeliveryInstructions(orderId)
         : Promise.resolve(null),
@@ -226,44 +151,9 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] order detail enrichment failed", err);
         return null;
       }),
-      fetchOrderPaymentDetail({
-        orderCoreId: orderId,
-        orderIdText: firstRow.orderId != null ? String(firstRow.orderId) : null,
-        formattedOrderId:
-          firstRow.formattedOrderId != null ? String(firstRow.formattedOrderId) : null,
-        displayId:
-          firstRow.formattedOrderId?.trim() ||
-          (firstRow.orderId ? String(firstRow.orderId) : `ORDER-${orderId}`),
-        merchantStoreId: firstRow.merchantStoreId ?? null,
-        orderType: firstRow.orderType ?? "food",
-        orderSource: firstRow.orderSource ?? null,
-        paymentStatus: firstRow.paymentStatus ?? null,
-        paymentMethod: firstRow.paymentMethod ?? null,
-        grandTotal: firstRow.grandTotal != null ? Number(firstRow.grandTotal) : null,
-        itemTotal: firstRow.itemTotal != null ? Number(firstRow.itemTotal) : null,
-        addonTotal: firstRow.addonTotal != null ? Number(firstRow.addonTotal) : null,
-        tipAmount: firstRow.tipAmount != null ? Number(firstRow.tipAmount) : null,
-      }).catch((err) => {
-        console.error("[GET /api/orders/core] payment detail failed", err);
-        return null;
-      }),
       getOrderTimelineEntriesWithFallback(orderId).catch((err) => {
         console.error("[GET /api/orders/core] timeline fetch failed", err);
         return [] as OrderTimelineEntry[];
-      }),
-      riderIdForTimeline != null
-        ? getRiderAssignmentTimeline(orderId, riderIdForTimeline).catch((err) => {
-            console.error("[GET /api/orders/core] rider timeline fetch failed", err);
-            return null;
-          })
-        : Promise.resolve(null),
-      getOrderRiderTracking(orderId).catch((err) => {
-        console.error("[GET /api/orders/core] rider tracking fetch failed", err);
-        return null;
-      }),
-      getOrderRiderActivityLogPayload(orderId).catch((err) => {
-        console.error("[GET /api/orders/core] rider activity log fetch failed", err);
-        return null;
       }),
       first?.orderType === "food"
         ? getFoodOrderMeta(orderId).catch((err) => {
@@ -271,10 +161,6 @@ async function enrichSingleOrderDetail(
             return null;
           })
         : Promise.resolve(null),
-      listOrderPartnerChatForDashboard(orderId).catch((err) => {
-        console.error("[GET /api/orders/core] partner chat fetch failed", err);
-        return { messages: [], chatClosed: false };
-      }),
       getOrderRiderAssignmentSnapshot(orderId).catch((err) => {
         console.error("[GET /api/orders/core] rider dispatch ui fetch failed", err);
         return null;
@@ -282,31 +168,7 @@ async function enrichSingleOrderDetail(
     ]);
 
     merchantSummary = summary;
-    remarksList = remarksRows.map(serializeRemarkForApi);
-    reconsList = reconsRows.map((r) =>
-      serializeReconForApi({
-        id: r.id,
-        providerName: r.providerName,
-        riderName: r.riderName,
-        riderMobile: r.riderMobile,
-        reconReason: r.reconReason,
-        reconReasonCategory: r.reconReasonCategory,
-        reconAt: r.reconAt,
-        actorEmail: r.actorEmail,
-        actorRole: r.actorRole,
-      })
-    );
-    notificationsList = notificationsRows.map(serializeNotificationForApi);
-    remarksCount = remarksList.length;
-    reconsCount = reconsList.length;
-    notificationsCount = notificationsList.length;
-    statusHistory = history;
-    paymentDetail = paymentDetailResult;
     timeline = serializeTimelineEntries(timelineEntries);
-    riderTimeline = riderTimelineResult;
-    riderTracking = riderTrackingResult;
-    riderActivityLog = riderActivityLogResult;
-    partnerChat = partnerChatResult;
     riderDispatchUi = riderDispatchUiResult;
 
     let enrichedData = data;
@@ -373,14 +235,6 @@ async function enrichSingleOrderDetail(
         },
       ] as unknown as typeof enrichedData;
     }
-    if (paymentDetail != null) {
-      enrichedData = [
-        {
-          ...(enrichedData[0] as Record<string, unknown>),
-          paymentDetail,
-        },
-      ] as unknown as typeof enrichedData;
-    }
     if (first?.orderType === "person_ride" && orderId != null) {
       const rideDetail = await getPersonRideOrderDetail(orderId);
       if (rideDetail) {
@@ -401,19 +255,7 @@ async function enrichSingleOrderDetail(
   return {
     data,
     merchantSummary,
-    remarksCount,
-    reconsCount,
-    notificationsCount,
-    remarks: remarksList,
-    recons: reconsList,
-    notifications: notificationsList,
-    statusHistory,
-    paymentDetail,
     timeline,
-    riderTimeline,
-    riderTracking,
-    riderActivityLog,
-    partnerChat,
     riderDispatchUi,
   };
 }
@@ -424,21 +266,7 @@ function buildSingleOrderResponseExtras(
   if (enrichment == null) return {};
   return {
     ...(enrichment.merchantSummary != null && { merchantSummary: enrichment.merchantSummary }),
-    ...(enrichment.remarksCount !== undefined && { remarksCount: enrichment.remarksCount }),
-    ...(enrichment.reconsCount !== undefined && { reconsCount: enrichment.reconsCount }),
-    ...(enrichment.notificationsCount !== undefined && {
-      notificationsCount: enrichment.notificationsCount,
-    }),
-    ...(enrichment.remarks !== undefined && { remarks: enrichment.remarks }),
-    ...(enrichment.recons !== undefined && { recons: enrichment.recons }),
-    ...(enrichment.notifications !== undefined && { notifications: enrichment.notifications }),
-    ...(enrichment.statusHistory !== undefined && { statusHistory: enrichment.statusHistory }),
-    ...(enrichment.paymentDetail != null && { paymentDetail: enrichment.paymentDetail }),
     timeline: enrichment.timeline,
-    riderTimeline: enrichment.riderTimeline,
-    riderTracking: enrichment.riderTracking,
-    riderActivityLog: enrichment.riderActivityLog,
-    partnerChat: enrichment.partnerChat,
     riderDispatchUi: enrichment.riderDispatchUi,
   };
 }

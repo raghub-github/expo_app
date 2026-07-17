@@ -1,4 +1,6 @@
-import { Pressable, Text, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import type { CustomerWeatherContext } from "@/services/weather.service";
@@ -70,19 +72,19 @@ export function LocationWeatherBanner({ weather, onPress }: Props) {
       </View>
       <View style={styles.textCol}>
         {title ? (
-          <Text style={styles.title} numberOfLines={2}>
+          <AppText style={styles.title} numberOfLines={2}>
             {title}
-          </Text>
+          </AppText>
         ) : null}
         {subtitle ? (
-          <Text style={styles.subtitle} numberOfLines={2}>
+          <AppText style={styles.subtitle} numberOfLines={2}>
             {subtitle}
-          </Text>
+          </AppText>
         ) : null}
       </View>
       {temp ? (
         <View style={styles.tempPill}>
-          <Text style={styles.tempText}>{temp}</Text>
+          <AppText style={styles.tempText}>{temp}</AppText>
           <Ionicons name="rainy-outline" size={13} color={RAIN_BLUE} />
         </View>
       ) : null}

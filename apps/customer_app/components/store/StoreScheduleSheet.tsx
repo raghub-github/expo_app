@@ -1,12 +1,7 @@
 import React, { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, ScrollView, StyleSheet, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreBottomSheetShell } from "./StoreBottomSheetShell";
@@ -69,10 +64,10 @@ export function StoreScheduleSheet({
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.88}>
       <View style={styles.handle} />
-      <Text style={styles.title}>Schedule for later</Text>
-      <Text style={styles.sub}>{storeName}</Text>
+      <AppText style={styles.title}>Schedule for later</AppText>
+      <AppText style={styles.sub}>{storeName}</AppText>
 
-      <Text style={styles.sectionLabel}>Select day</Text>
+      <AppText style={styles.sectionLabel}>Select day</AppText>
       <View style={styles.dayRow}>
         {days.map((d) => {
           const active = selectedDay === d.id;
@@ -83,14 +78,14 @@ export function StoreScheduleSheet({
               onPress={() => setSelectedDay(d.id)}
               activeOpacity={0.85}
             >
-              <Text style={[styles.dayChipLabel, active && styles.dayChipLabelActive]}>{d.label}</Text>
-              <Text style={[styles.dayChipSub, active && styles.dayChipSubActive]}>{d.sub}</Text>
+              <AppText style={[styles.dayChipLabel, active && styles.dayChipLabelActive]}>{d.label}</AppText>
+              <AppText style={[styles.dayChipSub, active && styles.dayChipSubActive]}>{d.sub}</AppText>
             </TouchableOpacity>
           );
         })}
       </View>
 
-      <Text style={styles.sectionLabel}>Select time slot</Text>
+      <AppText style={styles.sectionLabel}>Select time slot</AppText>
       <ScrollView
         style={[styles.slotList, { maxHeight: slotScrollMaxH }]}
         contentContainerStyle={styles.slotListContent}
@@ -110,7 +105,7 @@ export function StoreScheduleSheet({
                 size={18}
                 color={active ? StoreTheme.accentMint : StoreTheme.textMuted}
               />
-              <Text style={[styles.slotText, active && styles.slotTextActive]}>{slot}</Text>
+              <AppText style={[styles.slotText, active && styles.slotTextActive]}>{slot}</AppText>
             </TouchableOpacity>
           );
         })}
@@ -122,7 +117,7 @@ export function StoreScheduleSheet({
         disabled={!selectedSlot}
         activeOpacity={0.9}
       >
-        <Text style={styles.confirmBtnText}>Confirm schedule</Text>
+        <AppText style={styles.confirmBtnText}>Confirm schedule</AppText>
       </TouchableOpacity>
     </StoreBottomSheetShell>
   );

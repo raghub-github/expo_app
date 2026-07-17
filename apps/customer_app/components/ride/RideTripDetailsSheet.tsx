@@ -2,15 +2,9 @@
  * Trip details bottom sheet for active person-ride orders.
  */
 
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-} from "react-native";
+import { View, Modal, Pressable, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { OrderDetail } from "@/services/order.service";
 import { formatRideFare } from "@/lib/ride-order-display";
@@ -72,77 +66,77 @@ export function RideTripDetailsSheet({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 20 }]}>
-        <Text style={styles.title}>Trip details</Text>
+        <AppText style={styles.title}>Trip details</AppText>
         <ScrollView showsVerticalScrollIndicator={false}>
           {showTollNotice ? (
             <View style={styles.tollNote}>
-              <Text style={styles.tollNoteText}>{RIDE_TOLL_NOTICE_DETAIL}</Text>
+              <AppText style={styles.tollNoteText}>{RIDE_TOLL_NOTICE_DETAIL}</AppText>
             </View>
           ) : null}
           <View style={styles.row}>
             <View style={[styles.dot, styles.dotPickup]} />
             <View style={styles.textCol}>
-              <Text style={styles.rowLabel}>Pickup</Text>
-              <Text style={styles.rowValue}>{pickup}</Text>
+              <AppText style={styles.rowLabel}>Pickup</AppText>
+              <AppText style={styles.rowValue}>{pickup}</AppText>
             </View>
           </View>
           <View style={styles.row}>
             <View style={[styles.dot, styles.dotDrop]} />
             <View style={styles.textCol}>
-              <Text style={styles.rowLabel}>Drop</Text>
-              <Text style={styles.rowValue}>{drop}</Text>
+              <AppText style={styles.rowLabel}>Drop</AppText>
+              <AppText style={styles.rowValue}>{drop}</AppText>
             </View>
           </View>
           <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>Vehicle</Text>
-            <Text style={styles.metaValue}>{vehicleLabel}</Text>
+            <AppText style={styles.metaLabel}>Vehicle</AppText>
+            <AppText style={styles.metaValue}>{vehicleLabel}</AppText>
           </View>
           {showFareBreakdown ? (
             <>
               <View style={styles.metaRow}>
-                <Text style={styles.metaLabel}>Ride fare</Text>
-                <Text style={styles.metaValue}>{formatRideFare(resolvedRideFare)}</Text>
+                <AppText style={styles.metaLabel}>Ride fare</AppText>
+                <AppText style={styles.metaValue}>{formatRideFare(resolvedRideFare)}</AppText>
               </View>
               <View style={styles.metaRow}>
-                <Text style={styles.metaLabel}>Waiting charges</Text>
-                <Text style={[styles.metaValue, styles.waitingValue]}>
+                <AppText style={styles.metaLabel}>Waiting charges</AppText>
+                <AppText style={[styles.metaValue, styles.waitingValue]}>
                   {formatRideFare(resolvedWaiting)}
-                </Text>
+                </AppText>
               </View>
               <View style={styles.metaRow}>
-                <Text style={styles.metaLabel}>Total fare</Text>
-                <Text style={[styles.metaValue, styles.totalFareValue]}>
+                <AppText style={styles.metaLabel}>Total fare</AppText>
+                <AppText style={[styles.metaValue, styles.totalFareValue]}>
                   {formatRideFare(resolvedTotal)}
-                </Text>
+                </AppText>
               </View>
             </>
           ) : (
             <View style={styles.metaRow}>
-              <Text style={styles.metaLabel}>Fare</Text>
-              <Text style={styles.metaValue}>
+              <AppText style={styles.metaLabel}>Fare</AppText>
+              <AppText style={styles.metaValue}>
                 {resolvedTotal != null
                   ? formatRideFare(resolvedTotal)
                   : resolvedRideFare != null
                     ? formatRideFare(resolvedRideFare)
                     : "—"}
-              </Text>
+              </AppText>
             </View>
           )}
           <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>Payment</Text>
-            <Text style={styles.metaValue}>{payment}</Text>
+            <AppText style={styles.metaLabel}>Payment</AppText>
+            <AppText style={styles.metaValue}>{payment}</AppText>
           </View>
           <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>Order ID</Text>
-            <Text style={styles.metaValue}>{order.formattedOrderId ?? order.orderId}</Text>
+            <AppText style={styles.metaLabel}>Order ID</AppText>
+            <AppText style={styles.metaValue}>{order.formattedOrderId ?? order.orderId}</AppText>
           </View>
         </ScrollView>
         <TouchableOpacity style={styles.closeBtn} onPress={onClose} activeOpacity={0.9}>
-          <Text style={styles.closeBtnText}>Close</Text>
+          <AppText style={styles.closeBtnText}>Close</AppText>
         </TouchableOpacity>
         {showCancelRide && onCancelRide ? (
           <TouchableOpacity style={styles.cancelBtn} onPress={onCancelRide} activeOpacity={0.9}>
-            <Text style={styles.cancelBtnText}>Cancel Ride</Text>
+            <AppText style={styles.cancelBtnText}>Cancel Ride</AppText>
           </TouchableOpacity>
         ) : null}
       </View>

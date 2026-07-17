@@ -1,18 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Modal,
-  Animated,
-  Pressable,
-  Linking,
-  Alert,
-  AppState,
-  type AppStateStatus,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Animated, Pressable, Linking, Alert, AppState, type AppStateStatus } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -309,7 +298,7 @@ export default function OnboardingPermissionsScreen() {
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
       <View style={styles.content}>
-        <Text style={styles.subtitle}>We need a few permissions for a smooth and secure experience.</Text>
+        <AppText style={styles.subtitle}>We need a few permissions for a smooth and secure experience.</AppText>
       </View>
 
       {currentPermission && (
@@ -331,18 +320,18 @@ export default function OnboardingPermissionsScreen() {
                       onPress={() => handleSkip(currentPermission.id)}
                       hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                     >
-                      <Text style={styles.skipBtnText}>Skip</Text>
+                      <AppText style={styles.skipBtnText}>Skip</AppText>
                     </TouchableOpacity>
                   )}
                 </View>
                 <View style={styles.iconWrapCenter}>
                   <Ionicons name={currentPermission.icon} size={40} color={ACCENT} />
                 </View>
-                <Text style={styles.modalTitle}>{currentPermission.title}</Text>
+                <AppText style={styles.modalTitle}>{currentPermission.title}</AppText>
                 {currentPermission.subtitle ? (
-                  <Text style={styles.modalSubtitle}>{currentPermission.subtitle}</Text>
+                  <AppText style={styles.modalSubtitle}>{currentPermission.subtitle}</AppText>
                 ) : null}
-                <Text style={styles.modalDesc}>{currentPermission.description}</Text>
+                <AppText style={styles.modalDesc}>{currentPermission.description}</AppText>
                 <TouchableOpacity
                   style={[styles.allowBtn, loading === currentPermission.id && styles.allowBtnDisabled]}
                   onPress={() => handleAllow(currentPermission.id)}
@@ -351,12 +340,12 @@ export default function OnboardingPermissionsScreen() {
                   {loading === currentPermission.id ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Text style={styles.allowBtnText}>Allow</Text>
+                    <AppText style={styles.allowBtnText}>Allow</AppText>
                   )}
                 </TouchableOpacity>
-                <Text style={styles.settingsHint}>
+                <AppText style={styles.settingsHint}>
                   If blocked, we'll open Settings so you can enable it.
-                </Text>
+                </AppText>
               </View>
             </Animated.View>
           </Pressable>
@@ -368,10 +357,10 @@ export default function OnboardingPermissionsScreen() {
           <Pressable style={styles.overlay} onPress={() => {}}>
             <View style={styles.modalCardWrap}>
               <View style={styles.modalCard}>
-                <Text style={styles.modalTitle}>All set!</Text>
-                <Text style={styles.modalDesc}>
+                <AppText style={styles.modalTitle}>All set!</AppText>
+                <AppText style={styles.modalDesc}>
                   Permissions were saved successfully. You can continue to the app now.
-                </Text>
+                </AppText>
                 <TouchableOpacity
                   style={[styles.allowBtn, (!allDoneSaved || finalizing) && styles.allowBtnDisabled]}
                   disabled={!allDoneSaved || finalizing}
@@ -380,7 +369,7 @@ export default function OnboardingPermissionsScreen() {
                   {finalizing ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Text style={styles.allowBtnText}>Continue</Text>
+                    <AppText style={styles.allowBtnText}>Continue</AppText>
                   )}
                 </TouchableOpacity>
               </View>

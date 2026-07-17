@@ -4,15 +4,9 @@
  */
 
 import { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  Pressable,
-  StyleSheet,
-  Dimensions,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, Pressable, StyleSheet, Dimensions, ActivityIndicator } from "react-native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -83,9 +77,9 @@ function PlaceCard({
             </View>
           </View>
           <View style={styles.labelWrap}>
-            <Text style={styles.label} numberOfLines={2}>
+            <AppText style={styles.label} numberOfLines={2}>
               {place.name}
-            </Text>
+            </AppText>
           </View>
         </LinearGradient>
       </Pressable>
@@ -113,8 +107,8 @@ export function PopularDestinations({ coords, onDestinationPress }: PopularDesti
   if (loading) {
     return (
       <View style={styles.wrap}>
-        <Text style={styles.sectionTitle}>Popular places nearby</Text>
-        <Text style={styles.sectionSubtitle}>City-based popular destinations</Text>
+        <AppText style={styles.sectionTitle}>Popular places nearby</AppText>
+        <AppText style={styles.sectionSubtitle}>City-based popular destinations</AppText>
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="small" color={GatiMitraColors.emerald} />
         </View>
@@ -126,8 +120,8 @@ export function PopularDestinations({ coords, onDestinationPress }: PopularDesti
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.sectionTitle}>Popular places nearby</Text>
-      <Text style={styles.sectionSubtitle}>City-based popular destinations</Text>
+      <AppText style={styles.sectionTitle}>Popular places nearby</AppText>
+      <AppText style={styles.sectionSubtitle}>City-based popular destinations</AppText>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}

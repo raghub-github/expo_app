@@ -1,12 +1,7 @@
 import React, { useCallback, useState } from "react";
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Image, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -35,7 +30,7 @@ export function StoreComboSection({ combos, onAddCombo, isStoreClosed }: StoreCo
   return (
     <View style={styles.section}>
       <TouchableOpacity style={styles.header} onPress={() => setExpanded((v) => !v)} activeOpacity={0.8}>
-        <Text style={styles.title}>Most ordered together</Text>
+        <AppText style={styles.title}>Most ordered together</AppText>
         <Ionicons
           name={expanded ? "chevron-up" : "chevron-down"}
           size={18}
@@ -92,18 +87,18 @@ function ComboCard({
       {combo.customerCount != null && combo.customerCount > 0 ? (
         <View style={styles.badgeRow}>
           <Ionicons name="people-outline" size={12} color={StoreTheme.textSecondary} />
-          <Text style={styles.badgeText}>
+          <AppText style={styles.badgeText}>
             {combo.source === "popular_fallback"
               ? "Popular pairing"
               : `Ordered by ${combo.customerCount}+ customers`}
-          </Text>
+          </AppText>
         </View>
       ) : null}
-      <Text style={styles.comboTitle} numberOfLines={2}>
+      <AppText style={styles.comboTitle} numberOfLines={2}>
         {title}
-      </Text>
+      </AppText>
       <View style={styles.priceAddRow}>
-        <Text style={styles.comboPrice}>₹{totalPrice}</Text>
+        <AppText style={styles.comboPrice}>₹{totalPrice}</AppText>
         <StoreMenuAddButton
           onPress={handleAdd}
           disabled={isStoreClosed}

@@ -3,17 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, Pressable, ScrollView, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -105,10 +97,10 @@ export function DeliveryPartnerInstructionSheet({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) }]}
       >
-        <Text style={styles.title}>Instruction for Delivery partner</Text>
-        <Text style={styles.addr} numberOfLines={4}>
+        <AppText style={styles.title}>Instruction for Delivery partner</AppText>
+        <AppText style={styles.addr} numberOfLines={4}>
           {addressLine}
-        </Text>
+        </AppText>
 
         <TextInput
           style={styles.noteInput}
@@ -124,18 +116,18 @@ export function DeliveryPartnerInstructionSheet({
 
         <View style={[styles.voiceRow, styles.disabledBlock]} pointerEvents="none">
           <Ionicons name="mic-outline" size={20} color="#9CA3AF" />
-          <Text style={styles.voiceHintDisabled}>Tap and hold to record instruction</Text>
-          <Text style={styles.comingSoon}>Soon</Text>
+          <AppText style={styles.voiceHintDisabled}>Tap and hold to record instruction</AppText>
+          <AppText style={styles.comingSoon}>Soon</AppText>
         </View>
 
-        <Text style={[styles.imageLabel, styles.disabledLabel]}>Door/building image (optional)</Text>
+        <AppText style={[styles.imageLabel, styles.disabledLabel]}>Door/building image (optional)</AppText>
         <View style={[styles.imageDashed, styles.disabledBlock]} pointerEvents="none">
           <Ionicons name="camera-outline" size={22} color="#9CA3AF" />
-          <Text style={styles.imageCtaDisabled}>Add an image</Text>
+          <AppText style={styles.imageCtaDisabled}>Add an image</AppText>
         </View>
-        <Text style={[styles.imageHelp, styles.disabledLabel]}>
+        <AppText style={[styles.imageHelp, styles.disabledLabel]}>
           This helps our delivery partners find your exact location faster
-        </Text>
+        </AppText>
 
         <CheckRow
           icon={<MaterialCommunityIcons name="door-open" size={22} color={GatiMitraColors.textPrimary} />}
@@ -178,7 +170,7 @@ export function DeliveryPartnerInstructionSheet({
           {saving ? (
             <ActivityIndicator color="#FFFFFF" size="small" />
           ) : (
-            <Text style={styles.saveBtnText}>{saveLabel}</Text>
+            <AppText style={styles.saveBtnText}>{saveLabel}</AppText>
           )}
         </TouchableOpacity>
       </ScrollView>
@@ -203,7 +195,7 @@ function CheckRow({
     <View style={[styles.checkLine, last && styles.checkLineLast]}>
       <View style={styles.checkLeft}>
         {icon}
-        <Text style={styles.checkLabel}>{label}</Text>
+        <AppText style={styles.checkLabel}>{label}</AppText>
       </View>
       <Pressable
         onPress={onToggle}

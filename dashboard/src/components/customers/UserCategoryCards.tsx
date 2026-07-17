@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import {
   UserPlus,
   UserMinus,
@@ -9,6 +10,7 @@ import {
   XCircle,
   Ban,
   AlertTriangle,
+  Trash2,
 } from "lucide-react";
 
 interface UserCategoryCardsProps {
@@ -19,6 +21,7 @@ interface UserCategoryCardsProps {
   inactiveUsers: number;
   suspendedUsers: number;
   fraudUsers: number;
+  deletionRequestsPending?: number;
   loading?: boolean;
 }
 
@@ -32,6 +35,7 @@ export const UserCategoryCards = React.memo(function UserCategoryCards({
   inactiveUsers,
   suspendedUsers,
   fraudUsers,
+  deletionRequestsPending = 0,
   loading = false,
 }: UserCategoryCardsProps) {
   const categories = [
@@ -98,37 +102,64 @@ export const UserCategoryCards = React.memo(function UserCategoryCards({
       bgColor: "bg-rose-50",
       textColor: "text-rose-600",
     },
-  ];
+    {
+      title: "Account Deletion Requests",
+      description: "Pending review",
+      value: deletionRequestsPending,
+      icon: Trash2,
+      color: "bg-orange-600",
+      bgColor: "bg-orange-50",
+      textColor: "text-orange-700",
+      href: "/dashboard/customers/deletion-requests",
+    },
+  ] as const;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {categories.map((category) => {
         const Icon = category.icon;
+        const href = "href" in category ? category.href : undefined;
+        const inner = (
+          <div className="flex items-start justify-between h-full">
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-gray-900 mb-1">
+                {category.title}
+              </p>
+              <p className="text-xs text-gray-600 mb-2">
+                {category.description}
+              </p>
+              <p className="text-2xl font-bold text-gray-900">
+                {loading ? (
+                  <span className="inline-block w-10 h-6 bg-gray-200 rounded animate-pulse" />
+                ) : (
+                  category.value.toLocaleString()
+                )}
+              </p>
+            </div>
+            <div className={`${category.color} p-2.5 rounded-lg`}>
+              <Icon className="h-5 w-5 text-white" />
+            </div>
+          </div>
+        );
+
+        if (href) {
+          return (
+            <Link
+              key={category.title}
+              href={href}
+              className={`${category.bgColor} rounded-lg border border-orange-200 p-5 shadow-sm hover:shadow-md hover:border-orange-300 transition-all duration-200 ${CARD_MIN_HEIGHT} block focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400`}
+            >
+              {inner}
+            </Link>
+          );
+        }
+
         return (
           <div
             key={category.title}
             className={`${category.bgColor} rounded-lg border border-gray-200 p-5 shadow-sm hover:shadow-md transition-all duration-200 ${CARD_MIN_HEIGHT}`}
           >
-            <div className="flex items-start justify-between h-full">
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-gray-900 mb-1">
-                  {category.title}
-                </p>
-                <p className="text-xs text-gray-600 mb-2">
-                  {category.description}
-                </p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {loading ? (
-                    <span className="inline-block w-10 h-6 bg-gray-200 rounded animate-pulse" />
-                  ) : (
-                    category.value.toLocaleString()
-                  )}
-                </p>
-              </div>
-              <div className={`${category.color} p-2.5 rounded-lg`}>
-                <Icon className="h-5 w-5 text-white" />
-              </div>
-            </div>
+            {inner}
           </div>
         );
       })}

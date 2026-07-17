@@ -3,15 +3,9 @@
  */
 
 import { useMemo } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-  ActivityIndicator,
-  Dimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -66,7 +60,7 @@ export default function OffersTabScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: STATUS_BAR_TO_HEADER_GAP + 8 }]}>
-        <Text style={styles.headerTitle}>Offers</Text>
+        <AppText style={styles.headerTitle}>Offers</AppText>
       </View>
 
       <ScrollView
@@ -78,8 +72,8 @@ export default function OffersTabScreen() {
         ) : offers.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="pricetag-outline" size={40} color="#D1D5DB" />
-            <Text style={styles.emptyTitle}>No offers right now</Text>
-            <Text style={styles.emptySub}>Check back soon for deals near you.</Text>
+            <AppText style={styles.emptyTitle}>No offers right now</AppText>
+            <AppText style={styles.emptySub}>Check back soon for deals near you.</AppText>
           </View>
         ) : (
           offers.map((offer) => (

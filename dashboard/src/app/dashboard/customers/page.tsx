@@ -73,8 +73,15 @@ function CustomersPageContent() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [dashboardFilters, setDashboardFilters] = useState<DashboardStatsFilters>({});
+  const [hasMounted, setHasMounted] = useState(false);
   const prevSearchParamRef = useRef<string | null>(null);
   const debouncedSearch = useDebouncedValue(search, 500);
+
+  // PersistQueryClient restores permissions from localStorage on the client only.
+  // Defer role-based UI until after mount so SSR HTML matches the first client paint.
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
 
   // Load filters from localStorage and listen for updates from header
   useEffect(() => {
@@ -127,8 +134,8 @@ function CustomersPageContent() {
     setPage(newPage);
   };
 
-  // Show loading while checking permissions
-  if (permissionsLoading) {
+  // Show loading until mounted + permissions settle (avoids hydration mismatch)
+  if (!hasMounted || permissionsLoading) {
     return (
       <div className="space-y-6 w-full max-w-full overflow-x-hidden">
         <div className="rounded-lg border border-gray-200 bg-white p-6">
@@ -194,6 +201,7 @@ function CustomersPageContent() {
               inactiveUsers={stats?.inactiveUsers || 0}
               suspendedUsers={stats?.suspendedUsers || 0}
               fraudUsers={stats?.fraudUsers || 0}
+              deletionRequestsPending={stats?.deletionRequestsPending || 0}
               loading={statsLoading}
             />
           </div>

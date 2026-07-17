@@ -2,14 +2,9 @@
  * Shop / Marketplace cart – list items, quantity controls, proceed to checkout.
  */
 
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-} from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -35,14 +30,14 @@ export default function ShopCartScreen() {
           <View style={styles.emptyIconWrap}>
             <Ionicons name="cart-outline" size={48} color={GatiMitraColors.textSecondary} />
           </View>
-          <Text style={styles.emptyTitle}>Your cart is empty</Text>
-          <Text style={styles.emptySub}>Add products from the Shop</Text>
+          <AppText style={styles.emptyTitle}>Your cart is empty</AppText>
+          <AppText style={styles.emptySub}>Add products from the Shop</AppText>
           <TouchableOpacity
             onPress={() => router.back()}
             style={styles.browseBtn}
             activeOpacity={0.85}
           >
-            <Text style={styles.browseBtnText}>Browse Shop</Text>
+            <AppText style={styles.browseBtnText}>Browse Shop</AppText>
             <Ionicons name="arrow-forward" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
@@ -76,8 +71,8 @@ export default function ShopCartScreen() {
                 );
               })()}
               <View style={styles.itemInfo}>
-                <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
-                <Text style={styles.itemPrice}>₹{item.price}</Text>
+                <AppText style={styles.itemName} numberOfLines={2}>{item.name}</AppText>
+                <AppText style={styles.itemPrice}>₹{item.price}</AppText>
                 <View style={styles.qtyWrap}>
                   <TouchableOpacity
                     onPress={() => updateQuantity(item.productId, -1)}
@@ -86,7 +81,7 @@ export default function ShopCartScreen() {
                   >
                     <Ionicons name="remove" size={18} color={GatiMitraColors.textPrimary} />
                   </TouchableOpacity>
-                  <Text style={styles.qtyText}>{item.quantity}</Text>
+                  <AppText style={styles.qtyText}>{item.quantity}</AppText>
                   <TouchableOpacity
                     onPress={() => updateQuantity(item.productId, 1)}
                     style={styles.qtyBtn}
@@ -96,23 +91,23 @@ export default function ShopCartScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
-              <Text style={styles.rowTotal}>₹{item.price * item.quantity}</Text>
+              <AppText style={styles.rowTotal}>₹{item.price * item.quantity}</AppText>
             </View>
           ))}
         </View>
         <View style={[styles.summaryCard, SHADOW]}>
           <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Subtotal</Text>
-            <Text style={styles.summaryValue}>₹{subtotal}</Text>
+            <AppText style={styles.summaryLabel}>Subtotal</AppText>
+            <AppText style={styles.summaryValue}>₹{subtotal}</AppText>
           </View>
           <View style={[styles.summaryRow, styles.totalRow]}>
-            <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalValue}>₹{subtotal}</Text>
+            <AppText style={styles.totalLabel}>Total</AppText>
+            <AppText style={styles.totalValue}>₹{subtotal}</AppText>
           </View>
         </View>
         <TouchableOpacity onPress={() => clearCart()} style={styles.clearBtn} activeOpacity={0.8}>
           <Ionicons name="trash-outline" size={18} color="#dc2626" />
-          <Text style={styles.clearBtnText}>Clear cart</Text>
+          <AppText style={styles.clearBtnText}>Clear cart</AppText>
         </TouchableOpacity>
 
         <BrandingFooter />
@@ -123,7 +118,7 @@ export default function ShopCartScreen() {
           style={styles.checkoutBtn}
           activeOpacity={0.9}
         >
-          <Text style={styles.checkoutBtnText}>Proceed to checkout</Text>
+          <AppText style={styles.checkoutBtnText}>Proceed to checkout</AppText>
           <Ionicons name="arrow-forward" size={20} color="#fff" />
         </TouchableOpacity>
       </View>

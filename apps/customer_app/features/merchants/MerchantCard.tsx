@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity } from "react-native";
+import { View, TouchableOpacity } from "react-native";
+import { AppText } from "@/components/AppText";
+
 
 type MerchantCardProps = {
   name: string;
@@ -27,31 +29,31 @@ export function MerchantCard({
     >
       <View className="flex-row justify-between items-start">
         <View className="flex-1">
-          <Text className="text-lg font-semibold text-gray-900 dark:text-white">{name}</Text>
+          <AppText className="text-lg font-semibold text-gray-900 dark:text-white">{name}</AppText>
           {cuisines?.length ? (
-            <Text className="text-gray-500 dark:text-gray-400 text-sm mt-0.5" numberOfLines={1}>
+            <AppText className="text-gray-500 dark:text-gray-400 text-sm mt-0.5" numberOfLines={1}>
               {cuisines.join(", ")}
-            </Text>
+            </AppText>
           ) : null}
           <View className="flex-row items-center mt-2 gap-3">
             {rating != null && (
               <View className="bg-primary-100 dark:bg-primary-900/30 px-2 py-0.5 rounded">
-                <Text className="text-primary-600 dark:text-primary-400 text-xs font-medium">
+                <AppText className="text-primary-600 dark:text-primary-400 text-xs font-medium">
                   ★ {rating}
-                </Text>
+                </AppText>
               </View>
             )}
             {deliveryTime ? (
-              <Text className="text-gray-500 dark:text-gray-400 text-xs">{deliveryTime}</Text>
+              <AppText className="text-gray-500 dark:text-gray-400 text-xs">{deliveryTime}</AppText>
             ) : null}
             {costForTwo != null && (
-              <Text className="text-gray-500 dark:text-gray-400 text-xs">₹{costForTwo} for two</Text>
+              <AppText className="text-gray-500 dark:text-gray-400 text-xs">₹{costForTwo} for two</AppText>
             )}
           </View>
         </View>
         {isOpen === false && (
           <View className="bg-red-100 dark:bg-red-900/30 px-2 py-1 rounded">
-            <Text className="text-red-600 dark:text-red-400 text-xs">Closed</Text>
+            <AppText className="text-red-600 dark:text-red-400 text-xs">Closed</AppText>
           </View>
         )}
       </View>

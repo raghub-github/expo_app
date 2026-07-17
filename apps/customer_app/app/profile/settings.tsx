@@ -4,16 +4,9 @@
  */
 
 import { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Switch,
-  Modal,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Switch, Modal, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -44,8 +37,8 @@ function SettingsRow({ icon, label, value, onPress, right, showChevron = true }:
         <Ionicons name={icon} size={19} color={GREEN_DARK} />
       </View>
       <View style={styles.rowTextWrap}>
-        <Text style={styles.rowLabel}>{label}</Text>
-        {value ? <Text style={styles.rowValue}>{value}</Text> : null}
+        <AppText style={styles.rowLabel}>{label}</AppText>
+        {value ? <AppText style={styles.rowValue}>{value}</AppText> : null}
       </View>
       {right !== undefined ? right : isPressable && showChevron ? (
         <Ionicons name="chevron-forward" size={17} color="#C4C4C4" />
@@ -63,7 +56,7 @@ function SettingsRow({ icon, label, value, onPress, right, showChevron = true }:
 }
 
 function SectionTitle({ title }: { title: string }) {
-  return <Text style={styles.sectionTitle}>{title}</Text>;
+  return <AppText style={styles.sectionTitle}>{title}</AppText>;
 }
 
 export default function SettingsScreen() {
@@ -131,8 +124,8 @@ export default function SettingsScreen() {
                 <Ionicons name="notifications-outline" size={19} color={GREEN_DARK} />
               </View>
               <View style={styles.rowTextWrap}>
-                <Text style={styles.rowLabel}>{t("settings.pushNotifications")}</Text>
-                <Text style={styles.rowValue}>{t("settings.pushNotificationsSub")}</Text>
+                <AppText style={styles.rowLabel}>{t("settings.pushNotifications")}</AppText>
+                <AppText style={styles.rowValue}>{t("settings.pushNotificationsSub")}</AppText>
               </View>
               <Switch
                 value={notificationsEnabled}
@@ -256,7 +249,7 @@ export default function SettingsScreen() {
           activeOpacity={0.85}
         >
           <Ionicons name="log-out-outline" size={20} color="#DC2626" />
-          <Text style={styles.logoutText}>{t("settings.signOut")}</Text>
+          <AppText style={styles.logoutText}>{t("settings.signOut")}</AppText>
         </TouchableOpacity>
       </ScrollView>
 
@@ -266,20 +259,20 @@ export default function SettingsScreen() {
             <View style={styles.modalIconWrap}>
               <Ionicons name="log-out-outline" size={32} color="#fff" />
             </View>
-            <Text style={styles.modalTitle}>{t("settings.signOutModalTitle")}</Text>
-            <Text style={styles.modalMessage}>{t("settings.signOutModalMessage")}</Text>
+            <AppText style={styles.modalTitle}>{t("settings.signOutModalTitle")}</AppText>
+            <AppText style={styles.modalMessage}>{t("settings.signOutModalMessage")}</AppText>
             <TouchableOpacity style={styles.modalOptionBtn} onPress={handleSignOutThisDevice} activeOpacity={0.85}>
               <Ionicons name="phone-portrait-outline" size={20} color={GREEN_DARK} />
-              <Text style={styles.modalOptionText}>{t("settings.thisDevice")}</Text>
+              <AppText style={styles.modalOptionText}>{t("settings.thisDevice")}</AppText>
               <Ionicons name="chevron-forward" size={18} color={MUTED} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.modalOptionBtn} onPress={handleSignOutAllDevices} activeOpacity={0.85}>
               <Ionicons name="phone-portrait-outline" size={20} color={GREEN_DARK} />
-              <Text style={styles.modalOptionText}>{t("settings.allDevices")}</Text>
+              <AppText style={styles.modalOptionText}>{t("settings.allDevices")}</AppText>
               <Ionicons name="chevron-forward" size={18} color={MUTED} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setLogoutModalVisible(false)} activeOpacity={0.8}>
-              <Text style={styles.modalCancelText}>{t("common.cancel")}</Text>
+              <AppText style={styles.modalCancelText}>{t("common.cancel")}</AppText>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

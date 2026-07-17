@@ -1,17 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import {
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  Platform,
-  ScrollView,
-  Share,
-  StatusBar as RNStatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { NativeScrollEvent, NativeSyntheticEvent, Platform, ScrollView, Share, StatusBar as RNStatusBar, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -48,6 +38,7 @@ import {
 } from "@/lib/mealsUnderPriceShare";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import {
   fetchUserAppCategoriesWithCache,
@@ -63,6 +54,7 @@ import {
   type FoodItemUnderPrice,
   type StoreFoodItemsUnderPrice,
 } from "@/services/foodHomeItemsUnderPrice.service";
+import { addressService } from "@/services/address.service";
 import { type UserAppCategoryItem } from "@/services/userAppCategory.service";
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
@@ -70,8 +62,11 @@ import { useCartStore } from "@/store/cartStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { tryOpenFoodCheckoutSheet } from "@/lib/cartCheckoutGate";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
+import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
+import { MealsUnderPriceLoadingSkeleton } from "@/components/meals-under-price/MealsUnderPriceLoadingSkeleton";
 
 const STORE_TYPE = "FOOD";
 const PAD = 16;
@@ -94,10 +89,6 @@ function parseDeliveryMinutes(deliveryTime: string | null | undefined): number {
 
 const MEALS_CARDS_PER_STORE = 8;
 const MEALS_ITEMS_FETCH_PER_STORE = 8;
-
-function foodItemHasPhoto(item: FoodItemUnderPrice): boolean {
-  return !!item.imageUrl?.trim();
-}
 
 function resolveMenuItemForCart(
   item: FoodItemUnderPrice,
@@ -124,20 +115,42 @@ export default function MealsUnderPriceScreen() {
   const queryClient = useQueryClient();
   const address = useLocationStore((s) => s.address);
   const coords = useLocationStore((s) => s.coords);
+  const locationSource = useLocationStore((s) => s.locationSource);
   const debouncedCoords = useDebouncedCoords(coords, 400);
+  /** Match food home: selected pin instant, GPS debounced. */
+  const listingCoords = useMemo(() => {
+    if (locationSource === "selected" && coords) return coords;
+    return debouncedCoords;
+  }, [locationSource, coords, debouncedCoords]);
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
+
+  const { data: addresses = [] } = useQuery({
+    queryKey: ["addresses"],
+    queryFn: () => addressService.getAddresses(),
+    staleTime: 60 * 1000,
+  });
+
+  const merchantsAnchorCoords = useMemo(
+    () =>
+      resolveMerchantListingCoords({
+        locationSource,
+        listingCoords,
+        addresses,
+      }),
+    [locationSource, listingCoords, addresses]
+  );
 
   const {
     gridFirstUnder250MaxPrice,
     gridFirstUnder250Title,
     gridFirstUnder250HeroImageUrl,
-  } = useFoodHomeLayout(address, debouncedCoords);
+  } = useFoodHomeLayout(address, merchantsAnchorCoords);
 
   const maxPrice = gridFirstUnder250MaxPrice || DEFAULT_GRID_FIRST_UNDER_250.maxPrice;
   const pageTitle = gridFirstUnder250Title?.trim() || DEFAULT_GRID_FIRST_UNDER_250.title;
   const layoutHints = useMemo(
-    () => extractCustomerGeoHints(address, debouncedCoords),
-    [address, debouncedCoords]
+    () => extractCustomerGeoHints(address, merchantsAnchorCoords),
+    [address, merchantsAnchorCoords]
   );
 
   const syncLayout = useMemo(
@@ -188,8 +201,16 @@ export default function MealsUnderPriceScreen() {
   useFocusEffect(
     useCallback(() => {
       applyImmersiveStatusBar();
+      // Meals-under owns in-card View cart → checkout sheet; never the global dock.
+      useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(true);
       return () => {
         useScreenChromeStore.getState().resetStatusBarBackground();
+        // Only clear suppress if checkout sheet / gate is not open (View cart flow).
+        const sheetOpen = useCheckoutSheetStore.getState().visible;
+        const gateOpen = useCartCheckoutGateStore.getState().outsideRangeVisible;
+        if (!sheetOpen && !gateOpen) {
+          useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
+        }
       };
     }, [applyImmersiveStatusBar])
   );
@@ -249,46 +270,52 @@ export default function MealsUnderPriceScreen() {
     return categoryItems.find((c) => c.id === categoryTabId)?.name?.trim() ?? null;
   }, [categoryTabId, categoryItems]);
 
-  const { data: groupedStores = [], isFetching, refetch } = useQuery({
+  const {
+    data: groupedStores = [],
+    isFetching,
+    isPending,
+    isError,
+    refetch,
+  } = useQuery({
     queryKey: [
       "meals-under-price-grouped",
-      debouncedCoords?.latitude,
-      debouncedCoords?.longitude,
+      merchantsAnchorCoords?.latitude,
+      merchantsAnchorCoords?.longitude,
       maxPrice,
       vegOnly,
     ],
     queryFn: () =>
       fetchFoodItemsUnderPriceGrouped({
-        lat: debouncedCoords!.latitude,
-        lng: debouncedCoords!.longitude,
+        lat: merchantsAnchorCoords!.latitude,
+        lng: merchantsAnchorCoords!.longitude,
         maxPrice,
         vegOnly,
         maxStores: 15,
         itemsPerStore: MEALS_ITEMS_FETCH_PER_STORE,
       }),
-    enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
+    enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     placeholderData: (prev) => prev,
-    refetchOnMount: false,
+    refetchOnMount: true,
   });
 
   const { data: merchantsData } = useQuery({
     queryKey: [
       "merchants-meals-under-price",
-      debouncedCoords?.latitude,
-      debouncedCoords?.longitude,
+      merchantsAnchorCoords?.latitude,
+      merchantsAnchorCoords?.longitude,
       vegOnly,
     ],
     queryFn: () =>
       merchantService.getMerchants({
         limit: 40,
-        lat: debouncedCoords!.latitude,
-        lng: debouncedCoords!.longitude,
+        lat: merchantsAnchorCoords!.latitude,
+        lng: merchantsAnchorCoords!.longitude,
         vegOnly,
         distanceMode: "road",
       }),
-    enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
+    enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
     staleTime: 60_000,
   });
 
@@ -366,12 +393,13 @@ export default function MealsUnderPriceScreen() {
     return synced
       .map((store) => ({
         ...store,
-        items: store.items.filter(foodItemHasPhoto).slice(0, MEALS_CARDS_PER_STORE),
+        items: store.items.slice(0, MEALS_CARDS_PER_STORE),
       }))
       .filter((store) => store.items.length > 0);
   }, [filteredStores, menuPriceMaps]);
 
   const handleBack = useCallback(() => {
+    useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
     safeRouterBack(router, FOOD_HOME_FALLBACK);
   }, [router]);
   const handleShare = useCallback(async () => {
@@ -385,8 +413,16 @@ export default function MealsUnderPriceScreen() {
   }, [maxPrice, pageTitle]);
 
   const openCheckout = useCallback(() => {
-    useCheckoutSheetStore.getState().show();
-  }, []);
+    // Never show GlobalFloatingCart while leaving meals-under via View cart.
+    useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(true);
+    void tryOpenFoodCheckoutSheet(router, queryClient)
+      .then((ok) => {
+        if (ok) useCheckoutSheetStore.getState().show();
+      })
+      .catch(() => {
+        useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
+      });
+  }, [queryClient, router]);
 
   const addMenuItemToCart = useCallback(
     (store: StoreFoodItemsUnderPrice, menuItem: MenuItem, quantity = 1) => {
@@ -487,10 +523,12 @@ export default function MealsUnderPriceScreen() {
     [router, queryClient]
   );
 
+  const hasAnchor =
+    merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null;
+  const showListLoading =
+    hasAnchor && priceSyncedStores.length === 0 && (isPending || isFetching) && !isError;
   const showEmpty =
-    !isFetching &&
-    priceSyncedStores.length === 0 &&
-    debouncedCoords?.latitude != null;
+    hasAnchor && !isPending && !isFetching && priceSyncedStores.length === 0;
 
   const stickyTitleTop = insets.top;
   const stickyChromeHeight =
@@ -523,9 +561,9 @@ export default function MealsUnderPriceScreen() {
             >
               <Ionicons name="arrow-back" size={22} color="#0F172A" />
             </TouchableOpacity>
-            <Text style={styles.stickyTitle} numberOfLines={1}>
+            <AppText style={styles.stickyTitle} numberOfLines={1}>
               {pageTitle}
-            </Text>
+            </AppText>
             <TouchableOpacity
               style={styles.stickyIconBtn}
               onPress={() => void handleShare()}
@@ -612,14 +650,20 @@ export default function MealsUnderPriceScreen() {
           <MealsUnderPriceFilterRow {...filterRowProps} />
         </View>
 
-        {showEmpty ? (
+        {showListLoading ? (
+          <MealsUnderPriceLoadingSkeleton listOnly />
+        ) : showEmpty ? (
           <View style={styles.emptyWrap}>
-            <Text style={styles.emptyTitle}>No meals found nearby</Text>
-            <Text style={styles.emptySub}>
-              Try another category or check back when more restaurants are open.
-            </Text>
+            <AppText style={styles.emptyTitle}>
+              {isError ? "Couldn’t load meals" : "No meals found nearby"}
+            </AppText>
+            <AppText style={styles.emptySub}>
+              {isError
+                ? "Check your connection and try again."
+                : "Try another category or check back when more restaurants are open."}
+            </AppText>
             <TouchableOpacity style={styles.retryBtn} onPress={() => void refetch()}>
-              <Text style={styles.retryBtnText}>Refresh</Text>
+              <AppText style={styles.retryBtnText}>Refresh</AppText>
             </TouchableOpacity>
           </View>
         ) : (

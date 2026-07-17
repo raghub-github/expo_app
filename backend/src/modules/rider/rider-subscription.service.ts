@@ -2,7 +2,7 @@
  * GMitra Max rider subscriptions — subscription_plans / prices / benefits tables.
  */
 
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
 import {
   createRazorpayOrder,
@@ -950,6 +950,16 @@ export async function ensureRiderSubscriptionRenewalDebited(riderId: number): Pr
 }
 
 export async function processRiderSubscriptionRenewals(
+  riderIdFilter?: number
+): Promise<{
+  processed: number;
+  renewed: number;
+  failed: number;
+}> {
+  return withSqlRetry(() => processRiderSubscriptionRenewalsOnce(riderIdFilter));
+}
+
+async function processRiderSubscriptionRenewalsOnce(
   riderIdFilter?: number
 ): Promise<{
   processed: number;

@@ -25,7 +25,6 @@ import {
 } from "@/lib/foodHomeLayoutCache";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
-import { applyGridFirstImmersiveChrome } from "@/lib/gridFirstImmersiveChrome";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 import type { FoodHomeLayoutResult } from "@/services/foodHomeLayout.service";
 
@@ -103,12 +102,6 @@ export function useFoodHomeLayout(
   const layoutKey: FoodHomeLayoutKey | null = layoutReady
     ? (effectiveKey ?? DEFAULT_FOOD_HOME_LAYOUT)
     : effectiveKey;
-
-  useLayoutEffect(() => {
-    if (effectiveLayout?.layoutKey === "grid_first") {
-      applyGridFirstImmersiveChrome(true);
-    }
-  }, [effectiveLayout?.layoutKey]);
 
   useFocusEffect(
     useCallback(() => {

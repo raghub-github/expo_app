@@ -1,5 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { AppText } from "@/components/AppText";
 
 const TEXT = "#111827";
 
@@ -16,9 +17,9 @@ export function GatiCashWalletHeader({
       <TouchableOpacity onPress={onBack} style={styles.side} hitSlop={12} activeOpacity={0.7}>
         <Ionicons name="arrow-back" size={22} color={TEXT} />
       </TouchableOpacity>
-      <Text style={styles.title} numberOfLines={1}>
+      <AppText style={styles.title} numberOfLines={1}>
         GatiCash
-      </Text>
+      </AppText>
       <TouchableOpacity onPress={onSettings} style={styles.side} hitSlop={12} activeOpacity={0.7}>
         <Ionicons name="settings-outline" size={21} color={TEXT} />
       </TouchableOpacity>

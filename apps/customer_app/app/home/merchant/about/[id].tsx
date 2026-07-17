@@ -3,17 +3,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Share,
-  Linking,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Share, Linking, Alert } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -44,8 +36,8 @@ function formatLiveSinceYear(createdAt: string | null | undefined): string | nul
 function LegalRow({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.legalRow}>
-      <Text style={styles.legalLabel}>{label}</Text>
-      <Text style={styles.legalValue}>{value}</Text>
+      <AppText style={styles.legalLabel}>{label}</AppText>
+      <AppText style={styles.legalValue}>{value}</AppText>
     </View>
   );
 }
@@ -165,7 +157,7 @@ export default function MerchantAboutScreen() {
   if (!storeId) {
     return (
       <View style={styles.center}>
-        <Text style={styles.errorText}>Invalid restaurant</Text>
+        <AppText style={styles.errorText}>Invalid restaurant</AppText>
       </View>
     );
   }
@@ -181,7 +173,7 @@ export default function MerchantAboutScreen() {
   if (aboutError) {
     return (
       <View style={[styles.container, styles.center]}>
-        <Text style={styles.errorText}>Could not load restaurant info</Text>
+        <AppText style={styles.errorText}>Could not load restaurant info</AppText>
       </View>
     );
   }
@@ -212,9 +204,9 @@ export default function MerchantAboutScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
-          <Text style={styles.storeName}>{displayName}</Text>
-          {cuisineLine ? <Text style={styles.cuisineLine}>{cuisineLine}</Text> : null}
-          {fullAddress ? <Text style={styles.address}>{fullAddress}</Text> : null}
+          <AppText style={styles.storeName}>{displayName}</AppText>
+          {cuisineLine ? <AppText style={styles.cuisineLine}>{cuisineLine}</AppText> : null}
+          {fullAddress ? <AppText style={styles.address}>{fullAddress}</AppText> : null}
 
           <View style={styles.actionRow}>
             <TouchableOpacity style={styles.circleAction} onPress={handleCall} activeOpacity={0.8}>
@@ -233,18 +225,18 @@ export default function MerchantAboutScreen() {
             activeOpacity={0.8}
           >
             <Ionicons name="time-outline" size={17} color="#828282" style={styles.rowIcon} />
-            <Text style={styles.hoursText} numberOfLines={2}>
+            <AppText style={styles.hoursText} numberOfLines={2}>
               {isOpen ? (
                 <>
-                  <Text style={styles.openNow}>Open now</Text>
+                  <AppText style={styles.openNow}>Open now</AppText>
                   {closeTimeLabel ? (
-                    <Text style={styles.hoursMuted}>{` · Closes ${closeTimeLabel}`}</Text>
+                    <AppText style={styles.hoursMuted}>{` · Closes ${closeTimeLabel}`}</AppText>
                   ) : null}
                 </>
               ) : (
-                <Text style={styles.hoursMuted}>{openStatus.sub ?? openStatus.label}</Text>
+                <AppText style={styles.hoursMuted}>{openStatus.sub ?? openStatus.label}</AppText>
               )}
-            </Text>
+            </AppText>
             <Ionicons
               name={hoursExpanded ? "chevron-up" : "chevron-down"}
               size={15}
@@ -255,14 +247,14 @@ export default function MerchantAboutScreen() {
           {hoursExpanded ? (
             <View style={styles.hoursExtra}>
               {merchant?.avgPreparationTimeMinutes ? (
-                <Text style={styles.hoursExtraText}>
+                <AppText style={styles.hoursExtraText}>
                   Avg preparation: {merchant.avgPreparationTimeMinutes} mins
-                </Text>
+                </AppText>
               ) : null}
               {!isOpen && nextOpenAt ? (
-                <Text style={styles.hoursExtraText}>
+                <AppText style={styles.hoursExtraText}>
                   {formatNextOpenTime(toTimestamp(nextOpenAt)!)}
-                </Text>
+                </AppText>
               ) : null}
             </View>
           ) : null}
@@ -272,12 +264,12 @@ export default function MerchantAboutScreen() {
           <View style={styles.infoRow}>
             <Ionicons name="bicycle-outline" size={17} color="#828282" style={styles.rowIcon} />
             <View style={styles.infoTextCol}>
-              <Text style={styles.infoBold}>This is a delivery-only kitchen</Text>
-              <Text style={styles.infoSub}>
+              <AppText style={styles.infoBold}>This is a delivery-only kitchen</AppText>
+              <AppText style={styles.infoSub}>
                 {isCloudKitchen
                   ? "There are multiple brands delivering from this kitchen"
                   : "Orders are prepared fresh for doorstep delivery"}
-              </Text>
+              </AppText>
             </View>
             <Ionicons name="chevron-forward" size={15} color="#828282" />
           </View>
@@ -287,17 +279,17 @@ export default function MerchantAboutScreen() {
               <View style={styles.cardDivider} />
               <View style={styles.infoRow}>
                 <Ionicons name="phone-portrait-outline" size={17} color="#828282" style={styles.rowIcon} />
-                <Text style={styles.infoRowText}>{liveSince}</Text>
+                <AppText style={styles.infoRowText}>{liveSince}</AppText>
               </View>
             </>
           ) : null}
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.experienceTitle}>Had a bad experience here?</Text>
+          <AppText style={styles.experienceTitle}>Had a bad experience here?</AppText>
           <TouchableOpacity style={styles.infoRow} activeOpacity={0.8} onPress={() => router.back()}>
             <Ionicons name="eye-off-outline" size={17} color="#828282" style={styles.rowIcon} />
-            <Text style={styles.infoRowText}>Hide this restaurant</Text>
+            <AppText style={styles.infoRowText}>Hide this restaurant</AppText>
             <Ionicons name="chevron-forward" size={15} color="#828282" />
           </TouchableOpacity>
         </View>
@@ -312,16 +304,16 @@ export default function MerchantAboutScreen() {
           {about.fssai_number ? (
             <LegalRow label="FSSAI Lic No" value={about.fssai_number} />
           ) : null}
-          <Text style={styles.termsLine}>
+          <AppText style={styles.termsLine}>
             Please review the terms of service for GatiMitra{" "}
-            <Text style={styles.legalLink}>here</Text>
-          </Text>
+            <AppText style={styles.legalLink}>here</AppText>
+          </AppText>
         </View>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <TouchableOpacity style={styles.backMenuBtn} onPress={() => router.back()} activeOpacity={0.92}>
-          <Text style={styles.backMenuText}>Go back to menu</Text>
+          <AppText style={styles.backMenuText}>Go back to menu</AppText>
         </TouchableOpacity>
       </View>
     </View>

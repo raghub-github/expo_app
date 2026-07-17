@@ -22,6 +22,11 @@
       "backgroundColor": "#5eead4",
       "barStyle": "light-content"
     },
+    "androidNavigationBar": {
+      "backgroundColor": "#5eead4",
+      "barStyle": "light-content",
+      "visible": "sticky-immersive"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gatimitra.customer",

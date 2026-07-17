@@ -3,16 +3,9 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  NativeSyntheticEvent,
-  NativeScrollEvent,
-  Dimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, NativeSyntheticEvent, NativeScrollEvent, Dimensions } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -111,15 +104,15 @@ function PromoSlideCard({
         pointerEvents="none"
       />
       <View style={promoStyles.textCol}>
-        <Text style={promoStyles.title} numberOfLines={2}>
+        <AppText style={promoStyles.title} numberOfLines={2}>
           {slide.title}
-          <Text style={promoStyles.titleAccent}>{slide.titleAccent}</Text>
-        </Text>
-        <Text style={promoStyles.sub} numberOfLines={2}>
+          <AppText style={promoStyles.titleAccent}>{slide.titleAccent}</AppText>
+        </AppText>
+        <AppText style={promoStyles.sub} numberOfLines={2}>
           {slide.sub}
-        </Text>
+        </AppText>
         <View style={promoStyles.ctaBtn}>
-          <Text style={promoStyles.ctaText}>Book Now</Text>
+          <AppText style={promoStyles.ctaText}>Book Now</AppText>
         </View>
       </View>
     </>
@@ -333,10 +326,10 @@ export function RideSafetyBanner() {
         </View>
 
         <View style={safetyStyles.textCol}>
-          <Text style={safetyStyles.title}>Your Safety. Our Priority.</Text>
-          <Text style={safetyStyles.sub}>
+          <AppText style={safetyStyles.title}>Your Safety. Our Priority.</AppText>
+          <AppText style={safetyStyles.sub}>
             All rides are insured. Share trip details with your loved ones.
-          </Text>
+          </AppText>
         </View>
 
         <View style={safetyStyles.rightArt}>

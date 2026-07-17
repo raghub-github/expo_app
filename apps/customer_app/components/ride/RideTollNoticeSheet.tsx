@@ -1,11 +1,6 @@
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  TouchableOpacity,
-  StyleSheet,
-} from "react-native";
+import { View, Modal, Pressable, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { RIDE_TOLL_NOTICE_DETAIL, RIDE_TOLL_NOTICE_DISPLAY } from "@/lib/ride-toll-notice";
@@ -24,12 +19,12 @@ export function RideTollNoticeSheet({ visible, onClose }: Props) {
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 20 }]}>
         <View style={styles.handle} />
         <View style={styles.iconWrap}>
-          <Text style={styles.iconEmoji}>🛣️</Text>
+          <AppText style={styles.iconEmoji}>🛣️</AppText>
         </View>
-        <Text style={styles.title}>Toll charges</Text>
-        <Text style={styles.body}>{RIDE_TOLL_NOTICE_DETAIL}</Text>
+        <AppText style={styles.title}>Toll charges</AppText>
+        <AppText style={styles.body}>{RIDE_TOLL_NOTICE_DETAIL}</AppText>
         <TouchableOpacity style={styles.closeBtn} onPress={onClose} activeOpacity={0.9}>
-          <Text style={styles.closeBtnText}>Got it</Text>
+          <AppText style={styles.closeBtnText}>Got it</AppText>
         </TouchableOpacity>
       </View>
     </Modal>
@@ -43,9 +38,9 @@ type RideTollNoticeBannerProps = {
 export function RideTollNoticeBanner({ onPress }: RideTollNoticeBannerProps) {
   return (
     <TouchableOpacity style={styles.banner} onPress={onPress} activeOpacity={0.88}>
-      <Text style={styles.bannerText} numberOfLines={2}>
+      <AppText style={styles.bannerText} numberOfLines={2}>
         {RIDE_TOLL_NOTICE_DISPLAY}
-      </Text>
+      </AppText>
       <Ionicons name="chevron-forward" size={18} color="#1C1917" />
     </TouchableOpacity>
   );

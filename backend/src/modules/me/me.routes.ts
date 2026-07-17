@@ -678,18 +678,12 @@ export async function meRoutes(app: FastifyInstance) {
    *
    * The customer raises a request from the app with a reason. We:
    *   1. Record a review row in `account_deletion_requests` (the ops queue).
-   *   2. Deactivate the account: accountStatus = DEACTIVATED, set deletedAt +
-   *      deletionReason, bump sessionsInvalidBefore so every JWT is invalidated.
-   *   3. RETAIN all identity data — name, email, registered mobile number, KYC
-   *      documents, addresses — because Indian law (PMLA / GST / IT Act) requires
-   *      it and the request is reviewed. Nothing is anonymised here.
-   *
-   * A deactivated account cannot be revived (the auth/login path refuses it).
-   * Transaction records (orders / wallet / invoices) are always retained.
+   *   2. Do NOT deactivate yet — an admin completes deletion from the Customers
+   *      dashboard, which sets DEACTIVATED + sessionsInvalidBefore (app logout).
+   *   3. RETAIN all identity data when closed (PMLA / GST / IT Act).
    *
    * Single canonical endpoint: POST /v1/me/account/deletion-request.
-   * DELETE /v1/me/account is kept as an alias for older app builds and runs the
-   * exact same handler. Idempotent: returns 200 even if already deactivated.
+   * DELETE /v1/me/account is kept as an alias for older app builds.
    */
   const deletionRequestSchema = {
     body: z
@@ -703,6 +697,7 @@ export async function meRoutes(app: FastifyInstance) {
       200: z.object({ ok: z.literal(true), status: z.string() }),
       401: z.object({ error: z.string(), message: z.string() }),
       403: z.object({ error: z.string(), message: z.string() }),
+      500: z.object({ error: z.string(), message: z.string() }),
     },
   } as const;
 
@@ -751,38 +746,53 @@ export async function meRoutes(app: FastifyInstance) {
     const alreadyDeactivated = customerRow[0]!.deletedAt != null;
     const phoneE164 = body.phoneE164 || customerRow[0]!.primaryMobile || req.auth?.phone || null;
 
-    // Record the review request (idempotent-friendly: one fresh row per submit).
+    // Queue for ops review only — do not deactivate until an admin completes deletion.
+    // Idempotent: if a pending_review row already exists, reuse it.
     try {
-      await db.insert(accountDeletionRequests).values({
-        customerId,
-        phoneE164: phoneE164 ?? undefined,
-        reasonCode,
-        reasonText: reasonText ?? undefined,
-        status: "pending_review",
-        source,
-        requestedAt: now,
-      });
+      const existing = await db
+        .select({ id: accountDeletionRequests.id })
+        .from(accountDeletionRequests)
+        .where(
+          and(
+            eq(accountDeletionRequests.customerId, customerId),
+            eq(accountDeletionRequests.status, "pending_review"),
+          ),
+        )
+        .limit(1);
+
+      if (existing.length === 0) {
+        await db.insert(accountDeletionRequests).values({
+          customerId,
+          phoneE164: phoneE164 ?? undefined,
+          reasonCode,
+          reasonText: reasonText ?? undefined,
+          status: "pending_review",
+          source,
+          requestedAt: now,
+        });
+      }
     } catch (e) {
       req.log?.error?.({ err: e, customerId }, "[account-deletion] failed to record review request");
+      return reply.code(500).send({
+        error: "server_error",
+        message: "Could not record your deletion request. Please try again.",
+      });
     }
 
-    // Deactivate + RETAIN. We do not anonymise: identity, documents and the
-    // registered mobile number stay in the DB per the Account Deletion Policy.
-    await db
-      .update(customers)
-      .set({
-        accountStatus: "DEACTIVATED",
-        statusReason: "account_deletion_requested",
-        deletedAt: alreadyDeactivated ? customerRow[0]!.deletedAt : now,
-        deletionReason: reasonText ?? reasonCode,
-        sessionsInvalidBefore: now,
-        updatedAt: now,
-      })
-      .where(eq(customers.id, customerRow[0]!.id));
+    // Mark intent on the customer row without closing the account yet.
+    if (!alreadyDeactivated) {
+      await db
+        .update(customers)
+        .set({
+          statusReason: "account_deletion_requested",
+          updatedAt: now,
+        })
+        .where(eq(customers.id, customerRow[0]!.id));
+    }
 
     req.log?.info?.(
       { customerId, source, reasonCode, alreadyDeactivated },
-      "[account-deletion] request recorded; customer deactivated (data retained)",
+      "[account-deletion] request queued for admin review (account still active until completed)",
     );
 
     return { ok: true as const, status: "pending_review" };

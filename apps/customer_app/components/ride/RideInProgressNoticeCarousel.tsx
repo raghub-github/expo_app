@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Dimensions,
-  type NativeSyntheticEvent,
-  type NativeScrollEvent,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, StyleSheet, Dimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
 import { RIDE_TOLL_NOTICE_DISPLAY, shouldShowRideTollNotice } from "@/lib/ride-toll-notice";
 
 const SCREEN_W = Dimensions.get("window").width;
@@ -64,7 +58,7 @@ export function RideInProgressNoticeCarousel({ rideType }: Props) {
       >
         {RIDE_IN_PROGRESS_NOTICES.map((notice) => (
           <View key={notice} style={[styles.slide, { width: SLIDE_W }]}>
-            <Text style={styles.noticeText}>{notice}</Text>
+            <AppText style={styles.noticeText}>{notice}</AppText>
           </View>
         ))}
       </ScrollView>

@@ -34,6 +34,8 @@ export const STORAGE_KEYS = {
   MY_ORDERS_CACHE: "gm_customer_my_orders_cache_v1",
   /** FOOD browse categories for instant home/search/category paint */
   USER_APP_CATEGORIES_CACHE: "gm_customer_user_app_categories_cache_v1",
+  /** CMS static image URL map for instant ride/home asset paint */
+  APP_ASSETS_CACHE: "gm_customer_app_assets_cache_v1",
   /** Default delivery partner tip amount saved from tracking sheet */
   SAVED_DELIVERY_TIP: "gm_saved_delivery_tip_v1",
   /** Last known GatiCash balance for instant header paint */

@@ -1,4 +1,6 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { DietIndicator } from "@/components/store/DietIndicator";
@@ -69,27 +71,31 @@ function MealsUnderPriceItemCard({
   const basePrice = getBasePrice(menuItem);
   const showStrike = basePrice != null && basePrice > sellingPrice;
 
-  if (!uri) return null;
-
   return (
     <View style={[styles.itemCard, { width: cardWidth }]}>
       <TouchableOpacity activeOpacity={0.94} onPress={onPressItem}>
         <View style={[styles.imageWrap, { height: imageHeight }]}>
-          <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory-disk" />
+          {uri ? (
+            <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory-disk" />
+          ) : (
+            <View style={styles.imagePlaceholder}>
+              <Ionicons name="restaurant-outline" size={28} color="#9CA3AF" />
+            </View>
+          )}
         </View>
 
         <View style={styles.cardBody}>
           <View style={styles.nameRow}>
             <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
-            <Text style={styles.itemName} numberOfLines={2}>
+            <AppText style={styles.itemName} numberOfLines={2}>
               {item.name}
-            </Text>
+            </AppText>
           </View>
 
           <View style={styles.priceActionRow}>
             <View style={styles.priceCol}>
-              <Text style={styles.itemPrice}>{formatPrice(sellingPrice)}</Text>
-              {showStrike ? <Text style={styles.itemStrike}>{formatPrice(basePrice!)}</Text> : null}
+              <AppText style={styles.itemPrice}>{formatPrice(sellingPrice)}</AppText>
+              {showStrike ? <AppText style={styles.itemStrike}>{formatPrice(basePrice!)}</AppText> : null}
             </View>
             <TouchableOpacity
               style={styles.viewCartBtn}
@@ -99,12 +105,12 @@ function MealsUnderPriceItemCard({
                 onPressViewCart();
               }}
             >
-              <Text style={styles.viewCartBtnText}>View cart</Text>
+              <AppText style={styles.viewCartBtnText}>View cart</AppText>
               <Ionicons name="chevron-forward" size={11} color={ZOMATO_GREEN} />
             </TouchableOpacity>
           </View>
 
-          {showStrike ? <Text style={styles.offerHint}>Best offer applied</Text> : null}
+          {showStrike ? <AppText style={styles.offerHint}>Best offer applied</AppText> : null}
         </View>
       </TouchableOpacity>
     </View>
@@ -124,7 +130,7 @@ export function MealsUnderPriceStoreBlock({
 
   const reviewHint = formatReviewHint(store.totalReviews);
   const ratingLabel = formatRating(store.avgRating);
-  const visibleItems = store.items.filter((item) => !!item.imageUrl?.trim());
+  const visibleItems = store.items;
 
   if (visibleItems.length === 0) return null;
 
@@ -132,26 +138,26 @@ export function MealsUnderPriceStoreBlock({
     <View style={styles.section}>
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
-          <Text style={styles.storeName} numberOfLines={2}>
+          <AppText style={styles.storeName} numberOfLines={2}>
             {store.storeName}
-          </Text>
+          </AppText>
           <View style={styles.metaRow}>
             {store.deliveryTime ? (
               <>
                 <Ionicons name="flash" size={12} color={ZOMATO_GREEN} />
-                <Text style={[styles.metaText, styles.metaHighlight]}>{store.deliveryTime}</Text>
-                <Text style={styles.metaDot}>|</Text>
+                <AppText style={[styles.metaText, styles.metaHighlight]}>{store.deliveryTime}</AppText>
+                <AppText style={styles.metaDot}>|</AppText>
               </>
             ) : null}
-            <Text style={styles.secureDeliveryText}>Secure and Fast Delivery</Text>
+            <AppText style={styles.secureDeliveryText}>Secure and Fast Delivery</AppText>
           </View>
         </View>
         <View style={styles.ratingCol}>
           <View style={styles.ratingPill}>
-            <Text style={styles.ratingText}>{ratingLabel}</Text>
+            <AppText style={styles.ratingText}>{ratingLabel}</AppText>
             <Ionicons name="star" size={9} color="#FFFFFF" />
           </View>
-          {reviewHint ? <Text style={styles.reviewHint}>{reviewHint}</Text> : null}
+          {reviewHint ? <AppText style={styles.reviewHint}>{reviewHint}</AppText> : null}
         </View>
       </View>
 
@@ -181,7 +187,7 @@ export function MealsUnderPriceStoreBlock({
         activeOpacity={0.88}
         onPress={() => onPressViewMenu(store.storePublicId)}
       >
-        <Text style={styles.menuBtnText}>View full menu</Text>
+        <AppText style={styles.menuBtnText}>View full menu</AppText>
         <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
       </TouchableOpacity>
     </View>
@@ -285,6 +291,13 @@ const styles = StyleSheet.create({
   image: {
     width: "100%",
     height: "100%",
+  },
+  imagePlaceholder: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F3F4F6",
   },
   cardBody: {
     paddingHorizontal: 9,

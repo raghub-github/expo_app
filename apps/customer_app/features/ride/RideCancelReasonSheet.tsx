@@ -2,15 +2,9 @@
  * Cancellation reason picker while searching for a rider.
  */
 
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
+import { View, Modal, Pressable, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -50,8 +44,8 @@ export function RideCancelReasonSheet({
         </Pressable>
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <Text style={styles.title}>Why do you want to cancel?</Text>
-          <Text style={styles.subtitle}>Please provide the reason for cancellation</Text>
+          <AppText style={styles.title}>Why do you want to cancel?</AppText>
+          <AppText style={styles.subtitle}>Please provide the reason for cancellation</AppText>
 
           <DashedDivider />
 
@@ -63,7 +57,7 @@ export function RideCancelReasonSheet({
                   onPress={() => onSelectReason(reason)}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.reasonText}>{reason.label}</Text>
+                  <AppText style={styles.reasonText}>{reason.label}</AppText>
                   <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
                 </TouchableOpacity>
                 {index < RIDE_SEARCH_CANCEL_REASONS.length - 1 ? (

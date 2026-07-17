@@ -5,16 +5,9 @@
  */
 
 import React from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Image,
-  ImageSourcePropType,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, ScrollView, StyleSheet, Image, ImageSourcePropType, Platform } from "react-native";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -89,7 +82,7 @@ function CategoryChip({
           <Ionicons name="search" size={imgSize * 0.55} color={INACTIVE_GREY} />
         )}
       </View>
-      <Text
+      <AppText
         style={[
           styles.label,
           isActive && styles.labelActive,
@@ -98,7 +91,7 @@ function CategoryChip({
         numberOfLines={1}
       >
         {item.name}
-      </Text>
+      </AppText>
       {isActive && <View style={styles.underline} />}
     </AnimatedTouchable>
   );

@@ -2,16 +2,13 @@
  * All Services – 3-column ride service grid (Rapido-style, no icon boxes).
  */
 
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
+import { bundledRideServiceIcon } from "@/features/ride/rideOptionAssets";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 
@@ -53,7 +50,7 @@ function ServiceBadgeIcon({ type }: { type: ServiceBadge }) {
   if (type === "discount") {
     return (
       <View style={styles.discountBadge}>
-        <Text style={styles.discountBadgeText}>%</Text>
+        <AppText style={styles.discountBadgeText}>%</AppText>
       </View>
     );
   }
@@ -86,17 +83,18 @@ function ServiceTile({
           assetKey={service.assetKey}
           style={{ width: ICON_SIZE, height: ICON_SIZE }}
           contentFit="contain"
+          fallbackSource={bundledRideServiceIcon(service.assetKey)}
         />
         {service.badge && !disabled ? <ServiceBadgeIcon type={service.badge} /> : null}
         {disabled ? (
           <View style={styles.comingSoonBadge}>
-            <Text style={styles.comingSoonText}>Soon</Text>
+            <AppText style={styles.comingSoonText}>Soon</AppText>
           </View>
         ) : null}
       </View>
-      <Text style={[styles.tileLabel, disabled && styles.tileLabelDisabled]} numberOfLines={2}>
+      <AppText style={[styles.tileLabel, disabled && styles.tileLabelDisabled]} numberOfLines={2}>
         {service.label}
-      </Text>
+      </AppText>
     </TouchableOpacity>
   );
 }
@@ -110,7 +108,7 @@ type AllServicesGridProps = {
 export function AllServicesGrid({ onSelectService, servicesDisabled = false }: AllServicesGridProps) {
   return (
     <View style={[styles.root, servicesDisabled && styles.rootDisabled]}>
-      <Text style={styles.title}>All Services</Text>
+      <AppText style={styles.title}>All Services</AppText>
       <View style={styles.grid}>
         {ALL_SERVICES.map((service) => {
           const disabled =

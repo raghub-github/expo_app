@@ -22,8 +22,12 @@ export function matchSavedAddressIdNearCoords(
 }
 
 /**
- * Mirrors checkout `selectedAddress` resolution when `selectedAddressId` is still unset:
- * snap pin → saved (250m), else snap active location → saved (80m), else last-used / default / first.
+ * Resolves a saved delivery address for checkout / quotes.
+ *
+ * When browsing on live GPS (`current`), only snap to a saved address near the
+ * current coords — never fall back to stale active-location / default city.
+ * When the user explicitly selected a pin, snap that pin (then active pin).
+ * Only when there is no session pin at all do we fall back to last-used / default.
  */
 export function resolveCheckoutDeliveryAddress(
   addresses: Address[],
@@ -34,16 +38,22 @@ export function resolveCheckoutDeliveryAddress(
   if (addresses.length === 0) return null;
 
   let resolvedId: number | null = null;
-  if (sessionCoords && locationSource === "selected") {
+  if (sessionCoords && (locationSource === "selected" || locationSource === "current")) {
     resolvedId = matchSavedAddressIdNearCoords(
       addresses,
       sessionCoords.latitude,
       sessionCoords.longitude,
       0.25
     );
+    if (resolvedId != null) {
+      return addresses.find((a) => a.id === resolvedId) ?? null;
+    }
+    // Live GPS with no nearby saved address: do not invent a far-away default.
+    if (locationSource === "current") return null;
   }
   if (
     resolvedId == null &&
+    locationSource === "selected" &&
     activeLocation?.latitude != null &&
     activeLocation.longitude != null
   ) {
@@ -57,6 +67,7 @@ export function resolveCheckoutDeliveryAddress(
   if (resolvedId != null) {
     return addresses.find((a) => a.id === resolvedId) ?? null;
   }
+  if (locationSource === "current") return null;
   return (
     addresses.find((a) => a.isLastUsed) ??
     addresses.find((a) => a.isDefault) ??

@@ -2,7 +2,9 @@
  * Popular Restaurants Near You — horizontal list section.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { View, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -29,13 +31,13 @@ export function HomePopularRestaurants({
   return (
     <View style={styles.wrap}>
       <View style={styles.headerRow}>
-        <Text style={styles.title}>Popular Restaurants Near You</Text>
+        <AppText style={styles.title}>Popular Restaurants Near You</AppText>
         <TouchableOpacity
           style={styles.seeAllBtn}
           activeOpacity={0.8}
           onPress={() => router.push("/home" as never)}
         >
-          <Text style={styles.seeAllText}>See all</Text>
+          <AppText style={styles.seeAllText}>See all</AppText>
           <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.splashMint} />
         </TouchableOpacity>
       </View>

@@ -4,18 +4,9 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  Pressable,
-  Image,
-  ActivityIndicator,
-  ScrollView,
-  type ImageSourcePropType,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Modal, Pressable, Image, ActivityIndicator, ScrollView, type ImageSourcePropType } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -65,7 +56,7 @@ function TimerBadge({ label }: { label: string }) {
   return (
     <View style={styles.timerBadge}>
       <Ionicons name="timer-outline" size={16} color={GatiMitraColors.deepMintStart} />
-      <Text style={styles.timerBadgeText}>{label}</Text>
+      <AppText style={styles.timerBadgeText}>{label}</AppText>
     </View>
   );
 }
@@ -93,12 +84,12 @@ function TipChipRow({
           >
             {"popular" in opt && opt.popular ? (
               <View style={styles.popularBadge}>
-                <Text style={styles.popularBadgeText}>★ Most Popular</Text>
+                <AppText style={styles.popularBadgeText}>★ Most Popular</AppText>
               </View>
             ) : null}
-            <Text style={[styles.tipChipText, selected && styles.tipChipTextSelected]}>
+            <AppText style={[styles.tipChipText, selected && styles.tipChipTextSelected]}>
               {opt.label}
-            </Text>
+            </AppText>
           </TouchableOpacity>
         );
       })}
@@ -136,23 +127,23 @@ function NoTipBoostView({
           <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
         </View>
 
-        <Text style={styles.title}>Need your order faster?</Text>
-        <Text style={styles.message}>
+        <AppText style={styles.title}>Need your order faster?</AppText>
+        <AppText style={styles.message}>
           Adding a small tip can help your order get noticed by more nearby riders.
-        </Text>
+        </AppText>
 
         <View style={styles.shieldBanner}>
           <Ionicons name="shield-checkmark" size={18} color={GatiMitraColors.deepMintStart} />
-          <Text style={styles.shieldBannerText}>
+          <AppText style={styles.shieldBannerText}>
             Choose an option within{" "}
-            <Text style={styles.shieldBold}>{TIP_BOOST_DECISION_MINUTES} minutes</Text> or your
+            <AppText style={styles.shieldBold}>{TIP_BOOST_DECISION_MINUTES} minutes</AppText> or your
             order will be cancelled. After you continue, we&apos;ll search for another{" "}
-            <Text style={styles.shieldBold}>{EXTENSION_MINUTES} minutes.</Text>
-          </Text>
+            <AppText style={styles.shieldBold}>{EXTENSION_MINUTES} minutes.</AppText>
+          </AppText>
         </View>
 
         <View style={styles.tipLabelRow}>
-          <Text style={styles.tipLabel}>Add a tip to boost your order</Text>
+          <AppText style={styles.tipLabel}>Add a tip to boost your order</AppText>
           <Ionicons name="information-circle-outline" size={18} color="#9CA3AF" />
         </View>
 
@@ -160,10 +151,10 @@ function NoTipBoostView({
 
         <View style={styles.flashBanner}>
           <Ionicons name="flash" size={18} color={GatiMitraColors.deepMintStart} />
-          <Text style={styles.flashBannerText}>
+          <AppText style={styles.flashBannerText}>
             Add a tip and we&apos;ll re-notify nearby riders to help get your order accepted
             faster.
-          </Text>
+          </AppText>
         </View>
       </ScrollView>
 
@@ -176,7 +167,7 @@ function NoTipBoostView({
         {loadingAction === "add_tip" ? (
           <ActivityIndicator color="#FFFFFF" />
         ) : (
-          <Text style={styles.primaryBtnText}>Add Tip & Continue Searching</Text>
+          <AppText style={styles.primaryBtnText}>Add Tip & Continue Searching</AppText>
         )}
       </TouchableOpacity>
 
@@ -189,7 +180,7 @@ function NoTipBoostView({
         {loadingAction === "continue" ? (
           <ActivityIndicator color={GatiMitraColors.deepMintStart} />
         ) : (
-          <Text style={styles.secondaryBtnText}>Keep Searching Without Tip</Text>
+          <AppText style={styles.secondaryBtnText}>Keep Searching Without Tip</AppText>
         )}
       </TouchableOpacity>
 
@@ -199,7 +190,7 @@ function NoTipBoostView({
         activeOpacity={0.7}
         disabled={busy}
       >
-        <Text style={styles.cancelLinkText}>Cancel Order</Text>
+        <AppText style={styles.cancelLinkText}>Cancel Order</AppText>
       </TouchableOpacity>
     </>
   );
@@ -243,16 +234,16 @@ function TipAlreadyAddedView({
         <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
           <TouchableOpacity style={styles.backRow} onPress={onBackFromIncrease} disabled={busy}>
             <Ionicons name="arrow-back" size={20} color="#111827" />
-            <Text style={styles.backRowText}>Back</Text>
+            <AppText style={styles.backRowText}>Back</AppText>
           </TouchableOpacity>
 
-          <Text style={styles.title}>Increase your tip</Text>
-          <Text style={styles.message}>
+          <AppText style={styles.title}>Increase your tip</AppText>
+          <AppText style={styles.message}>
             Current tip {formatRupee(existingTipAmount)}. Add more to boost priority further.
-          </Text>
+          </AppText>
 
           <View style={styles.tipLabelRow}>
-            <Text style={styles.tipLabel}>Additional tip amount</Text>
+            <AppText style={styles.tipLabel}>Additional tip amount</AppText>
           </View>
 
           <TipChipRow selectedTip={selectedTip} onSelect={onSelectTip} disabled={busy} />
@@ -280,9 +271,9 @@ function TipAlreadyAddedView({
           {loadingAction === "add_tip" ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.primaryBtnText}>
+            <AppText style={styles.primaryBtnText}>
               Add {formatRupee(selectedTip)} & Continue Searching
-            </Text>
+            </AppText>
           )}
         </TouchableOpacity>
       </>
@@ -294,15 +285,15 @@ function TipAlreadyAddedView({
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.priorityHeaderRow}>
           <View style={styles.priorityHeaderText}>
-            <Text style={styles.priorityTitle}>Still searching for a rider</Text>
-            <Text style={styles.prioritySubtitle}>
+            <AppText style={styles.priorityTitle}>Still searching for a rider</AppText>
+            <AppText style={styles.prioritySubtitle}>
               Your {formatRupee(existingTipAmount)} tip has already been added and we&apos;re
               prioritizing your order for nearby riders.
-            </Text>
+            </AppText>
           </View>
           <View style={styles.continuingTimerBox}>
             <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
-            <Text style={styles.continuingTimerLabel}>Time left to continue</Text>
+            <AppText style={styles.continuingTimerLabel}>Time left to continue</AppText>
           </View>
         </View>
 
@@ -315,28 +306,28 @@ function TipAlreadyAddedView({
           <View style={styles.priorityActiveBadge}>
             <Ionicons name="checkmark-circle" size={16} color={GatiMitraColors.deepMintStart} />
             <View style={styles.priorityActiveTextWrap}>
-              <Text style={styles.priorityActiveTitle}>Priority Search Active</Text>
-              <Text style={styles.priorityActiveSub}>
+              <AppText style={styles.priorityActiveTitle}>Priority Search Active</AppText>
+              <AppText style={styles.priorityActiveSub}>
                 We&apos;re notifying more nearby riders.
-              </Text>
+              </AppText>
             </View>
           </View>
         </View>
 
         <View style={styles.goodNewsBanner}>
           <Ionicons name="checkmark-circle" size={18} color={GatiMitraColors.deepMintStart} />
-          <Text style={styles.goodNewsText}>
-            <Text style={styles.goodNewsBold}>Good news!</Text> Your order is already being shown
+          <AppText style={styles.goodNewsText}>
+            <AppText style={styles.goodNewsBold}>Good news!</AppText> Your order is already being shown
             with a priority boost to nearby riders.
-          </Text>
+          </AppText>
         </View>
 
         <View style={styles.flashBanner}>
           <Ionicons name="flash" size={18} color={GatiMitraColors.deepMintStart} />
-          <Text style={styles.flashBannerText}>
+          <AppText style={styles.flashBannerText}>
             Your order is getting priority and is visible to more riders. Thank you for adding a
             tip!
-          </Text>
+          </AppText>
         </View>
 
         <View style={styles.priceBreakdown}>
@@ -363,7 +354,7 @@ function TipAlreadyAddedView({
         {loadingAction === "continue" ? (
           <ActivityIndicator color="#FFFFFF" />
         ) : (
-          <Text style={styles.primaryBtnText}>Continue Searching</Text>
+          <AppText style={styles.primaryBtnText}>Continue Searching</AppText>
         )}
       </TouchableOpacity>
 
@@ -374,9 +365,9 @@ function TipAlreadyAddedView({
         disabled={busy}
       >
         <View style={styles.increaseTipRow}>
-          <Text style={styles.secondaryBtnText}>Increase Tip Further</Text>
+          <AppText style={styles.secondaryBtnText}>Increase Tip Further</AppText>
           <View style={styles.optionalPill}>
-            <Text style={styles.optionalPillText}>Optional</Text>
+            <AppText style={styles.optionalPillText}>Optional</AppText>
           </View>
         </View>
       </TouchableOpacity>
@@ -387,7 +378,7 @@ function TipAlreadyAddedView({
         activeOpacity={0.9}
         disabled={busy}
       >
-        <Text style={styles.cancelOrderBtnText}>Cancel Order</Text>
+        <AppText style={styles.cancelOrderBtnText}>Cancel Order</AppText>
       </TouchableOpacity>
     </>
   );
@@ -411,7 +402,7 @@ function PriceColumn({
   return (
     <View style={styles.priceColumn}>
       <View style={styles.priceLabelRow}>
-        <Text style={styles.priceLabel}>{label}</Text>
+        <AppText style={styles.priceLabel}>{label}</AppText>
         <Ionicons name="information-circle-outline" size={14} color="#9CA3AF" />
       </View>
       <View style={styles.priceValueRow}>
@@ -420,7 +411,7 @@ function PriceColumn({
           size={16}
           color={highlight ? GatiMitraColors.deepMintStart : "#6B7280"}
         />
-        <Text style={[styles.priceValue, bold && styles.priceValueBold]}>{formatRupee(amount)}</Text>
+        <AppText style={[styles.priceValue, bold && styles.priceValueBold]}>{formatRupee(amount)}</AppText>
         {checked ? (
           <View style={styles.tipCheckCircle}>
             <Ionicons name="checkmark" size={10} color="#FFFFFF" />

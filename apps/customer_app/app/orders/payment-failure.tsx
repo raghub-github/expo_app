@@ -5,7 +5,9 @@
  * Reassurance about auto-refund when money was debited.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -77,7 +79,7 @@ export default function PaymentFailureScreen() {
         >
           <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Payment</Text>
+        <AppText style={styles.headerTitle}>Payment</AppText>
         <View style={styles.headerSpacer} />
       </View>
 
@@ -94,26 +96,26 @@ export default function PaymentFailureScreen() {
           </View>
         </View>
 
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.body}>{message}</Text>
+        <AppText style={styles.title}>{title}</AppText>
+        <AppText style={styles.body}>{message}</AppText>
 
         <View style={styles.reassureCard}>
           <View style={styles.reassureIconWrap}>
             <Ionicons name="shield-checkmark" size={22} color={GREEN} />
           </View>
           <View style={styles.reassureBody}>
-            <Text style={styles.reassureHeading}>No worries! We've got you.</Text>
-            <Text style={styles.reassureText}>
-              If money was debited, it will be <Text style={styles.reassureBold}>auto-refunded</Text>{" "}
-              within <Text style={styles.reassureBold}>5–7 business days</Text>. No action is needed
+            <AppText style={styles.reassureHeading}>No worries! We've got you.</AppText>
+            <AppText style={styles.reassureText}>
+              If money was debited, it will be <AppText style={styles.reassureBold}>auto-refunded</AppText>{" "}
+              within <AppText style={styles.reassureBold}>5–7 business days</AppText>. No action is needed
               from your side.
-            </Text>
+            </AppText>
           </View>
         </View>
 
         <TouchableOpacity style={styles.primary} onPress={goToCheckout} activeOpacity={0.9}>
           <Ionicons name="card-outline" size={20} color="#fff" />
-          <Text style={styles.primaryText}>{primaryLabel}</Text>
+          <AppText style={styles.primaryText}>{primaryLabel}</AppText>
           <Ionicons name="chevron-forward" size={20} color="#fff" />
         </TouchableOpacity>
 
@@ -121,10 +123,10 @@ export default function PaymentFailureScreen() {
           <View style={styles.infoIconWrap}>
             <Ionicons name="information" size={16} color={PURPLE} />
           </View>
-          <Text style={styles.infoText}>
+          <AppText style={styles.infoText}>
             You'll go back to checkout — your cart and address are saved. Choose a different payment
             option like UPI, card, netbanking, or wallet.
-          </Text>
+          </AppText>
         </View>
 
         <TouchableOpacity
@@ -133,12 +135,12 @@ export default function PaymentFailureScreen() {
           activeOpacity={0.88}
         >
           <Ionicons name="receipt-outline" size={18} color={GREEN} />
-          <Text style={styles.secondaryText}>View My Orders</Text>
+          <AppText style={styles.secondaryText}>View My Orders</AppText>
         </TouchableOpacity>
 
         <View style={styles.orRow}>
           <View style={styles.orLine} />
-          <Text style={styles.orText}>or</Text>
+          <AppText style={styles.orText}>or</AppText>
           <View style={styles.orLine} />
         </View>
 
@@ -148,10 +150,10 @@ export default function PaymentFailureScreen() {
           activeOpacity={0.88}
         >
           <Ionicons name="home-outline" size={18} color={PURPLE} />
-          <Text style={styles.homeLinkText}>Back to Home</Text>
+          <AppText style={styles.homeLinkText}>Back to Home</AppText>
         </TouchableOpacity>
 
-        {code ? <Text style={styles.errorCode}>Reference: {code}</Text> : null}
+        {code ? <AppText style={styles.errorCode}>Reference: {code}</AppText> : null}
 
         <LegalFooter
           prefix="Money debited but order not placed?"

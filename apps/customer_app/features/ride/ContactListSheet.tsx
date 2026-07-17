@@ -4,18 +4,9 @@
  */
 
 import { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  Modal,
-  StyleSheet,
-  Pressable,
-  ActivityIndicator,
-  useWindowDimensions,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, FlatList, TouchableOpacity, Modal, StyleSheet, Pressable, ActivityIndicator, useWindowDimensions, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Contacts from "expo-contacts";
@@ -101,7 +92,7 @@ export function ContactListSheet({
         >
           <View style={styles.handle} />
           <View style={styles.headerRow}>
-            <Text style={styles.title}>{title}</Text>
+            <AppText style={styles.title}>{title}</AppText>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={12}>
               <Ionicons name="close" size={22} color={GatiMitraColors.textPrimary} />
             </TouchableOpacity>
@@ -112,11 +103,11 @@ export function ContactListSheet({
             </View>
           ) : error ? (
             <View style={styles.errorWrap}>
-              <Text style={styles.errorText}>{error}</Text>
+              <AppText style={styles.errorText}>{error}</AppText>
             </View>
           ) : contacts.length === 0 ? (
             <View style={styles.errorWrap}>
-              <Text style={styles.errorText}>{emptyText}</Text>
+              <AppText style={styles.errorText}>{emptyText}</AppText>
             </View>
           ) : (
             <FlatList
@@ -129,14 +120,14 @@ export function ContactListSheet({
                   activeOpacity={0.7}
                 >
                   <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>
+                    <AppText style={styles.avatarText}>
                       {(item.name[0] ?? "?").toUpperCase()}
-                    </Text>
+                    </AppText>
                   </View>
                   <View style={styles.contactInfo}>
-                    <Text style={styles.contactName}>{item.name}</Text>
+                    <AppText style={styles.contactName}>{item.name}</AppText>
                     {item.phone ? (
-                      <Text style={styles.contactPhone}>{item.phone}</Text>
+                      <AppText style={styles.contactPhone}>{item.phone}</AppText>
                     ) : null}
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />

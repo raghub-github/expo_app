@@ -246,6 +246,13 @@ export interface RiderOrderRow {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  walletCredited?: boolean;
+  walletDebited?: boolean;
+  hasLedgerEntry?: boolean;
+  earningCreditPending?: boolean;
+  paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
 }
 
 export interface RiderOrdersResponse {
@@ -392,7 +399,8 @@ export const riderApi = baseApi.injectEndpoints({
       ],
     }),
   }),
-  overrideExisting: false,
+  // Allow HMR to re-inject the same endpoints without console errors.
+  overrideExisting: true,
 });
 
 export const {

@@ -15,16 +15,9 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  ActivityIndicator,
-  StyleSheet,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, StyleSheet, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -157,8 +150,8 @@ export default function RaiseTicketScreen() {
         style={styles.container}
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 60 }}
       >
-        <Text style={styles.h1}>What's this about?</Text>
-        <Text style={styles.h2}>Tell us if your issue is about a specific order so we can pull up the details.</Text>
+        <AppText style={styles.h1}>What's this about?</AppText>
+        <AppText style={styles.h2}>Tell us if your issue is about a specific order so we can pull up the details.</AppText>
         <View style={{ marginTop: 18, gap: 12 }}>
           <TouchableOpacity
             style={styles.bigChoice}
@@ -172,8 +165,8 @@ export default function RaiseTicketScreen() {
               <Ionicons name="receipt" size={26} color="#dc2626" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.bigTitle}>About an order</Text>
-              <Text style={styles.bigSub}>Cancel, refund, damaged, delay, missing item, wrong item, rider issue…</Text>
+              <AppText style={styles.bigTitle}>About an order</AppText>
+              <AppText style={styles.bigSub}>Cancel, refund, damaged, delay, missing item, wrong item, rider issue…</AppText>
             </View>
             <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
           </TouchableOpacity>
@@ -190,8 +183,8 @@ export default function RaiseTicketScreen() {
               <Ionicons name="help-circle" size={26} color="#1d4ed8" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.bigTitle}>Not about an order</Text>
-              <Text style={styles.bigSub}>Account, payments, app issues, feedback, general help…</Text>
+              <AppText style={styles.bigTitle}>Not about an order</AppText>
+              <AppText style={styles.bigSub}>Account, payments, app issues, feedback, general help…</AppText>
             </View>
             <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
           </TouchableOpacity>
@@ -209,16 +202,16 @@ export default function RaiseTicketScreen() {
       >
         <TouchableOpacity onPress={() => setStep("context")} style={styles.backRow}>
           <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
-          <Text style={styles.backText}>Back</Text>
+          <AppText style={styles.backText}>Back</AppText>
         </TouchableOpacity>
-        <Text style={styles.h1}>Which order is this about?</Text>
-        <Text style={styles.h2}>Pick the order — the agent will see everything about it.</Text>
+        <AppText style={styles.h1}>Which order is this about?</AppText>
+        <AppText style={styles.h2}>Pick the order — the agent will see everything about it.</AppText>
 
         {loading ? (
           <ActivityIndicator color={GatiMitraColors.emerald} style={{ marginTop: 30 }} />
         ) : accumulatedOrders.length === 0 ? (
           <View style={{ marginTop: 24 }}>
-            <Text style={styles.emptyText}>You haven't placed any orders yet.</Text>
+            <AppText style={styles.emptyText}>You haven't placed any orders yet.</AppText>
             <TouchableOpacity
               onPress={() => {
                 setNoOrderMode(true);
@@ -227,7 +220,7 @@ export default function RaiseTicketScreen() {
               }}
               style={[styles.bigChoice, { marginTop: 12 }]}
             >
-              <Text style={styles.bigTitle}>Raise a general ticket instead</Text>
+              <AppText style={styles.bigTitle}>Raise a general ticket instead</AppText>
             </TouchableOpacity>
           </View>
         ) : (
@@ -248,18 +241,18 @@ export default function RaiseTicketScreen() {
                   activeOpacity={0.85}
                 >
                   <View style={styles.orderHeaderRow}>
-                    <Text style={styles.orderRef}>#{o.order_id ?? o.id}</Text>
+                    <AppText style={styles.orderRef}>#{o.order_id ?? o.id}</AppText>
                     <View style={[styles.badge, { backgroundColor: sb.bg }]}>
-                      <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+                      <AppText style={[styles.badgeText, { color: sb.color }]}>{sb.label}</AppText>
                     </View>
                   </View>
-                  <Text style={styles.orderStore} numberOfLines={1}>
+                  <AppText style={styles.orderStore} numberOfLines={1}>
                     {o.merchant_store_name ?? "Order"}
-                  </Text>
+                  </AppText>
                   <View style={styles.orderFooter}>
-                    <Text style={styles.orderWhen}>{whenPlaced(o.placed_at)}</Text>
+                    <AppText style={styles.orderWhen}>{whenPlaced(o.placed_at)}</AppText>
                     {o.grand_total != null ? (
-                      <Text style={styles.orderTotal}>₹{o.grand_total.toFixed(0)}</Text>
+                      <AppText style={styles.orderTotal}>₹{o.grand_total.toFixed(0)}</AppText>
                     ) : null}
                   </View>
                 </TouchableOpacity>
@@ -275,7 +268,7 @@ export default function RaiseTicketScreen() {
                   <ActivityIndicator color={GatiMitraColors.emerald} size="small" />
                 ) : (
                   <>
-                    <Text style={styles.loadMoreText}>Load more orders</Text>
+                    <AppText style={styles.loadMoreText}>Load more orders</AppText>
                     <Ionicons name="chevron-down" size={16} color={GatiMitraColors.emerald} />
                   </>
                 )}
@@ -294,7 +287,7 @@ export default function RaiseTicketScreen() {
               <View style={[styles.bigIcon, { backgroundColor: "#F1F5F9" }]}>
                 <Ionicons name="help-circle-outline" size={22} color={GatiMitraColors.textSecondary} />
               </View>
-              <Text style={[styles.bigTitle, { flex: 1 }]}>None of these — general help</Text>
+              <AppText style={[styles.bigTitle, { flex: 1 }]}>None of these — general help</AppText>
             </TouchableOpacity>
           </View>
         )}
@@ -314,31 +307,31 @@ export default function RaiseTicketScreen() {
           style={styles.backRow}
         >
           <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
-          <Text style={styles.backText}>Back</Text>
+          <AppText style={styles.backText}>Back</AppText>
         </TouchableOpacity>
 
         {pickedOrder ? (
           <View style={styles.contextChip}>
             <Ionicons name="receipt-outline" size={16} color="#15803d" />
-            <Text style={styles.contextChipText} numberOfLines={1}>
+            <AppText style={styles.contextChipText} numberOfLines={1}>
               Order #{pickedOrder.order_id ?? pickedOrder.id} · {statusLabel(pickedOrder.status, pickedOrder.current_status).label}
-            </Text>
+            </AppText>
           </View>
         ) : (
           <View style={styles.contextChip}>
             <Ionicons name="help-circle-outline" size={16} color="#15803d" />
-            <Text style={styles.contextChipText}>Not about a specific order</Text>
+            <AppText style={styles.contextChipText}>Not about a specific order</AppText>
           </View>
         )}
 
-        <Text style={styles.h1}>{showAllTopics ? "All help topics" : "Common concerns"}</Text>
-        <Text style={styles.h2}>
+        <AppText style={styles.h1}>{showAllTopics ? "All help topics" : "Common concerns"}</AppText>
+        <AppText style={styles.h2}>
           {showAllTopics
             ? "Browse the full list."
             : pickedOrder
               ? "These are the most likely issues for this order's stage."
               : "Pick what best matches your issue."}
-        </Text>
+        </AppText>
 
         {concernsQ.isLoading ? (
           <ActivityIndicator color={GatiMitraColors.emerald} style={{ marginTop: 30 }} />
@@ -346,7 +339,7 @@ export default function RaiseTicketScreen() {
           <View style={{ marginTop: 12 }}>
             {groupedAll.map((g) => (
               <View key={g.key} style={{ marginBottom: 18 }}>
-                <Text style={styles.sectionHead}>{g.key.replace(/_/g, " ").toUpperCase()}</Text>
+                <AppText style={styles.sectionHead}>{g.key.replace(/_/g, " ").toUpperCase()}</AppText>
                 {g.items.map((t) => (
                   <TouchableOpacity
                     key={t.ticket_title_id}
@@ -357,7 +350,7 @@ export default function RaiseTicketScreen() {
                     }}
                     style={styles.titleCard}
                   >
-                    <Text style={styles.titleCardText}>{t.title_text}</Text>
+                    <AppText style={styles.titleCardText}>{t.title_text}</AppText>
                     <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
                   </TouchableOpacity>
                 ))}
@@ -381,13 +374,13 @@ export default function RaiseTicketScreen() {
                 style={styles.titleCard}
                 activeOpacity={0.85}
               >
-                <Text style={styles.titleCardText}>{t.title_text}</Text>
+                <AppText style={styles.titleCardText}>{t.title_text}</AppText>
                 <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
               </TouchableOpacity>
             ))}
           </View>
         ) : (
-          <Text style={styles.emptyText}>No matching topics. Tap "Show all topics" below.</Text>
+          <AppText style={styles.emptyText}>No matching topics. Tap "Show all topics" below.</AppText>
         )}
 
         <TouchableOpacity
@@ -399,9 +392,9 @@ export default function RaiseTicketScreen() {
             size={18}
             color={GatiMitraColors.emerald}
           />
-          <Text style={styles.showAllText}>
+          <AppText style={styles.showAllText}>
             {showAllTopics ? "Show only relevant topics" : "Show all topics"}
-          </Text>
+          </AppText>
         </TouchableOpacity>
       </ScrollView>
     );
@@ -416,20 +409,20 @@ export default function RaiseTicketScreen() {
     >
       <TouchableOpacity onPress={() => setStep("concerns")} style={styles.backRow}>
         <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
-        <Text style={styles.backText}>Change topic</Text>
+        <AppText style={styles.backText}>Change topic</AppText>
       </TouchableOpacity>
       <View style={styles.selectedBox}>
-        <Text style={styles.selectedLabel}>You picked</Text>
-        <Text style={styles.selectedText}>{selectedTitle?.title_text}</Text>
+        <AppText style={styles.selectedLabel}>You picked</AppText>
+        <AppText style={styles.selectedText}>{selectedTitle?.title_text}</AppText>
         {pickedOrder ? (
-          <Text style={styles.selectedGroup}>For order #{pickedOrder.order_id ?? pickedOrder.id}</Text>
+          <AppText style={styles.selectedGroup}>For order #{pickedOrder.order_id ?? pickedOrder.id}</AppText>
         ) : null}
         {selectedTitle?.group_name ? (
-          <Text style={styles.selectedGroup}>Routed to: {selectedTitle.group_name}</Text>
+          <AppText style={styles.selectedGroup}>Routed to: {selectedTitle.group_name}</AppText>
         ) : null}
       </View>
 
-      <Text style={styles.fieldLabel}>Subject</Text>
+      <AppText style={styles.fieldLabel}>Subject</AppText>
       <TextInput
         value={subject}
         onChangeText={setSubject}
@@ -439,7 +432,7 @@ export default function RaiseTicketScreen() {
         maxLength={500}
       />
 
-      <Text style={styles.fieldLabel}>Describe the problem</Text>
+      <AppText style={styles.fieldLabel}>Describe the problem</AppText>
       <TextInput
         value={description}
         onChangeText={setDescription}
@@ -449,7 +442,7 @@ export default function RaiseTicketScreen() {
         multiline
         maxLength={10000}
       />
-      <Text style={styles.charCount}>{description.length}/10000</Text>
+      <AppText style={styles.charCount}>{description.length}/10000</AppText>
 
       <TouchableOpacity
         disabled={createMutation.isPending}
@@ -461,13 +454,13 @@ export default function RaiseTicketScreen() {
         ) : (
           <>
             <Ionicons name="paper-plane" size={18} color="#fff" />
-            <Text style={styles.submitText}>Raise ticket</Text>
+            <AppText style={styles.submitText}>Raise ticket</AppText>
           </>
         )}
       </TouchableOpacity>
-      <Text style={styles.note}>
+      <AppText style={styles.note}>
         An agent from the right team will be assigned automatically. You can chat and attach photos on the next screen.
-      </Text>
+      </AppText>
     </ScrollView>
   );
 }

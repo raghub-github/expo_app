@@ -3,23 +3,9 @@
  */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  TextInput,
-  Alert,
-  Modal,
-  Pressable,
-  KeyboardAvoidingView,
-  Platform,
-  BackHandler,
-  Keyboard,
-  type KeyboardEvent,
-  type ViewStyle,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, TextInput, Alert, Modal, Pressable, KeyboardAvoidingView, Platform, BackHandler, Keyboard, type KeyboardEvent, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -189,9 +175,9 @@ export default function WalletAddMoneyScreen() {
       <View style={[styles.ctaStack, containerStyle]}>
         {showThresholdWarning ? (
           <View style={styles.warningBanner}>
-            <Text style={styles.warningText}>
+            <AppText style={styles.warningText}>
               Threshold amount cannot be greater than add money amount
-            </Text>
+            </AppText>
           </View>
         ) : null}
 
@@ -201,7 +187,7 @@ export default function WalletAddMoneyScreen() {
           disabled={!canProceed}
           onPress={onAddPaymentMethod}
         >
-          <Text style={styles.ctaText}>Add Payment Method</Text>
+          <AppText style={styles.ctaText}>Add Payment Method</AppText>
           <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
@@ -233,9 +219,9 @@ export default function WalletAddMoneyScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.amountCard}>
-            <Text style={styles.enterLabel}>Enter amount</Text>
+            <AppText style={styles.enterLabel}>Enter amount</AppText>
             <View style={styles.amountRow}>
-              <Text style={styles.rupee}>₹</Text>
+              <AppText style={styles.rupee}>₹</AppText>
               <TextInput
                 style={styles.amountInput}
                 value={amountDisplay}
@@ -260,9 +246,9 @@ export default function WalletAddMoneyScreen() {
                     activeOpacity={0.85}
                     onPress={() => setAmount(preset)}
                   >
-                    <Text style={[styles.presetText, active && styles.presetTextActive]}>
+                    <AppText style={[styles.presetText, active && styles.presetTextActive]}>
                       ₹{formatAmount(preset)}
-                    </Text>
+                    </AppText>
                   </TouchableOpacity>
                 );
               })}
@@ -293,11 +279,11 @@ export default function WalletAddMoneyScreen() {
             </TouchableOpacity>
 
             <View style={styles.autoAddTextWrap}>
-              <Text style={styles.autoAddTitle}>Auto-add ₹{formatAmount(autoAddAmount)}</Text>
+              <AppText style={styles.autoAddTitle}>Auto-add ₹{formatAmount(autoAddAmount)}</AppText>
               <View style={styles.autoAddSubRow}>
-                <Text style={styles.autoAddSub}>
+                <AppText style={styles.autoAddSub}>
                   when balance goes below ₹{formatAmount(thresholdAmount)}
-                </Text>
+                </AppText>
                 <TouchableOpacity
                   onPress={openEditModal}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -311,27 +297,27 @@ export default function WalletAddMoneyScreen() {
 
           {!amountInputFocused ? (
             <>
-              <Text style={styles.sectionLabel}>ADD WITH GIFT CARD</Text>
+              <AppText style={styles.sectionLabel}>ADD WITH GIFT CARD</AppText>
               <View
                 pointerEvents="none"
                 style={styles.giftCardRowBlocked}
                 accessibilityState={{ disabled: true }}
               >
                 <Ionicons name="gift-outline" size={20} color={MUTED} />
-                <Text style={styles.giftCardLabel}>Claim a gift card</Text>
+                <AppText style={styles.giftCardLabel}>Claim a gift card</AppText>
                 <Ionicons name="chevron-forward" size={18} color="#D1D5DB" />
               </View>
-              <Text style={styles.comingSoonHint}>Coming soon</Text>
+              <AppText style={styles.comingSoonHint}>Coming soon</AppText>
 
-              <Text style={[styles.sectionLabel, { marginTop: 22 }]}>NOTE</Text>
+              <AppText style={[styles.sectionLabel, { marginTop: 22 }]}>NOTE</AppText>
               <View style={styles.noteCard}>
-                <Text style={styles.noteBullet}>• Money added has an expiry of 10 years</Text>
-                <Text style={styles.noteBullet}>
+                <AppText style={styles.noteBullet}>• Money added has an expiry of 10 years</AppText>
+                <AppText style={styles.noteBullet}>
                   • Balance cannot be transferred to a bank account as per RBI guidelines
-                </Text>
-                <Text style={styles.noteBullet}>
+                </AppText>
+                <AppText style={styles.noteBullet}>
                   • GatiCash can be used exclusively on GatiMitra.
-                </Text>
+                </AppText>
               </View>
             </>
           ) : null}
@@ -379,16 +365,16 @@ export default function WalletAddMoneyScreen() {
               style={[styles.modalSheet, { paddingBottom: insets.bottom + 20 }]}
               onPress={(e) => e.stopPropagation()}
             >
-              <Text style={styles.sheetTitle}>Add money</Text>
-              <Text style={styles.sheetSubtitle}>You can add a maximum of ₹50,000 in this month</Text>
+              <AppText style={styles.sheetTitle}>Add money</AppText>
+              <AppText style={styles.sheetSubtitle}>You can add a maximum of ₹50,000 in this month</AppText>
 
-              <Text style={styles.fieldGroupLabel}>Automatically add</Text>
+              <AppText style={styles.fieldGroupLabel}>Automatically add</AppText>
               <View style={[styles.inputField, styles.inputFieldActive]}>
                 <View style={styles.inputLabelWrap}>
-                  <Text style={styles.inputLabel}>Amount</Text>
+                  <AppText style={styles.inputLabel}>Amount</AppText>
                 </View>
                 <View style={styles.inputRow}>
-                  <Text style={styles.prefix}>₹</Text>
+                  <AppText style={styles.prefix}>₹</AppText>
                   <TextInput
                     style={styles.modalInput}
                     value={draftAutoAdd}
@@ -398,13 +384,13 @@ export default function WalletAddMoneyScreen() {
                 </View>
               </View>
 
-              <Text style={[styles.fieldGroupLabel, { marginTop: 16 }]}>when balance goes below</Text>
+              <AppText style={[styles.fieldGroupLabel, { marginTop: 16 }]}>when balance goes below</AppText>
               <View style={styles.inputField}>
                 <View style={styles.inputLabelWrap}>
-                  <Text style={styles.inputLabel}>Threshold Amount</Text>
+                  <AppText style={styles.inputLabel}>Threshold Amount</AppText>
                 </View>
                 <View style={styles.inputRow}>
-                  <Text style={styles.prefix}>₹</Text>
+                  <AppText style={styles.prefix}>₹</AppText>
                   <TextInput
                     style={styles.modalInput}
                     value={draftThreshold}
@@ -420,9 +406,9 @@ export default function WalletAddMoneyScreen() {
                 disabled={!canSaveAutoAdd}
                 onPress={saveAutoAddSettings}
               >
-                <Text style={[styles.continueText, !canSaveAutoAdd && styles.continueTextDisabled]}>
+                <AppText style={[styles.continueText, !canSaveAutoAdd && styles.continueTextDisabled]}>
                   Continue
-                </Text>
+                </AppText>
               </TouchableOpacity>
             </Pressable>
           </KeyboardAvoidingView>

@@ -13,7 +13,7 @@
  * dashboard) must use backend APIs only; do not duplicate schedule or open/close logic in the frontend.
  */
 
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry } from "../../db/client.js";
 
 const STORE_TIMEZONE_DEFAULT = "Asia/Kolkata";
 
@@ -74,27 +74,6 @@ const SCHEDULE_DUE_LOOKAHEAD_MS = 45_000;
 
 const UPDATED_BY_SYSTEM = "system";
 const UPDATED_BY_ID_SYSTEM: number | null = null;
-
-/** True when a retry may succeed (network blip, pooler cold start). */
-function isTransientPostgresConnectionError(err: unknown): boolean {
-  if (err == null || typeof err !== "object") return false;
-  const o = err as Record<string, unknown>;
-  const code = String(o.code ?? o.errno ?? "");
-  if (code === "CONNECT_TIMEOUT" || code === "ETIMEDOUT" || code === "ECONNRESET" || code === "EPIPE") {
-    return true;
-  }
-  const message = String(o.message ?? err);
-  return (
-    message.includes("CONNECT_TIMEOUT") ||
-    message.includes("ECONNRESET") ||
-    message.includes("ETIMEDOUT") ||
-    message.includes("socket hang up")
-  );
-}
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** Emit store_status_changed: log and insert into merchant_store_status_change. */
 export async function emitStoreStatusChanged(
@@ -1225,24 +1204,12 @@ async function evaluateAndPersistStoreScheduleState(
 }
 
 export async function runStoreScheduleTick(log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }): Promise<void> {
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
+  try {
+    await withSqlRetry(async () => {
       await runStoreScheduleTickOnce(log);
-      return;
-    } catch (err) {
-      const willRetry = attempt < maxAttempts && isTransientPostgresConnectionError(err);
-      if (willRetry) {
-        log.info(
-          { attempt, maxAttempts, err },
-          "store_schedule_tick_transient_db_error_retry"
-        );
-        await sleepMs(800 * attempt);
-        continue;
-      }
-      log.error({ err }, "store_schedule_tick_failed");
-      return;
-    }
+    });
+  } catch (err) {
+    log.error({ err }, "store_schedule_tick_failed");
   }
 }
 

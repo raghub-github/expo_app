@@ -2,7 +2,9 @@
  * Shown when no on-duty riders are available near the pickup location.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Pressable } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Modal, Pressable } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -41,9 +43,9 @@ export function RideServiceUnavailableSheet({
           <View style={styles.iconWrap}>
             <Ionicons name="location-outline" size={32} color="#DC2626" />
           </View>
-          <Text style={styles.message}>{message}</Text>
+          <AppText style={styles.message}>{message}</AppText>
           <TouchableOpacity style={styles.okayBtn} onPress={onOkay} activeOpacity={0.9}>
-            <Text style={styles.okayBtnText}>Okay</Text>
+            <AppText style={styles.okayBtnText}>Okay</AppText>
           </TouchableOpacity>
         </View>
       </View>

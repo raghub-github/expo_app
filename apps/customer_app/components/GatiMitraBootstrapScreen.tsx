@@ -4,16 +4,12 @@
  */
 
 import { useEffect, useRef, useCallback } from "react";
-import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { ActivityIndicator, StyleSheet, useWindowDimensions, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import * as SplashScreen from "expo-splash-screen";
+import * as NavigationBar from "expo-navigation-bar";
 import * as SystemUI from "expo-system-ui";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
@@ -41,12 +37,14 @@ export type GatiMitraBootstrapScreenProps = {
   /** When true (root only), door panels slide apart then `onExitComplete` runs. */
   appReady?: boolean;
   onExitComplete?: () => void;
+  statusMessage?: string | null;
 };
 
 export function GatiMitraBootstrapScreen({
   variant = "index",
   appReady = false,
   onExitComplete,
+  statusMessage = null,
 }: GatiMitraBootstrapScreenProps) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -64,15 +62,15 @@ export function GatiMitraBootstrapScreen({
   }, []);
 
   useEffect(() => {
-    void SplashScreen.hideAsync().catch(() => {});
-  }, []);
-
-  useEffect(() => {
     const chrome = useScreenChromeStore.getState();
     chrome.setBootstrapActive(true);
     chrome.setStatusBarBackground(SPLASH_STATUS_BAR, "light");
     chrome.setImmersiveStatusBarChrome(true);
     void SystemUI.setBackgroundColorAsync(SPLASH_STATUS_BAR);
+    void NavigationBar.setVisibilityAsync("visible").catch(() => {});
+    void NavigationBar.setPositionAsync("relative").catch(() => {});
+    void NavigationBar.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
+    void NavigationBar.setButtonStyleAsync("light").catch(() => {});
     return () => {
       const reset = useScreenChromeStore.getState();
       reset.setBootstrapActive(false);
@@ -117,7 +115,7 @@ export function GatiMitraBootstrapScreen({
 
   return (
     <View style={rootStyle} accessibilityLabel="GatiMitra loading">
-      <StatusBar style="light" backgroundColor={SPLASH_STATUS_BAR} translucent />
+      <StatusBar hidden style="light" backgroundColor={SPLASH_STATUS_BAR} translucent />
       <LinearGradient
         colors={[GRADIENT_TOP, GatiMitraColors.splashMint, GRADIENT_BOTTOM]}
         locations={[0, 0.45, 1]}
@@ -148,9 +146,9 @@ export function GatiMitraBootstrapScreen({
         </>
       ) : null}
       <View style={styles.logoLayer} pointerEvents="none">
-        <Text style={styles.title}>GatiMitra</Text>
+        <AppText style={styles.title}>GatiMitra</AppText>
         <View style={styles.divider} />
-        <Text style={styles.subtitle}>CRAFTED FOR CONVENIENCE</Text>
+        <AppText style={styles.subtitle}>CRAFTED FOR CONVENIENCE</AppText>
         <ActivityIndicator
           style={{
             position: "absolute",
@@ -161,6 +159,17 @@ export function GatiMitraBootstrapScreen({
           color="rgba(255,255,255,0.9)"
         />
       </View>
+      {statusMessage ? (
+        <View
+          pointerEvents="none"
+          style={[styles.statusDock, { bottom: Math.max(insets.bottom, 12) + 18 }]}
+        >
+          <View style={styles.statusRow}>
+            <AppText style={styles.statusTitle}>{statusMessage}</AppText>
+            <AppText style={styles.statusSubtitle}>Please wait...</AppText>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -194,6 +203,34 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 28,
+  },
+  statusDock: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    zIndex: 5,
+  },
+  statusRow: {
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: "rgba(13, 148, 136, 0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  statusTitle: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+    letterSpacing: 0.2,
+  },
+  statusSubtitle: {
+    color: "rgba(255,255,255,0.86)",
+    fontSize: 12,
+    fontWeight: "500",
+    textAlign: "center",
+    marginTop: 4,
   },
   title: {
     fontSize: 40,

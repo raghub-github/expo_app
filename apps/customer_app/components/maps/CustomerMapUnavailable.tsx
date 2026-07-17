@@ -1,4 +1,6 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 
 type Props = {
@@ -13,7 +15,7 @@ export function CustomerMapUnavailable({
   return (
     <View style={[styles.root, style]}>
       <Ionicons name="map-outline" size={32} color="#9CA3AF" />
-      <Text style={styles.text}>{message}</Text>
+      <AppText style={styles.text}>{message}</AppText>
     </View>
   );
 }

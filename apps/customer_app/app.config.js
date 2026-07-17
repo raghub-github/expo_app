@@ -29,6 +29,13 @@ module.exports = {
         ...(appJson.expo.ios?.infoPlist || {}),
         UIFileSharingEnabled: true,
         LSSupportsOpeningDocumentsInPlace: true,
+        LSApplicationQueriesSchemes: [
+          ...new Set([
+            ...((appJson.expo.ios?.infoPlist?.LSApplicationQueriesSchemes ||
+              []) as string[]),
+            "itms-apps",
+          ]),
+        ],
       },
     },
     android: {
@@ -66,7 +73,7 @@ module.exports = {
       [
         "expo-navigation-bar",
         {
-          backgroundColor: "#121212",
+          backgroundColor: "#5eead4",
           barStyle: "light",
           visibility: "visible",
           position: "relative",

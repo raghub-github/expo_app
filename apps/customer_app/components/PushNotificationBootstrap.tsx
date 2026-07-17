@@ -4,16 +4,9 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import {
-  AppState,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type AppStateStatus,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { AppState, Modal, Platform, Pressable, StyleSheet, View, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Localization from "expo-localization";
@@ -216,10 +209,10 @@ function PushNotificationBootstrapInner() {
         <Pressable style={styles.backdrop} onPress={() => setRichModal(null)}>
           <Pressable style={styles.card} onPress={() => {}}>
             <Image source={{ uri: richModal.imageUrl }} style={styles.image} contentFit="cover" />
-            {richModal.title ? <Text style={styles.title}>{richModal.title}</Text> : null}
-            {richModal.body ? <Text style={styles.body}>{richModal.body}</Text> : null}
+            {richModal.title ? <AppText style={styles.title}>{richModal.title}</AppText> : null}
+            {richModal.body ? <AppText style={styles.body}>{richModal.body}</AppText> : null}
             <Pressable style={styles.closeBtn} onPress={() => setRichModal(null)}>
-              <Text style={styles.closeText}>Close</Text>
+              <AppText style={styles.closeText}>Close</AppText>
             </Pressable>
           </Pressable>
         </Pressable>

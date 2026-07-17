@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 
 const TEXT = "#111827";
@@ -16,9 +18,9 @@ export function WalletSubpageHeader({ title, onBack, backgroundColor = "#F5F5F7"
       <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12} activeOpacity={0.7}>
         <Ionicons name="arrow-back" size={22} color={TEXT} />
       </TouchableOpacity>
-      <Text style={styles.title} numberOfLines={1}>
+      <AppText style={styles.title} numberOfLines={1}>
         {title}
-      </Text>
+      </AppText>
     </View>
   );
 }

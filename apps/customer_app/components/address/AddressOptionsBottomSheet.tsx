@@ -1,12 +1,6 @@
-import {
-  Modal,
-  View,
-  Text,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  Platform,
-} from "react-native";
+import { Modal, View, TouchableOpacity, Pressable, StyleSheet, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -36,16 +30,16 @@ export function AddressOptionsBottomSheet({ visible, onClose, onEdit, onDelete }
             <Ionicons name="close" size={20} color="#FFFFFF" />
           </TouchableOpacity>
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
-            <Text style={styles.title}>Address options</Text>
+            <AppText style={styles.title}>Address options</AppText>
             <TouchableOpacity style={styles.optionRow} onPress={onEdit} activeOpacity={0.85}>
               <BiPencilSquareIcon size={22} color={BRAND} />
-              <Text style={styles.optionText}>Edit Address</Text>
+              <AppText style={styles.optionText}>Edit Address</AppText>
               <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
             </TouchableOpacity>
             <View style={styles.divider} />
             <TouchableOpacity style={styles.optionRow} onPress={onDelete} activeOpacity={0.85}>
               <Ionicons name="trash-outline" size={22} color={BRAND} />
-              <Text style={styles.optionText}>Delete Address</Text>
+              <AppText style={styles.optionText}>Delete Address</AppText>
               <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
             </TouchableOpacity>
           </View>

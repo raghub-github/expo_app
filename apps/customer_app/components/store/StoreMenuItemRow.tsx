@@ -1,12 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-  Platform,
-  Vibration,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Pressable, StyleSheet, Platform, Vibration } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
@@ -126,25 +121,25 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               <DietIndicator type={diet} />
               {spicy ? (
                 <View style={styles.spicyBadge} accessibilityLabel="Spicy">
-                  <Text style={styles.spicyEmoji}>🌶</Text>
+                  <AppText style={styles.spicyEmoji}>🌶</AppText>
                 </View>
               ) : null}
             </View>
-            <Text style={styles.name} numberOfLines={2}>
+            <AppText style={styles.name} numberOfLines={2}>
               {item.name}
-            </Text>
+            </AppText>
           </View>
 
           {itemOffer?.kind === "bogo" ? (
             <View style={styles.offerBadgeSlot}>
               <View style={styles.bogoBadge}>
-                <Text style={styles.bogoBadgeText}>{itemOffer.label}</Text>
+                <AppText style={styles.bogoBadgeText}>{itemOffer.label}</AppText>
               </View>
             </View>
           ) : itemOffer ? (
             <View style={styles.offerBadgeSlot}>
               <View style={styles.boostBadge}>
-                <Text style={styles.boostBadgeText}>{itemOffer.label}</Text>
+                <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
               </View>
             </View>
           ) : null}
@@ -154,34 +149,34 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               <View style={styles.reorderBarTrack}>
                 <View style={styles.reorderBarFill} />
               </View>
-              <Text style={styles.reorderText}>Highly reordered</Text>
+              <AppText style={styles.reorderText}>Highly reordered</AppText>
             </View>
           ) : null}
 
           <View style={styles.priceBlock}>
             {showDiscount ? (
               <View style={styles.priceOfferRow}>
-                <Text style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</Text>
-                <Text style={styles.discountPrice}>
+                <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</AppText>
+                <AppText style={styles.discountPrice}>
                   {showOfferPrice ? `Get for ${formatOfferRupee(payableAmount)}` : formatOfferRupee(payableAmount)}
-                </Text>
+                </AppText>
               </View>
             ) : (
-              <Text style={styles.basePrice}>{formatOfferRupee(sellingPrice)}</Text>
+              <AppText style={styles.basePrice}>{formatOfferRupee(sellingPrice)}</AppText>
             )}
           </View>
 
           {item.description ? (
-            <Text style={styles.desc} numberOfLines={2}>
+            <AppText style={styles.desc} numberOfLines={2}>
               {item.description}
               {item.description.length > 80 ? (
-                <Text style={styles.moreLink}> ...more</Text>
+                <AppText style={styles.moreLink}> ...more</AppText>
               ) : null}
-            </Text>
+            </AppText>
           ) : null}
 
           {showCouponIneligibleNote ? (
-            <Text style={styles.couponNote}>NOT ELIGIBLE FOR COUPONS</Text>
+            <AppText style={styles.couponNote}>NOT ELIGIBLE FOR COUPONS</AppText>
           ) : null}
         </View>
 
@@ -208,7 +203,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
             {isCustomisable ? (
               <View style={styles.customisableOnImage} pointerEvents="none">
-                <Text style={styles.customisableOnImageText}>customisable</Text>
+                <AppText style={styles.customisableOnImageText}>customisable</AppText>
               </View>
             ) : null}
           </View>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { WebGeolocationPermission } from '@/lib/webLocationPermission'
 
 const DISMISS_STORAGE_KEY = 'gatimitra_location_prompt_dismissed_v1'
 
@@ -21,8 +22,9 @@ function writeDismissed() {
 }
 
 /**
- * Auto-open a location welcome modal once per browser tab session when no address is committed.
- * Dismiss (X) is remembered across reloads in the same tab (sessionStorage).
+ * Auto-open location welcome modal when permission is still undetermined
+ * and no address is committed. Skips when GPS is already granted (auto-fetch)
+ * or denied (enable-location modal handles that).
  */
 export function useLocationPromptAutoOpen(args: {
   enabled: boolean
@@ -30,9 +32,14 @@ export function useLocationPromptAutoOpen(args: {
   locationCommitted: boolean
   promptOpen: boolean
   openPrompt: () => void
+  /** When granted, LocationProvider auto-fetches — do not open welcome. */
+  permissionStatus?: WebGeolocationPermission
+  locationLoading?: boolean
 }) {
   const [dismissed, setDismissed] = useState(false)
   const selectedRef = useRef(false)
+  const permissionStatus = args.permissionStatus ?? 'undetermined'
+  const locationLoading = args.locationLoading === true
 
   useEffect(() => {
     if (readDismissed()) setDismissed(true)
@@ -40,6 +47,8 @@ export function useLocationPromptAutoOpen(args: {
 
   useEffect(() => {
     if (!args.enabled || !args.hydrated) return
+    if (permissionStatus === 'granted' || permissionStatus === 'denied') return
+    if (locationLoading) return
     if (args.locationCommitted || dismissed || args.promptOpen) return
     if (readDismissed()) {
       setDismissed(true)
@@ -53,6 +62,8 @@ export function useLocationPromptAutoOpen(args: {
     dismissed,
     args.promptOpen,
     args.openPrompt,
+    permissionStatus,
+    locationLoading,
   ])
 
   const markSelected = useCallback(() => {

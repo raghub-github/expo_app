@@ -1,4 +1,6 @@
-import { TouchableOpacity, Text, ActivityIndicator } from "react-native";
+import { TouchableOpacity, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { cn } from "@/utils/cn";
 
 type ButtonProps = {
@@ -37,7 +39,7 @@ export function Button({
       {loading ? (
         <ActivityIndicator color={variant === "primary" || variant === "outline" ? "#14b8a6" : "#6b7280"} />
       ) : (
-        <Text
+        <AppText
           className={cn(
             "font-semibold text-base",
             variant === "primary" && "text-white",
@@ -47,7 +49,7 @@ export function Button({
           )}
         >
           {children}
-        </Text>
+        </AppText>
       )}
     </TouchableOpacity>
   );

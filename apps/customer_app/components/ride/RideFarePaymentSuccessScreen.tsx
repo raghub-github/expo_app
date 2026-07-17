@@ -3,13 +3,9 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -68,9 +64,9 @@ export function RideFarePaymentSuccessScreen() {
   if (!orderId) {
     return (
       <View style={[styles.center, { paddingBottom: insets.bottom }]}>
-        <Text style={styles.errText}>Invalid ride order</Text>
+        <AppText style={styles.errText}>Invalid ride order</AppText>
         <TouchableOpacity onPress={goHome} style={styles.primaryBtn}>
-          <Text style={styles.primaryBtnText}>Back to Home</Text>
+          <AppText style={styles.primaryBtnText}>Back to Home</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -91,10 +87,10 @@ export function RideFarePaymentSuccessScreen() {
           <View style={styles.checkCircle}>
             <Ionicons name="checkmark" size={46} color="#fff" />
           </View>
-          <Text style={styles.title}>Payment completed!</Text>
-          <Text style={styles.subtitle}>
+          <AppText style={styles.title}>Payment completed!</AppText>
+          <AppText style={styles.subtitle}>
             Your ride fare has been paid successfully. Your captain will receive the earnings shortly.
-          </Text>
+          </AppText>
         </Animated.View>
 
         <Animated.View entering={FadeIn.duration(300).delay(120)} style={styles.card}>
@@ -103,42 +99,42 @@ export function RideFarePaymentSuccessScreen() {
               <View style={styles.infoIconWrap}>
                 <Ionicons name="receipt-outline" size={18} color={GREEN} />
               </View>
-              <Text style={styles.infoLabel}>Ride ID</Text>
+              <AppText style={styles.infoLabel}>Ride ID</AppText>
             </View>
-            <Text style={[styles.infoValue, { color: GREEN }]} numberOfLines={1}>
+            <AppText style={[styles.infoValue, { color: GREEN }]} numberOfLines={1}>
               #{formattedOrderId}
-            </Text>
+            </AppText>
           </View>
           <View style={[styles.infoRow, styles.infoRowLast]}>
             <View style={styles.infoLeft}>
               <View style={styles.infoIconWrap}>
                 <Ionicons name="wallet-outline" size={18} color={GREEN} />
               </View>
-              <Text style={styles.infoLabel}>Amount paid</Text>
+              <AppText style={styles.infoLabel}>Amount paid</AppText>
             </View>
-            <Text style={[styles.infoValue, styles.amountValue]}>
+            <AppText style={[styles.infoValue, styles.amountValue]}>
               {formatRideFare(amountPaid)}
-            </Text>
+            </AppText>
           </View>
         </Animated.View>
 
         <Animated.View entering={FadeIn.duration(300).delay(200)} style={styles.noteCard}>
           <Ionicons name="shield-checkmark" size={20} color={GREEN_DARK} />
-          <Text style={styles.noteText}>
+          <AppText style={styles.noteText}>
             You can now book your next ride. Thank you for riding with GatiMitra!
-          </Text>
+          </AppText>
         </Animated.View>
 
         <Animated.View entering={FadeIn.duration(300).delay(280)} style={styles.actions}>
           <TouchableOpacity style={styles.primaryBtn} onPress={goToRideSummary} activeOpacity={0.9}>
-            <Text style={styles.primaryBtnText}>View ride summary</Text>
+            <AppText style={styles.primaryBtnText}>View ride summary</AppText>
           </TouchableOpacity>
           <TouchableOpacity style={styles.secondaryBtn} onPress={goHome} activeOpacity={0.85}>
-            <Text style={styles.secondaryBtnText}>Back to Home</Text>
+            <AppText style={styles.secondaryBtnText}>Back to Home</AppText>
           </TouchableOpacity>
-          <Text style={styles.redirectHint}>
+          <AppText style={styles.redirectHint}>
             Opening ride summary in {secondsLeft}s…
-          </Text>
+          </AppText>
         </Animated.View>
       </ScrollView>
     </View>

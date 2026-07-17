@@ -3,17 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  Linking,
-  Platform,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Modal, TouchableOpacity, Pressable, StyleSheet, Linking, Platform, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -68,16 +60,33 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
       const readiness = await getDeviceLocationReadiness();
       if (!readiness.isReady) return;
       await requestPermissionAndFetch({ forceDevice: true });
+      const { coords, address } = useLocationStore.getState();
+      if (coords) {
+        try {
+          await addressService.setActiveLocation({
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            address: address?.fullAddress ?? address?.primary ?? "Current location",
+          });
+        } catch {
+          // Non-blocking
+        }
+        await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
+        const { invalidateFoodHomeLocationQueries } = await import(
+          "@/lib/invalidateFoodHomeLocationQueries"
+        );
+        void invalidateFoodHomeLocationQueries(queryClient);
+      }
       handleDismiss();
     };
     void syncIfReady();
     const interval = setInterval(() => void syncIfReady(), 2000);
     return () => clearInterval(interval);
-  }, [visible, requestPermissionAndFetch, handleDismiss]);
+  }, [visible, requestPermissionAndFetch, handleDismiss, queryClient]);
 
   const openLocationPage = useCallback(
     (focusSearch: boolean) => {
-      handleDismiss();
+    handleDismiss();
       router.push({
         pathname: "/location",
         params: focusSearch ? { focusSearch: "1" } : {},
@@ -118,6 +127,23 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
         const after = await getDeviceLocationReadiness();
         if (after.isReady) {
           await requestPermissionAndFetch({ forceDevice: true });
+          const { coords, address } = useLocationStore.getState();
+          if (coords) {
+            try {
+              await addressService.setActiveLocation({
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+                address: address?.fullAddress ?? address?.primary ?? "Current location",
+              });
+            } catch {
+              // Non-blocking
+            }
+            await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
+            const { invalidateFoodHomeLocationQueries } = await import(
+              "@/lib/invalidateFoodHomeLocationQueries"
+            );
+            void invalidateFoodHomeLocationQueries(queryClient);
+          }
           handleDismiss();
         } else if (Platform.OS === "android") {
           try {
@@ -137,7 +163,7 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
     } finally {
       setEnabling(false);
     }
-  }, [handleDismiss, promptLocationPermissionIfNeeded, requestPermissionAndFetch]);
+  }, [handleDismiss, promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
 
   const handleSelectAddress = useCallback(
     async (addr: Address) => {
@@ -195,10 +221,10 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
                 <View style={styles.locationSlash} />
               </View>
               <View style={styles.locationBannerText}>
-                <Text style={styles.locationBannerTitle}>Device location not enabled</Text>
-                <Text style={styles.locationBannerSub}>
+                <AppText style={styles.locationBannerTitle}>Device location not enabled</AppText>
+                <AppText style={styles.locationBannerSub}>
                   Enable your device location for a better delivery experience
-                </Text>
+                </AppText>
               </View>
               <TouchableOpacity
                 style={styles.enableBtn}
@@ -209,15 +235,15 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
                 {enabling ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.enableBtnText}>Enable</Text>
+                  <AppText style={styles.enableBtnText}>Enable</AppText>
                 )}
               </TouchableOpacity>
             </View>
 
             <View style={styles.sectionHeadRow}>
-              <Text style={styles.sectionTitle}>Select a saved address</Text>
+              <AppText style={styles.sectionTitle}>Select a saved address</AppText>
               <TouchableOpacity onPress={() => openLocationPage(false)} hitSlop={8} activeOpacity={0.85}>
-                <Text style={styles.seeAllLink}>See all</Text>
+                <AppText style={styles.seeAllLink}>See all</AppText>
               </TouchableOpacity>
             </View>
 
@@ -225,14 +251,14 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
               {addressesPending && addresses.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <ActivityIndicator size="small" color={BRAND} />
-                  <Text style={styles.emptyText}>Loading saved addresses…</Text>
+                  <AppText style={styles.emptyText}>Loading saved addresses…</AppText>
                 </View>
               ) : visibleAddresses.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <Ionicons name="location-outline" size={32} color={TEXT_MUTED} />
-                  <Text style={styles.emptyText}>No saved addresses yet</Text>
+                  <AppText style={styles.emptyText}>No saved addresses yet</AppText>
                   <TouchableOpacity onPress={() => openLocationPage(false)} activeOpacity={0.85}>
-                    <Text style={styles.addAddressLink}>Add an address</Text>
+                    <AppText style={styles.addAddressLink}>Add an address</AppText>
                   </TouchableOpacity>
                 </View>
               ) : (
@@ -252,12 +278,12 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
                         <Ionicons name={icon.name} size={22} color={icon.color} />
                       </View>
                       <View style={styles.addressTextWrap}>
-                        <Text style={styles.addressLabel} numberOfLines={1}>
+                        <AppText style={styles.addressLabel} numberOfLines={1}>
                           {addr.label ?? "Address"}
-                        </Text>
-                        <Text style={styles.addressLine} numberOfLines={2}>
+                        </AppText>
+                        <AppText style={styles.addressLine} numberOfLines={2}>
                           {addr.fullAddress}
-                        </Text>
+                        </AppText>
                       </View>
                       {loading ? (
                         <ActivityIndicator size="small" color={BRAND} style={styles.addressChevron} />
@@ -272,7 +298,7 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
 
             <TouchableOpacity style={styles.searchBar} onPress={() => openLocationPage(true)} activeOpacity={0.9}>
               <Ionicons name="search" size={20} color={TEXT_GRAY} />
-              <Text style={styles.searchPlaceholder}>Search location manually</Text>
+              <AppText style={styles.searchPlaceholder}>Search location manually</AppText>
             </TouchableOpacity>
           </View>
         </View>

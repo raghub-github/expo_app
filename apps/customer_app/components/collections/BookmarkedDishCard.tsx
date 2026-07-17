@@ -1,5 +1,7 @@
 import { useCallback, useState } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -72,14 +74,14 @@ export function BookmarkedDishCard({ item, onRemoved }: Props) {
       <View style={styles.body}>
         <View style={styles.titleRow}>
           <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
-          <Text style={styles.name} numberOfLines={2}>
+          <AppText style={styles.name} numberOfLines={2}>
             {item.name}
-          </Text>
+          </AppText>
         </View>
-        <Text style={styles.storeName} numberOfLines={1}>
+        <AppText style={styles.storeName} numberOfLines={1}>
           {item.storeName}
-        </Text>
-        <Text style={styles.price}>₹{Math.round(item.price)}</Text>
+        </AppText>
+        <AppText style={styles.price}>₹{Math.round(item.price)}</AppText>
       </View>
     </Pressable>
   );

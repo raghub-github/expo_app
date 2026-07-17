@@ -5,16 +5,9 @@
  */
 
 import React, { useState, useCallback, useMemo, useEffect } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  Dimensions,
-  ActivityIndicator,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Image, Dimensions, ActivityIndicator, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
@@ -159,9 +152,9 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
         />
         {merchant.cuisines && merchant.cuisines.length > 0 && (
           <View style={styles.overlayBadge}>
-            <Text style={styles.overlayBadgeText} numberOfLines={1}>
+            <AppText style={styles.overlayBadgeText} numberOfLines={1}>
               {merchant.cuisines[0]}
-            </Text>
+            </AppText>
           </View>
         )}
         <TouchableOpacity
@@ -186,25 +179,25 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
       <View style={styles.content}>
         <View style={styles.contentLeft}>
           <View style={styles.titleRow}>
-            <Text style={styles.storeName} numberOfLines={1}>
+            <AppText style={styles.storeName} numberOfLines={1}>
               {merchant.name}
-            </Text>
+            </AppText>
             <View style={[styles.ratingCapsule, !hasRating && styles.ratingCapsuleNew]}>
               {hasRating && <Ionicons name="star" size={12} color="#fff" />}
-              <Text style={styles.ratingCapsuleText}>{ratingLabel}</Text>
+              <AppText style={styles.ratingCapsuleText}>{ratingLabel}</AppText>
             </View>
           </View>
           <View style={styles.metaRow}>
             {merchant.deliveryTime && (
               <>
                 <Ionicons name="time-outline" size={14} color={TEXT_GRAY} />
-                <Text style={styles.metaText}>{merchant.deliveryTime}</Text>
+                <AppText style={styles.metaText}>{merchant.deliveryTime}</AppText>
               </>
             )}
             {distanceStr && (
               <>
-                {merchant.deliveryTime && <Text style={styles.metaDot}> · </Text>}
-                <Text style={styles.metaText}>{distanceStr}</Text>
+                {merchant.deliveryTime && <AppText style={styles.metaDot}> · </AppText>}
+                <AppText style={styles.metaText}>{distanceStr}</AppText>
               </>
             )}
           </View>
@@ -216,9 +209,9 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
         <View style={styles.offersRow}>
           {offerChips.map((text, i) => (
             <View key={i} style={[styles.offerPill, i === 0 ? styles.offerPillPremium : styles.offerPillDiscount]}>
-              <Text style={styles.offerPillText} numberOfLines={1}>
+              <AppText style={styles.offerPillText} numberOfLines={1}>
                 {i === 0 ? "👑 " : ""}{text}
-              </Text>
+              </AppText>
             </View>
           ))}
         </View>

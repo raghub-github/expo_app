@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { StyleSheet, TouchableOpacity, View } from "react-native";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MealsUnderPriceSortMode } from "./MealsUnderPriceFilterRow";
@@ -31,7 +33,7 @@ export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.52}>
       <View style={styles.sheetBody}>
-        <Text style={styles.title}>Sort</Text>
+        <AppText style={styles.title}>Sort</AppText>
 
         {SORT_OPTIONS.map((opt) => {
           const selected = draft === opt.id;
@@ -42,7 +44,7 @@ export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: 
               activeOpacity={0.85}
               onPress={() => setDraft(opt.id)}
             >
-              <Text style={styles.optionLabel}>{opt.label}</Text>
+              <AppText style={styles.optionLabel}>{opt.label}</AppText>
               <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
                 {selected ? <View style={styles.radioInner} /> : null}
               </View>
@@ -57,9 +59,9 @@ export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: 
           hitSlop={12}
           disabled={draft === "relevance"}
         >
-          <Text style={[styles.clearText, draft === "relevance" && styles.clearTextDisabled]}>
+          <AppText style={[styles.clearText, draft === "relevance" && styles.clearTextDisabled]}>
             Clear all
-          </Text>
+          </AppText>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.applyBtn, !canApply && styles.applyBtnDisabled]}
@@ -70,7 +72,7 @@ export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: 
             onClose();
           }}
         >
-          <Text style={[styles.applyText, !canApply && styles.applyTextDisabled]}>Apply</Text>
+          <AppText style={[styles.applyText, !canApply && styles.applyTextDisabled]}>Apply</AppText>
         </TouchableOpacity>
       </View>
     </StoreBottomSheetShell>

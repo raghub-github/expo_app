@@ -9,20 +9,24 @@ type Props = {
   style?: StyleProp<ImageStyle>;
   contentFit?: "cover" | "contain" | "fill" | "none" | "scale-down";
   accessibilityLabel?: string;
+  /** Shown when CMS URL is not ready yet (e.g. bundled ride service PNG). */
+  fallbackSource?: ImageSourcePropType | null;
 };
 
-/** Renders a CMS-managed image from backend (R2 proxy). */
+/** Renders a CMS-managed image from backend (R2 proxy), with optional bundled fallback. */
 export function AppAssetImage({
   assetKey,
   style,
   contentFit = "contain",
   accessibilityLabel,
+  fallbackSource = null,
 }: Props) {
   const url = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
-  if (!url) return null;
+  const source = url ? { uri: url } : fallbackSource;
+  if (!source) return null;
   return (
     <Image
-      source={{ uri: url }}
+      source={source}
       style={style}
       contentFit={contentFit}
       cachePolicy="memory-disk"

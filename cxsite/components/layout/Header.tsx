@@ -112,7 +112,7 @@ export default function Header() {
       displayName: locationState.displayName,
       locationSource: locationState.locationSource,
       permissionStatus,
-      loading: locationLoading,
+      loading: locationLoading || autoDetecting,
     })
 
     const openLocationWelcomeModal = useCallback(() => setShowLocationWelcomeModal(true), [])
@@ -123,6 +123,8 @@ export default function Header() {
         locationCommitted,
         promptOpen: showLocationWelcomeModal,
         openPrompt: openLocationWelcomeModal,
+        permissionStatus,
+        locationLoading: locationLoading || autoDetecting,
       })
 
     const closeLocationWelcomeModal = useCallback(() => {
@@ -169,12 +171,17 @@ export default function Header() {
       void pending
         .then((result) => {
           if (result.ok) {
+            const area =
+              (result.area && result.area.trim()) ||
+              result.displayName.split(',')[0]?.trim() ||
+              result.displayName
             handleSelectLocation(result.displayName, {
               id: 0,
-              location_name: result.displayName,
+              location_name: area,
               city: result.city || '',
               latitude: result.lat,
               longitude: result.lon,
+              label: 'CURRENT LOCATION',
             })
             return
           }

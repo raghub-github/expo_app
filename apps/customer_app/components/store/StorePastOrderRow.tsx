@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { View, StyleSheet, Text } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -133,26 +135,26 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
             <View style={styles.offerPriceRow}>
               {itemOffer?.kind === "bogo" ? (
                 <View style={styles.offerBadge}>
-                  <Text style={styles.bogoBadgeText}>{itemOffer.label}</Text>
+                  <AppText style={styles.bogoBadgeText}>{itemOffer.label}</AppText>
                 </View>
               ) : itemOffer ? (
                 <View style={[styles.offerBadge, styles.boostBadge]}>
-                  <Text style={styles.boostBadgeText}>{itemOffer.label}</Text>
+                  <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
                 </View>
               ) : null}
-              <Text style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</Text>
+              <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</AppText>
             </View>
-            <Text style={styles.discountPrice}>Get for {formatOfferRupee(payableAmount)}</Text>
+            <AppText style={styles.discountPrice}>Get for {formatOfferRupee(payableAmount)}</AppText>
           </>
         ) : (
           <>
             {itemOffer?.kind === "bogo" ? (
               <View style={styles.offerBadge}>
-                <Text style={styles.bogoBadgeText}>{itemOffer.label}</Text>
+                <AppText style={styles.bogoBadgeText}>{itemOffer.label}</AppText>
               </View>
             ) : itemOffer ? (
               <View style={[styles.offerBadge, styles.boostBadge]}>
-                <Text style={styles.boostBadgeText}>{itemOffer.label}</Text>
+                <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
               </View>
             ) : null}
             <StoreText style={styles.price} bold>

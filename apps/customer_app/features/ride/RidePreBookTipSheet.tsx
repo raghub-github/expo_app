@@ -4,15 +4,9 @@
  */
 
 import { useCallback, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  Pressable,
-  LayoutChangeEvent,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Modal, Pressable, LayoutChangeEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -90,22 +84,22 @@ export function RidePreBookTipSheet({
               accessibilityRole="button"
               accessibilityLabel="Trip details"
             >
-              <Text style={styles.tripDetailsText}>Trip details</Text>
+              <AppText style={styles.tripDetailsText}>Trip details</AppText>
               <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.deepMintStart} />
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.title}>Now you can set a price that works for you</Text>
+          <AppText style={styles.title}>Now you can set a price that works for you</AppText>
 
           <View style={styles.priceBox}>
-            <Text style={styles.priceValue}>₹{totalFare}</Text>
+            <AppText style={styles.priceValue}>₹{totalFare}</AppText>
           </View>
 
           <View style={styles.hintRow}>
             <Ionicons name="bulb-outline" size={16} color="#9CA3AF" />
-            <Text style={styles.hintText}>
+            <AppText style={styles.hintText}>
               Higher the price, higher the chance of getting a ride
-            </Text>
+            </AppText>
           </View>
 
           <View style={styles.sliderSection}>
@@ -120,14 +114,14 @@ export function RidePreBookTipSheet({
                 }
                 return (
                   <View key={amount} style={styles.sliderLabelCell}>
-                    <Text
+                    <AppText
                       style={[
                         styles.sliderLabelText,
                         stepIndex === index && styles.sliderLabelTextActive,
                       ]}
                     >
                       +{amount}
-                    </Text>
+                    </AppText>
                   </View>
                 );
               })}
@@ -177,9 +171,9 @@ export function RidePreBookTipSheet({
             activeOpacity={0.9}
             onPress={() => onConfirm(tipAmount)}
           >
-            <Text style={styles.bookBtnText}>
+            <AppText style={styles.bookBtnText}>
               Book {rideName} for ₹{totalFare}
-            </Text>
+            </AppText>
           </TouchableOpacity>
         </View>
       </View>
@@ -192,13 +186,13 @@ export function RidePreBookTipSheet({
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setTripDetailsVisible(false)} />
         <View style={[styles.tripModal, { paddingBottom: insets.bottom + 20 }]}>
-          <Text style={styles.tripModalTitle}>Trip details</Text>
+          <AppText style={styles.tripModalTitle}>Trip details</AppText>
           {pickupLabel ? (
             <View style={styles.tripRow}>
               <View style={[styles.tripDot, styles.tripDotPickup]} />
               <View style={styles.tripTextCol}>
-                <Text style={styles.tripRowLabel}>Pickup</Text>
-                <Text style={styles.tripRowValue}>{pickupLabel}</Text>
+                <AppText style={styles.tripRowLabel}>Pickup</AppText>
+                <AppText style={styles.tripRowValue}>{pickupLabel}</AppText>
               </View>
             </View>
           ) : null}
@@ -206,29 +200,29 @@ export function RidePreBookTipSheet({
             <View style={styles.tripRow}>
               <View style={[styles.tripDot, styles.tripDotDrop]} />
               <View style={styles.tripTextCol}>
-                <Text style={styles.tripRowLabel}>Drop</Text>
-                <Text style={styles.tripRowValue}>{dropLabel}</Text>
+                <AppText style={styles.tripRowLabel}>Drop</AppText>
+                <AppText style={styles.tripRowValue}>{dropLabel}</AppText>
               </View>
             </View>
           ) : null}
           <View style={styles.tripMetaRow}>
-            <Text style={styles.tripMetaLabel}>Base fare</Text>
-            <Text style={styles.tripMetaValue}>₹{baseFare}</Text>
+            <AppText style={styles.tripMetaLabel}>Base fare</AppText>
+            <AppText style={styles.tripMetaValue}>₹{baseFare}</AppText>
           </View>
           <View style={styles.tripMetaRow}>
-            <Text style={styles.tripMetaLabel}>Tip</Text>
-            <Text style={styles.tripMetaValue}>{tipAmount > 0 ? `+₹${tipAmount}` : "None"}</Text>
+            <AppText style={styles.tripMetaLabel}>Tip</AppText>
+            <AppText style={styles.tripMetaValue}>{tipAmount > 0 ? `+₹${tipAmount}` : "None"}</AppText>
           </View>
           <View style={styles.tripMetaRow}>
-            <Text style={styles.tripMetaLabel}>Total</Text>
-            <Text style={styles.tripMetaValue}>₹{totalFare}</Text>
+            <AppText style={styles.tripMetaLabel}>Total</AppText>
+            <AppText style={styles.tripMetaValue}>₹{totalFare}</AppText>
           </View>
           <TouchableOpacity
             style={styles.tripModalClose}
             onPress={() => setTripDetailsVisible(false)}
             activeOpacity={0.9}
           >
-            <Text style={styles.tripModalCloseText}>Close</Text>
+            <AppText style={styles.tripModalCloseText}>Close</AppText>
           </TouchableOpacity>
         </View>
       </Modal>

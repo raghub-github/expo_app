@@ -1,7 +1,11 @@
 'use client';
 
 import { useMemo, useRef, useEffect, useState } from 'react';
-import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-detail';
+import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-types';
+import {
+  formatPaymentInstrumentSource,
+  formatPaymentModeOnlineOrCash,
+} from '@/lib/orders/order-payment-display';
 import type { OrderItemsPricing } from '@/lib/orderItemsPayload';
 import {
   customerDiscountFromOrderPricing,
@@ -32,14 +36,25 @@ interface OrderRefundForDisplay {
   createdAt: string;
 }
 
+interface OrderRecoveryRecordForDisplay {
+  id: string;
+  party: 'rider' | 'merchant';
+  partyLabel: string;
+  kind: string;
+  reason: string | null;
+  amount: number;
+  impact: 'debit' | 'credit' | 'info';
+  status: string | null;
+  createdAt: string | null;
+}
+
 interface PaymentDetailsProps {
   order: OrderForPaymentCard;
   displayId: string;
   orderRefunds?: OrderRefundForDisplay[];
+  recoveryRecords?: OrderRecoveryRecordForDisplay[];
   paymentDetail?: OrderPaymentDetail | null;
-  /** Loaded from items API — used to correct merchant amount when payment detail is stale. */
   orderItemsPricing?: OrderItemsPricing | null;
-  /** Kick items fetch so discount / delivery appear without waiting on slow paymentDetail. */
   onPrefetchOrderItems?: () => void;
 }
 
@@ -83,12 +98,37 @@ interface PaymentDetailsModalProps {
   onClose: () => void;
   records: OrderPaymentRecord[];
   orderRefunds?: OrderRefundForDisplay[];
+  recoveryRecords?: OrderRecoveryRecordForDisplay[];
   summary: {
     totalAmount: number | null;
     totalCtm: number | null;
     deliveryFee: number | null;
-    totalCashbackEarned?: number | null;
+    gatiCashUsed?: number | null;
   };
+}
+
+function formatSignedCurrency(amount: number, impact: 'debit' | 'credit' | 'info') {
+  const abs = Math.abs(amount);
+  const value = `₹${abs.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  if (impact === 'debit') return `-${value}`;
+  if (impact === 'credit') return `+${value}`;
+  return value;
+}
+
+function impactBadge(impact: 'debit' | 'credit' | 'info'): {
+  label: string;
+  className: string;
+} {
+  if (impact === 'debit') {
+    return { label: 'Debited', className: 'bg-red-100 text-red-800' };
+  }
+  if (impact === 'credit') {
+    return { label: 'Credited', className: 'bg-emerald-100 text-emerald-800' };
+  }
+  return { label: 'No credit', className: 'bg-slate-100 text-slate-600' };
 }
 
 function PaymentDetailsModal({
@@ -96,13 +136,18 @@ function PaymentDetailsModal({
   onClose,
   records,
   orderRefunds = [],
+  recoveryRecords = [],
   summary,
 }: PaymentDetailsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const [activeView, setActiveView] = useState<'payment' | 'refund' | 'penalty'>(
+    'payment'
+  );
 
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
+      setActiveView('payment');
     }
     return () => {
       document.body.style.overflow = 'unset';
@@ -112,217 +157,343 @@ function PaymentDetailsModal({
   if (!isOpen) return null;
 
   const totalAmount = summary.totalAmount ?? records.reduce((sum, r) => sum + (r.amount ?? 0), 0);
-  const refundedCount = records.filter((r) => r.refunded || r.partialRefunded).length;
   const totalDeliveryFee =
     summary.deliveryFee ?? records.reduce((sum, r) => sum + (r.deliveryFee ?? 0), 0);
+  const totalGatiCash =
+    summary.gatiCashUsed ??
+    records.reduce((sum, r) => sum + (r.gatiCashUsed ?? 0), 0);
   const totalRefundAmount = orderRefunds.reduce((sum, r) => sum + Number(r.refundAmount) || 0, 0);
+  const refundedCount = records.filter((r) => r.refunded || r.partialRefunded).length;
+  const showGatiCash = totalGatiCash > 0;
+  const totalRiderPenalty = recoveryRecords
+    .filter((r) => r.party === 'rider' && r.impact === 'debit')
+    .reduce((sum, r) => sum + Math.abs(Number(r.amount) || 0), 0);
+  const totalMerchantDebit = recoveryRecords
+    .filter((r) => r.party === 'merchant' && r.impact === 'debit')
+    .reduce((sum, r) => sum + Math.abs(Number(r.amount) || 0), 0);
+  const totalMerchantCredit = recoveryRecords
+    .filter((r) => r.party === 'merchant' && r.impact === 'credit')
+    .reduce((sum, r) => sum + Math.abs(Number(r.amount) || 0), 0);
 
   return (
     <div
       className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      role="presentation"
     >
       <div
         ref={modalRef}
-        className="bg-white rounded-lg shadow-lg max-w-[min(96vw,1400px)] w-full p-5 text-[12px] text-slate-800 max-h-[90vh] overflow-auto"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Payment Details"
+        className="bg-white rounded-lg shadow-lg max-w-[min(96vw,1100px)] w-full p-5 text-[12px] text-slate-800 max-h-[90vh] overflow-auto"
       >
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 gap-3">
           <h2 className="text-base font-semibold text-slate-900">Payment Details</h2>
-          <button
-            type="button"
-            className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
-            onClick={onClose}
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={activeView}
+              onChange={(e) =>
+                setActiveView(e.target.value as 'payment' | 'refund' | 'penalty')
+              }
+              className="text-[12px] font-medium text-slate-700 border border-gray-300 rounded-md px-2 py-1 bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            >
+              <option value="payment">Payment Details</option>
+              <option value="refund">Refund Records</option>
+              <option value="penalty">Penalty &amp; Recovery Records</option>
+            </select>
+            <button
+              type="button"
+              className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
+              onClick={onClose}
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
-            <table className="w-full min-w-[1200px] border-collapse">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className={TH}>Payment Id</th>
-                  <th className={TH}>Transaction Id</th>
-                  <th className={TH}>MP TransactionId</th>
-                  <th className={TH}>Payment Status</th>
-                  <th className={TH}>Redemption Type</th>
-                  <th className={TH}>Product Type</th>
-                  <th className={TH}>Refunded</th>
-                  <th className={TH}>Partial Refunded</th>
-                  <th className={TH}>Partially Refunded Amount</th>
-                  <th className={TH}>Amount</th>
-                  <th className={TH}>Delivery Fee</th>
-                  <th className={TH}>CTC</th>
-                  <th className={TH}>Cashin</th>
-                  <th className={TH}>Points Used</th>
-                  <th className={TH}>CTM</th>
-                  <th className={TH}>Cashback Earned</th>
-                  <th className={TH}>PG Name</th>
-                  <th className={TH}>PG TransactionId</th>
-                  <th className={TH}>Coupon Code</th>
-                  <th className={TH}>Coupon Usage Count</th>
-                  <th className={TH}>Coupon Expiry</th>
-                  <th className={TH}>Coupon Value</th>
-                  <th className={TH}>Coupon Max Discount</th>
-                  <th className={TH}>Coupon Max Usage</th>
-                  <th className={TH}>Coupon Max Redemption</th>
-                  <th className={TH}>Coupon Type</th>
-                  <th className={TH}>Coupon User Eligible</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {records.map((record, index) => (
-                  <tr
-                    key={`${record.paymentId}-${record.productType}-${index}`}
-                    className={`hover:bg-gray-50 transition-colors ${
-                      index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'
-                    }`}
-                  >
-                    <td className={`${TD} font-medium`}>{record.paymentId}</td>
-                    <td className={`${TD} font-mono`}>{formatPlain(record.transactionId)}</td>
-                    <td className={`${TD} font-mono`}>{formatPlain(record.mpTransactionId)}</td>
-                    <td className={TD}>
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                          record.paymentStatus.toLowerCase().includes('refund')
-                            ? 'bg-red-100 text-red-800'
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}
-                      >
-                        {record.paymentStatus}
-                      </span>
-                    </td>
-                    <td className={TD}>{formatPlain(record.redemptionType)}</td>
-                    <td className={`${TD} font-medium`}>{formatPlain(record.productType)}</td>
-                    <td className={TD}>{record.refunded ? 'Yes' : '—'}</td>
-                    <td className={TD}>{record.partialRefunded ? 'Yes' : 'False'}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.partiallyRefundedAmount)}</td>
-                    <td className={`${TD} tabular-nums font-medium`}>{formatNum(record.amount)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.deliveryFee)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.ctc)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.cashin)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.pointsUsed)}</td>
-                    <td className={`${TD} tabular-nums font-medium text-emerald-800`}>{formatNum(record.ctm)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.cashbackEarned)}</td>
-                    <td className={TD}>{formatPlain(record.pgName)}</td>
-                    <td className={`${TD} font-mono`}>{formatPlain(record.pgTransactionId)}</td>
-                    <td className={TD}>{formatPlain(record.couponCode)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatPlain(record.couponUserUsageCount)}</td>
-                    <td className={TD}>{formatPlain(record.couponExpiryDate)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.couponValue)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatNum(record.couponMaxDiscount)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatPlain(record.couponMaxUsage)}</td>
-                    <td className={`${TD} tabular-nums`}>{formatPlain(record.couponMaxRedemption)}</td>
-                    <td className={TD}>{formatPlain(record.couponType)}</td>
-                    <td className={TD}>{formatPlain(record.couponUserEligible)}</td>
-                  </tr>
-                ))}
-                {records.length === 0 && (
-                  <tr>
-                    <td
-                      className="py-4 px-4 text-sm text-gray-500 text-center"
-                      colSpan={27}
+        {activeView === 'payment' && (
+        <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
+          <table className="w-full min-w-[1100px] border-collapse">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className={TH}>Payment Id</th>
+                <th className={TH}>Transaction Id</th>
+                <th className={TH}>GM Transaction Id</th>
+                <th className={TH}>Payment Status</th>
+                <th className={TH}>Payment Mode</th>
+                <th className={TH}>Source</th>
+                <th className={TH}>Amount (CTC)</th>
+                <th className={TH}>Cashin</th>
+                <th className={TH}>GatiCash Used</th>
+                <th className={TH}>CTM</th>
+                <th className={TH}>Delivery Fee</th>
+                <th className={TH}>PG Name</th>
+                <th className={TH}>PG Transaction Id</th>
+                <th className={TH}>Refunded</th>
+                <th className={TH}>Partial Refund Amt</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {records.map((record, index) => {
+                const ctc = record.ctc ?? record.amount;
+                const gati =
+                  record.gatiCashUsed != null && record.gatiCashUsed > 0
+                    ? record.gatiCashUsed
+                    : null;
+                const cashin =
+                  record.cashin != null && Number.isFinite(record.cashin)
+                    ? record.cashin
+                    : ctc != null && Number.isFinite(ctc)
+                      ? Math.round((Number(ctc) - (gati ?? 0)) * 100) / 100
+                      : null;
+                return (
+                <tr
+                  key={`${record.paymentId}-${index}`}
+                  className={`hover:bg-gray-50 transition-colors ${
+                    index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'
+                  }`}
+                >
+                  <td className={`${TD} font-medium`}>{record.paymentId}</td>
+                  <td className={`${TD} font-mono`}>{formatPlain(record.transactionId)}</td>
+                  <td className={`${TD} font-mono`}>{formatPlain(record.mpTransactionId)}</td>
+                  <td className={TD}>
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                        record.paymentStatus.toLowerCase().includes('refund')
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
                     >
-                      No payment records found for this order.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                      {record.paymentStatus}
+                    </span>
+                  </td>
+                  <td className={TD}>{formatPlain(record.paymentMode)}</td>
+                  <td className={`${TD} font-medium`}>{formatPlain(record.source)}</td>
+                  <td className={`${TD} tabular-nums font-medium`}>{formatNum(ctc)}</td>
+                  <td className={`${TD} tabular-nums`}>{formatNum(cashin)}</td>
+                  <td className={`${TD} tabular-nums font-medium text-teal-800`}>
+                    {formatNum(gati)}
+                  </td>
+                  <td className={`${TD} tabular-nums font-medium text-emerald-800`}>
+                    {formatNum(record.ctm)}
+                  </td>
+                  <td className={`${TD} tabular-nums`}>{formatNum(record.deliveryFee)}</td>
+                  <td className={TD}>{formatPlain(record.pgName)}</td>
+                  <td className={`${TD} font-mono`}>
+                    {formatPlain(record.pgTransactionId ?? record.transactionId)}
+                  </td>
+                  <td className={TD}>{record.refunded ? 'Yes' : '—'}</td>
+                  <td className={`${TD} tabular-nums`}>{formatNum(record.partiallyRefundedAmount)}</td>
+                </tr>
+                );
+              })}
+              {records.length === 0 && (
+                <tr>
+                  <td className="py-4 px-4 text-sm text-gray-500 text-center" colSpan={15}>
+                    No payment records found for this order.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        )}
 
+        {activeView === 'payment' && (
         <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200 text-[12px]">
           <h4 className="text-xs font-semibold text-slate-800 mb-3">Summary</h4>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div
+            className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${
+              showGatiCash ? 'lg:grid-cols-6' : 'lg:grid-cols-5'
+            }`}
+          >
             <div className="bg-white p-3 rounded-md border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-medium text-gray-600">Total Transactions</p>
-                  <p className="text-lg font-bold text-gray-900 mt-1">{records.length}</p>
-                </div>
-                <div className="p-2 bg-gray-100 rounded-md">
-                  <i className="bi bi-list-ol text-gray-600 text-base" />
-                </div>
-              </div>
+              <p className="text-[11px] font-medium text-gray-600">Total Transactions</p>
+              <p className="text-lg font-bold text-gray-900 mt-1">{records.length}</p>
             </div>
             <div className="bg-white p-3 rounded-md border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-medium text-gray-600">Total amount (CTC)</p>
-                  <p className="text-lg font-bold text-gray-900 mt-1">
-                    {formatCurrency(totalAmount)}
-                  </p>
-                </div>
-                <div className="p-2 bg-emerald-100 rounded-md">
-                  <i className="bi bi-currency-rupee text-emerald-600 text-base" />
-                </div>
-              </div>
+              <p className="text-[11px] font-medium text-gray-600">Total amount (CTC)</p>
+              <p className="text-lg font-bold text-gray-900 mt-1">{formatCurrency(totalAmount)}</p>
             </div>
             <div className="bg-white p-3 rounded-md border border-emerald-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-medium text-emerald-800">Merchant amount (CTM)</p>
-                  <p className="text-lg font-bold text-emerald-900 mt-1">
-                    {formatCurrency(summary.totalCtm)}
-                  </p>
-                </div>
-                <div className="p-2 bg-emerald-50 rounded-md">
-                  <i className="bi bi-shop text-emerald-700 text-base" />
-                </div>
-              </div>
-            </div>
-            <div className="bg-red-50 p-3 rounded-md border border-red-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-medium text-red-600">Refunded Items</p>
-                  <p className="text-lg font-bold text-red-900 mt-1">{refundedCount}</p>
-                </div>
-                <div className="p-2 bg-red-100 rounded-md">
-                  <i className="bi bi-arrow-counterclockwise text-red-600 text-base" />
-                </div>
-              </div>
-            </div>
-            <div className="bg-white p-3 rounded-md border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-medium text-gray-600">Delivery charges</p>
-                  <p className="text-lg font-bold text-gray-900 mt-1">
-                    {formatCurrency(totalDeliveryFee)}
-                  </p>
-                </div>
-                <div className="p-2 bg-blue-100 rounded-md">
-                  <i className="bi bi-truck text-blue-600 text-base" />
-                </div>
-              </div>
-            </div>
-          </div>
-          {orderRefunds.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <h3 className="text-sm font-semibold text-slate-800 mb-2">Refund records</h3>
-              <div className="space-y-2">
-                {orderRefunds.map((r) => (
-                  <div key={r.id} className="rounded-lg border border-slate-200 bg-slate-50/50 p-3 text-[12px]">
-                    <p className="font-medium text-slate-800">{r.refundReason}</p>
-                    <p className="text-slate-600 mt-0.5">
-                      Amount: {formatCurrency(Number(r.refundAmount))}
-                      {r.refundStatus && ` · Status: ${r.refundStatus}`}
-                    </p>
-                    <p className="text-slate-500 text-[11px] mt-1">
-                      {new Date(r.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-                      {r.initiatedByEmail && ` · By: ${r.initiatedByEmail}`}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              <p className="mt-2 text-[11px] font-semibold text-slate-700">
-                Total refunded: {formatCurrency(totalRefundAmount)}
+              <p className="text-[11px] font-medium text-emerald-800">Merchant amount (CTM)</p>
+              <p className="text-lg font-bold text-emerald-900 mt-1">
+                {formatCurrency(summary.totalCtm)}
               </p>
             </div>
-          )}
+            {showGatiCash ? (
+              <div className="bg-white p-3 rounded-md border border-teal-200">
+                <p className="text-[11px] font-medium text-teal-800">GatiCash used</p>
+                <p className="text-lg font-bold text-teal-900 mt-1">
+                  {formatCurrency(totalGatiCash)}
+                </p>
+              </div>
+            ) : null}
+            <div className="bg-red-50 p-3 rounded-md border border-red-200">
+              <p className="text-[11px] font-medium text-red-600">Refunded Items</p>
+              <p className="text-lg font-bold text-red-900 mt-1">{refundedCount}</p>
+            </div>
+            <div className="bg-white p-3 rounded-md border border-gray-200">
+              <p className="text-[11px] font-medium text-gray-600">Delivery charges</p>
+              <p className="text-lg font-bold text-gray-900 mt-1">
+                {formatCurrency(totalDeliveryFee)}
+              </p>
+            </div>
+          </div>
         </div>
+        )}
+
+        {activeView === 'refund' && (
+          <div>
+            {orderRefunds.length > 0 ? (
+              <>
+                <h3 className="text-sm font-semibold text-slate-800 mb-2">Refund records</h3>
+                <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
+                  <table className="w-full min-w-[720px] border-collapse">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className={TH}>#</th>
+                        <th className={TH}>Reason</th>
+                        <th className={TH}>Amount</th>
+                        <th className={TH}>Status</th>
+                        <th className={TH}>Initiated By</th>
+                        <th className={TH}>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {orderRefunds.map((r, index) => {
+                        const amt = Number(r.refundAmount);
+                        return (
+                          <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                            <td className={`${TD} font-semibold text-red-700`}>
+                              Refund #{index + 1}
+                            </td>
+                            <td className={TD}>{formatPlain(r.refundReason)}</td>
+                            <td className={`${TD} tabular-nums font-semibold text-red-700`}>
+                              {Number.isFinite(amt) ? `-₹${amt.toFixed(2)}` : '—'}
+                            </td>
+                            <td className={TD}>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-800 capitalize">
+                                {r.refundStatus?.trim() || 'initiated'}
+                              </span>
+                            </td>
+                            <td className={TD}>{formatPlain(r.initiatedByEmail)}</td>
+                            <td className={TD}>
+                              {new Date(r.createdAt).toLocaleString('en-IN', {
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-2 text-[11px] font-semibold text-slate-700">
+                  Total refunded: {formatCurrency(totalRefundAmount)}
+                </p>
+              </>
+            ) : (
+              <div className="py-10 text-center text-sm text-gray-500 rounded-lg border border-dashed border-gray-200">
+                No refund records for this order.
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeView === 'penalty' && (
+          <div>
+            {recoveryRecords.length > 0 ? (
+              <>
+                <h3 className="text-sm font-semibold text-slate-800 mb-2">
+                  Penalty &amp; recovery records
+                </h3>
+                <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
+                  <table className="w-full min-w-[880px] border-collapse">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className={TH}>Charged To</th>
+                        <th className={TH}>Type</th>
+                        <th className={TH}>Reason</th>
+                        <th className={TH}>Amount</th>
+                        <th className={TH}>Wallet Impact</th>
+                        <th className={TH}>Status</th>
+                        <th className={TH}>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {recoveryRecords.map((rec) => {
+                        const isRider = rec.party === 'rider';
+                        const amountClass =
+                          rec.impact === 'credit'
+                            ? 'text-emerald-700'
+                            : rec.impact === 'debit'
+                              ? 'text-red-700'
+                              : 'text-slate-600';
+                        return (
+                          <tr key={rec.id} className="hover:bg-gray-50 transition-colors">
+                            <td className={`${TD} font-medium`}>
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                  isRider
+                                    ? 'bg-sky-100 text-sky-800'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {rec.partyLabel}
+                              </span>
+                            </td>
+                            <td className={TD}>{formatPlain(rec.kind)}</td>
+                            <td className={TD}>{formatPlain(rec.reason)}</td>
+                            <td className={`${TD} tabular-nums font-semibold ${amountClass}`}>
+                              {formatSignedCurrency(rec.amount, rec.impact)}
+                            </td>
+                            <td className={TD}>
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${impactBadge(rec.impact).className}`}
+                              >
+                                {impactBadge(rec.impact).label}
+                              </span>
+                            </td>
+                            <td className={TD}>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
+                                {rec.status?.trim() || '—'}
+                              </span>
+                            </td>
+                            <td className={TD}>
+                              {rec.createdAt
+                                ? new Date(rec.createdAt).toLocaleString('en-IN', {
+                                    dateStyle: 'medium',
+                                    timeStyle: 'short',
+                                  })
+                                : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-semibold text-slate-700">
+                  {totalRiderPenalty > 0 && (
+                    <span>Rider penalty: -{formatCurrency(totalRiderPenalty)}</span>
+                  )}
+                  {totalMerchantDebit > 0 && (
+                    <span>Merchant debited: -{formatCurrency(totalMerchantDebit)}</span>
+                  )}
+                  {totalMerchantCredit > 0 && (
+                    <span>Merchant credited: +{formatCurrency(totalMerchantCredit)}</span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="py-10 text-center text-sm text-gray-500 rounded-lg border border-dashed border-gray-200">
+                No penalty or recovery records for this order.
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -332,6 +503,7 @@ export default function PaymentDetails({
   order,
   displayId,
   orderRefunds = [],
+  recoveryRecords = [],
   paymentDetail = null,
   orderItemsPricing = null,
   onPrefetchOrderItems,
@@ -377,7 +549,6 @@ export default function PaymentDetails({
       apiAmount: number | null | undefined,
       apiSource: OrderDiscountOfferSource | null | undefined
     ) => {
-      // Prefer items billing_snapshot path — available as soon as items prefetch lands.
       if (itemsDiscount.amount != null && itemsDiscount.amount > 0) {
         return {
           amount: itemsDiscount.amount,
@@ -429,23 +600,58 @@ export default function PaymentDetails({
         paymentDetail.deliveryFeeQuoted,
         paymentDetail.deliveryFeeWaived
       );
+      const paymentMode =
+        paymentDetail.paymentMode ??
+        formatPaymentModeOnlineOrCash(order.paymentMethod);
+      const source =
+        paymentDetail.source ??
+        formatPaymentInstrumentSource(order.paymentMethod) ??
+        (paymentMode === 'Cash' ? 'Cash' : null);
+
+      const rowDeliveryFee = delivery.waived ? 0 : delivery.amount;
+      const gatiForRows = paymentDetail.gatiCashUsed ?? null;
+
+      // Keep table CTM / delivery fee / cashin in sync with summary cards.
+      const records = paymentDetail.records.map((r) => {
+        const ctc = r.ctc ?? r.amount ?? totalCtc;
+        const gati = r.gatiCashUsed ?? gatiForRows;
+        const cashin =
+          r.cashin != null && Number.isFinite(r.cashin)
+            ? r.cashin
+            : ctc != null && Number.isFinite(ctc)
+              ? Math.round((Number(ctc) - (gati != null && gati > 0 ? gati : 0)) * 100) / 100
+              : null;
+        return {
+          ...r,
+          ctm: totalCtm,
+          deliveryFee: rowDeliveryFee ?? r.deliveryFee,
+          paymentMode: r.paymentMode ?? paymentMode,
+          source: r.source ?? source,
+          gatiCashUsed: gati != null && gati > 0 ? gati : null,
+          cashin,
+          ctc,
+          pgTransactionId: r.pgTransactionId ?? r.transactionId,
+        };
+      });
+
       return {
         totalAmount: totalCtc,
         totalCtm,
         totalCashbackEarned: paymentDetail.totalCashbackEarned,
+        gatiCashUsed: paymentDetail.gatiCashUsed ?? null,
         totalDiscountGranted: discount.amount,
         discountOfferSource: discount.offerSource,
         deliveryFee: delivery.amount,
         deliveryFeeQuoted: delivery.quoted,
         deliveryFeeWaived: delivery.waived,
-        source: paymentDetail.source,
-        paymentMode: paymentDetail.paymentMode,
+        source,
+        paymentMode,
         partialRefunded: paymentDetail.partialRefunded,
         refundAmount:
           paymentDetail.refundAmount ??
           (hasRefundRecords ? totalRefundFromRefunds : null),
         isRefunded,
-        records: paymentDetail.records,
+        records,
       };
     }
 
@@ -463,18 +669,24 @@ export default function PaymentDetails({
 
     const discount = pickDiscount(null, null);
     const delivery = pickDelivery(null, null, false);
+    const paymentMode = formatPaymentModeOnlineOrCash(order.paymentMethod);
+    const source =
+      formatPaymentInstrumentSource(order.paymentMethod) ??
+      (paymentMode === 'Cash' ? 'Cash' : null);
+    const totalCtm = pickMerchantAmount(null, totalCtc);
 
     return {
       totalAmount: totalCtc,
-      totalCtm: pickMerchantAmount(null, totalCtc),
+      totalCtm,
       totalCashbackEarned: null,
+      gatiCashUsed: null,
       totalDiscountGranted: discount.amount,
       discountOfferSource: discount.offerSource,
       deliveryFee: delivery.amount,
       deliveryFeeQuoted: delivery.quoted,
       deliveryFeeWaived: delivery.waived,
-      source: order.orderSource ? order.orderSource.toString() : '—',
-      paymentMode: order.paymentMethod ? order.paymentMethod.toString().toUpperCase() : '—',
+      source,
+      paymentMode,
       partialRefunded: false,
       refundAmount: hasRefundRecords ? totalRefundFromRefunds : null,
       isRefunded,
@@ -484,29 +696,22 @@ export default function PaymentDetails({
           transactionId: null,
           mpTransactionId: null,
           paymentStatus,
-          redemptionType: order.orderSource ?? undefined,
-          productType: order.orderType ?? undefined,
+          paymentMode,
+          source,
           refunded: isRefunded,
           partialRefunded: false,
           partiallyRefundedAmount: null,
           amount: totalCtc,
           ctc: totalCtc,
-          cashin: null,
-          pointsUsed: null,
-          ctm: pickMerchantAmount(null, totalCtc),
-          cashbackEarned: null,
+          cashin:
+            totalCtc != null && Number.isFinite(totalCtc)
+              ? Math.round(Number(totalCtc) * 100) / 100
+              : null,
+          gatiCashUsed: null,
+          ctm: totalCtm,
           deliveryFee: delivery.amount,
           pgName: null,
           pgTransactionId: null,
-          couponCode: null,
-          couponUserUsageCount: null,
-          couponExpiryDate: null,
-          couponValue: null,
-          couponMaxDiscount: null,
-          couponMaxUsage: null,
-          couponMaxRedemption: null,
-          couponType: null,
-          couponUserEligible: null,
         },
       ] as OrderPaymentRecord[],
     };
@@ -544,6 +749,16 @@ export default function PaymentDetails({
               {formatCurrency(resolved.totalCtm)}
             </span>
           </p>
+          {resolved.gatiCashUsed != null &&
+          Number.isFinite(resolved.gatiCashUsed) &&
+          resolved.gatiCashUsed > 0 ? (
+            <p className="text-[12px]">
+              <span className="text-gati-text-secondary font-medium">GatiCash used:</span>{' '}
+              <span className="text-gati-text-primary font-semibold">
+                {formatCurrency(resolved.gatiCashUsed)}
+              </span>
+            </p>
+          ) : null}
           <p className="text-[12px] flex flex-wrap items-center gap-x-1.5 gap-y-1">
             <span className="text-gati-text-secondary font-medium">
               Total Discount Granted on Ord:
@@ -583,15 +798,11 @@ export default function PaymentDetails({
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">PaymentMode:</span>{' '}
             <span className="text-gati-text-primary font-medium">
-              {resolved.paymentMode
-                ? resolved.paymentMode.toString().toUpperCase()
-                : '—'}
+              {resolved.paymentMode ?? '—'}
             </span>
           </p>
           <p className="text-[12px]">
-            <span className="text-gati-text-secondary font-medium">
-              Partial Refunded:
-            </span>{' '}
+            <span className="text-gati-text-secondary font-medium">Partial Refunded:</span>{' '}
             <span className="text-gati-text-primary font-medium">
               {resolved.partialRefunded ? 'True' : 'False'}
             </span>
@@ -603,14 +814,17 @@ export default function PaymentDetails({
               (view details)
             </button>
           </p>
-          <p className="text-[12px]">
-            <span className="text-gati-text-secondary font-medium">Refund Amount:</span>{' '}
-            <span className="text-gati-text-primary font-medium">
-              {resolved.isRefunded
-                ? formatCurrency(resolved.refundAmount)
-                : '—'}
-            </span>
-          </p>
+          {resolved.isRefunded &&
+          resolved.refundAmount != null &&
+          Number.isFinite(resolved.refundAmount) &&
+          resolved.refundAmount > 0 ? (
+            <p className="text-[12px]">
+              <span className="text-gati-text-secondary font-medium">Refund Amount:</span>{' '}
+              <span className="text-gati-text-primary font-medium">
+                {formatCurrency(resolved.refundAmount)}
+              </span>
+            </p>
+          ) : null}
         </div>
         <div className="mt-1 flex justify-end">
           <button
@@ -629,11 +843,12 @@ export default function PaymentDetails({
         onClose={() => setIsModalOpen(false)}
         records={resolved.records}
         orderRefunds={orderRefunds}
+        recoveryRecords={recoveryRecords}
         summary={{
           totalAmount: resolved.totalAmount,
           totalCtm: resolved.totalCtm,
           deliveryFee: resolved.deliveryFeeWaived ? 0 : resolved.deliveryFee,
-          totalCashbackEarned: resolved.totalCashbackEarned,
+          gatiCashUsed: resolved.gatiCashUsed,
         }}
       />
     </>

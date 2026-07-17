@@ -3,13 +3,9 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -91,7 +87,8 @@ export function RideBookingScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!locationHydrated) return;
-      void queryClient.invalidateQueries({ queryKey: ["featured-offers-ride"] });
+      // Background refresh only — keep cached offers painted (no blank flash).
+      void queryClient.refetchQueries({ queryKey: ["featured-offers-ride"], type: "active" });
     }, [locationHydrated, queryClient])
   );
 
@@ -233,9 +230,9 @@ export function RideBookingScreen() {
 
           <View style={styles.headerMain}>
             <TouchableOpacity style={styles.titleRow} activeOpacity={0.85} onPress={goToLocation}>
-              <Text style={styles.headerTitle} numberOfLines={1}>
+              <AppText style={styles.headerTitle} numberOfLines={1}>
                 Book a Ride
-              </Text>
+              </AppText>
               <Ionicons name="chevron-down" size={14} color={GatiMitraColors.deepMintStart} />
             </TouchableOpacity>
 
@@ -243,9 +240,9 @@ export function RideBookingScreen() {
               <View style={styles.locationPin}>
                 <Ionicons name="location" size={12} color={GatiMitraColors.deepMintStart} />
               </View>
-              <Text style={styles.locationText} numberOfLines={1} ellipsizeMode="tail">
+              <AppText style={styles.locationText} numberOfLines={1} ellipsizeMode="tail">
                 {locationDisplay}
-              </Text>
+              </AppText>
             </TouchableOpacity>
           </View>
 
@@ -290,7 +287,7 @@ export function RideBookingScreen() {
       {hasDueFare ? (
         <View style={[styles.dueFareFloating, { bottom: bannerBottom }]}>
           <Ionicons name="alert-circle-outline" size={20} color="#B45309" />
-          <Text style={styles.dueFareText}>{RIDE_DUE_FARE_NOTICE}</Text>
+          <AppText style={styles.dueFareText}>{RIDE_DUE_FARE_NOTICE}</AppText>
         </View>
       ) : null}
 

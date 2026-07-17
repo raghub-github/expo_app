@@ -38,6 +38,8 @@ export type OrderPricingLine = {
   kind: "charge" | "tax" | "discount";
   /** Platform vs store funding for discount lines. */
   discountTag?: "platform" | "store" | "mixed";
+  /** Non-discount row badge (e.g. GMitra Plus membership fee). */
+  rowBadge?: "membership";
 };
 
 export type OrderPricingSummary = {
@@ -264,6 +266,93 @@ function packagingTaxFromBilling(snap: Record<string, unknown> | null): number {
   return sum;
 }
 
+/** True when this charge line is already shown via a dedicated named fee row. */
+function isChargeCoveredByNamedFeeBucket(
+  label: string,
+  meta: Record<string, unknown> | null
+): boolean {
+  const u = label.trim().toLowerCase();
+  const source = String(meta?.source ?? meta?.bucket ?? meta?.ruleType ?? "").toLowerCase();
+  if (
+    u.includes("delivery") ||
+    source.includes("delivery") ||
+    source === "delivery"
+  ) {
+    return true;
+  }
+  if (u.includes("packaging") || source.includes("packaging")) return true;
+  if (u.includes("platform") || source.includes("platform")) return true;
+  if (u.includes("surge") || source.includes("surge")) return true;
+  if (u.includes("small order") || source.includes("small_order")) return true;
+  if (u.includes("convenience") || source.includes("convenience")) return true;
+  if (u.includes("tip") || source.includes("tip") || source.includes("rider_tip")) return true;
+  if (u.includes("donation") || source.includes("donation")) return true;
+  return false;
+}
+
+function isMembershipChargeLine(
+  label: string,
+  meta: Record<string, unknown> | null
+): boolean {
+  const source = String(meta?.source ?? "").toLowerCase();
+  const ruleType = String(meta?.ruleType ?? meta?.rule_type ?? "").toLowerCase();
+  const u = label.toLowerCase();
+  if (
+    source.includes("subscription") ||
+    source.includes("membership") ||
+    source.includes("gmitra") ||
+    ruleType.includes("subscription") ||
+    ruleType.includes("membership")
+  ) {
+    return true;
+  }
+  return (
+    u.includes("gmitra") ||
+    u.includes("membership") ||
+    u.includes("subscription") ||
+    u.includes("gati plus") ||
+    u.includes("gmitra plus")
+  );
+}
+
+/**
+ * Named misc / subscription / custom fee lines from billing_snapshot.charges
+ * (never collapse to a generic "Other Charges" bucket).
+ */
+function namedExtraChargeLinesFromBilling(
+  snap: Record<string, unknown>
+): OrderPricingLine[] {
+  const out: OrderPricingLine[] = [];
+  const charges = Array.isArray(snap.charges) ? snap.charges : [];
+  let i = 0;
+  for (const raw of charges) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    if (String(row.kind ?? "charge").toLowerCase() === "discount") continue;
+    if (String(row.kind ?? "").toLowerCase() === "tax") continue;
+    if (row.hidden === true) continue;
+    const amount = round2(asNum(row.amount));
+    if (amount <= 0.005) continue;
+    const label = String(row.label ?? "").trim();
+    if (!label) continue;
+    const meta =
+      row.meta && typeof row.meta === "object"
+        ? (row.meta as Record<string, unknown>)
+        : null;
+    if (isChargeCoveredByNamedFeeBucket(label, meta)) continue;
+    const ruleId = row.ruleId != null ? String(row.ruleId) : String(i);
+    out.push({
+      key: `named_charge_${ruleId}_${i}`,
+      label,
+      amount,
+      kind: "charge",
+      rowBadge: isMembershipChargeLine(label, meta) ? "membership" : undefined,
+    });
+    i += 1;
+  }
+  return out;
+}
+
 /**
  * Customer (CTC) bill from billing_snapshot + orders_core.
  * CTC uses grand_total (customer order value); never orders_food.food_items_total_value — that field is frozen CTM.
@@ -310,7 +399,59 @@ export function buildOrderPricingSummary(
   pushCharge("surge", "Surge Fee", surgeFee);
   pushCharge("small_order", "Small Order Fee", smallOrderFee);
   pushCharge("convenience", "Convenience Fee", convenienceFee);
-  pushCharge("misc", "Other Charges", miscFee);
+
+  const namedExtras = namedExtraChargeLinesFromBilling(snap);
+  for (const line of namedExtras) lines.push(line);
+
+  // Only if snapshot has misc_fee but no named charge lines, surface the fee with a clear label.
+  const namedExtrasSum = round2(namedExtras.reduce((s, l) => s + l.amount, 0));
+  const miscResidual = round2(Math.max(0, miscFee - namedExtrasSum));
+  if (miscResidual > 0.005 && namedExtras.length === 0) {
+    let labeled = false;
+    const gstComponents =
+      snap.gst_components && typeof snap.gst_components === "object"
+        ? (snap.gst_components as Record<string, unknown>)
+        : null;
+    const subscription =
+      gstComponents?.subscription && typeof gstComponents.subscription === "object"
+        ? (gstComponents.subscription as Record<string, unknown>)
+        : null;
+    const subscriptionOriginal = round2(asNum(subscription?.original));
+    if (subscriptionOriginal > 0.005 && Math.abs(subscriptionOriginal - miscResidual) <= 0.02) {
+      lines.push({
+        key: "subscription",
+        label: "Subscription",
+        amount: miscResidual,
+        kind: "charge",
+        rowBadge: "membership",
+      });
+      labeled = true;
+    }
+    if (!labeled) {
+      const steps = Array.isArray(snap.breakdown_steps) ? snap.breakdown_steps : [];
+      for (const step of steps) {
+        if (!step || typeof step !== "object") continue;
+        const row = step as Record<string, unknown>;
+        const amt = round2(asNum(row.amount));
+        if (Math.abs(amt - miscResidual) > 0.02) continue;
+        const stepLabel = String(row.step ?? "").trim();
+        if (!stepLabel || isChargeCoveredByNamedFeeBucket(stepLabel, null)) continue;
+        lines.push({
+          key: "misc_named",
+          label: stepLabel,
+          amount: miscResidual,
+          kind: "charge",
+          rowBadge: isMembershipChargeLine(stepLabel, null) ? "membership" : undefined,
+        });
+        labeled = true;
+        break;
+      }
+    }
+    if (!labeled) {
+      pushCharge("misc", "Additional fee", miscResidual);
+    }
+  }
+
   pushCharge("delivery", "Delivery Fee", deliveryFee);
   if (gst > 0) {
     lines.push({ key: "gst", label: "GST", amount: gst, kind: "tax" });
@@ -362,7 +503,7 @@ export function buildOrderPricingSummary(
   if (Math.abs(diff) >= 0.01) {
     lines.push({
       key: "adjustment",
-      label: diff > 0 ? "Other adjustment" : "Credit adjustment",
+      label: diff > 0 ? "Bill rounding" : "Bill credit",
       amount: Math.abs(diff),
       kind: diff > 0 ? "charge" : "discount",
     });

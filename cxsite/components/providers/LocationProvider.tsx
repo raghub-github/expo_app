@@ -14,6 +14,7 @@ import {
   watchWebGeolocationPermission,
   type WebGeolocationPermission,
 } from '@/lib/webLocationPermission'
+import { persistActiveLocationPin } from '@/lib/recentLocationStorage'
 
 export type LocationSource = 'selected' | 'current' | null
 
@@ -22,8 +23,8 @@ export type LocationState = {
   lat: number | null
   lon: number | null
   /**
-   * True when the user explicitly picked a location (manual search / saved address).
-   * Auto GPS uses `locationSource: 'current'` and does not set this.
+   * True when we have a usable delivery pin (manual pick or auto GPS).
+   * Pan-India browse uses `false` until location is available.
    */
   locationCommittedByUser?: boolean
   locationSource: LocationSource
@@ -178,6 +179,18 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
           persistSelectedLocation(next)
         }
 
+        if (
+          nextCommitted &&
+          nextDisplayName.trim() &&
+          nextDisplayName.trim().toLowerCase() !== 'india'
+        ) {
+          persistActiveLocationPin({
+            displayName: nextDisplayName,
+            lat: nextLat,
+            lon: nextLon,
+          })
+        }
+
         return next
       })
     },
@@ -214,8 +227,6 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
     setLocationLoading(true)
     markAutoDetectInFlight(true)
     try {
-      // Always invoke getCurrentPosition on user gesture (force). Do not pre-block on
-      // Permissions API — it can be stale; the browser prompt only appears here.
       await new Promise<void>((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(
           async (position) => {
@@ -229,20 +240,25 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
               const displayName =
                 (typeof data?.displayName === 'string' && data.displayName.trim()) ||
                 `${lat.toFixed(4)}, ${lon.toFixed(4)}`
+              const area = typeof data?.area === 'string' ? data.area.trim() : ''
+              const city = typeof data?.city === 'string' ? data.city.trim() : ''
 
-              setLocationState({
+              const next: LocationState = {
                 displayName,
                 lat,
                 lon,
                 locationCommittedByUser: true,
-                locationSource: 'selected',
-              })
-              persistSelectedLocation({
+                locationSource: 'current',
+              }
+              setLocationState(next)
+              // Persist so listings hydrate quickly; every visit still re-fetches GPS when granted.
+              persistSelectedLocation({ ...next, locationSource: 'selected' })
+              persistActiveLocationPin({
                 displayName,
                 lat,
                 lon,
-                locationCommittedByUser: true,
-                locationSource: 'selected',
+                area: area || undefined,
+                city: city || undefined,
               })
               setPermissionStatus('granted')
               setShowPermissionModal(false)
@@ -254,7 +270,10 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
           (error) => {
             if (error.code === 1) {
               setPermissionStatus('denied')
-              if (force) showPermissionModalSafe(true)
+              // Stay pan-India until location is enabled.
+              setLocationState({ ...defaultState })
+              clearPersistedSelectedLocation()
+              showPermissionModalSafe(true)
               resolve()
               return
             }
@@ -285,6 +304,12 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
     void requestDeviceLocation({ force: true })
   }, [hydrated, permissionStatus, requestDeviceLocation])
 
+  /**
+   * Every website visit:
+   * - granted → always auto-fetch fresh GPS (stores filter by that location)
+   * - denied → pan-India list + enable-location popup
+   * - undetermined → pan-India until user allows via welcome / Auto-detect
+   */
   useEffect(() => {
     if (!hydrated || bootstrapStarted.current) return
     bootstrapStarted.current = true
@@ -292,15 +317,19 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       const perm = await getWebGeolocationPermission()
       setPermissionStatus(perm)
-      // Never auto-prompt GPS or show the enable-location modal on load.
-      // Browsers require a user gesture for geolocation; pan-India browse stays until the user taps Auto-detect.
+
+      if (perm === 'granted') {
+        await requestDeviceLocation({ force: true })
+        return
+      }
+
       if (perm === 'denied') {
-        setLocationState((prev) =>
-          prev.locationSource === 'current' ? { ...defaultState } : prev
-        )
+        setLocationState({ ...defaultState })
+        clearPersistedSelectedLocation()
+        setShowPermissionModal(true)
       }
     })()
-  }, [hydrated])
+  }, [hydrated, requestDeviceLocation])
 
   const hasCoords = location.lat != null && location.lon != null
 

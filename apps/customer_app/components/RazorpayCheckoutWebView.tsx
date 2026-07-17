@@ -12,7 +12,9 @@
  */
 
 import { useCallback, useMemo } from "react";
-import { Modal, View, StyleSheet, TouchableOpacity, Text, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { Modal, View, StyleSheet, TouchableOpacity, ActivityIndicator } from "react-native";
 import { WebView } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -205,7 +207,7 @@ export function RazorpayCheckoutWebView({ visible, orderParams, prefill, themeCo
           <TouchableOpacity onPress={onCancel} style={styles.closeBtn} hitSlop={12}>
             <Ionicons name="close" size={24} color={GatiMitraColors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Complete payment</Text>
+          <AppText style={styles.headerTitle}>Complete payment</AppText>
           <View style={styles.headerSpacer} />
         </View>
         <WebView
@@ -221,7 +223,7 @@ export function RazorpayCheckoutWebView({ visible, orderParams, prefill, themeCo
           renderLoading={() => (
             <View style={styles.loadingWrap}>
               <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
-              <Text style={styles.loadingText}>Opening Razorpay…</Text>
+              <AppText style={styles.loadingText}>Opening Razorpay…</AppText>
             </View>
           )}
         />

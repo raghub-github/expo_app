@@ -100,11 +100,23 @@ async function resolveStateNameFromCoords(
   const sql = getSql()
   if (!sql) return null
   try {
-    // Nearest seeded pincode → state (spatial proximity), same cascade idea as backend.
+    // pincodes has no state_id — walk post_office → division → district → region → state
+    // (same chain as backend geoRefFromPincode).
     const rows = await sql<{ state_name: string }[]>`
       SELECT s.name AS state_name
       FROM pincodes p
-      INNER JOIN states s ON s.id = p.state_id
+      LEFT JOIN LATERAL (
+        SELECT ppo.post_office_id
+        FROM pincode_post_offices ppo
+        WHERE ppo.pincode_id = p.id
+        ORDER BY ppo.post_office_id
+        LIMIT 1
+      ) pick ON true
+      LEFT JOIN post_offices po ON po.id = pick.post_office_id
+      LEFT JOIN divisions dv ON dv.id = po.division_id
+      LEFT JOIN districts d ON d.id = dv.district_id
+      LEFT JOIN regions r ON r.id = d.region_id
+      INNER JOIN states s ON s.id = r.state_id
       WHERE p.latitude IS NOT NULL
         AND p.longitude IS NOT NULL
       ORDER BY

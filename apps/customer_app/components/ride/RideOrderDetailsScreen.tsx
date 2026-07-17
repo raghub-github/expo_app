@@ -3,16 +3,9 @@
  */
 
 import { useMemo, useState, useRef, useEffect } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  Alert,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -63,7 +56,7 @@ function RouteStop({
         <View style={[styles.routeDot, variant === "pickup" ? styles.routeDotPickup : styles.routeDotDrop]} />
         {!isLast ? <View style={styles.routeRail} /> : null}
       </View>
-      <Text style={styles.routeAddress}>{address}</Text>
+      <AppText style={styles.routeAddress}>{address}</AppText>
     </View>
   );
 }
@@ -82,20 +75,20 @@ function FareTotalWithDiscount({
 
   if (!hasDiscount) {
     return (
-      <Text style={size === "lg" ? styles.rideFare : styles.fareHeaderAmount}>
+      <AppText style={size === "lg" ? styles.rideFare : styles.fareHeaderAmount}>
         {formatRideFare(totalFare)}
-      </Text>
+      </AppText>
     );
   }
 
   return (
     <View style={size === "lg" ? styles.fareTotalDiscountRowLg : styles.fareTotalDiscountRow}>
-      <Text style={size === "lg" ? styles.fareTotalStruckLg : styles.fareTotalStruck}>
+      <AppText style={size === "lg" ? styles.fareTotalStruckLg : styles.fareTotalStruck}>
         {formatRideFare(totalBeforeDiscount)}
-      </Text>
-      <Text style={size === "lg" ? styles.fareTotalFinalLg : styles.fareTotalFinal}>
+      </AppText>
+      <AppText style={size === "lg" ? styles.fareTotalFinalLg : styles.fareTotalFinal}>
         {formatRideFare(totalFare)}
-      </Text>
+      </AppText>
     </View>
   );
 }
@@ -255,7 +248,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
         <TouchableOpacity onPress={onBack} style={styles.headerSide} hitSlop={12}>
           <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Details</Text>
+        <AppText style={styles.headerTitle}>Details</AppText>
         <View style={styles.headerSide} />
       </View>
 
@@ -267,15 +260,15 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
         <View style={styles.card}>
           <View style={styles.summaryTop}>
             <View style={styles.summaryLeft}>
-              <Text style={styles.rideTypeTitle}>{rideLabel}</Text>
-              <Text style={styles.rideDate}>{formatRideHistoryDateTime(order.createdAt)}</Text>
+              <AppText style={styles.rideTypeTitle}>{rideLabel}</AppText>
+              <AppText style={styles.rideDate}>{formatRideHistoryDateTime(order.createdAt)}</AppText>
               <View style={styles.rideFareRow}>
                 <FareTotalWithDiscount
                   totalFare={invoice.totalFare}
                   totalBeforeDiscount={totalBeforeDiscount}
                   size="lg"
                 />
-                {invoice.isEstimate ? <Text style={styles.estTag}> (.est)</Text> : null}
+                {invoice.isEstimate ? <AppText style={styles.estTag}> (.est)</AppText> : null}
               </View>
             </View>
             <View style={styles.summaryRight}>
@@ -292,7 +285,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
                 {isCompleted ? (
                   <Ionicons name="checkmark-circle" size={14} color={GREEN} />
                 ) : null}
-                <Text
+                <AppText
                   style={[
                     styles.statusBadgeText,
                     isCompleted && styles.statusBadgeTextCompleted,
@@ -300,7 +293,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
                   ]}
                 >
                   {statusLabel}
-                </Text>
+                </AppText>
               </View>
             </View>
           </View>
@@ -312,16 +305,16 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             onPress={() => setAddressExpanded((v) => !v)}
             activeOpacity={0.85}
           >
-            <Text style={styles.sectionTitle}>Address details</Text>
+            <AppText style={styles.sectionTitle}>Address details</AppText>
             <Ionicons name={addressExpanded ? "chevron-up" : "chevron-down"} size={18} color="#6B7280" />
           </TouchableOpacity>
 
           {addressExpanded ? (
             <View style={styles.sectionBody}>
-              <Text style={styles.rideIdText}>Ride ID #{displayOrderId}</Text>
+              <AppText style={styles.rideIdText}>Ride ID #{displayOrderId}</AppText>
               <RouteStop variant="pickup" address={pickupAddress} />
               <RouteStop variant="drop" address={dropAddress} isLast />
-              {tripStats ? <Text style={styles.tripStats}>{tripStats}</Text> : null}
+              {tripStats ? <AppText style={styles.tripStats}>{tripStats}</AppText> : null}
             </View>
           ) : null}
         </View>
@@ -331,8 +324,8 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             <Ionicons name="headset" size={20} color="#2563EB" />
           </View>
           <View style={styles.helpTextWrap}>
-            <Text style={styles.helpTitle}>Need help?</Text>
-            <Text style={styles.helpSub}>We&apos;re a tap away</Text>
+            <AppText style={styles.helpTitle}>Need help?</AppText>
+            <AppText style={styles.helpSub}>We&apos;re a tap away</AppText>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#2563EB" />
         </TouchableOpacity>
@@ -340,7 +333,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
         <View style={styles.card}>
           <View style={styles.invoiceHeaderRow}>
             <Ionicons name="receipt-outline" size={18} color="#111827" />
-            <Text style={styles.invoiceHeaderText}>INVOICE</Text>
+            <AppText style={styles.invoiceHeaderText}>INVOICE</AppText>
           </View>
 
           <TouchableOpacity
@@ -348,7 +341,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             onPress={() => setFareExpanded((v) => !v)}
             activeOpacity={0.85}
           >
-            <Text style={styles.fareHeaderLabel}>Total Fare</Text>
+            <AppText style={styles.fareHeaderLabel}>Total Fare</AppText>
             <View style={styles.fareHeaderRight}>
               <FareTotalWithDiscount
                 totalFare={invoice.totalFare}
@@ -363,30 +356,30 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             <View style={styles.fareBreakdown}>
               {invoice.lines.map((line) => (
                 <View key={`${line.label}-${line.amount}`} style={styles.fareLine}>
-                  <Text style={[styles.fareLineLabel, line.isDiscount && styles.fareLineDiscountLabel]}>
+                  <AppText style={[styles.fareLineLabel, line.isDiscount && styles.fareLineDiscountLabel]}>
                     {line.label}
-                  </Text>
+                  </AppText>
                   {line.isDiscount ? (
-                    <Text style={styles.fareLineDiscount}>-{formatRideFare(line.amount)}</Text>
+                    <AppText style={styles.fareLineDiscount}>-{formatRideFare(line.amount)}</AppText>
                   ) : (
-                    <Text style={styles.fareLineValue}>{formatRideFare(line.amount)}</Text>
+                    <AppText style={styles.fareLineValue}>{formatRideFare(line.amount)}</AppText>
                   )}
                 </View>
               ))}
 
               {tipAmount > 0.005 ? (
                 <View style={styles.tipInvoiceNoteBlock}>
-                  <Text style={styles.tipInvoiceNote}>
+                  <AppText style={styles.tipInvoiceNote}>
                     Tip amount is not included in the PDF/email invoice.
-                  </Text>
+                  </AppText>
                   <View style={styles.tipInvoiceMathRow}>
-                    <Text style={styles.tipInvoiceMath}>
-                      <Text style={styles.tipInvoiceMathValue}>{formatRideFare(invoiceTotalExclTip)}</Text>
-                      <Text style={styles.tipInvoiceMathOp}> + </Text>
-                      <Text style={styles.tipInvoiceMathValue}>{formatRideFare(tipAmount)} tip</Text>
-                      <Text style={styles.tipInvoiceMathOp}> = </Text>
-                      <Text style={styles.tipInvoiceMathTotal}>{formatRideFare(invoice.totalFare)}</Text>
-                    </Text>
+                    <AppText style={styles.tipInvoiceMath}>
+                      <AppText style={styles.tipInvoiceMathValue}>{formatRideFare(invoiceTotalExclTip)}</AppText>
+                      <AppText style={styles.tipInvoiceMathOp}> + </AppText>
+                      <AppText style={styles.tipInvoiceMathValue}>{formatRideFare(tipAmount)} tip</AppText>
+                      <AppText style={styles.tipInvoiceMathOp}> = </AppText>
+                      <AppText style={styles.tipInvoiceMathTotal}>{formatRideFare(invoice.totalFare)}</AppText>
+                    </AppText>
                   </View>
                 </View>
               ) : null}
@@ -406,7 +399,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             ) : (
               <Ionicons name="mail-outline" size={20} color="#2563EB" />
             )}
-            <Text style={styles.emailRowText}>Send invoice via Email</Text>
+            <AppText style={styles.emailRowText}>Send invoice via Email</AppText>
             <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
           </TouchableOpacity>
         </View>
@@ -414,10 +407,10 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
         {invoice.isEstimate ? (
           <View style={styles.disclaimerRow}>
             <Ionicons name="information-circle-outline" size={16} color="#9CA3AF" />
-            <Text style={styles.disclaimerText}>
+            <AppText style={styles.disclaimerText}>
               Fare shown is an estimate until payment is completed. Final amount may vary based on
               route and waiting time.
-            </Text>
+            </AppText>
           </View>
         ) : null}
       </ScrollView>
@@ -438,8 +431,8 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
           <View style={styles.invoiceSentToastCard}>
             <Ionicons name="checkmark-circle" size={22} color={GREEN} />
             <View style={styles.invoiceSentToastTextCol}>
-              <Text style={styles.invoiceSentToastTitle}>Invoice sent</Text>
-              <Text style={styles.invoiceSentToastMsg}>{invoiceSentToast}</Text>
+              <AppText style={styles.invoiceSentToastTitle}>Invoice sent</AppText>
+              <AppText style={styles.invoiceSentToastMsg}>{invoiceSentToast}</AppText>
             </View>
           </View>
         </View>

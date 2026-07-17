@@ -1,33 +1,23 @@
 /**
  * Account deletion — request screen.
  *
- * Deletion is request → review → deactivation (data retained, no revive).
- * The customer picks a reason and submits; the backend records a review row
- * and deactivates the account. We then sign the user out. There is no instant
- * self-service wipe and no way to reopen a closed account.
+ * Deletion is request → admin review → deactivation (data retained, no revive).
+ * The customer picks a reason and submits; the backend queues a review row.
+ * An admin completes deletion from the Customers dashboard, which closes the
+ * account and invalidates sessions (app logout).
  *
  * Endpoint: POST /v1/me/account/deletion-request
  * Policy:   Profile → Settings → Privacy → Account Deletion Policy
  */
 
 import { useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  TextInput,
-  Modal,
-  Pressable,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, TextInput, Modal, Pressable, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import { useAuthStore } from "@/store/authStore";
 import { ProfileSubpageHeader } from "@/components/profile/ProfileSubpageHeader";
 import { ProfileTheme } from "@/constants/profileTheme";
 import api from "@/services/api";
@@ -48,7 +38,6 @@ const REASONS: { code: string; label: string }[] = [
 export default function DeleteAccountScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const logout = useAuthStore((s) => s.logout);
 
   const [reasonCode, setReasonCode] = useState<string | null>(null);
   const [details, setDetails] = useState("");
@@ -70,11 +59,10 @@ export default function DeleteAccountScreen() {
         },
         { headers: { "X-Deletion-Source": "app" }, timeout: 15000 },
       );
-      await logout();
       Alert.alert(
         "Request submitted",
-        "Your account deletion request has been received and your account has been deactivated. This action is permanent — a closed account cannot be reopened.",
-        [{ text: "OK", onPress: () => router.replace("/") }],
+        "Your account deletion request has been received. Our team will review it (usually within 7 days). You can keep using the app until the account is closed.",
+        [{ text: "OK", onPress: () => router.back() }],
       );
     } catch (e: unknown) {
       const ax = e as { response?: { data?: { message?: string; error?: string } } };
@@ -101,15 +89,15 @@ export default function DeleteAccountScreen() {
         {/* Warning banner */}
         <View style={styles.warnCard}>
           <Ionicons name="warning-outline" size={22} color={DANGER} />
-          <Text style={styles.warnText}>
-            Deleting your account is <Text style={styles.bold}>permanent</Text>. Once your request is
-            reviewed and the account is deactivated, it <Text style={styles.bold}>cannot be reopened</Text>
+          <AppText style={styles.warnText}>
+            Deleting your account is <AppText style={styles.bold}>permanent</AppText>. Once your request is
+            reviewed and the account is deactivated, it <AppText style={styles.bold}>cannot be reopened</AppText>
             . Your order history, wallet balance and GMitra Max benefits cannot be recovered.
-          </Text>
+          </AppText>
         </View>
 
         {/* How it works */}
-        <Text style={styles.sectionTitle}>How it works</Text>
+        <AppText style={styles.sectionTitle}>How it works</AppText>
         <View style={styles.card}>
           <Step n="1" title="You raise a request" body="Choose a reason below and submit." />
           <View style={styles.separator} />
@@ -127,22 +115,22 @@ export default function DeleteAccountScreen() {
         </View>
 
         {/* What we keep */}
-        <Text style={styles.sectionTitle}>What happens to your data</Text>
+        <AppText style={styles.sectionTitle}>What happens to your data</AppText>
         <View style={styles.card}>
           <View style={styles.infoRow}>
             <Ionicons name="trash-outline" size={18} color={GREEN_DARK} style={styles.infoIcon} />
-            <Text style={styles.infoText}>
+            <AppText style={styles.infoText}>
               Profile photo, saved addresses, cart, wishlist and marketing data are removed within 30 days.
-            </Text>
+            </AppText>
           </View>
           <View style={styles.separator} />
           <View style={styles.infoRow}>
             <Ionicons name="lock-closed-outline" size={18} color={GREEN_DARK} style={styles.infoIcon} />
-            <Text style={styles.infoText}>
+            <AppText style={styles.infoText}>
               Your name, registered mobile number, documents and invoices are{" "}
-              <Text style={styles.bold}>retained</Text> for the periods Indian law requires (tax, GST,
+              <AppText style={styles.bold}>retained</AppText> for the periods Indian law requires (tax, GST,
               KYC), kept isolated from active systems, then permanently purged.
-            </Text>
+            </AppText>
           </View>
         </View>
         <TouchableOpacity
@@ -151,11 +139,11 @@ export default function DeleteAccountScreen() {
           style={styles.policyLink}
         >
           <Ionicons name="document-text-outline" size={15} color={GREEN_DARK} />
-          <Text style={styles.policyLinkText}>Read the full Account Deletion Policy</Text>
+          <AppText style={styles.policyLinkText}>Read the full Account Deletion Policy</AppText>
         </TouchableOpacity>
 
         {/* Reason */}
-        <Text style={styles.sectionTitle}>Why are you leaving?</Text>
+        <AppText style={styles.sectionTitle}>Why are you leaving?</AppText>
         <View style={styles.card}>
           {REASONS.map((r, idx) => (
             <View key={r.code}>
@@ -170,7 +158,7 @@ export default function DeleteAccountScreen() {
                   size={20}
                   color={reasonCode === r.code ? GREEN_DARK : "#C4C4C4"}
                 />
-                <Text style={styles.reasonLabel}>{r.label}</Text>
+                <AppText style={styles.reasonLabel}>{r.label}</AppText>
               </TouchableOpacity>
             </View>
           ))}
@@ -197,9 +185,9 @@ export default function DeleteAccountScreen() {
             size={22}
             color={acknowledged ? DANGER : "#C4C4C4"}
           />
-          <Text style={styles.ackText}>
+          <AppText style={styles.ackText}>
             I understand this is permanent and my account cannot be revived.
-          </Text>
+          </AppText>
         </TouchableOpacity>
 
         {/* Submit */}
@@ -212,12 +200,12 @@ export default function DeleteAccountScreen() {
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.submitText}>Request account deletion</Text>
+            <AppText style={styles.submitText}>Request account deletion</AppText>
           )}
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.cancelBtn} activeOpacity={0.7} onPress={() => router.back()}>
-          <Text style={styles.cancelText}>Keep my account</Text>
+          <AppText style={styles.cancelText}>Keep my account</AppText>
         </TouchableOpacity>
       </ScrollView>
 
@@ -228,15 +216,15 @@ export default function DeleteAccountScreen() {
             <View style={styles.modalIconWrap}>
               <Ionicons name="trash-outline" size={26} color="#fff" />
             </View>
-            <Text style={styles.modalTitle}>Delete account?</Text>
-            <Text style={styles.modalMessage}>
-              This submits a deletion request and deactivates your account. It cannot be undone.
-            </Text>
+            <AppText style={styles.modalTitle}>Delete account?</AppText>
+            <AppText style={styles.modalMessage}>
+              This submits a deletion request for review. Your account stays active until an admin completes the closure.
+            </AppText>
             <TouchableOpacity style={styles.modalDeleteBtn} onPress={submitRequest} activeOpacity={0.85}>
-              <Text style={styles.modalDeleteText}>Yes, delete my account</Text>
+              <AppText style={styles.modalDeleteText}>Yes, delete my account</AppText>
             </TouchableOpacity>
             <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setConfirmVisible(false)} activeOpacity={0.8}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
+              <AppText style={styles.modalCancelText}>Cancel</AppText>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -249,11 +237,11 @@ function Step({ n, title, body }: { n: string; title: string; body: string }) {
   return (
     <View style={styles.stepRow}>
       <View style={styles.stepNum}>
-        <Text style={styles.stepNumText}>{n}</Text>
+        <AppText style={styles.stepNumText}>{n}</AppText>
       </View>
       <View style={styles.rowTextWrap}>
-        <Text style={styles.stepTitle}>{title}</Text>
-        <Text style={styles.stepBody}>{body}</Text>
+        <AppText style={styles.stepTitle}>{title}</AppText>
+        <AppText style={styles.stepBody}>{body}</AppText>
       </View>
     </View>
   );

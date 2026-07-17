@@ -3,15 +3,9 @@
  */
 
 import { useCallback } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  RefreshControl,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, RefreshControl, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -48,11 +42,11 @@ function TicketRow({ ticket, onPress }: { ticket: TicketListItem; onPress: () =>
   return (
     <TouchableOpacity style={styles.ticketRow} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.ticketRowMain}>
-        <Text style={styles.ticketSubject} numberOfLines={2}>{ticket.subject}</Text>
-        <Text style={styles.ticketMeta}>{ticket.ticket_id} · {date}</Text>
+        <AppText style={styles.ticketSubject} numberOfLines={2}>{ticket.subject}</AppText>
+        <AppText style={styles.ticketMeta}>{ticket.ticket_id} · {date}</AppText>
       </View>
       <View style={[styles.statusPill, ticket.status === "OPEN" || ticket.status === "IN_PROGRESS" ? styles.statusOpen : styles.statusClosed]}>
-        <Text style={styles.statusText}>{statusLabel(ticket.status)}</Text>
+        <AppText style={styles.statusText}>{statusLabel(ticket.status)}</AppText>
       </View>
       <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
     </TouchableOpacity>
@@ -89,24 +83,24 @@ export default function HelpScreen() {
             <Ionicons name="add-circle-outline" size={28} color={TEAL} />
           </View>
           <View style={styles.createTextWrap}>
-            <Text style={styles.createTitle}>Create a ticket</Text>
-            <Text style={styles.createSub}>Describe your issue and we’ll get back to you.</Text>
+            <AppText style={styles.createTitle}>Create a ticket</AppText>
+            <AppText style={styles.createSub}>Describe your issue and we’ll get back to you.</AppText>
           </View>
           <Ionicons name="chevron-forward" size={22} color={TEXT_GRAY} />
         </TouchableOpacity>
 
         {/* My tickets */}
-        <Text style={styles.sectionTitle}>My tickets</Text>
+        <AppText style={styles.sectionTitle}>My tickets</AppText>
         {isLoading ? (
           <View style={styles.loaderWrap}>
             <ActivityIndicator size="small" color={TEAL} />
-            <Text style={styles.loaderText}>Loading…</Text>
+            <AppText style={styles.loaderText}>Loading…</AppText>
           </View>
         ) : tickets.length === 0 ? (
           <View style={[styles.emptyCard, SHADOW]}>
             <Ionicons name="document-text-outline" size={40} color={TEXT_GRAY} />
-            <Text style={styles.emptyTitle}>No tickets yet</Text>
-            <Text style={styles.emptySub}>Create a ticket above to get help.</Text>
+            <AppText style={styles.emptyTitle}>No tickets yet</AppText>
+            <AppText style={styles.emptySub}>Create a ticket above to get help.</AppText>
           </View>
         ) : (
           <View style={[styles.listCard, SHADOW]}>
@@ -125,7 +119,7 @@ export default function HelpScreen() {
         )}
 
         {/* Quick links — FAQ, Contact, Grievance — sourced from the legal pack */}
-        <Text style={styles.sectionTitle}>Quick links</Text>
+        <AppText style={styles.sectionTitle}>Quick links</AppText>
         <View style={[styles.listCard, SHADOW]}>
           <TouchableOpacity
             style={styles.quickRow}
@@ -134,8 +128,8 @@ export default function HelpScreen() {
           >
             <Ionicons name="help-circle-outline" size={22} color={TEAL} />
             <View style={styles.quickRowText}>
-              <Text style={styles.quickRowTitle}>FAQ</Text>
-              <Text style={styles.quickRowSub}>Common questions — food, rides, parcels</Text>
+              <AppText style={styles.quickRowTitle}>FAQ</AppText>
+              <AppText style={styles.quickRowSub}>Common questions — food, rides, parcels</AppText>
             </View>
             <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
           </TouchableOpacity>
@@ -147,8 +141,8 @@ export default function HelpScreen() {
           >
             <Ionicons name="call-outline" size={22} color={TEAL} />
             <View style={styles.quickRowText}>
-              <Text style={styles.quickRowTitle}>Contact Us</Text>
-              <Text style={styles.quickRowSub}>Every email, phone, and address</Text>
+              <AppText style={styles.quickRowTitle}>Contact Us</AppText>
+              <AppText style={styles.quickRowSub}>Every email, phone, and address</AppText>
             </View>
             <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
           </TouchableOpacity>
@@ -160,8 +154,8 @@ export default function HelpScreen() {
           >
             <Ionicons name="hammer-outline" size={22} color={TEAL} />
             <View style={styles.quickRowText}>
-              <Text style={styles.quickRowTitle}>Grievance Redressal</Text>
-              <Text style={styles.quickRowSub}>How to file & escalate — IT Rules 2021</Text>
+              <AppText style={styles.quickRowTitle}>Grievance Redressal</AppText>
+              <AppText style={styles.quickRowSub}>How to file & escalate — IT Rules 2021</AppText>
             </View>
             <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
           </TouchableOpacity>
@@ -173,22 +167,22 @@ export default function HelpScreen() {
           >
             <Ionicons name="shield-checkmark-outline" size={22} color={TEAL} />
             <View style={styles.quickRowText}>
-              <Text style={styles.quickRowTitle}>Safety Policy</Text>
-              <Text style={styles.quickRowSub}>SOS, women safety, incident reporting</Text>
+              <AppText style={styles.quickRowTitle}>Safety Policy</AppText>
+              <AppText style={styles.quickRowSub}>SOS, women safety, incident reporting</AppText>
             </View>
             <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
           </TouchableOpacity>
         </View>
 
         {/* Contact */}
-        <Text style={styles.sectionTitle}>Contact us</Text>
+        <AppText style={styles.sectionTitle}>Contact us</AppText>
         <View style={[styles.contactCard, SHADOW]}>
-          <Text style={styles.contactLabel}>Email</Text>
-          <Text style={styles.contactValue}>support@gatimitra.com</Text>
-          <Text style={styles.contactLabel}>Phone</Text>
-          <Text style={styles.contactValue}>+91 1800-xxx-xxxx</Text>
-          <Text style={styles.contactLabel}>Grievance Officer</Text>
-          <Text style={styles.contactValue}>grievance.officer@gatimitra.com</Text>
+          <AppText style={styles.contactLabel}>Email</AppText>
+          <AppText style={styles.contactValue}>support@gatimitra.com</AppText>
+          <AppText style={styles.contactLabel}>Phone</AppText>
+          <AppText style={styles.contactValue}>+91 1800-xxx-xxxx</AppText>
+          <AppText style={styles.contactLabel}>Grievance Officer</AppText>
+          <AppText style={styles.contactValue}>grievance.officer@gatimitra.com</AppText>
         </View>
 
         {/* All policies entry */}
@@ -199,8 +193,8 @@ export default function HelpScreen() {
         >
           <Ionicons name="book-outline" size={22} color={TEAL} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.allPoliciesTitle}>All Policies & Legal Documents</Text>
-            <Text style={styles.allPoliciesSub}>Refund, privacy, safety, subscriptions & more</Text>
+            <AppText style={styles.allPoliciesTitle}>All Policies & Legal Documents</AppText>
+            <AppText style={styles.allPoliciesSub}>Refund, privacy, safety, subscriptions & more</AppText>
           </View>
           <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
         </TouchableOpacity>

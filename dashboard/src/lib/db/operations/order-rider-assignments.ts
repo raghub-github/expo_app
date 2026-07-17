@@ -89,6 +89,55 @@ export async function listOrderRiderAssignmentsForOrder(
   })) as OrderRiderAssignmentRecord[];
 }
 
+/**
+ * Distinct riders who explicitly refused/rejected delivering this order.
+ * Used for Locality GREEN→RED (RED only when count ≥ 2).
+ */
+export async function countDistinctRidersWhoRefusedDelivery(
+  orderCoreId: number
+): Promise<number> {
+  if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) return 0;
+  const sql = getSql();
+  const riderIds = new Set<number>();
+
+  try {
+    const auditRows = (await sql`
+      SELECT DISTINCT a.rider_id AS "riderId"
+      FROM order_rider_dispatch_assignment_audit a
+      WHERE a.order_core_id = ${orderCoreId}
+        AND a.rider_id IS NOT NULL
+        AND a.event_type = 'rejected'
+    `) as Array<{ riderId?: number | null }>;
+    for (const row of auditRows) {
+      const id = Number(row.riderId);
+      if (Number.isFinite(id) && id > 0) riderIds.add(id);
+    }
+  } catch {
+    /* audit table optional */
+  }
+
+  try {
+    const assignmentRows = (await sql`
+      SELECT DISTINCT ora.rider_id AS "riderId"
+      FROM order_rider_assignments ora
+      WHERE (ora.order_core_id = ${orderCoreId} OR ora.order_id = ${orderCoreId})
+        AND ora.rider_id IS NOT NULL
+        AND (
+          ora.rejected_at IS NOT NULL
+          OR lower(coalesce(ora.assignment_status, '')) IN ('rejected', 'declined', 'refused')
+        )
+    `) as Array<{ riderId?: number | null }>;
+    for (const row of assignmentRows) {
+      const id = Number(row.riderId);
+      if (Number.isFinite(id) && id > 0) riderIds.add(id);
+    }
+  } catch {
+    /* assignments optional */
+  }
+
+  return riderIds.size;
+}
+
 export type RiderAssignmentTimelineEvent = {
   event_type: string;
   occurred_at: string;

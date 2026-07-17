@@ -4,13 +4,9 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useRoute } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -45,11 +41,11 @@ function OrderInfoRow({
         <View style={styles.infoIconWrap}>
           <Ionicons name={icon} size={18} color={GREEN} />
         </View>
-        <Text style={styles.infoLabel}>{label}</Text>
+        <AppText style={styles.infoLabel}>{label}</AppText>
       </View>
-      <Text style={[styles.infoValue, { color: valueColor }]} numberOfLines={1}>
+      <AppText style={[styles.infoValue, { color: valueColor }]} numberOfLines={1}>
         {value}
-      </Text>
+      </AppText>
     </View>
   );
 }
@@ -127,9 +123,9 @@ export default function OrderSuccessScreen() {
   if (!id) {
     return (
       <View style={[styles.center, { paddingBottom: insets.bottom }]}>
-        <Text style={styles.errText}>Invalid order</Text>
+        <AppText style={styles.errText}>Invalid order</AppText>
         <TouchableOpacity onPress={goHome} style={styles.primaryBtn}>
-          <Text style={styles.primaryBtnText}>Back to Home</Text>
+          <AppText style={styles.primaryBtnText}>Back to Home</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -156,10 +152,10 @@ export default function OrderSuccessScreen() {
           <View style={styles.checkCircle}>
             <Ionicons name="checkmark" size={46} color="#fff" />
           </View>
-          <Text style={styles.title}>🎉 Order placed successfully!</Text>
-          <Text style={styles.subtitle}>
+          <AppText style={styles.title}>🎉 Order placed successfully!</AppText>
+          <AppText style={styles.subtitle}>
             We&apos;ve received your order and will start preparing it soon.
-          </Text>
+          </AppText>
         </Animated.View>
 
         <Animated.View entering={FadeIn.duration(300).delay(120)} style={styles.card}>
@@ -193,10 +189,10 @@ export default function OrderSuccessScreen() {
                 <Ionicons name="location" size={20} color={GREEN} />
               </View>
               <View style={styles.addressBody}>
-                <Text style={styles.addressLabel}>Delivery address</Text>
-                <Text style={styles.addressText} numberOfLines={2}>
+                <AppText style={styles.addressLabel}>Delivery address</AppText>
+                <AppText style={styles.addressText} numberOfLines={2}>
                   {deliveryAddress}
-                </Text>
+                </AppText>
               </View>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
@@ -206,20 +202,20 @@ export default function OrderSuccessScreen() {
         <Animated.View entering={FadeIn.duration(300).delay(280)} style={styles.actions}>
           <TouchableOpacity onPress={trackOrder} style={styles.trackBtn} activeOpacity={0.88}>
             <Ionicons name="paper-plane" size={20} color="#fff" />
-            <Text style={styles.trackBtnText}>Track Order</Text>
+            <AppText style={styles.trackBtnText}>Track Order</AppText>
           </TouchableOpacity>
 
           <View style={styles.redirectRow}>
             <View style={styles.redirectDot} />
-            <Text style={styles.autoRedirectHint}>
+            <AppText style={styles.autoRedirectHint}>
               Opening live tracking in {Math.max(secondsLeft, 0)} second
               {secondsLeft === 1 ? "" : "s"}…
-            </Text>
+            </AppText>
           </View>
 
           <TouchableOpacity onPress={goHome} style={styles.homeBtn} activeOpacity={0.88}>
             <Ionicons name="home-outline" size={20} color={GatiMitraColors.textPrimary} />
-            <Text style={styles.homeBtnText}>Back to Home</Text>
+            <AppText style={styles.homeBtnText}>Back to Home</AppText>
           </TouchableOpacity>
         </Animated.View>
 

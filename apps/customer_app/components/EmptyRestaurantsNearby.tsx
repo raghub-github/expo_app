@@ -4,7 +4,9 @@
  */
 
 import { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Animated, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, Animated, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -64,12 +66,12 @@ export function EmptyRestaurantsNearby() {
       <Animated.View style={[styles.iconWrap, { transform: [{ translateY }] }]}>
         <Ionicons name="leaf" size={64} color="#27AE60" />
       </Animated.View>
-      <Text style={styles.title}>
+      <AppText style={styles.title}>
         Looks like we're still finding great kitchens near you 🌿
-      </Text>
-      <Text style={styles.subtitle}>
+      </AppText>
+      <AppText style={styles.subtitle}>
         We're expanding fast — try another nearby location or check back soon.
-      </Text>
+      </AppText>
       <TouchableOpacity
         onPress={onChangeLocation}
         activeOpacity={0.85}
@@ -82,7 +84,7 @@ export function EmptyRestaurantsNearby() {
           style={styles.cta}
         >
           <Ionicons name="location" size={20} color="#fff" />
-          <Text style={styles.ctaText}>Change Location</Text>
+          <AppText style={styles.ctaText}>Change Location</AppText>
         </LinearGradient>
       </TouchableOpacity>
     </Animated.View>

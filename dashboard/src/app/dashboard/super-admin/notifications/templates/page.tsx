@@ -166,75 +166,118 @@ export default function TemplatesPage() {
           </div>
         </div>
 
-        {/* Table */}
+        {/* Table — horizontal slide (touch / trackpad / scrollbar) */}
         <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-slate-200 text-sm">
-            <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-3">Code</th>
-                <th className="px-4 py-3">Category</th>
-                <th className="px-4 py-3">Role</th>
-                <th className="px-4 py-3">Priority</th>
-                <th className="px-4 py-3">Title</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {isLoading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">Loading…</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No templates match.</td></tr>
-              ) : (
-                filtered.map((t) => (
-                  <tr
-                    key={t.id}
-                    onClick={() => setEditing(t)}
-                    className="cursor-pointer transition hover:bg-teal-50/40"
-                  >
-                    <td className="px-4 py-3 font-mono text-xs text-slate-800">{t.code}</td>
-                    <td className="px-4 py-3 text-slate-600">{t.category}</td>
-                    <td className="px-4 py-3">
-                      <span className={"inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium " + (ROLE_COLORS[t.role] ?? "bg-slate-100 text-slate-700 border-slate-200")}>
-                        {t.role}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={"inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium " + (PRIORITY_COLORS[t.priority] ?? "bg-slate-100 text-slate-700 border-slate-200")}>
-                        {t.priority}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 max-w-[360px] truncate text-slate-700">{t.title_template}</td>
-                    <td className="px-4 py-3">
-                      {t.enabled ? (
-                        <span className="inline-flex rounded-md bg-teal-50 border border-teal-200 px-2 py-0.5 text-[11px] font-medium text-teal-700">Enabled</span>
-                      ) : (
-                        <span className="inline-flex rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600">Disabled</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                      <div className="inline-flex items-center gap-1">
-                        <button
-                          onClick={() => setTesting(t)}
-                          disabled={!t.enabled}
-                          title={t.enabled ? "Send a test notification" : "Enable this template first"}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-700 hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-50"
-                        >
-                          <Send className="h-3 w-3" /> Test
-                        </button>
-                        <button
-                          onClick={() => setEditing(t)}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-700 hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800"
-                        >
-                          <Pencil className="h-3 w-3" /> Edit
-                        </button>
-                      </div>
+          <div
+            className="overflow-x-auto overscroll-x-contain scroll-smooth [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]"
+            style={{ WebkitOverflowScrolling: "touch" }}
+          >
+            <table className="w-full min-w-[960px] border-separate border-spacing-0 divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="sticky left-0 z-20 bg-slate-50 px-4 py-3 shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)]">
+                    Code
+                  </th>
+                  <th className="px-4 py-3 whitespace-nowrap">Category</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Role</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Priority</th>
+                  <th className="px-4 py-3 whitespace-nowrap min-w-[280px]">Title</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Status</th>
+                  <th className="sticky right-0 z-20 bg-slate-50 px-4 py-3 text-right shadow-[-2px_0_6px_-2px_rgba(15,23,42,0.08)]">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                      Loading…
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                      No templates match.
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((t) => (
+                    <tr
+                      key={t.id}
+                      onClick={() => setEditing(t)}
+                      className="group cursor-pointer transition hover:bg-teal-50/40"
+                    >
+                      <td className="sticky left-0 z-10 bg-white px-4 py-3 font-mono text-xs text-slate-800 shadow-[2px_0_6px_-2px_rgba(15,23,42,0.06)] group-hover:bg-teal-50/40">
+                        {t.code}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-600">{t.category}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span
+                          className={
+                            "inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium " +
+                            (ROLE_COLORS[t.role] ?? "bg-slate-100 text-slate-700 border-slate-200")
+                          }
+                        >
+                          {t.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span
+                          className={
+                            "inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium " +
+                            (PRIORITY_COLORS[t.priority] ??
+                              "bg-slate-100 text-slate-700 border-slate-200")
+                          }
+                        >
+                          {t.priority}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 max-w-[420px] truncate text-slate-700">
+                        {t.title_template}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {t.enabled ? (
+                          <span className="inline-flex rounded-md border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-700">
+                            Enabled
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                            Disabled
+                          </span>
+                        )}
+                      </td>
+                      <td
+                        className="sticky right-0 z-10 bg-white px-4 py-3 text-right shadow-[-2px_0_6px_-2px_rgba(15,23,42,0.06)] group-hover:bg-teal-50/40"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            onClick={() => setTesting(t)}
+                            disabled={!t.enabled}
+                            title={
+                              t.enabled
+                                ? "Send a test notification"
+                                : "Enable this template first"
+                            }
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-700 hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-50"
+                          >
+                            <Send className="h-3 w-3" /> Test
+                          </button>
+                          <button
+                            onClick={() => setEditing(t)}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-700 hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800"
+                          >
+                            <Pencil className="h-3 w-3" /> Edit
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <p className="mt-4 text-xs text-slate-500">

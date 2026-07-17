@@ -5,9 +5,11 @@
 
 import { walletLedger } from "@/lib/db/schema";
 import type { getDb } from "@/lib/db/client";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, like } from "drizzle-orm";
 import { isRideRiderWalletCreditBlocked } from "@/lib/riders/ride-wallet-credit-pending";
 import { resolveRiderPayoutTotalForDisplay } from "@/lib/riders/rider-payout-snapshot";
+import { isLedgerCreditEntryType } from "@/lib/riders/rider-ledger-display";
+import { extractOrderCoreIdFromLedger } from "@/lib/riders/rider-ledger-resolve";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -26,6 +28,10 @@ export type EnrichableRiderOrder = {
   paymentStatus?: string | null;
   adminRiderPaymentClearedAt?: Date | string | null;
   walletCredited?: boolean;
+  /** True when net wallet_ledger impact for this order is a debit (e.g. cancel penalty). */
+  walletDebited?: boolean;
+  /** True when at least one wallet_ledger row is linked to this order. */
+  hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
   [key: string]: unknown;
 };
@@ -126,64 +132,105 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
 ): Promise<T[]> {
   if (orders.length === 0) return orders;
 
-  const refs = orders.flatMap((o) => ledgerRefPrefix(o.id));
+  const orderIds = orders.map((o) => o.id).filter((id) => Number.isFinite(id));
+  const earnRefs = orderIds.flatMap((id) => ledgerRefPrefix(id));
+  const refMatchers = [] as Array<ReturnType<typeof inArray> | ReturnType<typeof like>>;
+  if (earnRefs.length > 0) {
+    refMatchers.push(inArray(walletLedger.ref, earnRefs));
+  }
+  for (const id of orderIds) {
+    refMatchers.push(like(walletLedger.ref, `rider_cancel_pen:${id}:%`));
+  }
+
   const ledgerEntries =
-    refs.length === 0
+    refMatchers.length === 0
       ? []
       : await db
-          .select({ ref: walletLedger.ref, amount: walletLedger.amount })
+          .select({
+            ref: walletLedger.ref,
+            amount: walletLedger.amount,
+            entryType: walletLedger.entryType,
+            metadata: walletLedger.metadata,
+          })
           .from(walletLedger)
           .where(
-            and(eq(walletLedger.riderId, riderId), inArray(walletLedger.ref, refs)),
+            and(
+              eq(walletLedger.riderId, riderId),
+              or(...refMatchers),
+            ),
           );
 
-  const ledgerTotalByCoreId = new Map<number, number>();
+  /** Signed net ledger impact per order (credits +, debits −). */
+  const ledgerNetByCoreId = new Map<number, number>();
+  const ledgerHitByCoreId = new Set<number>();
   for (const entry of ledgerEntries) {
-    const ref = entry.ref ?? "";
-    const match = /^rider_earn:(?:delivery|tip):(\d+)$/.exec(ref);
-    if (!match) continue;
-    const coreId = Number(match[1]);
-    if (!Number.isFinite(coreId)) continue;
-    const amount = Number(entry.amount);
-    if (!Number.isFinite(amount)) continue;
-    ledgerTotalByCoreId.set(coreId, round2((ledgerTotalByCoreId.get(coreId) ?? 0) + amount));
+    const meta =
+      entry.metadata != null && typeof entry.metadata === "object"
+        ? (entry.metadata as Record<string, unknown>)
+        : null;
+    const coreId = extractOrderCoreIdFromLedger(entry.ref, meta);
+    if (coreId == null || !Number.isFinite(coreId)) continue;
+    const amount = Math.abs(Number(entry.amount));
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const entryType = String(entry.entryType ?? "");
+    const signed = isLedgerCreditEntryType(entryType) ? amount : -amount;
+    ledgerHitByCoreId.add(coreId);
+    ledgerNetByCoreId.set(coreId, round2((ledgerNetByCoreId.get(coreId) ?? 0) + signed));
   }
 
   return orders.map((order) => {
-    const ledgerTotal = ledgerTotalByCoreId.get(order.id);
-    const walletCredited = ledgerTotal != null && ledgerTotal > 0;
-    const earningCreditPending =
-      !walletCredited &&
+    const hasLedgerEntry = ledgerHitByCoreId.has(order.id);
+    const ledgerNet = hasLedgerEntry ? (ledgerNetByCoreId.get(order.id) ?? 0) : null;
+    const walletCredited = ledgerNet != null && ledgerNet > 0;
+    const walletDebited = ledgerNet != null && ledgerNet < 0;
+    const expectedEarning = resolveRiderEarningFromOrderFields({
+      riderEarning: order.riderEarning,
+      fareAmount: order.fareAmount,
+      grandTotal: order.grandTotal,
+      tipAmount: order.tipAmount,
+      billingSnapshot: order.billingSnapshot,
+      acceptPayoutSnapshot: order.acceptPayoutSnapshot,
+      assignmentRiderEarning: order.assignmentRiderEarning,
+      assignmentTipAmount: order.assignmentTipAmount,
+    });
+    const ridePaymentBlocked =
+      !hasLedgerEntry &&
       isRideRiderWalletCreditBlocked({
         orderType: order.orderType,
         status: order.status,
         paymentStatus: order.paymentStatus,
         adminRiderPaymentClearedAt: order.adminRiderPaymentClearedAt,
       });
-    const resolvedEarning = earningCreditPending
-      ? 0
-      : walletCredited
-        ? ledgerTotal!
-        : resolveRiderEarningFromOrderFields({
-            riderEarning: order.riderEarning,
-            fareAmount: order.fareAmount,
-            grandTotal: order.grandTotal,
-            tipAmount: order.tipAmount,
-            billingSnapshot: order.billingSnapshot,
-            acceptPayoutSnapshot: order.acceptPayoutSnapshot,
-            assignmentRiderEarning: order.assignmentRiderEarning,
-            assignmentTipAmount: order.assignmentTipAmount,
-          });
+    const statusKey = String(order.status ?? "").trim().toLowerCase();
+    const isTerminalNoPayout =
+      statusKey === "cancelled" || statusKey === "failed";
+    /** Waiting on wallet credit (ride payment hold, delivered, or active with known payout). */
+    const earningCreditPending =
+      !hasLedgerEntry &&
+      !isTerminalNoPayout &&
+      (ridePaymentBlocked || statusKey === "delivered" || expectedEarning > 0);
+
+    // Ledger net when present; otherwise expected payout (may render with strikethrough in UI).
+    const displayEarning =
+      ledgerNet != null
+        ? Math.abs(ledgerNet)
+        : expectedEarning > 0
+          ? expectedEarning
+          : Number(order.riderEarning) > 0
+            ? round2(Number(order.riderEarning))
+            : 0;
 
     return {
       ...order,
-      riderEarning: earningCreditPending ? null : resolvedEarning > 0 ? resolvedEarning : order.riderEarning,
+      riderEarning: displayEarning > 0 ? displayEarning : order.riderEarning,
       fareAmount: resolveOrderFareAmount({
         fareAmount: order.fareAmount,
         grandTotal: order.grandTotal,
         billingSnapshot: order.billingSnapshot,
       }),
       walletCredited,
+      walletDebited,
+      hasLedgerEntry,
       earningCreditPending,
     };
   });

@@ -1,5 +1,7 @@
 import React from "react";
-import { Pressable, Text, StyleSheet, Platform, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { Pressable, StyleSheet, Platform, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import Animated from "react-native-reanimated";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -29,7 +31,7 @@ export const MerchantFloatingFab = React.memo(function MerchantFloatingFab({
         {/* Inner shell keeps bg/border stable on Android Pressable + ripple. */}
         <View style={styles.fab} pointerEvents="none">
           <Ionicons name="restaurant-outline" size={18} color="#FFFFFF" />
-          <Text style={styles.text}>Menu</Text>
+          <AppText style={styles.text}>Menu</AppText>
         </View>
       </Pressable>
     </Animated.View>

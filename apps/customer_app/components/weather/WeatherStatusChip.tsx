@@ -1,4 +1,6 @@
-import { Pressable, Text, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext, WeatherSeverity } from "@/services/weather.service";
 
@@ -40,7 +42,7 @@ export function WeatherStatusChip({ weather, onPress, variant = "compact" }: Pro
         { backgroundColor: colors.bg, borderColor: colors.border },
       ]}
     >
-      <Text
+      <AppText
         style={[
           styles.chipText,
           variant === "pill" && styles.chipTextPill,
@@ -49,7 +51,7 @@ export function WeatherStatusChip({ weather, onPress, variant = "compact" }: Pro
         numberOfLines={1}
       >
         {weather.chipLabel}
-      </Text>
+      </AppText>
     </View>
   );
 

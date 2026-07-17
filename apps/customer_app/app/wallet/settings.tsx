@@ -3,22 +3,9 @@
  */
 
 import { useMemo, useState, useEffect, type ReactNode } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  Pressable,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-  Linking,
-  BackHandler,
-  Alert,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Modal, Pressable, TextInput, KeyboardAvoidingView, Platform, Linking, BackHandler, Alert, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -53,7 +40,7 @@ function ActionRow({ label, iconShape, onPress, leadingIcon, ionIcon }: ActionRo
         {leadingIcon ??
           (ionIcon ? <Ionicons name={ionIcon} size={18} color={TEXT} /> : null)}
       </View>
-      <Text style={styles.actionLabel}>{label}</Text>
+      <AppText style={styles.actionLabel}>{label}</AppText>
       <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />
     </TouchableOpacity>
   );
@@ -134,14 +121,14 @@ export default function WalletSettingsScreen() {
               <Ionicons name="person-outline" size={20} color={MUTED} />
             </View>
             <View style={styles.accountTextWrap}>
-              <Text style={styles.accountLabel}>Account linked with</Text>
-              <Text style={styles.accountPhone}>{linkedPhone}</Text>
+              <AppText style={styles.accountLabel}>Account linked with</AppText>
+              <AppText style={styles.accountPhone}>{linkedPhone}</AppText>
             </View>
           </View>
 
           <View style={styles.sectionHeader}>
             <View style={styles.accentBar} />
-            <Text style={styles.sectionTitle}>Quick actions</Text>
+            <AppText style={styles.sectionTitle}>Quick actions</AppText>
           </View>
 
           <View style={styles.quickCard}>
@@ -182,14 +169,14 @@ export default function WalletSettingsScreen() {
             </View>
 
             <Pressable style={[styles.modalSheet, { paddingBottom: insets.bottom + 20 }]} onPress={(e) => e.stopPropagation()}>
-              <Text style={styles.sheetTitle}>Change phone number</Text>
+              <AppText style={styles.sheetTitle}>Change phone number</AppText>
 
               <View style={styles.inputField}>
                 <View style={styles.inputLabelWrap}>
-                  <Text style={styles.inputLabel}>Phone number</Text>
+                  <AppText style={styles.inputLabel}>Phone number</AppText>
                 </View>
                 <View style={styles.inputRow}>
-                  <Text style={styles.prefix}>+91</Text>
+                  <AppText style={styles.prefix}>+91</AppText>
                   <TextInput
                     style={styles.input}
                     value={phoneInput}
@@ -205,10 +192,10 @@ export default function WalletSettingsScreen() {
 
               <View style={styles.infoRow}>
                 <Ionicons name="information-circle-outline" size={17} color={MUTED} />
-                <Text style={styles.infoText}>
-                  The existing <Text style={styles.infoBold}>GatiCash</Text> balance will not be transferred to
+                <AppText style={styles.infoText}>
+                  The existing <AppText style={styles.infoBold}>GatiCash</AppText> balance will not be transferred to
                   the new phone number.
-                </Text>
+                </AppText>
               </View>
 
               <TouchableOpacity
@@ -220,9 +207,9 @@ export default function WalletSettingsScreen() {
                 {phoneSubmitting ? (
                   <ActivityIndicator color="#FFFFFF" />
                 ) : (
-                  <Text style={[styles.continueText, !canContinue && styles.continueTextDisabled]}>
+                  <AppText style={[styles.continueText, !canContinue && styles.continueTextDisabled]}>
                     Continue
-                  </Text>
+                  </AppText>
                 )}
               </TouchableOpacity>
             </Pressable>

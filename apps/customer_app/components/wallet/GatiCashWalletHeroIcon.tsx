@@ -1,4 +1,6 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -18,7 +20,7 @@ export function GatiCashWalletHeroIcon() {
       >
         <View style={styles.flap} />
         <View style={styles.flapLine} />
-        <Text style={styles.rupee}>₹</Text>
+        <AppText style={styles.rupee}>₹</AppText>
       </LinearGradient>
     </View>
   );

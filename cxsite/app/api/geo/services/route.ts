@@ -9,7 +9,6 @@ import { getGatimitraBackendUrl } from '@/lib/server/gatimitraBackendUrl'
 
 export const dynamic = 'force-dynamic'
 
-const BACKEND_URL = getGatimitraBackendUrl()
 const UPSTREAM_TIMEOUT_MS = process.env.NODE_ENV === 'production' ? 12_000 : 4_000
 
 /** Proxy — same as customer app GET /v1/geo/services (DB first, then backend). */
@@ -62,8 +61,9 @@ export async function GET(request: NextRequest) {
     qs.set('lng', String(lng))
   }
 
+  const backendUrl = getGatimitraBackendUrl()
   try {
-    const upstream = await fetch(`${BACKEND_URL}/v1/geo/services?${qs.toString()}`, {
+    const upstream = await fetch(`${backendUrl}/v1/geo/services?${qs.toString()}`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
@@ -77,7 +77,10 @@ export async function GET(request: NextRequest) {
       console.warn('[GET /api/geo/services] upstream status', upstream.status)
     }
   } catch (err) {
-    console.error('[GET /api/geo/services] upstream failed:', err)
+    console.warn(
+      '[GET /api/geo/services] upstream failed:',
+      err instanceof Error ? err.message : err
+    )
   }
 
   return NextResponse.json(GEO_SERVICES_OPEN_FALLBACK, {

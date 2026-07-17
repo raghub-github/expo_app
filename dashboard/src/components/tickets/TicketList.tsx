@@ -22,6 +22,7 @@ import type { Option } from "./InlineSearchableSelect";
 import { BulkUpdateModal } from "./BulkUpdateModal";
 import { ExportTicketsModal } from "./ExportTicketsModal";
 import { buildTicketDetailHref, TICKET_FROM_QUEUE_PARAM } from "@/lib/tickets/ticket-path-utils";
+import { useAuth } from "@/providers/AuthProvider";
 
 export type TicketViewMode = "list" | "grid";
 type TicketScopeTab = "active" | "snoozed";
@@ -108,6 +109,8 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const updateTicket = useTicketUpdate();
   const queryClient = useQueryClient();
 
+  const { systemUser, permissions } = useAuth();
+
   /** Shared cache with header AgentStatusToggle — used for queue-home empty state when offline. */
   const { data: agentStatusRes, isFetched: agentStatusFetched } = useQuery<{
     success: boolean;
@@ -125,30 +128,23 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const queueResolvedAgentStatus = agentStatusRes?.data?.currentStatus || "offline";
   const queueHomeAgentOffline =
     isQueueHome && agentStatusFetched && queueResolvedAgentStatus === "offline";
-  const [queueGateTimedOut, setQueueGateTimedOut] = useState(false);
-
-  // Fast fallback: if agent-status API is slow on hard reload,
-  // don't block queue list forever behind the status gate.
-  useEffect(() => {
-    if (!isQueueHome) {
-      setQueueGateTimedOut(false);
-      return;
-    }
-    if (agentStatusFetched) {
-      setQueueGateTimedOut(false);
-      return;
-    }
-    const id = window.setTimeout(() => setQueueGateTimedOut(true), 1200);
-    return () => window.clearTimeout(id);
-  }, [isQueueHome, agentStatusFetched]);
 
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
 
   const agents = agentsData?.agents ?? [];
+  /** Prefer agents API name; fall back to auth bootstrap so queue list can fetch without waiting on /api/tickets/agents. */
+  const authAgentId =
+    systemUser?.id ??
+    (typeof permissions?.systemUserId === "number" ? permissions.systemUserId : null);
   const currentUser = agentsData?.currentUser
     ? { id: agentsData.currentUser.id, name: agentsData.currentUser.name || "Me" }
-    : null;
+    : authAgentId != null
+      ? {
+          id: authAgentId,
+          name: systemUser?.fullName?.trim() || "Me",
+        }
+      : null;
   const refData = refDataRaw
     ? { statuses: refDataRaw.statuses as Option[], priorities: refDataRaw.priorities as Option[], groups: refDataRaw.groups }
     : { statuses: [] as Option[], priorities: [] as Option[], groups: [] as Array<{ id: number; groupCode: string; groupName: string }> };
@@ -237,12 +233,10 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     return rest;
   }, [queryFilters]);
 
-  const queueListReady = !isQueueHome || Boolean(currentUser);
-  /** Queue home: wait for agent status before fetching tickets so we never show a stale "online" list after going offline. */
-  const queueHomeTicketsEnabled =
-    !isQueueHome || ((agentStatusFetched || queueGateTimedOut) && !queueHomeAgentOffline);
+  /** Fetch immediately; only pause when status confirms the agent is offline (queue home). */
+  const queueHomeTicketsEnabled = !isQueueHome || !queueHomeAgentOffline;
   const { data, isLoading, isPending, isError, isRefetchError, error, refetch } = useTickets(queryFilters, {
-    enabled: queueListReady && queueHomeTicketsEnabled,
+    enabled: queueHomeTicketsEnabled,
   });
   const [refreshErrorDismissed, setRefreshErrorDismissed] = useState(false);
   const activeCountFilters = useMemo<TicketFilters>(() => {
@@ -268,7 +262,8 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const { data: activeCountData } = useQuery({
     queryKey: [...queryKeys.tickets.list(activeCountFilters as unknown as Record<string, unknown>), "countOnly"],
     queryFn: ({ signal }) => fetchTickets(activeCountFilters, signal),
-    enabled: queueListReady && queueHomeTicketsEnabled,
+    // Defer tab counts until the main list has data so cold load isn't 3x DB work.
+    enabled: queueHomeTicketsEnabled && Boolean(data),
     staleTime: 15_000,
     refetchInterval: 20_000,
     refetchIntervalInBackground: true,
@@ -277,7 +272,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const { data: snoozedCountData } = useQuery({
     queryKey: [...queryKeys.tickets.list(snoozedCountFilters as unknown as Record<string, unknown>), "countOnly"],
     queryFn: ({ signal }) => fetchTickets(snoozedCountFilters, signal),
-    enabled: queueListReady && queueHomeTicketsEnabled,
+    enabled: queueHomeTicketsEnabled && Boolean(data),
     staleTime: 15_000,
     refetchInterval: 20_000,
     refetchIntervalInBackground: true,
@@ -841,10 +836,10 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     URL.revokeObjectURL(url);
   }, [tickets, selectedIds]);
 
-  // isLoading is false while the query is disabled (e.g. auth not ready); isPending stays true with no data — show spinner, not empty state.
+  // Only full-page spin when we have nothing to show (no snapshot / cache). Otherwise paint list and refresh in background.
   // When queue home is offline we intentionally disable the tickets query — never spin forever on a disabled query with no data.
   const awaitingTickets =
-    !(isQueueHome && queueHomeAgentOffline) && (isLoading || (isPending && data == null));
+    !(isQueueHome && queueHomeAgentOffline) && data == null && (isLoading || isPending);
   if (awaitingTickets) {
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">

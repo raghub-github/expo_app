@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderSummary } from "@/services/order.service";
 import {
@@ -29,15 +31,15 @@ export function RideHistoryRow({ order, onPress }: Props) {
       </View>
 
       <View style={styles.content}>
-        <Text style={styles.destination} numberOfLines={1}>
+        <AppText style={styles.destination} numberOfLines={1}>
           {destination}
-        </Text>
-        <Text style={styles.meta} numberOfLines={1}>
+        </AppText>
+        <AppText style={styles.meta} numberOfLines={1}>
           {formatRideHistoryDateTime(order.createdAt)}
-        </Text>
-        <Text style={styles.fareStatus} numberOfLines={1}>
+        </AppText>
+        <AppText style={styles.fareStatus} numberOfLines={1}>
           {fareLabel} • {statusLabel}
-        </Text>
+        </AppText>
       </View>
 
       <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />

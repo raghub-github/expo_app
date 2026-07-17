@@ -2,17 +2,9 @@
  * Final cancellation confirmation while searching for a rider.
  */
 
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  ActivityIndicator,
-  type ImageSourcePropType,
-} from "react-native";
+import { View, Modal, Pressable, TouchableOpacity, StyleSheet, Image, ActivityIndicator, type ImageSourcePropType } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -72,11 +64,11 @@ export function RideCancelConfirmSheet({
             {hero ? <Image source={hero} style={styles.heroImage} resizeMode="contain" /> : null}
           </View>
 
-          <Text style={styles.title}>Are you sure you want to cancel this ride?</Text>
+          <AppText style={styles.title}>Are you sure you want to cancel this ride?</AppText>
 
           <DashedDivider />
 
-          <Text style={styles.message}>{message}</Text>
+          <AppText style={styles.message}>{message}</AppText>
 
           <TouchableOpacity
             style={[styles.confirmBtn, loading && styles.confirmBtnDisabled]}
@@ -87,7 +79,7 @@ export function RideCancelConfirmSheet({
             {loading ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
-              <Text style={styles.confirmBtnText}>{confirmLabel}</Text>
+              <AppText style={styles.confirmBtnText}>{confirmLabel}</AppText>
             )}
           </TouchableOpacity>
 
@@ -97,7 +89,7 @@ export function RideCancelConfirmSheet({
             activeOpacity={0.9}
             disabled={loading}
           >
-            <Text style={styles.keepBtnText}>{keepLabel}</Text>
+            <AppText style={styles.keepBtnText}>{keepLabel}</AppText>
           </TouchableOpacity>
         </View>
       </View>

@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ProfileTheme } from "@/constants/profileTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -14,17 +16,17 @@ function FaqAnswerBlocks({ blocks }: { blocks: GatiCashFaqBlock[] }) {
       {blocks.map((block, index) => {
         if (block.type === "text") {
           return (
-            <Text key={index} style={styles.answerText}>
+            <AppText key={index} style={styles.answerText}>
               {block.text}
-            </Text>
+            </AppText>
           );
         }
         return (
           <View key={index} style={styles.bulletList}>
             {block.items.map((item) => (
               <View key={item} style={styles.bulletRow}>
-                <Text style={styles.bulletDot}>•</Text>
-                <Text style={styles.bulletText}>{item}</Text>
+                <AppText style={styles.bulletDot}>•</AppText>
+                <AppText style={styles.bulletText}>{item}</AppText>
               </View>
             ))}
           </View>
@@ -46,7 +48,7 @@ function FaqRow({ item, isLast }: { item: GatiCashFaqItem; isLast: boolean }) {
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
       >
-        <Text style={styles.question}>{item.question}</Text>
+        <AppText style={styles.question}>{item.question}</AppText>
         <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={MUTED} />
       </TouchableOpacity>
       {open ? <FaqAnswerBlocks blocks={item.blocks} /> : null}
@@ -59,7 +61,7 @@ export function GatiCashFaqAccordion({ items }: { items: GatiCashFaqItem[] }) {
     <View style={styles.card}>
       <View style={styles.cardTitleRow}>
         <View style={styles.accentBar} />
-        <Text style={styles.cardTitle}>GatiCash</Text>
+        <AppText style={styles.cardTitle}>GatiCash</AppText>
       </View>
       {items.map((item, index) => (
         <FaqRow key={item.id} item={item} isLast={index === items.length - 1} />

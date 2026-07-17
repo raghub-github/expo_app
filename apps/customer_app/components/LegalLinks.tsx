@@ -11,7 +11,9 @@
  */
 
 import { memo } from "react";
-import { Text, View, StyleSheet, type TextStyle } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, type TextStyle } from "react-native";
 import { useRouter } from "expo-router";
 import { LEGAL_DOC_BY_ID } from "@/lib/legal-registry";
 
@@ -33,16 +35,16 @@ export const LegalLink = memo(function LegalLink({ id, label, style }: LegalLink
   if (!doc) {
     // Render the label as plain text if the id is wrong so we never crash
     // a checkout flow because of a typo.
-    return <Text style={[styles.link, style, { textDecorationLine: "none", color: MUTED }]}>{displayLabel}</Text>;
+    return <AppText style={[styles.link, style, { textDecorationLine: "none", color: MUTED }]}>{displayLabel}</AppText>;
   }
   return (
-    <Text
+    <AppText
       style={[styles.link, style]}
       onPress={() => router.push(`/profile/legal/${doc.id}` as never)}
       accessibilityRole="link"
     >
       {displayLabel}
-    </Text>
+    </AppText>
   );
 });
 
@@ -51,7 +53,7 @@ type LegalFooterProps = {
   prefix: string;
   /** Doc ids to link, in order. */
   docIds: string[];
-  /** Style merged into the wrapping <Text>. */
+  /** Style merged into the wrapping <AppText>. */
   style?: TextStyle;
   /** Tighter padding for sticky checkout footers. */
   compact?: boolean;
@@ -60,19 +62,19 @@ type LegalFooterProps = {
 export const LegalFooter = memo(function LegalFooter({ prefix, docIds, style, compact = false }: LegalFooterProps) {
   return (
     <View style={[styles.footerWrap, compact && styles.footerWrapCompact]}>
-      <Text style={[styles.footer, style]}>
+      <AppText style={[styles.footer, style]}>
         {prefix}{" "}
         {docIds.map((id, idx) => {
           const isLast = idx === docIds.length - 1;
           const isSecondLast = idx === docIds.length - 2;
           return (
-            <Text key={id}>
+            <AppText key={id}>
               <LegalLink id={id} />
               {isSecondLast ? " and " : isLast ? "." : ", "}
-            </Text>
+            </AppText>
           );
         })}
-      </Text>
+      </AppText>
     </View>
   );
 });

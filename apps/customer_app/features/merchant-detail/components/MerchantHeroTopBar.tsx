@@ -1,5 +1,7 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -63,7 +65,7 @@ export const MerchantHeroTopBarContent = React.memo(function MerchantHeroTopBarC
         >
           <View style={styles.searchPill}>
             <Ionicons name="search" size={16} color="#FFFFFF" />
-            <Text style={styles.searchText}>Search</Text>
+            <AppText style={styles.searchText}>Search</AppText>
           </View>
         </TouchableOpacity>
 

@@ -2,21 +2,25 @@
  * My Orders — Active (live tracking) + History tabs.
  */
 
-import { useMemo, useState, useCallback, type ReactNode } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect, type ReactNode } from "react";
+import { AppText } from "@/components/AppText";
+
 import {
   View,
-  Text,
   TextInput,
-  ScrollView,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   Image,
   Share,
   Alert,
+  Animated,
+  useWindowDimensions,
 } from "react-native";
+import { Gesture, GestureDetector, ScrollView as GHScrollView } from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
@@ -31,9 +35,17 @@ import { getRideDropTitle } from "@/lib/ride-order-display";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useLocationStore } from "@/store/locationStore";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { populateCartFromOrder, resolveOrderItemDiet } from "@/lib/reorderFromOrder";
+import {
+  getMyOrdersCachedAt,
+  readSyncMyOrders,
+  seedMyOrdersQueryIfCached,
+  writeCachedMyOrders,
+} from "@/lib/myOrdersCache";
 import {
   getActiveOrderBadge,
   getCustomerOrderCancellationDisplayLabel,
@@ -54,6 +66,23 @@ const PAGE_BG = "#F5F5F5";
 const PAD = 16;
 
 type OrdersTab = "active" | "history";
+
+function orderMatchesSearch(order: OrderSummary, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (isPersonRideOrderSummary(order)) {
+    return (
+      getRideDropTitle(order).toLowerCase().includes(q) ||
+      !!order.merchantAddress?.toLowerCase().includes(q) ||
+      !!order.deliveryAddress?.toLowerCase().includes(q)
+    );
+  }
+  return (
+    !!order.merchantName?.toLowerCase().includes(q) ||
+    !!order.merchantPublicName?.toLowerCase().includes(q) ||
+    !!order.items?.some((i) => i.name.toLowerCase().includes(q))
+  );
+}
 
 function formatOrderDate(iso: string) {
   try {
@@ -121,23 +150,23 @@ function ActiveOrderCard({
 
         <View style={styles.orderCardHeadRight}>
           {!!restaurantName && (
-            <Text style={styles.orderRestaurantName} numberOfLines={1}>
+            <AppText style={styles.orderRestaurantName} numberOfLines={1}>
               {restaurantName}
-            </Text>
+            </AppText>
           )}
           {!!merchantArea && (
-            <Text style={styles.orderLocation} numberOfLines={1}>
+            <AppText style={styles.orderLocation} numberOfLines={1}>
               {merchantArea}
-            </Text>
+            </AppText>
           )}
           <TouchableOpacity onPress={onViewMenu} style={styles.viewMenuBtn} activeOpacity={0.8}>
-            <Text style={styles.viewMenuText}>View menu</Text>
+            <AppText style={styles.viewMenuText}>View menu</AppText>
             <Ionicons name="chevron-forward" size={12} color={GREEN} />
           </TouchableOpacity>
         </View>
 
         <View style={[styles.statusBadge, { backgroundColor: badge.bg }]}>
-          <Text style={[styles.statusBadgeText, { color: badge.color }]}>{badge.label}</Text>
+          <AppText style={[styles.statusBadgeText, { color: badge.color }]}>{badge.label}</AppText>
         </View>
       </View>
 
@@ -163,14 +192,14 @@ function ActiveOrderCard({
                       </View>
                     )}
                     <View style={styles.orderLineContent}>
-                      <Text style={styles.orderLineText} numberOfLines={2}>
-                        <Text style={styles.orderQty}>{item.quantity} x </Text>
+                      <AppText style={styles.orderLineText} numberOfLines={2}>
+                        <AppText style={styles.orderQty}>{item.quantity} x </AppText>
                         {item.name}
-                      </Text>
+                      </AppText>
                       {!!subtext && (
-                        <Text style={styles.orderLineSubtext} numberOfLines={2}>
+                        <AppText style={styles.orderLineSubtext} numberOfLines={2}>
                           {subtext}
-                        </Text>
+                        </AppText>
                       )}
                     </View>
                   </View>
@@ -178,7 +207,7 @@ function ActiveOrderCard({
               );
             })}
             {moreCount > 0 && (
-              <Text style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</Text>
+              <AppText style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</AppText>
             )}
           </TouchableOpacity>
         </>
@@ -187,10 +216,10 @@ function ActiveOrderCard({
       <DashedDivider />
 
       <TouchableOpacity style={styles.orderFooter} onPress={onTrack} activeOpacity={0.85}>
-        <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
+        <AppText style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</AppText>
         <View style={styles.priceRow}>
           {order.totalAmount != null && (
-            <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
+            <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
           )}
           <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
         </View>
@@ -200,10 +229,10 @@ function ActiveOrderCard({
 
       <View style={styles.actionRow}>
         <View style={styles.actionLeft}>
-          <Text style={styles.activeStatusText}>{displayOrderId(order)}</Text>
+          <AppText style={styles.activeStatusText}>{displayOrderId(order)}</AppText>
         </View>
         <TouchableOpacity style={styles.trackBtn} onPress={onTrack} activeOpacity={0.85}>
-          <Text style={styles.trackBtnText}>Track Order</Text>
+          <AppText style={styles.trackBtnText}>Track Order</AppText>
         </TouchableOpacity>
       </View>
     </View>
@@ -241,10 +270,10 @@ function HistoryOrderCard({
 }) {
   const storeId = order.merchantPublicStoreId?.trim() || null;
   const statusNorm = normalizeCustomerOrderStatus(order.status);
-  const paymentFailed =
+  const isCancelledOrFailed =
     statusNorm === "CANCELLED" || statusNorm === "PAYMENT_FAILED" || statusNorm === "FAILED";
   const delivered = statusNorm === "DELIVERED";
-  const showActionRow = delivered || paymentFailed;
+  const showActionRow = delivered || isCancelledOrFailed;
   const cancellationDisplayLabel = getCustomerOrderCancellationDisplayLabel({
     status: order.status,
     paymentStatus: order.paymentStatus,
@@ -259,6 +288,7 @@ function HistoryOrderCard({
     });
   const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
 
+  const hasDeliveryAnchor = deliveryAddressId != null || dropCoords != null;
   const { data: storeQuote } = useStoreDeliveryQuote({
     storeId: storeId ?? "",
     addressId: deliveryAddressId,
@@ -266,10 +296,12 @@ function HistoryOrderCard({
       deliveryAddressId == null && dropCoords
         ? { lat: dropCoords.latitude, lng: dropCoords.longitude }
         : null,
-    enabled: showActionRow && !!storeId && (deliveryAddressId != null || dropCoords != null),
+    // Only check serviceability for delivered orders — never for cancelled.
+    enabled: delivered && !!storeId && hasDeliveryAnchor,
   });
 
-  const canReorder = delivered && !paymentFailed && storeQuote?.serviceable === true;
+  const canReorder = delivered && storeQuote?.serviceable === true;
+  const showOutOfDeliveryZone = delivered && storeQuote?.serviceable === false;
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "";
   const merchantArea = getCompactAddressLine(order.merchantAddress);
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
@@ -292,17 +324,17 @@ function HistoryOrderCard({
 
         <View style={styles.orderCardHeadRight}>
           {!!restaurantName && (
-            <Text style={styles.orderRestaurantName} numberOfLines={1}>
+            <AppText style={styles.orderRestaurantName} numberOfLines={1}>
               {restaurantName}
-            </Text>
+            </AppText>
           )}
           {!!merchantArea && (
-            <Text style={styles.orderLocation} numberOfLines={1}>
+            <AppText style={styles.orderLocation} numberOfLines={1}>
               {merchantArea}
-            </Text>
+            </AppText>
           )}
           <TouchableOpacity onPress={onViewMenu} style={styles.viewMenuBtn} activeOpacity={0.8}>
-            <Text style={styles.viewMenuText}>View menu</Text>
+            <AppText style={styles.viewMenuText}>View menu</AppText>
             <Ionicons name="chevron-forward" size={12} color={GREEN} />
           </TouchableOpacity>
         </View>
@@ -315,15 +347,15 @@ function HistoryOrderCard({
           <View style={styles.moreMenu}>
             <TouchableOpacity style={styles.moreMenuItem} onPress={onShareRestaurant} activeOpacity={0.8}>
               <Ionicons name="share-social-outline" size={18} color="#696969" />
-              <Text style={styles.moreMenuText}>Share restaurant</Text>
+              <AppText style={styles.moreMenuText}>Share restaurant</AppText>
             </TouchableOpacity>
             <TouchableOpacity style={styles.moreMenuItem} onPress={onOrderDetails} activeOpacity={0.8}>
               <Ionicons name="receipt-outline" size={18} color="#696969" />
-              <Text style={styles.moreMenuText}>Order details</Text>
+              <AppText style={styles.moreMenuText}>Order details</AppText>
             </TouchableOpacity>
             <TouchableOpacity style={styles.moreMenuItem} onPress={onDeleteOrder} activeOpacity={0.8}>
               <Ionicons name="trash-outline" size={18} color="#696969" />
-              <Text style={styles.moreMenuText}>Delete this order</Text>
+              <AppText style={styles.moreMenuText}>Delete this order</AppText>
             </TouchableOpacity>
           </View>
         )}
@@ -351,14 +383,14 @@ function HistoryOrderCard({
                       </View>
                     )}
                     <View style={styles.orderLineContent}>
-                      <Text style={styles.orderLineText} numberOfLines={2}>
-                        <Text style={styles.orderQty}>{item.quantity} x </Text>
+                      <AppText style={styles.orderLineText} numberOfLines={2}>
+                        <AppText style={styles.orderQty}>{item.quantity} x </AppText>
                         {item.name}
-                      </Text>
+                      </AppText>
                       {!!subtext && (
-                        <Text style={styles.orderLineSubtext} numberOfLines={2}>
+                        <AppText style={styles.orderLineSubtext} numberOfLines={2}>
                           {subtext}
-                        </Text>
+                        </AppText>
                       )}
                     </View>
                   </View>
@@ -366,7 +398,7 @@ function HistoryOrderCard({
               );
             })}
             {moreCount > 0 && (
-              <Text style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</Text>
+              <AppText style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</AppText>
             )}
           </TouchableOpacity>
         </>
@@ -374,21 +406,21 @@ function HistoryOrderCard({
 
       <DashedDivider />
 
-      {delivered && !paymentFailed ? (
+      {delivered ? (
         <>
           <TouchableOpacity style={styles.orderFooterDateOnly} onPress={onPress} activeOpacity={0.85}>
-            <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
+            <AppText style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</AppText>
           </TouchableOpacity>
           <DashedDivider />
           <TouchableOpacity style={styles.statusPriceRow} onPress={onPress} activeOpacity={0.85}>
-            <Text style={styles.deliveredText}>
+            <AppText style={styles.deliveredText}>
               {getHistoryOrderStatusLabel(order.status, {
                 orderType: isPersonRideOrderSummary(order) ? "person_ride" : order.orderType,
               })}
-            </Text>
+            </AppText>
             <View style={styles.priceRow}>
               {order.totalAmount != null && (
-                <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
+                <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
               )}
               <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
             </View>
@@ -396,10 +428,10 @@ function HistoryOrderCard({
         </>
       ) : (
         <TouchableOpacity style={styles.orderFooter} onPress={onPress} activeOpacity={0.85}>
-          <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
+          <AppText style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</AppText>
           <View style={styles.priceRow}>
             {order.totalAmount != null && (
-              <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
+              <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
             )}
             <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
           </View>
@@ -411,20 +443,20 @@ function HistoryOrderCard({
           <DashedDivider />
           <View style={styles.actionRow}>
             <View style={styles.actionLeft}>
-              {paymentFailed ? (
+              {isCancelledOrFailed ? (
                 <View style={styles.cancelStatusBlock}>
                   <View style={styles.actionLeftRow}>
                     <Ionicons name="alert-circle" size={16} color={ERROR} />
-                    <Text style={styles.paymentFailedText}>{cancellationDisplayLabel}</Text>
+                    <AppText style={styles.paymentFailedText}>{cancellationDisplayLabel}</AppText>
                   </View>
                   {showRefunded ? (
-                    <Text style={styles.refundedText}>Refunded</Text>
+                    <AppText style={styles.refundedText}>Refunded</AppText>
                   ) : null}
                 </View>
               ) : hasRating ? (
                 <View style={styles.ratingBlock}>
                   <View style={styles.ratedRow}>
-                    <Text style={styles.ratedLabel}>You rated {order.storeRating}</Text>
+                    <AppText style={styles.ratedLabel}>You rated {order.storeRating}</AppText>
                     <Ionicons name="star" size={14} color="#F59E0B" />
                   </View>
                   <TouchableOpacity
@@ -432,13 +464,13 @@ function HistoryOrderCard({
                     onPress={onViewFeedback}
                     activeOpacity={0.8}
                   >
-                    <Text style={styles.viewFeedbackText}>View your feedback</Text>
+                    <AppText style={styles.viewFeedbackText}>View your feedback</AppText>
                     <Ionicons name="chevron-forward" size={12} color={GREEN} />
                   </TouchableOpacity>
                 </View>
               ) : (
                 <TouchableOpacity onPress={onShareFeedback} activeOpacity={0.8} style={styles.shareFeedbackBtn}>
-                  <Text style={styles.shareFeedbackText}>Share feedback</Text>
+                  <AppText style={styles.shareFeedbackText}>Share feedback</AppText>
                 </TouchableOpacity>
               )}
             </View>
@@ -446,13 +478,13 @@ function HistoryOrderCard({
             {canReorder ? (
               <TouchableOpacity style={styles.reorderBtn} onPress={onReorder} activeOpacity={0.9}>
                 <Ionicons name="refresh" size={15} color="#fff" />
-                <Text style={styles.reorderText}>Reorder</Text>
+                <AppText style={styles.reorderText}>Reorder</AppText>
               </TouchableOpacity>
-            ) : (
-              <View style={styles.notDeliveringBtn}>
-                <Text style={styles.notDeliveringText}>Currently not delivering</Text>
+            ) : showOutOfDeliveryZone ? (
+              <View style={styles.outOfZoneBtn}>
+                <AppText style={styles.outOfZoneText}>Out of delivery zone</AppText>
               </View>
-            )}
+            ) : null}
           </View>
         </>
       )}
@@ -464,7 +496,11 @@ export default function OrdersScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const insets = useAppSafeAreaInsets();
+  const { width: pageWidth } = useWindowDimensions();
+  const indicatorX = useRef(new Animated.Value(0)).current;
   const [tab, setTab] = useState<OrdersTab>("active");
+  const tabRef = useRef<OrdersTab>(tab);
+  tabRef.current = tab;
   const [search, setSearch] = useState("");
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<string>>(new Set());
@@ -497,13 +533,46 @@ export default function OrdersScreen() {
     return null;
   }, [resolvedDeliveryAddress, coords?.latitude, coords?.longitude]);
 
-  const { data: orders = [], isLoading } = useQuery({
+  const cachedOrders = useMemo(
+    () => readSyncMyOrders() as OrderSummary[] | undefined,
+    []
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      seedMyOrdersQueryIfCached(queryClient);
+    }, [queryClient])
+  );
+
+  const { data, isPending } = useQuery({
     queryKey: ["my-orders"],
-    queryFn: () => orderService.getMyOrders({ limit: 50 }),
+    queryFn: async () => {
+      const list = await orderService.getMyOrders({ limit: 50 });
+      void writeCachedMyOrders(list);
+      return list;
+    },
+    staleTime: 15_000,
     refetchInterval: tab === "active" ? 15_000 : false,
+    initialData: cachedOrders,
+    initialDataUpdatedAt: getMyOrdersCachedAt(),
+    placeholderData: (previous) => previous ?? cachedOrders,
   });
 
+  const orders = data ?? [];
+  /** Full-page spinner only when we have nothing cached/in-memory to paint. */
+  const showFullPageLoading = data === undefined && isPending;
+
   const visibleOrders = orders.filter((o) => !hiddenOrderIds.has(o.orderId));
+
+  const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
+  const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
+
+  useFocusEffect(
+    useCallback(() => {
+      setStatusBarBackground(PAGE_BG, "dark");
+      return () => resetStatusBarBackground();
+    }, [setStatusBarBackground, resetStatusBarBackground])
+  );
 
   const activeOrders = useMemo(
     () =>
@@ -521,25 +590,53 @@ export default function OrdersScreen() {
     [visibleOrders]
   );
 
-  const filteredHistory = search.trim()
-    ? historyOrders.filter((o) => {
-        const q = search.toLowerCase();
-        if (isPersonRideOrderSummary(o)) {
-          return (
-            getRideDropTitle(o).toLowerCase().includes(q) ||
-            o.merchantAddress?.toLowerCase().includes(q) ||
-            o.deliveryAddress?.toLowerCase().includes(q)
-          );
-        }
-        return (
-          o.merchantName?.toLowerCase().includes(q) ||
-          o.merchantPublicName?.toLowerCase().includes(q) ||
-          o.items?.some((i) => i.name.toLowerCase().includes(q))
-        );
-      })
-    : historyOrders;
+  const filteredActive = useMemo(
+    () => activeOrders.filter((o) => orderMatchesSearch(o, search)),
+    [activeOrders, search]
+  );
 
-  const listOrders = tab === "active" ? activeOrders : filteredHistory;
+  const filteredHistory = useMemo(
+    () => historyOrders.filter((o) => orderMatchesSearch(o, search)),
+    [historyOrders, search]
+  );
+
+  const selectTab = useCallback(
+    (next: OrdersTab) => {
+      if (next === tabRef.current) return;
+      setTab(next);
+      Animated.timing(indicatorX, {
+        toValue: next === "history" ? 1 : 0,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+    },
+    [indicatorX]
+  );
+
+  const swipeToHistory = useCallback(() => selectTab("history"), [selectTab]);
+  const swipeToActive = useCallback(() => selectTab("active"), [selectTab]);
+
+  // Only treat clear horizontal pans as tab switches — vertical list scroll must win otherwise.
+  const tabSwipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-32, 32])
+        .failOffsetY([-10, 10])
+        .onEnd((e) => {
+          "worklet";
+          if (Math.abs(e.translationY) > Math.abs(e.translationX)) return;
+          if (e.translationX < -56) {
+            runOnJS(swipeToHistory)();
+          } else if (e.translationX > 56) {
+            runOnJS(swipeToActive)();
+          }
+        }),
+    [swipeToActive, swipeToHistory]
+  );
+
+  useEffect(() => {
+    indicatorX.setValue(tabRef.current === "history" ? 1 : 0);
+  }, [pageWidth, indicatorX]);
 
   const handleShareRestaurant = async (order: OrderSummary) => {
     setOpenMenuOrderId(null);
@@ -618,12 +715,6 @@ export default function OrdersScreen() {
     [router]
   );
 
-  const emptyTitle = tab === "active" ? "No active orders" : "No past orders";
-  const emptySub =
-    tab === "active"
-      ? "When you place an order, track it here until delivery."
-      : "Delivered and cancelled orders will show up here.";
-
   const renderHistoryList = () => {
     const nodes: ReactNode[] = [];
     let rideGroup: OrderSummary[] = [];
@@ -682,94 +773,140 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, 8) }]}>
-        <Text style={styles.pageTitle}>My Orders</Text>
+      <View style={[styles.header, { paddingTop: STATUS_BAR_TO_HEADER_GAP }]}>
+        <AppText style={styles.pageTitle}>My Orders</AppText>
       </View>
 
       <View style={styles.tabRow}>
         <TouchableOpacity
           style={styles.tabBtn}
-          onPress={() => setTab("active")}
+          onPress={() => selectTab("active")}
           activeOpacity={0.85}
         >
-          <Text style={[styles.tabLabel, tab === "active" && styles.tabLabelActive]}>Active</Text>
-          {tab === "active" ? <View style={styles.tabIndicator} /> : <View style={styles.tabIndicatorSpacer} />}
+          <AppText style={[styles.tabLabel, tab === "active" && styles.tabLabelActive]}>Active</AppText>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.tabBtn}
-          onPress={() => setTab("history")}
+          onPress={() => selectTab("history")}
           activeOpacity={0.85}
         >
-          <Text style={[styles.tabLabel, tab === "history" && styles.tabLabelActive]}>History</Text>
-          {tab === "history" ? <View style={styles.tabIndicator} /> : <View style={styles.tabIndicatorSpacer} />}
+          <AppText style={[styles.tabLabel, tab === "history" && styles.tabLabelActive]}>History</AppText>
         </TouchableOpacity>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.tabIndicatorSliding,
+            {
+              width: pageWidth / 2,
+              transform: [
+                {
+                  translateX: indicatorX.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0, pageWidth / 2],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
       </View>
 
-      {tab === "history" ? (
-        <View style={styles.searchWrap}>
-          <Ionicons name="search" size={18} color={GREEN} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search by destination or restaurant"
-            placeholderTextColor={TEXT_GRAY}
-            value={search}
-            onChangeText={setSearch}
-          />
-        </View>
-      ) : null}
+      <View style={styles.searchWrap}>
+        <Ionicons name="search" size={18} color={GREEN} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search by destination or restaurant"
+          placeholderTextColor={TEXT_GRAY}
+          value={search}
+          onChangeText={setSearch}
+        />
+      </View>
 
-      {isLoading ? (
+      {showFullPageLoading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={GREEN} />
-          <Text style={styles.loadingText}>Loading orders...</Text>
-        </View>
-      ) : listOrders.length === 0 ? (
-        <View style={styles.centered}>
-          <Ionicons
-            name={tab === "active" ? "bicycle-outline" : "receipt-outline"}
-            size={56}
-            color={BORDER}
-          />
-          <Text style={styles.emptyTitle}>{emptyTitle}</Text>
-          <Text style={styles.emptySub}>{emptySub}</Text>
-          {tab === "active" ? (
-            <TouchableOpacity
-              onPress={() => router.push("/home")}
-              style={styles.exploreBtn}
-              activeOpacity={0.9}
-            >
-              <Text style={styles.exploreBtnText}>Order food</Text>
-            </TouchableOpacity>
-          ) : null}
-          <BrandingFooter />
+          <AppText style={styles.loadingText}>Loading orders...</AppText>
         </View>
       ) : (
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
-          showsVerticalScrollIndicator={false}
-          onScrollBeginDrag={() => setOpenMenuOrderId(null)}
-        >
-          {tab === "active"
-            ? activeOrders.map((order) =>
-                isPersonRideOrderSummary(order) ? (
-                  <RideActiveHistoryRow
-                    key={order.orderId}
-                    order={order}
-                    onPress={() => openOrderDetails(order.orderId)}
-                  />
-                ) : (
-                  <ActiveOrderCard
-                    key={order.orderId}
-                    order={order}
-                    onTrack={() => openOrderDetails(order.orderId)}
-                    onViewMenu={() => navigateToStore(order)}
-                  />
-                )
+        <GestureDetector gesture={tabSwipeGesture}>
+          <View style={styles.pager}>
+            {tab === "active" ? (
+              filteredActive.length === 0 ? (
+                <View style={styles.centered}>
+                  <Ionicons name="bicycle-outline" size={56} color={BORDER} />
+                  <AppText style={styles.emptyTitle}>
+                    {search.trim() ? "No matching orders" : "No active orders"}
+                  </AppText>
+                  <AppText style={styles.emptySub}>
+                    {search.trim()
+                      ? "Try a different restaurant or destination."
+                      : "When you place an order, track it here until delivery."}
+                  </AppText>
+                  {!search.trim() ? (
+                    <TouchableOpacity
+                      onPress={() => router.push("/home")}
+                      style={styles.exploreBtn}
+                      activeOpacity={0.9}
+                    >
+                      <AppText style={styles.exploreBtnText}>Order food</AppText>
+                    </TouchableOpacity>
+                  ) : null}
+                  <BrandingFooter />
+                </View>
+              ) : (
+                <GHScrollView
+                  style={styles.scroll}
+                  contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  onScrollBeginDrag={() => setOpenMenuOrderId(null)}
+                >
+                  {filteredActive.map((order) =>
+                    isPersonRideOrderSummary(order) ? (
+                      <RideActiveHistoryRow
+                        key={order.orderId}
+                        order={order}
+                        onPress={() => openOrderDetails(order.orderId)}
+                      />
+                    ) : (
+                      <ActiveOrderCard
+                        key={order.orderId}
+                        order={order}
+                        onTrack={() => openOrderDetails(order.orderId)}
+                        onViewMenu={() => navigateToStore(order)}
+                      />
+                    )
+                  )}
+                  <BrandingFooter />
+                </GHScrollView>
               )
-            : renderHistoryList()}
-          <BrandingFooter />
-        </ScrollView>
+            ) : filteredHistory.length === 0 ? (
+              <View style={styles.centered}>
+                <Ionicons name="receipt-outline" size={56} color={BORDER} />
+                <AppText style={styles.emptyTitle}>
+                  {search.trim() ? "No matching orders" : "No past orders"}
+                </AppText>
+                <AppText style={styles.emptySub}>
+                  {search.trim()
+                    ? "Try a different restaurant or destination."
+                    : "Delivered and cancelled orders will show up here."}
+                </AppText>
+                <BrandingFooter />
+              </View>
+            ) : (
+              <GHScrollView
+                style={styles.scroll}
+                contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                onScrollBeginDrag={() => setOpenMenuOrderId(null)}
+              >
+                {renderHistoryList()}
+                <BrandingFooter />
+              </GHScrollView>
+            )}
+          </View>
+        </GestureDetector>
       )}
     </View>
   );
@@ -791,6 +928,7 @@ const styles = StyleSheet.create({
   },
   tabRow: {
     flexDirection: "row",
+    position: "relative",
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
     backgroundColor: PAGE_BG,
@@ -799,28 +937,25 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     paddingTop: 10,
-    paddingBottom: 0,
+    paddingBottom: 13,
   },
   tabLabel: {
     fontSize: 15,
     fontWeight: "600",
     color: TEXT_GRAY,
-    paddingBottom: 10,
   },
   tabLabelActive: {
     color: GREEN,
     fontWeight: "700",
   },
-  tabIndicator: {
+  tabIndicatorSliding: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
     height: 3,
-    width: "100%",
     backgroundColor: GREEN,
     borderTopLeftRadius: 3,
     borderTopRightRadius: 3,
-  },
-  tabIndicatorSpacer: {
-    height: 3,
-    width: "100%",
   },
   searchWrap: {
     flexDirection: "row",
@@ -842,6 +977,7 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     paddingVertical: 8,
   },
+  pager: { flex: 1 },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: PAD, paddingTop: 12, gap: 12 },
   rideHistoryList: {
@@ -1181,7 +1317,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#fff",
   },
-  notDeliveringBtn: {
+  outOfZoneBtn: {
     paddingVertical: 8,
     paddingHorizontal: 12,
     backgroundColor: "#B9BDCA",
@@ -1189,7 +1325,7 @@ const styles = StyleSheet.create({
     maxWidth: "52%",
     flexShrink: 1,
   },
-  notDeliveringText: {
+  outOfZoneText: {
     fontSize: 11,
     lineHeight: 14,
     color: "#FFFFFF",

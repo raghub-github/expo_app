@@ -1,10 +1,7 @@
 import React, { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -89,10 +86,10 @@ function PairingCard({
           />
         </View>
       </View>
-      <Text style={styles.name} numberOfLines={2}>
+      <AppText style={styles.name} numberOfLines={2}>
         {item.name}
-      </Text>
-      <Text style={styles.price}>₹{Math.round(price)}</Text>
+      </AppText>
+      <AppText style={styles.price}>₹{Math.round(price)}</AppText>
     </View>
   );
 }
@@ -110,7 +107,7 @@ export const StoreMenuPairingSection = React.memo(function StoreMenuPairingSecti
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.title}>{PAIRING_SECTION_TITLE}</Text>
+      <AppText style={styles.title}>{PAIRING_SECTION_TITLE}</AppText>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}

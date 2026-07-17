@@ -7,6 +7,7 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import { ulid } from "ulid";
+import dns from "node:dns";
 import { loadEnv } from "./config/loadEnv.js";
 import { isTransientDbError } from "./lib/db/is-transient-db-error.js";
 import { isDbConnectionError } from "./db/client.js";
@@ -60,6 +61,8 @@ import { reconcilePendingPayments } from "./modules/orders/order.placement.servi
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 
 loadEnv();
+// Prefer IPv4 — corporate/VPN DNS64 (64:ff9b::*) often yields ENOTFOUND/unreachable for Supabase/Redis.
+dns.setDefaultResultOrder("ipv4first");
 const env = getEnv();
 
 const app = Fastify({
@@ -654,9 +657,10 @@ try {
         );
       })
       .catch((err) => app.log.error({ err }, "store_schedule_tick"));
-  void runScheduleTickLocked();
-  storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
-  app.log.info({ intervalSeconds: 30 }, "store schedule tick started (auto open/close from operating hours)");
+    // Prefer slightly staggered first runs so a cold pooler isn't hit by every tick at t=0.
+    void runScheduleTickLocked();
+    storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
+    app.log.info({ intervalSeconds: 30 }, "store schedule tick started (auto open/close from operating hours)");
 
   // Notification scheduled-campaign poller — picks up due scheduled campaigns
   // (status='scheduled' AND scheduled_at <= now()) and dispatches them via
@@ -719,7 +723,8 @@ try {
         );
       })
       .catch((err) => app.log.error({ err }, "order_auto_accept_tick"));
-  void runAutoAcceptTickLocked();
+  // Stagger first fire so cold-start ticks don't stampede the pooler together.
+  setTimeout(() => { void runAutoAcceptTickLocked(); }, 1_500);
   orderAutoAcceptInterval = setInterval(() => { void runAutoAcceptTickLocked(); }, orderAutoAcceptIntervalMs);
   app.log.info({ intervalMs: orderAutoAcceptIntervalMs }, "order auto-accept tick started");
 
@@ -735,7 +740,7 @@ try {
         );
       })
       .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
-  void runRideSearchTickLocked();
+  setTimeout(() => { void runRideSearchTickLocked(); }, 3_000);
   rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
 
   const orderDispatchWaveIntervalMs = 10_000;
@@ -750,7 +755,7 @@ try {
         );
       })
       .catch((err) => app.log.error({ err }, "order_dispatch_wave_tick"));
-  void runDispatchWaveTickLocked();
+  setTimeout(() => { void runDispatchWaveTickLocked(); }, 4_500);
   orderDispatchWaveInterval = setInterval(() => {
     void runDispatchWaveTickLocked();
   }, orderDispatchWaveIntervalMs);

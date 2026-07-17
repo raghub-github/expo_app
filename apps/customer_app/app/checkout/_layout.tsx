@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,7 +32,7 @@ function CartHeader({ title = "Cart" }: { title?: string }) {
         >
           <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
         </TouchableOpacity>
-        <Text style={styles.title}>{title}</Text>
+        <AppText style={styles.title}>{title}</AppText>
         <View style={styles.placeholder} />
       </View>
     </View>

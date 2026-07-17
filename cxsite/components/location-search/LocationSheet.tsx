@@ -14,6 +14,13 @@ import { isPanIndiaSavedRow } from '@/lib/panIndiaLocation'
 import { detectCurrentLocation } from '@/lib/detectCurrentLocation'
 import { locationAutoDetectErrorMessage } from '@/lib/locationAutoDetect'
 import { useLocationContext } from '@/components/providers/LocationProvider'
+import {
+  CURRENT_LOCATION_KEY,
+  RECENT_GUEST_KEY,
+  locationItemFromDisplayName,
+  pushGuestRecent,
+  readGuestRecent,
+} from '@/lib/recentLocationStorage'
 
 /** Only show in "Recently used" when there is a real place name (not empty / dash placeholders). */
 function hasUsableRecentLocation(item: LocationItem): boolean {
@@ -109,9 +116,7 @@ export default function LocationSheet({
   onSelectLocation,
   title = 'Select Location',
 }: LocationSheetProps) {
-  const CURRENT_LOCATION_KEY = 'gatimitra_location_v1'
   const SAVED_LOCATIONS_KEY = 'gatimitra_saved_locations_v1'
-  const RECENT_GUEST_KEY = 'gatimitra_recent_locations_v1'
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [popularLocations, setPopularLocations] = useState<LocationItem[]>([])
@@ -124,7 +129,7 @@ export default function LocationSheet({
   const [autoDetectError, setAutoDetectError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'saved' | 'popular'>('saved')
   const { user, isAuthenticated } = useAppSelector((state) => state.auth)
-  const { markAutoDetectInFlight } = useLocationContext()
+  const { markAutoDetectInFlight, location: activeLocation } = useLocationContext()
 
   const toLocationLabel = (item: LocationItem) => `${item.location_name}${item.city ? `, ${item.city}` : ''}`
 
@@ -135,28 +140,32 @@ export default function LocationSheet({
     return label
   }
 
-  /** Badge colors: HOME green, WORK blue, OTHER slate; custom_label gets a distinct violet tint. */
-  const loadGuestRecent = (): LocationItem[] => {
-    try {
-      const raw = typeof window !== 'undefined' ? window.localStorage.getItem(RECENT_GUEST_KEY) : null
-      const parsed = raw ? (JSON.parse(raw) as LocationItem[]) : []
-      return Array.isArray(parsed) ? parsed.slice(0, RECENT_LOCATIONS_UI_MAX) : []
-    } catch {
-      return []
-    }
+  /** Badge colors: HOME green, WORK blue, CURRENT LOCATION violet; custom_label violet. */
+  const loadGuestRecent = (): LocationItem[] => readGuestRecent()
+
+  const pushGuestRecentLocal = (item: LocationItem) => {
+    setRecentLocations(pushGuestRecent(item))
   }
 
-  const pushGuestRecent = (item: LocationItem) => {
-    try {
-      const list = loadGuestRecent()
-      const key = `${item.location_name}|${item.city || ''}`.toLowerCase()
-      const filtered = list.filter((l) => `${l.location_name}|${l.city || ''}`.toLowerCase() !== key)
-      const next = [item, ...filtered].slice(0, RECENT_LOCATIONS_UI_MAX)
-      window.localStorage.setItem(RECENT_GUEST_KEY, JSON.stringify(next))
-      setRecentLocations(next)
-    } catch {
-      // ignore
+  /** Merge the active delivery pin into Recently used (top). */
+  const withActiveLocationInRecent = (list: LocationItem[]): LocationItem[] => {
+    if (
+      !activeLocation.locationCommittedByUser ||
+      !activeLocation.displayName?.trim() ||
+      activeLocation.displayName.trim().toLowerCase() === 'india'
+    ) {
+      return list.slice(0, RECENT_LOCATIONS_UI_MAX)
     }
+    const currentItem = locationItemFromDisplayName(
+      activeLocation.displayName,
+      activeLocation.lat,
+      activeLocation.lon
+    )
+    const key = `${currentItem.location_name}|${currentItem.city || ''}`.toLowerCase()
+    const filtered = list.filter(
+      (l) => `${l.location_name}|${l.city || ''}`.toLowerCase() !== key
+    )
+    return [currentItem, ...filtered].slice(0, RECENT_LOCATIONS_UI_MAX)
   }
 
   /** Recently used on the website is device-local only (not the address book in Postgres). */
@@ -167,7 +176,7 @@ export default function LocationSheet({
       const filtered = existing.filter((l) => `${l.location_name}|${l.city || ''}`.toLowerCase() !== key)
       const next = [item, ...filtered].slice(0, RECENT_LOCATIONS_UI_MAX)
       writeRecentHistoryCache(customerId, next)
-      setRecentLocations(next)
+      setRecentLocations(withActiveLocationInRecent(next))
     } catch {
       // ignore
     }
@@ -181,6 +190,7 @@ export default function LocationSheet({
     const raw = typeof item.label === 'string' ? item.label.trim().toUpperCase() : ''
     if (raw === 'HOME') return 'bg-emerald-50 text-emerald-700'
     if (raw === 'WORK') return 'bg-blue-50 text-blue-700'
+    if (raw === 'CURRENT LOCATION' || raw === 'CURRENT') return 'bg-violet-50 text-violet-700'
     return 'bg-slate-100 text-slate-600'
   }
 
@@ -191,7 +201,7 @@ export default function LocationSheet({
       pushAuthenticatedRecent(customerId, item)
       return
     }
-    pushGuestRecent(item)
+    pushGuestRecentLocal(item)
   }
 
   const clearRecentUsed = (e: MouseEvent<HTMLButtonElement>) => {
@@ -225,7 +235,11 @@ export default function LocationSheet({
         const cachedSaved = readSavedListCache(customerId)
         const cachedRecent = readRecentHistoryCache(customerId)
         if (cachedSaved?.length) setSavedLocations(filterSavedNoIndia(cachedSaved))
-        if (cachedRecent?.length) setRecentLocations(cachedRecent.slice(0, RECENT_LOCATIONS_UI_MAX))
+        if (cachedRecent?.length) {
+          setRecentLocations(withActiveLocationInRecent(cachedRecent.slice(0, RECENT_LOCATIONS_UI_MAX)))
+        } else {
+          setRecentLocations(withActiveLocationInRecent([]))
+        }
 
         setPopularLoading(true)
         Promise.all([
@@ -276,7 +290,7 @@ export default function LocationSheet({
       } else {
         setSavedLocations(list.slice(0, 8))
       }
-      setRecentLocations(loadGuestRecent())
+      setRecentLocations(withActiveLocationInRecent(loadGuestRecent()))
 
       setPopularLoading(true)
       fetch('/api/locations/popular?limit=20')
@@ -355,12 +369,17 @@ export default function LocationSheet({
     void pending
       .then((result) => {
         if (result.ok) {
+          const area =
+            (result.area && result.area.trim()) ||
+            result.displayName.split(',')[0]?.trim() ||
+            result.displayName
           selectLocationAndClose({
             id: 0,
-            location_name: result.displayName,
+            location_name: area,
             city: result.city || '',
             latitude: result.lat,
             longitude: result.lon,
+            label: 'CURRENT LOCATION',
           })
           return
         }

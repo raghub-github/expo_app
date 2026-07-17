@@ -38,6 +38,9 @@ interface OrderRow {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  walletCredited?: boolean;
+  walletDebited?: boolean;
+  hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
@@ -57,12 +60,44 @@ function formatOrderStatusLabel(order: OrderRow): string {
   return base;
 }
 
-function formatOrderEarningLabel(order: OrderRow): string {
-  if (order.earningCreditPending) return "Pending";
-  if (order.riderEarning == null || order.riderEarning === "" || order.riderEarning === "0") {
-    return "—";
+type EarningDisplay = {
+  label: string;
+  className: string;
+};
+
+/** Credit → plain; debit → leading −; not credited to wallet → strikethrough. */
+function formatOrderEarningDisplay(order: OrderRow): EarningDisplay {
+  const amount = Number(order.riderEarning);
+  const hasAmount = Number.isFinite(amount) && amount > 0;
+  const absLabel = hasAmount ? `₹${amount.toFixed(2)}` : "—";
+
+  // Wallet credit landed — never strikethrough.
+  if (order.walletCredited === true) {
+    return {
+      label: absLabel,
+      className: "font-medium text-emerald-700 tabular-nums",
+    };
   }
-  return `₹${order.riderEarning}`;
+
+  // Wallet debit (e.g. cancel penalty) — show minus, no strikethrough.
+  if (order.walletDebited === true) {
+    return {
+      label: hasAmount ? `−₹${amount.toFixed(2)}` : "—",
+      className: "font-medium text-red-700 tabular-nums",
+    };
+  }
+
+  // Amount never credited to wallet — strikethrough (cancelled / pending / unpaid).
+  if (!hasAmount) {
+    return { label: "—", className: "font-medium text-gray-400" };
+  }
+
+  return {
+    label: absLabel,
+    className: order.earningCreditPending
+      ? "font-medium text-amber-700/80 tabular-nums line-through decoration-amber-600/70"
+      : "font-medium text-gray-500 tabular-nums line-through decoration-gray-400",
+  };
 }
 
 export function RiderOrdersClient() {
@@ -370,7 +405,7 @@ export function RiderOrdersClient() {
   const hasSearch = searchValue.length > 0;
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+    <div className="space-y-4 w-full max-w-full overflow-x-hidden text-xs text-gray-900 [&_h1]:!text-xl [&_h1]:sm:!text-2xl [&_h1]:!tracking-tight [&>div>div>div>p]:!text-xs">
       <RiderSectionHeader
         title="Rider Orders"
         description="Filter by service, status, and date. Add penalty from order actions."
@@ -388,11 +423,11 @@ export function RiderOrdersClient() {
             activeCount={[filterSearch.trim(), orderType, status, from, to].filter((v) => v && v !== "all").length}
             trailingSlot={
               <>
-                <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+                <span className="text-[10px] text-gray-600 whitespace-nowrap">Rows</span>
                 <select
                   value={pageSize}
                   onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                  className="h-6 sm:h-7 min-w-[2.5rem] rounded border border-gray-300 bg-white px-1.5 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  className="h-6 min-w-[2.5rem] rounded border border-gray-300 bg-white px-1.5 text-[10px] text-gray-900 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                   aria-label="Rows per page"
                 >
                   <option value={5}>5</option>
@@ -415,8 +450,8 @@ export function RiderOrdersClient() {
                   id="orders-filter-search"
                 />
                 <div className="min-w-[100px]">
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Service</label>
-                  <select value={orderType} onChange={(e) => setOrderType(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                  <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Service</label>
+                  <select value={orderType} onChange={(e) => setOrderType(e.target.value)} className="w-full px-2 py-1 border border-gray-300 rounded-md text-xs text-gray-900 bg-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
                     <option value="all" className="text-gray-900 bg-white">All</option>
                     <option value="food" className="text-gray-900 bg-white">Food</option>
                     <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
@@ -424,8 +459,8 @@ export function RiderOrdersClient() {
                   </select>
                 </div>
                 <div className="min-w-[120px]">
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Status</label>
-                  <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                  <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Status</label>
+                  <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full px-2 py-1 border border-gray-300 rounded-md text-xs text-gray-900 bg-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
                     <option value="all" className="text-gray-900 bg-white">All</option>
                     <option value="assigned" className="text-gray-900 bg-white">Assigned</option>
                     <option value="accepted" className="text-gray-900 bg-white">Accepted</option>
@@ -438,14 +473,14 @@ export function RiderOrdersClient() {
                   </select>
                 </div>
                 <div className="min-w-[120px]">
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">From</label>
-                  <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500" />
+                  <label className="block text-[10px] font-medium text-gray-600 mb-0.5">From</label>
+                  <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-full px-2 py-1 border border-gray-300 rounded-md text-xs text-gray-900 bg-white focus:ring-1 focus:ring-blue-500" />
                 </div>
                 <div className="min-w-[120px]">
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">To</label>
-                  <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500" />
+                  <label className="block text-[10px] font-medium text-gray-600 mb-0.5">To</label>
+                  <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-full px-2 py-1 border border-gray-300 rounded-md text-xs text-gray-900 bg-white focus:ring-1 focus:ring-blue-500" />
                 </div>
-                <button type="button" onClick={clearAllOrderFilters} className="px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">
+                <button type="button" onClick={clearAllOrderFilters} className="px-3 py-1 border border-gray-300 text-gray-700 rounded-md text-xs font-medium hover:bg-gray-50 transition-colors h-[28px] shrink-0">
                   Clear filters
                 </button>
               </>
@@ -463,16 +498,18 @@ export function RiderOrdersClient() {
                 )}
                 <div className={`transition-opacity duration-200 ${loading && orders.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
                   {/* Card layout for small screens */}
-                  <div className="block md:hidden space-y-3">
+                  <div className="block md:hidden space-y-2">
                     {orders.length === 0 ? (
-                      <p className="px-4 py-8 text-center text-gray-600 text-sm">No orders found.</p>
+                      <p className="px-3 py-6 text-center text-gray-600 text-xs">No orders found.</p>
                     ) : (
-                      orders.map((o) => (
-                        <div key={o.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm ring-1 ring-gray-900/5">
+                      orders.map((o) => {
+                        const earning = formatOrderEarningDisplay(o);
+                        return (
+                        <div key={o.id} className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm ring-1 ring-gray-900/5">
                           <div className="flex justify-between items-start gap-2">
                             <div className="min-w-0 flex-1">
-                              <p className="font-semibold text-gray-900">#{o.externalRef || o.id}</p>
-                              <p className="text-sm text-gray-500 capitalize">{o.orderType.replace("_", " ")} • {formatOrderStatusLabel(o)}</p>
+                              <p className="text-xs font-semibold text-gray-900">#{o.externalRef || o.id}</p>
+                              <p className="text-[11px] text-gray-500 capitalize">{o.orderType.replace("_", " ")} • {formatOrderStatusLabel(o)}</p>
                             </div>
                             <OrderRowMenu
                               orderId={o.id}
@@ -493,61 +530,64 @@ export function RiderOrdersClient() {
                               showAddPenalty={canAddPenaltyForService(o.orderType)}
                             />
                           </div>
-                          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
                             <span className="text-gray-600">Order value: <span className="font-medium text-gray-900">₹{o.fareAmount ?? "—"}</span></span>
-                            <span className="text-gray-600">Earning: <span className={`font-medium ${o.earningCreditPending ? "text-amber-700" : "text-gray-900"}`}>{formatOrderEarningLabel(o)}</span></span>
+                            <span className="text-gray-600">Earning: <span className={earning.className}>{earning.label}</span></span>
                             {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
-                              <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700 border border-green-200">
+                              <span className="inline-flex items-center rounded-md bg-green-50 px-1.5 py-0.5 text-[10px] font-semibold text-green-700 border border-green-200">
                                 Extra +₹{(approvedExtraByOrderId.get(o.id) ?? 0).toFixed(2)}
                               </span>
                             )}
                           </div>
-                          <p className="mt-2 text-xs text-gray-500">{new Date(o.createdAt).toLocaleString()}</p>
+                          <p className="mt-1.5 text-[10px] text-gray-500">{new Date(o.createdAt).toLocaleString()}</p>
                         </div>
-                      ))
+                      );
+                      })
                     )}
                   </div>
                   {/* Table for md and up */}
                   <div className="hidden md:block overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
+                <table className="min-w-full divide-y divide-gray-200 text-xs">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Order ID</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Type</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Status</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Order value</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Earning</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
-                      <th className="px-4 py-3 w-10"></th>
+                      <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Order ID</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Type</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Status</th>
+                      <th className="px-3 py-2 text-right text-[10px] font-medium text-gray-600 uppercase tracking-wide">Order value</th>
+                      <th className="px-3 py-2 text-right text-[10px] font-medium text-gray-600 uppercase tracking-wide">Earning</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Date</th>
+                      <th className="px-3 py-2 w-10"></th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {orders.length === 0 ? (
-                      <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600 text-sm">No orders found.</td></tr>
+                      <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-600 text-xs">No orders found.</td></tr>
                     ) : (
-                      orders.map((o) => (
+                      orders.map((o) => {
+                        const earning = formatOrderEarningDisplay(o);
+                        return (
                         <tr key={o.id} className="relative hover:bg-gray-50/50">
-                          <td className="px-4 py-3 text-sm font-mono font-medium text-gray-900">{o.externalRef || o.id}</td>
-                          <td className="px-4 py-3 text-sm text-gray-900 capitalize">{o.orderType.replace("_", " ")}</td>
-                          <td className="px-4 py-3 text-sm text-gray-900 capitalize">{formatOrderStatusLabel(o)}</td>
-                          <td className="px-4 py-3 text-sm text-right text-gray-900">₹{o.fareAmount ?? "—"}</td>
-                          <td className="px-4 py-3 text-sm text-right">
+                          <td className="px-3 py-2 text-xs font-mono font-medium text-gray-900">{o.externalRef || o.id}</td>
+                          <td className="px-3 py-2 text-xs text-gray-900 capitalize">{o.orderType.replace("_", " ")}</td>
+                          <td className="px-3 py-2 text-xs text-gray-900 capitalize">{formatOrderStatusLabel(o)}</td>
+                          <td className="px-3 py-2 text-xs text-right text-gray-900 tabular-nums">₹{o.fareAmount ?? "—"}</td>
+                          <td className="px-3 py-2 text-xs text-right">
                             <div className="flex flex-col items-end leading-tight">
-                              <span className={`font-medium ${o.earningCreditPending ? "text-amber-700" : "text-gray-900"}`}>
-                                {formatOrderEarningLabel(o)}
+                              <span className={earning.className}>
+                                {earning.label}
                               </span>
                               {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
                                 <span
-                                  className="mt-1 inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700 border border-green-200"
-                                  title="Approved extra amount (add amount) for this order"
+                                  className="mt-0.5 inline-flex items-center rounded-md bg-green-50 px-1.5 py-0.5 text-[10px] font-semibold text-green-700 border border-green-200"
+                                  title="Approved extra amount for this order"
                                 >
                                   Extra +₹{(approvedExtraByOrderId.get(o.id) ?? 0).toFixed(2)}
                                 </span>
                               )}
                             </div>
                           </td>
-                          <td className="px-4 py-3 text-sm text-gray-600">{new Date(o.createdAt).toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right">
+                          <td className="px-3 py-2 text-[11px] text-gray-600 tabular-nums">{new Date(o.createdAt).toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right">
                             <OrderRowMenu
                               orderId={o.id}
                               orderType={o.orderType}
@@ -568,7 +608,8 @@ export function RiderOrdersClient() {
                             />
                           </td>
                         </tr>
-                      ))
+                      );
+                      })
                     )}
                   </tbody>
                 </table>

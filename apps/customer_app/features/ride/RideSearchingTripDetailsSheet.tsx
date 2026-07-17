@@ -2,17 +2,9 @@
  * Trip details sheet while searching for a rider (Rapido-style, Gatimitra colors).
  */
 
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  ImageSourcePropType,
-} from "react-native";
+import { View, Modal, Pressable, ScrollView, TouchableOpacity, StyleSheet, Image, ImageSourcePropType } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -56,7 +48,7 @@ function LocationTimeline({
           <View style={[styles.timelineDot, styles.timelineDotPickup]} />
           <View style={styles.timelineLine} />
         </View>
-        <Text style={styles.timelineAddress}>{pickupAddress}</Text>
+        <AppText style={styles.timelineAddress}>{pickupAddress}</AppText>
       </View>
 
       {stops.map((stop, index) => (
@@ -65,9 +57,9 @@ function LocationTimeline({
             <View style={[styles.timelineDot, styles.timelineDotStop]} />
             <View style={styles.timelineLine} />
           </View>
-          <Text style={styles.timelineAddress}>
+          <AppText style={styles.timelineAddress}>
             {stop.address?.trim() || stop.label?.trim() || `Stop ${index + 1}`}
-          </Text>
+          </AppText>
         </View>
       ))}
 
@@ -75,7 +67,7 @@ function LocationTimeline({
         <View style={styles.timelineRail}>
           <View style={[styles.timelineDot, styles.timelineDotDrop]} />
         </View>
-        <Text style={styles.timelineAddress}>{dropAddress}</Text>
+        <AppText style={styles.timelineAddress}>{dropAddress}</AppText>
       </View>
     </View>
   );
@@ -103,21 +95,21 @@ export function RideSearchingTripDetailsSheet({
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-            <Text style={styles.statusLabel}>{statusLabel}</Text>
+            <AppText style={styles.statusLabel}>{statusLabel}</AppText>
 
             <View style={styles.serviceCard}>
               {rideImage ? (
                 <Image source={rideImage} style={styles.serviceImage} resizeMode="contain" />
               ) : null}
-              <Text style={styles.serviceName}>{rideName}</Text>
-              <Text style={styles.serviceFare}>
+              <AppText style={styles.serviceName}>{rideName}</AppText>
+              <AppText style={styles.serviceFare}>
                 ₹{Number.isFinite(totalFare) ? totalFare : "—"}
-              </Text>
+              </AppText>
             </View>
 
             <DashedDivider />
 
-            <Text style={styles.sectionTitle}>Location Details</Text>
+            <AppText style={styles.sectionTitle}>Location Details</AppText>
             <LocationTimeline
               pickupAddress={pickupAddress}
               dropAddress={dropAddress}
@@ -125,26 +117,26 @@ export function RideSearchingTripDetailsSheet({
             />
 
             <View style={styles.fareRow}>
-              <Text style={styles.fareRowLabel}>Total Fare</Text>
-              <Text style={styles.fareRowValue}>
+              <AppText style={styles.fareRowLabel}>Total Fare</AppText>
+              <AppText style={styles.fareRowValue}>
                 ₹{Number.isFinite(totalFare) ? totalFare : "—"}
-              </Text>
+              </AppText>
             </View>
 
             {tipAmount > 0 ? (
               <View style={styles.tipRow}>
-                <Text style={styles.tipRowLabel}>Includes tip</Text>
-                <Text style={styles.tipRowValue}>+₹{tipAmount}</Text>
+                <AppText style={styles.tipRowLabel}>Includes tip</AppText>
+                <AppText style={styles.tipRowValue}>+₹{tipAmount}</AppText>
               </View>
             ) : null}
           </ScrollView>
 
           <TouchableOpacity style={styles.backBtn} onPress={onBack} activeOpacity={0.9}>
-            <Text style={styles.backBtnText}>Back</Text>
+            <AppText style={styles.backBtnText}>Back</AppText>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.cancelBtn} onPress={onCancelRide} activeOpacity={0.9}>
-            <Text style={styles.cancelBtnText}>Cancel Ride</Text>
+            <AppText style={styles.cancelBtnText}>Cancel Ride</AppText>
           </TouchableOpacity>
         </View>
       </View>

@@ -75,6 +75,17 @@ async function postInternal(
 
   const json = await readBackendJson(res);
   if (!res.ok || !json.ok) {
+    const backendError = typeof json.error === "string" ? json.error.trim() : "";
+    if (
+      backendError.toLowerCase().includes("no active rider") ||
+      backendError.toLowerCase().includes("no_active_riders")
+    ) {
+      return {
+        ok: false,
+        error: "No active rider on this locality",
+        status: res.status >= 400 ? res.status : 409,
+      };
+    }
     return {
       ok: false,
       error: mapBackendFailure(res, json),

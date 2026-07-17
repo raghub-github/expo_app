@@ -1,13 +1,6 @@
-import {
-  Modal,
-  View,
-  Text,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  Platform,
-  ActivityIndicator,
-} from "react-native";
+import { Modal, View, TouchableOpacity, Pressable, StyleSheet, Platform, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -62,12 +55,12 @@ export function NearbyLocationConfirmBottomSheet({
               </View>
             </View>
 
-            <Text style={styles.title}>Confirm only if you are familiar with this location.</Text>
+            <AppText style={styles.title}>Confirm only if you are familiar with this location.</AppText>
 
             <View style={styles.placeCard}>
-              <Text style={styles.placeText} numberOfLines={3}>
+              <AppText style={styles.placeText} numberOfLines={3}>
                 {displayAddress}
-              </Text>
+              </AppText>
             </View>
 
             <TouchableOpacity
@@ -79,7 +72,7 @@ export function NearbyLocationConfirmBottomSheet({
               {loading ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
-                <Text style={styles.primaryBtnText}>Yes, Confirm</Text>
+                <AppText style={styles.primaryBtnText}>Yes, Confirm</AppText>
               )}
             </TouchableOpacity>
 
@@ -89,7 +82,7 @@ export function NearbyLocationConfirmBottomSheet({
               activeOpacity={0.75}
               disabled={loading}
             >
-              <Text style={styles.secondaryBtnText}>Cancel</Text>
+              <AppText style={styles.secondaryBtnText}>Cancel</AppText>
             </TouchableOpacity>
           </View>
         </View>

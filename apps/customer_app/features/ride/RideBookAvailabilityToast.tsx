@@ -1,4 +1,6 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -18,7 +20,7 @@ export function RideBookAvailabilityToast({ visible, message }: Props) {
         <View style={styles.logoCircle}>
           <AppAssetImage assetKey={CX.orders.toastLogo} style={styles.logo} contentFit="contain" />
         </View>
-        <Text style={styles.text}>{message}</Text>
+        <AppText style={styles.text}>{message}</AppText>
       </View>
     </View>
   );

@@ -1403,11 +1403,14 @@ export default function RidersPage() {
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-100">
-                          {displayedOrders.map((order: { id: number; orderType: string; status: string; fareAmount?: number | string | null; riderEarning?: number; walletCredited?: boolean; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
+                          {displayedOrders.map((order: { id: number; orderType: string; status: string; fareAmount?: number | string | null; riderEarning?: number; walletCredited?: boolean; walletDebited?: boolean; hasLedgerEntry?: boolean; earningCreditPending?: boolean; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
                             const extra = approvedExtraByOrderId.get(order.id) ?? 0;
                             const earning = Number(order.riderEarning || 0);
                             const totalAmount = earning + extra;
                             const walletEntry = orderWalletEntryType(order, extra);
+                            const isPendingCredit = walletEntry === "Pending";
+                            const isDebit = walletEntry === "Debit";
+                            const noLedger = !order.walletCredited && !order.walletDebited && !order.hasLedgerEntry;
                             return (
                               <tr key={order.id} className="hover:bg-gray-50/60 transition-colors">
                                 <td className="px-3 py-1.5">
@@ -1428,9 +1431,28 @@ export default function RidersPage() {
                                   />
                                 </td>
                                 <td className="px-3 py-1.5 whitespace-nowrap leading-tight">
-                                  <span className="text-xs font-bold text-gray-900 tabular-nums">₹{totalAmount.toFixed(2)}</span>
-                                  {extra > 0 && (
-                                    <p className="text-[9px] text-emerald-600 font-medium">+₹{extra.toFixed(2)}</p>
+                                  {totalAmount > 0 ? (
+                                    <>
+                                      <span
+                                        className={`text-xs font-bold tabular-nums ${
+                                          isDebit
+                                            ? "text-red-700"
+                                            : isPendingCredit || noLedger
+                                              ? "text-amber-700 line-through decoration-amber-600/70"
+                                              : "text-emerald-700"
+                                        }`}
+                                      >
+                                        {isDebit ? `−₹${totalAmount.toFixed(2)}` : `₹${totalAmount.toFixed(2)}`}
+                                      </span>
+                                      {isPendingCredit ? (
+                                        <p className="text-[9px] text-amber-600 font-medium">pending</p>
+                                      ) : null}
+                                      {extra > 0 && (
+                                        <p className="text-[9px] text-emerald-600 font-medium">+₹{extra.toFixed(2)}</p>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span className="text-xs text-gray-400">—</span>
                                   )}
                                 </td>
                                 <td className="px-3 py-1.5 whitespace-nowrap">
@@ -2950,83 +2972,29 @@ function OrderStatusBadge({
   riderAssignmentStatus,
   riderRideUnassigned,
 }: RiderDashboardOrderStatusInput) {
-  const statusInput: RiderDashboardOrderStatusInput = {
+  const label = resolveRiderDashboardOrderStatusLabel({
     status,
     orderType,
     riderAssignmentStatus,
     riderRideUnassigned,
-  };
-  const key = resolveRiderDashboardOrderStatusKey(statusInput);
-  const label = resolveRiderDashboardOrderStatusLabel(statusInput);
-
-  type StatusCfg = { bg: string; text: string; border: string; icon: React.ReactNode };
-  const configs: Record<string, StatusCfg> = {
-    delivered: {
-      bg: "bg-emerald-50",
-      text: "text-emerald-700",
-      border: "border-emerald-200",
-      icon: <CheckCircle className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
-    },
-    reached_store: {
-      bg: "bg-purple-50",
-      text: "text-purple-700",
-      border: "border-purple-200",
-      icon: <span className="h-1.5 w-1.5 rounded-full bg-purple-600 shrink-0" />,
-    },
-    picked_up: {
-      bg: "bg-cyan-50",
-      text: "text-cyan-700",
-      border: "border-cyan-200",
-      icon: <span className="h-1.5 w-1.5 rounded-full bg-cyan-600 shrink-0" />,
-    },
-    in_transit: {
-      bg: "bg-sky-50",
-      text: "text-sky-700",
-      border: "border-sky-200",
-      icon: <span className="h-1.5 w-1.5 rounded-full bg-sky-600 shrink-0" />,
-    },
-    accepted: {
-      bg: "bg-indigo-50",
-      text: "text-indigo-700",
-      border: "border-indigo-200",
-      icon: <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shrink-0" />,
-    },
-    assigned: {
-      bg: "bg-blue-50",
-      text: "text-blue-700",
-      border: "border-blue-200",
-      icon: <span className="h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />,
-    },
-    cancelled: {
-      bg: "bg-red-50",
-      text: "text-red-700",
-      border: "border-red-200",
-      icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
-    },
-    assignment_cancelled: {
-      bg: "bg-orange-50",
-      text: "text-orange-800",
-      border: "border-orange-200",
-      icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
-    },
-    failed: {
-      bg: "bg-red-50",
-      text: "text-red-700",
-      border: "border-red-200",
-      icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
-    },
-  };
-
-  const cfg = configs[key] ?? {
-    bg: "bg-gray-50",
-    text: "text-gray-700",
-    border: "border-gray-200",
-    icon: <span className="h-1.5 w-1.5 rounded-full bg-gray-500 shrink-0" />,
-  };
+  });
+  const key = resolveRiderDashboardOrderStatusKey({
+    status,
+    orderType,
+    riderAssignmentStatus,
+    riderRideUnassigned,
+  });
+  const tone =
+    key === "cancelled" || key === "failed"
+      ? "text-red-700"
+      : key === "assignment_cancelled"
+        ? "text-orange-700"
+        : key === "delivered"
+          ? "text-emerald-700"
+          : "text-gray-800";
 
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border whitespace-nowrap leading-tight ${cfg.bg} ${cfg.text} ${cfg.border}`}>
-      {cfg.icon}
+    <span className={`text-xs font-medium whitespace-nowrap leading-tight ${tone}`}>
       {label}
     </span>
   );
@@ -3077,42 +3045,36 @@ function exportOrdersCsv(
 }
 
 function orderWalletEntryType(
-  order: { status: string; riderEarning?: number | string | null; walletCredited?: boolean },
-  extra = 0
+  order: {
+    status: string;
+    riderEarning?: number | string | null;
+    walletCredited?: boolean;
+    walletDebited?: boolean;
+    hasLedgerEntry?: boolean;
+    earningCreditPending?: boolean;
+  },
+  _extra = 0
 ): "Credit" | "Debit" | "Pending" | "—" {
-  const earning = Number(order.riderEarning || 0);
-  const total = earning + extra;
-  if (total > 0 || order.walletCredited) return "Credit";
+  if (order.walletCredited === true) return "Credit";
+  if (order.walletDebited === true) return "Debit";
+
   const status = String(order.status || "").toLowerCase();
   if (status === "cancelled" || status === "failed") return "—";
+
   return "Pending";
 }
 
 function WalletEntryBadge({ entry }: { entry: "Credit" | "Debit" | "Pending" | "—" }) {
-  if (entry === "—") return <span className="text-gray-400 text-sm">—</span>;
-
+  if (entry === "—") {
+    return <span className="text-xs text-gray-400">—</span>;
+  }
   if (entry === "Credit") {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-emerald-50 text-emerald-700 border-emerald-200 whitespace-nowrap leading-tight">
-        <CheckCircle className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
-        Credit
-      </span>
-    );
+    return <span className="text-xs font-medium text-emerald-700">Credit</span>;
   }
   if (entry === "Debit") {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-red-50 text-red-700 border-red-200 whitespace-nowrap leading-tight">
-        <X className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
-        Debit
-      </span>
-    );
+    return <span className="text-xs font-medium text-red-700">Debit</span>;
   }
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-amber-50 text-amber-700 border-amber-200 whitespace-nowrap leading-tight">
-      <Clock className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
-      Pending
-    </span>
-  );
+  return <span className="text-xs font-medium text-amber-700">Pending</span>;
 }
 
 function StatusBadge({ status }: { status: string }) {

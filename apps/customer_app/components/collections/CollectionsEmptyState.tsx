@@ -1,4 +1,6 @@
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Pressable, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -73,9 +75,9 @@ export function CollectionsEmptyState({ variant, onExplore }: Props) {
   return (
     <View style={styles.wrap}>
       <EmptyCardStack variant={variant} />
-      <Text style={styles.hint}>{hint}</Text>
+      <AppText style={styles.hint}>{hint}</AppText>
       <Pressable style={styles.cta} onPress={onExplore}>
-        <Text style={styles.ctaText}>{t("collections.startExploring")}</Text>
+        <AppText style={styles.ctaText}>{t("collections.startExploring")}</AppText>
       </Pressable>
     </View>
   );

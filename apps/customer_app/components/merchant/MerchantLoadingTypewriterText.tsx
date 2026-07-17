@@ -4,7 +4,9 @@
  */
 
 import React from "react";
-import { Text, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { StyleSheet } from "react-native";
 import { StoreTheme } from "@/constants/storeTheme";
 
 type Props = {
@@ -18,9 +20,9 @@ export function MerchantLoadingTypewriterText({ text, texts }: Props) {
   if (!display) return null;
 
   return (
-    <Text style={styles.text} accessibilityLiveRegion="polite" numberOfLines={3}>
+    <AppText style={styles.text} accessibilityLiveRegion="polite" numberOfLines={3}>
       {display}
-    </Text>
+    </AppText>
   );
 }
 

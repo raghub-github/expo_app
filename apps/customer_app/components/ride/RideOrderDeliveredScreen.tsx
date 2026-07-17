@@ -3,18 +3,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AppText } from "@/components/AppText";
+
 import { useFocusEffect, useRouter } from "expo-router";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  Linking,
-  Platform,
-  Image as RNImage,
-} from "react-native";
+import { View, StyleSheet, TouchableOpacity, ScrollView, Alert, Linking, Platform, Image as RNImage } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -151,7 +143,7 @@ function RouteStop({
         />
         {!isLast ? <View style={styles.routeRail} /> : null}
       </View>
-      <Text style={styles.routeAddress}>{address}</Text>
+      <AppText style={styles.routeAddress}>{address}</AppText>
     </View>
   );
 }
@@ -331,20 +323,20 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
     <View style={styles.rateDoneRow}>
       <Ionicons name="hand-left-outline" size={18} color={MUTED} />
       <View style={styles.rateDoneText}>
-        <Text style={styles.rateDoneTitle}>Thank you for rating!</Text>
-        <Text style={styles.rateDoneSub}>You rated {displayRating} ★</Text>
+        <AppText style={styles.rateDoneTitle}>Thank you for rating!</AppText>
+        <AppText style={styles.rateDoneSub}>You rated {displayRating} ★</AppText>
       </View>
     </View>
   ) : (
     <View style={styles.rateBlock}>
-      <Text style={styles.rateTitle}>Rate {riderFirstName}</Text>
+      <AppText style={styles.rateTitle}>Rate {riderFirstName}</AppText>
       <InlineStars
         value={localRating}
         onPress={(n) => handleOpenRatingSheet(n)}
         disabled={submitting}
       />
       <TouchableOpacity onPress={() => handleOpenRatingSheet()} activeOpacity={0.85}>
-        <Text style={styles.rateSheetHint}>Tap a star to rate your captain</Text>
+        <AppText style={styles.rateSheetHint}>Tap a star to rate your captain</AppText>
       </TouchableOpacity>
     </View>
   );
@@ -371,9 +363,9 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
             <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.heroSideBtnLeft}>
               <Ionicons name="arrow-back" size={22} color="#fff" />
             </TouchableOpacity>
-            <Text style={styles.heroTitle} numberOfLines={1}>
+            <AppText style={styles.heroTitle} numberOfLines={1}>
               {rideLabel}
-            </Text>
+            </AppText>
             <View style={styles.heroSideBtnRight} />
           </View>
 
@@ -409,23 +401,23 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
               </View>
             </View>
             <View style={styles.receiptCard}>
-              <Text style={styles.receiptTitle}>
+              <AppText style={styles.receiptTitle}>
                 Ride completed at{" "}
-                <Text style={styles.receiptTitleBold}>{dropTitle}</Text>
-              </Text>
+                <AppText style={styles.receiptTitleBold}>{dropTitle}</AppText>
+              </AppText>
               {deliveredTime ? (
-                <Text style={styles.receiptSub}>Completed at {deliveredTime}</Text>
+                <AppText style={styles.receiptSub}>Completed at {deliveredTime}</AppText>
               ) : (
-                <Text style={styles.receiptSub}>{formatRideHistoryDateTime(order.createdAt)}</Text>
+                <AppText style={styles.receiptSub}>{formatRideHistoryDateTime(order.createdAt)}</AppText>
               )}
               {vehicleImage ? (
                 <RNImage source={vehicleImage} style={styles.vehicleHero} resizeMode="contain" />
               ) : null}
-              <Text style={styles.fareAmount}>
+              <AppText style={styles.fareAmount}>
                 {formatRideFare(fareBreakdown.total)}
-                <Text style={styles.estTag}> (.est)</Text>
-              </Text>
-              {tripStats ? <Text style={styles.tripStatsHero}>{tripStats}</Text> : null}
+                <AppText style={styles.estTag}> (.est)</AppText>
+              </AppText>
+              {tripStats ? <AppText style={styles.tripStatsHero}>{tripStats}</AppText> : null}
             </View>
             <ReceiptTornEdge />
           </View>
@@ -453,30 +445,30 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
           ) : null}
 
           <View style={styles.mainCard}>
-            <Text style={styles.sectionLabel}>TRIP SUMMARY</Text>
-            <Text style={styles.rideIdText}>Ride ID #{displayOrderId}</Text>
+            <AppText style={styles.sectionLabel}>TRIP SUMMARY</AppText>
+            <AppText style={styles.rideIdText}>Ride ID #{displayOrderId}</AppText>
             <RouteStop variant="pickup" address={pickupAddress} />
             <RouteStop variant="drop" address={dropAddress} isLast />
             {tripStats ? (
-              <Text style={styles.tripStatsLine}>{tripStats}</Text>
+              <AppText style={styles.tripStatsLine}>{tripStats}</AppText>
             ) : null}
             {fareLineItems.map((line) => (
               <View key={`${line.label}-${line.amount}`} style={styles.fareRow}>
-                <Text style={styles.fareRowLabel}>{line.label}</Text>
-                <Text style={styles.fareRowValue}>{formatRideFare(line.amount)}</Text>
+                <AppText style={styles.fareRowLabel}>{line.label}</AppText>
+                <AppText style={styles.fareRowValue}>{formatRideFare(line.amount)}</AppText>
               </View>
             ))}
             <View style={[styles.fareRow, styles.fareRowTotal]}>
-              <Text style={styles.fareTotalLabel}>Total</Text>
-              <Text style={styles.fareTotalValue}>{formatRideFare(fareBreakdown.total)}</Text>
+              <AppText style={styles.fareTotalLabel}>Total</AppText>
+              <AppText style={styles.fareTotalValue}>{formatRideFare(fareBreakdown.total)}</AppText>
             </View>
           </View>
 
           <TouchableOpacity style={styles.helpCard} onPress={onOpenHelp} activeOpacity={0.85}>
             <AppAssetImage assetKey={CX.orders.support} style={styles.helpImage} contentFit="contain" />
             <View style={styles.helpTextWrap}>
-              <Text style={styles.helpTitle}>Need help with your ride?</Text>
-              <Text style={styles.helpSub}>Get help & support</Text>
+              <AppText style={styles.helpTitle}>Need help with your ride?</AppText>
+              <AppText style={styles.helpSub}>Get help & support</AppText>
             </View>
             <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />
           </TouchableOpacity>

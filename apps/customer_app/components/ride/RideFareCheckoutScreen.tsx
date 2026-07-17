@@ -3,17 +3,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppText } from "@/components/AppText";
+
 import { useRouter } from "expo-router";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
-  Modal,
-} from "react-native";
+import { View, StyleSheet, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Modal } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -480,7 +473,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Ride checkout</Text>
+        <AppText style={styles.headerTitle}>Ride checkout</AppText>
         <View style={styles.headerSpacer} />
       </View>
 
@@ -489,8 +482,8 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.metaCard}>
-          <Text style={styles.metaTitle}>{rideLabel} fare</Text>
-          <Text style={styles.metaSub}>Ride ID: {displayOrderId}</Text>
+          <AppText style={styles.metaTitle}>{rideLabel} fare</AppText>
+          <AppText style={styles.metaSub}>Ride ID: {displayOrderId}</AppText>
         </View>
 
         <View style={styles.offerCard}>
@@ -501,7 +494,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
               </View>
             ) : (
               <View style={styles.offerCouponIconCircle}>
-                <Text style={styles.offerCouponIconPct}>%</Text>
+                <AppText style={styles.offerCouponIconPct}>%</AppText>
               </View>
             )}
             <TouchableOpacity
@@ -509,27 +502,27 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
               onPress={() => setOffersOpen(true)}
               activeOpacity={0.85}
             >
-              <Text style={styles.offerAppliedHeadline} numberOfLines={2}>
+              <AppText style={styles.offerAppliedHeadline} numberOfLines={2}>
                 {hasAppliedOffer
                   ? displayOfferLabel ?? `Saved ₹${Math.round(appliedOfferDiscount)}`
                   : "Apply ride offers"}
-              </Text>
+              </AppText>
               {hasAppliedOffer ? (
-                <Text style={styles.offerSubLineMuted}>
+                <AppText style={styles.offerSubLineMuted}>
                   You save {formatRideFare(appliedOfferDiscount)}
-                </Text>
+                </AppText>
               ) : (
-                <Text style={styles.offerSub} numberOfLines={1}>
+                <AppText style={styles.offerSub} numberOfLines={1}>
                   Coupons · GatiMitra ride offers
-                </Text>
+                </AppText>
               )}
               {!hasAppliedOffer ? (
-                <Text style={styles.offersLearnMore}>View all coupons ›</Text>
+                <AppText style={styles.offersLearnMore}>View all coupons ›</AppText>
               ) : null}
             </TouchableOpacity>
             {hasAppliedOffer ? (
               <TouchableOpacity onPress={clearOffers} hitSlop={8} activeOpacity={0.7}>
-                <Text style={styles.offersRemoveRed}>Remove</Text>
+                <AppText style={styles.offersRemoveRed}>Remove</AppText>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity
@@ -537,14 +530,14 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
                 onPress={() => setOffersOpen(true)}
                 activeOpacity={0.85}
               >
-                <Text style={styles.offersApplyOutlineText}>APPLY</Text>
+                <AppText style={styles.offersApplyOutlineText}>APPLY</AppText>
               </TouchableOpacity>
             )}
           </View>
         </View>
 
         <View style={styles.summaryCard}>
-          <Text style={styles.sectionLabel}>BILL SUMMARY</Text>
+          <AppText style={styles.sectionLabel}>BILL SUMMARY</AppText>
 
           <RideCheckoutBillSummary
             compactBill={compactBill}
@@ -555,8 +548,8 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
           <View style={styles.routeDivider} />
 
           <View style={styles.toPayRow}>
-            <Text style={styles.toPayLabel}>To pay</Text>
-            <Text style={styles.toPayValue}>{formatRideFare(toPayAmount)}</Text>
+            <AppText style={styles.toPayLabel}>To pay</AppText>
+            <AppText style={styles.toPayValue}>{formatRideFare(toPayAmount)}</AppText>
           </View>
 
           <View style={styles.routeBlock}>
@@ -566,20 +559,20 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
               <View style={styles.routeDotDrop} />
             </View>
             <View style={styles.routeTextCol}>
-              <Text style={styles.routeText} numberOfLines={2}>
+              <AppText style={styles.routeText} numberOfLines={2}>
                 {order.merchantAddress?.trim() || "Pickup"}
-              </Text>
-              <Text style={[styles.routeText, styles.routeTextDrop]} numberOfLines={2}>
+              </AppText>
+              <AppText style={[styles.routeText, styles.routeTextDrop]} numberOfLines={2}>
                 {order.deliveryAddress?.trim() || "Drop"}
-              </Text>
+              </AppText>
             </View>
           </View>
 
-          <Text style={styles.methodLine}>
+          <AppText style={styles.methodLine}>
             {toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005
               ? "Paying with GatiCash"
               : `Pay via ${deliveredBill.paymentMethodLabel}`}
-          </Text>
+          </AppText>
         </View>
       </ScrollView>
 
@@ -613,7 +606,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
             ) : (
               <>
                 <Ionicons name="lock-closed" size={18} color="#fff" />
-                <Text style={styles.payBtnText}>{payButtonLabel}</Text>
+                <AppText style={styles.payBtnText}>{payButtonLabel}</AppText>
                 <View style={styles.payBtnChevron}>
                   <Ionicons name="chevron-forward" size={16} color="#fff" />
                 </View>
@@ -623,7 +616,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         </TouchableOpacity>
         <View style={styles.secureRow}>
           <Ionicons name="shield-checkmark-outline" size={14} color={GatiMitraColors.textSecondary} />
-          <Text style={styles.secureText}>100% Secure Payments</Text>
+          <AppText style={styles.secureText}>100% Secure Payments</AppText>
         </View>
       </View>
 
@@ -771,13 +764,13 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
       <Modal visible={simulatedPayment != null} transparent animationType="fade">
         <View style={styles.simOverlay}>
           <View style={styles.simCard}>
-            <Text style={styles.simTitle}>Simulate payment</Text>
-            <Text style={styles.simSub}>Dev mode — mark ride fare as paid.</Text>
+            <AppText style={styles.simTitle}>Simulate payment</AppText>
+            <AppText style={styles.simSub}>Dev mode — mark ride fare as paid.</AppText>
             <TouchableOpacity style={styles.simBtn} onPress={handleSimulatedPaySuccess}>
-              <Text style={styles.simBtnText}>Mark paid</Text>
+              <AppText style={styles.simBtnText}>Mark paid</AppText>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setSimulatedPayment(null)}>
-              <Text style={styles.simCancel}>Cancel</Text>
+              <AppText style={styles.simCancel}>Cancel</AppText>
             </TouchableOpacity>
           </View>
         </View>

@@ -3,7 +3,9 @@
  * "Booking for someone else?"
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -42,17 +44,17 @@ export function BookingForSomeoneElseSheet({
           </View>
         </View>
 
-        <Text style={styles.title}>Booking for someone else?</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>Booking for someone else?</AppText>
+        <AppText style={styles.subtitle}>
           Enter their details and we&apos;ll send ride updates directly to them.
-        </Text>
+        </AppText>
 
         <TouchableOpacity
           style={styles.primaryBtn}
           onPress={onYesSomeoneElse}
           activeOpacity={0.9}
         >
-          <Text style={styles.primaryBtnText}>Yes, for someone else</Text>
+          <AppText style={styles.primaryBtnText}>Yes, for someone else</AppText>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -60,7 +62,7 @@ export function BookingForSomeoneElseSheet({
           onPress={onNoBookingForMe}
           activeOpacity={0.85}
         >
-          <Text style={styles.secondaryBtnText}>No, booking for me</Text>
+          <AppText style={styles.secondaryBtnText}>No, booking for me</AppText>
         </TouchableOpacity>
       </View>
     </StoreBottomSheetShell>

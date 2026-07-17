@@ -9,15 +9,9 @@
  */
 
 import { useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -97,11 +91,11 @@ export default function ConsentScreen() {
           <View style={styles.heroIcon}>
             <Ionicons name="shield-checkmark" size={32} color="#FFFFFF" />
           </View>
-          <Text style={styles.heroTitle}>One quick step</Text>
-          <Text style={styles.heroSub}>
+          <AppText style={styles.heroTitle}>One quick step</AppText>
+          <AppText style={styles.heroSub}>
             Indian law requires us to ask for your consent to our Terms of Service and Privacy Policy
             before you create an account.
-          </Text>
+          </AppText>
         </View>
 
         <View style={styles.policiesCard}>
@@ -122,8 +116,8 @@ export default function ConsentScreen() {
                   color={GREEN_DARK}
                 />
                 <View style={styles.policyText}>
-                  <Text style={styles.policyTitle}>Read the {doc.title}</Text>
-                  <Text style={styles.policySub}>{doc.subtitle}</Text>
+                  <AppText style={styles.policyTitle}>Read the {doc.title}</AppText>
+                  <AppText style={styles.policySub}>{doc.subtitle}</AppText>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={MUTED} />
               </TouchableOpacity>
@@ -141,8 +135,8 @@ export default function ConsentScreen() {
              so users don't have to hit the 22px checkbox itself precisely.
           2. android_ripple gives immediate visual feedback so users see
              their tap registered even before the state re-renders.
-          3. `pointerEvents="none"` on the inner <Text> block prevents
-             nested <Text> children (Terms/Privacy styled fragments) from
+          3. `pointerEvents="none"` on the inner <AppText> block prevents
+             nested <AppText> children (Terms/Privacy styled fragments) from
              absorbing the touch on Android — a well-known RN quirk where
              child Text with different styling becomes its own hit target.
           4. delayPressIn=0 so the ripple + toggle fire immediately on
@@ -164,27 +158,27 @@ export default function ConsentScreen() {
           >
             {accepted ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
           </View>
-          <Text style={styles.acceptText} pointerEvents="none">
+          <AppText style={styles.acceptText} pointerEvents="none">
             I have read and agree to the{" "}
-            <Text style={styles.acceptLink}>Terms of Service</Text> and the{" "}
-            <Text style={styles.acceptLink}>Privacy Policy</Text>. I confirm I am{" "}
-            <Text style={styles.bold}>18 years or older</Text> to use ride services, or
+            <AppText style={styles.acceptLink}>Terms of Service</AppText> and the{" "}
+            <AppText style={styles.acceptLink}>Privacy Policy</AppText>. I confirm I am{" "}
+            <AppText style={styles.bold}>18 years or older</AppText> to use ride services, or
             using GatiMitra under parental supervision.
-          </Text>
+          </AppText>
         </Pressable>
 
-        <Text style={styles.legalFooter}>
+        <AppText style={styles.legalFooter}>
           You can change or withdraw consent at any time from{" "}
-          <Text style={styles.bold}>Profile → Settings → Privacy</Text>. Updates to these
+          <AppText style={styles.bold}>Profile → Settings → Privacy</AppText>. Updates to these
           policies trigger a re-consent prompt — no silent changes.
-        </Text>
+        </AppText>
 
-        <Text style={styles.versionTag}>Legal pack: {LEGAL_PACK_VERSION}</Text>
+        <AppText style={styles.versionTag}>Legal pack: {LEGAL_PACK_VERSION}</AppText>
       </ScrollView>
 
       <View style={[styles.cta, { paddingBottom: insets.bottom + 12 }]}>
         <TouchableOpacity onPress={onDecline} style={styles.declineBtn} activeOpacity={0.8}>
-          <Text style={styles.declineText}>Decline</Text>
+          <AppText style={styles.declineText}>Decline</AppText>
         </TouchableOpacity>
         <TouchableOpacity
           onPress={onAccept}
@@ -192,7 +186,7 @@ export default function ConsentScreen() {
           style={[styles.acceptBtn, (!accepted || submitting) && styles.acceptBtnDisabled]}
           activeOpacity={0.85}
         >
-          <Text style={styles.acceptBtnText}>{submitting ? "Saving…" : "Accept & continue"}</Text>
+          <AppText style={styles.acceptBtnText}>{submitting ? "Saving…" : "Accept & continue"}</AppText>
         </TouchableOpacity>
       </View>
     </View>

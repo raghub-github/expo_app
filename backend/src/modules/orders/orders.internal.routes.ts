@@ -157,9 +157,14 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
       return reply.send({ ok: true, ...result });
     } catch (err) {
       req.log.warn({ err, body: parsed.data }, "rider-manual-assign failed");
-      return reply.code(400).send({
+      const message = err instanceof Error ? err.message : "manual_assign_failed";
+      const statusCode =
+        typeof (err as { statusCode?: unknown })?.statusCode === "number"
+          ? Number((err as { statusCode: number }).statusCode)
+          : 400;
+      return reply.code(statusCode >= 400 && statusCode < 600 ? statusCode : 400).send({
         ok: false,
-        error: err instanceof Error ? err.message : "manual_assign_failed",
+        error: message,
       });
     }
   });

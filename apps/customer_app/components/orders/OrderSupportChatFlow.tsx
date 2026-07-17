@@ -3,18 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Linking,
-  Alert,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, ScrollView, StyleSheet, Linking, Alert, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -73,23 +64,23 @@ type Props = {
 function BotMessageText({ text, onEmailPress }: { text: string; onEmailPress: () => void }) {
   const email = SUPPORT_CONTACT_EMAIL;
   if (!text.includes(email)) {
-    return <Text style={styles.botText}>{text}</Text>;
+    return <AppText style={styles.botText}>{text}</AppText>;
   }
 
   const parts = text.split(email);
   return (
-    <Text style={styles.botText}>
+    <AppText style={styles.botText}>
       {parts.map((part, index) => (
-        <Text key={`${index}-${part.slice(0, 8)}`}>
+        <AppText key={`${index}-${part.slice(0, 8)}`}>
           {part}
           {index < parts.length - 1 ? (
-            <Text style={styles.botEmailLink} onPress={onEmailPress}>
+            <AppText style={styles.botEmailLink} onPress={onEmailPress}>
               {email}
-            </Text>
+            </AppText>
           ) : null}
-        </Text>
+        </AppText>
       ))}
-    </Text>
+    </AppText>
   );
 }
 
@@ -97,9 +88,9 @@ function UserBubble({ message }: { message: SupportChatMessage }) {
   return (
     <View style={styles.userRow}>
       <View style={styles.userBubble}>
-        <Text style={styles.userText}>{message.text}</Text>
+        <AppText style={styles.userText}>{message.text}</AppText>
         <View style={styles.userMeta}>
-          <Text style={styles.userTime}>{formatChatTime(message.sentAt)}</Text>
+          <AppText style={styles.userTime}>{formatChatTime(message.sentAt)}</AppText>
           <Ionicons name="checkmark-done" size={14} color={LINK_BLUE} />
         </View>
       </View>
@@ -124,7 +115,7 @@ function BotBubble({
     <View style={styles.botRow}>
       <View style={styles.botBubble}>
         <BotMessageText text={message.text} onEmailPress={onEmailPress} />
-        <Text style={styles.botTime}>{formatChatTime(message.sentAt)}</Text>
+        <AppText style={styles.botTime}>{formatChatTime(message.sentAt)}</AppText>
 
         {message.orders?.length ? (
           <View style={styles.optionsCard}>
@@ -138,9 +129,9 @@ function BotBubble({
                     activeOpacity={0.85}
                     onPress={() => onOrderPress(order)}
                   >
-                    <Text style={styles.orderTitle}>{orderPickerTitle(order)}</Text>
-                    <Text style={styles.orderSub}>{orderPickerSubtitle(order, itemHint)}</Text>
-                    <Text
+                    <AppText style={styles.orderTitle}>{orderPickerTitle(order)}</AppText>
+                    <AppText style={styles.orderSub}>{orderPickerSubtitle(order, itemHint)}</AppText>
+                    <AppText
                       style={[
                         styles.orderStatus,
                         status.tone === "success" && styles.orderStatusSuccess,
@@ -148,7 +139,7 @@ function BotBubble({
                       ]}
                     >
                       {status.text}
-                    </Text>
+                    </AppText>
                   </TouchableOpacity>
                 </View>
               );
@@ -161,7 +152,7 @@ function BotBubble({
                   activeOpacity={0.85}
                   onPress={() => onOptionPress(option)}
                 >
-                  <Text style={styles.optionText}>{option.label}</Text>
+                  <AppText style={styles.optionText}>{option.label}</AppText>
                 </TouchableOpacity>
               </View>
             ))}
@@ -176,7 +167,7 @@ function BotBubble({
                   activeOpacity={0.85}
                   onPress={() => onOptionPress(option)}
                 >
-                  <Text style={styles.optionText}>{option.label}</Text>
+                  <AppText style={styles.optionText}>{option.label}</AppText>
                 </TouchableOpacity>
               </View>
             ))}
@@ -531,9 +522,9 @@ export function OrderSupportChatFlow({
         <TouchableOpacity onPress={onEndChat} style={styles.headerSide} hitSlop={12}>
           <Ionicons name="arrow-back" size={22} color={TEXT} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>GatiMitra Support</Text>
+        <AppText style={styles.headerTitle}>GatiMitra Support</AppText>
         <TouchableOpacity onPress={onEndChat} style={styles.headerEnd} hitSlop={12}>
-          <Text style={styles.endChatText}>End chat</Text>
+          <AppText style={styles.endChatText}>End chat</AppText>
         </TouchableOpacity>
       </View>
 
@@ -579,13 +570,13 @@ export function OrderSupportChatFlow({
               { paddingBottom: Math.max(insets.bottom + 16, 28) },
             ]}
           >
-            <Text style={styles.footerNote}>Still having an issue? </Text>
+            <AppText style={styles.footerNote}>Still having an issue? </AppText>
             <TouchableOpacity
               onPress={() => void resumeSupportChat()}
               activeOpacity={0.7}
               hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
             >
-              <Text style={styles.footerLink}>Chat with us</Text>
+              <AppText style={styles.footerLink}>Chat with us</AppText>
             </TouchableOpacity>
           </View>
         ) : null}

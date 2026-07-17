@@ -78,6 +78,30 @@ export type LocalityDisplay = {
   isSafe: boolean;
 };
 
+/** Distinct riders who must refuse before Locality turns RED. */
+export const LOCALITY_RED_MIN_RIDER_REFUSALS = 2;
+
+/**
+ * Locality GREEN/RED for order sidebar.
+ * GREEN by default; RED only when enough distinct riders refuse delivery.
+ * (Not based on billing.serviceable / out-of-range.)
+ */
+export function resolveLocalityFromRiderRefusals(
+  distinctRiderRefusalCount: number
+): LocalityDisplay {
+  const count = Number.isFinite(distinctRiderRefusalCount)
+    ? Math.max(0, Math.floor(distinctRiderRefusalCount))
+    : 0;
+  if (count >= LOCALITY_RED_MIN_RIDER_REFUSALS) {
+    return { label: "RED", isSafe: false };
+  }
+  return { label: "GREEN", isSafe: true };
+}
+
+/**
+ * Legacy billing/checkout locality strings (kept for other callers).
+ * Order sidebar Locality tag uses {@link resolveLocalityFromRiderRefusals} instead.
+ */
 export function resolveLocalityDisplay(
   billingSnapshot: unknown,
   checkoutMetadata: unknown

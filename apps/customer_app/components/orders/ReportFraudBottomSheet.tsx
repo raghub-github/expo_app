@@ -1,15 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  StyleSheet,
-  TextInput,
-  ScrollView,
-  ActivityIndicator,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Modal, Pressable, StyleSheet, TextInput, ScrollView, ActivityIndicator, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -47,7 +39,7 @@ function FraudCheckbox({
       <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
         {checked ? <Ionicons name="checkmark" size={14} color="#fff" /> : null}
       </View>
-      <Text style={styles.optionLabel}>{label}</Text>
+      <AppText style={styles.optionLabel}>{label}</AppText>
     </Pressable>
   );
 }
@@ -117,7 +109,7 @@ export function ReportFraudBottomSheet({
         </Pressable>
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
-          <Text style={styles.title}>{title}</Text>
+          <AppText style={styles.title}>{title}</AppText>
 
           {optionsQ.isLoading ? (
             <View style={styles.loadingWrap}>
@@ -169,7 +161,7 @@ export function ReportFraudBottomSheet({
             {submitting ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.submitBtnText}>Report fraud</Text>
+              <AppText style={styles.submitBtnText}>Report fraud</AppText>
             )}
           </Pressable>
         </View>

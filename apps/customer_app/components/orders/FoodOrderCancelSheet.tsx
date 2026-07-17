@@ -3,7 +3,9 @@
  */
 
 import { useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -109,43 +111,43 @@ export function FoodOrderCancelSheet({
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) }}
       >
         <View style={styles.heroIconWrap}>
-          <Text style={styles.heroEmoji}>🍜</Text>
+          <AppText style={styles.heroEmoji}>🍜</AppText>
         </View>
 
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>{title}</AppText>
+        <AppText style={styles.subtitle}>
           {prepStarted
             ? `${chargePct}% cancellation charges apply after food preparation has started. No refund will be issued.`
             : "You can cancel this order, but no refund will be issued once the order is placed."}
-        </Text>
+        </AppText>
 
         <View style={styles.quickRow}>
           <View style={[styles.quickCard, styles.quickCardDisabled]}>
             <Ionicons name="add-circle-outline" size={22} color={MUTED} />
-            <Text style={[styles.quickLabel, styles.quickLabelDisabled]}>Add more items</Text>
+            <AppText style={[styles.quickLabel, styles.quickLabelDisabled]}>Add more items</AppText>
           </View>
           <View style={[styles.quickCard, styles.quickCardDisabled]}>
             <Ionicons name="location-outline" size={22} color={MUTED} />
-            <Text style={[styles.quickLabel, styles.quickLabelDisabled]}>Change address</Text>
+            <AppText style={[styles.quickLabel, styles.quickLabelDisabled]}>Change address</AppText>
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Continue with cancellation</Text>
+        <AppText style={styles.sectionTitle}>Continue with cancellation</AppText>
 
         <View style={styles.breakdownCard}>
           <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Order amount</Text>
-            <Text style={styles.breakdownValue}>{formatMoney(orderAmount)}</Text>
+            <AppText style={styles.breakdownLabel}>Order amount</AppText>
+            <AppText style={styles.breakdownValue}>{formatMoney(orderAmount)}</AppText>
           </View>
           <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Cancellation charges ({chargePct}%)</Text>
-            <Text style={[styles.breakdownValue, styles.chargeValue]}>
+            <AppText style={styles.breakdownLabel}>Cancellation charges ({chargePct}%)</AppText>
+            <AppText style={[styles.breakdownValue, styles.chargeValue]}>
               {formatMoney(cancelCharge)}
-            </Text>
+            </AppText>
           </View>
           <View style={[styles.breakdownRow, styles.refundRow]}>
-            <Text style={styles.refundLabel}>Your refund</Text>
-            <Text style={[styles.refundValue, styles.noRefundValue]}>{formatMoney(refund)}</Text>
+            <AppText style={styles.refundLabel}>Your refund</AppText>
+            <AppText style={[styles.refundValue, styles.noRefundValue]}>{formatMoney(refund)}</AppText>
           </View>
         </View>
 
@@ -155,7 +157,7 @@ export function FoodOrderCancelSheet({
           onPress={() => setReasonSheetVisible(true)}
           disabled={cancelling}
         >
-          <Text style={styles.cancelBtnText}>Cancel order · No refund</Text>
+          <AppText style={styles.cancelBtnText}>Cancel order · No refund</AppText>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -166,7 +168,7 @@ export function FoodOrderCancelSheet({
             onOpenChat();
           }}
         >
-          <Text style={styles.chatLinkText}>Chat with delivery partner</Text>
+          <AppText style={styles.chatLinkText}>Chat with delivery partner</AppText>
         </TouchableOpacity>
       </ScrollView>
     </StoreBottomSheetShell>

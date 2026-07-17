@@ -59,6 +59,7 @@ export const queryKeys = {
     details: () => ["customers", "detail"] as const,
     detail: (id: number | string) => ["customers", "detail", id] as const,
     stats: (filters: Record<string, unknown>) => ["customers", "stats", stableSerialize(filters)] as const,
+    usersByState: () => ["customers", "users-by-state"] as const,
   },
   
   // Service Points

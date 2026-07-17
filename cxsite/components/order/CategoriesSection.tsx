@@ -317,6 +317,7 @@ export default function CategoriesSection({
     location: locationState,
     setLocation: setGlobalLocation,
     permissionStatus,
+    locationLoading,
     markAutoDetectInFlight,
     hydrated,
   } = useLocationContext()
@@ -333,8 +334,10 @@ export default function CategoriesSection({
       locationCommitted,
       promptOpen: showLocationWelcomeModal,
       openPrompt: openLocationWelcomeModal,
+      permissionStatus,
+      locationLoading,
     })
-  const showLocationNudgeBar = hydrated && !locationCommitted && !locationPromptDismissed
+  const showLocationNudgeBar = hydrated && !locationCommitted && !locationPromptDismissed && permissionStatus !== 'granted'
   const closeLocationWelcomeModal = useCallback(() => {
     setShowLocationWelcomeModal(false)
     setWelcomeDetectError(null)

@@ -13,6 +13,7 @@ import {
   Alert,
   Platform,
 } from "react-native";
+import { AppText } from "@/components/AppText";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -296,7 +297,7 @@ export default function LocationMapScreen() {
           <TouchableOpacity onPress={handleBack} style={styles.backBtn} hitSlop={12}>
             <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
           </TouchableOpacity>
-        <Text style={styles.headerTitle}>Confirm location</Text>
+        <AppText style={styles.headerTitle}>Confirm location</AppText>
         <View style={styles.headerRight} />
       </View>
 
@@ -327,7 +328,7 @@ export default function LocationMapScreen() {
       {/* Hint */}
       <View style={styles.hintWrap}>
         <Ionicons name="move-outline" size={18} color={TEXT_GRAY} />
-        <Text style={styles.hintText}>Drag the map to move the pin to the correct location</Text>
+        <AppText style={styles.hintText}>Drag the map to move the pin to the correct location</AppText>
       </View>
 
       {/* Address card */}
@@ -336,12 +337,12 @@ export default function LocationMapScreen() {
           <AddressRowSkeleton />
         ) : (
           <>
-            <Text style={styles.addressPrimary} numberOfLines={1}>
+            <AppText style={styles.addressPrimary} numberOfLines={1}>
               {address.primary}
-            </Text>
-            <Text style={styles.addressFull} numberOfLines={2}>
+            </AppText>
+            <AppText style={styles.addressFull} numberOfLines={2}>
               {address.fullAddress || address.secondary}
-            </Text>
+            </AppText>
           </>
         )}
         <TouchableOpacity
@@ -353,7 +354,7 @@ export default function LocationMapScreen() {
             <ActivityIndicator size="small" color="#fff" />
           ) : (
             <>
-              <Text style={styles.confirmBtnText}>Confirm location</Text>
+              <AppText style={styles.confirmBtnText}>Confirm location</AppText>
               <Ionicons name="checkmark-circle" size={20} color="#fff" />
             </>
           )}

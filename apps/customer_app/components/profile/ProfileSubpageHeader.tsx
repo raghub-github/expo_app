@@ -2,7 +2,9 @@
  * Shared sub-page header for profile stack screens (wallet, settings, verify email).
  */
 
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { ProfileTheme } from "@/constants/profileTheme";
@@ -23,9 +25,9 @@ export function ProfileSubpageHeader({ title, onBack, rightAction }: ProfileSubp
       <TouchableOpacity onPress={onBack} style={styles.side} hitSlop={12}>
         <Ionicons name="arrow-back" size={22} color={ProfileTheme.text} />
       </TouchableOpacity>
-      <Text style={styles.title} numberOfLines={1}>
+      <AppText style={styles.title} numberOfLines={1}>
         {title}
-      </Text>
+      </AppText>
       {rightAction ? (
         <TouchableOpacity onPress={rightAction.onPress} style={styles.side} hitSlop={12}>
           <Ionicons name={rightAction.icon} size={21} color={ProfileTheme.text} />

@@ -3,13 +3,9 @@
  */
 
 import { useCallback, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -123,17 +119,17 @@ function NotificationCard({
 
         <View style={styles.cardBody}>
           <View style={styles.cardTopRow}>
-            <Text
+            <AppText
               style={[styles.cardTitle, !item.read && styles.cardTitleUnread]}
               numberOfLines={1}
             >
               {item.title}
-            </Text>
-            <Text style={styles.cardTime}>{item.time}</Text>
+            </AppText>
+            <AppText style={styles.cardTime}>{item.time}</AppText>
           </View>
-          <Text style={styles.cardText} numberOfLines={2}>
+          <AppText style={styles.cardText} numberOfLines={2}>
             {item.body}
-          </Text>
+          </AppText>
         </View>
 
         <Ionicons name="chevron-forward" size={16} color="#C4C9D4" style={styles.chevron} />
@@ -200,13 +196,13 @@ export default function NotificationsScreen() {
             </TouchableOpacity>
 
             <View style={styles.headerCenter}>
-              <Text style={styles.headerTitle}>Notifications</Text>
+              <AppText style={styles.headerTitle}>Notifications</AppText>
               {unreadCount > 0 ? (
-                <Text style={styles.headerSub}>
+                <AppText style={styles.headerSub}>
                   {unreadCount} unread {unreadCount === 1 ? "update" : "updates"}
-                </Text>
+                </AppText>
               ) : (
-                <Text style={styles.headerSub}>You're all caught up</Text>
+                <AppText style={styles.headerSub}>You're all caught up</AppText>
               )}
             </View>
 
@@ -239,14 +235,14 @@ export default function NotificationsScreen() {
                     onPress={() => setActiveFilter(tab.id)}
                     activeOpacity={0.85}
                   >
-                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                    <AppText style={[styles.filterChipText, active && styles.filterChipTextActive]}>
                       {tab.label}
-                    </Text>
+                    </AppText>
                     {count > 0 ? (
                       <View style={[styles.filterCount, active && styles.filterCountActive]}>
-                        <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>
+                        <AppText style={[styles.filterCountText, active && styles.filterCountTextActive]}>
                           {count}
-                        </Text>
+                        </AppText>
                       </View>
                     ) : null}
                   </TouchableOpacity>
@@ -273,24 +269,24 @@ export default function NotificationsScreen() {
               >
                 <Ionicons name="notifications-off-outline" size={40} color={GatiMitraColors.deepMintStart} />
               </LinearGradient>
-              <Text style={styles.emptyTitle}>No notifications yet</Text>
-              <Text style={styles.emptySub}>
+              <AppText style={styles.emptyTitle}>No notifications yet</AppText>
+              <AppText style={styles.emptySub}>
                 Orders, ride updates, offers and account alerts will appear here when you have
                 activity on GatiMitra.
-              </Text>
+              </AppText>
             </View>
           ) : !hasFilteredResults ? (
             <View style={styles.emptyWrap}>
               <View style={styles.emptyIconWrap}>
                 <Ionicons name="filter-outline" size={36} color={GatiMitraColors.textSecondary} />
               </View>
-              <Text style={styles.emptyTitle}>Nothing in this filter</Text>
-              <Text style={styles.emptySub}>Try another category or check back later.</Text>
+              <AppText style={styles.emptyTitle}>Nothing in this filter</AppText>
+              <AppText style={styles.emptySub}>Try another category or check back later.</AppText>
             </View>
           ) : (
             groupedSections.map((section) => (
               <View key={section.group} style={styles.section}>
-                <Text style={styles.sectionLabel}>{section.label}</Text>
+                <AppText style={styles.sectionLabel}>{section.label}</AppText>
                 <View style={styles.sectionCards}>
                   {section.items.map((item) => (
                     <NotificationCard

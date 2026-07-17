@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -39,9 +41,9 @@ export function RideServiceBottomNav({ activeTab, onTabChange }: Props) {
             size={18}
             color={activeTab === "all" ? GatiMitraColors.primaryMint : GatiMitraColors.textSecondary}
           />
-          <Text style={[styles.tabLabel, activeTab === "all" && styles.tabLabelActive]}>
+          <AppText style={[styles.tabLabel, activeTab === "all" && styles.tabLabelActive]}>
             All Services
-          </Text>
+          </AppText>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === "intercity" && styles.tabActive]}
@@ -53,9 +55,9 @@ export function RideServiceBottomNav({ activeTab, onTabChange }: Props) {
             size={18}
             color={activeTab === "intercity" ? GatiMitraColors.primaryMint : GatiMitraColors.textSecondary}
           />
-          <Text style={[styles.tabLabel, activeTab === "intercity" && styles.tabLabelActive]}>
+          <AppText style={[styles.tabLabel, activeTab === "intercity" && styles.tabLabelActive]}>
             Inter city
-          </Text>
+          </AppText>
         </TouchableOpacity>
       </View>
     </View>

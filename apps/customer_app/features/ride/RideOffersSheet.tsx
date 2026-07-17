@@ -1,12 +1,7 @@
 import { useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -44,12 +39,12 @@ function RideOfferCard({ offer }: { offer: RideBookOffer }) {
           <Ionicons name="pricetag" size={16} color={GatiMitraColors.primaryMint} />
         </View>
         <View style={styles.cardTextCol}>
-          <Text style={styles.cardTitle}>{offer.label}</Text>
-          {offer.subLabel ? <Text style={styles.cardSub}>{offer.subLabel}</Text> : null}
-          {offer.criteria ? <Text style={styles.cardCriteria}>{offer.criteria}</Text> : null}
+          <AppText style={styles.cardTitle}>{offer.label}</AppText>
+          {offer.subLabel ? <AppText style={styles.cardSub}>{offer.subLabel}</AppText> : null}
+          {offer.criteria ? <AppText style={styles.cardCriteria}>{offer.criteria}</AppText> : null}
           {code ? (
             <View style={styles.codeBox}>
-              <Text style={styles.codeText}>{code}</Text>
+              <AppText style={styles.codeText}>{code}</AppText>
             </View>
           ) : null}
         </View>
@@ -66,7 +61,7 @@ function RideOfferCard({ offer }: { offer: RideBookOffer }) {
           {details.map((line) => (
             <View key={line} style={styles.detailRow}>
               <Ionicons name="checkmark-circle" size={16} color="#059669" />
-              <Text style={styles.detailText}>{line}</Text>
+              <AppText style={styles.detailText}>{line}</AppText>
             </View>
           ))}
         </View>
@@ -82,16 +77,16 @@ export function RideOffersSheet({ visible, onClose, offers }: RideOffersSheetPro
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.78}>
       <View style={styles.handle} />
-      <Text style={styles.sheetTitle}>Ride offers</Text>
-      <Text style={styles.sheetSub}>
+      <AppText style={styles.sheetTitle}>Ride offers</AppText>
+      <AppText style={styles.sheetSub}>
         Coupons and discounts for your trip will show up here.
-      </Text>
+      </AppText>
       <View style={styles.paymentNotice}>
         <Ionicons name="information-circle-outline" size={18} color="#0369A1" />
-        <Text style={styles.paymentNoticeText}>
+        <AppText style={styles.paymentNoticeText}>
           Eligible offers are applied exclusively on the fare payment page after your ride is
           completed — not at the time of booking.
-        </Text>
+        </AppText>
       </View>
 
       <ScrollView
@@ -105,10 +100,10 @@ export function RideOffersSheet({ visible, onClose, offers }: RideOffersSheetPro
             <View style={styles.emptyIcon}>
               <Ionicons name="pricetag-outline" size={28} color="#9CA3AF" />
             </View>
-            <Text style={styles.emptyTitle}>No offers right now</Text>
-            <Text style={styles.emptySub}>
+            <AppText style={styles.emptyTitle}>No offers right now</AppText>
+            <AppText style={styles.emptySub}>
               When we run ride promotions, you will see them here before you book.
-            </Text>
+            </AppText>
           </View>
         ) : (
           offers.map((offer) => <RideOfferCard key={offer.id} offer={offer} />)

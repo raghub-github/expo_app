@@ -3,18 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Image,
-  Alert,
-  InteractionManager,
-  Linking,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image, Alert, InteractionManager, Linking } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
@@ -541,7 +532,7 @@ export default function OrderDetailsScreen() {
   if (!orderId) {
     return (
       <View style={[styles.center, styles.screen]}>
-        <Text style={styles.mutedText}>Invalid order</Text>
+        <AppText style={styles.mutedText}>Invalid order</AppText>
       </View>
     );
   }
@@ -550,7 +541,7 @@ export default function OrderDetailsScreen() {
     return (
       <View style={[styles.center, styles.screen]}>
         <ActivityIndicator size="large" color={GREEN} />
-        <Text style={styles.mutedText}>Loading order...</Text>
+        <AppText style={styles.mutedText}>Loading order...</AppText>
       </View>
     );
   }
@@ -558,7 +549,7 @@ export default function OrderDetailsScreen() {
   if (!order) {
     return (
       <View style={[styles.center, styles.screen]}>
-        <Text style={styles.mutedText}>Order not found</Text>
+        <AppText style={styles.mutedText}>Order not found</AppText>
       </View>
     );
   }
@@ -576,7 +567,7 @@ export default function OrderDetailsScreen() {
     return (
       <View style={[styles.center, styles.screen]}>
         <ActivityIndicator size="large" color={GREEN} />
-        <Text style={styles.mutedText}>Opening ride search…</Text>
+        <AppText style={styles.mutedText}>Opening ride search…</AppText>
       </View>
     );
   }
@@ -730,10 +721,10 @@ export default function OrderDetailsScreen() {
           <TouchableOpacity onPress={handleBack} style={styles.headerSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{pageTitle}</Text>
+          <AppText style={styles.headerTitle}>{pageTitle}</AppText>
           <TouchableOpacity onPress={handleOpenHelp} style={styles.headerSideRight} hitSlop={12}>
             <Ionicons name="headset-outline" size={18} color={GREEN} />
-            <Text style={styles.supportText}>Support</Text>
+            <AppText style={styles.supportText}>Support</AppText>
           </TouchableOpacity>
         </View>
 
@@ -748,13 +739,13 @@ export default function OrderDetailsScreen() {
 
           {isInProgress && !isRideOrder && trackingWeather?.showBanner ? (
             <View style={styles.weatherTrackingCard}>
-              <Text style={styles.weatherTrackingTitle}>
+              <AppText style={styles.weatherTrackingTitle}>
                 {trackingWeather.bannerTitle ?? trackingWeather.chipLabel}
-              </Text>
+              </AppText>
               {trackingWeather.bannerSubtitle || trackingWeather.trackingMessage ? (
-                <Text style={styles.weatherTrackingSub}>
+                <AppText style={styles.weatherTrackingSub}>
                   {trackingWeather.bannerSubtitle || trackingWeather.trackingMessage}
-                </Text>
+                </AppText>
               ) : null}
             </View>
           ) : isInProgress && !isRideOrder && trackingWeather?.showChip ? (
@@ -772,15 +763,15 @@ export default function OrderDetailsScreen() {
                   color={isCancelled || isFailed ? "#DC2626" : GREEN}
                 />
               </View>
-              <Text style={styles.statusText}>{statusBanner}</Text>
+              <AppText style={styles.statusText}>{statusBanner}</AppText>
             </View>
           </View>
 
           {isDelivered && order.storeRatingSubmitted && order.storeRating != null && !isRideOrder ? (
             <View style={styles.card}>
-              <Text style={styles.feedbackCardTitle}>Your feedback</Text>
+              <AppText style={styles.feedbackCardTitle}>Your feedback</AppText>
               <View style={styles.feedbackRatingRow}>
-                <Text style={styles.feedbackRatingLabel}>Restaurant</Text>
+                <AppText style={styles.feedbackRatingLabel}>Restaurant</AppText>
                 <View style={styles.feedbackStars}>
                   {[1, 2, 3, 4, 5].map((n) => (
                     <Ionicons
@@ -794,7 +785,7 @@ export default function OrderDetailsScreen() {
               </View>
               {order.deliveryRating != null ? (
                 <View style={styles.feedbackRatingRow}>
-                  <Text style={styles.feedbackRatingLabel}>Delivery</Text>
+                  <AppText style={styles.feedbackRatingLabel}>Delivery</AppText>
                   <View style={styles.feedbackStars}>
                     {[1, 2, 3, 4, 5].map((n) => (
                       <Ionicons
@@ -808,16 +799,16 @@ export default function OrderDetailsScreen() {
                 </View>
               ) : null}
               {order.storeReviewText ? (
-                <Text style={styles.feedbackReviewText}>
-                  <Text style={styles.feedbackReviewLabel}>Restaurant: </Text>
+                <AppText style={styles.feedbackReviewText}>
+                  <AppText style={styles.feedbackReviewLabel}>Restaurant: </AppText>
                   {order.storeReviewText}
-                </Text>
+                </AppText>
               ) : null}
               {order.riderReviewText ? (
-                <Text style={styles.feedbackReviewText}>
-                  <Text style={styles.feedbackReviewLabel}>Delivery: </Text>
+                <AppText style={styles.feedbackReviewText}>
+                  <AppText style={styles.feedbackReviewLabel}>Delivery: </AppText>
                   {order.riderReviewText}
-                </Text>
+                </AppText>
               ) : null}
             </View>
           ) : null}
@@ -830,22 +821,22 @@ export default function OrderDetailsScreen() {
                 ) : bannerUri ? (
                   <Image source={{ uri: bannerUri }} style={styles.restaurantLogoImg} resizeMode="cover" />
                 ) : (
-                  <Text style={styles.restaurantInitial}>{restaurantName.slice(0, 1).toUpperCase()}</Text>
+                  <AppText style={styles.restaurantInitial}>{restaurantName.slice(0, 1).toUpperCase()}</AppText>
                 )}
               </View>
               <View style={styles.restaurantInfo}>
-                <Text style={styles.restaurantName} numberOfLines={1}>
+                <AppText style={styles.restaurantName} numberOfLines={1}>
                   {restaurantName}
-                </Text>
+                </AppText>
                 {!!merchantArea && (
-                  <Text style={styles.restaurantArea} numberOfLines={isRideOrder ? 2 : 1}>
+                  <AppText style={styles.restaurantArea} numberOfLines={isRideOrder ? 2 : 1}>
                     {isRideOrder ? `Pickup · ${merchantArea}` : merchantArea}
-                  </Text>
+                  </AppText>
                 )}
                 {isRideOrder && dropAddress ? (
-                  <Text style={styles.restaurantArea} numberOfLines={2}>
+                  <AppText style={styles.restaurantArea} numberOfLines={2}>
                     Drop · {dropAddress}
-                  </Text>
+                  </AppText>
                 ) : null}
               </View>
               {!isRideOrder ? (
@@ -877,7 +868,7 @@ export default function OrderDetailsScreen() {
             </View>
 
             <View style={styles.orderIdRow}>
-              <Text style={styles.orderIdText}>Order ID: #{displayOrderId}</Text>
+              <AppText style={styles.orderIdText}>Order ID: #{displayOrderId}</AppText>
               <TouchableOpacity onPress={handleCopyOrderId} hitSlop={8}>
                 <Ionicons name="copy-outline" size={16} color={MUTED} />
               </TouchableOpacity>
@@ -916,9 +907,9 @@ export default function OrderDetailsScreen() {
                       )}
                       <View style={styles.itemTextWrap}>
                         <View style={styles.itemNameRow}>
-                          <Text style={[styles.itemName, styles.itemNameFlex]} numberOfLines={2}>
+                          <AppText style={[styles.itemName, styles.itemNameFlex]} numberOfLines={2}>
                             {item.quantity} x {item.name}
-                          </Text>
+                          </AppText>
                           {hasCust ? (
                             <TouchableOpacity
                               style={styles.infoBtn}
@@ -935,16 +926,16 @@ export default function OrderDetailsScreen() {
                           ) : null}
                         </View>
                         {hasCust ? (
-                          <Text style={styles.itemTapHint}>Tap to see size & add-ons</Text>
+                          <AppText style={styles.itemTapHint}>Tap to see size & add-ons</AppText>
                         ) : null}
                       </View>
                     </View>
-                    <Text style={styles.itemPrice}>₹{Math.round(lineTotal)}</Text>
+                    <AppText style={styles.itemPrice}>₹{Math.round(lineTotal)}</AppText>
                   </TouchableOpacity>
                   {hasCust ? (
-                    <Text style={styles.itemDashedText} numberOfLines={1} accessibilityElementsHidden>
+                    <AppText style={styles.itemDashedText} numberOfLines={1} accessibilityElementsHidden>
                       — — — — — — — — —
-                    </Text>
+                    </AppText>
                   ) : null}
                 </View>
               );
@@ -969,24 +960,24 @@ export default function OrderDetailsScreen() {
                 {liveEtaMins != null && liveEtaMins > 0 ? (
                   <View style={styles.etaPill}>
                     <Ionicons name="time-outline" size={16} color={GREEN} />
-                    <Text style={styles.etaText}>Arriving in ~{liveEtaMins} mins</Text>
+                    <AppText style={styles.etaText}>Arriving in ~{liveEtaMins} mins</AppText>
                   </View>
                 ) : null}
               </View>
               {order.pickupOtp ? (
                 <View style={styles.otpRow}>
                   <Ionicons name="key-outline" size={16} color={GREEN} />
-                  <Text style={styles.otpText}>
-                    Pickup OTP: <Text style={styles.otpValue}>{order.pickupOtp}</Text>
-                  </Text>
+                  <AppText style={styles.otpText}>
+                    Pickup OTP: <AppText style={styles.otpValue}>{order.pickupOtp}</AppText>
+                  </AppText>
                 </View>
               ) : null}
               {order.deliveryOtp ? (
                 <View style={styles.otpRow}>
                   <Ionicons name="shield-checkmark-outline" size={16} color={GREEN} />
-                  <Text style={styles.otpText}>
-                    Delivery OTP: <Text style={styles.otpValue}>{order.deliveryOtp}</Text>
-                  </Text>
+                  <AppText style={styles.otpText}>
+                    Delivery OTP: <AppText style={styles.otpValue}>{order.deliveryOtp}</AppText>
+                  </AppText>
                 </View>
               ) : null}
             </View>
@@ -998,7 +989,7 @@ export default function OrderDetailsScreen() {
                 <View style={styles.billIconWrap}>
                   <Ionicons name="receipt-outline" size={16} color={MUTED} />
                 </View>
-                <Text style={styles.billTitle}>{billTitle}</Text>
+                <AppText style={styles.billTitle}>{billTitle}</AppText>
               </View>
               <TouchableOpacity onPress={handleBillSummaryReceipt} hitSlop={8} disabled={receiptDownloading}>
                 <Ionicons name="download-outline" size={20} color={MUTED} />
@@ -1007,137 +998,137 @@ export default function OrderDetailsScreen() {
 
             {!isRideOrder ? (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Item total</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.itemTotal || items.reduce((s, i) => s + (i.lineTotal ?? i.price * i.quantity), 0))}</Text>
+                <AppText style={styles.billLabel}>Item total</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.itemTotal || items.reduce((s, i) => s + (i.lineTotal ?? i.price * i.quantity), 0))}</AppText>
               </View>
             ) : null}
             {bill.gstAndPackaging > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>GST & restaurant packaging</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.gstAndPackaging)}</Text>
+                <AppText style={styles.billLabel}>GST & restaurant packaging</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.gstAndPackaging)}</AppText>
               </View>
             )}
             {(bill.deliveryFeeOriginal != null || bill.deliveryFee > 0.005) && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Delivery partner fee</Text>
+                <AppText style={styles.billLabel}>Delivery partner fee</AppText>
                 {bill.deliveryFeeOriginal != null ? (
                   bill.deliveryDisplayFree || bill.deliveryFee <= 0.005 ? (
                     <View style={styles.freeDeliveryWrap}>
-                      <Text style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</Text>
-                      <Text style={styles.freeText}>FREE</Text>
+                      <AppText style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</AppText>
+                      <AppText style={styles.freeText}>FREE</AppText>
                     </View>
                   ) : (
                     <View style={styles.freeDeliveryWrap}>
-                      <Text style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</Text>
-                      <Text style={styles.billValue}>{formatMoney(bill.deliveryFee)}</Text>
+                      <AppText style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</AppText>
+                      <AppText style={styles.billValue}>{formatMoney(bill.deliveryFee)}</AppText>
                     </View>
                   )
                 ) : (
-                  <Text style={styles.billValue}>{formatMoney(bill.deliveryFee)}</Text>
+                  <AppText style={styles.billValue}>{formatMoney(bill.deliveryFee)}</AppText>
                 )}
               </View>
             )}
             {bill.platformFee > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Platform fee</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.platformFee)}</Text>
+                <AppText style={styles.billLabel}>Platform fee</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.platformFee)}</AppText>
               </View>
             )}
             {bill.donation > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Feeding India donation</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.donation)}</Text>
+                <AppText style={styles.billLabel}>Feeding India donation</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.donation)}</AppText>
               </View>
             )}
             {bill.tipAmount > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Tip for delivery partner</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.tipAmount)}</Text>
+                <AppText style={styles.billLabel}>Tip for delivery partner</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.tipAmount)}</AppText>
               </View>
             )}
             {bill.surgeFee > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Surge fee</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.surgeFee)}</Text>
+                <AppText style={styles.billLabel}>Surge fee</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.surgeFee)}</AppText>
               </View>
             )}
             {bill.smallOrderFee > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Small order fee</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.smallOrderFee)}</Text>
+                <AppText style={styles.billLabel}>Small order fee</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.smallOrderFee)}</AppText>
               </View>
             )}
             {bill.convenienceFee > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Convenience fee</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.convenienceFee)}</Text>
+                <AppText style={styles.billLabel}>Convenience fee</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.convenienceFee)}</AppText>
               </View>
             )}
             {bill.miscFee > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Other charges</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.miscFee)}</Text>
+                <AppText style={styles.billLabel}>Other charges</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.miscFee)}</AppText>
               </View>
             )}
             {bill.subscriptionFee > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>{bill.subscriptionLabel ?? "Membership"}</Text>
-                <Text style={styles.billValue}>{formatMoney(bill.subscriptionFee)}</Text>
+                <AppText style={styles.billLabel}>{bill.subscriptionLabel ?? "Membership"}</AppText>
+                <AppText style={styles.billValue}>{formatMoney(bill.subscriptionFee)}</AppText>
               </View>
             )}
 
             <View style={styles.billDivider} />
 
             <View style={[styles.billRow, styles.billGrandRow]}>
-              <Text style={styles.billGrandLabel}>Grand total</Text>
-              <Text style={styles.billGrandValue}>{formatMoney(bill.grandTotal)}</Text>
+              <AppText style={styles.billGrandLabel}>Grand total</AppText>
+              <AppText style={styles.billGrandValue}>{formatMoney(bill.grandTotal)}</AppText>
             </View>
 
             {bill.discountLines.length > 0
               ? bill.discountLines.map((line, idx) => (
                   <View key={`disc-${line.code ?? line.label}-${idx}`} style={styles.billRow}>
-                    <Text style={styles.couponLabel}>{line.label}</Text>
-                    <Text style={styles.couponValue}>- {formatMoney(line.amount)}</Text>
+                    <AppText style={styles.couponLabel}>{line.label}</AppText>
+                    <AppText style={styles.couponValue}>- {formatMoney(line.amount)}</AppText>
                   </View>
                 ))
               : bill.couponDiscount > 0.005 && (
                   <View style={styles.billRow}>
-                    <Text style={styles.couponLabel}>
+                    <AppText style={styles.couponLabel}>
                       Coupon applied{bill.couponCode ? ` - ${bill.couponCode}` : ""}
-                    </Text>
-                    <Text style={styles.couponValue}>- {formatMoney(bill.couponDiscount)}</Text>
+                    </AppText>
+                    <AppText style={styles.couponValue}>- {formatMoney(bill.couponDiscount)}</AppText>
                   </View>
                 )}
 
             {bill.gatiCashApplied > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.couponLabel}>Using GatiCash</Text>
-                <Text style={styles.couponValue}>- {formatMoney(bill.gatiCashApplied)}</Text>
+                <AppText style={styles.couponLabel}>Using GatiCash</AppText>
+                <AppText style={styles.couponValue}>- {formatMoney(bill.gatiCashApplied)}</AppText>
               </View>
             )}
 
             {bill.missedOfferDiscount > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.couponLabel}>Offer discount</Text>
-                <Text style={styles.couponValue}>- {formatMoney(bill.missedOfferDiscount)}</Text>
+                <AppText style={styles.couponLabel}>Offer discount</AppText>
+                <AppText style={styles.couponValue}>- {formatMoney(bill.missedOfferDiscount)}</AppText>
               </View>
             )}
 
             {bill.missedOfferWalletAdd > 0.005 && (
               <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Add to GatiCash wallet</Text>
-                <Text style={styles.billValue}>+ {formatMoney(bill.missedOfferWalletAdd)}</Text>
+                <AppText style={styles.billLabel}>Add to GatiCash wallet</AppText>
+                <AppText style={styles.billValue}>+ {formatMoney(bill.missedOfferWalletAdd)}</AppText>
               </View>
             )}
 
             <View style={[styles.billRow, styles.billPaidRow]}>
-              <Text style={styles.paidLabel}>{isCancelled || isFailed ? "Amount" : "Paid"}</Text>
-              <Text style={styles.paidValue}>{formatMoney(bill.paid)}</Text>
+              <AppText style={styles.paidLabel}>{isCancelled || isFailed ? "Amount" : "Paid"}</AppText>
+              <AppText style={styles.paidValue}>{formatMoney(bill.paid)}</AppText>
             </View>
 
             {bill.totalSavings > 0.005 && (
               <View style={styles.savingsBanner}>
-                <Text style={styles.savingsText}>🎉 You saved {formatMoney(bill.totalSavings)} on this order!</Text>
+                <AppText style={styles.savingsText}>🎉 You saved {formatMoney(bill.totalSavings)} on this order!</AppText>
               </View>
             )}
           </View>
@@ -1146,12 +1137,12 @@ export default function OrderDetailsScreen() {
             <View style={styles.card}>
               <View style={styles.riderRow}>
                 <View style={styles.riderAvatar}>
-                  <Text style={styles.riderAvatarText}>{order.rider.name.slice(0, 1).toUpperCase()}</Text>
+                  <AppText style={styles.riderAvatarText}>{order.rider.name.slice(0, 1).toUpperCase()}</AppText>
                 </View>
                 <View style={styles.riderInfo}>
-                  <Text style={styles.riderName}>{order.rider.name}</Text>
+                  <AppText style={styles.riderName}>{order.rider.name}</AppText>
                   {order.rider.phone ? (
-                    <Text style={styles.riderPhone}>{maskPhone(order.rider.phone)}</Text>
+                    <AppText style={styles.riderPhone}>{maskPhone(order.rider.phone)}</AppText>
                   ) : null}
                 </View>
               </View>
@@ -1163,11 +1154,11 @@ export default function OrderDetailsScreen() {
               <View style={styles.infoRow}>
                 <Ionicons name="call-outline" size={20} color={GREEN} />
                 <View style={styles.infoTextWrap}>
-                  <Text style={styles.infoTitle}>Alternate contact number</Text>
-                  <Text style={styles.infoSub}>
+                  <AppText style={styles.infoTitle}>Alternate contact number</AppText>
+                  <AppText style={styles.infoSub}>
                     {alternateContactName ? alternateContactName : "Contact"}
                     {alternateContactPhone ? ` · ${maskPhone(alternateContactPhone)}` : ""}
-                  </Text>
+                  </AppText>
                 </View>
               </View>
             </View>
@@ -1178,8 +1169,8 @@ export default function OrderDetailsScreen() {
               <View style={styles.infoRow}>
                 <Ionicons name="person-outline" size={20} color={GREEN} />
                 <View style={styles.infoTextWrap}>
-                  <Text style={styles.infoTitle}>Customer name</Text>
-                  <Text style={styles.infoSub}>{deliveryCustomerName}</Text>
+                  <AppText style={styles.infoTitle}>Customer name</AppText>
+                  <AppText style={styles.infoSub}>{deliveryCustomerName}</AppText>
                 </View>
               </View>
             </View>
@@ -1189,16 +1180,16 @@ export default function OrderDetailsScreen() {
             <View style={styles.infoRow}>
               <Ionicons name="wallet-outline" size={20} color={GREEN} />
               <View style={styles.infoTextWrap}>
-                <Text style={styles.infoTitle}>Payment method</Text>
-                <Text style={styles.infoSub}>Paid via: {paymentMethodLabel}</Text>
+                <AppText style={styles.infoTitle}>Payment method</AppText>
+                <AppText style={styles.infoSub}>Paid via: {paymentMethodLabel}</AppText>
               </View>
             </View>
             <View style={styles.infoDivider} />
             <View style={styles.infoRow}>
               <Ionicons name="calendar-outline" size={20} color={GREEN} />
               <View style={styles.infoTextWrap}>
-                <Text style={styles.infoTitle}>Payment date</Text>
-                <Text style={styles.infoSub}>{formatPaymentDate(order.createdAt)}</Text>
+                <AppText style={styles.infoTitle}>Payment date</AppText>
+                <AppText style={styles.infoSub}>{formatPaymentDate(order.createdAt)}</AppText>
               </View>
             </View>
             {!!order.deliveryAddress && (
@@ -1207,8 +1198,8 @@ export default function OrderDetailsScreen() {
                 <View style={styles.infoRow}>
                   <Ionicons name="location-outline" size={20} color={GREEN} />
                   <View style={styles.infoTextWrap}>
-                    <Text style={styles.infoTitle}>Delivery address</Text>
-                    <Text style={styles.infoSub}>{order.deliveryAddress}</Text>
+                    <AppText style={styles.infoTitle}>Delivery address</AppText>
+                    <AppText style={styles.infoSub}>{order.deliveryAddress}</AppText>
                   </View>
                 </View>
               </>
@@ -1224,7 +1215,7 @@ export default function OrderDetailsScreen() {
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <TouchableOpacity style={styles.invoiceBtn} onPress={handleInvoice} activeOpacity={0.9}>
             <Ionicons name="download-outline" size={18} color={GREEN} />
-            <Text style={styles.invoiceText}>Invoice</Text>
+            <AppText style={styles.invoiceText}>Invoice</AppText>
           </TouchableOpacity>
         </View>
 

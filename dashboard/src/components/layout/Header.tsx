@@ -323,6 +323,8 @@ function OrderSearchBar() {
 const ROUTE_TITLES: Record<string, string> = {
   "/dashboard": "Home",
   "/dashboard/customers": "Customers",
+  "/dashboard/customers/deletion-requests": "Account deletion requests",
+  "/dashboard/customers/users-by-state": "Users by State / UT",
   "/dashboard/riders": "Riders",
   "/dashboard/merchants": "Merchants",
   "/dashboard/orders": "Orders",
@@ -877,12 +879,87 @@ function HeaderComponent() {
           )}
       </div>
 
-      {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
+      {/* Center: Order Search / Tickets search+New / Dashboard Search */}
       {effectivePathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-3 px-4">
           <OrderTypeDropdown />
           <div className="min-w-0 flex-1 max-w-lg">
             <OrderSearchBar />
+          </div>
+        </div>
+      ) : effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace ? (
+        <div
+          className={`flex min-w-0 flex-1 items-center justify-end gap-2 ${
+            rightSidebar?.isOpen ? "pr-5 sm:pr-8 lg:pr-10" : "pr-3 sm:pr-4"
+          }`}
+        >
+          {/* Global search and + New — kept clear of the filters rail */}
+          <div className="w-full min-w-0 max-w-[140px] sm:max-w-[200px] md:max-w-[240px]">
+            <GlobalSearch />
+          </div>
+          <div ref={newMenuRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowNewDropdown((prev) => !prev)}
+              className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-400 transition-colors"
+              aria-expanded={showNewDropdown}
+              aria-haspopup="true"
+            >
+              <Plus className="h-4 w-4" />
+              <span>New</span>
+              <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showNewDropdown ? "rotate-180" : ""}`} />
+            </button>
+            {showNewDropdown && (
+              <div
+                className="absolute right-0 top-full z-[100] mt-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg ring-1 ring-black/5"
+                role="menu"
+              >
+                <Link
+                  href="/dashboard/tickets/new"
+                  onClick={() => setShowNewDropdown(false)}
+                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                  role="menuitem"
+                >
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+                    <Ticket className="h-4 w-4" />
+                  </div>
+                  <span>Ticket</span>
+                </Link>
+                <Link
+                  href="/dashboard/email"
+                  onClick={() => setShowNewDropdown(false)}
+                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                  role="menuitem"
+                >
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
+                    <Mail className="h-4 w-4" />
+                  </div>
+                  <span>Email</span>
+                </Link>
+                <Link
+                  href="/dashboard/contacts/new"
+                  onClick={() => setShowNewDropdown(false)}
+                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                  role="menuitem"
+                >
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+                    <UserPlus className="h-4 w-4" />
+                  </div>
+                  <span>Contact</span>
+                </Link>
+                <Link
+                  href="/dashboard/companies/new"
+                  onClick={() => setShowNewDropdown(false)}
+                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                  role="menuitem"
+                >
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
+                    <Building2 className="h-4 w-4" />
+                  </div>
+                  <span>Company</span>
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&
@@ -914,78 +991,6 @@ function HeaderComponent() {
               Merchant
             </button>
           </div>
-        )}
-        {/* Global search and + New: only on Tickets dashboard */}
-        {effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace && (
-          <>
-            <div className="w-full min-w-0 max-w-[160px] sm:max-w-[220px] md:max-w-[280px]">
-              <GlobalSearch />
-            </div>
-            <div ref={newMenuRef} className="relative">
-              <button
-                type="button"
-                onClick={() => setShowNewDropdown((prev) => !prev)}
-                className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-400 transition-colors"
-                aria-expanded={showNewDropdown}
-                aria-haspopup="true"
-              >
-                <Plus className="h-4 w-4" />
-                <span>New</span>
-                <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showNewDropdown ? "rotate-180" : ""}`} />
-              </button>
-              {showNewDropdown && (
-                <div
-                  className="absolute right-0 top-full z-[100] mt-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg ring-1 ring-black/5"
-                  role="menu"
-                >
-                  <Link
-                    href="/dashboard/tickets/new"
-                    onClick={() => setShowNewDropdown(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                    role="menuitem"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-                      <Ticket className="h-4 w-4" />
-                    </div>
-                    <span>Ticket</span>
-                  </Link>
-                  <Link
-                    href="/dashboard/email"
-                    onClick={() => setShowNewDropdown(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                    role="menuitem"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
-                      <Mail className="h-4 w-4" />
-                    </div>
-                    <span>Email</span>
-                  </Link>
-                  <Link
-                    href="/dashboard/contacts/new"
-                    onClick={() => setShowNewDropdown(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                    role="menuitem"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-                      <UserPlus className="h-4 w-4" />
-                    </div>
-                    <span>Contact</span>
-                  </Link>
-                  <Link
-                    href="/dashboard/companies/new"
-                    onClick={() => setShowNewDropdown(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                    role="menuitem"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
-                      <Building2 className="h-4 w-4" />
-                    </div>
-                    <span>Company</span>
-                  </Link>
-                </div>
-              )}
-            </div>
-          </>
         )}
         {/* Right sidebar / panel toggle - mobile only when this dashboard has a right sidebar */}
         {hasRightSidebar && (

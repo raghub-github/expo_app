@@ -1,6 +1,6 @@
 /**
  * Upstream GatiMitra API base URL for cxsite server routes.
- * In dev, prefer local backend over production when env is unset.
+ * Dev defaults to local backend on :3000.
  */
 export function getGatimitraBackendUrl(): string {
   const explicit = process.env.GATIMITRA_BACKEND_API_URL?.trim()

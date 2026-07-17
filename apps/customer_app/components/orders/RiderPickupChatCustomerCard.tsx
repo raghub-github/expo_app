@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Platform, Vibration } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Platform, Vibration } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { RiderPickupChatCustomerView } from "@/lib/rider-pickup-chat-customer";
@@ -66,9 +68,9 @@ export function RiderPickupChatCustomerCard({
           activeOpacity={0.88}
         >
           <Ionicons name="location" size={16} color="#fff" />
-          <Text style={styles.primaryBtnText}>
+          <AppText style={styles.primaryBtnText}>
             {shareLoading ? "Sharing…" : "Share live location"}
-          </Text>
+          </AppText>
         </TouchableOpacity>
       );
     }
@@ -77,11 +79,11 @@ export function RiderPickupChatCustomerCard({
         <View style={styles.actionRow}>
           <TouchableOpacity style={styles.secondaryBtn} onPress={onCall} activeOpacity={0.88}>
             <Ionicons name="call" size={15} color={MINT} />
-            <Text style={styles.secondaryBtnText}>Call driver</Text>
+            <AppText style={styles.secondaryBtnText}>Call driver</AppText>
           </TouchableOpacity>
           <TouchableOpacity style={styles.secondaryBtn} onPress={onChat} activeOpacity={0.88}>
             <Ionicons name="chatbubble-ellipses" size={15} color={MINT} />
-            <Text style={styles.secondaryBtnText}>Chat</Text>
+            <AppText style={styles.secondaryBtnText}>Chat</AppText>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.secondaryBtn}
@@ -90,7 +92,7 @@ export function RiderPickupChatCustomerCard({
             activeOpacity={0.88}
           >
             <Ionicons name="location" size={15} color={MINT} />
-            <Text style={styles.secondaryBtnText}>Share location</Text>
+            <AppText style={styles.secondaryBtnText}>Share location</AppText>
           </TouchableOpacity>
         </View>
       );
@@ -99,7 +101,7 @@ export function RiderPickupChatCustomerCard({
       return (
         <TouchableOpacity style={styles.callHighlightBtn} onPress={onCall} activeOpacity={0.88}>
           <Ionicons name="call" size={18} color="#fff" />
-          <Text style={styles.primaryBtnText}>Call driver now</Text>
+          <AppText style={styles.primaryBtnText}>Call driver now</AppText>
         </TouchableOpacity>
       );
     }
@@ -107,7 +109,7 @@ export function RiderPickupChatCustomerCard({
       return (
         <View style={styles.waitRow}>
           <Ionicons name="time-outline" size={16} color="#B45309" />
-          <Text style={styles.waitText}>Waiting {waitLabel}</Text>
+          <AppText style={styles.waitText}>Waiting {waitLabel}</AppText>
         </View>
       );
     }
@@ -120,13 +122,13 @@ export function RiderPickupChatCustomerCard({
         {view.action === "arrived_alert" ? (
           <View style={styles.arrivedBadge}>
             <Ionicons name="notifications" size={14} color="#B45309" />
-            <Text style={styles.arrivedBadgeText}>Driver arrived</Text>
+            <AppText style={styles.arrivedBadgeText}>Driver arrived</AppText>
           </View>
         ) : null}
-        <Text style={styles.body}>{view.customerText}</Text>
+        <AppText style={styles.body}>{view.customerText}</AppText>
         {actionRow}
       </View>
-      <Text style={styles.timeLabel}>{timeLabel}</Text>
+      <AppText style={styles.timeLabel}>{timeLabel}</AppText>
     </View>
   );
 }

@@ -1,13 +1,6 @@
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  ActivityIndicator,
-} from "react-native";
+import { View, Modal, Pressable, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -45,15 +38,15 @@ export function FoodCancelReasonSheet({
         </Pressable>
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <Text style={styles.title}>Why do you want to cancel?</Text>
-          <Text style={styles.subtitle}>Please select a reason for cancellation</Text>
+          <AppText style={styles.title}>Why do you want to cancel?</AppText>
+          <AppText style={styles.subtitle}>Please select a reason for cancellation</AppText>
 
           <View style={styles.divider} />
 
           {loading ? (
             <View style={styles.loadingWrap}>
               <ActivityIndicator size="large" color={GatiMitraColors.primaryMint} />
-              <Text style={styles.loadingText}>Cancelling your order…</Text>
+              <AppText style={styles.loadingText}>Cancelling your order…</AppText>
             </View>
           ) : (
             <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
@@ -64,7 +57,7 @@ export function FoodCancelReasonSheet({
                     onPress={() => onSelectReason(reason)}
                     activeOpacity={0.85}
                   >
-                    <Text style={styles.reasonText}>{reason.label}</Text>
+                    <AppText style={styles.reasonText}>{reason.label}</AppText>
                     <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
                   </TouchableOpacity>
                   {index < FOOD_ORDER_CANCEL_REASONS.length - 1 ? (

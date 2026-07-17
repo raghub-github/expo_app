@@ -5,15 +5,9 @@
  */
 
 import React, { useCallback } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  RefreshControl,
-  ActivityIndicator,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -82,28 +76,28 @@ export default function SupportListScreen() {
             </View>
             <View style={styles.cardMain}>
               <View style={styles.cardHeader}>
-                <Text style={styles.subject} numberOfLines={1}>
+                <AppText style={styles.subject} numberOfLines={1}>
                   {item.subject || item.ticket_title || "Ticket"}
-                </Text>
+                </AppText>
                 <View style={[styles.badge, { backgroundColor: sb.bg }]}>
-                  <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+                  <AppText style={[styles.badgeText, { color: sb.color }]}>{sb.label}</AppText>
                 </View>
               </View>
               {item.description ? (
-                <Text style={styles.body} numberOfLines={2}>
+                <AppText style={styles.body} numberOfLines={2}>
                   {item.description}
-                </Text>
+                </AppText>
               ) : null}
               <View style={styles.cardFooter}>
-                <Text style={styles.ref}>#{item.ticket_id}</Text>
+                <AppText style={styles.ref}>#{item.ticket_id}</AppText>
                 <View style={styles.footerRight}>
                   {lastByAgent ? (
                     <View style={styles.dotAgent}>
                       <View style={styles.dot} />
-                      <Text style={styles.dotText}>Agent replied</Text>
+                      <AppText style={styles.dotText}>Agent replied</AppText>
                     </View>
                   ) : null}
-                  <Text style={styles.when}>{formatWhen(lastActivity)}</Text>
+                  <AppText style={styles.when}>{formatWhen(lastActivity)}</AppText>
                 </View>
               </View>
             </View>
@@ -131,7 +125,7 @@ export default function SupportListScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.headerSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimaryNew} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>My Support</Text>
+          <AppText style={styles.headerTitle}>My Support</AppText>
           <View style={styles.headerSide} />
         </View>
 
@@ -145,14 +139,14 @@ export default function SupportListScreen() {
               <View style={styles.emptyIconWrap}>
                 <Ionicons name="chatbubbles-outline" size={40} color={GatiMitraColors.primaryMint} />
               </View>
-              <Text style={styles.emptyTitle}>No tickets yet</Text>
-              <Text style={styles.emptyBody}>
+              <AppText style={styles.emptyTitle}>No tickets yet</AppText>
+              <AppText style={styles.emptyBody}>
                 Need help? Tap “Raise a ticket” below — an agent will get back to you in chat.
-              </Text>
+              </AppText>
               {error ? (
-                <Text style={styles.errorText} numberOfLines={3}>
+                <AppText style={styles.errorText} numberOfLines={3}>
                   {(error as Error).message}
-                </Text>
+                </AppText>
               ) : null}
             </View>
           }
@@ -168,7 +162,7 @@ export default function SupportListScreen() {
           activeOpacity={0.9}
         >
           <Ionicons name="add" size={22} color="#fff" />
-          <Text style={styles.fabText}>Raise a ticket</Text>
+          <AppText style={styles.fabText}>Raise a ticket</AppText>
         </TouchableOpacity>
       </View>
     </>

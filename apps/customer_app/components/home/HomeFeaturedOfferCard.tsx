@@ -3,7 +3,9 @@
  * All copy comes from GET /v1/offers/featured (no hardcoded offer values).
  */
 
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -82,9 +84,9 @@ function FeatureItem({ icon, label }: { icon: keyof typeof Ionicons.glyphMap; la
   return (
     <View style={styles.featureItem}>
       <Ionicons name={icon} size={11} color={GREEN_DARK} />
-      <Text style={styles.featureText} numberOfLines={1}>
+      <AppText style={styles.featureText} numberOfLines={1}>
         {label}
-      </Text>
+      </AppText>
     </View>
   );
 }
@@ -127,32 +129,32 @@ export function HomeFeaturedOfferCard({
 
           <View style={styles.limitedBadge}>
             <Ionicons name="sparkles" size={10} color={GREEN_DARK} />
-            <Text style={styles.limitedBadgeText}>LIMITED TIME OFFER</Text>
+            <AppText style={styles.limitedBadgeText}>LIMITED TIME OFFER</AppText>
           </View>
 
           <View style={styles.headlineRow}>
-            {prefix ? <Text style={styles.headlinePrefix}>{prefix} </Text> : null}
-            <Text style={styles.headlineHighlight} numberOfLines={2}>
+            {prefix ? <AppText style={styles.headlinePrefix}>{prefix} </AppText> : null}
+            <AppText style={styles.headlineHighlight} numberOfLines={2}>
               {highlight}
-            </Text>
+            </AppText>
           </View>
 
           {conditionLine ? (
-            <Text style={styles.conditionText} numberOfLines={2}>
+            <AppText style={styles.conditionText} numberOfLines={2}>
               {conditionLine}
-            </Text>
+            </AppText>
           ) : null}
 
           {showCodeRow ? (
             <View style={styles.codeRow}>
               <View style={styles.codeRowLeft}>
                 <Ionicons name="pricetag" size={13} color={GREEN} />
-                <Text style={styles.useCodeLabel}>Use Code:</Text>
+                <AppText style={styles.useCodeLabel}>Use Code:</AppText>
               </View>
               <View style={styles.codeChip}>
-                <Text style={styles.codeChipText} numberOfLines={1}>
+                <AppText style={styles.codeChipText} numberOfLines={1}>
                   {code}
-                </Text>
+                </AppText>
               </View>
             </View>
           ) : null}
@@ -179,18 +181,18 @@ export function HomeFeaturedOfferCard({
 
           <View style={styles.brandRow}>
             <Ionicons name="navigate-circle" size={18} color="#fff" />
-            <Text style={styles.brandText}>GatiMitra</Text>
+            <AppText style={styles.brandText}>GatiMitra</AppText>
           </View>
 
           <View style={styles.applyBtn}>
-            <Text style={styles.applyBtnText}>TAP TO{"\n"}APPLY</Text>
+            <AppText style={styles.applyBtnText}>TAP TO{"\n"}APPLY</AppText>
           </View>
 
-          <Text style={styles.urgencyText} numberOfLines={3}>
+          <AppText style={styles.urgencyText} numberOfLines={3}>
             Hurry up! Offer valid for a{" "}
-            <Text style={styles.urgencyBold}>limited time</Text> only.
+            <AppText style={styles.urgencyBold}>limited time</AppText> only.
             {storeName?.trim() ? `\n${storeName.trim()}` : ""}
-          </Text>
+          </AppText>
         </LinearGradient>
       </View>
     </View>

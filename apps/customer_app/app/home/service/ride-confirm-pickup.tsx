@@ -3,13 +3,9 @@
  */
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -52,7 +48,7 @@ function PickupCenterPin() {
   return (
     <View style={styles.pinOverlay} pointerEvents="none">
       <View style={styles.pickupLabelPill}>
-        <Text style={styles.pickupLabelText}>Pickup Point</Text>
+        <AppText style={styles.pickupLabelText}>Pickup Point</AppText>
       </View>
       <View style={styles.pinShadow}>
         <Ionicons name="location-sharp" size={56} color={GatiMitraColors.primaryMint} />
@@ -411,8 +407,8 @@ export default function RideConfirmPickupScreen() {
             <Ionicons name="map-outline" size={22} color={GatiMitraColors.primaryMint} />
           </View>
           <View style={styles.sheetIntroText}>
-            <Text style={styles.sheetTitle}>Check your pickup point</Text>
-            <Text style={styles.sheetSubtitle}>Select a nearby point for easier pickup</Text>
+            <AppText style={styles.sheetTitle}>Check your pickup point</AppText>
+            <AppText style={styles.sheetSubtitle}>Select a nearby point for easier pickup</AppText>
           </View>
         </View>
 
@@ -420,16 +416,16 @@ export default function RideConfirmPickupScreen() {
           {geocoding ? (
             <View style={styles.geocodeRow}>
               <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-              <Text style={styles.geocodingText}>Updating address…</Text>
+              <AppText style={styles.geocodingText}>Updating address…</AppText>
             </View>
           ) : (
             <>
-              <Text style={styles.addressPrimary} numberOfLines={2}>
+              <AppText style={styles.addressPrimary} numberOfLines={2}>
                 {formatPrimaryLabel(address.primary)}
-              </Text>
-              <Text style={styles.addressFull} numberOfLines={3}>
+              </AppText>
+              <AppText style={styles.addressFull} numberOfLines={3}>
                 {address.fullAddress || "—"}
-              </Text>
+              </AppText>
             </>
           )}
         </View>
@@ -443,7 +439,7 @@ export default function RideConfirmPickupScreen() {
           {confirming ? (
             <ActivityIndicator size="small" color="#FFFFFF" />
           ) : (
-            <Text style={styles.confirmBtnText}>Confirm pickup</Text>
+            <AppText style={styles.confirmBtnText}>Confirm pickup</AppText>
           )}
         </TouchableOpacity>
       </View>
