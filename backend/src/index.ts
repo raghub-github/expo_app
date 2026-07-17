@@ -285,6 +285,28 @@ app.get("/v1/razorpay-checkout", {
   return reply.type("text/html").send(html);
 });
 
+// Internal: manually trigger the merchant subscription lifecycle tick.
+// Runs the same reminders + renewals + expired notices the 10-min interval
+// runs — useful for on-demand testing (from a script, from ops) and for
+// external cron systems that prefer to control the schedule themselves.
+// Auth: X-Internal-Secret header == BACKEND_SCHEDULE_TICK_SECRET.
+app.post("/v1/internal/merchant-subscription/lifecycle-tick", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  try {
+    const { runMerchantSubscriptionLifecycleTick } = await import(
+      "./modules/merchant-partner/merchant-subscription-lifecycle.js"
+    );
+    const result = await runMerchantSubscriptionLifecycleTick();
+    return reply.send({ ok: true, result });
+  } catch (e) {
+    req.log.error({ err: e }, "merchant_subscription_lifecycle_tick_failed");
+    return reply.code(500).send({ error: "lifecycle_tick_failed" });
+  }
+});
+
 // Internal: trigger schedule tick for a store (e.g. after operating hours updated from dashboard).
 // Requires X-Internal-Secret header to match BACKEND_SCHEDULE_TICK_SECRET. Used so store open/close
 // is re-evaluated immediately when hours are changed outside the backend (e.g. dashboard PATCH).
@@ -862,10 +884,15 @@ try {
     const merchantSubscriptionRenewalLockMs = 12 * 60 * 1000;
     const runMerchantSubscriptionRenewalLocked = () =>
       withLock("tick:merchant-subscription-renewal", merchantSubscriptionRenewalLockMs, async () => {
-        const { processMerchantSubscriptionRenewals } = await import(
-          "./modules/merchant-partner/merchant-subscription.service.js"
+        // The lifecycle tick supersedes processMerchantSubscriptionRenewals —
+        // it does the same renewal work PLUS logs every attempt to
+        // merchant_subscription_renewal_attempts, sends 3-day reminders,
+        // sends renewal success/failure emails, and sends expired notices.
+        // All passes are idempotent (dedupe_key + UNIQUE constraints).
+        const { runMerchantSubscriptionLifecycleTick } = await import(
+          "./modules/merchant-partner/merchant-subscription-lifecycle.js"
         );
-        return processMerchantSubscriptionRenewals();
+        return runMerchantSubscriptionLifecycleTick();
       })
         .then((result) => {
           incrCounter(
