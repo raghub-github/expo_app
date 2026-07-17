@@ -1509,6 +1509,11 @@ type SubscriptionHistoryPurchase = {
   billingPeriodStart: string | null;
   billingPeriodEnd: string | null;
   notes: string | null;
+  /** Derived server-side using the same rule as refundMerchantSubscriptionPayment.
+   *  Clients render the Refund button off this — the API re-checks on POST. */
+  refundable: boolean;
+  refundDeadline: string | null;
+  daysRemaining: number;          // 0 when the window has expired
 };
 
 type SubscriptionHistoryRefundBase = {
@@ -1610,25 +1615,51 @@ export async function listMerchantSubscriptionHistory(args: {
     `.catch(() => []), // Gracefully handle missing table (migration 0420 not applied yet)
   ]);
 
-  const purchases: SubscriptionHistoryPurchase[] = (purchaseRows as unknown as Array<Record<string, unknown>>).map((r) => ({
-    eventType: "PURCHASE",
-    eventAt: r.event_at ? new Date(String(r.event_at)).toISOString() : new Date(0).toISOString(),
-    id: Number(r.id),
-    subscriptionId: Number(r.subscription_id),
-    planId: r.plan_id != null ? Number(r.plan_id) : null,
-    planName: r.plan_name != null ? String(r.plan_name) : null,
-    planCode: r.plan_code != null ? String(r.plan_code) : null,
-    amount: Number(r.amount ?? 0),
-    totalPaise: Number(r.total_paise ?? 0),
-    gstPercent: r.gst_percent != null ? Number(r.gst_percent) : 0,
-    gstAmountPaise: r.gst_amount_paise != null ? Number(r.gst_amount_paise) : 0,
-    gateway: String(r.gateway ?? "").toUpperCase(),
-    gatewayId: r.gateway_id != null ? String(r.gateway_id) : null,
-    status: String(r.status ?? "").toUpperCase(),
-    billingPeriodStart: r.billing_period_start ? String(r.billing_period_start) : null,
-    billingPeriodEnd: r.billing_period_end ? String(r.billing_period_end) : null,
-    notes: r.notes != null ? String(r.notes) : null,
-  }));
+  const nowMs = Date.now();
+  const purchases: SubscriptionHistoryPurchase[] = (purchaseRows as unknown as Array<Record<string, unknown>>).map((r) => {
+    const paymentDateStr = r.event_at ? String(r.event_at) : null;
+    const paymentDate = paymentDateStr ? new Date(paymentDateStr) : null;
+    const gateway = String(r.gateway ?? "").toUpperCase();
+    const status = String(r.status ?? "").toUpperCase();
+
+    // Same rule as refundMerchantSubscriptionPayment. Backend re-checks on the
+    // actual POST — this field is a UI hint.
+    let refundable = false;
+    let refundDeadline: Date | null = null;
+    let daysRemaining = 0;
+    if (paymentDate && !Number.isNaN(paymentDate.getTime())) {
+      refundDeadline = new Date(paymentDate.getTime() + MERCHANT_SUB_REFUND_WINDOW_MS);
+      const msLeft = refundDeadline.getTime() - nowMs;
+      daysRemaining = Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
+      refundable =
+        status === "PAID" &&
+        (gateway === "WALLET" || gateway === "RAZORPAY") &&
+        msLeft > 0;
+    }
+
+    return {
+      eventType: "PURCHASE",
+      eventAt: paymentDate ? paymentDate.toISOString() : new Date(0).toISOString(),
+      id: Number(r.id),
+      subscriptionId: Number(r.subscription_id),
+      planId: r.plan_id != null ? Number(r.plan_id) : null,
+      planName: r.plan_name != null ? String(r.plan_name) : null,
+      planCode: r.plan_code != null ? String(r.plan_code) : null,
+      amount: Number(r.amount ?? 0),
+      totalPaise: Number(r.total_paise ?? 0),
+      gstPercent: r.gst_percent != null ? Number(r.gst_percent) : 0,
+      gstAmountPaise: r.gst_amount_paise != null ? Number(r.gst_amount_paise) : 0,
+      gateway,
+      gatewayId: r.gateway_id != null ? String(r.gateway_id) : null,
+      status,
+      billingPeriodStart: r.billing_period_start ? String(r.billing_period_start) : null,
+      billingPeriodEnd: r.billing_period_end ? String(r.billing_period_end) : null,
+      notes: r.notes != null ? String(r.notes) : null,
+      refundable,
+      refundDeadline: refundDeadline ? refundDeadline.toISOString() : null,
+      daysRemaining,
+    };
+  });
 
   const refunds: (SubscriptionHistoryRefundBase | SubscriptionHistoryAdminRefund)[] = (refundRows as unknown as Array<Record<string, unknown>>).map((r) => {
     const base: SubscriptionHistoryRefundBase = {
