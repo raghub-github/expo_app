@@ -1,4 +1,6 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -35,9 +37,9 @@ export function MealsUnderPriceFilterRow({
           size={13}
           color={sortActive ? "#fff" : "#64748B"}
         />
-        <Text style={[styles.filterChipText, sortActive && styles.filterChipTextActive]}>
+        <AppText style={[styles.filterChipText, sortActive && styles.filterChipTextActive]}>
           Sort
-        </Text>
+        </AppText>
         <Ionicons
           name="chevron-down"
           size={12}
@@ -50,17 +52,17 @@ export function MealsUnderPriceFilterRow({
         activeOpacity={0.85}
       >
         <Ionicons name="flash" size={13} color={nearFast ? "#15803D" : "#16A34A"} />
-        <Text style={[styles.filterChipText, nearFast && styles.filterChipTextNearFast]}>
+        <AppText style={[styles.filterChipText, nearFast && styles.filterChipTextNearFast]}>
           Near & Fast
-        </Text>
+        </AppText>
       </TouchableOpacity>
       <View style={[styles.filterChip, styles.filterChipMuted]}>
         <Ionicons name="star-outline" size={12} color="#64748B" />
-        <Text style={styles.filterChipTextMuted}>New to you</Text>
+        <AppText style={styles.filterChipTextMuted}>New to you</AppText>
       </View>
       <View style={[styles.filterChip, styles.filterChipMuted]}>
         <Ionicons name="time-outline" size={12} color="#64748B" />
-        <Text style={styles.filterChipTextMuted}>Previously ordered</Text>
+        <AppText style={styles.filterChipTextMuted}>Previously ordered</AppText>
       </View>
     </ScrollView>
   );

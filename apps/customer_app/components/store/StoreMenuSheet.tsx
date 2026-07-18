@@ -1,15 +1,7 @@
 import React from "react";
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Platform,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Modal, Pressable, TouchableOpacity, ScrollView, StyleSheet, Platform, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -64,12 +56,12 @@ function MenuRow({
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.75}>
       <View style={styles.rowLeft}>
-        <Text style={styles.rowTitle} numberOfLines={2}>
+        <AppText style={styles.rowTitle} numberOfLines={2}>
           {section.title}
-        </Text>
-        {section.showPlus ? <Text style={styles.plusSuffix}> +</Text> : null}
+        </AppText>
+        {section.showPlus ? <AppText style={styles.plusSuffix}> +</AppText> : null}
       </View>
-      <Text style={styles.rowCount}>{section.count}</Text>
+      <AppText style={styles.rowCount}>{section.count}</AppText>
     </TouchableOpacity>
   );
 }
@@ -90,20 +82,20 @@ function OfferRow({
       activeOpacity={0.75}
     >
       <View style={[styles.offerIcon, selected && styles.offerIconSelected]}>
-        <Text style={[styles.offerIconPct, selected && styles.offerIconPctSelected]}>%</Text>
+        <AppText style={[styles.offerIconPct, selected && styles.offerIconPctSelected]}>%</AppText>
       </View>
       <View style={styles.offerTextCol}>
-        <Text style={[styles.offerTitle, selected && styles.offerTitleSelected]} numberOfLines={1}>
+        <AppText style={[styles.offerTitle, selected && styles.offerTitleSelected]} numberOfLines={1}>
           {offer.title}
-        </Text>
+        </AppText>
         {offer.subtitle ? (
-          <Text style={styles.offerSub} numberOfLines={1}>
+          <AppText style={styles.offerSub} numberOfLines={1}>
             {offer.subtitle}
-          </Text>
+          </AppText>
         ) : null}
       </View>
       {offer.count > 0 ? (
-        <Text style={[styles.rowCount, selected && styles.offerCountSelected]}>{offer.count}</Text>
+        <AppText style={[styles.rowCount, selected && styles.offerCountSelected]}>{offer.count}</AppText>
       ) : (
         <Ionicons
           name="chevron-forward"
@@ -153,7 +145,7 @@ export function StoreMenuSheet({
           >
             {hasOffers ? (
               <>
-                <Text style={styles.sectionLabel}>ACTIVE OFFERS</Text>
+                <AppText style={styles.sectionLabel}>ACTIVE OFFERS</AppText>
                 {offerRows.map((offer) => (
                   <OfferRow
                     key={offer.id}
@@ -163,7 +155,7 @@ export function StoreMenuSheet({
                   />
                 ))}
                 <View style={styles.divider} />
-                <Text style={styles.sectionLabel}>CATEGORIES</Text>
+                <AppText style={styles.sectionLabel}>CATEGORIES</AppText>
               </>
             ) : null}
 
@@ -183,7 +175,7 @@ export function StoreMenuSheet({
                   onPress={() => onSelectSection(largeOrderSection)}
                   activeOpacity={0.75}
                 >
-                  <Text style={styles.largeOrderText}>LARGE ORDER MENU</Text>
+                  <AppText style={styles.largeOrderText}>LARGE ORDER MENU</AppText>
                   <Ionicons name="chevron-down" size={16} color={StoreTheme.textPrimary} />
                 </TouchableOpacity>
               </>
@@ -192,9 +184,9 @@ export function StoreMenuSheet({
         </View>
 
         {fssaiLabel ? (
-          <Text style={[styles.fssai, { bottom: Math.max(insets.bottom, 12) + 8 }]} numberOfLines={1}>
+          <AppText style={[styles.fssai, { bottom: Math.max(insets.bottom, 12) + 8 }]} numberOfLines={1}>
             {fssaiLabel}
-          </Text>
+          </AppText>
         ) : null}
 
         <TouchableOpacity
@@ -213,7 +205,7 @@ export function StoreMenuSheet({
           hitSlop={10}
         >
           <Ionicons name="close" size={16} color="#fff" />
-          <Text style={styles.closeText}>Close</Text>
+          <AppText style={styles.closeText}>Close</AppText>
         </TouchableOpacity>
       </View>
     </Modal>

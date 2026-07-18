@@ -1,5 +1,7 @@
 import React, { useEffect } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -69,20 +71,20 @@ export default function PaymentConfirmingScreen() {
       <View style={styles.iconWrap}>
         <Ionicons name="time-outline" size={56} color={GatiMitraColors.emerald} />
       </View>
-      <Text style={styles.title}>Confirming payment</Text>
-      <Text style={styles.body}>
+      <AppText style={styles.title}>Confirming payment</AppText>
+      <AppText style={styles.body}>
         {statusQuery.data?.message ??
           initialMessage ??
           "We received your payment attempt and are checking the final confirmation from Razorpay."}
-      </Text>
+      </AppText>
       <View style={styles.card}>
         <ActivityIndicator color={GatiMitraColors.emerald} />
-        <Text style={styles.cardTitle}>Please keep this screen open</Text>
-        <Text style={styles.cardBody}>
+        <AppText style={styles.cardTitle}>Please keep this screen open</AppText>
+        <AppText style={styles.cardBody}>
           Your order will be created automatically as soon as payment is confirmed. If the payment is not confirmed within
           5 minutes, it will be cancelled and refunded automatically.
-        </Text>
-        {pendingId ? <Text style={styles.pendingId}>Ref: {pendingId}</Text> : null}
+        </AppText>
+        {pendingId ? <AppText style={styles.pendingId}>Ref: {pendingId}</AppText> : null}
       </View>
 
       <TouchableOpacity
@@ -90,7 +92,7 @@ export default function PaymentConfirmingScreen() {
         onPress={() => router.replace("/(tabs)/orders")}
         activeOpacity={0.88}
       >
-        <Text style={styles.secondaryText}>Go to My Orders</Text>
+        <AppText style={styles.secondaryText}>Go to My Orders</AppText>
       </TouchableOpacity>
     </ScrollView>
   );

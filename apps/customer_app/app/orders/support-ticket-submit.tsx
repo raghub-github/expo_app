@@ -3,16 +3,9 @@
  */
 
 import { useCallback } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, ScrollView, StyleSheet, Alert, KeyboardAvoidingView, Platform } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -148,11 +141,11 @@ export default function SupportTicketSubmitScreen() {
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <Text style={styles.headerTitle}>Submit ticket</Text>
+            <AppText style={styles.headerTitle}>Submit ticket</AppText>
             {displayOrderId ? (
-              <Text style={styles.headerSubtitle}>
+              <AppText style={styles.headerSubtitle}>
                 {isRideOrder ? "Ride" : "Order"} #{displayOrderId}
-              </Text>
+              </AppText>
             ) : null}
           </View>
           <View style={styles.headerSide} />
@@ -169,7 +162,7 @@ export default function SupportTicketSubmitScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <Text style={styles.lead}>Please share a few more details so we can help.</Text>
+            <AppText style={styles.lead}>Please share a few more details so we can help.</AppText>
             <CustomerSupportTicketIntakeForm
               issueTitle={optionLabel}
               initialDescription={optionLabel}

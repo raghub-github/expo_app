@@ -3,7 +3,9 @@
  * Long addresses truncate with ellipsis to avoid overlap.
  */
 
-import { View, Text, TextInput, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TextInput, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -56,19 +58,19 @@ export function ShopHeader({
           onPress={() => router.push("/location")}
         >
           <View style={styles.titleRow}>
-            <Text style={styles.headerTitle} numberOfLines={1}>
+            <AppText style={styles.headerTitle} numberOfLines={1}>
               Shop / Marketplace
-            </Text>
+            </AppText>
             <Ionicons name="chevron-down" size={16} color={TEXT_GRAY} />
           </View>
           <View style={styles.locationRow}>
-            <Text
+            <AppText
               style={styles.locationText}
               numberOfLines={1}
               ellipsizeMode="tail"
             >
               {locationDisplay}
-            </Text>
+            </AppText>
           </View>
         </TouchableOpacity>
         <View style={styles.headerRight}>
@@ -80,7 +82,7 @@ export function ShopHeader({
             <Ionicons name="cart-outline" size={24} color={TITLE_DARK} />
             {cartCount > 0 && (
               <View style={styles.cartBadge}>
-                <Text style={styles.cartBadgeText}>{cartCount > 99 ? "99+" : cartCount}</Text>
+                <AppText style={styles.cartBadgeText}>{cartCount > 99 ? "99+" : cartCount}</AppText>
               </View>
             )}
           </TouchableOpacity>

@@ -6,7 +6,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   View,
-  Text,
   TextInput,
   ScrollView,
   TouchableOpacity,
@@ -17,6 +16,7 @@ import {
   Share,
   RefreshControl,
 } from "react-native";
+import { AppText } from "@/components/AppText";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -40,7 +40,6 @@ import { addressService, type Address, type LocalSuggestionResult } from "@/serv
 import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
-import { BrandingFooter } from "@/components/BrandingFooter";
 import { AddressOptionsBottomSheet } from "@/components/address/AddressOptionsBottomSheet";
 import { AddressConfirmBottomSheet } from "@/components/address/AddressConfirmBottomSheet";
 import { NearbyLocationConfirmBottomSheet } from "@/components/address/NearbyLocationConfirmBottomSheet";
@@ -63,7 +62,6 @@ const BRAND = "#14B8A6";
 const BRAND_LIGHT = GatiMitraColors.mintSoft;
 
 const SEARCH_DEBOUNCE_MS = MAPBOX_SEARCH_DEBOUNCE_MS;
-const NEAR_SAVED_RADIUS_METERS = 500;
 const INITIAL_SAVED_VISIBLE = 3;
 const NEARBY_PLACES_LIMIT = 6;
 const NEARBY_MIN_DISTANCE_M = 30;
@@ -303,6 +301,7 @@ export default function SelectLocationScreen() {
     coords,
     locationSource,
     requestPermissionAndFetch,
+    clearPersistedSelection,
     setAddress,
     setAddressAndCoords,
     loading,
@@ -456,9 +455,12 @@ export default function SelectLocationScreen() {
   );
   const hasMoreSaved = filteredSaved.length > INITIAL_SAVED_VISIBLE;
 
-  /** Reference point for distances + nearby POIs — follows selected/active location. */
+  /** Reference point for distances + nearby POIs — selected pin, else live GPS (not stale active-location). */
   const referenceCoords = useMemo(() => {
     if (locationSource === "selected" && coords?.latitude != null && coords?.longitude != null) {
+      return { latitude: coords.latitude, longitude: coords.longitude };
+    }
+    if (coords?.latitude != null && coords?.longitude != null) {
       return { latitude: coords.latitude, longitude: coords.longitude };
     }
     if (
@@ -468,9 +470,6 @@ export default function SelectLocationScreen() {
       Number.isFinite(activeLocation.longitude)
     ) {
       return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
-    }
-    if (coords?.latitude != null && coords?.longitude != null) {
-      return { latitude: coords.latitude, longitude: coords.longitude };
     }
     return null;
   }, [locationSource, coords, activeLocation]);
@@ -691,6 +690,7 @@ export default function SelectLocationScreen() {
   }, [searchQuery, coords?.latitude, coords?.longitude]);
 
   const handleUseCurrentLocation = async () => {
+    // Always pull a fresh GPS fix, set it as the session location, then close this sheet.
     await requestPermissionAndFetch({ forceDevice: true });
     const osPermission = await Location.getForegroundPermissionsAsync();
     const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
@@ -705,55 +705,23 @@ export default function SelectLocationScreen() {
       Alert.alert("Location not found", "We couldn't detect your location. Try again or search manually.");
       return;
     }
-    try {
-      await profileService.updateProfile({
-        location_permission: true,
-        latitude: latestCoords.latitude,
-        longitude: latestCoords.longitude,
-      });
-    } catch {
-      // Non-blocking; selecting location should still work.
-    }
 
-    // If we have a nearby saved address, use it directly (no confirmation step).
-    if (savedAddresses.length > 0) {
-      let best = { addr: null as Address | null, distance: Number.POSITIVE_INFINITY };
-      for (const addr of savedAddresses) {
-        const d = distanceMeters(latestCoords.latitude, latestCoords.longitude, addr.latitude, addr.longitude);
-        if (d < best.distance) best = { addr, distance: d };
-      }
-      if (best.addr && best.distance <= NEAR_SAVED_RADIUS_METERS) {
-        try {
-          await addressService.setActiveLocation({
-            latitude: best.addr.latitude,
-            longitude: best.addr.longitude,
-            address: best.addr.fullAddress,
-          });
-          const primary = best.addr.label ?? "Address";
-          useLocationStore.getState().setAddressAndCoords(
-            {
-              primary,
-              secondary: best.addr.fullAddress.slice(0, 80),
-              fullAddress: best.addr.fullAddress,
-            },
-            { latitude: best.addr.latitude, longitude: best.addr.longitude },
-            { source: "selected" }
-          );
-          void invalidateFoodHomeLocationQueries(queryClient);
-        } finally {
-          safeBack();
-        }
-        return;
-      }
-    }
-
-    // For "Use current location", apply immediately without map confirmation/form.
     try {
-      await addressService.setActiveLocation({
-        latitude: latestCoords.latitude,
-        longitude: latestCoords.longitude,
-        address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
-      });
+      await Promise.all([
+        clearPersistedSelection(),
+        addressService.setActiveLocation({
+          latitude: latestCoords.latitude,
+          longitude: latestCoords.longitude,
+          address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
+        }),
+        profileService
+          .updateProfile({
+            location_permission: true,
+            latitude: latestCoords.latitude,
+            longitude: latestCoords.longitude,
+          })
+          .catch(() => {}),
+      ]);
       setAddressAndCoords(
         latestAddress ?? {
           primary: "Current location",
@@ -987,7 +955,7 @@ export default function SelectLocationScreen() {
           <TouchableOpacity onPress={safeBack} style={styles.backBtn} hitSlop={12}>
             <Ionicons name="chevron-back" size={24} color={TITLE_DARK} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Select a location</Text>
+          <AppText style={styles.headerTitle}>Select a location</AppText>
           <View style={styles.headerRight} />
         </View>
         <View style={styles.searchBarWrap}>
@@ -1015,7 +983,7 @@ export default function SelectLocationScreen() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 8) }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={
@@ -1031,13 +999,13 @@ export default function SelectLocationScreen() {
         {showSearchSection && (
           <View style={[styles.sectionHeadRow, { marginTop: 0 }]}>
             <Ionicons name="search" size={14} color={BRAND} />
-            <Text style={styles.sectionHeading}>SEARCH RESULTS</Text>
+            <AppText style={styles.sectionHeading}>SEARCH RESULTS</AppText>
           </View>
         )}
         {showSearchSection && searchLoading && (
           <View style={[styles.searchLoadingWrap, styles.sectionBox]}>
             <ActivityIndicator size="small" color={BRAND} />
-            <Text style={styles.searchLoadingText}>Searching for places...</Text>
+            <AppText style={styles.searchLoadingText}>Searching for places...</AppText>
           </View>
         )}
         {showSearchSection && !searchLoading && searchResults.length > 0 && (
@@ -1045,7 +1013,7 @@ export default function SelectLocationScreen() {
             {resolvingSearchPlace ? (
               <View style={styles.searchLoadingWrap}>
                 <ActivityIndicator size="small" color={BRAND} />
-                <Text style={styles.searchLoadingText}>Loading map location…</Text>
+                <AppText style={styles.searchLoadingText}>Loading map location…</AppText>
               </View>
             ) : null}
             {searchResults.map((place, index) => (
@@ -1064,48 +1032,48 @@ export default function SelectLocationScreen() {
                     {/* Rule 3: Pincode format — Area, City / Pincode: XXXXX / State */}
                     {place.isPincodeResult ? (
                       <>
-                        <Text style={styles.addressLabel} numberOfLines={1}>
+                        <AppText style={styles.addressLabel} numberOfLines={1}>
                           {place.primary}
-                        </Text>
-                        <Text style={styles.addressMeta} numberOfLines={1}>
+                        </AppText>
+                        <AppText style={styles.addressMeta} numberOfLines={1}>
                           {place.secondary}
-                        </Text>
+                        </AppText>
                         {place.state ? (
-                          <Text style={styles.addressLine} numberOfLines={1}>
+                          <AppText style={styles.addressLine} numberOfLines={1}>
                             {place.state}
-                          </Text>
+                          </AppText>
                         ) : null}
                       </>
                     ) : (
                       <>
-                        <Text style={styles.addressLabel} numberOfLines={1}>
+                        <AppText style={styles.addressLabel} numberOfLines={1}>
                           {highlightSegments(place.primary, searchQuery.trim()).map((seg, i) =>
                             seg.match ? (
-                              <Text key={i} style={[styles.addressLabel, styles.addressLabelMatch]}>
+                              <AppText key={i} style={[styles.addressLabel, styles.addressLabelMatch]}>
                                 {seg.text}
-                              </Text>
+                              </AppText>
                             ) : (
                               seg.text
                             )
                           )}
-                        </Text>
+                        </AppText>
                         <View style={styles.addressMetaRow}>
                           {(place.area ?? place.city ?? place.state) && (
-                            <Text style={styles.addressMeta} numberOfLines={1}>
+                            <AppText style={styles.addressMeta} numberOfLines={1}>
                               {[place.area, place.city, place.state].filter(Boolean).join(" · ")}
-                            </Text>
+                            </AppText>
                           )}
                           {place.distanceKm != null && place.distanceKm < 500 && (
-                            <Text style={styles.distanceBadge}>
+                            <AppText style={styles.distanceBadge}>
                               {place.distanceKm < 1
                                 ? `${Math.round(place.distanceKm * 1000)} m`
                                 : `${place.distanceKm.toFixed(1)} km`}
-                            </Text>
+                            </AppText>
                           )}
                         </View>
-                        <Text style={styles.addressLine} numberOfLines={2}>
+                        <AppText style={styles.addressLine} numberOfLines={2}>
                           {place.fullAddress}
-                        </Text>
+                        </AppText>
                       </>
                     )}
                   </View>
@@ -1122,27 +1090,27 @@ export default function SelectLocationScreen() {
             {searchFailsafe || searchLoading ? (
               <>
                 <ActivityIndicator size="small" color={BRAND} />
-                <Text style={[styles.emptySavedText, { marginTop: 12 }]}>
+                <AppText style={[styles.emptySavedText, { marginTop: 12 }]}>
                   Searching nearby known places…
-                </Text>
+                </AppText>
               </>
             ) : isPincodeSearchMode(searchQuery.trim()) ? (
               <>
                 <View style={styles.emptyIconWrap}>
                   <Ionicons name="location-outline" size={40} color={BORDER} />
                 </View>
-                <Text style={styles.emptySavedText}>
+                <AppText style={styles.emptySavedText}>
                   We're not delivering here yet — but we're expanding fast. Try another nearby location.
-                </Text>
+                </AppText>
               </>
             ) : (
               <>
                 <View style={styles.emptyIconWrap}>
                   <Ionicons name="search-outline" size={40} color={BORDER} />
                 </View>
-                <Text style={styles.emptySavedText}>
+                <AppText style={styles.emptySavedText}>
                   No places found. Try another spelling or a nearby landmark.
-                </Text>
+                </AppText>
               </>
             )}
           </View>
@@ -1159,10 +1127,10 @@ export default function SelectLocationScreen() {
             <View style={styles.actionLeft}>
               <Ionicons name="locate" size={22} color={BRAND} />
               <View style={styles.optionTextWrap}>
-                <Text style={styles.actionTitle}>Use current location</Text>
-                <Text style={styles.optionSub} numberOfLines={1}>
+                <AppText style={styles.actionTitle}>Use current location</AppText>
+                <AppText style={styles.optionSub} numberOfLines={1}>
                   {loading ? "Getting location..." : formatLocationPreviewUpper(currentLocationPreview)}
-                </Text>
+                </AppText>
               </View>
             </View>
             <View style={styles.actionRowRight}>
@@ -1182,7 +1150,7 @@ export default function SelectLocationScreen() {
           >
             <View style={styles.actionLeft}>
               <Ionicons name="add" size={22} color={BRAND} />
-              <Text style={styles.actionTitle}>Add Address</Text>
+              <AppText style={styles.actionTitle}>Add Address</AppText>
             </View>
             <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
           </TouchableOpacity>
@@ -1195,20 +1163,20 @@ export default function SelectLocationScreen() {
 
         {/* SAVED ADDRESSES */}
         <View style={styles.sectionHeadRow}>
-          <Text style={styles.sectionHeading}>SAVED ADDRESSES</Text>
+          <AppText style={styles.sectionHeading}>SAVED ADDRESSES</AppText>
         </View>
         {addressesPending && savedAddressesData === undefined ? (
           <View style={styles.emptySaved}>
             <ActivityIndicator size="small" color={BRAND} />
-            <Text style={[styles.emptySavedText, { marginTop: 12 }]}>Loading saved addresses...</Text>
+            <AppText style={[styles.emptySavedText, { marginTop: 12 }]}>Loading saved addresses...</AppText>
           </View>
         ) : addressesError ? (
           <View style={styles.emptySaved}>
-            <Text style={styles.emptySavedText}>
+            <AppText style={styles.emptySavedText}>
               Could not load saved addresses. Check your connection and try again.
-            </Text>
+            </AppText>
             <TouchableOpacity onPress={() => refetchAddresses()} activeOpacity={0.85}>
-              <Text style={[styles.addAddressLink, { marginTop: 12 }]}>Retry</Text>
+              <AppText style={[styles.addAddressLink, { marginTop: 12 }]}>Retry</AppText>
             </TouchableOpacity>
           </View>
         ) : filteredSaved.length === 0 ? (
@@ -1216,12 +1184,12 @@ export default function SelectLocationScreen() {
             <View style={styles.emptyIconWrap}>
               <Ionicons name="location-outline" size={40} color={BORDER} />
             </View>
-            <Text style={styles.emptySavedText}>
+            <AppText style={styles.emptySavedText}>
               {searchQuery.trim() ? "No addresses match your search." : "No saved addresses yet."}
-            </Text>
+            </AppText>
             {!searchQuery.trim() && (
               <TouchableOpacity onPress={handleAddAddressDirect}>
-                <Text style={styles.addAddressLink}>Add address</Text>
+                <AppText style={styles.addAddressLink}>Add address</AppText>
               </TouchableOpacity>
             )}
           </View>
@@ -1258,7 +1226,7 @@ export default function SelectLocationScreen() {
                     <View style={styles.savedCardLeftCol}>
                       <Ionicons name={icon.name} size={24} color={icon.color} />
                       {distM != null ? (
-                        <Text style={styles.savedDistance}>{formatDistanceMeters(distM)}</Text>
+                        <AppText style={styles.savedDistance}>{formatDistanceMeters(distM)}</AppText>
                       ) : null}
                     </View>
                     <View style={styles.savedCardBody}>
@@ -1268,22 +1236,22 @@ export default function SelectLocationScreen() {
                         activeOpacity={0.85}
                       >
                         <View style={styles.addressLabelRow}>
-                          <Text style={styles.savedAddressTitle}>{saved.label ?? "Address"}</Text>
+                          <AppText style={styles.savedAddressTitle}>{saved.label ?? "Address"}</AppText>
                           {isSelected ? (
                             <View style={styles.selectedPillRight}>
-                              <Text style={styles.selectedPillRightText}>SELECTED</Text>
+                              <AppText style={styles.selectedPillRightText}>SELECTED</AppText>
                             </View>
                           ) : (
                             <View style={styles.unselectedRadio} />
                           )}
                         </View>
-                        <Text style={styles.savedAddressLine} numberOfLines={3}>
+                        <AppText style={styles.savedAddressLine} numberOfLines={3}>
                           {saved.fullAddress}
-                        </Text>
+                        </AppText>
                         {phoneLine ? (
-                          <Text style={styles.savedPhoneLine} numberOfLines={1}>
+                          <AppText style={styles.savedPhoneLine} numberOfLines={1}>
                             {phoneLine}
-                          </Text>
+                          </AppText>
                         ) : null}
                       </TouchableOpacity>
                       <View style={styles.savedActionsRow}>
@@ -1332,7 +1300,7 @@ export default function SelectLocationScreen() {
                 onPress={() => setSavedExpanded((v) => !v)}
                 activeOpacity={0.85}
               >
-                <Text style={styles.seeMoreText}>{savedExpanded ? "see less" : "see more"}</Text>
+                <AppText style={styles.seeMoreText}>{savedExpanded ? "see less" : "see more"}</AppText>
                 <Ionicons
                   name={savedExpanded ? "chevron-up" : "chevron-down"}
                   size={16}
@@ -1346,7 +1314,7 @@ export default function SelectLocationScreen() {
         {!searchQuery.trim() && referenceCoords && !nearbyLoading && nearbyPlaces.length > 0 ? (
           <>
             <View style={styles.sectionDividerRow}>
-              <Text style={styles.sectionHeading}>NEARBY LOCATIONS</Text>
+              <AppText style={styles.sectionHeading}>NEARBY LOCATIONS</AppText>
               <View style={styles.sectionDividerLine} />
             </View>
             <View style={styles.nearbyList}>
@@ -1373,11 +1341,11 @@ export default function SelectLocationScreen() {
                   >
                     <Ionicons name="location" size={22} color={BRAND} style={styles.nearbyPin} />
                     <View style={styles.nearbyTextWrap}>
-                      <Text style={styles.nearbySubtitle} numberOfLines={2}>
+                      <AppText style={styles.nearbySubtitle} numberOfLines={2}>
                         {place.fullAddress || place.primary}
-                      </Text>
+                      </AppText>
                       {distM != null ? (
-                        <Text style={styles.nearbyAwaySubtext}>{formatDistanceAway(distM)}</Text>
+                        <AppText style={styles.nearbyAwaySubtext}>{formatDistanceAway(distM)}</AppText>
                       ) : null}
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
@@ -1393,10 +1361,10 @@ export default function SelectLocationScreen() {
             <View style={[styles.sectionHeadRow, { justifyContent: "space-between" }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Ionicons name="time-outline" size={14} color={BRAND} />
-                <Text style={styles.sectionHeading}>RECENT SEARCHES</Text>
+                <AppText style={styles.sectionHeading}>RECENT SEARCHES</AppText>
               </View>
               <TouchableOpacity onPress={clearRecentLocations} hitSlop={8}>
-                <Text style={styles.clearAllText}>Clear All</Text>
+                <AppText style={styles.clearAllText}>Clear All</AppText>
               </TouchableOpacity>
             </View>
             <View style={styles.recentSearchList}>
@@ -1413,12 +1381,12 @@ export default function SelectLocationScreen() {
                   <View style={styles.recentSearchLeft}>
                     <Ionicons name="time-outline" size={18} color="#667085" />
                     <View style={styles.recentSearchTextWrap}>
-                      <Text style={styles.recentSearchTitle} numberOfLines={1}>
+                      <AppText style={styles.recentSearchTitle} numberOfLines={1}>
                         {item.primary}
-                      </Text>
-                      <Text style={styles.recentSearchSubtitle} numberOfLines={2}>
+                      </AppText>
+                      <AppText style={styles.recentSearchSubtitle} numberOfLines={2}>
                         {item.fullAddress ?? item.primary}
-                      </Text>
+                      </AppText>
                     </View>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
@@ -1428,7 +1396,6 @@ export default function SelectLocationScreen() {
           </>
         )}
 
-        <BrandingFooter />
       </ScrollView>
       </View>
       <WeatherDetailsSheet

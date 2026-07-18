@@ -18,6 +18,7 @@
     "export:web": "expo export --platform web",
     "serve:web": "serve dist -s -l 5000",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint:typography": "node scripts/check-apptext-typography.js",
     "generate:icons": "node scripts/generate-app-icons.mjs",
     "legal:build": "node legal/build-bundle.mjs",
     "prebuild:legal": "node legal/build-bundle.mjs"
@@ -88,6 +89,7 @@
     "react-native-worklets": "0.5.1",
     "scheduler": "0.26.0",
     "semver": "^7.7.3",
+    "sp-react-native-in-app-updates": "^2.0.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^3.4.19",
     "zustand": "^5.0.9"
@@ -96,6 +98,7 @@
     "@config-plugins/react-native-blob-util": "^12.0.0",
     "@expo/config-plugins": "^54.0.4",
     "@types/react": "~19.1.0",
+    "babel-plugin-module-resolver": "^5.0.3",
     "expo-build-properties": "^0.13.3",
     "serve": "^14.2.4",
     "sharp": "^0.34.5",

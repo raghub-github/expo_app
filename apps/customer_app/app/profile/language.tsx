@@ -3,7 +3,9 @@
  */
 
 import { useEffect } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { Ionicons } from "@expo/vector-icons";
@@ -40,7 +42,7 @@ export default function LanguageScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.hint}>{t("language.chooseLanguage")}</Text>
+        <AppText style={styles.hint}>{t("language.chooseLanguage")}</AppText>
         <View style={[styles.card, SHADOW_SOFT]}>
           {LANGUAGE_OPTIONS.map((opt) => {
             const isSelected = language === opt.code;
@@ -52,7 +54,7 @@ export default function LanguageScreen() {
                 activeOpacity={0.7}
               >
                 <View style={styles.rowContent}>
-                  <Text style={styles.rowLabel}>{t(`languages.${opt.code}`)}</Text>
+                  <AppText style={styles.rowLabel}>{t(`languages.${opt.code}`)}</AppText>
                 </View>
                 {isSelected ? (
                   <Ionicons name="checkmark-circle" size={24} color={TEAL} />

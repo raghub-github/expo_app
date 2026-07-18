@@ -2,7 +2,9 @@
  * Mint-green downloading pill with GatiMitra logo (order invoice fetch).
  */
 
-import { View, Text, StyleSheet, Modal, ActivityIndicator } from "react-native";
+import { View, StyleSheet, Modal, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -19,7 +21,7 @@ export function InvoiceDownloadingToast({ visible, message = "Downloading invoic
         <View style={styles.pill}>
           <AppAssetImage assetKey={CX.orders.toastLogo} style={styles.logo} contentFit="contain" />
           <ActivityIndicator size="small" color={GatiMitraColors.deepMintStart} />
-          <Text style={styles.text}>{message}</Text>
+          <AppText style={styles.text}>{message}</AppText>
         </View>
       </View>
     </Modal>

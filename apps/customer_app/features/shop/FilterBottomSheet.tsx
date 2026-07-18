@@ -3,16 +3,9 @@
  */
 
 import { useEffect } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Dimensions,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Modal, TouchableOpacity, ScrollView, StyleSheet, Dimensions, Pressable } from "react-native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -102,14 +95,14 @@ export function FilterBottomSheet({
           <Pressable style={styles.handleWrap} onPress={onClose}>
             <View style={styles.handle} />
           </Pressable>
-          <Text style={styles.title}>Filters & Sort</Text>
-          <Text style={styles.subtitle}>Category & price</Text>
+          <AppText style={styles.title}>Filters & Sort</AppText>
+          <AppText style={styles.subtitle}>Category & price</AppText>
           <ScrollView
             style={styles.scroll}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.scrollContent}
           >
-            <Text style={styles.sectionLabel}>Category</Text>
+            <AppText style={styles.sectionLabel}>Category</AppText>
             <View style={styles.chips}>
               {categories.map((c) => {
                 const isActive = c.id === selectedCategory;
@@ -120,14 +113,14 @@ export function FilterBottomSheet({
                     onPress={() => onCategoryChange(c.id)}
                     activeOpacity={0.8}
                   >
-                    <Text style={[styles.chipText, isActive && styles.chipTextActive]}>
+                    <AppText style={[styles.chipText, isActive && styles.chipTextActive]}>
                       {c.name}
-                    </Text>
+                    </AppText>
                   </TouchableOpacity>
                 );
               })}
             </View>
-            <Text style={[styles.sectionLabel, { marginTop: 20 }]}>Sort by</Text>
+            <AppText style={[styles.sectionLabel, { marginTop: 20 }]}>Sort by</AppText>
             <View style={styles.sortList}>
               {SORT_OPTIONS.map((opt) => {
                 const isActive = sortOption === opt.id;
@@ -138,9 +131,9 @@ export function FilterBottomSheet({
                     onPress={() => onSortChange(opt.id)}
                     activeOpacity={0.8}
                   >
-                    <Text style={[styles.sortLabel, isActive && styles.sortLabelActive]}>
+                    <AppText style={[styles.sortLabel, isActive && styles.sortLabelActive]}>
                       {opt.label}
-                    </Text>
+                    </AppText>
                     {isActive && (
                       <Ionicons name="checkmark-circle" size={22} color={GatiMitraColors.emerald} />
                     )}
@@ -151,7 +144,7 @@ export function FilterBottomSheet({
           </ScrollView>
           <View style={styles.footer}>
             <TouchableOpacity style={styles.applyBtn} onPress={onClose} activeOpacity={0.9}>
-              <Text style={styles.applyBtnText}>Apply</Text>
+              <AppText style={styles.applyBtnText}>Apply</AppText>
             </TouchableOpacity>
           </View>
         </Animated.View>

@@ -1,15 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  Image,
-  StyleSheet,
-  Alert,
-  TouchableOpacity,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, Pressable, Image, StyleSheet, Alert, TouchableOpacity, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 
@@ -127,12 +119,12 @@ export function CustomerSupportTicketIntakeForm({
       <View style={styles.wrap}>
         <View style={styles.topicChip}>
           <Ionicons name="checkmark-circle" size={16} color={GREEN} />
-          <Text style={styles.topicChipText} numberOfLines={2}>
+          <AppText style={styles.topicChipText} numberOfLines={2}>
             {issueTitle}
-          </Text>
+          </AppText>
         </View>
 
-        <Text style={styles.fieldLabel}>Tell us what happened</Text>
+        <AppText style={styles.fieldLabel}>Tell us what happened</AppText>
         <TextInput
           value={description}
           onChangeText={(value) => setDescription(value.slice(0, MAX_CHARS))}
@@ -142,11 +134,11 @@ export function CustomerSupportTicketIntakeForm({
           multiline
           textAlignVertical="top"
         />
-        <Text style={styles.counter}>
+        <AppText style={styles.counter}>
           {description.length}/{MAX_CHARS}
-        </Text>
+        </AppText>
 
-        <Text style={styles.photosLabel}>Add supporting photos (optional)</Text>
+        <AppText style={styles.photosLabel}>Add supporting photos (optional)</AppText>
         {remainingPhotoSlots > 0 ? (
           <TouchableOpacity
             style={styles.addPhotosBtn}
@@ -154,9 +146,9 @@ export function CustomerSupportTicketIntakeForm({
             onPress={() => void pickPhotos()}
           >
             <Ionicons name="images-outline" size={18} color={GREEN} />
-            <Text style={styles.addPhotosBtnText}>
+            <AppText style={styles.addPhotosBtnText}>
               Select up to {remainingPhotoSlots} photo{remainingPhotoSlots > 1 ? "s" : ""} at once
-            </Text>
+            </AppText>
           </TouchableOpacity>
         ) : null}
         <View style={styles.photoRow}>
@@ -186,11 +178,11 @@ export function CustomerSupportTicketIntakeForm({
             );
           })}
         </View>
-        <Text style={styles.photosCaption}>
+        <AppText style={styles.photosCaption}>
           {photoUris.length > 0
             ? `${photoUris.length}/${MAX_PHOTOS} photos added · tap a photo to replace or remove`
             : "Up to 3 photos as proof for your claim"}
-        </Text>
+        </AppText>
 
         <TouchableOpacity
           disabled={!canSubmit}
@@ -208,7 +200,7 @@ export function CustomerSupportTicketIntakeForm({
           ) : (
             <>
               <Ionicons name="headset" size={18} color="#fff" />
-              <Text style={styles.submitText}>Submit ticket</Text>
+              <AppText style={styles.submitText}>Submit ticket</AppText>
             </>
           )}
         </TouchableOpacity>

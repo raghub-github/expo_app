@@ -2,7 +2,7 @@
  * Merchant store subscription upgrades — Partner Site parity (Razorpay + proration).
  */
 
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
 import {
   createRazorpayOrder,
@@ -2008,6 +2008,12 @@ export async function ensureMerchantSubscriptionRenewalDebited(storeId: number):
 }
 
 export async function processMerchantSubscriptionRenewals(
+  storeIdFilter?: number
+): Promise<{ processed: number; renewed: number; failed: number }> {
+  return withSqlRetry(() => processMerchantSubscriptionRenewalsOnce(storeIdFilter));
+}
+
+async function processMerchantSubscriptionRenewalsOnce(
   storeIdFilter?: number
 ): Promise<{ processed: number; renewed: number; failed: number }> {
   const sql = getSql();

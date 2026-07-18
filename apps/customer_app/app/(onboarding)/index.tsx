@@ -4,21 +4,9 @@
  */
 
 import { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  ScrollView,
-  Pressable,
-  Image,
-  Keyboard,
-  Switch,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView, Pressable, Image, Keyboard, Switch } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -139,7 +127,7 @@ export default function OnboardingProfileScreen() {
     return (
       <View style={[styles.center, { paddingBottom: insets.bottom }]}>
         <ActivityIndicator size="large" color={ACCENT} />
-        <Text style={styles.loadingText}>Loading…</Text>
+        <AppText style={styles.loadingText}>Loading…</AppText>
       </View>
     );
   }
@@ -158,7 +146,7 @@ export default function OnboardingProfileScreen() {
           <View style={styles.progressBar}>
             <View style={[styles.progressFill, { width: "50%" }]} />
           </View>
-          <Text style={styles.progressLabel}>Step 1 of 2</Text>
+          <AppText style={styles.progressLabel}>Step 1 of 2</AppText>
         </View>
 
         <View style={styles.logoWrap}>
@@ -173,10 +161,10 @@ export default function OnboardingProfileScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.title}>Complete your profile</Text>
-          <Text style={styles.subtitle}>Just a couple of details so we can personalize your experience.</Text>
+          <AppText style={styles.title}>Complete your profile</AppText>
+          <AppText style={styles.subtitle}>Just a couple of details so we can personalize your experience.</AppText>
 
-          <Text style={styles.label}>Full name *</Text>
+          <AppText style={styles.label}>Full name *</AppText>
           <TextInput
             style={[styles.input, errors.fullName && styles.inputError]}
             placeholder="Enter your full name"
@@ -186,9 +174,9 @@ export default function OnboardingProfileScreen() {
             autoCapitalize="words"
             editable={!submitting}
           />
-          {errors.fullName ? <Text style={styles.errorText}>{errors.fullName}</Text> : null}
+          {errors.fullName ? <AppText style={styles.errorText}>{errors.fullName}</AppText> : null}
 
-          <Text style={styles.label}>Email (optional)</Text>
+          <AppText style={styles.label}>Email (optional)</AppText>
           <TextInput
             style={[styles.input, errors.email && styles.inputError]}
             placeholder="your@email.com"
@@ -199,22 +187,22 @@ export default function OnboardingProfileScreen() {
             onChangeText={(t) => { setEmail(t); setErrors((e) => ({ ...e, email: "" })); }}
             editable={!submitting}
           />
-          {errors.email ? <Text style={styles.errorText}>{errors.email}</Text> : null}
+          {errors.email ? <AppText style={styles.errorText}>{errors.email}</AppText> : null}
 
-          <Text style={styles.label}>Age group (optional)</Text>
+          <AppText style={styles.label}>Age group (optional)</AppText>
           <TouchableOpacity
             style={[styles.input, styles.selectTrigger, errors.ageGroup && styles.inputError]}
             onPress={() => { Keyboard.dismiss(); setShowAgePicker(true); }}
             disabled={submitting}
           >
-            <Text style={ageGroup ? styles.selectText : styles.selectPlaceholder}>
+            <AppText style={ageGroup ? styles.selectText : styles.selectPlaceholder}>
               {ageGroup || "Select age range"}
-            </Text>
+            </AppText>
             <Ionicons name="chevron-down" size={20} color={BODY} />
           </TouchableOpacity>
-          {errors.ageGroup ? <Text style={styles.errorText}>{errors.ageGroup}</Text> : null}
+          {errors.ageGroup ? <AppText style={styles.errorText}>{errors.ageGroup}</AppText> : null}
 
-          <Text style={styles.label}>Gender (optional)</Text>
+          <AppText style={styles.label}>Gender (optional)</AppText>
           <View style={styles.genderRow}>
             {PROFILE_GENDERS.map((g) => (
               <TouchableOpacity
@@ -223,14 +211,14 @@ export default function OnboardingProfileScreen() {
                 onPress={() => { setGender(g.value); setErrors((e) => ({ ...e, gender: "" })); }}
                 disabled={submitting}
               >
-                <Text style={[styles.genderText, gender === g.value && styles.genderTextActive]}>{g.label}</Text>
+                <AppText style={[styles.genderText, gender === g.value && styles.genderTextActive]}>{g.label}</AppText>
               </TouchableOpacity>
             ))}
           </View>
-          {errors.gender ? <Text style={styles.errorText}>{errors.gender}</Text> : null}
+          {errors.gender ? <AppText style={styles.errorText}>{errors.gender}</AppText> : null}
 
           <View style={styles.referralToggleRow}>
-            <Text style={styles.referralToggleLabel}>I have a referral code</Text>
+            <AppText style={styles.referralToggleLabel}>I have a referral code</AppText>
             <Switch
               value={hasReferralCode}
               onValueChange={setHasReferralCode}
@@ -240,7 +228,7 @@ export default function OnboardingProfileScreen() {
           </View>
           {hasReferralCode && (
             <>
-              <Text style={styles.label}>Referral code</Text>
+              <AppText style={styles.label}>Referral code</AppText>
               <TextInput
                 style={styles.input}
                 placeholder="Enter referrer's code"
@@ -253,7 +241,7 @@ export default function OnboardingProfileScreen() {
             </>
           )}
 
-          {errors.submit ? <Text style={styles.errorText}>{errors.submit}</Text> : null}
+          {errors.submit ? <AppText style={styles.errorText}>{errors.submit}</AppText> : null}
 
           <TouchableOpacity
             onPress={handleSubmit}
@@ -264,7 +252,7 @@ export default function OnboardingProfileScreen() {
             {submitting ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.primaryBtnText}>Continue</Text>
+              <AppText style={styles.primaryBtnText}>Continue</AppText>
             )}
           </TouchableOpacity>
         </View>
@@ -273,7 +261,7 @@ export default function OnboardingProfileScreen() {
       {showAgePicker && (
         <Pressable style={styles.modalOverlay} onPress={() => setShowAgePicker(false)}>
           <Pressable style={styles.pickerSheet} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.pickerTitle}>Select age group</Text>
+            <AppText style={styles.pickerTitle}>Select age group</AppText>
             <ScrollView style={styles.pickerList}>
               {AGE_GROUPS.map((ag) => (
                 <TouchableOpacity
@@ -281,7 +269,7 @@ export default function OnboardingProfileScreen() {
                   style={[styles.pickerRow, ageGroup === ag && styles.pickerRowActive]}
                   onPress={() => { setAgeGroup(ag); setShowAgePicker(false); setErrors((e) => ({ ...e, ageGroup: "" })); }}
                 >
-                  <Text style={styles.pickerRowText}>{ag} years</Text>
+                  <AppText style={styles.pickerRowText}>{ag} years</AppText>
                   {ageGroup === ag ? <Ionicons name="checkmark" size={22} color={ACCENT} /> : null}
                 </TouchableOpacity>
               ))}

@@ -33,7 +33,7 @@ import { resolveTabBarBottomInset } from "@/constants/layout";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
-import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCartStore, type CartItem } from "@/store/cartStore";
 import { useLocationStore, getDeviceLocationReadiness } from "@/store/locationStore";
 import { LegalFooter, LegalLink } from "@/components/LegalLinks";
@@ -65,8 +65,10 @@ import {
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
-import { getRoute } from "@/services/distance.service";
+import { getRoute, getStoreDeliveryQuote, type StoreDeliveryQuote } from "@/services/distance.service";
 import { checkoutRouterBack } from "@/lib/safeRouterBack";
+import { evaluateCartCheckoutEligibility } from "@/lib/cartCheckoutGate";
+import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useCheckoutPresentation } from "@/lib/checkoutPresentation";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
@@ -386,6 +388,22 @@ function formatAddressToStoreDistance(
   if (!Number.isFinite(m)) return "—";
   if (m < 1000) return `${Math.round(m)} m`;
   return `${km.toFixed(1)} km`;
+}
+
+function isCheckoutSheetAddressOutOfZone(
+  quote: StoreDeliveryQuote | undefined,
+  storeLat: number | null | undefined,
+  storeLng: number | null | undefined,
+  addr: Address
+): boolean {
+  if (quote?.serviceable === false) return true;
+  if (quote?.unserviceable_reason === "out_of_range") return true;
+  if (storeLat == null || storeLng == null) return false;
+  const km = haversineKm(Number(storeLat), Number(storeLng), addr.latitude, addr.longitude);
+  if (!Number.isFinite(km)) return false;
+  const radiusKm = quote?.service_radius_km ?? SERVICE_RADIUS_KM;
+  if (quote != null) return !quote.serviceable;
+  return km > radiusKm;
 }
 
 /** One-line summary in the checkout card (GatiMitra-style). */
@@ -887,6 +905,19 @@ export default function CheckoutScreen() {
   const clearCart = useCartStore((s) => s.clearCart);
   const syncPricesFromMap = useCartStore((s) => s.syncPricesFromMap);
   const syncDiscountEligibility = useCartStore((s) => s.syncDiscountEligibility);
+
+  useEffect(() => {
+    if (items.length === 0) return;
+    void evaluateCartCheckoutEligibility(queryClient).then((eligibility) => {
+      if (eligibility.allowed) return;
+      if (isCheckoutSheet) {
+        useCheckoutSheetStore.getState().hide();
+      } else {
+        checkoutRouterBack(router, merchantId);
+      }
+      useCartCheckoutGateStore.getState().show();
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- gate only on first checkout entry
   /** Stable per-line dispatchers — required for CheckoutCartLineRow's React.memo to bail
    * on rows other than the one actually tapped (see component definition above). */
   const handleIncrementCartLine = useCallback(
@@ -1082,19 +1113,46 @@ export default function CheckoutScreen() {
     setScheduleSlotDraft(SCHEDULE_SLOT_OPTIONS[0]);
   }, [scheduleDayIndex, scheduleSheetVisible]);
 
-  // Address selection priority — explicit pick in this checkout session wins,
-  // then the customer's current default (set on the home picker or "Set as
-  // default" in profile), then the last-order fallback, then the first row.
-  // The default beats last-used so the user's most recent explicit choice on
-  // the home header propagates to checkout without an extra tap.
-  const selectedAddress = useMemo(
-    () =>
-      addresses.find((a) => a.id === selectedAddressId) ??
+  // Address for this checkout: explicit pick wins. On live GPS, never invent a
+  // far-away default/home address (that re-locks discovery to an old city).
+  const selectedAddress = useMemo(() => {
+    if (selectedAddressId != null) {
+      return addresses.find((a) => a.id === selectedAddressId) ?? undefined;
+    }
+    if (locationSource === "current" && sessionCoords) {
+      const nearId = matchSavedAddressIdNearCoords(
+        addresses,
+        sessionCoords.latitude,
+        sessionCoords.longitude,
+        0.25
+      );
+      if (nearId != null) return addresses.find((a) => a.id === nearId);
+      return undefined;
+    }
+    return (
       addresses.find((a) => a.isDefault) ??
       addresses.find((a) => a.isLastUsed) ??
-      addresses[0],
-    [addresses, selectedAddressId]
-  );
+      addresses[0]
+    );
+  }, [addresses, selectedAddressId, locationSource, sessionCoords?.latitude, sessionCoords?.longitude]);
+
+  const requiresAddressForAutoGpsCheckout =
+    locationSource === "current" && deliveryType === "delivery" && !selectedAddress;
+
+  const checkoutAddressServiceability = useQueries({
+    queries: addresses.map((addr) => ({
+      queryKey: ["store-delivery-quote", merchantId, addr.id, "checkout-address-sheet"],
+      queryFn: () =>
+        getStoreDeliveryQuote({
+          storeId: merchantId!,
+          addressId: addr.id,
+          serviceType: "FOOD",
+        }),
+      enabled: addressSheetVisible && !!merchantId,
+      staleTime: 5 * 60 * 1000,
+      gcTime: 15 * 60 * 1000,
+    })),
+  });
 
   const checkoutReceiverSummary = useMemo(() => {
     return formatCheckoutReceiverLine(checkoutReceiverName, checkoutReceiverMobile);
@@ -1168,7 +1226,9 @@ export default function CheckoutScreen() {
   );
 
   // Keep "active location" and global location pin in sync with the checkout delivery address.
-  // This makes store distance consistent across Home, Merchant detail, and Checkout.
+  // Only promote to locationSource "selected" when the user is already on a selected pin
+  // or explicitly chose an address in this checkout — never when browsing on live GPS
+  // with a far-away default address auto-filled.
   useEffect(() => {
     if (!selectedAddress) return;
 
@@ -1176,7 +1236,6 @@ export default function CheckoutScreen() {
     const lng = selectedAddress.longitude;
 
     const sameAsSession =
-      locationSource === "selected" &&
       sessionCoords != null &&
       Math.abs(sessionCoords.latitude - lat) < 1e-6 &&
       Math.abs(sessionCoords.longitude - lng) < 1e-6;
@@ -1189,10 +1248,30 @@ export default function CheckoutScreen() {
       Math.abs(activeLat - lat) < 1e-6 &&
       Math.abs(activeLng - lng) < 1e-6;
 
-    if (sameAsSession && sameAsActive) return;
+    if (locationSource === "current") {
+      // Live GPS mode: only sync server active pin when checkout address matches GPS
+      // (nearby saved). Never flip home discovery from an auto-filled checkout address —
+      // explicit picks go through selectAddressFromCheckoutSheet.
+      const nearGps =
+        sessionCoords != null &&
+        matchSavedAddressIdNearCoords(addresses, sessionCoords.latitude, sessionCoords.longitude, 0.25) ===
+          selectedAddress.id;
+      if (nearGps && !sameAsActive) {
+        addressService
+          .setActiveLocation({
+            latitude: lat,
+            longitude: lng,
+            address: selectedAddress.fullAddress,
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    if (sameAsSession && sameAsActive && locationSource === "selected") return;
 
     // Update local app "selected" location (used by merchants list + merchant detail).
-    if (!sameAsSession) {
+    if (!sameAsSession || locationSource !== "selected") {
       setAddressAndCoords(
         {
           primary: selectedAddress.label ?? "Delivery location",
@@ -1220,6 +1299,7 @@ export default function CheckoutScreen() {
   }, [
     activeLocation?.latitude,
     activeLocation?.longitude,
+    addresses,
     locationSource,
     sessionCoords?.latitude,
     sessionCoords?.longitude,
@@ -1237,9 +1317,9 @@ export default function CheckoutScreen() {
   /**
    * Delivery pin must follow the same source as home / "Select a location":
    * 1) In-memory map pin when user chose a saved address or map (locationSource === "selected")
-   * 2) Server PUT /v1/me/active-location (updated when user picks a saved row or current location)
-   * 3) Fallback: isLastUsed / default / first — avoids ignoring "Kkk" when backend flags still point at HOME.
-   * Do not auto-pick a saved address from device GPS here — that breaks ordering for someone else while you are elsewhere.
+   * 2) Nearby saved address to live GPS (when source === "current")
+   * 3) Server active-location only when source is selected
+   * Never auto-pick a far default/home while on live GPS.
    */
   useEffect(() => {
     if (addresses.length === 0) return;
@@ -1253,8 +1333,22 @@ export default function CheckoutScreen() {
         0.25
       );
     }
+    if (resolved == null && sessionCoords && locationSource === "current") {
+      resolved = matchSavedAddressIdNearCoords(
+        addresses,
+        sessionCoords.latitude,
+        sessionCoords.longitude,
+        0.25
+      );
+      if (resolved != null) {
+        setSelectedAddressId((prev) => (prev != null ? prev : resolved));
+      }
+      // Stay without a far default — user must pick a delivery address if none nearby.
+      return;
+    }
     if (
       resolved == null &&
+      locationSource === "selected" &&
       activeLocation?.latitude != null &&
       activeLocation.longitude != null
     ) {
@@ -1271,6 +1365,8 @@ export default function CheckoutScreen() {
       setSelectedAddressId((prev) => (prev != null ? prev : resolved));
       return;
     }
+
+    if (locationSource === "current") return;
 
     setSelectedAddressId((prev) => {
       if (prev != null) return prev;
@@ -1535,6 +1631,10 @@ export default function CheckoutScreen() {
         setSelectedAddressId(addr.id);
         await queryClient.invalidateQueries({ queryKey: ["addresses"] });
         await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+        const { invalidateFoodHomeLocationQueries } = await import(
+          "@/lib/invalidateFoodHomeLocationQueries"
+        );
+        void invalidateFoodHomeLocationQueries(queryClient);
         setAddressSheetVisible(false);
       } catch {
         Alert.alert("Could not update address", "Please try again.");
@@ -3049,9 +3149,7 @@ export default function CheckoutScreen() {
     return gatiCashMaxApply;
   }, [useGatiCashWallet, gatiCashMaxApply]);
 
-  const showGatiCashWalletBar =
-    gatiCashAvailable > 0.005 ||
-    (gatiCashBalanceQ.isLoading && authHydrated && !!authSession);
+  const showGatiCashWalletBar = gatiCashAvailable > 0.005;
 
   const checkoutScrollBottomInset = useMemo(
     () =>
@@ -4157,7 +4255,11 @@ export default function CheckoutScreen() {
                     styles.upsellScrollContent,
                     { gap: upsellChipLayout.gap, paddingRight: 16 },
                   ]}
-                  style={styles.upsellScrollInner}
+                  style={[
+                    styles.upsellScrollInner,
+                    // Explicit height — never flex-grow into sheet leftover (whitespace gap).
+                    { height: upsellChipLayout.chipW + 44 },
+                  ]}
                 >
                   {completeYourMealItems.map((m) => {
                     const { chipW, radius } = upsellChipLayout;
@@ -4729,152 +4831,170 @@ export default function CheckoutScreen() {
               applyAmount={gatiCashApplyAmount}
               checked={useGatiCashWallet}
               onToggle={() => setUseGatiCashWallet((v) => !v)}
-              loading={gatiCashBalanceQ.isLoading && authHydrated && !!authSession}
             />
           </View>
         )}
-        <View style={styles.footerRow}>
-          <View style={styles.footerToggleCol}>
-            <View style={styles.deliveryTypeToggle}>
-            <TouchableOpacity
-              style={[
-                styles.deliveryTypeSeg,
-                deliveryType === "delivery" && styles.deliveryTypeSegActive,
-              ]}
-              onPress={() => setDeliveryType("delivery")}
-              activeOpacity={0.88}
-            >
-              <MaterialCommunityIcons
-                name="motorbike"
-                size={18}
-                color={deliveryType === "delivery" ? "#FFFFFF" : "#111111"}
-              />
-              <CheckoutText
+        {requiresAddressForAutoGpsCheckout ? (
+          <Pressable
+            onPress={openCheckoutAddressSheet}
+            accessibilityRole="button"
+            accessibilityLabel="Select address to continue ordering"
+            style={({ pressed }) => [
+              styles.ctaSolidPressable,
+              styles.footerAddressCtaPressable,
+              pressed && styles.ctaTouchPressed,
+            ]}
+          >
+            <View style={[styles.ctaSolid, styles.footerAddressCta]} collapsable={false}>
+              <CheckoutText style={styles.ctaSolidTitle} bold numberOfLines={1}>
+                Select Address to Continue Ordering
+              </CheckoutText>
+            </View>
+          </Pressable>
+        ) : (
+          <View style={styles.footerRow}>
+            <View style={styles.footerToggleCol}>
+              <View style={styles.deliveryTypeToggle}>
+              <TouchableOpacity
                 style={[
-                  styles.deliveryTypeSegText,
-                  deliveryType === "delivery" && styles.deliveryTypeSegTextActive,
+                  styles.deliveryTypeSeg,
+                  deliveryType === "delivery" && styles.deliveryTypeSegActive,
                 ]}
+                onPress={() => setDeliveryType("delivery")}
+                activeOpacity={0.88}
               >
-                Delivery
-              </CheckoutText>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.deliveryTypeSeg,
-                deliveryType === "self_pickup" && styles.deliveryTypeSegActive,
-              ]}
-              onPress={() => setDeliveryType("self_pickup")}
-              activeOpacity={0.88}
-            >
-              <MaterialCommunityIcons
-                name="shopping-outline"
-                size={18}
-                color={deliveryType === "self_pickup" ? "#FFFFFF" : "#111111"}
-              />
-              <CheckoutText
+                <MaterialCommunityIcons
+                  name="motorbike"
+                  size={18}
+                  color={deliveryType === "delivery" ? "#FFFFFF" : "#111111"}
+                />
+                <CheckoutText
+                  style={[
+                    styles.deliveryTypeSegText,
+                    deliveryType === "delivery" && styles.deliveryTypeSegTextActive,
+                  ]}
+                >
+                  Delivery
+                </CheckoutText>
+              </TouchableOpacity>
+              <TouchableOpacity
                 style={[
-                  styles.deliveryTypeSegText,
-                  deliveryType === "self_pickup" && styles.deliveryTypeSegTextActive,
+                  styles.deliveryTypeSeg,
+                  deliveryType === "self_pickup" && styles.deliveryTypeSegActive,
                 ]}
+                onPress={() => setDeliveryType("self_pickup")}
+                activeOpacity={0.88}
               >
-                Takeaway
-              </CheckoutText>
-            </TouchableOpacity>
-            </View>
-          </View>
-          <View style={styles.footerCtaCol}>
-          {isStoreClosed ? (
-            <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
-              <CheckoutText style={styles.ctaSolidTitle} bold>
-                Store closed
-              </CheckoutText>
-            </View>
-          ) : items.length === 0 ? (
-            <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
-              <CheckoutText style={styles.ctaSolidTitle} bold>
-                Add items
-              </CheckoutText>
-            </View>
-          ) : deliveryType === "self_pickup" ? (
-            <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
-              <CheckoutText style={styles.ctaSolidTitle} bold>
-                Coming Soon
-              </CheckoutText>
-            </View>
-          ) : (
-            <Pressable
-              onPress={() => {
-                if (!canPlaceOrder) {
-                  const reason = !selectedAddress
-                    ? "Add a delivery address to place your order."
-                    : billingQuery.isError
-                      ? "Could not load the bill. Pull to refresh or try again."
-                      : billingQuery.isLoading || (billingQuery.isPlaceholderData && billingQuery.isFetching)
-                        ? "Updating your bill — try again in a moment."
-                        : !serverBill
-                          ? "Waiting for the bill to load."
-                          : "Select a payment method to continue.";
-                  Alert.alert("Almost there", reason);
-                  return;
-                }
-                handlePlaceOrderPress();
-              }}
-              disabled={
-                canPlaceOrder &&
-                (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating)
-              }
-              accessibilityRole="button"
-              accessibilityLabel={canPlaceOrder ? "Place order" : "Place order unavailable"}
-              style={({ pressed }) => [styles.ctaSolidPressable, pressed && styles.ctaTouchPressed]}
-            >
-              <View
-                style={[styles.ctaSolid, !canPlaceOrder && styles.ctaSolidWaiting]}
-                collapsable={false}
-              >
-                <View style={styles.ctaSolidLeft}>
-                  <CheckoutText style={styles.ctaSolidAmount} bold numberOfLines={1}>
-                    {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
-                  </CheckoutText>
-                  <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
-                    TOTAL
-                  </CheckoutText>
-                </View>
-                <View style={styles.ctaSolidRight}>
-                  {canPlaceOrder &&
-                  (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <>
-                      <View style={styles.ctaSolidRightRow}>
-                        <CheckoutText style={styles.ctaSolidTitle} bold numberOfLines={1}>
-                          Place Order
-                        </CheckoutText>
-                        {canPlaceOrder ? (
-                          <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
-                        ) : null}
-                      </View>
-                      {!canPlaceOrder ? (
-                        <CheckoutText style={styles.ctaSolidHint} bold numberOfLines={1}>
-                          {!selectedAddress
-                            ? "Check address"
-                            : billingQuery.isError
-                              ? "Bill error"
-                              : billingQuery.isLoading ||
-                                  (billingQuery.isPlaceholderData && billingQuery.isFetching)
-                                ? "Loading bill…"
-                                : !serverBill
-                                  ? "Waiting for bill"
-                                  : "Select payment"}
-                        </CheckoutText>
-                      ) : null}
-                    </>
-                  )}
-                </View>
+                <MaterialCommunityIcons
+                  name="shopping-outline"
+                  size={18}
+                  color={deliveryType === "self_pickup" ? "#FFFFFF" : "#111111"}
+                />
+                <CheckoutText
+                  style={[
+                    styles.deliveryTypeSegText,
+                    deliveryType === "self_pickup" && styles.deliveryTypeSegTextActive,
+                  ]}
+                >
+                  Takeaway
+                </CheckoutText>
+              </TouchableOpacity>
               </View>
-            </Pressable>
-          )}
+            </View>
+            <View style={styles.footerCtaCol}>
+            {isStoreClosed ? (
+              <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
+                <CheckoutText style={styles.ctaSolidTitle} bold>
+                  Store closed
+                </CheckoutText>
+              </View>
+            ) : items.length === 0 ? (
+              <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
+                <CheckoutText style={styles.ctaSolidTitle} bold>
+                  Add items
+                </CheckoutText>
+              </View>
+            ) : deliveryType === "self_pickup" ? (
+              <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
+                <CheckoutText style={styles.ctaSolidTitle} bold>
+                  Coming Soon
+                </CheckoutText>
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => {
+                  if (!canPlaceOrder) {
+                    const reason = !selectedAddress
+                      ? "Add a delivery address to place your order."
+                      : billingQuery.isError
+                        ? "Could not load the bill. Pull to refresh or try again."
+                        : billingQuery.isLoading || (billingQuery.isPlaceholderData && billingQuery.isFetching)
+                          ? "Updating your bill — try again in a moment."
+                          : !serverBill
+                            ? "Waiting for the bill to load."
+                            : "Select a payment method to continue.";
+                    Alert.alert("Almost there", reason);
+                    return;
+                  }
+                  handlePlaceOrderPress();
+                }}
+                disabled={
+                  canPlaceOrder &&
+                  (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating)
+                }
+                accessibilityRole="button"
+                accessibilityLabel={canPlaceOrder ? "Place order" : "Place order unavailable"}
+                style={({ pressed }) => [styles.ctaSolidPressable, pressed && styles.ctaTouchPressed]}
+              >
+                <View
+                  style={[styles.ctaSolid, !canPlaceOrder && styles.ctaSolidWaiting]}
+                  collapsable={false}
+                >
+                  <View style={styles.ctaSolidLeft}>
+                    <CheckoutText style={styles.ctaSolidAmount} bold numberOfLines={1}>
+                      {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
+                    </CheckoutText>
+                    <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
+                      TOTAL
+                    </CheckoutText>
+                  </View>
+                  <View style={styles.ctaSolidRight}>
+                    {canPlaceOrder &&
+                    (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) ? (
+                      <ActivityIndicator color="#FFFFFF" size="small" />
+                    ) : (
+                      <>
+                        <View style={styles.ctaSolidRightRow}>
+                          <CheckoutText style={styles.ctaSolidTitle} bold numberOfLines={1}>
+                            Place Order
+                          </CheckoutText>
+                          {canPlaceOrder ? (
+                            <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
+                          ) : null}
+                        </View>
+                        {!canPlaceOrder ? (
+                          <CheckoutText style={styles.ctaSolidHint} bold numberOfLines={1}>
+                            {!selectedAddress
+                              ? "Check address"
+                              : billingQuery.isError
+                                ? "Bill error"
+                                : billingQuery.isLoading ||
+                                    (billingQuery.isPlaceholderData && billingQuery.isFetching)
+                                  ? "Loading bill…"
+                                  : !serverBill
+                                    ? "Waiting for bill"
+                                    : "Select payment"}
+                          </CheckoutText>
+                        ) : null}
+                      </>
+                    )}
+                  </View>
+                </View>
+              </Pressable>
+            )}
+            </View>
           </View>
-        </View>
+        )}
         <LegalFooter
           prefix="By placing this order you agree to"
           docIds={["terms-of-service", "shipping-delivery-policy"]}
@@ -5087,8 +5207,7 @@ export default function CheckoutScreen() {
               styles.noteSheetCard,
               styles.addressSelectSheetCard,
               {
-                paddingBottom: Math.max(insets.bottom, 20) + 12,
-                maxHeight: Math.min(640, windowHeight * 0.92),
+                paddingBottom: Math.max(insets.bottom, 4),
               },
             ]}
           >
@@ -5104,36 +5223,27 @@ export default function CheckoutScreen() {
             </View>
             <CheckoutText style={styles.addressSelectSheetTitle}>Select an address</CheckoutText>
 
-            <Pressable
-              style={styles.addressSelectAddPressable}
-              onPress={() => {
-                setAddressSheetVisible(false);
-                router.push({ pathname: "/location", params: { afterSaveReturn: "checkout" } });
-              }}
-              android_ripple={{ color: "rgba(45, 181, 160, 0.18)" }}
-            >
-              <LinearGradient
-                colors={["#F0FDFA", "#E6FAF5", "#DCF5EF"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.addressSelectAddGradient}
+            <View style={styles.addressSelectActionPanel}>
+              <Pressable
+                style={styles.addressSelectActionRow}
+                onPress={() => {
+                  setAddressSheetVisible(false);
+                  router.push({ pathname: "/location", params: { afterSaveReturn: "checkout" } });
+                }}
+                android_ripple={{ color: "rgba(45, 181, 160, 0.12)" }}
               >
-                <View style={styles.addressSelectAddIconCircle}>
-                  <Ionicons name="add" size={28} color="#FFFFFF" />
+                <View style={styles.addressSelectActionLeft}>
+                  <Ionicons name="add" size={22} color={CX.mint} />
+                  <View style={styles.addressSelectActionTextCol}>
+                    <CheckoutText style={styles.addressSelectActionTitle}>Add Address</CheckoutText>
+                    <CheckoutText style={styles.addressSelectActionSub} numberOfLines={1}>
+                      Search area or drop a pin on the map
+                    </CheckoutText>
+                  </View>
                 </View>
-                <View style={styles.addressSelectAddTextCol}>
-                  <CheckoutText style={styles.addressSelectAddTitle}>Add Address</CheckoutText>
-                  <CheckoutText style={styles.addressSelectAddSub} numberOfLines={2}>
-                    Search area or drop a pin on the map
-                  </CheckoutText>
-                </View>
-                <View style={styles.addressSelectAddChevronWrap}>
-                  <Ionicons name="chevron-forward" size={20} color={CX.mint} />
-                </View>
-              </LinearGradient>
-            </Pressable>
-
-            <View style={styles.addressSelectSectionRule} />
+                <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+              </Pressable>
+            </View>
 
             <CheckoutText style={styles.addressSelectSectionLabel}>SAVED ADDRESSES</CheckoutText>
 
@@ -5147,112 +5257,86 @@ export default function CheckoutScreen() {
               </CheckoutText>
             ) : (
               <ScrollView
-                style={[styles.addressSelectScroll, { maxHeight: Math.min(460, windowHeight * 0.58) }]}
+                style={[
+                  styles.addressSelectScroll,
+                  { maxHeight: Math.min(420, Math.round(windowHeight * 0.55)) },
+                ]}
+                contentContainerStyle={styles.addressSelectScrollContent}
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
+                bounces={false}
               >
-                {addresses.map((addr) => {
-                  const isSelected = selectedAddress?.id === addr.id;
-                  const busy = addressSheetBusyId === addr.id;
-                  const dist = formatAddressToStoreDistance(merchant?.latitude, merchant?.longitude, addr);
-                  const title = addr.contactName?.trim() || addr.label || "Saved address";
-                  return (
-                    <View
-                      key={addr.id}
-                      style={[styles.addressSelectCard, isSelected && styles.addressSelectCardSelected]}
-                    >
-                      {isSelected ? (
-                        <CheckoutText style={styles.addressSelectDeliversTo}>DELIVERS TO</CheckoutText>
-                      ) : null}
+                <View style={[styles.addressSelectActionPanel, styles.addressSelectActionPanelInScroll]}>
+                  {addresses.map((addr, index) => {
+                    const isSelected = selectedAddress?.id === addr.id;
+                    const busy = addressSheetBusyId === addr.id;
+                    const dist = formatAddressToStoreDistance(merchant?.latitude, merchant?.longitude, addr);
+                    const title = addr.contactName?.trim() || addr.label || "Saved address";
+                    const quote = checkoutAddressServiceability[index]?.data;
+                    const isOutOfDeliveryZone = isCheckoutSheetAddressOutOfZone(
+                      quote,
+                      merchant?.latitude,
+                      merchant?.longitude,
+                      addr
+                    );
+                    const showLabel =
+                      addr.label?.trim() &&
+                      addr.label.trim().toLowerCase() !== title.toLowerCase();
+                    return (
                       <Pressable
+                        key={addr.id}
+                        style={[
+                          styles.addressSelectActionRow,
+                          isSelected && styles.addressSelectActionRowSelected,
+                          index === addresses.length - 1 && styles.addressSelectActionRowLast,
+                        ]}
                         onPress={() => void selectAddressFromCheckoutSheet(addr)}
                         disabled={addressSheetBusyId != null}
-                        style={({ pressed }) => [
-                          styles.addressSelectTapBlock,
-                          pressed && { opacity: 0.94 },
-                        ]}
+                        android_ripple={{ color: "rgba(45, 181, 160, 0.1)" }}
                       >
-                        <View
-                          style={[
-                            styles.addressSelectCardInnerRow,
-                            !isSelected && styles.addressSelectCardInnerRowPadTop,
-                          ]}
-                        >
-                          <View style={styles.addressSelectIconCol}>
-                            {busy ? (
-                              <ActivityIndicator size="small" color={CX.mint} />
-                            ) : (
-                              <Ionicons
-                                name={checkoutAddressRowIcon(addr.label, addr.contactName)}
-                                size={24}
-                                color="#374151"
-                              />
-                            )}
-                            <CheckoutText style={styles.addressSelectDist}>{dist}</CheckoutText>
-                          </View>
-                          <View style={styles.addressSelectBody}>
-                            <CheckoutText style={styles.addressSelectCardTitle} numberOfLines={1}>
+                        <View style={styles.addressSelectActionLeft}>
+                          {busy ? (
+                            <ActivityIndicator size="small" color={CX.mint} />
+                          ) : (
+                            <Ionicons
+                              name={checkoutAddressRowIcon(addr.label, addr.contactName)}
+                              size={22}
+                              color={CX.mint}
+                            />
+                          )}
+                          <View style={styles.addressSelectActionTextCol}>
+                            {isOutOfDeliveryZone ? (
+                              <View style={styles.addressSelectOutOfZonePill}>
+                                <CheckoutText style={styles.addressSelectOutOfZonePillText}>
+                                  Out of Delivery Zone
+                                </CheckoutText>
+                              </View>
+                            ) : null}
+                            <CheckoutText style={styles.addressSelectActionTitle} numberOfLines={1}>
                               {title}
                             </CheckoutText>
-                            {addr.contactName && addr.label ? (
-                              <CheckoutText style={styles.addressSelectSub} numberOfLines={1}>
+                            {showLabel ? (
+                              <CheckoutText style={styles.addressSelectActionLabel} numberOfLines={1}>
                                 {addr.label}
                               </CheckoutText>
                             ) : null}
-                            <CheckoutText style={styles.addressSelectAddr} numberOfLines={4}>
-                              {addr.fullAddress}
-                            </CheckoutText>
-                            {addr.contactMobile ? (
-                              <CheckoutText style={styles.addressSelectPhone} numberOfLines={1}>
-                                Phone number: {addr.contactMobile}
-                              </CheckoutText>
+                            <CheckoutText style={styles.addressSelectActionSub}>{addr.fullAddress}</CheckoutText>
+                            {dist !== "—" ? (
+                              <CheckoutText style={styles.addressSelectActionDist}>{dist}</CheckoutText>
                             ) : null}
                           </View>
                         </View>
+                        {isSelected ? (
+                          <View style={styles.addressSelectSelectedPill}>
+                            <CheckoutText style={styles.addressSelectSelectedPillText}>SELECTED</CheckoutText>
+                          </View>
+                        ) : (
+                          <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                        )}
                       </Pressable>
-                      <View style={styles.addressSelectActionsRow}>
-                        <Pressable
-                          style={styles.addressSelectActionBtn}
-                          hitSlop={8}
-                          android_ripple={{ color: "rgba(255,255,255,0.25)", borderless: true }}
-                          onPress={() => {
-                            Alert.alert("Address", undefined, [
-                              {
-                                text: "Edit on map",
-                                onPress: () => openCheckoutAddressEditMap(addr),
-                              },
-                              {
-                                text: "Delete",
-                                style: "destructive",
-                                onPress: () => confirmDeleteCheckoutAddress(addr),
-                              },
-                              { text: "Cancel", style: "cancel" },
-                            ]);
-                          }}
-                        >
-                          <Ionicons name="ellipsis-horizontal" size={17} color="#FFFFFF" />
-                        </Pressable>
-                        <Pressable
-                          style={styles.addressSelectActionBtn}
-                          hitSlop={8}
-                          android_ripple={{ color: "rgba(255,255,255,0.25)", borderless: true }}
-                          onPress={() => void shareCheckoutAddress(addr)}
-                        >
-                          <Ionicons name="share-outline" size={17} color="#FFFFFF" />
-                        </Pressable>
-                        <Pressable
-                          style={styles.addressSelectActionBtn}
-                          hitSlop={8}
-                          android_ripple={{ color: "rgba(255,255,255,0.25)", borderless: true }}
-                          onPress={() => confirmDeleteCheckoutAddress(addr)}
-                          disabled={deleteCheckoutAddressMutation.isPending}
-                        >
-                          <Ionicons name="trash-outline" size={17} color="#FFFFFF" />
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })}
+                    );
+                  })}
+                </View>
               </ScrollView>
             )}
           </View>
@@ -6527,7 +6611,7 @@ const styles = StyleSheet.create({
   upsellScrollWrap: {
     marginHorizontal: -16,
   },
-  upsellScrollInner: { flex: 1, minHeight: 0, overflow: "visible" },
+  upsellScrollInner: { overflow: "visible" },
   upsellScrollContent: {
     paddingVertical: 0,
     paddingHorizontal: 16,
@@ -7798,68 +7882,95 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     letterSpacing: -0.3,
   },
-  addressSelectAddPressable: {
-    borderRadius: 16,
+  addressSelectActionPanel: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 10,
     overflow: "hidden",
-    marginBottom: 2,
-    shadowColor: "#2DB5A0",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.14,
-    shadowRadius: 14,
-    elevation: 5,
   },
-  addressSelectAddGradient: {
+  addressSelectActionPanelInScroll: {
+    marginBottom: 0,
+  },
+  addressSelectActionRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
     paddingVertical: 16,
-    paddingHorizontal: 14,
-    gap: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(45, 181, 160, 0.22)",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E8ECF0",
+    gap: 10,
   },
-  addressSelectAddIconCircle: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: CX.mint,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: CX.mintDark,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 4,
+  addressSelectActionRowLast: { borderBottomWidth: 0 },
+  addressSelectActionRowSelected: {
+    backgroundColor: "#F0FDFA",
   },
-  addressSelectAddTextCol: { flex: 1, minWidth: 0, justifyContent: "center" },
-  addressSelectAddTitle: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#0f172a",
-    letterSpacing: -0.2,
+  addressSelectActionLeft: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    flex: 1,
+    minWidth: 0,
   },
-  addressSelectAddSub: {
+  addressSelectActionTextCol: { flex: 1, minWidth: 0 },
+  addressSelectActionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#111827",
+    lineHeight: 20,
+  },
+  addressSelectActionSub: {
     fontSize: 12,
-    fontWeight: "500",
-    color: "#64748B",
+    color: "#4B5563",
     marginTop: 4,
-    lineHeight: 16,
+    lineHeight: 17,
   },
-  addressSelectAddChevronWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.85)",
-    alignItems: "center",
-    justifyContent: "center",
+  addressSelectActionLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    marginTop: 2,
+    lineHeight: 14,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  addressSelectActionDist: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    marginTop: 4,
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
+  addressSelectOutOfZonePill: {
+    alignSelf: "flex-start",
+    backgroundColor: "#FEE2E2",
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(45, 181, 160, 0.2)",
+    borderColor: "#FECACA",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginBottom: 5,
   },
-  addressSelectSectionRule: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: "#E5E7EB",
-    marginTop: 14,
-    marginBottom: 4,
+  addressSelectOutOfZonePillText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#DC2626",
+    letterSpacing: 0.5,
+  },
+  addressSelectSelectedPill: {
+    backgroundColor: CX.mint,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  addressSelectSelectedPillText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.4,
   },
   addressSelectSectionLabel: {
     fontSize: 10,
@@ -7878,81 +7989,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   addressSelectScroll: { flexGrow: 0 },
-  addressSelectCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#ECEEF1",
-    marginBottom: 10,
-    overflow: "hidden",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  addressSelectCardSelected: {
-    backgroundColor: "#FFFFFF",
-    borderColor: CX.mint,
-    borderWidth: 2,
-    shadowColor: CX.mint,
-    shadowOpacity: 0.12,
-  },
-  addressSelectDeliversTo: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#2563EB",
-    letterSpacing: 0.85,
-    marginLeft: 14,
-    marginRight: 14,
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  addressSelectTapBlock: {
-    width: "100%",
-  },
-  addressSelectCardInnerRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingTop: 4,
-    paddingBottom: 12,
-  },
-  addressSelectCardInnerRowPadTop: { paddingTop: 12 },
-  addressSelectIconCol: { width: 44, alignItems: "center", paddingTop: 2 },
-  addressSelectDist: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#6B7280",
-    marginTop: 6,
-    textAlign: "center",
-  },
-  addressSelectBody: { flex: 1, minWidth: 0 },
-  addressSelectCardTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
-  addressSelectSub: { fontSize: 12, fontWeight: "600", color: "#64748B", marginTop: 2 },
-  addressSelectAddr: { fontSize: 14, fontWeight: "400", color: "#4B5563", marginTop: 6, lineHeight: 20 },
-  addressSelectPhone: { fontSize: 13, fontWeight: "400", color: "#6B7280", marginTop: 8 },
-  addressSelectActionsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 14,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#EEF1F5",
-  },
-  addressSelectActionBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: CX.mint,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 0,
-  },
+  addressSelectScrollContent: { flexGrow: 0, paddingBottom: 0 },
   donationCard: {
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
@@ -8276,6 +8313,14 @@ const styles = StyleSheet.create({
     minWidth: 0,
     marginLeft: CHECKOUT_FOOTER_GAP,
     paddingLeft: CHECKOUT_FOOTER_CTA_LEFT_INSET,
+  },
+  footerAddressCtaPressable: {
+    marginTop: 2,
+  },
+  footerAddressCta: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
   },
   // Delivery / Takeaway segmented control (reference: white shell, light pink border, magenta active half)
   deliveryTypeToggle: {

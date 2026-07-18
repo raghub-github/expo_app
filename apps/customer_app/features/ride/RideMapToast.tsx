@@ -1,4 +1,6 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 
 export type RideMapToastProps = {
@@ -18,8 +20,8 @@ export function RideMapToast({ visible, title, message, topInset = 0 }: RideMapT
           <Ionicons name="information-circle" size={20} color="#047857" />
         </View>
         <View style={styles.textCol}>
-          <Text style={styles.title}>{title}</Text>
-          {message ? <Text style={styles.message}>{message}</Text> : null}
+          <AppText style={styles.title}>{title}</AppText>
+          {message ? <AppText style={styles.message}>{message}</AppText> : null}
         </View>
       </View>
     </View>

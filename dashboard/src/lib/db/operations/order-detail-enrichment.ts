@@ -17,9 +17,10 @@ import {
   buildRiderInstructionsFromCheckout,
   parseInstructionList,
   resolveFirstEtaAtIso,
-  resolveLocalityDisplay,
+  resolveLocalityFromRiderRefusals,
   resolveMerchantUpdatedKptMinutes,
 } from "@/lib/orders/order-detail-display";
+import { countDistinctRidersWhoRefusedDelivery } from "@/lib/db/operations/order-rider-assignments";
 import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
 import { resolveMerchantCancellationFields } from "@/lib/orders/merchant-cancellation-fields";
 import { getOrderOtpsForDashboard } from "./order-otps";
@@ -1088,12 +1089,8 @@ export async function getOrderDetailEnrichment(
       }
     }
 
-    let locality = resolveLocalityDisplay(billing, checkout);
-    if (!locality && billing?.serviceable === true) {
-      locality = { label: "GREEN", isSafe: true };
-    } else if (!locality && billing?.serviceable === false) {
-      locality = { label: "RED", isSafe: false };
-    }
+    const refusalCount = await countDistinctRidersWhoRefusedDelivery(orderId);
+    const locality = resolveLocalityFromRiderRefusals(refusalCount);
 
     let systemKptResolved = systemKpt ?? storeAvg;
     if (systemKptResolved == null) {

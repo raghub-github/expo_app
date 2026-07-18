@@ -19,7 +19,6 @@ import {
 } from "@/services/foodHomeLayout.service";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
-import { applyGridFirstImmersiveChrome } from "@/lib/gridFirstImmersiveChrome";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 
 export const FOOD_HOME_LAYOUT_STALE_MS = 5 * 60 * 1000;
@@ -135,7 +134,6 @@ export async function hydrateFoodHomeLayoutMemoryFromStorage(): Promise<void> {
     memoryByKey.set(key, entry);
     prefetchGridFirstHeroMedia(entry.gridFirstHeroMedia);
     prefetchMealsUnder250HeroMedia(entry);
-    if (entry.layoutKey === "grid_first") applyGridFirstImmersiveChrome(true);
   }
 }
 
@@ -168,7 +166,6 @@ export async function fetchFoodHomeLayoutWithCache(
   });
   prefetchGridFirstHeroMedia(result.gridFirstHeroMedia);
   prefetchMealsUnder250HeroMedia(result);
-  if (result.layoutKey === "grid_first") applyGridFirstImmersiveChrome(true);
   await writeCachedFoodHomeLayout(hints, result);
   return result;
 }
@@ -185,7 +182,6 @@ export async function hydrateFoodHomeLayoutForHints(
   if (cached?.layoutKey) {
     prefetchGridFirstHeroMedia(cached.gridFirstHeroMedia);
     prefetchMealsUnder250HeroMedia(cached);
-    if (cached.layoutKey === "grid_first") applyGridFirstImmersiveChrome(true);
     queryClient.setQueryData(queryKey, cached);
   }
   return cached;

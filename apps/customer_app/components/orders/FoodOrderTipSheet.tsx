@@ -3,19 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  Image,
-  TextInput,
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView, Image, TextInput, ActivityIndicator, Alert, Modal, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -187,15 +177,15 @@ export function FoodOrderTipSheet({
               <Image source={{ uri: partnerPhotoUri }} style={styles.avatar} />
             ) : (
               <View style={styles.avatarFallback}>
-                <Text style={styles.avatarInitial}>{partnerName.slice(0, 1).toUpperCase()}</Text>
+                <AppText style={styles.avatarInitial}>{partnerName.slice(0, 1).toUpperCase()}</AppText>
               </View>
             )}
           </View>
 
-          <Text style={styles.title}>Tip your delivery partner</Text>
-          <Text style={styles.subtitle}>
+          <AppText style={styles.title}>Tip your delivery partner</AppText>
+          <AppText style={styles.subtitle}>
             Delivery partner will get notified instantly. The full tip is sent after delivery.
-          </Text>
+          </AppText>
 
           <View style={styles.tipRow}>
             {FOOD_TIP_PRESETS.map((amount) => {
@@ -210,9 +200,9 @@ export function FoodOrderTipSheet({
                   }}
                   activeOpacity={0.85}
                 >
-                  <Text style={[styles.tipChipText, active && styles.tipChipTextActive]}>
+                  <AppText style={[styles.tipChipText, active && styles.tipChipTextActive]}>
                     ₹{amount}
-                  </Text>
+                  </AppText>
                 </TouchableOpacity>
               );
             })}
@@ -221,13 +211,13 @@ export function FoodOrderTipSheet({
               onPress={() => setCustomMode(true)}
               activeOpacity={0.85}
             >
-              <Text style={[styles.tipChipText, customMode && styles.tipChipTextActive]}>Other</Text>
+              <AppText style={[styles.tipChipText, customMode && styles.tipChipTextActive]}>Other</AppText>
             </TouchableOpacity>
           </View>
 
           {customMode ? (
             <View style={styles.customWrap}>
-              <Text style={styles.customLabel}>Custom amount</Text>
+              <AppText style={styles.customLabel}>Custom amount</AppText>
               <TextInput
                 style={styles.customInput}
                 keyboardType="number-pad"
@@ -251,17 +241,17 @@ export function FoodOrderTipSheet({
                 size={20}
                 color={saveForNext ? MINT : MUTED}
               />
-              <Text style={styles.saveText}>Save tip for next order</Text>
+              <AppText style={styles.saveText}>Save tip for next order</AppText>
             </TouchableOpacity>
             <TouchableOpacity onPress={handleClear} hitSlop={8}>
-              <Text style={styles.clearText}>Clear</Text>
+              <AppText style={styles.clearText}>Clear</AppText>
             </TouchableOpacity>
           </View>
 
           <View style={styles.payFooter}>
             <View style={styles.payMethodCol}>
-              <Text style={styles.payUsing}>PAY USING</Text>
-              <Text style={styles.payMethod}>{paymentMethodLabel.replace(/_/g, " ")}</Text>
+              <AppText style={styles.payUsing}>PAY USING</AppText>
+              <AppText style={styles.payMethod}>{paymentMethodLabel.replace(/_/g, " ")}</AppText>
             </View>
             <TouchableOpacity
               style={[styles.payBtn, (paying || tipAmount <= 0) && styles.payBtnDisabled]}
@@ -279,8 +269,8 @@ export function FoodOrderTipSheet({
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <>
-                    <Text style={styles.payBtnTotal}>₹{tipAmount} TOTAL</Text>
-                    <Text style={styles.payBtnCta}>Pay tip ›</Text>
+                    <AppText style={styles.payBtnTotal}>₹{tipAmount} TOTAL</AppText>
+                    <AppText style={styles.payBtnCta}>Pay tip ›</AppText>
                   </>
                 )}
               </LinearGradient>
@@ -308,8 +298,8 @@ export function FoodOrderTipSheet({
       <Modal visible={simulatedPayment != null} transparent animationType="fade">
         <Pressable style={styles.simBackdrop} onPress={() => setSimulatedPayment(null)} />
         <View style={styles.simCard}>
-          <Text style={styles.simTitle}>Simulate tip payment</Text>
-          <Text style={styles.simSub}>₹{tipAmount} to {partnerName}</Text>
+          <AppText style={styles.simTitle}>Simulate tip payment</AppText>
+          <AppText style={styles.simSub}>₹{tipAmount} to {partnerName}</AppText>
           <TouchableOpacity
             style={styles.simSuccessBtn}
             onPress={() => {
@@ -321,10 +311,10 @@ export function FoodOrderTipSheet({
               });
             }}
           >
-            <Text style={styles.simSuccessText}>Simulate Success</Text>
+            <AppText style={styles.simSuccessText}>Simulate Success</AppText>
           </TouchableOpacity>
           <TouchableOpacity style={styles.simCancelBtn} onPress={() => setSimulatedPayment(null)}>
-            <Text style={styles.simCancelText}>Cancel</Text>
+            <AppText style={styles.simCancelText}>Cancel</AppText>
           </TouchableOpacity>
         </View>
       </Modal>

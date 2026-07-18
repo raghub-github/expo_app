@@ -1,5 +1,7 @@
 import React, { useCallback } from "react";
-import { Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { StoreTheme } from "@/constants/storeTheme";
 import type { MerchantCategoryChip } from "../types";
 import { CATEGORY_ROW_HEIGHT } from "../constants/layout";
@@ -42,9 +44,9 @@ export const MerchantCategoryRow = React.memo(function MerchantCategoryRow({
             onPress={handlePress(chip)}
             activeOpacity={0.8}
           >
-            <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
+            <AppText style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
               {chip.title}
-            </Text>
+            </AppText>
           </TouchableOpacity>
         );
       })}

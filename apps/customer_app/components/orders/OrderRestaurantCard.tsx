@@ -2,7 +2,9 @@
  * Live tracking — restaurant info, order summary, cooking requests (Zomato-style).
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -53,9 +55,9 @@ function SolidDivider() {
 function DashedDivider() {
   return (
     <View style={styles.dashedWrap}>
-      <Text style={styles.dashedLine} numberOfLines={1}>
+      <AppText style={styles.dashedLine} numberOfLines={1}>
         - - - - - - - - - - - - - - - - - - - -
-      </Text>
+      </AppText>
     </View>
   );
 }

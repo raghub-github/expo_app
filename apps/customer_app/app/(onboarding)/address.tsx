@@ -3,7 +3,9 @@
  * Optional step: add first address or skip, then continue to permissions.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -34,17 +36,17 @@ export default function OnboardingAddressScreen() {
         <View style={styles.iconWrap}>
           <Ionicons name="location" size={48} color={ACCENT} />
         </View>
-        <Text style={styles.title}>Where do you want your orders delivered?</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>Where do you want your orders delivered?</AppText>
+        <AppText style={styles.subtitle}>
           Add your delivery location so we can show you nearby restaurants and accurate delivery times. You can add more
           addresses later.
-        </Text>
+        </AppText>
         <TouchableOpacity style={styles.primaryBtn} onPress={handleAddAddress} activeOpacity={0.85}>
           <Ionicons name="add-circle-outline" size={22} color="#fff" />
-          <Text style={styles.primaryBtnText}>Add delivery address</Text>
+          <AppText style={styles.primaryBtnText}>Add delivery address</AppText>
         </TouchableOpacity>
         <TouchableOpacity style={styles.skipBtn} onPress={handleSkip} activeOpacity={0.85}>
-          <Text style={styles.skipBtnText}>Skip for now</Text>
+          <AppText style={styles.skipBtnText}>Skip for now</AppText>
         </TouchableOpacity>
       </View>
     </View>

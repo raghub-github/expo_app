@@ -4,25 +4,9 @@
  */
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  FlatList,
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Pressable,
-  Animated,
-  Easing,
-  Image,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, FlatList, ActivityIndicator, Alert, Modal, Pressable, Animated, Easing, Image, useWindowDimensions } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -978,7 +962,7 @@ export default function LocationAddressScreen() {
         </TouchableOpacity>
         <TouchableOpacity style={styles.headerSearchBar} onPress={() => setLocationSearchVisible(true)} activeOpacity={0.85}>
           <Ionicons name="search" size={18} color={TEAL} />
-          <Text style={styles.headerSearchText}>Search for area, street name...</Text>
+          <AppText style={styles.headerSearchText}>Search for area, street name...</AppText>
         </TouchableOpacity>
       </View>
       <View style={styles.mapCard}>
@@ -1007,7 +991,7 @@ export default function LocationAddressScreen() {
           />
           <View style={styles.mapTooltipWrap} pointerEvents="none">
             <View style={styles.mapTooltip}>
-              <Text style={styles.mapTooltipText}>Move pin to your exact delivery location</Text>
+              <AppText style={styles.mapTooltipText}>Move pin to your exact delivery location</AppText>
             </View>
           </View>
           <View pointerEvents="none" style={styles.mapPinOverlay}>
@@ -1015,10 +999,10 @@ export default function LocationAddressScreen() {
           </View>
           <TouchableOpacity style={styles.mapUseCurrentPill} onPress={handleUseCurrentLocationOnMap} activeOpacity={0.85}>
             <Ionicons name="locate" size={15} color={TEAL} />
-            <Text style={styles.mapUseCurrentText}>Use current location</Text>
+            <AppText style={styles.mapUseCurrentText}>Use current location</AppText>
           </TouchableOpacity>
         </View>
-        <Text style={styles.mapHint}>Move map to set exact delivery location</Text>
+        <AppText style={styles.mapHint}>Move map to set exact delivery location</AppText>
       </View>
       <View style={styles.sheet}>
         <ScrollView
@@ -1035,18 +1019,18 @@ export default function LocationAddressScreen() {
             <>
               <View style={styles.sectionHeadRow}>
                 <Ionicons name="home-outline" size={15} color={TEAL} />
-                <Text style={styles.sectionTitle}>Address details</Text>
+                <AppText style={styles.sectionTitle}>Address details</AppText>
               </View>
 
               <View style={styles.summaryBox}>
-                <Text style={styles.summaryTitle}>Map location</Text>
-                <Text style={styles.summaryText} numberOfLines={2}>
+                <AppText style={styles.summaryTitle}>Map location</AppText>
+                <AppText style={styles.summaryText} numberOfLines={2}>
                   {liveMapAddress || params.primary || "Location selected on map"}
-                </Text>
+                </AppText>
                 {pinDistanceLoading ? (
-                  <Text style={styles.summaryDistanceTextMuted}>Calculating distance…</Text>
+                  <AppText style={styles.summaryDistanceTextMuted}>Calculating distance…</AppText>
                 ) : pinDistance != null && distanceOrigin ? (
-                  <Text style={styles.summaryDistanceText}>
+                  <AppText style={styles.summaryDistanceText}>
                     {pinDistance.meters < 50
                       ? `Same area as ${distanceOrigin.label}`
                       : pinDistance.meters < 1000
@@ -1056,15 +1040,15 @@ export default function LocationAddressScreen() {
                         : `${(pinDistance.meters / 1000).toFixed(1)} km${
                             pinDistance.kind === "road" ? " by road" : " approx. (straight line)"
                           } from ${distanceOrigin.label}`}
-                  </Text>
+                  </AppText>
                 ) : !distanceOrigin ? (
-                  <Text style={styles.summaryDistanceTextMuted}>
+                  <AppText style={styles.summaryDistanceTextMuted}>
                     Allow location access to see distance from you to this pin.
-                  </Text>
+                  </AppText>
                 ) : null}
               </View>
 
-              <Text style={styles.label}>Flat / House / Building *</Text>
+              <AppText style={styles.label}>Flat / House / Building *</AppText>
           <TextInput
             style={getInputStyle("line1")}
             placeholder="e.g. Flat 501, Shyam Residency"
@@ -1077,7 +1061,7 @@ export default function LocationAddressScreen() {
             onBlur={() => setFocusedField(null)}
           />
 
-              <Text style={styles.label}>Street / Area (optional)</Text>
+              <AppText style={styles.label}>Street / Area (optional)</AppText>
           <TextInput
             style={getInputStyle("line2", prefilled.line2)}
             placeholder="Area, street name"
@@ -1095,7 +1079,7 @@ export default function LocationAddressScreen() {
 
               <View style={styles.row}>
                 <View style={styles.col}>
-                  <Text style={styles.label}>City *</Text>
+                  <AppText style={styles.label}>City *</AppText>
                   <TextInput
                     style={getInputStyle("city", prefilled.city)}
                     placeholder="City"
@@ -1112,7 +1096,7 @@ export default function LocationAddressScreen() {
                   />
                 </View>
                 <View style={styles.col}>
-                  <Text style={styles.label}>State *</Text>
+                  <AppText style={styles.label}>State *</AppText>
                   <TextInput
                     style={getInputStyle("state", prefilled.state)}
                     placeholder="State"
@@ -1132,7 +1116,7 @@ export default function LocationAddressScreen() {
 
               <View style={styles.row}>
                 <View style={styles.col}>
-                  <Text style={styles.label}>Pincode *</Text>
+                  <AppText style={styles.label}>Pincode *</AppText>
                   <TextInput
                     style={getInputStyle("pincode", prefilled.pincode)}
                     placeholder="Pincode"
@@ -1149,7 +1133,7 @@ export default function LocationAddressScreen() {
                   />
                 </View>
                 <View style={styles.col}>
-                  <Text style={styles.label}>Landmark (optional)</Text>
+                  <AppText style={styles.label}>Landmark (optional)</AppText>
                   <TextInput
                     style={getInputStyle("landmark")}
                     placeholder="Nearby landmark"
@@ -1166,7 +1150,7 @@ export default function LocationAddressScreen() {
 
               <View style={styles.sectionHeadRow}>
             <Ionicons name="person-outline" size={15} color={TEAL} />
-            <Text style={styles.sectionTitle}>Delivery contact</Text>
+            <AppText style={styles.sectionTitle}>Delivery contact</AppText>
             <TouchableOpacity
               style={styles.contactsBtn}
               onPress={handlePickFromContacts}
@@ -1175,14 +1159,14 @@ export default function LocationAddressScreen() {
               {contactsLoading ? (
                 <ActivityIndicator size="small" color={TEAL} />
               ) : (
-                <Text style={styles.contactsBtnText}>Pick from contacts</Text>
+                <AppText style={styles.contactsBtnText}>Pick from contacts</AppText>
               )}
             </TouchableOpacity>
               </View>
 
               <View style={styles.row}>
                 <View style={styles.col}>
-                  <Text style={styles.label}>Contact name</Text>
+                  <AppText style={styles.label}>Contact name</AppText>
                   <TextInput
                     style={getInputStyle("contactName")}
                     placeholder="Receiver name"
@@ -1196,7 +1180,7 @@ export default function LocationAddressScreen() {
                   />
                 </View>
                 <View style={styles.col}>
-                  <Text style={styles.label}>Contact mobile</Text>
+                  <AppText style={styles.label}>Contact mobile</AppText>
                   <TextInput
                     style={getInputStyle("contactMobile")}
                     placeholder="Mobile number"
@@ -1212,7 +1196,7 @@ export default function LocationAddressScreen() {
               </View>
 
 
-              <Text style={styles.doorImageLabel}>Door/building image (optional)</Text>
+              <AppText style={styles.doorImageLabel}>Door/building image (optional)</AppText>
               <Pressable style={styles.doorImageDashed} onPress={pickDoorImage} disabled={submitting || doorImageUploading}>
                 {doorImageLocalUri || doorImageRemoteUrl ? (
                   <Image
@@ -1227,7 +1211,7 @@ export default function LocationAddressScreen() {
                 ) : (
                   <>
                     <Ionicons name="camera-outline" size={22} color={BRAND} />
-                    <Text style={styles.doorImageCta}>Add an image</Text>
+                    <AppText style={styles.doorImageCta}>Add an image</AppText>
                   </>
                 )}
                 {doorImageUploading ? (
@@ -1236,11 +1220,11 @@ export default function LocationAddressScreen() {
                   </View>
                 ) : null}
               </Pressable>
-              <Text style={styles.doorImageHelp}>
+              <AppText style={styles.doorImageHelp}>
                 This helps our delivery partners find your exact location faster
-              </Text>
+              </AppText>
 
-              <Text style={styles.label}>Save as</Text>
+              <AppText style={styles.label}>Save as</AppText>
               <View style={styles.chipRow}>
             {(["Home", "Work", "Other"] as const).map((opt) => {
               const disabled = (opt === "Home" && hasHome) || (opt === "Work" && hasWork) || submitting;
@@ -1251,9 +1235,9 @@ export default function LocationAddressScreen() {
                   onPress={() => !disabled && setLabel(opt)}
                   disabled={disabled}
                 >
-                  <Text style={[styles.chipText, label === opt && styles.chipTextActive, disabled && styles.chipTextDisabled]}>
+                  <AppText style={[styles.chipText, label === opt && styles.chipTextActive, disabled && styles.chipTextDisabled]}>
                     {opt}
-                  </Text>
+                  </AppText>
                 </TouchableOpacity>
               );
             })}
@@ -1275,7 +1259,7 @@ export default function LocationAddressScreen() {
           </>
           )}
 
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
 
           </View>
         </ScrollView>
@@ -1288,7 +1272,7 @@ export default function LocationAddressScreen() {
             {submitting ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.primaryBtnText}>{isEditMode ? "Update address" : "Save address"}</Text>
+              <AppText style={styles.primaryBtnText}>{isEditMode ? "Update address" : "Save address"}</AppText>
             )}
           </TouchableOpacity>
         </View>
@@ -1302,7 +1286,7 @@ export default function LocationAddressScreen() {
                 <Ionicons name="close" size={18} color={TEXT_GRAY} />
               </TouchableOpacity>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Select a location</Text>
+                <AppText style={styles.modalTitle}>Select a location</AppText>
               </View>
               <View style={styles.modalSearchWrap}>
                 <Ionicons name="search" size={18} color={TEAL} />
@@ -1332,7 +1316,7 @@ export default function LocationAddressScreen() {
               >
                 <Ionicons name="locate" size={18} color={TEAL} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.locationSearchActionTitle}>Use current location</Text>
+                  <AppText style={styles.locationSearchActionTitle}>Use current location</AppText>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={TEXT_GRAY} />
               </TouchableOpacity>
@@ -1357,14 +1341,14 @@ export default function LocationAddressScreen() {
                     >
                       <Ionicons name={item.icon} size={18} color="#64748B" />
                       <View style={styles.locationResultTextWrap}>
-                        <Text style={styles.locationResultTitle}>{item.title}</Text>
-                        <Text style={styles.locationResultSubtitle}>{item.subtitle}</Text>
+                        <AppText style={styles.locationResultTitle}>{item.title}</AppText>
+                        <AppText style={styles.locationResultSubtitle}>{item.subtitle}</AppText>
                         {roadMeters != null && (
-                          <Text style={styles.locationResultDistance}>
+                          <AppText style={styles.locationResultDistance}>
                             {roadMeters < 1000
                               ? `${Math.round(roadMeters)} m`
                               : `${(roadMeters / 1000).toFixed(1)} km`}
-                          </Text>
+                          </AppText>
                         )}
                       </View>
                     </TouchableOpacity>
@@ -1374,13 +1358,13 @@ export default function LocationAddressScreen() {
                   locationSearchLoading ? (
                     <View style={styles.emptyContactsWrap}>
                       <ActivityIndicator size="small" color={TEAL} />
-                      <Text style={[styles.emptyContactsText, { marginTop: 8 }]}>Searching locations...</Text>
+                      <AppText style={[styles.emptyContactsText, { marginTop: 8 }]}>Searching locations...</AppText>
                     </View>
                   ) : (
                     <View style={styles.emptyContactsWrap}>
-                      <Text style={styles.emptyContactsText}>
+                      <AppText style={styles.emptyContactsText}>
                         {locationSearchQuery.trim().length >= 2 ? "No location found." : "No recent locations."}
-                      </Text>
+                      </AppText>
                     </View>
                   )
                 }
@@ -1402,7 +1386,7 @@ export default function LocationAddressScreen() {
                 <Ionicons name="close" size={18} color={TEXT_GRAY} />
               </TouchableOpacity>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Select contact</Text>
+                <AppText style={styles.modalTitle}>Select contact</AppText>
               </View>
               <View style={styles.modalSearchWrap}>
                 <Ionicons name="search" size={16} color={TEXT_GRAY} />
@@ -1443,12 +1427,12 @@ export default function LocationAddressScreen() {
                       <Ionicons name="person" size={16} color={TEAL} />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.contactName} numberOfLines={1}>
+                      <AppText style={styles.contactName} numberOfLines={1}>
                         {c.name}
-                      </Text>
-                      <Text style={styles.contactPhone} numberOfLines={1}>
+                      </AppText>
+                      <AppText style={styles.contactPhone} numberOfLines={1}>
                         {c.phone}
-                      </Text>
+                      </AppText>
                     </View>
                   </TouchableOpacity>
                 )}
@@ -1456,11 +1440,11 @@ export default function LocationAddressScreen() {
                   contactsLoading ? (
                     <View style={styles.emptyContactsWrap}>
                       <ActivityIndicator size="small" color={TEAL} />
-                      <Text style={[styles.emptyContactsText, { marginTop: 8 }]}>Loading contacts...</Text>
+                      <AppText style={[styles.emptyContactsText, { marginTop: 8 }]}>Loading contacts...</AppText>
                     </View>
                   ) : (
                     <View style={styles.emptyContactsWrap}>
-                      <Text style={styles.emptyContactsText}>No contacts found.</Text>
+                      <AppText style={styles.emptyContactsText}>No contacts found.</AppText>
                     </View>
                   )
                 }

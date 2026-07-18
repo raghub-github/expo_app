@@ -1,12 +1,6 @@
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  ActivityIndicator,
-  ScrollView,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Image, ActivityIndicator, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import type { RideQuoteBillingLine } from "@/lib/ride-quote-display";
@@ -50,7 +44,7 @@ export function RideVehicleFareDetailsSheet({
         {resolveRideImage(imageKey) ? (
           <Image source={resolveRideImage(imageKey)!} style={styles.headerIcon} resizeMode="contain" />
         ) : null}
-        <Text style={styles.title}>{vehicleName} Fare Details</Text>
+        <AppText style={styles.title}>{vehicleName} Fare Details</AppText>
       </View>
 
       <ScrollView
@@ -60,11 +54,11 @@ export function RideVehicleFareDetailsSheet({
         bounces={false}
       >
         <View style={styles.totalRow}>
-          <Text style={styles.totalLabel}>Total Estimated fare price including taxes.</Text>
+          <AppText style={styles.totalLabel}>Total Estimated fare price including taxes.</AppText>
           {loading ? (
             <ActivityIndicator size="small" color="#111827" />
           ) : (
-            <Text style={styles.totalFare}>{fareLabel}*</Text>
+            <AppText style={styles.totalFare}>{fareLabel}*</AppText>
           )}
         </View>
 
@@ -73,45 +67,45 @@ export function RideVehicleFareDetailsSheet({
         {showBreakdown ? (
           billingLines.map((line) => (
             <View key={`${line.label}-${line.amount}`} style={styles.lineRow}>
-              <Text style={styles.lineLabel}>{line.label}</Text>
-              <Text style={styles.lineValue}>{loading ? "…" : formatFareAmount(line.amount)}</Text>
+              <AppText style={styles.lineLabel}>{line.label}</AppText>
+              <AppText style={styles.lineValue}>{loading ? "…" : formatFareAmount(line.amount)}</AppText>
             </View>
           ))
         ) : (
           <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>Ride Fare</Text>
-            <Text style={styles.lineValue}>{loading ? "…" : fareLabel}</Text>
+            <AppText style={styles.lineLabel}>Ride Fare</AppText>
+            <AppText style={styles.lineValue}>{loading ? "…" : fareLabel}</AppText>
           </View>
         )}
 
         {showBreakdown ? (
           <View style={[styles.lineRow, styles.totalBreakdownRow]}>
-            <Text style={styles.totalBreakdownLabel}>Total payable</Text>
-            <Text style={styles.totalBreakdownValue}>{loading ? "…" : fareLabel}</Text>
+            <AppText style={styles.totalBreakdownLabel}>Total payable</AppText>
+            <AppText style={styles.totalBreakdownValue}>{loading ? "…" : fareLabel}</AppText>
           </View>
         ) : null}
 
-        <Text style={styles.disclaimer}>
+        <AppText style={styles.disclaimer}>
           *Price may vary based on final pickup or drop location, time taken, final route and toll area.
-        </Text>
+        </AppText>
 
         {rateCardSummary ? (
           <View style={styles.infoBlock}>
-            <Text style={styles.infoHeading}>Rate Card</Text>
-            <Text style={styles.infoText}>{rateCardSummary}</Text>
+            <AppText style={styles.infoHeading}>Rate Card</AppText>
+            <AppText style={styles.infoText}>{rateCardSummary}</AppText>
           </View>
         ) : null}
 
         {waitingChargeNote ? (
           <View style={styles.infoBlock}>
-            <Text style={styles.infoHeading}>Waiting Charges</Text>
-            <Text style={styles.infoText}>{waitingChargeNote}</Text>
+            <AppText style={styles.infoHeading}>Waiting Charges</AppText>
+            <AppText style={styles.infoText}>{waitingChargeNote}</AppText>
           </View>
         ) : null}
       </ScrollView>
 
       <TouchableOpacity style={styles.gotItBtn} onPress={onClose} activeOpacity={0.85}>
-        <Text style={styles.gotItText}>Got it</Text>
+        <AppText style={styles.gotItText}>Got it</AppText>
       </TouchableOpacity>
     </StoreBottomSheetShell>
   );

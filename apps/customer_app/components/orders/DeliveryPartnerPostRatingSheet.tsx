@@ -3,14 +3,9 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  ScrollView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -68,7 +63,7 @@ export function DeliveryPartnerPostRatingSheet({
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.78}>
       <ScrollView contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) }}>
-        <Text style={styles.thanks}>Thank you for rating!</Text>
+        <AppText style={styles.thanks}>Thank you for rating!</AppText>
 
         <View style={styles.starsRow}>
           {[1, 2, 3, 4, 5].map((n) => (
@@ -82,8 +77,8 @@ export function DeliveryPartnerPostRatingSheet({
           ))}
         </View>
 
-        <Text style={styles.prompt}>What did you like?</Text>
-        <Text style={styles.partnerHint}>Rating {partnerName}</Text>
+        <AppText style={styles.prompt}>What did you like?</AppText>
+        <AppText style={styles.partnerHint}>Rating {partnerName}</AppText>
 
         <View style={styles.tagsWrap}>
           {DELIVERY_RATING_TAGS.map((tag) => {
@@ -95,7 +90,7 @@ export function DeliveryPartnerPostRatingSheet({
                 onPress={() => toggleTag(tag)}
                 activeOpacity={0.85}
               >
-                <Text style={[styles.tagText, active && styles.tagTextActive]}>{tag}</Text>
+                <AppText style={[styles.tagText, active && styles.tagTextActive]}>{tag}</AppText>
               </TouchableOpacity>
             );
           })}
@@ -110,7 +105,7 @@ export function DeliveryPartnerPostRatingSheet({
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.submitText}>Submit rating</Text>
+            <AppText style={styles.submitText}>Submit rating</AppText>
           )}
         </TouchableOpacity>
       </ScrollView>

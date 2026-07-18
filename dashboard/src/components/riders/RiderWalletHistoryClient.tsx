@@ -199,7 +199,7 @@ export function RiderWalletHistoryClient() {
   const ledgerFilterChips: FilterChipItem[] = [];
   if (filterSearch.trim()) ledgerFilterChips.push({ id: "q", label: `Search: "${filterSearch.trim().slice(0, 14)}${filterSearch.trim().length > 14 ? "…" : ""}"` });
   if (flow !== "all") ledgerFilterChips.push({ id: "flow", label: `Flow: ${flow === "credit" ? "Credit only" : "Debit only"}` });
-  if (entryType !== "all") ledgerFilterChips.push({ id: "entryType", label: `Type: ${entryType.replace("_", " ")}` });
+  if (entryType !== "all") ledgerFilterChips.push({ id: "entryType", label: `Type: ${entryType.replace(/_/g, " ")}` });
   if (serviceType !== "all") ledgerFilterChips.push({ id: "serviceType", label: `Service: ${serviceType.replace("_", " ")}` });
   if (from) ledgerFilterChips.push({ id: "from", label: `From: ${from}` });
   if (to) ledgerFilterChips.push({ id: "to", label: `To: ${to}` });
@@ -292,14 +292,29 @@ export function RiderWalletHistoryClient() {
                   <label className="block text-xs font-medium text-gray-600 mb-0.5">Type</label>
                   <select value={entryType} onChange={(e) => setEntryType(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500">
                     <option value="all">All</option>
-                    <option value="earning">Earning</option>
-                    <option value="penalty">Penalty</option>
-                    <option value="penalty_reversal">Penalty reversal</option>
-                    <option value="bonus">Bonus</option>
-                    <option value="refund">Refund</option>
-                    <option value="referral_bonus">Referral bonus</option>
-                    <option value="onboarding_fee">Onboarding fee</option>
-                    <option value="adjustment">Adjustment</option>
+                    <optgroup label="Credits">
+                      <option value="earning">Earning</option>
+                      <option value="incentive">Incentive</option>
+                      <option value="surge">Surge</option>
+                      <option value="bonus">Bonus</option>
+                      <option value="referral_bonus">Referral bonus</option>
+                      <option value="refund">Refund</option>
+                      <option value="manual_add">Manual credit</option>
+                      <option value="penalty_reversal">Penalty reversal</option>
+                      <option value="cancellation_payout">Cancellation payout</option>
+                      <option value="failed_withdrawal_revert">Withdrawal reverted</option>
+                    </optgroup>
+                    <optgroup label="Debits">
+                      <option value="penalty">Penalty</option>
+                      <option value="withdrawal">Withdrawal</option>
+                      <option value="subscription_fee">Subscription fee</option>
+                      <option value="onboarding_fee">Onboarding fee</option>
+                      <option value="adjustment">Adjustment</option>
+                      <option value="manual_deduct">Manual deduction</option>
+                      <option value="purchase">Purchase</option>
+                      <option value="cod_order">COD collected</option>
+                    </optgroup>
+                    <option value="other">Other</option>
                   </select>
                 </div>
                 <div className="min-w-[100px]">

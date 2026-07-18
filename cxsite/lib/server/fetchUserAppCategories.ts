@@ -73,7 +73,10 @@ async function fetchFromBackend(storeType: string): Promise<UserAppCategoryTile[
     if (!Array.isArray(data.items)) return []
     return mapBackendItems(data.items)
   } catch (err) {
-    console.warn('[fetchUserAppCategories] upstream failed:', err)
+    console.warn(
+      '[fetchUserAppCategories] upstream failed:',
+      err instanceof Error ? err.message : err
+    )
     return null
   }
 }

@@ -15,23 +15,28 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback, useRef, useState } from "react";
 import { View, LogBox, Alert, AppState, Platform, type AppStateStatus } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager, useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
-import { useLocationStore, getDeviceLocationReadiness } from "@/store/locationStore";
+import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
+import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
+import { LocationWatchSync } from "@/components/LocationWatchSync";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
 import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
+import { CartCheckoutGateHost } from "@/components/cart/CartCheckoutGateHost";
 import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
+import { PlayInAppUpdateBootstrap } from "@/components/PlayInAppUpdateBootstrap";
 import { LegalConsentGate } from "@/components/LegalConsentGate";
 import { AddressesPrefetch } from "@/components/AddressesPrefetch";
 import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
@@ -53,7 +58,7 @@ import {
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
-import { DEFAULT_STATUS_BAR_HEIGHT, resolveBottomSafeInset, screenManagesBottomNav } from "@/constants/layout";
+import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
@@ -68,6 +73,7 @@ import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets"
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
+const SPLASH_CHROME_COLOR = "#5eead4";
 
 // Restore the API URL override BEFORE any module-level code makes a request.
 // This runs at JS load time, not in a useEffect, so the override is in place
@@ -91,6 +97,29 @@ void (async () => {
 // against navigating straight to the tracking screen after placing the first
 // order, which otherwise shows "Map unavailable" until the icon finally resolves.
 void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike"));
+
+// Prime Android launch chrome as early as JS can run so slow startup / offline
+// sessions never fall back to the platform's default white nav background.
+void (async () => {
+  if (Platform.OS !== "android") return;
+  try {
+    const [SystemUI, NavigationBar] = await Promise.all([
+      import("expo-system-ui"),
+      import("expo-navigation-bar"),
+    ]);
+    await SystemUI.setBackgroundColorAsync(SPLASH_CHROME_COLOR);
+    await NavigationBar.setVisibilityAsync("visible");
+    try {
+      await NavigationBar.setPositionAsync("relative");
+    } catch {
+      // Ignored on builds where nav position is fixed by the OS.
+    }
+    await NavigationBar.setBackgroundColorAsync(SPLASH_CHROME_COLOR);
+    await NavigationBar.setButtonStyleAsync("light");
+  } catch {
+    // Keep startup resilient; config-plugin defaults still apply natively.
+  }
+})();
 
 // Suppress benign console warnings
 LogBox.ignoreLogs([
@@ -156,10 +185,10 @@ export default function RootLayout() {
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
   const hydrateLocation = useLocationStore((s) => s.hydrate);
 
-  const ready = fontsLoaded && hydrated && cartHydrated;
-  // Never block first paint on home prefetch — cache-first screens paint instantly;
-  // prefetchHomeScreenData / AppAssetsPrefetch continue in background.
-  const appReady = ready;
+  const criticalReady = hydrated && cartHydrated;
+  const ready = criticalReady;
+  // Fonts keep loading in background; don't hold the first app frame hostage.
+  const appReady = criticalReady;
 
   const handleSplashExitComplete = useCallback(() => {
     setSplashExited(true);
@@ -174,7 +203,7 @@ export default function RootLayout() {
   }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation]);
 
   useEffect(() => {
-    if (!ready || !session) {
+    if (!criticalReady || !session) {
       setHomeDataPrefetched(!session);
       return;
     }
@@ -186,25 +215,25 @@ export default function RootLayout() {
     return () => {
       cancelled = true;
     };
-  }, [ready, session]);
+  }, [criticalReady, session]);
 
   useEffect(() => {
-    if (!ready || !session) {
+    if (!criticalReady || !session) {
       setStartupTimedOut(false);
       return;
     }
     const timeout = setTimeout(() => setStartupTimedOut(true), 7_000);
     return () => clearTimeout(timeout);
-  }, [ready, session]);
+  }, [criticalReady, session]);
 
   useEffect(() => {
-    if (!ready || session) return;
+    if (!criticalReady || session) return;
     if (assetsLoaded || homeImagesPrefetched) return;
     const timeout = setTimeout(() => {
       useAppAssetsStore.getState().setHomeImagesPrefetched(true);
     }, 5_000);
     return () => clearTimeout(timeout);
-  }, [ready, session, assetsLoaded, homeImagesPrefetched]);
+  }, [criticalReady, session, assetsLoaded, homeImagesPrefetched]);
 
   useEffect(() => {
     if (hydrated && useAuthStore.getState().session) {
@@ -216,30 +245,35 @@ export default function RootLayout() {
     if (!hydrated || !cartHydrated) return;
     void (async () => {
       await hydrateLocation();
-      let { coords, address, locationSource } = useLocationStore.getState();
+      // Always request fresh GPS on launch. Persisted selected pins are cleared in hydrate()
+      // so a previous city cannot keep driving merchant discovery after travel.
+      await promptLocationPermissionIfNeeded({ force: true });
+      const readiness = await getDeviceLocationReadiness();
+      if (!readiness.isReady) return;
+      const before = useLocationStore.getState().coords;
+      if (useLocationStore.getState().locationSource === "selected") {
+        // Only if something set selected during bootstrap (explicit pick).
+        return;
+      }
+      await requestPermissionAndFetch({ forceDevice: true });
+      const { coords, address } = useLocationStore.getState();
       if (coords) {
         await restoreAndPrefetchLocationWeather(queryClient, address, coords);
       }
-      if (locationSource === "selected" && coords && address) {
-        await promptLocationPermissionIfNeeded({ force: false });
-        return;
+      await syncActiveLocationFromStore();
+      if (coordsMovedSignificantly(before, coords)) {
+        void invalidateFoodHomeLocationQueries(queryClient);
       }
-      await promptLocationPermissionIfNeeded({ force: true });
-      ({ locationSource, coords, address } = useLocationStore.getState());
-      const readiness = await getDeviceLocationReadiness();
-      if (!readiness.isReady) return;
-      if (locationSource === "selected" && coords && address) return;
-      await requestPermissionAndFetch({ forceDevice: true });
     })();
   }, [hydrated, cartHydrated, hydrateLocation, promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
 
   const onLayoutRootView = useCallback(() => {
-    if (ready && splashExited) {
+    if (criticalReady && splashExited) {
       SplashScreen.hideAsync().catch(() => {
         // Ignore keep-awake related failures when hiding splash
       });
     }
-  }, [ready, splashExited]);
+  }, [criticalReady, splashExited]);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -252,7 +286,7 @@ export default function RootLayout() {
         >
           <AppAssetsPrefetch />
           <UserAppCategoriesPrefetch />
-          {ready ? (
+          {criticalReady ? (
             <>
               <ReactQueryFocusSync />
               <StoreStatusRealtimeSync />
@@ -260,13 +294,16 @@ export default function RootLayout() {
               <SessionRevokedHandler />
               <CustomerPermissionsRealtimeSync />
               <LocationPermissionResumeCheck />
+              <LocationWatchSync />
               <LanguageSync />
               <CustomerSystemChrome />
               <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
               <CheckoutBottomSheetHost />
+              <CartCheckoutGateHost />
               <GlobalFloatingCart />
               <LocationModalWrapper />
               <PushNotificationBootstrap />
+              <PlayInAppUpdateBootstrap />
               <LegalConsentGate />
               <AddressesPrefetch />
               <FeaturedOffersPrefetch />
@@ -285,6 +322,7 @@ export default function RootLayout() {
             <GatiMitraBootstrapScreen
               variant="root"
               appReady={appReady}
+              statusMessage={startupTimedOut ? "Initializing GatiMitra..." : null}
               onExitComplete={handleSplashExitComplete}
             />
           ) : null}
@@ -430,28 +468,48 @@ function CustomerPermissionsRealtimeSync() {
   return null;
 }
 
-/** Re-check device location when app returns from background or GPS is toggled in quick settings. */
+/** Re-check GPS when app returns from background; reload merchants if the user moved. */
 function LocationPermissionResumeCheck() {
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
+  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const showPermissionModal = useLocationStore((s) => s.showPermissionModal);
+  const queryClient = useQueryClient();
+  const lastResumeCoordsRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
   useEffect(() => {
-    const sync = () => void promptLocationPermissionIfNeeded();
+    const syncOnForeground = async () => {
+      const { locationSource, coords: before } = useLocationStore.getState();
+      await promptLocationPermissionIfNeeded();
+      // Explicit session selection stays; otherwise refresh live GPS.
+      if (locationSource === "selected") return;
+      const readiness = await getDeviceLocationReadiness();
+      if (!readiness.isReady) return;
+      await requestPermissionAndFetch({ forceDevice: true });
+      const after = useLocationStore.getState().coords;
+      await syncActiveLocationFromStore();
+      const baseline = lastResumeCoordsRef.current ?? before;
+      if (coordsMovedSignificantly(baseline, after)) {
+        void invalidateFoodHomeLocationQueries(queryClient);
+      }
+      if (after) lastResumeCoordsRef.current = after;
+    };
 
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if (nextState === "active") void sync();
+      if (nextState === "active") void syncOnForeground();
     });
 
     const interval = setInterval(() => {
       if (AppState.currentState !== "active") return;
-      if (useLocationStore.getState().showPermissionModal) void sync();
+      if (useLocationStore.getState().showPermissionModal) {
+        void promptLocationPermissionIfNeeded();
+      }
     }, 2000);
 
     return () => {
       sub.remove();
       clearInterval(interval);
     };
-  }, [promptLocationPermissionIfNeeded]);
+  }, [promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
 
   useEffect(() => {
     if (!showPermissionModal) return;
@@ -476,8 +534,6 @@ function LocationModalWrapper() {
     />
   );
 }
-
-const SPLASH_CHROME_COLOR = "#5eead4";
 
 function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boolean }) {
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
@@ -528,9 +584,8 @@ function RootStack({
     inProfileStack || inLegalStack || inCheckoutStack || inOrdersStack || hideStatusBarSpacer || splashChromeActive
       ? 0
       : statusBarHeight;
-  const stackBottomInset = screenManagesBottomNav(segments)
-    ? 0
-    : resolveBottomSafeInset(insets.bottom);
+  // Never pad the stack for Android/iOS system nav — that created a white gap row
+  // above the nav bar on search and other non-home routes. Screens add insets themselves.
   const resolvedStatusBarBackground = splashChromeActive
     ? SPLASH_CHROME_COLOR
     : statusBarBackground;
@@ -540,6 +595,7 @@ function RootStack({
     <>
       <StatusBarSystemUISync splashChromeActive={splashChromeActive} />
       <StatusBar
+        hidden={splashChromeActive}
         style={resolvedStatusBarStyle}
         backgroundColor={
           immersiveStatusBar && statusBarBackground === "transparent"
@@ -561,7 +617,6 @@ function RootStack({
             headerShown: false,
             contentStyle: {
               backgroundColor: colors.background.light,
-              paddingBottom: stackBottomInset,
             },
             animation: "slide_from_right",
           }}

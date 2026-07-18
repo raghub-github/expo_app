@@ -4,16 +4,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-  NativeSyntheticEvent,
-  NativeScrollEvent,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions, NativeSyntheticEvent, NativeScrollEvent } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -99,10 +92,10 @@ export function PromoCarousel({ onBookNow }: PromoCarouselProps) {
               style={styles.banner}
             >
               <View style={styles.bannerContent}>
-                <Text style={styles.bannerTitle}>{slide.title}</Text>
-                <Text style={styles.bannerSub}>{slide.sub}</Text>
+                <AppText style={styles.bannerTitle}>{slide.title}</AppText>
+                <AppText style={styles.bannerSub}>{slide.sub}</AppText>
                 <View style={styles.ctaWrap}>
-                  <Text style={styles.ctaText}>{slide.cta}</Text>
+                  <AppText style={styles.ctaText}>{slide.cta}</AppText>
                   <Ionicons name="arrow-forward" size={18} color="#fff" />
                 </View>
               </View>

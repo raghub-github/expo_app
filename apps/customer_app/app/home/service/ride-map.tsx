@@ -3,13 +3,9 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -198,9 +194,9 @@ export default function RideMapPickerScreen() {
       {/* Bottom sheet */}
       <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>Select your location</Text>
+          <AppText style={styles.sheetTitle}>Select your location</AppText>
           <TouchableOpacity style={styles.changeBtn} onPress={() => router.back()} activeOpacity={0.85}>
-            <Text style={styles.changeBtnText}>Change</Text>
+            <AppText style={styles.changeBtnText}>Change</AppText>
           </TouchableOpacity>
         </View>
 
@@ -210,16 +206,16 @@ export default function RideMapPickerScreen() {
             {geocoding ? (
               <View style={styles.geocodeRow}>
                 <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-                <Text style={styles.geocodingText}>Updating address…</Text>
+                <AppText style={styles.geocodingText}>Updating address…</AppText>
               </View>
             ) : (
               <>
-                <Text style={styles.addressPrimary} numberOfLines={1}>
+                <AppText style={styles.addressPrimary} numberOfLines={1}>
                   {resolvePlaceDisplayName(address)}
-                </Text>
-                <Text style={styles.addressFull} numberOfLines={2}>
+                </AppText>
+                <AppText style={styles.addressFull} numberOfLines={2}>
                   {address.fullAddress}
-                </Text>
+                </AppText>
               </>
             )}
           </View>
@@ -231,7 +227,7 @@ export default function RideMapPickerScreen() {
           activeOpacity={0.9}
           disabled={geocoding}
         >
-          <Text style={styles.confirmBtnText}>{selectButtonLabel(field)}</Text>
+          <AppText style={styles.confirmBtnText}>{selectButtonLabel(field)}</AppText>
         </TouchableOpacity>
       </View>
     </View>

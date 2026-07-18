@@ -31,6 +31,7 @@ import {
   MERCHANTS_LIST_GC_MS,
   MERCHANTS_LIST_STALE_MS,
   readSyncMerchantsList,
+  readSyncMerchantsListEntry,
   seedMerchantsListQueryIfCached,
 } from "@/lib/merchantsListCache";
 import { prefetchMerchantCardImages } from "@/lib/imageEngine";
@@ -44,7 +45,9 @@ import {
 import { prefetchGridFirstHeroMedia, prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import { addressService } from "@/services/address.service";
-import { resolveCheckoutDeliveryAddress, matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
+import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
+import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
+import { resolveDeliveryLocationLabel } from "@/lib/resolveDeliveryLocationLabel";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import {
   type UserAppCategoryItem,
@@ -233,55 +236,20 @@ export default function FoodMerchantsScreen() {
     queryFn: () => addressService.getActiveLocation(),
     staleTime: 0,
   });
-
   /**
-   * Canonical delivery anchor for merchant listing distance:
-   * - If user explicitly selected a pin, snap it to a saved address within 250m (same as checkout)
-   * - Else prefer backend "active location" (saved delivery address) over device GPS drift
-   * - Else fallback to current debounced coords
-   *
-   * This ensures distance labels stay consistent across: list → merchant page → checkout.
+   * Canonical delivery anchor for merchant listing:
+   * selected pin (snapped to nearby saved) → live GPS.
+   * Never use server active-location / default saved address (stale city bug).
    */
-  const merchantsAnchorCoords = useMemo(() => {
-    if (
-      locationSource === "selected" &&
-      listingCoords?.latitude != null &&
-      listingCoords.longitude != null
-    ) {
-      if (addresses.length > 0) {
-        const nearId = matchSavedAddressIdNearCoords(
-          addresses,
-          listingCoords.latitude,
-          listingCoords.longitude,
-          0.25
-        );
-        if (nearId != null) {
-          const addr = addresses.find((a) => a.id === nearId);
-          if (addr) {
-            return { latitude: addr.latitude, longitude: addr.longitude };
-          }
-        }
-      }
-      return listingCoords;
-    }
-
-    if (
-      activeLocation?.latitude != null &&
-      activeLocation?.longitude != null &&
-      locationSource !== "selected"
-    ) {
-      return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
-    }
-
-    return listingCoords;
-  }, [
-    locationSource,
-    listingCoords?.latitude,
-    listingCoords?.longitude,
-    addresses,
-    activeLocation?.latitude,
-    activeLocation?.longitude,
-  ]);
+  const merchantsAnchorCoords = useMemo(
+    () =>
+      resolveMerchantListingCoords({
+        locationSource,
+        listingCoords,
+        addresses,
+      }),
+    [locationSource, listingCoords, addresses]
+  );
 
   const { data: weather } = useLocationWeather({
     lat: merchantsAnchorCoords?.latitude,
@@ -345,14 +313,26 @@ export default function FoodMerchantsScreen() {
     if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
       return undefined;
     }
-    return readSyncMerchantsList(
+    const entry = readSyncMerchantsListEntry(
+      merchantsAnchorCoords.latitude,
+      merchantsAnchorCoords.longitude,
+      vegOnly
+    );
+    return entry?.items;
+  }, [merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
+
+  const cachedMerchantsEntry = useMemo(() => {
+    if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
+      return undefined;
+    }
+    return readSyncMerchantsListEntry(
       merchantsAnchorCoords.latitude,
       merchantsAnchorCoords.longitude,
       vegOnly
     );
   }, [merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
 
-  const { data: merchantsData, isLoading, isFetching, refetch } = useQuery({
+  const { data: merchantsData, isLoading, isFetching, isFetched, refetch } = useQuery({
     queryKey: [
       "merchants",
       merchantsAnchorCoords?.latitude,
@@ -490,10 +470,18 @@ export default function FoodMerchantsScreen() {
   const restaurantCardWidth = offerCardWidth;
 
   const merchants = Array.isArray(merchantsData) ? merchantsData : [];
-  /** Only block the list on first load — background refetch must not swap cards for skeleton. */
-  const showSkeleton = isLoading && merchants.length === 0;
+  const hasDeliveryCoords =
+    merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null;
+  /** Network settled or geo bucket cached (including empty = no service). */
+  const merchantsDiscoverySettled =
+    isFetched || cachedMerchantsEntry != null;
+  /** Skeleton only on true first paint with no cache and in-flight fetch. */
+  const showMerchantsSkeleton =
+    hasDeliveryCoords && !merchantsDiscoverySettled && isLoading && merchants.length === 0;
   /** True when at least one ACTIVE store exists in the area (open or closed). Not tied to Open Now filter. */
   const hasStoresInArea = merchants.length > 0;
+  const isNonServiceableScreen =
+    hasDeliveryCoords && merchantsDiscoverySettled && !hasStoresInArea && !vegOnly;
   const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
   const statusMap = useStoreStatusStore((s) => s.statusMap);
 
@@ -599,7 +587,7 @@ export default function FoodMerchantsScreen() {
           maxPrice,
           vegOnly,
           maxStores: 15,
-          itemsPerStore: 6,
+          itemsPerStore: 8,
         }),
       staleTime: 60_000,
     });
@@ -768,7 +756,7 @@ export default function FoodMerchantsScreen() {
     selectedCuisines.length > 0 ||
     filterHasOffers ||
     noPackagingCharges;
-  const isVegEmptyState = vegOnly && !showSkeleton && filteredAndSortedMerchants.length === 0;
+  const isVegEmptyState = vegOnly && !showMerchantsSkeleton && filteredAndSortedMerchants.length === 0;
   const activeFilterCount = useMemo(() => {
     let n = 0;
     if (deliveryFilter !== "any") n += 1;
@@ -801,77 +789,27 @@ export default function FoodMerchantsScreen() {
       setRefreshing(false);
     }
   };
-  const selectedLocationLabel = useMemo(() => {
-    if (locationSource === "selected" && address) {
-      if (
-        listingCoords?.latitude != null &&
-        listingCoords.longitude != null &&
-        addresses.length > 0
-      ) {
-        const nearId = matchSavedAddressIdNearCoords(
-          addresses,
-          listingCoords.latitude,
-          listingCoords.longitude,
-          0.25
-        );
-        if (nearId != null) {
-          const saved = addresses.find((a) => a.id === nearId);
-          const savedFull = saved?.fullAddress?.trim();
-          if (savedFull) return savedFull;
-        }
-      }
-
-      const full = address.fullAddress?.trim();
-      if (full && full.toLowerCase() !== "current location") return full;
-
-      const secondary = address.secondary?.trim();
-      if (secondary) return secondary;
-
-      const primary = address.primary?.trim();
-      if (primary) return primary;
-    }
-
-    const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
-    const fullParts = (address?.fullAddress ?? "")
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean);
-    const secondaryParts = (address?.secondary ?? "")
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean);
-    const stateCandidate =
-      address?.state ??
-      [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
-    const normalizedState = stateCandidate?.toLowerCase() ?? "";
-    const areaLocality = Array.from(
-      new Set(
-        [...secondaryParts, ...fullParts, address?.primary ?? ""]
-          .map((p) => p.trim())
-          .filter(
-            (p) =>
-              !!p &&
-              !isPincode(p) &&
-              p.toLowerCase() !== "india" &&
-              p.toLowerCase() !== normalizedState
-          )
-      )
-    )
-      .slice(0, 2)
-      .join(", ");
-    if (areaLocality && stateCandidate) return `${areaLocality} (${stateCandidate})`;
-    if (areaLocality) return areaLocality;
-    return address?.fullAddress ?? "Current location";
-  }, [
-    locationSource,
-    listingCoords?.latitude,
-    listingCoords?.longitude,
-    addresses,
-    address?.fullAddress,
-    address?.secondary,
-    address?.primary,
-    address?.state,
-  ]);
+  const selectedLocationLabel = useMemo(
+    () =>
+      resolveDeliveryLocationLabel({
+        locationSource,
+        address,
+        addresses,
+        coords: listingCoords,
+      }),
+    [
+      locationSource,
+      listingCoords?.latitude,
+      listingCoords?.longitude,
+      addresses,
+      address?.fullAddress,
+      address?.secondary,
+      address?.primary,
+      address?.city,
+      address?.state,
+      address?.pincode,
+    ]
+  );
 
   const gridFirstLocationLabels = useMemo(() => {
     if (locationSource === "selected" && address) {
@@ -889,7 +827,7 @@ export default function FoodMerchantsScreen() {
       addresses,
       listingCoords ?? null,
       locationSource,
-      activeLocation
+      locationSource === "selected" ? activeLocation : null
     );
     const primary = resolved?.label?.trim() || address?.primary?.trim() || "Home";
     const secondaryRaw =
@@ -927,7 +865,7 @@ export default function FoodMerchantsScreen() {
   ]);
 
   const resolvedFoodHomeLayoutKey =
-    foodHomeLayoutKeyRaw ?? cachedLayoutKey ?? (layoutReady ? DEFAULT_FOOD_HOME_LAYOUT : "classic");
+    foodHomeLayoutKeyRaw ?? cachedLayoutKey ?? DEFAULT_FOOD_HOME_LAYOUT;
   const isGridFirstLayout = resolvedFoodHomeLayoutKey === "grid_first";
   const showGridFirstSubscriptionRow =
     gridFirstSubscriptionRowEnabled && gridFirstSubscriptionRowText.trim().length > 0;
@@ -979,7 +917,6 @@ export default function FoodMerchantsScreen() {
     categoryRailLayout.circle * 2 + RAIL_ROW_GAP + 38;
   const setImmersiveStatusBarChrome = useScreenChromeStore((s) => s.setImmersiveStatusBarChrome);
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
-  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   const isGridFirstLayoutRef = useRef(isGridFirstLayout);
   isGridFirstLayoutRef.current = isGridFirstLayout;
 
@@ -992,6 +929,12 @@ export default function FoodMerchantsScreen() {
     [setStatusBarBackground]
   );
   const statusBarTopInset = insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
+
+  useLayoutEffect(() => {
+    if (!isGridFirstLayout || isNonServiceableScreen) return;
+    useScreenChromeStore.getState().setImmersiveStatusBarChrome(true);
+    useScreenChromeStore.getState().setStatusBarBackground("transparent", "dark");
+  }, [isGridFirstLayout, isNonServiceableScreen]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1011,11 +954,10 @@ export default function FoodMerchantsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (!isGridFirstLayout || !hasStoresInArea) {
-        if (!hasStoresInArea) {
-          setImmersiveStatusBarChrome(false);
-          setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
-        }
+      if (!isGridFirstLayout) return;
+      if (isNonServiceableScreen) {
+        setImmersiveStatusBarChrome(false);
+        setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
         return;
       }
       setImmersiveStatusBarChrome(true);
@@ -1024,14 +966,16 @@ export default function FoodMerchantsScreen() {
         setImmersiveStatusBarChrome(false);
         useScreenChromeStore.getState().resetStatusBarBackground();
       };
-    }, [isGridFirstLayout, hasStoresInArea, setImmersiveStatusBarChrome, setStatusBarBackground])
+    }, [
+      isGridFirstLayout,
+      isNonServiceableScreen,
+      setImmersiveStatusBarChrome,
+      setStatusBarBackground,
+    ])
   );
 
   // Do NOT re-apply immersive in a layout effect — it races merchant focus and
   // collapses the store header gap / shifts the Continue bar after ~1 min.
-
-  const isNonServiceableScreen =
-    layoutCanQuery && layoutReady && !hasStoresInArea && !showSkeleton && !vegOnly;
 
   useLayoutEffect(() => {
     if (!isNonServiceableScreen) return;
@@ -1234,23 +1178,23 @@ export default function FoodMerchantsScreen() {
     [syncGridFirstStickyStatusBar]
   );
 
-  if (layoutCanQuery && !layoutReady) {
+  if (isNonServiceableScreen) {
     return (
-      <View style={styles.container}>
-        <StatusBar style="dark" />
-        <View style={[styles.layoutResolvingShell, { paddingTop: HEADER_TOP_PADDING_NONE }]}>
-          <GMSkeleton style={styles.layoutResolvingHero} />
-          <CategoryRailSkeleton
-            columnCount={4}
-            itemW={categoryRailLayout.itemW}
-            columnGap={categoryRailLayout.columnGap}
-            circle={categoryRailLayout.circle}
-            rowGap={RAIL_ROW_GAP}
-          />
-          <View style={styles.section}>
-            <RestaurantListSkeleton count={4} />
-          </View>
-        </View>
+      <View style={[styles.container, styles.nonServiceableContainer]}>
+        <StatusBar style="dark" backgroundColor={NON_SERVICEABLE_STATUS_BAR_BG} />
+        <GMEmptyState
+          header={
+            <GMHeader
+              topInset={HEADER_TOP_PADDING_NONE}
+              onBack={handleBack}
+              showBack={false}
+              minimal
+              blendBackground
+              locationLabel={selectedLocationLabel}
+              locationLabelLines={2}
+            />
+          }
+        />
       </View>
     );
   }
@@ -1263,27 +1207,6 @@ export default function FoodMerchantsScreen() {
   const showLovedHorizontal = foodHomeLayoutKey === "discovery";
   const lovedSectionTitle =
     foodHomeLayoutKey === "grid_first" ? "RECOMMENDED WITH DEALS" : "LOVED BY CUSTOMERS";
-
-  // No-service screen should not block veg-mode discovery UX.
-  // If veg toggle is ON and no pure-veg stores are found, keep user on the same listing screen
-  // and show a contextual empty message in "Restaurants near you".
-  if (!hasStoresInArea && !showSkeleton && !vegOnly) {
-    return (
-      <View style={[styles.container, styles.nonServiceableContainer]}>
-        <GMEmptyState
-          header={
-            <GMHeader
-              topInset={hideStatusBarSpacer ? statusBarTopInset : HEADER_TOP_PADDING_NONE}
-              onBack={handleBack}
-              minimal
-              blendBackground
-              locationLabel={selectedLocationLabel}
-            />
-          }
-        />
-      </View>
-    );
-  }
 
   // Single scroll: header in flow, then content (categories → filters → list). Sticky rail inside content area only.
   return (
@@ -1311,7 +1234,7 @@ export default function FoodMerchantsScreen() {
       <View style={styles.contentWrap}>
         <FlashList
           style={styles.scroll}
-          data={showSkeleton ? EMPTY_MERCHANTS : filteredAndSortedMerchants}
+          data={showMerchantsSkeleton ? EMPTY_MERCHANTS : filteredAndSortedMerchants}
           keyExtractor={restaurantKeyExtractor}
           renderItem={renderRestaurantItem}
           extraData={restaurantListExtraData}
@@ -1480,10 +1403,10 @@ export default function FoodMerchantsScreen() {
           )}
 
           {/* Loved by Customers — horizontal rail: 2 full + 3rd peek */}
-          {(showSkeleton || lovedByCustomers.length > 0) && (showLovedGrid || showLovedHorizontal) ? (
+          {(showMerchantsSkeleton || lovedByCustomers.length > 0) && (showLovedGrid || showLovedHorizontal) ? (
             <View style={styles.lovedSection}>
               <AppText style={styles.sectionHeading}>{lovedSectionTitle}</AppText>
-              {showSkeleton ? (
+              {showMerchantsSkeleton ? (
                 <LovedMerchantsGridSkeleton count={4} />
               ) : (
                 <LovedMerchantsHorizontal
@@ -1497,14 +1420,14 @@ export default function FoodMerchantsScreen() {
 
           <View style={[styles.section, styles.restaurantSection]}>
             <AppText style={styles.sectionHeading}>RESTAURANTS NEAR YOU</AppText>
-            {!showSkeleton ? (
+            {!showMerchantsSkeleton ? (
               <AppText style={styles.restaurantOpenCount}>{openRestaurantCountLabel}</AppText>
             ) : null}
           </View>
             </>
           }
           ListEmptyComponent={
-            showSkeleton ? (
+            showMerchantsSkeleton ? (
               <RestaurantListSkeleton count={3} cardWidth={restaurantCardWidth} />
             ) : vegOnly ? (
               <View style={styles.vegEmptyWrap}>

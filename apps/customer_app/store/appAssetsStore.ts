@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AppAssetItem } from "@/services/appAssets.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { readSyncAppAssets, writeSyncAppAssets } from "@/lib/appAssetsCache";
 
 type AppAssetsState = {
   assets: Record<string, AppAssetItem>;
@@ -23,13 +24,20 @@ function normalizeAssets(assets: Record<string, AppAssetItem>): Record<string, A
   return out;
 }
 
+const seeded = readSyncAppAssets();
+const seededNormalized = seeded ? normalizeAssets(seeded) : {};
+const hasSeed = Object.keys(seededNormalized).length > 0;
+
 export const useAppAssetsStore = create<AppAssetsState>((set) => ({
-  assets: {},
-  loaded: false,
+  assets: seededNormalized,
+  loaded: hasSeed,
   loading: false,
   homeImagesPrefetched: false,
-  setAssets: (assets) =>
-    set({ assets: normalizeAssets(assets), loaded: true, loading: false }),
+  setAssets: (assets) => {
+    const normalized = normalizeAssets(assets);
+    writeSyncAppAssets(normalized);
+    set({ assets: normalized, loaded: true, loading: false });
+  },
   setLoading: (loading) => set({ loading }),
   setHomeImagesPrefetched: (done) => set({ homeImagesPrefetched: done }),
   markLoadFailed: () => set({ loading: false, homeImagesPrefetched: true }),

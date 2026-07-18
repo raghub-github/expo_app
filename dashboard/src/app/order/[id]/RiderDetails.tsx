@@ -30,11 +30,28 @@ import { riderDeliveryMilestoneLabel } from "@/lib/riders/rider-order-status-dis
 
 function riderManagementToastMessage(error: string | undefined, fallback: string): string {
   if (!error) return fallback;
+  const normalized = error.toLowerCase().replace(/_/g, " ");
+  if (
+    normalized.includes("no active rider on this locality") ||
+    normalized.includes("no active riders in locality") ||
+    normalized.includes("no active rider") ||
+    normalized.includes("no eligible rider") ||
+    normalized.includes("no riders available") ||
+    normalized.includes("eligible riders: 0")
+  ) {
+    return "No active rider on this locality";
+  }
+  if (
+    normalized.includes("not ready for rider assignment") ||
+    normalized.includes("order_not_dispatchable")
+  ) {
+    return "Order is not ready for rider assignment";
+  }
   if (
     error === "Rider management service is not configured" ||
     error === "internal_token_not_configured"
   ) {
-    return "Could not start rider assignment. Please try again.";
+    return "Rider assignment service is not configured. Check INTERNAL_API_TOKEN.";
   }
   return error;
 }
@@ -810,10 +827,13 @@ export default function RiderDetails({
       const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
 
       if (!res.ok || !json.success) {
+        const rawError = typeof json.error === "string" ? json.error : undefined;
         toast(
           riderManagementToastMessage(
-            typeof json.error === "string" ? json.error : undefined,
-            "Could not start rider assignment."
+            rawError,
+            res.status === 409
+              ? "No active rider on this locality"
+              : "Could not start rider assignment."
           ),
           "error"
         );

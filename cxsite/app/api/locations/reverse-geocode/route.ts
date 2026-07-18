@@ -13,7 +13,7 @@ const cache = new Map<string, { data: ReverseGeoPayload; expires: number }>()
 
 function getCacheKey(lat: number, lon: number): string {
   const r = 4 // 4 decimals ~11m
-  return `v2_${lat.toFixed(r)}_${lon.toFixed(r)}`
+  return `v3_${lat.toFixed(r)}_${lon.toFixed(r)}`
 }
 
 /** City / town for URLs and LocationItem.city (Nominatim address parts). */
@@ -32,13 +32,29 @@ function extractCity(address: Record<string, string>): string {
 
 /** Neighbourhood / street for LocationItem.location_name slugs. */
 function extractArea(address: Record<string, string>): string {
-  const { neighbourhood, suburb, hamlet, village, quarter, city_district, road, residential } =
-    address
+  const {
+    neighbourhood,
+    suburb,
+    hamlet,
+    village,
+    quarter,
+    city_district,
+    road,
+    residential,
+    locality,
+    city_block,
+    borough,
+    district,
+  } = address
   return (
     neighbourhood ||
     suburb ||
+    locality ||
     quarter ||
     city_district ||
+    city_block ||
+    borough ||
+    district ||
     hamlet ||
     village ||
     road ||
@@ -122,14 +138,35 @@ export async function GET(request: NextRequest) {
       typeof data.display_name === 'string' && data.display_name.trim() !== ''
         ? shortenNominatimDisplayName(data.display_name.trim())
         : ''
-    const displayName = fromNominatim || (address ? buildDisplayName(address) : `${lat.toFixed(4)}, ${lon.toFixed(4)}`)
     const city = address ? extractCity(address) : ''
-    const area = address ? extractArea(address) : ''
+    let area = address ? extractArea(address) : ''
+    // If OSM address parts lack a neighbourhood, use the most-specific Nominatim segment.
+    if (!area && fromNominatim) {
+      const first = fromNominatim.split(',')[0]?.trim() || ''
+      if (
+        first &&
+        (!city || first.toLowerCase() !== city.toLowerCase()) &&
+        !/^india$/i.test(first)
+      ) {
+        area = first
+      }
+    }
+    // Prefer locality/area first (not city-only).
+    const areaFirst = address ? buildDisplayName(address) : ''
+    const areaCityLabel =
+      area && city && area.toLowerCase() !== city.toLowerCase()
+        ? `${area}, ${city}`
+        : ''
+    const displayName =
+      areaCityLabel ||
+      fromNominatim ||
+      areaFirst ||
+      `${lat.toFixed(4)}, ${lon.toFixed(4)}`
     const payload: ReverseGeoPayload = {
       address: displayName,
       displayName,
       city,
-      area,
+      area: area || (areaCityLabel.includes(',') ? areaCityLabel.split(',')[0].trim() : area),
     }
 
     cache.set(key, { data: payload, expires: Date.now() + CACHE_TTL_MS })

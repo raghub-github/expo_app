@@ -1,5 +1,5 @@
 import type { Sql } from "postgres";
-import { getSql } from "../db/client.js";
+import { getSql, withSqlRetry } from "../db/client.js";
 import { patchMerchantFoodOrderStatus } from "../modules/merchant-partner/merchant-food-orders.service.js";
 import { resolveStorePrepWithBuffer } from "../lib/order-prep-time.js";
 
@@ -107,19 +107,21 @@ async function acceptOneTarget(
  * Runs server-side — merchant does not need the partner site or app open.
  */
 export async function runOrderAutoAcceptTick(log: AutoAcceptLog): Promise<void> {
-  const sql = getSql();
   const now = new Date().toISOString();
 
   try {
-    const targets = await fetchAutoAcceptTargets(sql, { limit: 50 });
-    let accepted = 0;
-    for (const target of targets) {
-      const ok = await acceptOneTarget(sql, target, log);
-      if (ok) accepted += 1;
-    }
-    if (accepted > 0) {
-      log.info({ accepted, scanned: targets.length, now }, "order_auto_accept_tick");
-    }
+    await withSqlRetry(async () => {
+      const sql = getSql();
+      const targets = await fetchAutoAcceptTargets(sql, { limit: 50 });
+      let accepted = 0;
+      for (const target of targets) {
+        const ok = await acceptOneTarget(sql, target, log);
+        if (ok) accepted += 1;
+      }
+      if (accepted > 0) {
+        log.info({ accepted, scanned: targets.length, now }, "order_auto_accept_tick");
+      }
+    });
   } catch (e) {
     log.error({ err: e, now }, "order_auto_accept_tick_failed");
   }

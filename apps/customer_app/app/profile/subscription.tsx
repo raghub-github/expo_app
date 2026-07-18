@@ -3,14 +3,9 @@
  */
 
 import { useCallback, useMemo } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -52,7 +47,7 @@ function BenefitRow({ text }: { text: string }) {
       <View style={styles.benefitIconWrap}>
         <Ionicons name={icon} size={18} color={GOLD_DARK} />
       </View>
-      <Text style={styles.benefitText}>{text}</Text>
+      <AppText style={styles.benefitText}>{text}</AppText>
     </View>
   );
 }
@@ -148,32 +143,32 @@ export default function SubscriptionScreen() {
                 <MaterialCommunityIcons name="crown" size={28} color={GOLD} />
               </View>
               <View style={[styles.statusPill, isActive ? styles.statusPillActive : styles.statusPillInactive]}>
-                <Text style={[styles.statusPillText, isActive ? styles.statusPillTextActive : styles.statusPillTextInactive]}>
+                <AppText style={[styles.statusPillText, isActive ? styles.statusPillTextActive : styles.statusPillTextInactive]}>
                   {isActive ? "Active" : "Not joined"}
-                </Text>
+                </AppText>
               </View>
             </View>
 
-            <Text style={styles.planTitle}>{planName}</Text>
-            <Text style={styles.planSubtitle}>
+            <AppText style={styles.planTitle}>{planName}</AppText>
+            <AppText style={styles.planSubtitle}>
               {isActive
                 ? "Your perks are applied automatically on every eligible order."
                 : checkoutPlan?.headline ??
                   checkoutPlan?.description ??
                   "Save on delivery and unlock member-only offers across GatiMitra."}
-            </Text>
+            </AppText>
 
             {isActive && expiresAt ? (
               <View style={styles.metaChip}>
                 <Ionicons name="calendar-outline" size={14} color={GOLD_DARK} />
-                <Text style={styles.metaChipText}>Valid till {expiresAt}</Text>
+                <AppText style={styles.metaChipText}>Valid till {expiresAt}</AppText>
               </View>
             ) : null}
 
             {!isActive && defaultPrice ? (
               <View style={styles.priceChip}>
-                <Text style={styles.priceChipLabel}>Starts at</Text>
-                <Text style={styles.priceChipValue}>{formatPlanPriceLine(defaultPrice)}</Text>
+                <AppText style={styles.priceChipLabel}>Starts at</AppText>
+                <AppText style={styles.priceChipValue}>{formatPlanPriceLine(defaultPrice)}</AppText>
               </View>
             ) : null}
           </LinearGradient>
@@ -183,23 +178,23 @@ export default function SubscriptionScreen() {
               {freeDeliveryEnabled && freeDeliveryRadius != null ? (
                 <View style={styles.statCard}>
                   <Ionicons name="bicycle" size={20} color={GatiMitraColors.primaryMint} />
-                  <Text style={styles.statValue}>{freeDeliveryRadius} km</Text>
-                  <Text style={styles.statLabel}>Free delivery radius</Text>
+                  <AppText style={styles.statValue}>{freeDeliveryRadius} km</AppText>
+                  <AppText style={styles.statLabel}>Free delivery radius</AppText>
                 </View>
               ) : null}
               {billingCycle ? (
                 <View style={styles.statCard}>
                   <Ionicons name="refresh-circle-outline" size={20} color={GOLD_DARK} />
-                  <Text style={styles.statValue}>
+                  <AppText style={styles.statValue}>
                     {billingCycle.charAt(0).toUpperCase() + billingCycle.slice(1)}
-                  </Text>
-                  <Text style={styles.statLabel}>Billing cycle</Text>
+                  </AppText>
+                  <AppText style={styles.statLabel}>Billing cycle</AppText>
                 </View>
               ) : null}
             </View>
           ) : null}
 
-          <Text style={styles.sectionTitle}>{isActive ? "Your perks" : "What you get"}</Text>
+          <AppText style={styles.sectionTitle}>{isActive ? "Your perks" : "What you get"}</AppText>
           <View style={styles.benefitsCard}>
             {benefits.map((benefit) => (
               <BenefitRow key={benefit} text={benefit} />
@@ -213,13 +208,13 @@ export default function SubscriptionScreen() {
 
           <View style={styles.noteCard}>
             <Ionicons name="information-circle-outline" size={18} color={MUTED} />
-            <Text style={styles.noteText}>
+            <AppText style={styles.noteText}>
               {isActive
                 ? "Benefits may vary by city, restaurant, and order value. Savings show up automatically at checkout."
                 : hasPlans
                   ? `Add ${planName} at checkout on your next food order to start saving instantly.`
                   : "Membership plans are being rolled out in your area. Check back soon."}
-            </Text>
+            </AppText>
           </View>
 
           {!isActive && hasPlans ? (
@@ -230,14 +225,14 @@ export default function SubscriptionScreen() {
                 end={{ x: 1, y: 0.5 }}
                 style={styles.primaryBtnGradient}
               >
-                <Text style={styles.primaryBtnText}>Browse restaurants</Text>
+                <AppText style={styles.primaryBtnText}>Browse restaurants</AppText>
                 <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
               </LinearGradient>
             </TouchableOpacity>
           ) : null}
 
           <TouchableOpacity style={styles.termsLink} onPress={handleTerms} activeOpacity={0.8}>
-            <Text style={styles.termsLinkText}>View subscription terms</Text>
+            <AppText style={styles.termsLinkText}>View subscription terms</AppText>
             <Ionicons name="chevron-forward" size={16} color={GatiMitraColors.primaryMint} />
           </TouchableOpacity>
         </ScrollView>

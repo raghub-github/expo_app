@@ -5,20 +5,9 @@
  */
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-  Modal,
-  Pressable,
-  TextInput,
-  Share,
-  Alert,
-  InteractionManager,
-  StatusBar,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Platform, Modal, Pressable, TextInput, Share, Alert, InteractionManager, StatusBar } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets, initialWindowMetrics } from "react-native-safe-area-context";
@@ -158,6 +147,7 @@ import { orderService, type OrderSummary } from "@/services/order.service";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
 import { MERCHANT_NAV_SHUTTER_SLIDE_MS } from "@/components/MerchantNavTransitionShutter";
+import { tryNavigateToFoodCheckout } from "@/lib/cartCheckoutGate";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const MENU_SEARCH_DEBOUNCE_MS = 200;
@@ -630,17 +620,13 @@ export default function MerchantDetailScreen() {
   });
 
   const deliveryCoords = useMemo(() => {
-    // If user explicitly selected a location (saved/map pin), that is the delivery point for distance labels.
+    // Explicit user pin for this session.
     if (coords && locationSource === "selected") {
       return { latitude: coords.latitude, longitude: coords.longitude };
     }
-    // Otherwise prefer backend "active location" (saved delivery address) over device GPS drift.
-    if (activeLocation?.latitude != null && activeLocation.longitude != null) {
-      return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
-    }
-    // Final fallback: whatever the current global coords are.
+    // Live GPS — never prefer stale server active-location over device coords.
     return coords;
-  }, [activeLocation?.latitude, activeLocation?.longitude, coords?.latitude, coords?.longitude, locationSource]);
+  }, [coords?.latitude, coords?.longitude, locationSource]);
 
   /**
    * Same drop coordinates as checkout/billing: when the map pin is "selected", snap to the saved
@@ -1315,8 +1301,8 @@ export default function MerchantDetailScreen() {
 
   const handleStoreCartContinue = useCallback(() => {
     if (isStoreClosedForStatus) return;
-    router.push("/checkout");
-  }, [isStoreClosedForStatus, router]);
+    void tryNavigateToFoodCheckout(router, queryClient);
+  }, [isStoreClosedForStatus, queryClient, router]);
 
   /**
    * Stable boolean, NOT a live countdown string — the closed banner's live "opens/closes
@@ -1414,8 +1400,8 @@ export default function MerchantDetailScreen() {
     if (openCart !== "1" || !merchantId || !isCartForThisMerchant) {
       return;
     }
-    router.push("/checkout");
-  }, [openCart, merchantId, isCartForThisMerchant, router]);
+    void tryNavigateToFoodCheckout(router, queryClient);
+  }, [openCart, merchantId, isCartForThisMerchant, queryClient, router]);
 
   const handleShareRestaurant = useCallback(async () => {
     closeOptionsSheet();
@@ -1674,7 +1660,7 @@ export default function MerchantDetailScreen() {
   if (!merchantId) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.centeredText}>Invalid merchant</Text>
+        <AppText style={styles.centeredText}>Invalid merchant</AppText>
       </View>
     );
   }
@@ -1699,18 +1685,18 @@ export default function MerchantDetailScreen() {
     return (
       <View style={styles.centered}>
         <Ionicons name="cloud-offline-outline" size={40} color={GatiMitraColors.textSecondary} />
-        <Text style={[styles.centeredText, { marginTop: 12, textAlign: "center", paddingHorizontal: 24 }]}>
+        <AppText style={[styles.centeredText, { marginTop: 12, textAlign: "center", paddingHorizontal: 24 }]}>
           Could not load this restaurant. Check your connection and try again.
-        </Text>
+        </AppText>
         <TouchableOpacity
           style={styles.retryBtn}
           onPress={() => void refetch()}
           activeOpacity={0.85}
         >
-          <Text style={styles.retryBtnText}>Retry</Text>
+          <AppText style={styles.retryBtnText}>Retry</AppText>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 12 }} activeOpacity={0.7}>
-          <Text style={styles.retryLinkText}>Go back</Text>
+          <AppText style={styles.retryLinkText}>Go back</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -1775,7 +1761,7 @@ export default function MerchantDetailScreen() {
                 accessibilityLabel={stickySearchHint}
               >
                 <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
-                <Text
+                <AppText
                   style={[
                     styles.stickySearchHintText,
                     menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilled,
@@ -1784,7 +1770,7 @@ export default function MerchantDetailScreen() {
                   ellipsizeMode="tail"
                 >
                   {menuSearchQuery.trim().length > 0 ? menuSearchQuery : stickySearchHint}
-                </Text>
+                </AppText>
               </TouchableOpacity>
             )}
             <TouchableOpacity onPress={openOptionsSheet} style={styles.heroCircleBtnLight} hitSlop={8}>
@@ -1892,10 +1878,10 @@ export default function MerchantDetailScreen() {
         <Pressable style={styles.sheetOverlay} onPress={closeOptionsSheet}>
           <Pressable style={[styles.optionsSheet, { paddingBottom: insets.bottom + 24 }]} onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.optionsSheetTitle}>{merchant.name}</Text>
+            <AppText style={styles.optionsSheetTitle}>{merchant.name}</AppText>
             <TouchableOpacity style={styles.optionRow} onPress={() => { closeOptionsSheet(); /* Add to Collection */ }}>
               <Ionicons name="bookmark-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.optionRowText}>Add to Collection</Text>
+              <AppText style={styles.optionRowText}>Add to Collection</AppText>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
@@ -1903,7 +1889,7 @@ export default function MerchantDetailScreen() {
               onPress={() => { closeOptionsSheet(); setGroupOrderSheetVisible(true); }}
             >
               <Ionicons name="people-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.optionRowText}>Group Order</Text>
+              <AppText style={styles.optionRowText}>Group Order</AppText>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
@@ -1911,27 +1897,27 @@ export default function MerchantDetailScreen() {
               onPress={() => { closeOptionsSheet(); router.push(`/home/merchant/about/${merchantId}`); }}
             >
               <Ionicons name="information-circle-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.optionRowText}>See more about this restaurant</Text>
+              <AppText style={styles.optionRowText}>See more about this restaurant</AppText>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.optionRow} onPress={handleShareRestaurant}>
               <Ionicons name="share-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.optionRowText}>Share this restaurant</Text>
+              <AppText style={styles.optionRowText}>Share this restaurant</AppText>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.optionRow} onPress={closeOptionsSheet}>
               <Ionicons name="eye-off-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.optionRowText}>Hide this restaurant</Text>
+              <AppText style={styles.optionRowText}>Hide this restaurant</AppText>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.optionRow} onPress={openReportSheet}>
               <Ionicons name="warning-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.optionRowText}>Report fraud or bad practices</Text>
+              <AppText style={styles.optionRowText}>Report fraud or bad practices</AppText>
               <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
-            <Text style={styles.optionSheetFooter}>
+            <AppText style={styles.optionSheetFooter}>
               Menu items, prices, photos and descriptions are set by the restaurant. Report incorrect information.
-            </Text>
+            </AppText>
           </Pressable>
         </Pressable>
       </Modal>
@@ -1969,8 +1955,8 @@ export default function MerchantDetailScreen() {
         <Pressable style={styles.sheetOverlay} onPress={closeReportSheet}>
           <Pressable style={[styles.reportSheet, { paddingBottom: insets.bottom + 24 }]} onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.reportSheetTitle}>Report an issue with the menu</Text>
-            <Text style={styles.reportSheetSub}>This feedback will be shared directly with the restaurant.</Text>
+            <AppText style={styles.reportSheetTitle}>Report an issue with the menu</AppText>
+            <AppText style={styles.reportSheetSub}>This feedback will be shared directly with the restaurant.</AppText>
             {REPORT_OPTIONS.map((opt) => (
               <TouchableOpacity
                 key={opt.id}
@@ -1978,7 +1964,7 @@ export default function MerchantDetailScreen() {
                 onPress={() => handleReportSubmit(opt.id)}
                 disabled={reportSubmitting}
               >
-                <Text style={styles.reportOptionText}>{opt.label}</Text>
+                <AppText style={styles.reportOptionText}>{opt.label}</AppText>
                 <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
               </TouchableOpacity>
             ))}

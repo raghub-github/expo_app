@@ -2,7 +2,9 @@
  * Horizontal marquee banner for merchant prep-delay updates (20s).
  */
 import { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Animated as RNAnimated } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, Animated as RNAnimated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -50,7 +52,7 @@ export function PrepDelayMarqueeBanner({ message }: { message: string }) {
         }}
       >
         <RNAnimated.View style={{ flexDirection: "row", transform: [{ translateX }] }}>
-          <Text
+          <AppText
             style={styles.text}
             onLayout={(e) => {
               textW.current = e.nativeEvent.layout.width;
@@ -58,7 +60,7 @@ export function PrepDelayMarqueeBanner({ message }: { message: string }) {
             numberOfLines={1}
           >
             {message}
-          </Text>
+          </AppText>
         </RNAnimated.View>
       </View>
     </View>

@@ -1,5 +1,7 @@
 import { useCallback, useState } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -76,18 +78,18 @@ export function BookmarkedStoreCard({ merchant, onRemoved }: Props) {
 
         {offerText ? (
           <View style={styles.offerStrip}>
-            <Text style={styles.offerStripText} numberOfLines={1}>
+            <AppText style={styles.offerStripText} numberOfLines={1}>
               {offerText}
-            </Text>
+            </AppText>
           </View>
         ) : null}
       </View>
 
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          <Text style={styles.name} numberOfLines={2}>
+          <AppText style={styles.name} numberOfLines={2}>
             {merchant.name}
-          </Text>
+          </AppText>
           <MerchantRatingBadge
             rating={merchant.avgRating}
             totalReviews={merchant.totalReviews}
@@ -98,13 +100,13 @@ export function BookmarkedStoreCard({ merchant, onRemoved }: Props) {
         </View>
 
         {merchant.serviceable === false ? (
-          <Text style={styles.metaWarn} numberOfLines={2}>
+          <AppText style={styles.metaWarn} numberOfLines={2}>
             Does not deliver to your location
-          </Text>
+          </AppText>
         ) : merchant.serviceable === true ? (
-          <Text style={styles.metaOk} numberOfLines={1}>
+          <AppText style={styles.metaOk} numberOfLines={1}>
             {formatMerchantDeliveryTime(merchant)}
-          </Text>
+          </AppText>
         ) : null}
       </View>
     </Pressable>

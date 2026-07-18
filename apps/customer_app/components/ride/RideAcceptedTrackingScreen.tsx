@@ -4,19 +4,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppText } from "@/components/AppText";
+
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Image,
-  Platform,
-  Linking,
-  Alert,
-  ActivityIndicator,
-  Dimensions,
-} from "react-native";
+import { View, StyleSheet, TouchableOpacity, Image, Platform, Linking, Alert, ActivityIndicator, Dimensions } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -538,7 +529,7 @@ export function RideAcceptedTrackingScreen({
     return (
       <View style={[styles.screen, styles.mapLoading]}>
         <ActivityIndicator size="large" color={GREEN} />
-        <Text style={styles.loadingMapText}>Loading pickup location…</Text>
+        <AppText style={styles.loadingMapText}>Loading pickup location…</AppText>
       </View>
     );
   }
@@ -606,11 +597,11 @@ export function RideAcceptedTrackingScreen({
                 <View style={styles.navChipIconWrap}>
                   <Ionicons name="navigate" size={15} color="#137333" />
                 </View>
-                <Text style={styles.navChipEta}>{formatPickupEtaMinutes(tripEtaMinutes)}</Text>
+                <AppText style={styles.navChipEta}>{formatPickupEtaMinutes(tripEtaMinutes)}</AppText>
                 {distanceLabel ? (
                   <>
                     <View style={styles.navChipDot} />
-                    <Text style={styles.navChipMeta}>{distanceLabel}</Text>
+                    <AppText style={styles.navChipMeta}>{distanceLabel}</AppText>
                   </>
                 ) : null}
               </View>
@@ -621,7 +612,7 @@ export function RideAcceptedTrackingScreen({
         {waitBannerText ? (
           <View style={[styles.waitBannerFloat, { top: insets.top + 2 }]} pointerEvents="none">
             <View style={styles.waitBannerPill}>
-              <Text
+              <AppText
                 style={[
                   styles.waitBannerPillText,
                   { fontSize: waitBannerFontSize, lineHeight: waitBannerFontSize + 4 },
@@ -631,7 +622,7 @@ export function RideAcceptedTrackingScreen({
                 {...(Platform.OS === "android" ? { includeFontPadding: false } : {})}
               >
                 {waitBannerText}
-              </Text>
+              </AppText>
             </View>
           </View>
         ) : null}
@@ -651,7 +642,7 @@ export function RideAcceptedTrackingScreen({
           </TouchableOpacity>
           <TouchableOpacity style={styles.safetyFab} onPress={onOpenSupport} activeOpacity={0.85}>
             <Ionicons name="shield-checkmark" size={18} color={ACCENT_BLUE} />
-            <Text style={styles.safetyFabText}>Safety</Text>
+            <AppText style={styles.safetyFabText}>Safety</AppText>
           </TouchableOpacity>
         </View>
       </View>
@@ -667,7 +658,7 @@ export function RideAcceptedTrackingScreen({
         {rideInProgress ? (
           <View style={styles.sheetMainContent}>
             <View style={[styles.banner, styles.bannerNav]}>
-              <Text style={styles.bannerText}>{bannerText}</Text>
+              <AppText style={styles.bannerText}>{bannerText}</AppText>
             </View>
 
             <RideInProgressNoticeCarousel rideType={rideCatalogId} />
@@ -675,24 +666,24 @@ export function RideAcceptedTrackingScreen({
             <View style={[styles.etaBlock, styles.etaBlockNav]}>
               <View style={styles.etaRowSplit}>
                 <View style={styles.etaLeft}>
-                  <Text style={styles.etaTitle}>
+                  <AppText style={styles.etaTitle}>
                     Drop in{" "}
-                    <Text style={styles.etaHighlight}>{formatPickupEtaMinutes(tripEtaMinutes)}</Text>
-                  </Text>
+                    <AppText style={styles.etaHighlight}>{formatPickupEtaMinutes(tripEtaMinutes)}</AppText>
+                  </AppText>
                   {distanceLabel ? (
-                    <Text style={styles.etaSub}>
-                      Captain <Text style={styles.etaSubBold}>{distanceLabel}</Text> away
-                    </Text>
+                    <AppText style={styles.etaSub}>
+                      Captain <AppText style={styles.etaSubBold}>{distanceLabel}</AppText> away
+                    </AppText>
                   ) : (
-                    <Text style={styles.etaSub}>Captain is heading to drop</Text>
+                    <AppText style={styles.etaSub}>Captain is heading to drop</AppText>
                   )}
                 </View>
                 {showPickupWaitAside ? (
                   <View style={styles.pickupWaitAside}>
-                    <Text style={styles.pickupWaitLabel}>Pickup Waiting</Text>
-                    <Text style={styles.pickupWaitTime}>
+                    <AppText style={styles.pickupWaitLabel}>Pickup Waiting</AppText>
+                    <AppText style={styles.pickupWaitTime}>
                       {formatRideWaitHhMmSs(finalizedPickupWaitSec)}
-                    </Text>
+                    </AppText>
                   </View>
                 ) : null}
               </View>
@@ -702,31 +693,31 @@ export function RideAcceptedTrackingScreen({
               <View style={styles.captainTopRow}>
                 <View style={styles.captainInfo}>
                   {vehicleReg ? (
-                    <Text style={styles.vehicleReg} numberOfLines={1}>
+                    <AppText style={styles.vehicleReg} numberOfLines={1}>
                       {vehicleReg}
-                    </Text>
+                    </AppText>
                   ) : null}
                   {vehicleModel ? (
-                    <Text style={styles.vehicleModel} numberOfLines={1}>
+                    <AppText style={styles.vehicleModel} numberOfLines={1}>
                       {vehicleModel}
-                    </Text>
+                    </AppText>
                   ) : null}
-                  <Text style={styles.captainName} numberOfLines={1}>
+                  <AppText style={styles.captainName} numberOfLines={1}>
                     {riderName.toUpperCase()}
-                  </Text>
+                  </AppText>
                 </View>
                 <View style={styles.avatarWrap}>
                   {photoUri ? (
                     <Image source={{ uri: photoUri }} style={styles.avatar} />
                   ) : (
                     <View style={styles.avatarFallback}>
-                      <Text style={styles.avatarInitial}>{riderName.slice(0, 1).toUpperCase()}</Text>
+                      <AppText style={styles.avatarInitial}>{riderName.slice(0, 1).toUpperCase()}</AppText>
                     </View>
                   )}
                   {riderRating != null && Number.isFinite(riderRating) ? (
                     <View style={styles.ratingBadge}>
-                      <Text style={styles.ratingText}>{riderRating.toFixed(1)}</Text>
-                      <Text style={styles.ratingStar}>★</Text>
+                      <AppText style={styles.ratingText}>{riderRating.toFixed(1)}</AppText>
+                      <AppText style={styles.ratingStar}>★</AppText>
                     </View>
                   ) : null}
                 </View>
@@ -739,9 +730,9 @@ export function RideAcceptedTrackingScreen({
                   activeOpacity={0.85}
                 >
                   <Ionicons name="chatbubble-ellipses-outline" size={18} color="#374151" />
-                  <Text style={styles.compactContactText} numberOfLines={1}>
+                  <AppText style={styles.compactContactText} numberOfLines={1}>
                     Message {riderFirstName}
-                  </Text>
+                  </AppText>
                   <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.compactUnreadBadge} />
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -758,46 +749,46 @@ export function RideAcceptedTrackingScreen({
         ) : (
           <View style={styles.sheetMainContent}>
           <View style={styles.banner}>
-            <Text style={styles.bannerText}>{bannerText}</Text>
+            <AppText style={styles.bannerText}>{bannerText}</AppText>
           </View>
 
           <View style={styles.etaBlock}>
             {pickupWaitActive ? (
               <View style={styles.etaRowSplit}>
                 <View style={styles.etaLeft}>
-                  <Text style={styles.etaTitle}>
+                  <AppText style={styles.etaTitle}>
                     Captain is waiting ·{" "}
-                    <Text style={styles.etaHighlight}>
+                    <AppText style={styles.etaHighlight}>
                       {waitFreeRemainingSec > 0
                         ? `${formatRideWaitMmSs(waitFreeRemainingSec)} free left`
                         : formatRideWaitMmSs(waitElapsedSec)}
-                    </Text>
-                  </Text>
-                  <Text style={styles.etaSub}>
+                    </AppText>
+                  </AppText>
+                  <AppText style={styles.etaSub}>
                     Share your pickup PIN with the captain to start the ride
-                  </Text>
+                  </AppText>
                 </View>
                 <View style={styles.pickupWaitAside}>
-                  <Text style={styles.pickupWaitLabel}>Pickup Waiting</Text>
-                  <Text style={styles.pickupWaitTime}>
+                  <AppText style={styles.pickupWaitLabel}>Pickup Waiting</AppText>
+                  <AppText style={styles.pickupWaitTime}>
                     {formatRideWaitHhMmSs(finalizedPickupWaitSec)}
-                  </Text>
+                  </AppText>
                 </View>
               </View>
             ) : (
               <>
-                <Text style={styles.etaTitle}>
+                <AppText style={styles.etaTitle}>
                   Pickup in{" "}
-                  <Text style={styles.etaHighlight}>{formatPickupEtaMinutes(tripEtaMinutes)}</Text>
-                </Text>
+                  <AppText style={styles.etaHighlight}>{formatPickupEtaMinutes(tripEtaMinutes)}</AppText>
+                </AppText>
                 {distanceLabel ? (
-                  <Text style={styles.etaSub}>
-                    Captain <Text style={styles.etaSubBold}>{distanceLabel}</Text> away
-                  </Text>
+                  <AppText style={styles.etaSub}>
+                    Captain <AppText style={styles.etaSubBold}>{distanceLabel}</AppText> away
+                  </AppText>
                 ) : (
-                  <Text style={styles.etaSub}>
+                  <AppText style={styles.etaSub}>
                     {riderPos ? "Captain is on the way" : "Waiting for captain location…"}
-                  </Text>
+                  </AppText>
                 )}
               </>
             )}
@@ -805,11 +796,11 @@ export function RideAcceptedTrackingScreen({
 
           {showPickupPin ? (
             <View style={styles.pinRow}>
-              <Text style={styles.pinLabel}>Start your order with PIN</Text>
+              <AppText style={styles.pinLabel}>Start your order with PIN</AppText>
               <View style={styles.pinBoxes}>
                 {pinDigits.map((digit, index) => (
                   <View key={`pin-${index}`} style={styles.pinBox}>
-                    <Text style={styles.pinDigit}>{digit}</Text>
+                    <AppText style={styles.pinDigit}>{digit}</AppText>
                   </View>
                 ))}
               </View>
@@ -820,31 +811,31 @@ export function RideAcceptedTrackingScreen({
             <View style={styles.captainTopRow}>
               <View style={styles.captainInfo}>
                 {vehicleReg ? (
-                  <Text style={styles.vehicleReg} numberOfLines={1}>
+                  <AppText style={styles.vehicleReg} numberOfLines={1}>
                     {vehicleReg}
-                  </Text>
+                  </AppText>
                 ) : null}
                 {vehicleModel ? (
-                  <Text style={styles.vehicleModel} numberOfLines={1}>
+                  <AppText style={styles.vehicleModel} numberOfLines={1}>
                     {vehicleModel}
-                  </Text>
+                  </AppText>
                 ) : null}
-                <Text style={styles.captainName} numberOfLines={1}>
+                <AppText style={styles.captainName} numberOfLines={1}>
                   {riderName.toUpperCase()}
-                </Text>
+                </AppText>
               </View>
               <View style={styles.avatarWrap}>
                 {photoUri ? (
                   <Image source={{ uri: photoUri }} style={styles.avatar} />
                 ) : (
                   <View style={styles.avatarFallback}>
-                    <Text style={styles.avatarInitial}>{riderName.slice(0, 1).toUpperCase()}</Text>
+                    <AppText style={styles.avatarInitial}>{riderName.slice(0, 1).toUpperCase()}</AppText>
                   </View>
                 )}
                 {riderRating != null && Number.isFinite(riderRating) ? (
                   <View style={styles.ratingBadge}>
-                    <Text style={styles.ratingText}>{riderRating.toFixed(1)}</Text>
-                    <Text style={styles.ratingStar}>★</Text>
+                    <AppText style={styles.ratingText}>{riderRating.toFixed(1)}</AppText>
+                    <AppText style={styles.ratingStar}>★</AppText>
                   </View>
                 ) : null}
               </View>
@@ -860,9 +851,9 @@ export function RideAcceptedTrackingScreen({
                   <Ionicons name="chatbubble-ellipses-outline" size={17} color="#374151" />
                   <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.messageUnreadBadge} />
                 </View>
-                <Text style={styles.messageBtnText} numberOfLines={1}>
+                <AppText style={styles.messageBtnText} numberOfLines={1}>
                   {chatUnreadCount > 0 ? `Message ${riderFirstName} (${chatUnreadCount})` : `Message ${riderFirstName}`}
-                </Text>
+                </AppText>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.callBtn}
@@ -879,10 +870,10 @@ export function RideAcceptedTrackingScreen({
 
         <View style={[styles.footer, rideInProgress && styles.footerNav, { paddingBottom: footerBottomPad }]}>
           <View style={styles.footerTop}>
-            <Text style={styles.footerLabel}>{rideInProgress ? "Drop at" : "Pickup From"}</Text>
-            <Text style={styles.footerAddress} numberOfLines={rideInProgress ? 1 : 2}>
+            <AppText style={styles.footerLabel}>{rideInProgress ? "Drop at" : "Pickup From"}</AppText>
+            <AppText style={styles.footerAddress} numberOfLines={rideInProgress ? 1 : 2}>
               {rideInProgress ? dropAddress : pickupAddress}
-            </Text>
+            </AppText>
           </View>
           <TouchableOpacity
             style={styles.tripDetailsBtn}
@@ -890,9 +881,9 @@ export function RideAcceptedTrackingScreen({
             activeOpacity={0.85}
           >
             <Ionicons name="receipt-outline" size={16} color="#111827" />
-            <Text style={styles.tripDetailsText} numberOfLines={1}>
+            <AppText style={styles.tripDetailsText} numberOfLines={1}>
               Trip Details
-            </Text>
+            </AppText>
             <Ionicons name="chevron-forward" size={14} color="#6B7280" />
           </TouchableOpacity>
         </View>

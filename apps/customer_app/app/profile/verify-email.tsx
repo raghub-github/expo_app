@@ -3,17 +3,9 @@
  */
 
 import { useCallback, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, KeyboardAvoidingView, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -120,10 +112,10 @@ export default function VerifyEmailScreen() {
             <View style={styles.successIcon}>
               <Ionicons name="checkmark-circle" size={48} color={GREEN} />
             </View>
-            <Text style={styles.cardTitle}>Email verified</Text>
-            <Text style={styles.cardSub}>{emailDisplay ?? "Your email is verified."}</Text>
+            <AppText style={styles.cardTitle}>Email verified</AppText>
+            <AppText style={styles.cardSub}>{emailDisplay ?? "Your email is verified."}</AppText>
             <TouchableOpacity style={styles.primaryBtn} onPress={() => router.back()}>
-              <Text style={styles.primaryBtnText}>Back to profile</Text>
+              <AppText style={styles.primaryBtnText}>Back to profile</AppText>
             </TouchableOpacity>
           </View>
         ) : (
@@ -131,17 +123,17 @@ export default function VerifyEmailScreen() {
             <View style={styles.iconWrap}>
               <Ionicons name="mail-unread-outline" size={36} color={GREEN} />
             </View>
-            <Text style={styles.cardTitle}>Verify your email</Text>
-            <Text style={styles.cardSub}>
+            <AppText style={styles.cardTitle}>Verify your email</AppText>
+            <AppText style={styles.cardSub}>
               {sent
                 ? `Enter the 6-digit code sent to ${emailDisplay ?? "your email"}.`
                 : "We'll send a verification code to your registered email."}
-            </Text>
+            </AppText>
 
             {emailDisplay ? (
               <View style={styles.emailChip}>
                 <Ionicons name="mail-outline" size={16} color={GREEN_DARK} />
-                <Text style={styles.emailChipText} numberOfLines={1}>{emailDisplay}</Text>
+                <AppText style={styles.emailChipText} numberOfLines={1}>{emailDisplay}</AppText>
               </View>
             ) : null}
 
@@ -154,7 +146,7 @@ export default function VerifyEmailScreen() {
                 {sendMutation.isPending ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.primaryBtnText}>Send code</Text>
+                  <AppText style={styles.primaryBtnText}>Send code</AppText>
                 )}
               </TouchableOpacity>
             ) : (
@@ -180,7 +172,7 @@ export default function VerifyEmailScreen() {
                   {confirmMutation.isPending ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.primaryBtnText}>Verify email</Text>
+                    <AppText style={styles.primaryBtnText}>Verify email</AppText>
                   )}
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -188,14 +180,14 @@ export default function VerifyEmailScreen() {
                   onPress={handleSendCode}
                   disabled={sendMutation.isPending}
                 >
-                  <Text style={styles.linkBtnText}>Resend code</Text>
+                  <AppText style={styles.linkBtnText}>Resend code</AppText>
                 </TouchableOpacity>
               </>
             )}
 
             {!profile?.email ? (
               <TouchableOpacity style={styles.linkBtn} onPress={() => router.push("/profile/edit")}>
-                <Text style={styles.linkBtnText}>Add email in profile</Text>
+                <AppText style={styles.linkBtnText}>Add email in profile</AppText>
               </TouchableOpacity>
             ) : null}
           </View>

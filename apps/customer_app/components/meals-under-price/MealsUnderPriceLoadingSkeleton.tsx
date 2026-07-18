@@ -12,12 +12,15 @@ const CARD_GAP = 12;
 type Props = {
   startMessageIndex?: number;
   edgeToEdge?: boolean;
+  /** Skip hero/filters — used under the real page chrome while stores load. */
+  listOnly?: boolean;
 };
 
 /** Meals-under-price page skeleton — hero, filters, store rows with horizontal cards. */
 export function MealsUnderPriceLoadingSkeleton({
   startMessageIndex,
   edgeToEdge = false,
+  listOnly = false,
 }: Props) {
   const insets = useSafeAreaInsets();
   const message = useMerchantLoadingMessage("meals-under-price", startMessageIndex);
@@ -26,15 +29,17 @@ export function MealsUnderPriceLoadingSkeleton({
     <View
       style={[
         styles.root,
-        edgeToEdge ? { paddingTop: insets.top, paddingBottom: insets.bottom } : { paddingBottom: insets.bottom },
+        edgeToEdge ? { paddingTop: insets.top, paddingBottom: insets.bottom } : { paddingBottom: listOnly ? 8 : insets.bottom },
       ]}
     >
-      <GMSkeleton style={styles.hero} />
-      <View style={styles.filterRow}>
-        {Array.from({ length: 4 }).map((_, i) => (
-          <GMSkeleton key={i} style={styles.filterChip} />
-        ))}
-      </View>
+      {!listOnly ? <GMSkeleton style={styles.hero} /> : null}
+      {!listOnly ? (
+        <View style={styles.filterRow}>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <GMSkeleton key={i} style={styles.filterChip} />
+          ))}
+        </View>
+      ) : null}
 
       {Array.from({ length: 2 }).map((_, sectionIdx) => (
         <View key={sectionIdx} style={styles.section}>

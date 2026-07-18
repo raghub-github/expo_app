@@ -3,15 +3,9 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  TextInput,
-  ActivityIndicator,
-  ScrollView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -80,8 +74,8 @@ export function RestaurantPostDeliveryRatingSheet({
           ))}
         </View>
 
-        <Text style={styles.headline}>{headline}</Text>
-        <Text style={styles.storeName}>{storeName}</Text>
+        <AppText style={styles.headline}>{headline}</AppText>
+        <AppText style={styles.storeName}>{storeName}</AppText>
 
         <TouchableOpacity
           style={styles.recommendRow}
@@ -94,15 +88,15 @@ export function RestaurantPostDeliveryRatingSheet({
             color={recommendFriends ? ACCENT : MUTED}
           />
           <View style={styles.recommendTextWrap}>
-            <Text style={styles.recommendTitle}>I recommend it to my friends</Text>
-            <Text style={styles.recommendSub}>
+            <AppText style={styles.recommendTitle}>I recommend it to my friends</AppText>
+            <AppText style={styles.recommendSub}>
               Restaurant and dishes in this order will appear as a recommendation to friends who
               have your contact.
-            </Text>
+            </AppText>
           </View>
         </TouchableOpacity>
 
-        <Text style={styles.noteLabel}>Send a note to the restaurant</Text>
+        <AppText style={styles.noteLabel}>Send a note to the restaurant</AppText>
         <TextInput
           style={styles.noteInput}
           placeholder="Add your thoughts here"
@@ -116,7 +110,7 @@ export function RestaurantPostDeliveryRatingSheet({
 
         <TouchableOpacity style={styles.photoRow} activeOpacity={0.8}>
           <Ionicons name="camera-outline" size={20} color={MUTED} />
-          <Text style={styles.photoText}>Add photo</Text>
+          <AppText style={styles.photoText}>Add photo</AppText>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -134,7 +128,7 @@ export function RestaurantPostDeliveryRatingSheet({
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.submitText}>Submit</Text>
+            <AppText style={styles.submitText}>Submit</AppText>
           )}
         </TouchableOpacity>
       </ScrollView>

@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import type { EnrichedPlaceResult } from "@/services/location.service";
 import { resolvePlaceDisplayName } from "@/services/location.service";
@@ -36,20 +38,20 @@ export function LocationSearchResultRow({ item, query = "", distanceLabel, onPre
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.leftCol}>
         <Ionicons name="location-outline" size={20} color="#6B7280" />
-        {distanceLabel ? <Text style={styles.distance}>{distanceLabel}</Text> : null}
+        {distanceLabel ? <AppText style={styles.distance}>{distanceLabel}</AppText> : null}
       </View>
 
       <View style={styles.content}>
-        <Text style={styles.primary} numberOfLines={1}>
+        <AppText style={styles.primary} numberOfLines={1}>
           {segments.map((seg, i) => (
-            <Text key={i} style={seg.match ? styles.match : undefined}>
+            <AppText key={i} style={seg.match ? styles.match : undefined}>
               {seg.text}
-            </Text>
+            </AppText>
           ))}
-        </Text>
-        <Text style={styles.secondary} numberOfLines={2}>
+        </AppText>
+        <AppText style={styles.secondary} numberOfLines={2}>
           {secondary}
-        </Text>
+        </AppText>
       </View>
 
       <TouchableOpacity style={styles.heartBtn} hitSlop={12} onPress={onPress}>

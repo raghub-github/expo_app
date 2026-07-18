@@ -3,14 +3,9 @@
  * Smooth transition to quantity controls on add.
  */
 
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-} from "react-native";
+import { View, Image, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useShopCartStore } from "@/store/shopCartStore";
@@ -62,33 +57,33 @@ export function ProductCard({ product, imageKey }: ProductCardProps) {
         ) : null}
         {discount != null && (
           <View style={styles.discountBadge}>
-            <Text style={styles.discountText}>{discount}% OFF</Text>
+            <AppText style={styles.discountText}>{discount}% OFF</AppText>
           </View>
         )}
         {product.popular && (
           <View style={styles.popularBadge}>
-            <Text style={styles.popularText}>Popular</Text>
+            <AppText style={styles.popularText}>Popular</AppText>
           </View>
         )}
       </View>
-      <Text style={styles.name} numberOfLines={2}>
+      <AppText style={styles.name} numberOfLines={2}>
         {product.name}
-      </Text>
+      </AppText>
       <View style={styles.priceRow}>
-        <Text style={styles.price}>₹{product.price}</Text>
+        <AppText style={styles.price}>₹{product.price}</AppText>
         {product.originalPrice != null && product.originalPrice > product.price && (
-          <Text style={styles.originalPrice}>₹{product.originalPrice}</Text>
+          <AppText style={styles.originalPrice}>₹{product.originalPrice}</AppText>
         )}
       </View>
       {product.rating != null && (
         <View style={styles.ratingRow}>
           <Ionicons name="star" size={12} color={GatiMitraColors.warmOrange} />
-          <Text style={styles.ratingText}>{product.rating}</Text>
+          <AppText style={styles.ratingText}>{product.rating}</AppText>
         </View>
       )}
       {product.cod && (
         <View style={styles.codBadge}>
-          <Text style={styles.codText}>COD</Text>
+          <AppText style={styles.codText}>COD</AppText>
         </View>
       )}
       {qty === 0 ? (
@@ -97,7 +92,7 @@ export function ProductCard({ product, imageKey }: ProductCardProps) {
           onPress={addToCart}
           activeOpacity={0.85}
         >
-          <Text style={styles.addBtnText}>Add to Cart</Text>
+          <AppText style={styles.addBtnText}>Add to Cart</AppText>
         </TouchableOpacity>
       ) : (
         <View style={styles.qtyRow}>
@@ -108,7 +103,7 @@ export function ProductCard({ product, imageKey }: ProductCardProps) {
           >
             <Ionicons name="remove" size={18} color={GatiMitraColors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.qtyText}>{qty}</Text>
+          <AppText style={styles.qtyText}>{qty}</AppText>
           <TouchableOpacity
             style={styles.qtyBtn}
             onPress={() => updateQuantity(product.id, 1)}

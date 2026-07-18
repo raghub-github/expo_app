@@ -43,15 +43,25 @@ export function resolveCustomerBottomNavHeight(rawBottomInset: number): number {
 
 /** Screens that position their own bottom chrome — no stack paddingBottom (avoids double bottom gap). */
 export function screenManagesBottomNav(segments: readonly string[]): boolean {
-  if (segments[0] === "(tabs)") return true;
-  if (segments[0] === "checkout") return true;
-  if (segments[0] === "home") return true;
-  if (segments[0] === "orders") return true;
-  return false;
+  // Always true: Android system nav is `relative` (CustomerSystemChrome), so the OS
+  // already reserves nav height. Stack `paddingBottom` painted a white strip above it
+  // on every screen (search, wallet, location, …). Screens that need scroll clearance
+  // apply insets.bottom themselves.
+  void segments;
+  return true;
 }
 
 /** Extra lift for floating cart on food browse / merchant menu (above system nav). */
 export const FLOATING_CART_UI_LIFT = 20;
+
+/** Full floating cart bar height (padding + thumb row). Keep in sync with GlobalFloatingCart `gmBar`. */
+export const FLOATING_CART_BAR_HEIGHT = 64;
+
+/** Extra height when the "All carts" tab sits above the bar. */
+export const FLOATING_CART_ALL_CARTS_TAB_HEIGHT = 36;
+
+/** Minimum gap between Change Location CTA and the floating cart top edge. */
+export const FLOATING_CART_ABOVE_CTA_GAP = 16;
 
 /** @deprecated Use `FLOATING_CART_UI_LIFT` — kept for merchant menu FAB call sites. */
 export const MERCHANT_FLOATING_UI_LIFT = FLOATING_CART_UI_LIFT;
@@ -66,6 +76,53 @@ export function resolveFloatingCartBottomOffset(
     return options.tabBarOffset + (Platform.OS === "android" ? 4 : 10);
   }
   return Platform.OS === "android" ? navInset : navInset + 10;
+}
+
+/** Total bottom reserve for the floating cart pill (offset from screen bottom + bar height). */
+export function resolveFloatingCartReserveHeight(options: {
+  rawBottomInset: number;
+  aboveTabBar?: boolean;
+  tabBarOffset?: number;
+  /** Worst-case: include the "All carts" tab strip above the bar. */
+  withAllCartsTab?: boolean;
+  foodServiceLift?: boolean;
+}): number {
+  const bottomOffset =
+    resolveFloatingCartBottomOffset(options.rawBottomInset, {
+      aboveTabBar: options.aboveTabBar,
+      tabBarOffset: options.tabBarOffset,
+    }) + (options.foodServiceLift === false ? 0 : FLOATING_CART_UI_LIFT);
+  const barHeight =
+    FLOATING_CART_BAR_HEIGHT +
+    (options.withAllCartsTab ? FLOATING_CART_ALL_CARTS_TAB_HEIGHT : 0);
+  return bottomOffset + barHeight;
+}
+
+/**
+ * Bottom inset for the no-service "Change Location" CTA so it never overlaps the floating cart.
+ */
+export function resolveChangeLocationCtaBottom(options: {
+  rawBottomInset: number;
+  /** When false, only clears the home-indicator / nav inset. */
+  reserveFloatingCart?: boolean;
+  aboveTabBar?: boolean;
+  tabBarOffset?: number;
+  withAllCartsTab?: boolean;
+  gap?: number;
+}): number {
+  const gap = options.gap ?? FLOATING_CART_ABOVE_CTA_GAP;
+  if (options.reserveFloatingCart === false) {
+    return Math.max(options.rawBottomInset, 12) + 20;
+  }
+  return (
+    resolveFloatingCartReserveHeight({
+      rawBottomInset: options.rawBottomInset,
+      aboveTabBar: options.aboveTabBar,
+      tabBarOffset: options.tabBarOffset,
+      withAllCartsTab: options.withAllCartsTab ?? true,
+      foodServiceLift: true,
+    }) + gap
+  );
 }
 
 /** Minimal vertical padding between status bar and header content when no root spacer (0 = compact). */

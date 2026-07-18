@@ -3,17 +3,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Platform,
-  ImageBackground,
-  ActivityIndicator,
-  type ImageStyle,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, ScrollView, Platform, ImageBackground, ActivityIndicator, type ImageStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -190,7 +182,7 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
         <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Payment Pending</Text>
+        <AppText style={styles.headerTitle}>Payment Pending</AppText>
         <View style={styles.headerSpacer} />
       </View>
 
@@ -222,51 +214,51 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
               style={StyleSheet.absoluteFill}
             />
             <View style={styles.heroMessageBox}>
-              <Text style={styles.heroMessageTitle}>
+              <AppText style={styles.heroMessageTitle}>
                 Every delay impacts a rider&apos;s{" "}
-                <Text style={styles.heroMessageHighlight}>earnings</Text>.
-              </Text>
-              <Text style={styles.heroMessageSub}>Please complete your payment.</Text>
+                <AppText style={styles.heroMessageHighlight}>earnings</AppText>.
+              </AppText>
+              <AppText style={styles.heroMessageSub}>Please complete your payment.</AppText>
             </View>
           </ImageBackground>
         ) : null}
 
         <View style={styles.statusCard}>
-          <Text style={styles.statusLine}>
+          <AppText style={styles.statusLine}>
             Your {vehicleType} ride is completed order id {displayOrderId}
-          </Text>
+          </AppText>
         </View>
 
         <View style={styles.summaryCard}>
           <View style={styles.fareTopRow}>
             <View style={styles.fareTopLeft}>
-              <Text style={styles.sectionLabel}>FARE DUE</Text>
+              <AppText style={styles.sectionLabel}>FARE DUE</AppText>
               {rideFareBillQ.isLoading && !billSummary ? (
                 <View style={styles.billLoadingRow}>
                   <ActivityIndicator size="small" color={MINT_DARK} />
-                  <Text style={styles.billLoadingText}>Calculating fare…</Text>
+                  <AppText style={styles.billLoadingText}>Calculating fare…</AppText>
                 </View>
               ) : strikethroughAmount != null ? (
                 <View style={styles.fareAmountRow}>
-                  <Text style={styles.amountStrike}>{formatRideFare(strikethroughAmount)}</Text>
-                  <Text style={styles.amount}>{formatRideFare(fareDueAmount)}</Text>
+                  <AppText style={styles.amountStrike}>{formatRideFare(strikethroughAmount)}</AppText>
+                  <AppText style={styles.amount}>{formatRideFare(fareDueAmount)}</AppText>
                 </View>
               ) : (
-                <Text style={styles.amount}>{formatRideFare(fareDueAmount)}</Text>
+                <AppText style={styles.amount}>{formatRideFare(fareDueAmount)}</AppText>
               )}
               {hasOfferDiscount ? (
                 <View style={styles.savedPill}>
-                  <Text style={styles.savedPillText}>
+                  <AppText style={styles.savedPillText}>
                     You save {formatRideFare(discountTotal)}
-                  </Text>
+                  </AppText>
                 </View>
               ) : null}
-              <Text style={styles.methodLine}>Pay via {deliveredBill.paymentMethodLabel}</Text>
+              <AppText style={styles.methodLine}>Pay via {deliveredBill.paymentMethodLabel}</AppText>
             </View>
             <View style={styles.walletArt}>
               <Ionicons name="wallet" size={28} color={MINT_DARK} />
               <View style={styles.walletCoin}>
-                <Text style={styles.walletCoinText}>₹</Text>
+                <AppText style={styles.walletCoinText}>₹</AppText>
               </View>
             </View>
           </View>
@@ -274,15 +266,15 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
           {showCompactBill ? (
             <>
               <View style={styles.routeDivider} />
-              <Text style={styles.breakdownLabel}>Bill summary</Text>
+              <AppText style={styles.breakdownLabel}>Bill summary</AppText>
               <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownLineLabel}>Total fare</Text>
-                <Text style={styles.breakdownLineValue}>{formatRideFare(summaryTotalFare)}</Text>
+                <AppText style={styles.breakdownLineLabel}>Total fare</AppText>
+                <AppText style={styles.breakdownLineValue}>{formatRideFare(summaryTotalFare)}</AppText>
               </View>
               {appliedOfferLines.map((line) => (
                 <View key={`${line.label}-${line.amount}`} style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLineLabel}>{line.label}</Text>
-                  <Text style={styles.breakdownDiscount}>-{formatRideFare(line.amount)}</Text>
+                  <AppText style={styles.breakdownLineLabel}>{line.label}</AppText>
+                  <AppText style={styles.breakdownDiscount}>-{formatRideFare(line.amount)}</AppText>
                 </View>
               ))}
             </>
@@ -297,12 +289,12 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
               <View style={styles.routeDotDrop} />
             </View>
             <View style={styles.routeTextCol}>
-              <Text style={styles.routeText} numberOfLines={2}>
+              <AppText style={styles.routeText} numberOfLines={2}>
                 {order.merchantAddress?.trim() || "Pickup"}
-              </Text>
-              <Text style={[styles.routeText, styles.routeTextDrop]} numberOfLines={2}>
+              </AppText>
+              <AppText style={[styles.routeText, styles.routeTextDrop]} numberOfLines={2}>
                 {order.deliveryAddress?.trim() || "Drop"}
-              </Text>
+              </AppText>
             </View>
           </View>
         </View>
@@ -313,10 +305,10 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
 
         <View style={styles.infoBanner}>
           <Ionicons name="information-circle" size={18} color="#4F46E5" />
-          <Text style={styles.infoBannerText}>
+          <AppText style={styles.infoBannerText}>
             Your captain receives earnings after payment is confirmed. You cannot book another ride
             until this fare is cleared.
-          </Text>
+          </AppText>
         </View>
       </ScrollView>
 
@@ -333,7 +325,7 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
             style={styles.payBtnGradient}
           >
             <Ionicons name="lock-closed" size={18} color="#fff" />
-            <Text style={styles.payBtnText}>Proceed to Payment</Text>
+            <AppText style={styles.payBtnText}>Proceed to Payment</AppText>
             <View style={styles.payBtnChevron}>
               <Ionicons name="chevron-forward" size={16} color="#fff" />
             </View>
@@ -341,7 +333,7 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
         </TouchableOpacity>
         <View style={styles.secureRow}>
           <Ionicons name="shield-checkmark-outline" size={14} color={GatiMitraColors.textSecondary} />
-          <Text style={styles.secureText}>100% Secure Payments</Text>
+          <AppText style={styles.secureText}>100% Secure Payments</AppText>
         </View>
       </View>
 

@@ -1,15 +1,7 @@
 import { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  TextInput,
-  ActivityIndicator,
-  ScrollView,
-  useWindowDimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Image, TextInput, ActivityIndicator, ScrollView, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -76,7 +68,7 @@ function RatingTags({
             onPress={() => onToggle(tag)}
             activeOpacity={0.85}
           >
-            <Text style={[styles.tagChipText, active && styles.tagChipTextActive]}>{tag}</Text>
+            <AppText style={[styles.tagChipText, active && styles.tagChipTextActive]}>{tag}</AppText>
           </TouchableOpacity>
         );
       })}
@@ -199,14 +191,14 @@ export function OrderDeliveryRatingSheet({
           <View style={styles.successIcon}>
             <Ionicons name="checkmark-circle" size={26} color={GREEN} />
           </View>
-          <Text style={styles.title}>Order delivered!</Text>
-          <Text style={styles.subtitle}>
+          <AppText style={styles.title}>Order delivered!</AppText>
+          <AppText style={styles.subtitle}>
             Rate the restaurant, delivery partner, or both — at least one is enough.
-          </Text>
+          </AppText>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Restaurant</Text>
+          <AppText style={styles.sectionTitle}>Restaurant</AppText>
           <View style={styles.entityRow}>
             {storeBannerUri ? (
               <Image source={{ uri: storeBannerUri }} style={styles.entityThumb} resizeMode="cover" />
@@ -215,11 +207,11 @@ export function OrderDeliveryRatingSheet({
                 <Ionicons name="restaurant-outline" size={20} color={MUTED} />
               </View>
             )}
-            <Text style={styles.entityName} numberOfLines={2}>
+            <AppText style={styles.entityName} numberOfLines={2}>
               {storeName}
-            </Text>
+            </AppText>
           </View>
-          <Text style={styles.rateHint}>How was the food?</Text>
+          <AppText style={styles.rateHint}>How was the food?</AppText>
           <StarRow value={storeRating} onChange={handleStoreRatingChange} />
           {storeRating >= 1 ? (
             <RatingTags
@@ -228,7 +220,7 @@ export function OrderDeliveryRatingSheet({
               onToggle={toggleStoreTag}
             />
           ) : null}
-          <Text style={styles.reviewLabel}>Review restaurant (optional)</Text>
+          <AppText style={styles.reviewLabel}>Review restaurant (optional)</AppText>
           <TextInput
             style={styles.reviewInput}
             placeholder="Food quality, packaging, taste…"
@@ -242,16 +234,16 @@ export function OrderDeliveryRatingSheet({
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Delivery partner</Text>
+          <AppText style={styles.sectionTitle}>Delivery partner</AppText>
           <View style={styles.entityRow}>
             <View style={[styles.entityThumbFallback, styles.riderThumb]}>
               <Ionicons name="bicycle" size={22} color={GREEN} />
             </View>
-            <Text style={styles.entityName} numberOfLines={1}>
+            <AppText style={styles.entityName} numberOfLines={1}>
               {riderName?.trim() || "Your GatiMitra rider"}
-            </Text>
+            </AppText>
           </View>
-          <Text style={styles.rateHint}>How was the delivery?</Text>
+          <AppText style={styles.rateHint}>How was the delivery?</AppText>
           <StarRow value={deliveryRating} onChange={handleDeliveryRatingChange} />
           {deliveryRating >= 1 ? (
             <RatingTags
@@ -260,7 +252,7 @@ export function OrderDeliveryRatingSheet({
               onToggle={toggleRiderTag}
             />
           ) : null}
-          <Text style={styles.reviewLabel}>Review delivery (optional)</Text>
+          <AppText style={styles.reviewLabel}>Review delivery (optional)</AppText>
           <TextInput
             style={styles.reviewInput}
             placeholder="Delivery speed, rider behaviour, handling…"
@@ -274,8 +266,8 @@ export function OrderDeliveryRatingSheet({
 
           {showTipOption ? (
             <View style={styles.tipBlock}>
-              <Text style={styles.tipTitle}>Say thanks with a tip</Text>
-              <Text style={styles.tipSubtitle}>You did not add a tip at checkout.</Text>
+              <AppText style={styles.tipTitle}>Say thanks with a tip</AppText>
+              <AppText style={styles.tipSubtitle}>You did not add a tip at checkout.</AppText>
               <View style={styles.tipRow}>
                 {TIP_PRESETS.map((amount) => {
                   const active = selectedTip === amount;
@@ -286,9 +278,9 @@ export function OrderDeliveryRatingSheet({
                       onPress={() => setSelectedTip(active ? null : amount)}
                       activeOpacity={0.85}
                     >
-                      <Text style={[styles.tipChipText, active && styles.tipChipTextActive]}>
+                      <AppText style={[styles.tipChipText, active && styles.tipChipTextActive]}>
                         ₹{amount}
-                      </Text>
+                      </AppText>
                     </TouchableOpacity>
                   );
                 })}
@@ -306,7 +298,7 @@ export function OrderDeliveryRatingSheet({
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.submitBtnText}>Submit rating</Text>
+            <AppText style={styles.submitBtnText}>Submit rating</AppText>
           )}
         </TouchableOpacity>
 
@@ -316,7 +308,7 @@ export function OrderDeliveryRatingSheet({
           disabled={submitting}
           activeOpacity={0.8}
         >
-          <Text style={styles.laterBtnText}>Maybe later</Text>
+          <AppText style={styles.laterBtnText}>Maybe later</AppText>
         </TouchableOpacity>
       </ScrollView>
     </StoreBottomSheetShell>

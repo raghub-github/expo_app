@@ -3,17 +3,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  ScrollView,
-  Keyboard,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, ScrollView, Keyboard } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -82,18 +74,18 @@ export function CookingRequestBottomSheet({
           { paddingBottom: Math.max(insets.bottom, 12) },
         ]}
       >
-        <Text style={styles.title}>Add cooking requests</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>Add cooking requests</AppText>
+        <AppText style={styles.subtitle}>
           {restaurantName} will see this note while preparing your order.
-        </Text>
+        </AppText>
 
         {existingInstructions.length > 0 ? (
           <View style={styles.existingWrap}>
-            <Text style={styles.existingLabel}>Already added</Text>
+            <AppText style={styles.existingLabel}>Already added</AppText>
             {existingInstructions.map((item) => (
-              <Text key={item} style={styles.existingItem}>
+              <AppText key={item} style={styles.existingItem}>
                 • {item}
-              </Text>
+              </AppText>
             ))}
           </View>
         ) : null}
@@ -122,7 +114,7 @@ export function CookingRequestBottomSheet({
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.ctaText}>Add request</Text>
+            <AppText style={styles.ctaText}>Add request</AppText>
           )}
         </TouchableOpacity>
       </ScrollView>

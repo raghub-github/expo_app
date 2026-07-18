@@ -1,16 +1,8 @@
 /**
  * Periodic live ETA tick — recalculates all active food orders.
  */
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry } from "../../db/client.js";
 import { runLiveEtaForOrder } from "./eta.live-engine.js";
-
-const ACTIVE_FOOD_STATUSES = [
-  "assigned",
-  "accepted",
-  "reached_store",
-  "picked_up",
-  "in_transit",
-];
 
 export type LiveEtaTickResult = {
   scanned: number;
@@ -19,16 +11,26 @@ export type LiveEtaTickResult = {
 };
 
 export async function runLiveEtaTick(limit = 200): Promise<LiveEtaTickResult> {
-  const sql = getSql();
-  const rows = await sql<Array<{ order_id: string }>>`
-    SELECT oc.order_id
-    FROM orders_core oc
-    WHERE oc.order_type = 'food'
-      AND oc.status = ANY(${ACTIVE_FOOD_STATUSES})
-      AND oc.order_id IS NOT NULL
-    ORDER BY COALESCE(oc.live_eta_updated_at, oc.updated_at) ASC NULLS FIRST
-    LIMIT ${limit}
-  `;
+  const rows = await withSqlRetry(async () => {
+    const sql = getSql();
+    // Static IN list — avoids postgres.js binding a JS array as a malformed
+    // text literal ("a,b,c") instead of a Postgres text[] ("{a,b,c}").
+    return await sql<Array<{ order_id: string }>>`
+      SELECT oc.order_id
+      FROM orders_core oc
+      WHERE oc.order_type = 'food'
+        AND oc.status::text IN (
+          'assigned',
+          'accepted',
+          'reached_store',
+          'picked_up',
+          'in_transit'
+        )
+        AND oc.order_id IS NOT NULL
+      ORDER BY COALESCE(oc.live_eta_updated_at, oc.updated_at) ASC NULLS FIRST
+      LIMIT ${limit}
+    `;
+  });
 
   let updated = 0;
   let errors = 0;

@@ -2,19 +2,10 @@
  * Live trip share sheet — WhatsApp, SMS, Telegram, copy link.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Modal,
-  ActivityIndicator,
-  Alert,
-  Linking,
-  Platform,
-  Share,
-} from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, Modal, ActivityIndicator, Alert, Linking, Platform, Share } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -118,30 +109,30 @@ export function RideTripShareSheet({ visible, orderId, onClose }: RideTripShareS
         <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => onCloseRef.current()} />
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom + 12, 20) }]}>
           <View style={styles.handle} />
-          <Text style={styles.title}>Share live trip</Text>
-          <Text style={styles.subtitle}>
+          <AppText style={styles.title}>Share live trip</AppText>
+          <AppText style={styles.subtitle}>
             Friends and family can track your ride in real time. Link expires when the trip ends.
-          </Text>
+          </AppText>
 
           {loading ? (
             <View style={styles.loadingWrap}>
               <ActivityIndicator color="#137333" />
-              <Text style={styles.loadingText}>Generating secure link…</Text>
+              <AppText style={styles.loadingText}>Generating secure link…</AppText>
             </View>
           ) : error ? (
             <View style={styles.errorWrap}>
-              <Text style={styles.errorText}>{error}</Text>
+              <AppText style={styles.errorText}>{error}</AppText>
               <TouchableOpacity style={styles.retryBtn} onPress={retry} activeOpacity={0.85}>
-                <Text style={styles.retryBtnText}>Try again</Text>
+                <AppText style={styles.retryBtnText}>Try again</AppText>
               </TouchableOpacity>
             </View>
           ) : (
             <>
               {shareUrl ? (
                 <View style={styles.urlBox}>
-                  <Text style={styles.urlText} numberOfLines={2}>
+                  <AppText style={styles.urlText} numberOfLines={2}>
                     {shareUrl}
-                  </Text>
+                  </AppText>
                 </View>
               ) : null}
 
@@ -154,7 +145,7 @@ export function RideTripShareSheet({ visible, orderId, onClose }: RideTripShareS
 
               <TouchableOpacity style={styles.moreBtn} onPress={() => handleChannel("more")} activeOpacity={0.85}>
                 <Ionicons name="share-social-outline" size={18} color="#111827" />
-                <Text style={styles.moreBtnText}>More options</Text>
+                <AppText style={styles.moreBtnText}>More options</AppText>
               </TouchableOpacity>
             </>
           )}
@@ -180,7 +171,7 @@ function ShareBtn({
       <View style={[styles.shareIconWrap, { backgroundColor: `${color}18` }]}>
         <Ionicons name={icon} size={22} color={color} />
       </View>
-      <Text style={styles.shareLabel}>{label}</Text>
+      <AppText style={styles.shareLabel}>{label}</AppText>
     </TouchableOpacity>
   );
 }

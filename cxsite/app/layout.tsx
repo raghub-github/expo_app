@@ -7,6 +7,7 @@ import { CartAnimationProvider } from "@/components/cart/CartAnimation";
 import { LocationProvider } from "@/components/providers/LocationProvider";
 import AuthLocationSync from "@/components/providers/AuthLocationSync";
 import OrderLocationFromUrlSync from "@/components/location-search/OrderLocationFromUrlSync";
+import LocationVisitGate from "@/components/location-search/LocationVisitGate";
 import OrganizationJsonLd from "@/components/legal/OrganizationJsonLd";
 import { AppAssetsProvider } from "@/components/providers/AppAssetsProvider";
 import ImageProtection from "@/components/common/ImageProtection";
@@ -91,6 +92,7 @@ export default function RootLayout({
                 <AuthLocationSync />
                 <OrderLocationFromUrlSync />
               </Suspense>
+              <LocationVisitGate />
               <CartAnimationProvider>
                 {children}
               </CartAnimationProvider>

@@ -3,17 +3,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  ActivityIndicator,
-  Platform,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView, TextInput, ActivityIndicator, Platform, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -187,7 +179,7 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
       </TouchableOpacity>
 
       <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-        <Text style={styles.title}>Select a location</Text>
+        <AppText style={styles.title}>Select a location</AppText>
 
         <View style={styles.searchBar}>
           <Ionicons name="search" size={20} color={TEXT_GRAY} />
@@ -212,9 +204,9 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
         >
           {showSearchResults ? (
             <>
-              <Text style={styles.sectionLabel}>SEARCH RESULTS</Text>
+              <AppText style={styles.sectionLabel}>SEARCH RESULTS</AppText>
               {searchResults.length === 0 && !searchLoading ? (
-                <Text style={styles.emptyText}>No places found. Try another spelling.</Text>
+                <AppText style={styles.emptyText}>No places found. Try another spelling.</AppText>
               ) : (
                 searchResults.map((place, index) => (
                   <TouchableOpacity
@@ -228,12 +220,12 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
                       <Ionicons name="location-outline" size={22} color={BRAND} />
                     </View>
                     <View style={styles.addressTextWrap}>
-                      <Text style={styles.addressLabel} numberOfLines={1}>
+                      <AppText style={styles.addressLabel} numberOfLines={1}>
                         {place.primary}
-                      </Text>
-                      <Text style={styles.addressLine} numberOfLines={2}>
+                      </AppText>
+                      <AppText style={styles.addressLine} numberOfLines={2}>
                         {place.fullAddress}
-                      </Text>
+                      </AppText>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={TEXT_MUTED} />
                   </TouchableOpacity>
@@ -254,24 +246,24 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
                   <Ionicons name="add" size={24} color="#FFFFFF" />
                 </View>
                 <View style={styles.addressTextWrap}>
-                  <Text style={styles.addressLabel}>Add Address</Text>
-                  <Text style={styles.addressLine} numberOfLines={1}>
+                  <AppText style={styles.addressLabel}>Add Address</AppText>
+                  <AppText style={styles.addressLine} numberOfLines={1}>
                     Search area or drop a pin on the map
-                  </Text>
+                  </AppText>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={TEXT_MUTED} />
               </TouchableOpacity>
 
               <View style={styles.sectionRule} />
-              <Text style={styles.sectionLabel}>SAVED ADDRESSES</Text>
+              <AppText style={styles.sectionLabel}>SAVED ADDRESSES</AppText>
 
               {addressesPending && addresses.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <ActivityIndicator size="small" color={BRAND} />
-                  <Text style={styles.emptyText}>Loading saved addresses…</Text>
+                  <AppText style={styles.emptyText}>Loading saved addresses…</AppText>
                 </View>
               ) : addresses.length === 0 ? (
-                <Text style={styles.emptyText}>No saved addresses yet.</Text>
+                <AppText style={styles.emptyText}>No saved addresses yet.</AppText>
               ) : (
                 addresses.map((addr, index) => {
                   const icon = savedAddressIcon(addr);
@@ -288,12 +280,12 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
                         <Ionicons name={icon.name} size={22} color={icon.color} />
                       </View>
                       <View style={styles.addressTextWrap}>
-                        <Text style={styles.addressLabel} numberOfLines={1}>
+                        <AppText style={styles.addressLabel} numberOfLines={1}>
                           {addr.label ?? "Address"}
-                        </Text>
-                        <Text style={styles.addressLine} numberOfLines={3}>
+                        </AppText>
+                        <AppText style={styles.addressLine} numberOfLines={3}>
                           {addr.fullAddress}
-                        </Text>
+                        </AppText>
                       </View>
                       {loading ? (
                         <ActivityIndicator size="small" color={BRAND} />

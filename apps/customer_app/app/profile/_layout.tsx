@@ -31,6 +31,7 @@ export default function ProfileLayout() {
       <Stack.Screen name="ticket/[id]" options={{ title: "Ticket" }} />
       <Stack.Screen name="legal" options={{ headerShown: false }} />
       <Stack.Screen name="about" options={{ title: "About" }} />
+      <Stack.Screen name="delete-account" options={{ headerShown: false }} />
     </Stack>
     </>
   );

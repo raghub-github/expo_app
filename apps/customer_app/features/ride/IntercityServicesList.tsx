@@ -1,11 +1,8 @@
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { AppAssetImage } from "@/components/AppAssetImage";
+import { bundledRideServiceIcon } from "@/features/ride/rideOptionAssets";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { ALL_SERVICES, type ServiceId } from "./AllServicesGrid";
@@ -36,12 +33,12 @@ export function IntercityServicesList({
     return (
       <View style={styles.emptyWrap}>
         <Ionicons name="map-outline" size={40} color={GatiMitraColors.textSecondary} />
-        <Text style={styles.emptyTitle}>Select your route</Text>
-        <Text style={styles.emptySub}>
+        <AppText style={styles.emptyTitle}>Select your route</AppText>
+        <AppText style={styles.emptySub}>
           Choose pickup and drop locations to see inter city cab options.
-        </Text>
+        </AppText>
         <TouchableOpacity style={styles.routeBtn} onPress={onChangeRoute} activeOpacity={0.85}>
-          <Text style={styles.routeBtnText}>Select locations</Text>
+          <AppText style={styles.routeBtnText}>Select locations</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -51,15 +48,15 @@ export function IntercityServicesList({
     <View style={styles.root}>
       <View style={styles.headRow}>
         <View style={styles.headTextCol}>
-          <Text style={styles.title}>Inter city rides</Text>
-          <Text style={styles.subtitle}>
+          <AppText style={styles.title}>Inter city rides</AppText>
+          <AppText style={styles.subtitle}>
             {intercityEligible
               ? `${tripKm!.toFixed(1)} km trip · Cab options for longer routes`
               : `Trip under ${INTERCITY_MIN_DISTANCE_KM} km — use All services for nearby rides`}
-          </Text>
+          </AppText>
         </View>
         <TouchableOpacity style={styles.changeRouteBtn} onPress={onChangeRoute} activeOpacity={0.85}>
-          <Text style={styles.changeRouteText}>Change</Text>
+          <AppText style={styles.changeRouteText}>Change</AppText>
         </TouchableOpacity>
       </View>
 
@@ -84,25 +81,26 @@ export function IntercityServicesList({
                     assetKey={service.assetKey}
                     style={styles.icon}
                     contentFit="contain"
+                    fallbackSource={bundledRideServiceIcon(service.assetKey)}
                   />
                 ) : null}
               </View>
               <View style={styles.info}>
-                <Text style={[styles.label, disabled && styles.labelDisabled]}>{row.label}</Text>
-                <Text style={styles.rowSub} numberOfLines={2}>
+                <AppText style={[styles.label, disabled && styles.labelDisabled]}>{row.label}</AppText>
+                <AppText style={styles.rowSub} numberOfLines={2}>
                   {row.subtitle}
-                </Text>
+                </AppText>
               </View>
               <View style={styles.fareCol}>
                 {row.estFare != null && row.estFare > 0 ? (
-                  <Text style={[styles.fare, disabled && styles.labelDisabled]}>₹{row.estFare}</Text>
+                  <AppText style={[styles.fare, disabled && styles.labelDisabled]}>₹{row.estFare}</AppText>
                 ) : (
                   <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
                 )}
                 {!disabled ? (
                   <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
                 ) : (
-                  <Text style={styles.soonBadge}>N/A</Text>
+                  <AppText style={styles.soonBadge}>N/A</AppText>
                 )}
               </View>
             </TouchableOpacity>

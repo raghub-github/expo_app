@@ -3,20 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Platform,
-  Linking,
-  Alert,
-  Image,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, Platform, Linking, Alert, Image, ActivityIndicator, KeyboardAvoidingView } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -258,7 +247,7 @@ export default function OrderPartnerChatScreen() {
     if (m.senderType === "SYSTEM") {
       return (
         <View key={m.id} style={styles.systemBubbleWrap}>
-          <Text style={styles.systemBubble}>{m.body}</Text>
+          <AppText style={styles.systemBubble}>{m.body}</AppText>
         </View>
       );
     }
@@ -266,9 +255,9 @@ export default function OrderPartnerChatScreen() {
       return (
         <View key={m.id} style={styles.customerBubbleWrap}>
           <View style={styles.customerBubble}>
-            <Text style={styles.customerBubbleText}>{m.body}</Text>
+            <AppText style={styles.customerBubbleText}>{m.body}</AppText>
           </View>
-          <Text style={styles.timeLabel}>{formatTime(m.createdAt)}</Text>
+          <AppText style={styles.timeLabel}>{formatTime(m.createdAt)}</AppText>
         </View>
       );
     }
@@ -292,9 +281,9 @@ export default function OrderPartnerChatScreen() {
     return (
       <View key={m.id} style={styles.partnerBubbleWrap}>
         <View style={styles.partnerBubble}>
-          <Text style={styles.partnerBubbleText}>{m.body}</Text>
+          <AppText style={styles.partnerBubbleText}>{m.body}</AppText>
         </View>
-        <Text style={styles.timeLabelLeft}>{formatTime(m.createdAt)}</Text>
+        <AppText style={styles.timeLabelLeft}>{formatTime(m.createdAt)}</AppText>
       </View>
     );
   };
@@ -328,16 +317,16 @@ export default function OrderPartnerChatScreen() {
               {partnerPhoto ? (
                 <Image source={{ uri: partnerPhoto }} style={styles.headerAvatarImg} />
               ) : (
-                <Text style={styles.headerAvatarText}>{partnerName.slice(0, 1).toUpperCase()}</Text>
+                <AppText style={styles.headerAvatarText}>{partnerName.slice(0, 1).toUpperCase()}</AppText>
               )}
             </View>
             <View style={styles.headerTextCol}>
-              <Text style={styles.headerTitle} numberOfLines={1}>
+              <AppText style={styles.headerTitle} numberOfLines={1}>
                 {partnerName} ({displayPartnerRole})
-              </Text>
-              <Text style={styles.headerSub} numberOfLines={1}>
+              </AppText>
+              <AppText style={styles.headerSub} numberOfLines={1}>
                 {orderSubtitle}
-              </Text>
+              </AppText>
             </View>
           </View>
           <TouchableOpacity
@@ -350,12 +339,12 @@ export default function OrderPartnerChatScreen() {
         </View>
 
         <View style={styles.banner}>
-          <Text style={styles.bannerEmoji}>🛵</Text>
+          <AppText style={styles.bannerEmoji}>🛵</AppText>
           <View style={styles.bannerTextWrap}>
-            <Text style={styles.bannerTitle}>Your partner might be driving</Text>
-            <Text style={styles.bannerSub}>
+            <AppText style={styles.bannerTitle}>Your partner might be driving</AppText>
+            <AppText style={styles.bannerSub}>
               They&apos;ll respond to your messages as soon as possible
-            </Text>
+            </AppText>
           </View>
         </View>
 
@@ -365,11 +354,11 @@ export default function OrderPartnerChatScreen() {
           </View>
         ) : error && messages.length === 0 ? (
           <View style={styles.loadingWrap}>
-            <Text style={styles.errorText}>
+            <AppText style={styles.errorText}>
               {(error as Error).message || "Could not load chat."}
-            </Text>
+            </AppText>
             <TouchableOpacity onPress={() => void refetch()} style={styles.retryBtn}>
-              <Text style={styles.retryText}>Retry</Text>
+              <AppText style={styles.retryText}>Retry</AppText>
             </TouchableOpacity>
           </View>
         ) : (
@@ -387,9 +376,9 @@ export default function OrderPartnerChatScreen() {
           >
             {messages.length === 0 ? (
               <View style={styles.systemBubbleWrap}>
-                <Text style={styles.systemBubble}>
+                <AppText style={styles.systemBubble}>
                   Ask about pickup OTP, location, or trip details. Messages appear in the rider app.
-                </Text>
+                </AppText>
               </View>
             ) : (
               messages.map(renderBubble)
@@ -399,7 +388,7 @@ export default function OrderPartnerChatScreen() {
 
         {chatClosed ? (
           <View style={[styles.closedBar, { paddingBottom: composerBottomPad }]}>
-            <Text style={styles.closedText}>Chat closed — order completed.</Text>
+            <AppText style={styles.closedText}>Chat closed — order completed.</AppText>
           </View>
         ) : (
           <>
@@ -413,9 +402,9 @@ export default function OrderPartnerChatScreen() {
                     disabled={sendMutation.isPending || shareLocationLoading}
                     activeOpacity={0.85}
                   >
-                    <Text style={styles.quickReplyText} numberOfLines={2}>
+                    <AppText style={styles.quickReplyText} numberOfLines={2}>
                       {item.message}
-                    </Text>
+                    </AppText>
                     <Ionicons name="chevron-forward" size={16} color="#C4C4C4" />
                   </TouchableOpacity>
                 ))}

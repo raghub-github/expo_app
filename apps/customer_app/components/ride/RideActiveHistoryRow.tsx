@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { OrderSummary } from "@/services/order.service";
@@ -29,23 +31,23 @@ export function RideActiveHistoryRow({ order, onPress }: Props) {
           <Image source={vehicleImage} style={styles.vehicleImage} resizeMode="contain" />
         ) : null}
         <View style={styles.topText}>
-          <Text style={styles.title} numberOfLines={1}>
+          <AppText style={styles.title} numberOfLines={1}>
             {track.title}
-          </Text>
-          <Text style={styles.subtitle} numberOfLines={1}>
+          </AppText>
+          <AppText style={styles.subtitle} numberOfLines={1}>
             {destination}
-          </Text>
+          </AppText>
         </View>
         <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
       </View>
 
       <View style={styles.bottomRow}>
-        <Text style={styles.date}>{formatRideHistoryDateTime(order.createdAt)}</Text>
+        <AppText style={styles.date}>{formatRideHistoryDateTime(order.createdAt)}</AppText>
         <View style={styles.trackPill}>
-          <Text style={styles.trackPillText}>{track.subtitle}</Text>
+          <AppText style={styles.trackPillText}>{track.subtitle}</AppText>
         </View>
         {order.totalAmount != null ? (
-          <Text style={styles.fare}>{formatRideFare(order.totalAmount)}</Text>
+          <AppText style={styles.fare}>{formatRideFare(order.totalAmount)}</AppText>
         ) : null}
       </View>
     </TouchableOpacity>

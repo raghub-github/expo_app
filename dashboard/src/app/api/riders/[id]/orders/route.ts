@@ -21,6 +21,9 @@ type RiderOrderUiRow = {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  walletCredited?: boolean;
+  walletDebited?: boolean;
+  hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
@@ -53,6 +56,9 @@ function mapCoreOrderRow(row: {
   orderId?: string | null;
   externalRef?: string | null;
   earningCreditPending?: boolean;
+  walletCredited?: boolean;
+  walletDebited?: boolean;
+  hasLedgerEntry?: boolean;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
   riderRideUnassigned?: boolean;
@@ -74,6 +80,9 @@ function mapCoreOrderRow(row: {
         ? row.createdAt.toISOString()
         : String(row.createdAt ?? new Date().toISOString()),
     externalRef,
+    walletCredited: row.walletCredited === true,
+    walletDebited: row.walletDebited === true,
+    hasLedgerEntry: row.hasLedgerEntry === true || row.walletCredited === true || row.walletDebited === true,
     earningCreditPending: row.earningCreditPending === true,
     paymentStatus: row.paymentStatus ?? null,
     riderAssignmentStatus: row.riderAssignmentStatus ?? null,
@@ -159,8 +168,13 @@ export async function GET(
               formattedOrderId: row.formattedOrderId,
               orderId: row.orderId,
               externalRef: row.externalRef,
+              walletCredited: row.walletCredited,
+              walletDebited: row.walletDebited,
+              hasLedgerEntry: row.hasLedgerEntry,
               earningCreditPending: row.earningCreditPending,
               paymentStatus: row.paymentStatus,
+              riderAssignmentStatus: row.riderAssignmentStatus,
+              riderRideUnassigned: row.riderRideUnassigned,
             })
           ),
           total: result.total,

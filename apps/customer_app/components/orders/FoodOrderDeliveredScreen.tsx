@@ -3,15 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  Linking,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, ScrollView, Alert, Linking } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -94,9 +88,9 @@ function formatDeliveredTime(iso: string | undefined | null) {
 function DashedDivider() {
   return (
     <View style={styles.dashedWrap}>
-      <Text style={styles.dashed} numberOfLines={1}>
+      <AppText style={styles.dashed} numberOfLines={1}>
         - - - - - - - - - - - - - - - - - - - -
-      </Text>
+      </AppText>
     </View>
   );
 }
@@ -143,7 +137,7 @@ function DeliveredDetailsCard({
       {hasContact ? (
         <View style={styles.detailRow}>
           <Ionicons name="call-outline" size={18} color={MUTED} style={styles.detailIcon} />
-          <Text style={styles.detailContact}>{contactTitle}</Text>
+          <AppText style={styles.detailContact}>{contactTitle}</AppText>
         </View>
       ) : null}
 
@@ -153,11 +147,11 @@ function DeliveredDetailsCard({
         <View style={styles.detailRow}>
           <Ionicons name="location-outline" size={18} color={MUTED} style={styles.detailIcon} />
           <View style={styles.detailTextWrap}>
-            {addressTitle ? <Text style={styles.detailTitle}>{addressTitle}</Text> : null}
+            {addressTitle ? <AppText style={styles.detailTitle}>{addressTitle}</AppText> : null}
             {addressLine ? (
-              <Text style={styles.detailSub} numberOfLines={4}>
+              <AppText style={styles.detailSub} numberOfLines={4}>
                 {addressLine}
-              </Text>
+              </AppText>
             ) : null}
           </View>
         </View>
@@ -497,15 +491,15 @@ export function FoodOrderDeliveredScreen({
       <View style={styles.rateDoneRow}>
         <Ionicons name="hand-left-outline" size={18} color={MUTED} style={styles.rowIcon} />
         <View style={styles.rateDoneText}>
-          <Text style={styles.rateDoneTitle}>Thank you for rating!</Text>
-          <Text style={styles.rateDoneSub}>You rated {displayDeliveryRating} ★</Text>
+          <AppText style={styles.rateDoneTitle}>Thank you for rating!</AppText>
+          <AppText style={styles.rateDoneSub}>You rated {displayDeliveryRating} ★</AppText>
         </View>
       </View>
     ) : (
       <View style={styles.rateRow}>
         <Ionicons name="hand-left-outline" size={18} color={MUTED} style={styles.rowIcon} />
         <View style={styles.rateTextWrap}>
-          <Text style={styles.rateTitle}>Rate {riderFirstName}</Text>
+          <AppText style={styles.rateTitle}>Rate {riderFirstName}</AppText>
           <InlineStars
             value={localDeliveryRating}
             onPress={(n) => handleDeliveryStarPress(n)}
@@ -537,9 +531,9 @@ export function FoodOrderDeliveredScreen({
             <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.heroSideBtnLeft}>
               <Ionicons name="arrow-back" size={22} color="#fff" />
             </TouchableOpacity>
-            <Text style={styles.heroRestaurant} numberOfLines={1}>
+            <AppText style={styles.heroRestaurant} numberOfLines={1}>
               {restaurantName}
-            </Text>
+            </AppText>
             <View style={styles.heroSideBtnRight} />
           </View>
 
@@ -550,29 +544,29 @@ export function FoodOrderDeliveredScreen({
               </View>
             </View>
             <View style={styles.receiptCard}>
-              <Text style={styles.receiptTitle}>
+              <AppText style={styles.receiptTitle}>
                 Order delivered at{" "}
-                <Text style={styles.receiptTitleBold}>{deliveryLabel}</Text>
-              </Text>
+                <AppText style={styles.receiptTitleBold}>{deliveryLabel}</AppText>
+              </AppText>
               {deliveredTime ? (
-                <Text style={styles.receiptSub}>Delivered at {deliveredTime}</Text>
+                <AppText style={styles.receiptSub}>Delivered at {deliveredTime}</AppText>
               ) : null}
               <AppAssetImage
                 assetKey={CX.orders.postDeliveryHero}
                 style={styles.receiptHero}
                 contentFit="contain"
               />
-              <Text style={styles.receiptThanks}>Thank your delivery partner</Text>
+              <AppText style={styles.receiptThanks}>Thank your delivery partner</AppText>
               {displayTipAmount <= 0 ? (
                 <TouchableOpacity
                   style={styles.tipCta}
                   onPress={() => setTipSheetVisible(true)}
                   activeOpacity={0.9}
                 >
-                  <Text style={styles.tipCtaText}>Leave them a tip</Text>
+                  <AppText style={styles.tipCtaText}>Leave them a tip</AppText>
                 </TouchableOpacity>
               ) : (
-                <Text style={styles.tipDone}>You tipped ₹{displayTipAmount} — thank you!</Text>
+                <AppText style={styles.tipDone}>You tipped ₹{displayTipAmount} — thank you!</AppText>
               )}
             </View>
             <ReceiptTornEdge />
@@ -586,17 +580,17 @@ export function FoodOrderDeliveredScreen({
               {bannerUri ? (
                 <Image source={{ uri: bannerUri }} style={styles.logoImg} contentFit="cover" />
               ) : (
-                <Text style={styles.logoInitial}>{restaurantName.slice(0, 1).toUpperCase()}</Text>
+                <AppText style={styles.logoInitial}>{restaurantName.slice(0, 1).toUpperCase()}</AppText>
               )}
             </View>
             <View style={styles.restaurantInfo}>
-              <Text style={styles.restaurantName} numberOfLines={1}>
+              <AppText style={styles.restaurantName} numberOfLines={1}>
                 {restaurantName}
-              </Text>
+              </AppText>
               {!!merchantArea && (
-                <Text style={styles.restaurantArea} numberOfLines={1}>
+                <AppText style={styles.restaurantArea} numberOfLines={1}>
                   {merchantArea}
-                </Text>
+                </AppText>
               )}
             </View>
             <TouchableOpacity
@@ -618,15 +612,15 @@ export function FoodOrderDeliveredScreen({
               style={styles.rowIcon}
             />
             <View style={styles.orderTextWrap}>
-              <Text style={styles.orderIdLabel}>Order #{displayOrderId}</Text>
+              <AppText style={styles.orderIdLabel}>Order #{displayOrderId}</AppText>
               {itemsPreview ? (
                 <View style={styles.itemPreviewRow}>
                   {items[0]?.vegNonVeg ? (
                     <DietIndicator type={resolveOrderItemDiet(items[0].vegNonVeg) ?? "veg"} />
                   ) : null}
-                  <Text style={styles.itemPreview} numberOfLines={1}>
+                  <AppText style={styles.itemPreview} numberOfLines={1}>
                     {itemsPreview}
-                  </Text>
+                  </AppText>
                 </View>
               ) : null}
             </View>
@@ -639,15 +633,15 @@ export function FoodOrderDeliveredScreen({
             <View style={styles.rateDoneRow}>
               <Ionicons name="hand-left-outline" size={18} color={MUTED} style={styles.rowIcon} />
               <View style={styles.rateDoneText}>
-                <Text style={styles.rateDoneTitle}>Thank you for rating!</Text>
-                <Text style={styles.rateDoneSub}>You rated {displayStoreRating} ★</Text>
+                <AppText style={styles.rateDoneTitle}>Thank you for rating!</AppText>
+                <AppText style={styles.rateDoneSub}>You rated {displayStoreRating} ★</AppText>
               </View>
             </View>
           ) : (
             <View style={styles.rateRow}>
               <Ionicons name="hand-left-outline" size={18} color={MUTED} style={styles.rowIcon} />
               <View style={styles.rateTextWrap}>
-                <Text style={styles.rateTitle}>Rate {restaurantName}</Text>
+                <AppText style={styles.rateTitle}>Rate {restaurantName}</AppText>
                 <InlineStars
                   value={localStoreRating}
                   onPress={(n) => handleStoreStarPress(n)}
@@ -660,7 +654,7 @@ export function FoodOrderDeliveredScreen({
 
           <TouchableOpacity style={styles.hearRow} activeOpacity={0.85}>
             <Ionicons name="storefront-outline" size={18} color={MUTED} style={styles.rowIcon} />
-            <Text style={styles.hearText}>Hear from restaurants</Text>
+            <AppText style={styles.hearText}>Hear from restaurants</AppText>
             <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />
           </TouchableOpacity>
 
@@ -669,14 +663,14 @@ export function FoodOrderDeliveredScreen({
           <View style={styles.packagingBlock}>
             <View style={styles.packagingHead}>
               <Ionicons name="bag-outline" size={18} color={MUTED} style={styles.rowIcon} />
-              <Text style={styles.packagingTitle}>
+              <AppText style={styles.packagingTitle}>
                 How was the restaurant&apos;s packaging?
                 {packagingFeedback === "good" ? (
-                  <Text style={styles.packagingAnswer}> Good</Text>
+                  <AppText style={styles.packagingAnswer}> Good</AppText>
                 ) : packagingFeedback === "bad" ? (
-                  <Text style={styles.packagingAnswerBad}> Not good</Text>
+                  <AppText style={styles.packagingAnswerBad}> Not good</AppText>
                 ) : null}
-              </Text>
+              </AppText>
             </View>
             {packagingFeedback == null ? (
               <View style={styles.packagingBtns}>
@@ -686,7 +680,7 @@ export function FoodOrderDeliveredScreen({
                   activeOpacity={0.85}
                   disabled={feedbackSaving}
                 >
-                  <Text style={styles.packBtnText}>Good</Text>
+                  <AppText style={styles.packBtnText}>Good</AppText>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.packBtn}
@@ -694,7 +688,7 @@ export function FoodOrderDeliveredScreen({
                   activeOpacity={0.85}
                   disabled={feedbackSaving}
                 >
-                  <Text style={styles.packBtnText}>Not good</Text>
+                  <AppText style={styles.packBtnText}>Not good</AppText>
                 </TouchableOpacity>
               </View>
             ) : null}
@@ -727,8 +721,8 @@ export function FoodOrderDeliveredScreen({
         <TouchableOpacity style={styles.helpCard} onPress={onOpenHelp} activeOpacity={0.85}>
           <AppAssetImage assetKey={CX.orders.support} style={styles.helpImage} contentFit="contain" />
           <View style={styles.helpTextWrap}>
-            <Text style={styles.helpTitle}>Need help with your order?</Text>
-            <Text style={styles.helpSub}>Get help & support</Text>
+            <AppText style={styles.helpTitle}>Need help with your order?</AppText>
+            <AppText style={styles.helpSub}>Get help & support</AppText>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#C4C4C4" />
         </TouchableOpacity>

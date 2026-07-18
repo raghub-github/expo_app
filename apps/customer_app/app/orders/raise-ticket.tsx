@@ -3,19 +3,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  ActivityIndicator,
-  StyleSheet,
-  Alert,
-  Linking,
-  BackHandler,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, StyleSheet, Alert, Linking, BackHandler, Platform } from "react-native";
 import type { ReactNode } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -88,9 +78,9 @@ function normalizeTel(raw: string | null | undefined): string | null {
 function DashedDivider() {
   return (
     <View style={styles.dashedDividerWrap}>
-      <Text style={styles.dashedDivider} numberOfLines={1} ellipsizeMode="clip">
+      <AppText style={styles.dashedDivider} numberOfLines={1} ellipsizeMode="clip">
         - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-      </Text>
+      </AppText>
     </View>
   );
 }
@@ -100,7 +90,7 @@ function HelpSectionBlock({ title, children }: { title: string; children: ReactN
     <View style={styles.sectionBlock}>
       <View style={styles.sectionCard}>
         <View style={styles.sectionHeadBar}>
-          <Text style={styles.sectionHeadText}>{title}</Text>
+          <AppText style={styles.sectionHeadText}>{title}</AppText>
         </View>
         {children}
       </View>
@@ -125,8 +115,8 @@ function HelpActionRow({
         <Ionicons name={icon} size={17} color={MUTED} />
       </View>
       <View style={styles.rowTextCol}>
-        <Text style={styles.rowTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.rowSubtitle}>{subtitle}</Text> : null}
+        <AppText style={styles.rowTitle}>{title}</AppText>
+        {subtitle ? <AppText style={styles.rowSubtitle}>{subtitle}</AppText> : null}
       </View>
       {onPress ? <Ionicons name="chevron-forward" size={16} color="#BDBDBD" /> : null}
     </>
@@ -558,12 +548,12 @@ export default function OrderRaiseTicketScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.section}>
-        <Text style={styles.h1}>What went wrong?</Text>
-        <Text style={styles.h2}>
+        <AppText style={styles.h1}>What went wrong?</AppText>
+        <AppText style={styles.h2}>
           {showAllTopics
             ? "Browse all help topics for this order."
             : "Topics matched to your order's current status."}
-        </Text>
+        </AppText>
 
         {concernsQ.isLoading ? (
           <ActivityIndicator color={GREEN} style={{ marginTop: 28 }} />
@@ -571,7 +561,7 @@ export default function OrderRaiseTicketScreen() {
           <View style={styles.topicList}>
             {groupedAll.map((g) => (
               <View key={g.key} style={styles.topicGroup}>
-                <Text style={styles.groupHead}>{g.key.replace(/_/g, " ")}</Text>
+                <AppText style={styles.groupHead}>{g.key.replace(/_/g, " ")}</AppText>
                 {g.items.map((t) => (
                   <TopicRow
                     key={t.ticket_title_id}
@@ -594,7 +584,7 @@ export default function OrderRaiseTicketScreen() {
           </View>
         ) : (
           <View style={styles.emptyBox}>
-            <Text style={styles.emptyText}>No status-specific topics available.</Text>
+            <AppText style={styles.emptyText}>No status-specific topics available.</AppText>
           </View>
         )}
 
@@ -604,9 +594,9 @@ export default function OrderRaiseTicketScreen() {
           activeOpacity={0.85}
         >
           <Ionicons name={showAllTopics ? "filter" : "list"} size={18} color={GREEN} />
-          <Text style={styles.toggleText}>
+          <AppText style={styles.toggleText}>
             {showAllTopics ? "Show relevant topics only" : "Show all topics"}
-          </Text>
+          </AppText>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -628,17 +618,17 @@ export default function OrderRaiseTicketScreen() {
           style={styles.backRow}
         >
           <Ionicons name="chevron-back" size={18} color={GREEN} />
-          <Text style={styles.backText}>Change topic</Text>
+          <AppText style={styles.backText}>Change topic</AppText>
         </TouchableOpacity>
 
         {selectedTitle ? (
           <View style={styles.pickedBox}>
             <Ionicons name="checkmark-circle" size={18} color={GREEN} />
-            <Text style={styles.pickedText}>{selectedTitle.title_text}</Text>
+            <AppText style={styles.pickedText}>{selectedTitle.title_text}</AppText>
           </View>
         ) : null}
 
-        <Text style={styles.fieldLabel}>Subject</Text>
+        <AppText style={styles.fieldLabel}>Subject</AppText>
         <TextInput
           value={subject}
           onChangeText={setSubject}
@@ -648,7 +638,7 @@ export default function OrderRaiseTicketScreen() {
           maxLength={500}
         />
 
-        <Text style={styles.fieldLabel}>Tell us what happened</Text>
+        <AppText style={styles.fieldLabel}>Tell us what happened</AppText>
         <TextInput
           value={description}
           onChangeText={setDescription}
@@ -658,7 +648,7 @@ export default function OrderRaiseTicketScreen() {
           multiline
           maxLength={10000}
         />
-        <Text style={styles.charCount}>{description.length}/10000</Text>
+        <AppText style={styles.charCount}>{description.length}/10000</AppText>
 
         <TouchableOpacity
           disabled={createMutation.isPending}
@@ -671,15 +661,15 @@ export default function OrderRaiseTicketScreen() {
           ) : (
             <>
               <Ionicons name="headset" size={18} color="#fff" />
-              <Text style={styles.submitText}>Submit ticket</Text>
+              <AppText style={styles.submitText}>Submit ticket</AppText>
             </>
           )}
         </TouchableOpacity>
 
-        <Text style={styles.note}>
+        <AppText style={styles.note}>
           Our support team will review your order and assign the right agent. You can chat and share
           photos on the next screen.
-        </Text>
+        </AppText>
 
         <LegalFooter
           prefix="See our"
@@ -754,11 +744,11 @@ export default function OrderRaiseTicketScreen() {
 
       {!isRideOrder ? (
         <View style={styles.cancellationCard}>
-          <Text style={styles.cancellationTitle}>Cancellation Policy</Text>
-          <Text style={styles.cancellationBody} numberOfLines={3}>
+          <AppText style={styles.cancellationTitle}>Cancellation Policy</AppText>
+          <AppText style={styles.cancellationBody} numberOfLines={3}>
             Help us reduce food wastage by avoiding order cancellations. A 100% cancellation charge will
             apply. This helps us compensate the restaurant partner for food preparation.
-          </Text>
+          </AppText>
         </View>
       ) : null}
     </View>
@@ -769,8 +759,8 @@ export default function OrderRaiseTicketScreen() {
       return (
         <View style={styles.centered}>
           <Ionicons name="alert-circle-outline" size={40} color={MUTED} />
-          <Text style={styles.errTitle}>Missing order</Text>
-          <Text style={styles.errText}>Open support from an order details page.</Text>
+          <AppText style={styles.errTitle}>Missing order</AppText>
+          <AppText style={styles.errText}>Open support from an order details page.</AppText>
         </View>
       );
     }
@@ -780,9 +770,9 @@ export default function OrderRaiseTicketScreen() {
         return (
           <View style={styles.centered}>
             <Ionicons name="receipt-outline" size={40} color={MUTED} />
-            <Text style={styles.errTitle}>Order not found</Text>
+            <AppText style={styles.errTitle}>Order not found</AppText>
             <TouchableOpacity style={styles.errBtn} onPress={() => router.back()}>
-              <Text style={styles.errBtnText}>Go back</Text>
+              <AppText style={styles.errBtnText}>Go back</AppText>
             </TouchableOpacity>
           </View>
         );
@@ -808,7 +798,7 @@ export default function OrderRaiseTicketScreen() {
       return (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={GREEN} />
-          <Text style={styles.loadingText}>Finding your order…</Text>
+          <AppText style={styles.loadingText}>Finding your order…</AppText>
         </View>
       );
     }
@@ -817,12 +807,12 @@ export default function OrderRaiseTicketScreen() {
       return (
         <View style={styles.centered}>
           <Ionicons name="receipt-outline" size={40} color={MUTED} />
-          <Text style={styles.errTitle}>Order not found</Text>
-          <Text style={styles.errText}>
+          <AppText style={styles.errTitle}>Order not found</AppText>
+          <AppText style={styles.errText}>
             We couldn't find order #{orderRefParam || orderIdParam} in your account.
-          </Text>
+          </AppText>
           <TouchableOpacity style={styles.errBtn} onPress={() => router.back()}>
-            <Text style={styles.errBtnText}>Go back</Text>
+            <AppText style={styles.errBtnText}>Go back</AppText>
           </TouchableOpacity>
         </View>
       );
@@ -870,8 +860,8 @@ export default function OrderRaiseTicketScreen() {
             </TouchableOpacity>
             <View style={styles.heroRow}>
               <View style={styles.heroTextCol}>
-                <Text style={styles.heroHi}>Hi!</Text>
-                <Text style={styles.heroSub}>How can we help you?</Text>
+                <AppText style={styles.heroHi}>Hi!</AppText>
+                <AppText style={styles.heroSub}>How can we help you?</AppText>
               </View>
               <View style={styles.heroImageWrap}>
                 <AppAssetImage
@@ -888,7 +878,7 @@ export default function OrderRaiseTicketScreen() {
             <TouchableOpacity onPress={handleBack} style={styles.headerSide} hitSlop={12}>
               <Ionicons name="arrow-back" size={22} color={TEXT} />
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>{showFlowHeader ? "Get help" : "Help"}</Text>
+            <AppText style={styles.headerTitle}>{showFlowHeader ? "Get help" : "Help"}</AppText>
             <View style={styles.headerSide} />
           </View>
         )}
@@ -923,7 +913,7 @@ function TopicRow({ title, onPress }: { title: string; onPress: () => void }) {
       <View style={styles.topicIcon}>
         <Ionicons name="help-buoy-outline" size={18} color={GREEN} />
       </View>
-      <Text style={styles.topicText}>{title}</Text>
+      <AppText style={styles.topicText}>{title}</AppText>
       <Ionicons name="chevron-forward" size={18} color={MUTED} />
     </TouchableOpacity>
   );

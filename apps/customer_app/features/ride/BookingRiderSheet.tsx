@@ -3,16 +3,9 @@
  * Add a guest opens contact list when permission granted; else parent shows permission modal.
  */
 
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  Modal,
-  StyleSheet,
-  Pressable,
-  useWindowDimensions,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, Modal, StyleSheet, Pressable, useWindowDimensions, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -60,7 +53,7 @@ export function BookingRiderSheet({
           onStartShouldSetResponder={() => true}
         >
           <View style={styles.handle} />
-          <Text style={styles.title}>Booking ride for</Text>
+          <AppText style={styles.title}>Booking ride for</AppText>
 
           <TouchableOpacity
             style={styles.optionRow}
@@ -72,7 +65,7 @@ export function BookingRiderSheet({
               size={22}
               color={GatiMitraColors.textPrimary}
             />
-            <Text style={styles.optionLabel}>Myself</Text>
+            <AppText style={styles.optionLabel}>Myself</AppText>
             <View
               style={[
                 styles.radio,
@@ -95,14 +88,14 @@ export function BookingRiderSheet({
               size={22}
               color={GatiMitraColors.emerald}
             />
-            <Text style={styles.addLabel}>Add a guest</Text>
+            <AppText style={styles.addLabel}>Add a guest</AppText>
           </TouchableOpacity>
 
           <View style={styles.privacyNote}>
             <Ionicons name="information-circle-outline" size={18} color={GatiMitraColors.textSecondary} />
-            <Text style={styles.privacyText}>
+            <AppText style={styles.privacyText}>
               Contact name won't be shared with captain.
-            </Text>
+            </AppText>
           </View>
 
           <TouchableOpacity
@@ -110,7 +103,7 @@ export function BookingRiderSheet({
             onPress={onClose}
             activeOpacity={0.9}
           >
-            <Text style={styles.doneBtnText}>Done</Text>
+            <AppText style={styles.doneBtnText}>Done</AppText>
           </TouchableOpacity>
         </View>
       </View>

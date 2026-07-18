@@ -1,12 +1,6 @@
-import {
-  Modal,
-  View,
-  Text,
-  TouchableOpacity,
-  Pressable,
-  StyleSheet,
-  Platform,
-} from "react-native";
+import { Modal, View, TouchableOpacity, Pressable, StyleSheet, Platform } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -53,10 +47,10 @@ export function AddressConfirmBottomSheet({ visible, address, onConfirm, onCance
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 14) + 10 }]}>
             <View style={styles.handle} />
 
-            <Text style={styles.title}>Switch delivery location?</Text>
-            <Text style={styles.subtitle}>
+            <AppText style={styles.title}>Switch delivery location?</AppText>
+            <AppText style={styles.subtitle}>
               Your orders and delivery ETA will update for this address.
-            </Text>
+            </AppText>
 
             <View style={styles.addressCard}>
               <View style={styles.addressCardTop}>
@@ -65,27 +59,27 @@ export function AddressConfirmBottomSheet({ visible, address, onConfirm, onCance
                 </View>
                 <View style={styles.addressMeta}>
                   <View style={styles.labelPill}>
-                    <Text style={styles.labelPillText}>{label.toUpperCase()}</Text>
+                    <AppText style={styles.labelPillText}>{label.toUpperCase()}</AppText>
                   </View>
-                  <Text style={styles.addressLine} numberOfLines={3}>
+                  <AppText style={styles.addressLine} numberOfLines={3}>
                     {address.fullAddress}
-                  </Text>
+                  </AppText>
                 </View>
               </View>
               {address.contactMobile ? (
                 <View style={styles.phoneRow}>
                   <Ionicons name="call-outline" size={14} color={TEXT_MUTED} />
-                  <Text style={styles.phoneText}>{address.contactMobile}</Text>
+                  <AppText style={styles.phoneText}>{address.contactMobile}</AppText>
                 </View>
               ) : null}
             </View>
 
             <TouchableOpacity style={styles.primaryBtn} onPress={onConfirm} activeOpacity={0.88}>
-              <Text style={styles.primaryBtnText}>Confirm & use this address</Text>
+              <AppText style={styles.primaryBtnText}>Confirm & use this address</AppText>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.secondaryBtn} onPress={onCancel} activeOpacity={0.75}>
-              <Text style={styles.secondaryBtnText}>Choose a different address</Text>
+              <AppText style={styles.secondaryBtnText}>Choose a different address</AppText>
             </TouchableOpacity>
           </View>
         </View>

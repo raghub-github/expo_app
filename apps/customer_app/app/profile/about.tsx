@@ -3,15 +3,9 @@
  * plus app version info shown in a card.
  */
 
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-  Alert,
-} from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Platform, Alert } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useRouter } from "expo-router";
 import Constants from "expo-constants";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -57,8 +51,8 @@ export default function AboutScreen() {
           <View style={styles.brandIcon}>
             <Ionicons name="leaf-outline" size={28} color="#FFFFFF" />
           </View>
-          <Text style={styles.brandName}>GatiMitra</Text>
-          <Text style={styles.brandTag}>Mobility. Food. Logistics. — for India</Text>
+          <AppText style={styles.brandName}>GatiMitra</AppText>
+          <AppText style={styles.brandTag}>Mobility. Food. Logistics. — for India</AppText>
         </View>
 
         <View style={styles.section}>
@@ -77,10 +71,10 @@ export default function AboutScreen() {
                       <Ionicons name={row.icon} size={20} color={GREEN} />
                     </View>
                     <View style={styles.rowText}>
-                      <Text style={styles.rowTitle}>{doc.title}</Text>
-                      <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      <AppText style={styles.rowTitle}>{doc.title}</AppText>
+                      <AppText style={styles.rowSubtitle} numberOfLines={1}>
                         {doc.subtitle}
-                      </Text>
+                      </AppText>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={MUTED} />
                   </TouchableOpacity>
@@ -92,23 +86,23 @@ export default function AboutScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>App version</Text>
+          <AppText style={styles.sectionTitle}>App version</AppText>
           <TouchableOpacity style={styles.versionCard} activeOpacity={0.7} onPress={copyVersion}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.versionTitle}>
+              <AppText style={styles.versionTitle}>
                 GatiMitra v{appVersion}{" "}
-                <Text style={styles.versionBuild}>({buildNumber})</Text>
-              </Text>
-              <Text style={styles.versionMeta}>Legal pack: {LEGAL_PACK_VERSION}</Text>
+                <AppText style={styles.versionBuild}>({buildNumber})</AppText>
+              </AppText>
+              <AppText style={styles.versionMeta}>Legal pack: {LEGAL_PACK_VERSION}</AppText>
             </View>
             <Ionicons name="copy-outline" size={18} color={MUTED} />
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.footer}>
+        <AppText style={styles.footer}>
           © {new Date().getFullYear()} GatiMitra Technologies Private Limited{"\n"}
           Made in India 🇮🇳
-        </Text>
+        </AppText>
       </ScrollView>
     </View>
   );

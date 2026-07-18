@@ -164,117 +164,118 @@ export async function GET(request: NextRequest) {
         : `ut.${sortBy} ${sortOrder}, ut.updated_at DESC, ut.id DESC`;
 
     const sqlClient = getSql();
-    // Opportunistic wake-up: avoid stale "Resuming now" when cron has not run yet.
-    try {
-      const wokeRows = await sqlClient`
-        WITH due AS (
-          SELECT id
-          FROM public.unified_tickets
-          WHERE status = 'SNOOZED'
-            AND snoozed_until IS NOT NULL
-            AND snoozed_until <= NOW()
-          FOR UPDATE SKIP LOCKED
-        )
-        UPDATE public.unified_tickets ut
-        SET status = 'OPEN',
-            snoozed_until = NULL,
-            snooze_reason = NULL,
-            updated_at = NOW()
-        FROM due
-        WHERE ut.id = due.id
-        RETURNING ut.id
-      ` as Record<string, unknown>[];
-      const sqlAudit = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
-      for (const row of wokeRows) {
-        const id = Number(row.id);
-        if (!Number.isFinite(id)) continue;
-        await insertTicketActivityAudit(sqlAudit, {
-          ticket_id: id,
-          activity_type: "auto_unsnoozed",
-          activity_category: "status_change",
-          activity_description: "Ticket auto-resumed after snooze expiry",
-          actor_user_id: null,
-          actor_name: "System",
-          actor_email: null,
-          actor_type: "SYSTEM",
-          old_status: "SNOOZED",
-          new_status: "OPEN",
-        });
+    // Snooze wake + SLA sync must NOT block the list response — agents need
+    // tickets immediately. Run in background; cron/automation also covers these.
+    void (async () => {
+      try {
+        const wokeRows = (await sqlClient`
+          WITH due AS (
+            SELECT id
+            FROM public.unified_tickets
+            WHERE status = 'SNOOZED'
+              AND snoozed_until IS NOT NULL
+              AND snoozed_until <= NOW()
+            FOR UPDATE SKIP LOCKED
+            LIMIT 50
+          )
+          UPDATE public.unified_tickets ut
+          SET status = 'OPEN',
+              snoozed_until = NULL,
+              snooze_reason = NULL,
+              updated_at = NOW()
+          FROM due
+          WHERE ut.id = due.id
+          RETURNING ut.id
+        `) as Record<string, unknown>[];
+        const sqlAudit = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
+        for (const row of wokeRows) {
+          const id = Number(row.id);
+          if (!Number.isFinite(id)) continue;
+          await insertTicketActivityAudit(sqlAudit, {
+            ticket_id: id,
+            activity_type: "auto_unsnoozed",
+            activity_category: "status_change",
+            activity_description: "Ticket auto-resumed after snooze expiry",
+            actor_user_id: null,
+            actor_name: "System",
+            actor_email: null,
+            actor_type: "SYSTEM",
+            old_status: "SNOOZED",
+            new_status: "OPEN",
+          });
+        }
+      } catch (wakeErr) {
+        console.warn("[GET /api/tickets] opportunistic snooze wake skipped:", wakeErr);
       }
-    } catch (wakeErr) {
-      console.warn("[GET /api/tickets] opportunistic snooze wake skipped:", wakeErr);
-    }
-    // Keep SLA fields/tag in DB synced with real time:
-    // 1) populate missing sla_due_at from priority SLA settings
-    // 2) add/remove SLA_BREACHED tag when due crosses NOW()
-    try {
-      await sqlClient`
-        WITH cfg AS (
-          SELECT
-            COALESCE(sla_minutes_low, 30) AS low_mins,
-            COALESCE(sla_minutes_medium, 25) AS medium_mins,
-            COALESCE(sla_minutes_high, 20) AS high_mins,
-            COALESCE(sla_minutes_urgent, 15) AS urgent_mins,
-            COALESCE(sla_minutes_critical, 10) AS critical_mins
-          FROM public.ticket_queue_auto_assign_settings
-          WHERE id = 1
-          LIMIT 1
-        )
-        UPDATE public.unified_tickets ut
-        SET
-          sla_due_at = ut.created_at + make_interval(mins => (
-            CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
-              WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
-              WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
-              WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
-              WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
-              ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
-            END
-          )),
-          updated_at = NOW()
-        WHERE ut.sla_due_at IS NULL
-          AND ut.status::text NOT IN ('RESOLVED', 'CLOSED');
-      `;
+      try {
+        await sqlClient`
+          WITH cfg AS (
+            SELECT
+              COALESCE(sla_minutes_low, 30) AS low_mins,
+              COALESCE(sla_minutes_medium, 25) AS medium_mins,
+              COALESCE(sla_minutes_high, 20) AS high_mins,
+              COALESCE(sla_minutes_urgent, 15) AS urgent_mins,
+              COALESCE(sla_minutes_critical, 10) AS critical_mins
+            FROM public.ticket_queue_auto_assign_settings
+            WHERE id = 1
+            LIMIT 1
+          )
+          UPDATE public.unified_tickets ut
+          SET
+            sla_due_at = ut.created_at + make_interval(mins => (
+              CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
+                WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
+                WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
+                WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
+                WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
+                ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
+              END
+            )),
+            updated_at = NOW()
+          WHERE ut.sla_due_at IS NULL
+            AND ut.status::text NOT IN ('RESOLVED', 'CLOSED');
+        `;
 
-      await sqlClient`
-        UPDATE public.unified_tickets ut
-        SET
-          tags = CASE
-            WHEN ut.status::text IN ('RESOLVED', 'CLOSED')
-              THEN CASE
+        await sqlClient`
+          UPDATE public.unified_tickets ut
+          SET
+            tags = CASE
+              WHEN ut.status::text IN ('RESOLVED', 'CLOSED')
+                THEN CASE
+                  WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                    THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+                  ELSE COALESCE(ut.tags, ARRAY[]::text[])
+                END
+              WHEN ut.sla_due_at IS NOT NULL AND ut.sla_due_at <= NOW()
+                THEN CASE
+                  WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                    THEN COALESCE(ut.tags, ARRAY[]::text[])
+                  ELSE array_append(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+                END
+              ELSE CASE
                 WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
                   THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
                 ELSE COALESCE(ut.tags, ARRAY[]::text[])
               END
-            WHEN ut.sla_due_at IS NOT NULL AND ut.sla_due_at <= NOW()
-              THEN CASE
-                WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
-                  THEN COALESCE(ut.tags, ARRAY[]::text[])
-                ELSE array_append(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
-              END
-            ELSE CASE
-              WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
-                THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
-              ELSE COALESCE(ut.tags, ARRAY[]::text[])
-            END
-          END,
-          updated_at = NOW()
-        WHERE (
-          ut.status::text IN ('RESOLVED', 'CLOSED')
-          AND COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
-        ) OR (
-          ut.status::text NOT IN ('RESOLVED', 'CLOSED')
-          AND ut.sla_due_at IS NOT NULL
-          AND (
-            (ut.sla_due_at <= NOW() AND NOT (COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]))
-            OR
-            (ut.sla_due_at > NOW() AND COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[])
-          )
-        );
-      `;
-    } catch (slaSyncErr) {
-      console.warn("[GET /api/tickets] SLA sync skipped:", slaSyncErr);
-    }
+            END,
+            updated_at = NOW()
+          WHERE (
+            ut.status::text IN ('RESOLVED', 'CLOSED')
+            AND COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+          ) OR (
+            ut.status::text NOT IN ('RESOLVED', 'CLOSED')
+            AND ut.sla_due_at IS NOT NULL
+            AND (
+              (ut.sla_due_at <= NOW() AND NOT (COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]))
+              OR
+              (ut.sla_due_at > NOW() AND COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[])
+            )
+          );
+        `;
+      } catch (slaSyncErr) {
+        console.warn("[GET /api/tickets] SLA sync skipped:", slaSyncErr);
+      }
+    })();
     /** Drain ticket_automation_jobs (e.g. ticket_created from DB trigger) before listing so assignments are visible immediately. */
     try {
       const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
@@ -622,12 +623,15 @@ export async function GET(request: NextRequest) {
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
 
+    // Fast list path: parallel COUNT + page SELECT without per-row LATERAL
+    // (assigned group + metadata landed group cover the list UI).
     try {
-      if (whereClause) {
-        countResult = (await sqlClient`
-          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as never}        `) as unknown as { count: number }[];
-        try {
-          ticketRows = (await sqlClient`
+      const countQuery = whereClause
+        ? sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as never}`
+        : sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`;
+
+      const pageQuery = whereClause
+        ? sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -637,8 +641,7 @@ export async function GET(request: NextRequest) {
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
               tg.group_code AS group_code, tg.group_name AS group_name,
-              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
-              landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
+              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
             LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
@@ -648,117 +651,12 @@ export async function GET(request: NextRequest) {
               THEN (ut.metadata->>'landed_group_id')::bigint
               ELSE NULL
             END
-            LEFT JOIN LATERAL (
-              SELECT tg2.id AS lid, tg2.group_code AS lcode, tg2.group_name AS lname
-              FROM public.ticket_groups tg2
-              WHERE tg2.is_active = true
-                AND LOWER(TRIM(COALESCE(tg2.service_type::text, ''))) = LOWER(TRIM(COALESCE(ut.service_type::text, '')))
-                AND LOWER(TRIM(COALESCE(tg2.ticket_section::text, ''))) = LOWER(TRIM(COALESCE(ut.ticket_source::text, '')))
-                AND (
-                  LOWER(TRIM(COALESCE(ut.ticket_category::text, ''))) = ''
-                  OR LOWER(TRIM(COALESCE(tg2.ticket_category::text, ''))) = LOWER(TRIM(COALESCE(ut.ticket_category::text, '')))
-                )
-                AND LOWER(TRIM(COALESCE(tg2.source_role::text, ''))) = LOWER(TRIM(COALESCE(ut.raised_by_type::text, '')))
-              ORDER BY tg2.display_order ASC NULLS LAST
-              LIMIT 1
-            ) landed_match ON true
             WHERE ${whereClause as never}
             ORDER BY ${sqlClient.unsafe(orderByClause)}
             LIMIT ${limit}
             OFFSET ${offset}
-          `) as unknown as Record<string, unknown>[];
-        } catch {
-          try {
-            ticketRows = (await sqlClient`
-              SELECT
-                ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
-                ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
-                ut.assigned_to_agent_id, ut.assigned_to_agent_name,
-                ut.assigned_at, ut.satisfaction_rating,
-                ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
-                tg.group_code AS group_code, tg.group_name AS group_name,
-                tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
-                landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
-              FROM public.unified_tickets ut
-              LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-              LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
-                WHEN ut.metadata IS NOT NULL
-                  AND (ut.metadata->>'landed_group_id') IS NOT NULL
-                  AND (ut.metadata->>'landed_group_id') ~ '^[0-9]+$'
-                THEN (ut.metadata->>'landed_group_id')::bigint
-                ELSE NULL
-              END
-              LEFT JOIN LATERAL (
-                SELECT tg2.id AS lid, tg2.group_code AS lcode, tg2.group_name AS lname
-                FROM public.ticket_groups tg2
-                WHERE tg2.is_active = true
-                  AND LOWER(TRIM(COALESCE(tg2.service_type::text, ''))) = LOWER(TRIM(COALESCE(ut.service_type::text, '')))
-                  AND LOWER(TRIM(COALESCE(tg2.ticket_section::text, ''))) = LOWER(TRIM(COALESCE(ut.ticket_source::text, '')))
-                  AND LOWER(TRIM(COALESCE(tg2.source_role::text, ''))) = LOWER(TRIM(COALESCE(ut.raised_by_type::text, '')))
-                ORDER BY tg2.display_order ASC NULLS LAST
-                LIMIT 1
-              ) landed_match ON true
-              WHERE ${whereClause as never}
-              ORDER BY ${sqlClient.unsafe(orderByClause)}
-              LIMIT ${limit}
-              OFFSET ${offset}
-            `) as unknown as Record<string, unknown>[];
-          } catch {
-            try {
-              ticketRows = (await sqlClient`
-                SELECT
-                  ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
-                  ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
-                  ut.assigned_to_agent_id, ut.assigned_to_agent_name,
-                  ut.assigned_at, ut.satisfaction_rating,
-                  ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                  ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
-                  tg.group_code AS group_code, tg.group_name AS group_name,
-                  tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
-                FROM public.unified_tickets ut
-                LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-                LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
-                  WHEN ut.metadata IS NOT NULL
-                    AND (ut.metadata->>'landed_group_id') IS NOT NULL
-                    AND (ut.metadata->>'landed_group_id') ~ '^[0-9]+$'
-                  THEN (ut.metadata->>'landed_group_id')::bigint
-                  ELSE NULL
-                END
-                WHERE ${whereClause as never}
-                ORDER BY ${sqlClient.unsafe(orderByClause)}
-                LIMIT ${limit}
-                OFFSET ${offset}
-              `) as unknown as Record<string, unknown>[];
-            } catch {
-              ticketRows = (await sqlClient`
-                SELECT
-                  ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
-                  ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
-                  ut.assigned_to_agent_id, ut.assigned_to_agent_name,
-                  ut.assigned_at, ut.satisfaction_rating,
-                  ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                  ut.group_id,
-                  tg.group_code AS group_code, tg.group_name AS group_name
-                FROM public.unified_tickets ut
-                LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-                WHERE ${whereClause as never}
-                ORDER BY ${sqlClient.unsafe(orderByClause)}
-                LIMIT ${limit}
-                OFFSET ${offset}
-              `) as unknown as Record<string, unknown>[];
-            }
-          }
-        }
-      } else {
-        countResult = (await sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`) as unknown as {
-          count: number;
-        }[];
-        try {
-          ticketRows = (await sqlClient`
+          `
+        : sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -768,8 +666,7 @@ export async function GET(request: NextRequest) {
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
               tg.group_code AS group_code, tg.group_name AS group_name,
-              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
-              landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
+              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
             LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
@@ -779,27 +676,20 @@ export async function GET(request: NextRequest) {
               THEN (ut.metadata->>'landed_group_id')::bigint
               ELSE NULL
             END
-            LEFT JOIN LATERAL (
-              SELECT tg2.id AS lid, tg2.group_code AS lcode, tg2.group_name AS lname
-              FROM public.ticket_groups tg2
-              WHERE tg2.is_active = true
-                AND LOWER(TRIM(COALESCE(tg2.service_type::text, ''))) = LOWER(TRIM(COALESCE(ut.service_type::text, '')))
-                AND LOWER(TRIM(COALESCE(tg2.ticket_section::text, ''))) = LOWER(TRIM(COALESCE(ut.ticket_source::text, '')))
-                AND (
-                  LOWER(TRIM(COALESCE(ut.ticket_category::text, ''))) = ''
-                  OR LOWER(TRIM(COALESCE(tg2.ticket_category::text, ''))) = LOWER(TRIM(COALESCE(ut.ticket_category::text, '')))
-                )
-                AND LOWER(TRIM(COALESCE(tg2.source_role::text, ''))) = LOWER(TRIM(COALESCE(ut.raised_by_type::text, '')))
-              ORDER BY tg2.display_order ASC NULLS LAST
-              LIMIT 1
-            ) landed_match ON true
             ORDER BY ${sqlClient.unsafe(orderByClause)}
             LIMIT ${limit}
             OFFSET ${offset}
-          `) as unknown as Record<string, unknown>[];
-        } catch {
-          try {
-            ticketRows = (await sqlClient`
+          `;
+
+      try {
+        const [countRows, pageRows] = await Promise.all([countQuery, pageQuery]);
+        countResult = countRows as unknown as { count: number }[];
+        ticketRows = pageRows as unknown as Record<string, unknown>[];
+      } catch (lightErr) {
+        // Minimal fallback if metadata/group columns missing on older DBs.
+        console.warn('[GET /api/tickets] light list query failed, using minimal select:', lightErr);
+        const minimalPage = whereClause
+          ? sqlClient`
               SELECT
                 ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                 ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -807,107 +697,61 @@ export async function GET(request: NextRequest) {
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                 ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
-                tg.group_code AS group_code, tg.group_name AS group_name,
-                tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
-                landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
+                ut.group_id,
+                tg.group_code AS group_code, tg.group_name AS group_name
               FROM public.unified_tickets ut
               LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-              LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
-                WHEN ut.metadata IS NOT NULL
-                  AND (ut.metadata->>'landed_group_id') IS NOT NULL
-                  AND (ut.metadata->>'landed_group_id') ~ '^[0-9]+$'
-                THEN (ut.metadata->>'landed_group_id')::bigint
-                ELSE NULL
-              END
-              LEFT JOIN LATERAL (
-                SELECT tg2.id AS lid, tg2.group_code AS lcode, tg2.group_name AS lname
-                FROM public.ticket_groups tg2
-                WHERE tg2.is_active = true
-                  AND LOWER(TRIM(COALESCE(tg2.service_type::text, ''))) = LOWER(TRIM(COALESCE(ut.service_type::text, '')))
-                  AND LOWER(TRIM(COALESCE(tg2.ticket_section::text, ''))) = LOWER(TRIM(COALESCE(ut.ticket_source::text, '')))
-                  AND LOWER(TRIM(COALESCE(tg2.source_role::text, ''))) = LOWER(TRIM(COALESCE(ut.raised_by_type::text, '')))
-                ORDER BY tg2.display_order ASC NULLS LAST
-                LIMIT 1
-              ) landed_match ON true
+              WHERE ${whereClause as never}
               ORDER BY ${sqlClient.unsafe(orderByClause)}
               LIMIT ${limit}
               OFFSET ${offset}
-            `) as unknown as Record<string, unknown>[];
-          } catch {
-            try {
-              ticketRows = (await sqlClient`
-                SELECT
-                  ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
-                  ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
-                  ut.assigned_to_agent_id, ut.assigned_to_agent_name,
-                  ut.assigned_at, ut.satisfaction_rating,
-                  ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                  ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
-                  tg.group_code AS group_code, tg.group_name AS group_name,
-                  tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
-                FROM public.unified_tickets ut
-                LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-                LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
-                  WHEN ut.metadata IS NOT NULL
-                    AND (ut.metadata->>'landed_group_id') IS NOT NULL
-                    AND (ut.metadata->>'landed_group_id') ~ '^[0-9]+$'
-                  THEN (ut.metadata->>'landed_group_id')::bigint
-                  ELSE NULL
-                END
-                ORDER BY ${sqlClient.unsafe(orderByClause)}
-                LIMIT ${limit}
-                OFFSET ${offset}
-              `) as unknown as Record<string, unknown>[];
-            } catch {
-              ticketRows = (await sqlClient`
-                SELECT
-                  ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
-                  ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
-                  ut.assigned_to_agent_id, ut.assigned_to_agent_name,
-                  ut.assigned_at, ut.satisfaction_rating,
-                  ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                  ut.group_id,
-                  tg.group_code AS group_code, tg.group_name AS group_name
-                FROM public.unified_tickets ut
-                LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-                ORDER BY ${sqlClient.unsafe(orderByClause)}
-                LIMIT ${limit}
-                OFFSET ${offset}
-              `) as unknown as Record<string, unknown>[];
-            }
-          }
-        }
+            `
+          : sqlClient`
+              SELECT
+                ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
+                ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
+                ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
+                ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                ut.assigned_at, ut.satisfaction_rating,
+                ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
+                ut.group_id,
+                tg.group_code AS group_code, tg.group_name AS group_name
+              FROM public.unified_tickets ut
+              LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
+              ORDER BY ${sqlClient.unsafe(orderByClause)}
+              LIMIT ${limit}
+              OFFSET ${offset}
+            `;
+        const [countRows, pageRows] = await Promise.all([countQuery, minimalPage]);
+        countResult = countRows as unknown as { count: number }[];
+        ticketRows = pageRows as unknown as Record<string, unknown>[];
       }
-    } catch (queryError) {
-      console.error("[GET /api/tickets] Query execution error:", queryError);
-      console.error("[GET /api/tickets] Ensure public.unified_tickets table and enums exist.");
-      throw queryError;
+    } catch (listQueryErr) {
+      console.error('[GET /api/tickets] list query failed:', listQueryErr);
+      throw listQueryErr;
     }
 
+    const total = countResult[0]?.count ?? 0;
+
+    // Export-only enrichment map. Fast list path skips LATERAL joins; keep an empty
+    // map so mapping never throws. Populate only when exporting.
     const enrichById = new Map<number, Record<string, unknown>>();
     if (forExport && ticketRows.length > 0) {
-      const ids = ticketRows
-        .map((r) => {
-          const v = r.id;
-          const n = typeof v === "bigint" ? Number(v) : Number(v);
-          return Number.isFinite(n) ? n : NaN;
-        })
-        .filter((n) => !Number.isNaN(n));
-      if (ids.length > 0) {
-        try {
+      try {
+        const ids = ticketRows
+          .map((r) => rowNum(r, "id", "id"))
+          .filter((id): id is number => id != null && id > 0);
+        if (ids.length > 0) {
           const enrichRows = (await sqlClient`
             SELECT
               ut.id,
               ut.tags,
-              ut.resolution,
               ut.metadata,
+              ut.resolution,
               ut.internal_notes AS ticket_internal_notes,
               ut.association_type AS ticket_association_type,
-              ut.agent_interaction_count AS ticket_agent_icount,
-              ut.customer_interaction_count AS ticket_customer_icount,
+              COALESCE(ut.agent_interaction_count, 0) AS ticket_agent_icount,
+              COALESCE(ut.customer_interaction_count, 0) AS ticket_customer_icount,
               su.full_name AS agent_system_full_name,
               su.email AS agent_email,
               su.mobile AS agent_mobile,
@@ -917,7 +761,7 @@ export async function GET(request: NextRequest) {
               c.email AS cust_email,
               c.primary_mobile AS cust_primary_mobile,
               c.alternate_mobile AS cust_alternate_mobile,
-              c.preferred_language AS cust_language,
+              c.language AS cust_language,
               c.work_phone AS cust_work_phone,
               c.facebook_id AS cust_facebook_id,
               c.twitter_id AS cust_twitter_id,
@@ -927,29 +771,25 @@ export async function GET(request: NextRequest) {
               c.unique_external_id AS cust_unique_external_id,
               c.twitter_verified AS cust_twitter_verified,
               c.twitter_follower_count AS cust_twitter_follower_count,
-              ms.store_name AS store_name,
+              mp.company_name AS export_company_name,
               ms.store_display_name AS store_display_name,
-              COALESCE(mp.business_name, mp.parent_name, ms.store_name, '') AS export_company_name,
               mp.company_domains AS mp_company_domains
             FROM public.unified_tickets ut
-            LEFT JOIN public.system_users su ON su.id = ut.assigned_to_agent_id AND su.deleted_at IS NULL
-            LEFT JOIN public.customers c ON c.id = ut.customer_id AND c.deleted_at IS NULL
-            LEFT JOIN public.merchant_stores ms ON ms.id = ut.merchant_store_id AND ms.deleted_at IS NULL
-            LEFT JOIN public.merchant_parents mp ON mp.id = COALESCE(ut.merchant_parent_id, ms.parent_id)
+            LEFT JOIN public.system_users su ON su.id = ut.assigned_to_agent_id
+            LEFT JOIN public.customers c ON c.id = ut.customer_id
+            LEFT JOIN public.merchant_stores ms ON ms.id = ut.merchant_store_id
+            LEFT JOIN public.merchant_parents mp ON mp.id = ms.parent_id
             WHERE ut.id = ANY(${ids})
           `) as Record<string, unknown>[];
-          for (const er of enrichRows) {
-            const idRaw = er.id;
-            const idNum = typeof idRaw === "bigint" ? Number(idRaw) : Number(idRaw);
-            if (Number.isFinite(idNum)) enrichById.set(idNum, er);
+          for (const row of enrichRows) {
+            const id = rowNum(row, "id", "id");
+            if (id != null) enrichById.set(id, row);
           }
-        } catch (enrichErr) {
-          console.error("[GET /api/tickets] forExport enrich query failed:", enrichErr);
         }
+      } catch (exportEnrichErr) {
+        console.warn("[GET /api/tickets] export enrich skipped:", exportEnrichErr);
       }
     }
-
-    const total = countResult[0]?.count ?? 0;
 
     let tickets = ticketRows.map((t: Record<string, unknown>) => {
       const rawStatus = String(t.status ?? "").toUpperCase().replace(/-/g, "_");

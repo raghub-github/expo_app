@@ -1,12 +1,7 @@
 import React, { useMemo } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Image, Platform } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -75,7 +70,7 @@ export function CartSheetScallopedPercentBadge({ size = 34 }: { size?: number })
           { width: coreSize, height: coreSize, borderRadius: coreSize / 2 },
         ]}
       >
-        <Text style={[scallopStyles.pct, { fontSize: Math.round(coreSize * 0.4) }]}>%</Text>
+        <AppText style={[scallopStyles.pct, { fontSize: Math.round(coreSize * 0.4) }]}>%</AppText>
       </View>
     </View>
   );
@@ -302,17 +297,17 @@ export function MerchantMenuCartSheet({
           <View style={styles.offerTextCol}>
             {offerCopy ? (
               <>
-                <Text style={styles.offerTitle} numberOfLines={2}>
+                <AppText style={styles.offerTitle} numberOfLines={2}>
                   {offerCopy.title}
-                </Text>
-                <Text style={styles.offerSubtitle} numberOfLines={2}>
+                </AppText>
+                <AppText style={styles.offerSubtitle} numberOfLines={2}>
                   {offerCopy.subtitle}
-                </Text>
+                </AppText>
               </>
             ) : (
-              <Text style={styles.offerSubtitle} numberOfLines={1}>
+              <AppText style={styles.offerSubtitle} numberOfLines={1}>
                 {OFFER_BANNER_SUBTITLE}
-              </Text>
+              </AppText>
             )}
           </View>
         </LinearGradient>
@@ -342,14 +337,14 @@ export function MerchantMenuCartSheet({
               totalCount={totalCount}
               accentColor={continueBg}
             />
-            <Text style={styles.itemCountText} numberOfLines={1}>
+            <AppText style={styles.itemCountText} numberOfLines={1}>
               {isStoreClosed ? closedTitle : itemLabel}
-            </Text>
+            </AppText>
           </View>
 
           {!isStoreClosed ? (
             <View style={styles.continueRight}>
-              <Text style={styles.continueLabel}>Continue</Text>
+              <AppText style={styles.continueLabel}>Continue</AppText>
               <Ionicons name="chevron-forward" size={17} color="#FFFFFF" />
             </View>
           ) : null}

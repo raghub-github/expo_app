@@ -3,14 +3,9 @@
  */
 
 import { useCallback, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  ActivityIndicator,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, StyleSheet, ActivityIndicator, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -148,17 +143,17 @@ export default function CollectionsScreen() {
           style={[styles.tab, activeTab === "dishes" && styles.tabActive]}
           onPress={() => setActiveTab("dishes")}
         >
-          <Text style={[styles.tabText, activeTab === "dishes" && styles.tabTextActive]}>
+          <AppText style={[styles.tabText, activeTab === "dishes" && styles.tabTextActive]}>
             {t("collections.dishes")}
-          </Text>
+          </AppText>
         </Pressable>
         <Pressable
           style={[styles.tab, activeTab === "restaurants" && styles.tabActive]}
           onPress={() => setActiveTab("restaurants")}
         >
-          <Text style={[styles.tabText, activeTab === "restaurants" && styles.tabTextActive]}>
+          <AppText style={[styles.tabText, activeTab === "restaurants" && styles.tabTextActive]}>
             {t("collections.restaurants")}
-          </Text>
+          </AppText>
         </Pressable>
       </View>
 

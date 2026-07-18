@@ -3,16 +3,9 @@
  */
 
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  ActivityIndicator,
-  Dimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Image, ActivityIndicator, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -180,31 +173,31 @@ function RideOptionCard({
       })()}
       <View style={styles.rideInfo}>
         <View style={styles.rideNameRow}>
-          <Text style={styles.rideName}>{option.name}</Text>
+          <AppText style={styles.rideName}>{option.name}</AppText>
           {selected && option.capacity != null ? (
             <View style={styles.capacityWrap}>
               <Ionicons name="person" size={11} color="#6B7280" />
-              <Text style={styles.capacityText}>{option.capacity}</Text>
+              <AppText style={styles.capacityText}>{option.capacity}</AppText>
             </View>
           ) : null}
           {option.tag === "FASTEST" ? (
             <View style={styles.fastestTag}>
-              <Text style={styles.fastestText}>FASTEST</Text>
+              <AppText style={styles.fastestText}>FASTEST</AppText>
             </View>
           ) : null}
           {option.tag === "SAVE" ? (
             <View style={styles.saveTag}>
-              <Text style={styles.saveText}>%</Text>
+              <AppText style={styles.saveText}>%</AppText>
             </View>
           ) : null}
         </View>
-        {option.subtitle ? <Text style={styles.rideSubtitle}>{option.subtitle}</Text> : null}
-        <Text style={styles.rideTiming}>
+        {option.subtitle ? <AppText style={styles.rideSubtitle}>{option.subtitle}</AppText> : null}
+        <AppText style={styles.rideTiming}>
           {pickupKmLabel ? `Pickup: ${pickupKmLabel} km` : `${awayMins} mins away`}
           {rideKmLabel ? ` • Ride: ${rideKmLabel}` : ""}
           {routeEtaMins != null ? ` • ETA: ${etaMins} min` : ""}
-        </Text>
-        <Text style={styles.rideDropTiming}>Drop {dropLabel}</Text>
+        </AppText>
+        <AppText style={styles.rideDropTiming}>Drop {dropLabel}</AppText>
       </View>
       <View style={styles.ridePriceWrap}>
         {farePending ? (
@@ -212,13 +205,13 @@ function RideOptionCard({
         ) : (
           <View style={styles.priceCol}>
             {compareFare != null && compareFare > 0 && price != null && compareFare > price ? (
-              <Text style={styles.ridePriceStrike}>₹{Math.round(compareFare)}</Text>
+              <AppText style={styles.ridePriceStrike}>₹{Math.round(compareFare)}</AppText>
             ) : null}
             <View style={styles.priceRow}>
               {showSurgeHint && selected ? (
                 <Ionicons name="caret-up" size={14} color="#DC2626" style={styles.surgeCaret} />
               ) : null}
-              <Text style={styles.ridePrice}>{price != null ? `₹${price}` : "—"}</Text>
+              <AppText style={styles.ridePrice}>{price != null ? `₹${price}` : "—"}</AppText>
             </View>
           </View>
         )}
@@ -1001,7 +994,7 @@ export default function RideBookScreen() {
             ]}
           >
             <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-            <Text style={styles.routeLoadingText}>Calculating route…</Text>
+            <AppText style={styles.routeLoadingText}>Calculating route…</AppText>
           </View>
         ) : null}
 
@@ -1021,7 +1014,7 @@ export default function RideBookScreen() {
               activeOpacity={0.88}
             >
               <Ionicons name="add" size={18} color="#111827" />
-              <Text style={styles.mapFabText}>Add stop</Text>
+              <AppText style={styles.mapFabText}>Add stop</AppText>
             </TouchableOpacity>
             <TouchableOpacity style={styles.locateFab} activeOpacity={0.88}>
               <Ionicons name="locate" size={22} color="#2563EB" />
@@ -1047,7 +1040,7 @@ export default function RideBookScreen() {
                   : styles.pricingBannerLine
               }
             >
-              <Text
+              <AppText
                 style={
                   pricingBanner.variant === "inline"
                     ? styles.pricingBannerInlineText
@@ -1055,7 +1048,7 @@ export default function RideBookScreen() {
                 }
               >
                 {pricingBanner.text}
-              </Text>
+              </AppText>
             </View>
           ) : null}
           <ScrollView
@@ -1067,7 +1060,7 @@ export default function RideBookScreen() {
             {availabilityLoading && availableOptions.length === 0 ? (
               <View style={styles.optionsLoading}>
                 <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-                <Text style={styles.optionsLoadingText}>Finding nearby riders…</Text>
+                <AppText style={styles.optionsLoadingText}>Finding nearby riders…</AppText>
               </View>
             ) : faresLoadingForOptions ? (
               sortedOptions.map((option) => (
@@ -1108,7 +1101,7 @@ export default function RideBookScreen() {
           <View style={styles.payOffersRow}>
             <View style={styles.payOffersHalf}>
               <Ionicons name="card-outline" size={18} color="#111827" />
-              <Text style={styles.payOffersText}>Online</Text>
+              <AppText style={styles.payOffersText}>Online</AppText>
             </View>
             <View style={styles.payOffersDivider} />
             <TouchableOpacity
@@ -1117,9 +1110,9 @@ export default function RideBookScreen() {
               onPress={() => setOffersSheetVisible(true)}
             >
               <Ionicons name="pricetag-outline" size={18} color="#111827" />
-              <Text style={styles.payOffersText}>
+              <AppText style={styles.payOffersText}>
                 Offers{rideBookOffers.length > 0 ? ` (${rideBookOffers.length})` : ""}
-              </Text>
+              </AppText>
               <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
             </TouchableOpacity>
           </View>
@@ -1130,13 +1123,13 @@ export default function RideBookScreen() {
             onPress={handleBookPress}
             disabled={!selectedRide || !canBookSelectedRide}
           >
-            <Text style={styles.bookBtnText}>
+            <AppText style={styles.bookBtnText}>
               {faresLoadingForOptions
                 ? "Calculating fare…"
                 : selectedRide
                   ? `Book ${selectedRide.name}`
                   : "Book ride"}
-            </Text>
+            </AppText>
           </TouchableOpacity>
         </View>
       ) : null}

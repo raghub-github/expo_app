@@ -3,7 +3,9 @@
  */
 
 import { useCallback, useMemo, useState, useEffect } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
 import { Image } from "expo-image";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useRouter } from "expo-router";
@@ -174,7 +176,7 @@ export default function ProfileScreen() {
                     onError={handleAvatarError}
                   />
                 ) : (
-                  <Text style={styles.avatarText}>{initials}</Text>
+                  <AppText style={styles.avatarText}>{initials}</AppText>
                 )}
                 {isEmailVerified ? (
                   <View style={styles.avatarVerifiedDot}>
@@ -183,22 +185,22 @@ export default function ProfileScreen() {
                 ) : null}
               </View>
               <View style={styles.identityBody}>
-                <Text style={styles.userName} numberOfLines={1}>{displayName}</Text>
+                <AppText style={styles.userName} numberOfLines={1}>{displayName}</AppText>
                 {email ? (
                   <View style={styles.emailRow}>
-                    <Text style={styles.userEmail} numberOfLines={1}>{email}</Text>
+                    <AppText style={styles.userEmail} numberOfLines={1}>{email}</AppText>
                     {isEmailVerified ? (
                       <View style={styles.emailVerifiedTag}>
                         <Ionicons name="checkmark-circle" size={12} color={GREEN} />
-                        <Text style={styles.emailVerifiedText}>Verified</Text>
+                        <AppText style={styles.emailVerifiedText}>Verified</AppText>
                       </View>
                     ) : null}
                   </View>
                 ) : (
-                  <Text style={styles.userEmail}>Add email in profile</Text>
+                  <AppText style={styles.userEmail}>Add email in profile</AppText>
                 )}
                 <Pressable style={styles.editLink} onPress={() => router.push("/profile/edit")}>
-                  <Text style={styles.editLinkText}>{t("profile.editProfile")}</Text>
+                  <AppText style={styles.editLinkText}>{t("profile.editProfile")}</AppText>
                   <Ionicons name="chevron-forward" size={14} color={GREEN} />
                 </Pressable>
               </View>
@@ -213,9 +215,9 @@ export default function ProfileScreen() {
             <View style={styles.plusCrownRing}>
               <MaterialCommunityIcons name="crown" size={16} color={GOLD} />
             </View>
-            <Text style={styles.plusStripText}>
+            <AppText style={styles.plusStripText}>
               {subscriptionActive ? `${subscriptionPlanName} Active` : `Join ${subscriptionPlanName}`}
-            </Text>
+            </AppText>
             <Ionicons name="chevron-forward" size={18} color={MUTED} />
           </TouchableOpacity>
         </View>
@@ -226,12 +228,12 @@ export default function ProfileScreen() {
             <View style={styles.savingsIconWrap}>
               <Ionicons name="sparkles-outline" size={18} color={GREEN_DARK} />
             </View>
-            <Text style={styles.savingsLabel} numberOfLines={1}>
+            <AppText style={styles.savingsLabel} numberOfLines={1}>
               {t("profile.lifetimeSavings")}
-            </Text>
-            <Text style={styles.savingsValue} numberOfLines={1}>
+            </AppText>
+            <AppText style={styles.savingsValue} numberOfLines={1}>
               ₹{lifetimeSavingsDisplay}
-            </Text>
+            </AppText>
           </View>
         </View>
 
@@ -240,9 +242,9 @@ export default function ProfileScreen() {
           <View style={styles.idCard}>
             {customerId ? (
               <TouchableOpacity style={styles.idRow} onPress={() => copyToClipboard(customerId, "Customer ID")}>
-                <Text style={styles.idLabel}>{t("profile.customerId")}</Text>
+                <AppText style={styles.idLabel}>{t("profile.customerId")}</AppText>
                 <View style={styles.idValueRow}>
-                  <Text style={styles.idValue}>{customerId}</Text>
+                  <AppText style={styles.idValue}>{customerId}</AppText>
                   <Ionicons name="copy-outline" size={15} color={MUTED} />
                 </View>
               </TouchableOpacity>
@@ -250,9 +252,9 @@ export default function ProfileScreen() {
             {customerId && referralCode ? <View style={styles.idDivider} /> : null}
             {referralCode ? (
               <TouchableOpacity style={styles.idRow} onPress={() => copyToClipboard(referralCode, t("profile.referralId"))}>
-                <Text style={styles.idLabel}>{t("profile.referralId")}</Text>
+                <AppText style={styles.idLabel}>{t("profile.referralId")}</AppText>
                 <View style={styles.idValueRow}>
-                  <Text style={styles.idValue}>{referralCode}</Text>
+                  <AppText style={styles.idValue}>{referralCode}</AppText>
                   <Ionicons name="copy-outline" size={15} color={MUTED} />
                 </View>
               </TouchableOpacity>
@@ -266,10 +268,10 @@ export default function ProfileScreen() {
             <Ionicons name="location-outline" size={18} color={GREEN} />
           </View>
           <View style={styles.addressCopy}>
-            <Text style={styles.addressTitle}>{addressLine ? "Delivery address" : "Add delivery address"}</Text>
-            <Text style={styles.addressSub} numberOfLines={2}>
+            <AppText style={styles.addressTitle}>{addressLine ? "Delivery address" : "Add delivery address"}</AppText>
+            <AppText style={styles.addressSub} numberOfLines={2}>
               {addressLine ?? "Save your home or work for faster checkout"}
-            </Text>
+            </AppText>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
         </TouchableOpacity>
@@ -284,10 +286,10 @@ export default function ProfileScreen() {
               activeOpacity={0.75}
             >
               <Ionicons name={item.icon} size={20} color={TEXT} />
-              <Text style={styles.menuLabel}>{item.label}</Text>
+              <AppText style={styles.menuLabel}>{item.label}</AppText>
               {item.badge ? (
                 <View style={styles.menuBadge}>
-                  <Text style={styles.menuBadgeText}>{item.badge}</Text>
+                  <AppText style={styles.menuBadgeText}>{item.badge}</AppText>
                 </View>
               ) : null}
               <Ionicons name="chevron-forward" size={17} color="#C4C4C4" />
@@ -297,10 +299,10 @@ export default function ProfileScreen() {
 
         {/* Refer banner */}
         <View style={styles.referCard}>
-          <Text style={styles.referTitle}>{t("profile.referEarnTitle")}</Text>
-          <Text style={styles.referSub}>{t("profile.referEarnSub")}</Text>
+          <AppText style={styles.referTitle}>{t("profile.referEarnTitle")}</AppText>
+          <AppText style={styles.referSub}>{t("profile.referEarnSub")}</AppText>
           <TouchableOpacity style={styles.referBtn} activeOpacity={0.9} onPress={handleReferNow}>
-            <Text style={styles.referBtnText}>{t("profile.referNow")}</Text>
+            <AppText style={styles.referBtnText}>{t("profile.referNow")}</AppText>
             <Ionicons name="arrow-forward" size={16} color="#fff" />
           </TouchableOpacity>
         </View>

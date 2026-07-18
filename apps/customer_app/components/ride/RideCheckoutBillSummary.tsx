@@ -1,12 +1,7 @@
 import { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  Modal,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, Pressable, Modal, ActivityIndicator } from "react-native";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { RideCheckoutCompactBill } from "@/lib/ride-fare-bill-display";
 
@@ -33,7 +28,7 @@ function BillRow({
   isDiscount?: boolean;
 }) {
   const labelText = (
-    <Text
+    <AppText
       style={[
         dashedUnderline ? styles.dashedLabelText : styles.plainLabelText,
         emphasis && styles.emphasisLabel,
@@ -41,7 +36,7 @@ function BillRow({
       ]}
     >
       {label}
-    </Text>
+    </AppText>
   );
 
   const labelBlock = dashedUnderline ? (
@@ -51,7 +46,7 @@ function BillRow({
   );
 
   const valueText = (
-    <Text
+    <AppText
       style={[
         styles.lineValue,
         emphasis && styles.emphasisValue,
@@ -59,7 +54,7 @@ function BillRow({
       ]}
     >
       {isDiscount ? `-${fmtBillAmount(amount)}` : fmtBillAmount(amount)}
-    </Text>
+    </AppText>
   );
 
   return (
@@ -102,26 +97,26 @@ function RideGstBreakdownModal({
       <View style={styles.modalBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.modalCard}>
-          <Text style={styles.modalDisclaimer}>
+          <AppText style={styles.modalDisclaimer}>
             GatiMitra has no role to play in taxes levied by the govt.
-          </Text>
+          </AppText>
 
           {lines.map((row) => (
             <View key={row.key} style={styles.modalLine}>
-              <Text style={styles.modalLineLabel}>{row.label}</Text>
-              <Text style={styles.modalLineValue}>{fmtBillAmount(row.amount)}</Text>
+              <AppText style={styles.modalLineLabel}>{row.label}</AppText>
+              <AppText style={styles.modalLineValue}>{fmtBillAmount(row.amount)}</AppText>
             </View>
           ))}
 
           <View style={styles.modalDivider} />
 
           <View style={styles.modalLine}>
-            <Text style={styles.modalTotalLabel}>Total</Text>
-            <Text style={styles.modalTotalValue}>{fmtBillAmount(gstTotal)}</Text>
+            <AppText style={styles.modalTotalLabel}>Total</AppText>
+            <AppText style={styles.modalTotalValue}>{fmtBillAmount(gstTotal)}</AppText>
           </View>
 
           <Pressable onPress={onClose} style={styles.modalOkBtn} hitSlop={8}>
-            <Text style={styles.modalOkText}>OKAY</Text>
+            <AppText style={styles.modalOkText}>OKAY</AppText>
           </Pressable>
         </View>
       </View>
@@ -146,7 +141,7 @@ export function RideCheckoutBillSummary({
     return (
       <View style={styles.loadingRow}>
         <ActivityIndicator size="small" color={MINT_DARK} />
-        <Text style={styles.loadingText}>Calculating fare…</Text>
+        <AppText style={styles.loadingText}>Calculating fare…</AppText>
       </View>
     );
   }

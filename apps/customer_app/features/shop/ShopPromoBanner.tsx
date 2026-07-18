@@ -4,17 +4,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-  NativeSyntheticEvent,
-  NativeScrollEvent,
-  ActivityIndicator,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -154,12 +146,12 @@ export function ShopPromoBanner() {
               style={styles.banner}
             >
               <View style={styles.bannerContent}>
-                <Text style={styles.bannerTitle}>{slide.title}</Text>
-                <Text style={styles.bannerSub} numberOfLines={2}>
+                <AppText style={styles.bannerTitle}>{slide.title}</AppText>
+                <AppText style={styles.bannerSub} numberOfLines={2}>
                   {slide.sub}
-                </Text>
+                </AppText>
                 <View style={styles.ctaWrap}>
-                  <Text style={styles.ctaText}>{slide.cta}</Text>
+                  <AppText style={styles.ctaText}>{slide.cta}</AppText>
                   <Ionicons name="arrow-forward" size={18} color="#fff" />
                 </View>
               </View>

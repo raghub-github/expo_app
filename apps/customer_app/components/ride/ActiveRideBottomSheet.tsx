@@ -3,16 +3,9 @@
  * Multiple rides scroll horizontally.
  */
 
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  Platform,
-  ScrollView,
-  useWindowDimensions,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Image, Platform, ScrollView, useWindowDimensions } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useRouter, usePathname } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -116,24 +109,24 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
             ) : null}
           </View>
           <View style={styles.textCol}>
-            <Text style={styles.title} numberOfLines={1}>
+            <AppText style={styles.title} numberOfLines={1}>
               {title}
-            </Text>
-            <Text style={styles.subtitle} numberOfLines={1}>
+            </AppText>
+            <AppText style={styles.subtitle} numberOfLines={1}>
               {subtitle}
-            </Text>
-            <Text style={styles.orderId} numberOfLines={1}>
+            </AppText>
+            <AppText style={styles.orderId} numberOfLines={1}>
               {orderRef}
-            </Text>
+            </AppText>
           </View>
           <View style={styles.ctaCol}>
-            <Text style={styles.ctaText}>
+            <AppText style={styles.ctaText}>
               {paymentDue
                 ? dueFareAmount > 0
                   ? `Pay ${formatRideFare(dueFareAmount)}`
                   : "Pay"
                 : "Track"}
-            </Text>
+            </AppText>
             <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
           </View>
         </LinearGradient>
@@ -189,9 +182,9 @@ export function ActiveRideBottomSheet({
       {multi ? (
         <View style={styles.hintRow} pointerEvents="none">
           <Ionicons name="swap-horizontal" size={14} color="#6B7280" />
-          <Text style={styles.hintText}>
+          <AppText style={styles.hintText}>
             Swipe for {rides.length} active rides
-          </Text>
+          </AppText>
         </View>
       ) : null}
     </Animated.View>

@@ -18,6 +18,7 @@ export function CheckoutBottomSheetHost() {
     if (fromMealsUnderPrice) {
       useCartStore.getState().clearCart();
     }
+    useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
   }, []);
 
   const sheetBodyHeight = Math.max(360, Math.round(windowHeight * 0.9) - 56);

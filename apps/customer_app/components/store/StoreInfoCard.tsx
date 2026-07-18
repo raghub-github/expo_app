@@ -1,11 +1,7 @@
 import React from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
@@ -66,9 +62,9 @@ export function StoreInfoCard({
     <View style={styles.card}>
       <View style={styles.topRow}>
         <View style={styles.nameBlock}>
-          <Text style={styles.name} numberOfLines={2}>
+          <AppText style={styles.name} numberOfLines={2}>
             {name}
-          </Text>
+          </AppText>
           <TouchableOpacity onPress={onInfoPress} hitSlop={8} style={styles.infoBtn}>
             <Ionicons name="information-circle-outline" size={18} color={StoreTheme.textSecondary} />
           </TouchableOpacity>
@@ -86,9 +82,9 @@ export function StoreInfoCard({
       {locationText ? (
         <TouchableOpacity style={styles.metaRow} onPress={onLocationPress} activeOpacity={0.7}>
           <Ionicons name="location-outline" size={15} color={StoreTheme.textSecondary} />
-          <Text style={styles.metaText} numberOfLines={1}>
+          <AppText style={styles.metaText} numberOfLines={1}>
             {locationText}
-          </Text>
+          </AppText>
           <Ionicons name="chevron-down" size={14} color={StoreTheme.textSecondary} />
         </TouchableOpacity>
       ) : null}
@@ -96,17 +92,17 @@ export function StoreInfoCard({
       {scheduledLabel ? (
         <TouchableOpacity style={styles.metaRow} onPress={onSchedulePress} activeOpacity={0.7}>
           <Ionicons name="calendar-outline" size={15} color={StoreTheme.accentMint} />
-          <Text style={[styles.metaText, styles.scheduledText]} numberOfLines={1}>
+          <AppText style={[styles.metaText, styles.scheduledText]} numberOfLines={1}>
             {scheduledLabel}
-          </Text>
+          </AppText>
           <Ionicons name="chevron-down" size={14} color={StoreTheme.textSecondary} />
         </TouchableOpacity>
       ) : etaLabel ? (
         <TouchableOpacity style={styles.metaRow} onPress={onSchedulePress} activeOpacity={0.7}>
           <Ionicons name="time-outline" size={15} color={StoreTheme.textSecondary} />
-          <Text style={styles.metaText} numberOfLines={1}>
+          <AppText style={styles.metaText} numberOfLines={1}>
             {etaLabel} · Schedule for later
-          </Text>
+          </AppText>
           <Ionicons name="chevron-down" size={14} color={StoreTheme.textSecondary} />
         </TouchableOpacity>
       ) : null}
@@ -114,7 +110,7 @@ export function StoreInfoCard({
       {isFrequentlyReordered ? (
         <View style={styles.reorderBadge}>
           <Ionicons name="checkmark-circle" size={14} color={StoreTheme.reorderGreen} />
-          <Text style={styles.reorderBadgeText}>Frequently reordered</Text>
+          <AppText style={styles.reorderBadgeText}>Frequently reordered</AppText>
         </View>
       ) : null}
 
@@ -135,9 +131,9 @@ export function StoreInfoCard({
             )}
             {offerCount > 0 ? (
               <View style={styles.offerCountWrap}>
-                <Text style={styles.offerCount}>
+                <AppText style={styles.offerCount}>
                   {offerCount} {offerCount === 1 ? "offer" : "offers"}
-                </Text>
+                </AppText>
                 <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
               </View>
             ) : offerTexts.length > 0 || reserveOfferRow ? (

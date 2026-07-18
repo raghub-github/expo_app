@@ -10,6 +10,16 @@ export function isTransientDbError(reason: unknown): boolean {
     "08003", // connection_does_not_exist
     "57P01", // admin_shutdown
     "53300", // too_many_connections
+    "ENOTFOUND", // DNS blip (VPN / flaky resolvers)
+    "EAI_AGAIN", // temporary DNS failure
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "ETIMEDOUT",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "CONNECT_TIMEOUT", // postgres.js connect timeout to pooler
+    "CONNECTION_DESTROYED",
+    "CONNECTION_CLOSED",
   ]);
   if (codes.some((c) => transientCodes.has(c))) return true;
 
@@ -24,6 +34,9 @@ export function isTransientDbError(reason: unknown): boolean {
     msg.includes("connection terminated") ||
     msg.includes("connect econnrefused") ||
     msg.includes("connect etimedout") ||
+    msg.includes("connect_timeout") ||
+    msg.includes("getaddrinfo enotfound") ||
+    msg.includes("getaddrinfo eai_again") ||
     msg.includes("write connection_closed")
   );
 }
@@ -44,6 +57,12 @@ function isConnectionErr(err: unknown): boolean {
   if (
     code === "ECONNRESET" ||
     code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "ENETUNREACH" ||
+    code === "EHOSTUNREACH" ||
+    code === "ETIMEDOUT" ||
+    code === "CONNECT_TIMEOUT" ||
     code === "CONNECTION_DESTROYED" ||
     code === "57P01" ||
     code === "08006" ||
@@ -56,6 +75,9 @@ function isConnectionErr(err: unknown): boolean {
   return (
     msg.includes("connection_closed") ||
     msg.includes("connection_destroyed") ||
+    msg.includes("connect_timeout") ||
+    msg.includes("getaddrinfo enotfound") ||
+    msg.includes("getaddrinfo eai_again") ||
     msg.includes("write connection_closed")
   );
 }

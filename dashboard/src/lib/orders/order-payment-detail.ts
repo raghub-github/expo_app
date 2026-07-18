@@ -1,6 +1,7 @@
 /**
  * Order payment card + modal — amounts from orders_core, billing_snapshot,
- * pending_orders / payment_events / timelines.
+ * payment_intents / payment_transactions (canonical capture), plus
+ * pending_orders / payment_events / timelines for Razorpay ids.
  * Total CTM = merchant-visible bill total (same as partnersite / merchant app).
  */
 
@@ -16,62 +17,17 @@ import {
 import { computeMerchantCtmForPartnerOrder } from "@/lib/merchant-order-ctm";
 import { resolveDeliveryFeeDisplayFromBilling } from "@/lib/orderItemsPayload";
 import { supabaseAdmin } from "@/lib/supabase/server";
+import {
+  formatPaymentInstrumentSource,
+  formatPaymentModeOnlineOrCash,
+} from "@/lib/orders/order-payment-display";
+import type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
 
-export type OrderPaymentRecord = {
-  paymentId: string;
-  transactionId: string | null;
-  mpTransactionId: string | null;
-  paymentStatus: string;
-  redemptionType: string | null;
-  productType: string | null;
-  refunded: boolean;
-  partialRefunded: boolean;
-  partiallyRefundedAmount: number | null;
-  amount: number | null;
-  deliveryFee: number | null;
-  /** Customer cost for this line (CTC). */
-  ctc: number | null;
-  /** Cash paid (online) for this line. */
-  cashin: number | null;
-  pointsUsed: number | null;
-  /** Merchant amount for this line (CTM). */
-  ctm: number | null;
-  cashbackEarned: number | null;
-  pgName: string | null;
-  pgTransactionId: string | null;
-  couponCode: string | null;
-  couponUserUsageCount: number | null;
-  couponExpiryDate: string | null;
-  couponValue: number | null;
-  couponMaxDiscount: number | null;
-  couponMaxUsage: number | null;
-  couponMaxRedemption: number | null;
-  couponType: string | null;
-  couponUserEligible: boolean | null;
-};
-
-export type OrderPaymentDetail = {
-  totalAmount: number | null;
-  /** Merchant-visible bill total (items at merchant prices + packaging − restaurant discount). */
-  totalCtm: number | null;
-  totalCashbackEarned: number | null;
-  /** Total discount granted to customer on this order. */
-  totalDiscountGranted: number | null;
-  discountOfferSource: OrderDiscountOfferSource | null;
-  /** Display delivery fee (quoted when membership waived; otherwise charged). */
-  deliveryFee: number | null;
-  /** Pre-benefit quoted fee for strikethrough when membership waived. */
-  deliveryFeeQuoted?: number | null;
-  /** True when membership benefit made delivery ₹0. */
-  deliveryFeeWaived?: boolean;
-  source: string | null;
-  paymentMode: string | null;
-  partialRefunded: boolean;
-  refundAmount: number | null;
-  totalRefunded: number | null;
-  totalPaid: number | null;
-  records: OrderPaymentRecord[];
-};
+export type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
+export {
+  formatPaymentInstrumentSource,
+  formatPaymentModeOnlineOrCash,
+} from "@/lib/orders/order-payment-display";
 
 function asNum(v: unknown): number | null {
   if (v == null || v === "") return null;
@@ -83,8 +39,53 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Normalize drizzle / postgres-js execute results to a plain row array. */
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  if (Array.isArray(result)) return result as Record<string, unknown>[];
+  if (result && typeof result === "object") {
+    const rows = (result as { rows?: unknown }).rows;
+    if (Array.isArray(rows)) return rows as Record<string, unknown>[];
+  }
+  return [];
+}
+
 function readRecord(raw: unknown): Record<string, unknown> | null {
   return parseBillingSnapshot(raw);
+}
+
+function gatiCashFromBilling(billing: Record<string, unknown> | null): number | null {
+  if (!billing) return null;
+  const direct =
+    asNum(billing.gati_cash_applied) ??
+    asNum(billing.gatiCashApplied) ??
+    asNum(billing.gati_cash_amount) ??
+    asNum(billing.gatiCashAmount);
+  if (direct != null && direct > 0) return round2(direct);
+
+  const adj = billing.checkout_adjustments ?? billing.checkoutAdjustments;
+  if (adj && typeof adj === "object") {
+    const a = adj as Record<string, unknown>;
+    const fromAdj = asNum(a.gatiCashApplied) ?? asNum(a.gati_cash_applied);
+    if (fromAdj != null && fromAdj > 0) return round2(fromAdj);
+    const lines = Array.isArray(a.lines) ? a.lines : [];
+    let sum = 0;
+    for (const line of lines) {
+      if (!line || typeof line !== "object") continue;
+      const row = line as Record<string, unknown>;
+      if (String(row.kind ?? "") !== "gati_cash_applied") continue;
+      sum += Math.abs(asNum(row.amount) ?? 0);
+    }
+    if (sum > 0.005) return round2(sum);
+  }
+
+  const meta = billing.checkout_metadata ?? billing.checkoutMetadata;
+  if (meta && typeof meta === "object") {
+    const fromMeta =
+      asNum((meta as Record<string, unknown>).gatiCashAmount) ??
+      asNum((meta as Record<string, unknown>).gati_cash_amount);
+    if (fromMeta != null && fromMeta > 0) return round2(fromMeta);
+  }
+  return null;
 }
 
 async function fetchDiscountFromOrderTables(input: {
@@ -256,79 +257,6 @@ function cashbackFromBilling(billing: Record<string, unknown> | null): number | 
   return sum > 0 ? round2(sum) : null;
 }
 
-type CouponMeta = {
-  code: string | null;
-  value: number | null;
-  maxDiscount: number | null;
-  maxUsage: number | null;
-  maxRedemption: number | null;
-  type: string | null;
-  userUsageCount: number | null;
-  expiryDate: string | null;
-  userEligible: boolean | null;
-};
-
-function extractCouponMeta(billing: Record<string, unknown> | null): CouponMeta {
-  const empty: CouponMeta = {
-    code: null,
-    value: null,
-    maxDiscount: null,
-    maxUsage: null,
-    maxRedemption: null,
-    type: null,
-    userUsageCount: null,
-    expiryDate: null,
-    userEligible: null,
-  };
-  if (!billing) return empty;
-
-  const discounts = Array.isArray(billing.discounts) ? billing.discounts : [];
-  for (const d of discounts) {
-    if (!d || typeof d !== "object") continue;
-    const row = d as Record<string, unknown>;
-    const meta =
-      row.meta && typeof row.meta === "object"
-        ? (row.meta as Record<string, unknown>)
-        : {};
-    const label = String(row.label ?? "").toLowerCase();
-    const isCoupon =
-      String(meta.source ?? "").toLowerCase() === "coupon" ||
-      meta.couponCode != null ||
-      meta.code != null ||
-      label.includes("coupon");
-    if (!isCoupon) continue;
-
-    return {
-      code:
-        (typeof meta.couponCode === "string" && meta.couponCode.trim()) ||
-        (typeof meta.code === "string" && meta.code.trim()) ||
-        null,
-      value: asNum(meta.couponValue ?? meta.value ?? row.amount),
-      maxDiscount: asNum(meta.maxDiscount ?? meta.couponMaxDiscount),
-      maxUsage: asNum(meta.maxUsage ?? meta.couponMaxUsage),
-      maxRedemption: asNum(meta.maxRedemption ?? meta.couponMaxRedemption),
-      type:
-        (typeof meta.couponType === "string" && meta.couponType) ||
-        (typeof row.kind === "string" && row.kind) ||
-        null,
-      userUsageCount: asNum(meta.userUsageCount ?? meta.usageCount),
-      expiryDate:
-        typeof meta.expiryDate === "string"
-          ? meta.expiryDate
-          : typeof meta.expiresAt === "string"
-            ? meta.expiresAt
-            : null,
-      userEligible:
-        typeof meta.userEligible === "boolean"
-          ? meta.userEligible
-          : typeof meta.eligible === "boolean"
-            ? meta.eligible
-            : null,
-    };
-  }
-  return empty;
-}
-
 function resolveDeliveryFee(
   billing: Record<string, unknown> | null,
   core: Record<string, unknown>,
@@ -355,167 +283,118 @@ function resolveDeliveryFee(
   };
 }
 
-function isOnlinePaymentMode(mode: string | null): boolean {
-  if (!mode) return false;
-  const m = mode.trim().toUpperCase();
-  return m !== "COD" && m !== "CASH" && m !== "CASH_ON_DELIVERY";
+/** Public order id variants used across payment_intents / payment_transactions / pending_orders. */
+function collectOrderIdCandidates(input: {
+  orderCoreId: number;
+  orderIdText: string | null;
+  formattedOrderId: string | null;
+  displayId: string;
+}): string[] {
+  const raw = [
+    input.orderIdText,
+    input.formattedOrderId,
+    input.displayId,
+    String(input.orderCoreId),
+  ];
+  const out = new Set<string>();
+  const add = (v: string) => {
+    const s = v.trim();
+    if (!s) return;
+    out.add(s);
+    out.add(s.replace(/^#/, ""));
+    out.add(s.replace(/-/g, ""));
+    out.add(s.replace(/^#/, "").replace(/-/g, ""));
+    // GM100044 ↔ GMF100044 (core seq vs formatted public id)
+    if (/^GMF\d+/i.test(s)) out.add(s.replace(/^GMF/i, "GM"));
+    if (/^GM\d+/i.test(s) && !/^GMF/i.test(s)) out.add(s.replace(/^GM/i, "GMF"));
+  };
+  for (const v of raw) {
+    if (v == null) continue;
+    add(String(v));
+  }
+  return [...out];
 }
 
-function buildPaymentLineRecords(args: {
-  paymentIdLabel: string;
-  transactionId: string | null;
-  mpTransactionId: string | null;
-  paymentStatus: string;
-  redemptionType: string | null;
-  orderType: string;
-  refunded: boolean;
-  partialRefunded: boolean;
-  partialRefundedAmount: number | null;
-  billing: Record<string, unknown> | null;
-  core: Record<string, unknown>;
-  merchantItemSubtotal: number | null;
-  merchantTotal: number | null;
-  deliveryFeeTotal: number | null;
-  cashbackEarned: number | null;
-  pgName: string | null;
-  pgTransactionId: string | null;
+type CapturedPaymentRow = {
+  transactionId: number;
+  intentId: string | null;
+  gateway: string | null;
   paymentMode: string | null;
-  coupon: CouponMeta;
-}): OrderPaymentRecord[] {
-  const billing = args.billing ?? {};
-  const core = args.core;
-  const online = isOnlinePaymentMode(args.paymentMode);
-  const attachCoupon = (row: OrderPaymentRecord, withCoupon: boolean): OrderPaymentRecord => ({
-    ...row,
-    couponCode: withCoupon ? args.coupon.code : null,
-    couponUserUsageCount: withCoupon ? args.coupon.userUsageCount : null,
-    couponExpiryDate: withCoupon ? args.coupon.expiryDate : null,
-    couponValue: withCoupon ? args.coupon.value : null,
-    couponMaxDiscount: withCoupon ? args.coupon.maxDiscount : null,
-    couponMaxUsage: withCoupon ? args.coupon.maxUsage : null,
-    couponMaxRedemption: withCoupon ? args.coupon.maxRedemption : null,
-    couponType: withCoupon ? args.coupon.type : null,
-    couponUserEligible: withCoupon ? args.coupon.userEligible : null,
-  });
+  transactionReference: string | null;
+  status: string | null;
+  amount: number | null;
+  razorpayOrderId: string | null;
+  razorpayPaymentId: string | null;
+};
 
-  const base = {
-    paymentId: args.paymentIdLabel,
-    transactionId: args.transactionId,
-    mpTransactionId: args.mpTransactionId,
-    paymentStatus: args.paymentStatus,
-    redemptionType: args.redemptionType,
-    refunded: args.refunded,
-    partialRefunded: args.partialRefunded,
-    partiallyRefundedAmount: args.partialRefunded ? args.partialRefundedAmount : null,
-    cashbackEarned: args.cashbackEarned,
-    pgName: args.pgName,
-    pgTransactionId: args.pgTransactionId ?? args.transactionId,
-    pointsUsed: null,
-    couponCode: null as string | null,
-    couponUserUsageCount: null as number | null,
-    couponExpiryDate: null as string | null,
-    couponValue: null as number | null,
-    couponMaxDiscount: null as number | null,
-    couponMaxUsage: null as number | null,
-    couponMaxRedemption: null as number | null,
-    couponType: null as string | null,
-    couponUserEligible: null as boolean | null,
-  };
+async function fetchCapturedPayments(
+  orderIdCandidates: string[]
+): Promise<CapturedPaymentRow[]> {
+  if (orderIdCandidates.length === 0) return [];
+  const db = getDb();
+  try {
+    const rows = rowsOf(
+      await db.execute(sql`
+      SELECT
+        pt.id AS transaction_id,
+        pi.intent_id,
+        pt.gateway,
+        pt.payment_mode,
+        pt.transaction_reference,
+        pt.status,
+        pt.amount::text AS amount,
+        pt.raw_response,
+        pi.metadata AS intent_metadata
+      FROM payment_transactions pt
+      LEFT JOIN payment_intents pi ON pi.id = pt.payment_intent_id
+      WHERE pt.order_id IN (${sql.join(
+        orderIdCandidates.map((id) => sql`${id}`),
+        sql`, `
+      )})
+         OR pi.order_id IN (${sql.join(
+           orderIdCandidates.map((id) => sql`${id}`),
+           sql`, `
+         )})
+      ORDER BY pt.created_at DESC
+      LIMIT 20
+    `)
+    );
 
-  const itemGross =
-    round2((asNum(billing.item_total) ?? 0) + (asNum(billing.addon_total) ?? 0)) ||
-    round2((asNum(core.item_total) ?? 0) + (asNum(core.addon_total) ?? 0));
-  const packaging = round2(asNum(billing.packaging_fee) ?? 0);
-  const delivery = args.deliveryFeeTotal ?? round2(asNum(billing.delivery_fee) ?? 0);
-  const platform = round2(asNum(billing.platform_fee) ?? 0);
-  const surge = round2(asNum(billing.surge_fee) ?? 0);
-  const smallOrder = round2(asNum(billing.small_order_fee) ?? 0);
-  const convenience = round2(asNum(billing.convenience_fee) ?? 0);
-  const misc = round2(asNum(billing.misc_fee) ?? 0);
-  const gst = round2(asNum(billing.tax_total) ?? 0);
-  const tip = round2(asNum(billing.tip_amount) ?? 0);
-  const donation = round2(asNum(billing.donation_amount) ?? 0);
-
-  const merchantItem = args.merchantItemSubtotal;
-  const itemRatio =
-    merchantItem != null && merchantItem > 0 && itemGross > 0
-      ? merchantItem / itemGross
-      : null;
-
-  const lineCtm = (customerAmt: number, merchantBillable: boolean): number | null => {
-    if (!merchantBillable || customerAmt <= 0) return null;
-    if (itemRatio != null) return round2(customerAmt * itemRatio);
-    return null;
-  };
-
-  const pushLine = (
-    productType: string,
-    amount: number,
-    opts?: { deliveryFee?: number | null; ctm?: number | null; merchantBillable?: boolean }
-  ): OrderPaymentRecord | null => {
-    if (amount <= 0) return null;
-    const ctc = round2(amount);
-    const ctm =
-      opts?.ctm != null
-        ? opts.ctm
-        : lineCtm(ctc, opts?.merchantBillable ?? false);
-    return {
-      ...base,
-      productType,
-      amount: ctc,
-      ctc,
-      cashin: online ? ctc : null,
-      ctm,
-      deliveryFee: opts?.deliveryFee ?? null,
-    };
-  };
-
-  const lines: OrderPaymentRecord[] = [];
-  let couponAttached = false;
-
-  const specs: Array<OrderPaymentRecord | null> = [
-    pushLine("FOOD", itemGross, { merchantBillable: true, ctm: merchantItem ?? undefined }),
-    pushLine("PACKAGING", packaging, { merchantBillable: true, ctm: packaging > 0 ? packaging : null }),
-    pushLine("DELIVERY_FEE", delivery, { deliveryFee: delivery > 0 ? delivery : null }),
-    pushLine("PLATFORM_FEE", platform),
-    pushLine("SURGE_FEE", surge),
-    pushLine("SMALL_ORDER_FEE", smallOrder),
-    pushLine("CONVENIENCE_FEE", convenience),
-    pushLine("MISC_FEE", misc),
-    pushLine("GST", gst),
-    pushLine("TIP", tip),
-    pushLine("DONATION", donation),
-  ];
-
-  for (const row of specs) {
-    if (!row) continue;
-    const withCoupon = !couponAttached;
-    if (withCoupon) couponAttached = true;
-    lines.push(attachCoupon(row, withCoupon));
+    return rows.map((r) => {
+      const raw = readRecord(r.raw_response) ?? {};
+      const intentMeta = readRecord(r.intent_metadata) ?? {};
+      const fromRef =
+        r.transaction_reference != null ? String(r.transaction_reference).trim() : "";
+      const razorpayPaymentId =
+        (typeof raw.razorpayPaymentId === "string" && raw.razorpayPaymentId) ||
+        (typeof raw.razorpay_payment_id === "string" && raw.razorpay_payment_id) ||
+        (typeof raw.id === "string" && String(raw.id).startsWith("pay_") ? String(raw.id) : null) ||
+        (fromRef.startsWith("pay_") || fromRef.length > 0 ? fromRef : null);
+      const razorpayOrderId =
+        (typeof raw.razorpayOrderId === "string" && raw.razorpayOrderId) ||
+        (typeof raw.razorpay_order_id === "string" && raw.razorpay_order_id) ||
+        (typeof intentMeta.razorpayOrderId === "string" && intentMeta.razorpayOrderId) ||
+        (typeof intentMeta.razorpay_order_id === "string" && intentMeta.razorpay_order_id) ||
+        (typeof intentMeta.order_id === "string" &&
+        String(intentMeta.order_id).startsWith("order_")
+          ? String(intentMeta.order_id)
+          : null) ||
+        null;
+      return {
+        transactionId: Number(r.transaction_id) || 0,
+        intentId: r.intent_id != null ? String(r.intent_id) : null,
+        gateway: r.gateway != null ? String(r.gateway) : null,
+        paymentMode: r.payment_mode != null ? String(r.payment_mode) : null,
+        transactionReference: fromRef || null,
+        status: r.status != null ? String(r.status) : null,
+        amount: asNum(r.amount),
+        razorpayOrderId,
+        razorpayPaymentId,
+      };
+    });
+  } catch {
+    return [];
   }
-
-  if (lines.length === 0) {
-    const grand =
-      asNum(core.grand_total) ?? asNum(billing.final_amount) ?? asNum(billing.final_payable);
-    if (grand != null && grand > 0) {
-      lines.push(
-        attachCoupon(
-          {
-            ...base,
-            productType: args.orderType?.toUpperCase() || "ORDER",
-            amount: round2(grand),
-            ctc: round2(grand),
-            cashin: online ? round2(grand) : null,
-            ctm: args.merchantTotal,
-            deliveryFee: args.deliveryFeeTotal,
-          },
-          true
-        )
-      );
-    }
-  }
-
-  return lines;
 }
 
 async function merchantGrossFromCommissionSnapshots(
@@ -687,7 +566,8 @@ export async function fetchOrderPaymentDetail(input: {
 
   let core: Record<string, unknown> = {};
   try {
-    const rows = await db.execute(sql`
+    const rows = rowsOf(
+      await db.execute(sql`
       SELECT
         grand_total,
         item_total,
@@ -706,8 +586,9 @@ export async function fetchOrderPaymentDetail(input: {
       FROM orders_core
       WHERE id = ${orderCoreId}
       LIMIT 1
-    `);
-    core = (rows as unknown as Record<string, unknown>[])[0] ?? {};
+    `)
+    );
+    core = rows[0] ?? {};
   } catch {
     core = {};
   }
@@ -716,13 +597,15 @@ export async function fetchOrderPaymentDetail(input: {
 
   let settlementDelivery: number | null = null;
   try {
-    const sb = await db.execute(sql`
+    const sb = rowsOf(
+      await db.execute(sql`
       SELECT delivery_fee
       FROM order_settlement_breakdown
       WHERE order_id = ${orderCoreId}
       LIMIT 1
-    `);
-    const row = (sb as unknown as Record<string, unknown>[])[0];
+    `)
+    );
+    const row = sb[0];
     if (row) {
       settlementDelivery = asNum(row.delivery_fee);
     }
@@ -733,47 +616,81 @@ export async function fetchOrderPaymentDetail(input: {
   let razorpayOrderId: string | null = null;
   let razorpayPaymentId: string | null = null;
   let pgName: string | null = null;
+  let instrumentRaw: string | null = null;
+  let gatiCashUsed: number | null = null;
 
-  const orderText =
-    input.orderIdText?.trim() || input.formattedOrderId?.trim() || null;
+  const orderIdCandidates = collectOrderIdCandidates({
+    orderCoreId,
+    orderIdText: input.orderIdText,
+    formattedOrderId: input.formattedOrderId,
+    displayId: input.displayId,
+  });
+  const capturedPayments = await fetchCapturedPayments(orderIdCandidates);
+  const primaryCapture = capturedPayments[0] ?? null;
+  if (primaryCapture) {
+    razorpayPaymentId = primaryCapture.razorpayPaymentId;
+    razorpayOrderId = primaryCapture.razorpayOrderId;
+    if (primaryCapture.gateway) pgName = primaryCapture.gateway;
+    if (primaryCapture.paymentMode) instrumentRaw = primaryCapture.paymentMode;
+  }
 
-  if (orderText) {
+  if (orderIdCandidates.length > 0) {
     try {
-      const pending = await db.execute(sql`
-        SELECT razorpay_order_id, razorpay_payment_id, payment_method, billing_snapshot
+      const pending = rowsOf(
+        await db.execute(sql`
+        SELECT
+          razorpay_order_id,
+          razorpay_payment_id,
+          payment_method,
+          billing_snapshot,
+          gati_cash_applied::text AS gati_cash_applied
         FROM pending_orders
-        WHERE finalized_order_id = ${orderText}
+        WHERE finalized_order_id IN (${sql.join(
+          orderIdCandidates.map((id) => sql`${id}`),
+          sql`, `
+        )})
         ORDER BY updated_at DESC
         LIMIT 1
-      `);
-      const p = (pending as unknown as Record<string, unknown>[])[0];
+      `)
+      );
+      const p = pending[0];
       if (p) {
         if (!billing || discountTotalFromBilling(billing) <= 0) {
           const pendingBilling = readRecord(p.billing_snapshot ?? p.billingSnapshot);
           if (pendingBilling) billing = pendingBilling;
         }
         razorpayOrderId =
-          p.razorpay_order_id != null ? String(p.razorpay_order_id) : null;
+          razorpayOrderId ??
+          (p.razorpay_order_id != null ? String(p.razorpay_order_id) : null);
         razorpayPaymentId =
-          p.razorpay_payment_id != null ? String(p.razorpay_payment_id) : null;
-        if (!pgName && p.payment_method != null) {
-          pgName = String(p.payment_method);
+          razorpayPaymentId ??
+          (p.razorpay_payment_id != null ? String(p.razorpay_payment_id) : null);
+        if (p.payment_method != null) {
+          instrumentRaw = instrumentRaw ?? String(p.payment_method);
+          if (!pgName) pgName = String(p.payment_method);
         }
+        const pendingGati = asNum(p.gati_cash_applied);
+        if (pendingGati != null && pendingGati > 0) gatiCashUsed = round2(pendingGati);
       }
     } catch {
       /* ignore */
     }
 
     try {
-      const pe = await db.execute(sql`
+      const pe = rowsOf(
+        await db.execute(sql`
         SELECT razorpay_order_id, razorpay_payment_id, payload, source
         FROM payment_events
-        WHERE order_id = ${orderText}
+        WHERE order_id IN (${sql.join(
+          orderIdCandidates.map((id) => sql`${id}`),
+          sql`, `
+        )})
           AND razorpay_payment_id IS NOT NULL
         ORDER BY created_at DESC
         LIMIT 1
-      `);
-      const e = (pe as unknown as Record<string, unknown>[])[0];
+      `)
+      );
+      const e = pe[0];
       if (e) {
         razorpayOrderId =
           razorpayOrderId ??
@@ -781,17 +698,18 @@ export async function fetchOrderPaymentDetail(input: {
         razorpayPaymentId =
           razorpayPaymentId ??
           (e.razorpay_payment_id != null ? String(e.razorpay_payment_id) : null);
-        if (!pgName) {
-          const payload = readRecord(e.payload);
-          const method =
-            payload?.method ??
-            payload?.payment_method ??
-            (payload?.payment && typeof payload.payment === "object"
-              ? (payload.payment as Record<string, unknown>).method
-              : null);
-          pgName =
-            (method != null ? String(method) : null) ??
-            (e.source != null ? String(e.source) : null);
+        const payload = readRecord(e.payload);
+        const method =
+          payload?.method ??
+          payload?.payment_method ??
+          (payload?.payment && typeof payload.payment === "object"
+            ? (payload.payment as Record<string, unknown>).method
+            : null);
+        if (method != null) {
+          instrumentRaw = String(method);
+          if (!pgName) pgName = String(method);
+        } else if (!pgName && e.source != null) {
+          pgName = String(e.source);
         }
       }
     } catch {
@@ -800,15 +718,17 @@ export async function fetchOrderPaymentDetail(input: {
   }
 
   try {
-    const tl = await db.execute(sql`
+    const tl = rowsOf(
+      await db.execute(sql`
       SELECT metadata
       FROM order_timelines
       WHERE order_id = ${orderCoreId}
         AND metadata IS NOT NULL
       ORDER BY occurred_at DESC
       LIMIT 5
-    `);
-    for (const row of tl as unknown as { metadata?: unknown }[]) {
+    `)
+    );
+    for (const row of tl) {
       const meta = readRecord(row.metadata);
       if (!meta) continue;
       razorpayOrderId =
@@ -832,19 +752,6 @@ export async function fetchOrderPaymentDetail(input: {
   const deliveryResolved = resolveDeliveryFee(billing, core, settlementDelivery);
   const deliveryFee = deliveryResolved.fee;
 
-  let merchantItemSubtotal =
-    orderCoreId > 0
-      ? await merchantGrossFromCommissionSnapshots(
-          orderCoreId,
-          input.merchantStoreId,
-          billing,
-          core
-        )
-      : null;
-  if (merchantItemSubtotal == null || merchantItemSubtotal <= 0) {
-    merchantItemSubtotal = merchantGrossFromBilling(billing, core);
-  }
-
   const totalCtm = await resolveTotalCtm(
     input.merchantStoreId,
     core,
@@ -861,13 +768,24 @@ export async function fetchOrderPaymentDetail(input: {
     input.paymentStatus ??
     "—";
 
-  const paymentMode =
+  const paymentModeRaw =
     (core.payment_method != null ? String(core.payment_method) : null) ??
+    primaryCapture?.paymentMode ??
     input.paymentMethod;
 
+  const paymentModeDisplay = formatPaymentModeOnlineOrCash(paymentModeRaw);
+  const paymentSourceDisplay =
+    formatPaymentInstrumentSource(instrumentRaw, paymentModeRaw, pgName) ??
+    (paymentModeDisplay === "Cash" ? "Cash" : paymentModeDisplay === "Online" ? "Online" : null);
+
   if (!pgName) {
-    pgName = razorpayPaymentId ? "razorpay" : paymentMode;
+    pgName = razorpayPaymentId ? "razorpay" : paymentModeRaw;
   }
+  if (pgName && ["upi", "card", "wallet", "cod", "online", "cash"].includes(pgName.toLowerCase())) {
+    pgName = razorpayPaymentId ? "razorpay" : pgName;
+  }
+
+  gatiCashUsed = gatiCashUsed ?? gatiCashFromBilling(billing);
 
   const isRefunded =
     paymentStatus.toLowerCase().includes("refund") ||
@@ -880,7 +798,6 @@ export async function fetchOrderPaymentDetail(input: {
     totalRefunded > 0 &&
     totalRefunded < totalAmount - 0.01;
 
-  const coupon = extractCouponMeta(billing);
   const cashbackEarned = cashbackFromBilling(billing);
   let discountSummary = orderDiscountGrantedSummaryFromBilling(billing);
   if (discountSummary.amount == null) {
@@ -891,44 +808,57 @@ export async function fetchOrderPaymentDetail(input: {
     });
   }
 
-  const records = buildPaymentLineRecords({
-    paymentIdLabel,
-    transactionId: razorpayPaymentId,
-    mpTransactionId: razorpayOrderId,
-    paymentStatus,
-    redemptionType:
-      (core.order_source != null ? String(core.order_source) : null) ??
-      input.orderSource,
-    orderType: input.orderType,
-    refunded: isRefunded && !partialRefunded,
-    partialRefunded,
-    partialRefundedAmount:
-      totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
-    billing,
-    core,
-    merchantItemSubtotal: merchantItemSubtotal > 0 ? merchantItemSubtotal : null,
-    merchantTotal: totalCtm,
-    deliveryFeeTotal: deliveryFee,
-    cashbackEarned,
-    pgName,
-    pgTransactionId: razorpayPaymentId,
-    paymentMode,
-    coupon,
-  });
+  const ctc =
+    totalAmount != null && totalAmount > 0
+      ? round2(totalAmount)
+      : primaryCapture?.amount != null && primaryCapture.amount > 0
+        ? round2(primaryCapture.amount)
+        : null;
+  const gati = gatiCashUsed != null && gatiCashUsed > 0 ? round2(gatiCashUsed) : null;
+  const online = paymentModeDisplay !== "Cash";
+  const cashin =
+    ctc != null
+      ? round2(Math.max(0, ctc - (gati ?? 0)))
+      : online && primaryCapture?.amount != null
+        ? round2(primaryCapture.amount)
+        : null;
+
+  // One capture row — CTM uses the same SSOT as the summary card (no fee-line guesswork).
+  const records: OrderPaymentRecord[] = [
+    {
+      paymentId: paymentIdLabel,
+      transactionId: razorpayPaymentId ?? primaryCapture?.transactionReference ?? null,
+      mpTransactionId: razorpayOrderId,
+      paymentStatus: primaryCapture?.status?.trim() || paymentStatus,
+      paymentMode: paymentModeDisplay,
+      source: paymentSourceDisplay,
+      refunded: isRefunded && !partialRefunded,
+      partialRefunded,
+      partiallyRefundedAmount:
+        totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
+      amount: ctc,
+      deliveryFee,
+      ctc,
+      cashin: online ? cashin : cashin,
+      gatiCashUsed: gati,
+      ctm: totalCtm,
+      pgName: razorpayPaymentId ? "razorpay" : pgName,
+      pgTransactionId: razorpayPaymentId ?? primaryCapture?.transactionReference ?? null,
+    },
+  ];
 
   return {
-    totalAmount: totalAmount != null ? round2(totalAmount) : null,
+    totalAmount: ctc,
     totalCtm,
     totalCashbackEarned: cashbackEarned,
+    gatiCashUsed: gati,
     totalDiscountGranted: discountSummary.amount,
     discountOfferSource: discountSummary.offerSource,
     deliveryFee,
     deliveryFeeQuoted: deliveryResolved.quoted,
     deliveryFeeWaived: deliveryResolved.waived,
-    source:
-      (core.order_source != null ? String(core.order_source) : null) ??
-      input.orderSource,
-    paymentMode,
+    source: paymentSourceDisplay,
+    paymentMode: paymentModeDisplay,
     partialRefunded,
     refundAmount: totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
     totalRefunded: totalRefunded != null ? round2(totalRefunded) : null,

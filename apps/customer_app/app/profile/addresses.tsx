@@ -3,7 +3,9 @@
  */
 
 import { useLayoutEffect, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useRouter, useLocalSearchParams, useNavigation } from "expo-router";
@@ -189,30 +191,30 @@ export default function AddressesScreen() {
         {isLoading ? (
           <View style={styles.emptyWrap}>
             <ActivityIndicator size="small" color={TEAL} />
-            <Text style={[styles.emptySub, { marginTop: 12 }]}>{t("addresses.loading", "Loading addresses...")}</Text>
+            <AppText style={[styles.emptySub, { marginTop: 12 }]}>{t("addresses.loading", "Loading addresses...")}</AppText>
           </View>
         ) : error ? (
           <View style={styles.emptyWrap}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="warning-outline" size={48} color={TEXT_MUTED} />
             </View>
-            <Text style={styles.emptyTitle}>{t("addresses.errorLoading", "Could not load addresses")}</Text>
-            <Text style={styles.emptySub}>{t("addresses.errorLoadingSub", "Please try again later.")}</Text>
+            <AppText style={styles.emptyTitle}>{t("addresses.errorLoading", "Could not load addresses")}</AppText>
+            <AppText style={styles.emptySub}>{t("addresses.errorLoadingSub", "Please try again later.")}</AppText>
           </View>
         ) : !hasAddresses ? (
           <View style={styles.emptyWrap}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="location-outline" size={48} color={TEXT_MUTED} />
             </View>
-            <Text style={styles.emptyTitle}>{t("addresses.noSavedAddresses", "No saved address found")}</Text>
-            <Text style={styles.emptySub}>{t("addresses.noSavedAddressesSub", "Please use the Add new address button below for a smooth delivery experience.")}</Text>
+            <AppText style={styles.emptyTitle}>{t("addresses.noSavedAddresses", "No saved address found")}</AppText>
+            <AppText style={styles.emptySub}>{t("addresses.noSavedAddressesSub", "Please use the Add new address button below for a smooth delivery experience.")}</AppText>
           </View>
         ) : (
           <>
             {selectingForCheckout ? (
-              <Text style={styles.checkoutHint}>
+              <AppText style={styles.checkoutHint}>
                 {t("addresses.tapToDeliverHere", "Tap an address to deliver your order here")}
-              </Text>
+              </AppText>
             ) : null}
             {addresses.map((addr) => {
               const cardMain = (
@@ -226,22 +228,22 @@ export default function AddressesScreen() {
                   </View>
                   <View style={styles.addressBody}>
                     <View style={styles.addressLabelRow}>
-                      <Text style={styles.addressLabel}>{addr.label ?? t("addresses.other", "Other")}</Text>
+                      <AppText style={styles.addressLabel}>{addr.label ?? t("addresses.other", "Other")}</AppText>
                       {addr.isDefault && (
                         <View style={styles.defaultBadge}>
-                          <Text style={styles.defaultBadgeText}>{t("addresses.default", "Default")}</Text>
+                          <AppText style={styles.defaultBadgeText}>{t("addresses.default", "Default")}</AppText>
                         </View>
                       )}
                     </View>
                     {addr.contactName ? (
-                      <Text style={styles.addressLine} numberOfLines={1}>
+                      <AppText style={styles.addressLine} numberOfLines={1}>
                         {addr.contactName}
                         {addr.contactMobile ? ` • ${addr.contactMobile}` : ""}
-                      </Text>
+                      </AppText>
                     ) : null}
-                    <Text style={styles.addressLine} numberOfLines={2}>
+                    <AppText style={styles.addressLine} numberOfLines={2}>
                       {addr.fullAddress}
-                    </Text>
+                    </AppText>
                   </View>
                 </>
               );
@@ -267,7 +269,7 @@ export default function AddressesScreen() {
                         onPress={() => void handleSetDefault(addr)}
                         disabled={setDefaultMutation.isPending}
                       >
-                        <Text style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</Text>
+                        <AppText style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</AppText>
                       </TouchableOpacity>
                     )}
                     {!selectingForCheckout && (
@@ -325,8 +327,8 @@ export default function AddressesScreen() {
             <Ionicons name="add" size={28} color={TEAL} />
           </View>
           <View style={styles.addTextWrap}>
-            <Text style={styles.addTitle}>{t("addresses.addNewAddress")}</Text>
-            <Text style={styles.addSub}>{t("addresses.addNewAddressSub")}</Text>
+            <AppText style={styles.addTitle}>{t("addresses.addNewAddress")}</AppText>
+            <AppText style={styles.addSub}>{t("addresses.addNewAddressSub")}</AppText>
           </View>
           <Ionicons name="chevron-forward" size={22} color={TEXT_MUTED} />
         </TouchableOpacity>

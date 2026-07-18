@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutGrid,
@@ -17,6 +16,7 @@ import {
 import { useRouter } from "next/navigation";
 import { usePermissions } from "@/hooks/usePermissions";
 import { queryKeys } from "@/lib/queryKeys";
+import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
 import {
   USER_APP_CATEGORY_STORE_TYPES,
   parseUserAppCategoryStoreType,
@@ -611,17 +611,7 @@ export default function CustomerAppCategoriesPage() {
             </p>
           </div>
         </div>
-        <div className="inline-flex items-center rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
-          <span className="rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white">
-            App Category
-          </span>
-          <Link
-            href="/dashboard/super-admin/cxapp-home"
-            className="rounded-md px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            CXApp Home
-          </Link>
-        </div>
+        <CxAppHomeSectionToggle />
       </div>
 
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between xl:gap-6">

@@ -4,9 +4,10 @@ import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 
 /**
- * Backend env loading rules (in order):
- * 1) `.env.local` (machine-specific overrides, never committed)
- * 2) `.env` (shared dev/prod secrets injected by server)
+ * Backend env loading rules:
+ * 1) Load candidate `.env` / `.env.local` files (lowest → highest priority)
+ * 2) Always finish with `backend/.env` then `backend/.env.local` (override),
+ *    so a repo-root `.env.local` cannot silently replace DATABASE_URL/REDIS_URL.
  *
  * We do NOT commit any `.env*` files.
  * Example templates live as `env.example` and `env.local.example`.
@@ -27,16 +28,20 @@ export function loadEnv() {
   const backendFromInitCwd = initCwd ? path.resolve(initCwd, "backend") : "";
 
   const candidates = Array.from(
-    new Set([cwd, initCwd, backendRoot, backendFromCwd, backendFromInitCwd].filter(Boolean)),
+    new Set([cwd, initCwd, backendFromCwd, backendFromInitCwd, backendRoot].filter(Boolean)),
   );
 
+  // First pass: non-override fills (later files don't clobber earlier unless override).
   for (const base of candidates) {
-    const envLocal = path.join(base, ".env.local");
     const env = path.join(base, ".env");
-
-    if (fs.existsSync(envLocal)) dotenv.config({ path: envLocal, override: true });
+    const envLocal = path.join(base, ".env.local");
     if (fs.existsSync(env)) dotenv.config({ path: env, override: false });
+    if (fs.existsSync(envLocal)) dotenv.config({ path: envLocal, override: false });
   }
+
+  // Final authority: the backend package env files always win.
+  const backendEnv = path.join(backendRoot, ".env");
+  const backendEnvLocal = path.join(backendRoot, ".env.local");
+  if (fs.existsSync(backendEnv)) dotenv.config({ path: backendEnv, override: true });
+  if (fs.existsSync(backendEnvLocal)) dotenv.config({ path: backendEnvLocal, override: true });
 }
-
-

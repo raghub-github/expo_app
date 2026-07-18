@@ -1623,16 +1623,14 @@ export default function OrderRightSidebar({
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Locality:</dt>
             <dd>
-              {order.localityIsSafe === true ? (
-                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-100">
-                  GREEN
-                </span>
-              ) : order.localityIsSafe === false ? (
+              {order.localityIsSafe === false ? (
                 <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-bold text-red-700 ring-1 ring-red-100">
                   RED
                 </span>
               ) : (
-                <span className="font-medium text-slate-700">—</span>
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-100">
+                  GREEN
+                </span>
               )}
             </dd>
           </div>

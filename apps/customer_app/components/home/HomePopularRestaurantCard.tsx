@@ -3,7 +3,9 @@
  */
 
 import { useState, useCallback } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -71,9 +73,9 @@ export function HomePopularRestaurantCard({ merchant, weatherDelayMinutes = 0 }:
         />
         <View style={styles.etaBadge}>
           <Ionicons name="time-outline" size={10} color="#fff" />
-          <Text style={styles.etaText} numberOfLines={1}>
+          <AppText style={styles.etaText} numberOfLines={1}>
             {etaLabel}
-          </Text>
+          </AppText>
         </View>
         <TouchableOpacity
           style={styles.heartBtn}
@@ -89,25 +91,25 @@ export function HomePopularRestaurantCard({ merchant, weatherDelayMinutes = 0 }:
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.name} numberOfLines={1}>
+      <AppText style={styles.name} numberOfLines={1}>
         {merchant.name}
-      </Text>
+      </AppText>
 
       <View style={styles.metaRow}>
         {rating ? (
           <>
             <Ionicons name="star" size={12} color="#F59E0B" />
-            <Text style={styles.rating}>{rating}</Text>
-            <Text style={styles.dot}>•</Text>
+            <AppText style={styles.rating}>{rating}</AppText>
+            <AppText style={styles.dot}>•</AppText>
           </>
         ) : null}
-        <Text style={styles.metaText} numberOfLines={1}>
+        <AppText style={styles.metaText} numberOfLines={1}>
           {cuisine}
-        </Text>
-        <Text style={styles.dot}>•</Text>
-        <Text style={styles.metaText} numberOfLines={1}>
+        </AppText>
+        <AppText style={styles.dot}>•</AppText>
+        <AppText style={styles.metaText} numberOfLines={1}>
           {priceForTwo}
-        </Text>
+        </AppText>
       </View>
     </TouchableOpacity>
   );

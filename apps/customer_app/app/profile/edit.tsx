@@ -3,19 +3,9 @@
  */
 
 import { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  ScrollView,
-  Pressable,
-  Keyboard,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView, Pressable, Keyboard } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -127,7 +117,7 @@ export default function EditProfileScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.label}>Full name *</Text>
+        <AppText style={styles.label}>Full name *</AppText>
         <TextInput
           style={[styles.input, errors.fullName && styles.inputError]}
           placeholder="Enter full name"
@@ -136,14 +126,14 @@ export default function EditProfileScreen() {
           onChangeText={(t) => { setFullName(t); setErrors((e) => ({ ...e, fullName: "" })); }}
           editable={!submitting}
         />
-        {errors.fullName ? <Text style={styles.errorText}>{errors.fullName}</Text> : null}
+        {errors.fullName ? <AppText style={styles.errorText}>{errors.fullName}</AppText> : null}
 
         <View style={styles.labelRow}>
-          <Text style={[styles.label, styles.labelInline]}>Email *</Text>
+          <AppText style={[styles.label, styles.labelInline]}>Email *</AppText>
           {isEmailVerified ? (
             <View style={styles.verifiedBadge}>
               <Ionicons name="checkmark-circle" size={14} color={GREEN} />
-              <Text style={styles.verifiedBadgeText}>Verified</Text>
+              <AppText style={styles.verifiedBadgeText}>Verified</AppText>
             </View>
           ) : null}
         </View>
@@ -168,23 +158,23 @@ export default function EditProfileScreen() {
           />
         </View>
         {isEmailVerified ? (
-          <Text style={styles.verifiedHint}>Verified email cannot be changed.</Text>
+          <AppText style={styles.verifiedHint}>Verified email cannot be changed.</AppText>
         ) : null}
-        {errors.email ? <Text style={styles.errorText}>{errors.email}</Text> : null}
+        {errors.email ? <AppText style={styles.errorText}>{errors.email}</AppText> : null}
 
-        <Text style={styles.label}>Age group</Text>
+        <AppText style={styles.label}>Age group</AppText>
         <TouchableOpacity
           style={[styles.input, styles.selectTrigger]}
           onPress={() => { Keyboard.dismiss(); setShowAgePicker(true); }}
           disabled={submitting}
         >
-          <Text style={ageGroup ? styles.selectText : styles.selectPlaceholder}>
+          <AppText style={ageGroup ? styles.selectText : styles.selectPlaceholder}>
             {ageGroup || "Select age range"}
-          </Text>
+          </AppText>
           <Ionicons name="chevron-down" size={20} color={GRAY} />
         </TouchableOpacity>
 
-        <Text style={styles.label}>Gender</Text>
+        <AppText style={styles.label}>Gender</AppText>
         <View style={styles.genderRow}>
           {PROFILE_GENDERS.map((g) => (
             <TouchableOpacity
@@ -193,12 +183,12 @@ export default function EditProfileScreen() {
               onPress={() => setGender(g.value)}
               disabled={submitting}
             >
-              <Text style={[styles.genderText, gender === g.value && styles.genderTextActive]}>{g.label}</Text>
+              <AppText style={[styles.genderText, gender === g.value && styles.genderTextActive]}>{g.label}</AppText>
             </TouchableOpacity>
           ))}
         </View>
 
-        <Text style={styles.label}>Referral ID (optional)</Text>
+        <AppText style={styles.label}>Referral ID (optional)</AppText>
         <TextInput
           style={styles.input}
           placeholder="Referral code"
@@ -208,43 +198,43 @@ export default function EditProfileScreen() {
           editable={!submitting}
         />
 
-        <Text style={styles.sectionTitle}>Address (optional)</Text>
-        <Text style={styles.label}>Address line 1</Text>
+        <AppText style={styles.sectionTitle}>Address (optional)</AppText>
+        <AppText style={styles.label}>Address line 1</AppText>
         <TextInput style={styles.input} placeholder="Street, building" placeholderTextColor={PLACEHOLDER} value={addressLine1} onChangeText={setAddressLine1} editable={!submitting} />
-        <Text style={styles.label}>Address line 2</Text>
+        <AppText style={styles.label}>Address line 2</AppText>
         <TextInput style={styles.input} placeholder="Area, landmark" placeholderTextColor={PLACEHOLDER} value={addressLine2} onChangeText={setAddressLine2} editable={!submitting} />
         <View style={styles.row2}>
           <View style={styles.half}>
-            <Text style={styles.label}>City</Text>
+            <AppText style={styles.label}>City</AppText>
             <TextInput style={styles.input} placeholder="City" placeholderTextColor={PLACEHOLDER} value={city} onChangeText={setCity} editable={!submitting} />
           </View>
           <View style={styles.half}>
-            <Text style={styles.label}>State</Text>
+            <AppText style={styles.label}>State</AppText>
             <TextInput style={styles.input} placeholder="State" placeholderTextColor={PLACEHOLDER} value={state} onChangeText={setState} editable={!submitting} />
           </View>
         </View>
         <View style={styles.row2}>
           <View style={styles.half}>
-            <Text style={styles.label}>Pincode</Text>
+            <AppText style={styles.label}>Pincode</AppText>
             <TextInput style={styles.input} placeholder="Pincode" placeholderTextColor={PLACEHOLDER} value={pincode} onChangeText={setPincode} keyboardType="number-pad" editable={!submitting} />
           </View>
           <View style={styles.half}>
-            <Text style={styles.label}>Country</Text>
+            <AppText style={styles.label}>Country</AppText>
             <TextInput style={styles.input} placeholder="Country" placeholderTextColor={PLACEHOLDER} value={country} onChangeText={setCountry} editable={!submitting} />
           </View>
         </View>
 
-        {errors.submit ? <Text style={styles.errorText}>{errors.submit}</Text> : null}
+        {errors.submit ? <AppText style={styles.errorText}>{errors.submit}</AppText> : null}
 
         <TouchableOpacity onPress={handleSubmit} disabled={submitting} style={styles.btn}>
-          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
+          {submitting ? <ActivityIndicator color="#fff" /> : <AppText style={styles.btnText}>Save</AppText>}
         </TouchableOpacity>
       </ScrollView>
 
       {showAgePicker ? (
         <Pressable style={styles.modalOverlay} onPress={() => setShowAgePicker(false)}>
           <Pressable style={styles.pickerSheet} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.pickerTitle}>Select age group</Text>
+            <AppText style={styles.pickerTitle}>Select age group</AppText>
             <ScrollView style={styles.pickerList}>
               {AGE_GROUPS.map((ag) => (
                 <TouchableOpacity
@@ -252,7 +242,7 @@ export default function EditProfileScreen() {
                   style={[styles.pickerRow, ageGroup === ag && styles.pickerRowActive]}
                   onPress={() => { setAgeGroup(ag); setShowAgePicker(false); }}
                 >
-                  <Text style={styles.pickerRowText}>{ag} years</Text>
+                  <AppText style={styles.pickerRowText}>{ag} years</AppText>
                   {ageGroup === ag ? <Ionicons name="checkmark" size={22} color={GREEN} /> : null}
                 </TouchableOpacity>
               ))}

@@ -19,14 +19,16 @@ export function isCrossModuleNavigation(fromPath: string, toHref: string): boole
   return getDashboardModuleKey(fromPath) !== getDashboardModuleKey(toHref);
 }
 
-/** Navigation finished when the active URL belongs to the target module. */
+/** Navigation finished when the active URL matches the target (or a nested child of it). */
 export function hasReachedNavTarget(pathname: string, target: string): boolean {
   const path = cleanDashboardHref(pathname);
   const tgt = cleanDashboardHref(target);
   if (path === tgt) return true;
   if (tgt === "/dashboard") return path === "/dashboard";
+  // Reached only when we landed on the target or a deeper path under it —
+  // not when we're still on a sibling under the same module (e.g. super-admin tabs).
   if (path.startsWith(`${tgt}/`)) return true;
-  return getDashboardModuleKey(path) === getDashboardModuleKey(tgt);
+  return false;
 }
 
 /** Whether the layout navigation overlay should run for this in-app route change. */

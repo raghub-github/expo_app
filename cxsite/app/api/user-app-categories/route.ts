@@ -30,13 +30,10 @@ export async function GET(request: Request) {
       headers: { 'Content-Type': 'application/json', ...CACHE_HEADERS },
     })
   } catch (err) {
-    console.error('[GET /api/user-app-categories]', err)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      {
-        status: 500,
-        headers: { 'Cache-Control': 'no-store' },
-      }
-    )
+    // Soft-fail: order page can render without top-pick tiles when backend is down.
+    console.warn('[GET /api/user-app-categories]', err)
+    return NextResponse.json([], {
+      headers: { 'Content-Type': 'application/json', ...CACHE_HEADERS },
+    })
   }
 }

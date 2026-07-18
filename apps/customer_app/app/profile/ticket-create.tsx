@@ -3,17 +3,9 @@
  */
 
 import { useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -72,7 +64,7 @@ export default function TicketCreateScreen() {
       keyboardVerticalOffset={80}
     >
       <View style={styles.form}>
-        <Text style={styles.label}>Subject</Text>
+        <AppText style={styles.label}>Subject</AppText>
         <TextInput
           style={styles.input}
           value={subject}
@@ -82,7 +74,7 @@ export default function TicketCreateScreen() {
           maxLength={200}
           editable={!submitting}
         />
-        <Text style={styles.label}>Description</Text>
+        <AppText style={styles.label}>Description</AppText>
         <TextInput
           style={[styles.input, styles.textArea]}
           value={description}
@@ -106,7 +98,7 @@ export default function TicketCreateScreen() {
           ) : (
             <>
               <Ionicons name="send-outline" size={20} color="#fff" />
-              <Text style={styles.submitText}>Submit ticket</Text>
+              <AppText style={styles.submitText}>Submit ticket</AppText>
             </>
           )}
         </TouchableOpacity>

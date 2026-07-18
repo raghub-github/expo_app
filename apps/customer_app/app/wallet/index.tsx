@@ -5,13 +5,13 @@
 import { useCallback, useMemo, useState } from "react";
 import {
   View,
-  Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
+import { AppText } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -94,17 +94,19 @@ function TransactionRow({ tx }: { tx: WalletTransaction }) {
         <Ionicons name={icon.name} size={20} color={icon.color} />
       </View>
       <View style={styles.txBody}>
-        <Text style={styles.txTitle} numberOfLines={2}>
+        <AppText style={styles.txTitle} numberOfLines={2}>
           {title}
-        </Text>
+        </AppText>
         {offerName ? (
-          <Text style={styles.txSubtitle} numberOfLines={2}>
+          <AppText style={styles.txSubtitle} numberOfLines={2}>
             {offerName}
-          </Text>
+          </AppText>
         ) : null}
-        <Text style={styles.txDate}>{formatTxDate(tx.created_at)}</Text>
+        <AppText style={styles.txDate}>{formatTxDate(tx.created_at)}</AppText>
       </View>
-      <Text style={styles.txAmount}>{amountStr}</Text>
+      <AppText style={[styles.txAmount, isCredit ? styles.txAmountCredit : styles.txAmountDebit]}>
+        {amountStr}
+      </AppText>
     </View>
   );
 }
@@ -170,22 +172,22 @@ export default function WalletScreen() {
           <View style={styles.heroWhite}>
             <GatiCashWalletHeroIcon />
 
-            <Text style={styles.balanceLabel}>YOUR BALANCE</Text>
+            <AppText style={styles.balanceLabel}>YOUR BALANCE</AppText>
             {balanceQ.isLoading ? (
               <ActivityIndicator color={ACCENT} style={{ marginTop: 10 }} />
             ) : (
-              <Text style={styles.balanceAmount}>{balanceDisplay}</Text>
+              <AppText style={styles.balanceAmount}>{balanceDisplay}</AppText>
             )}
-            {lockedNote ? <Text style={styles.lockedNote}>{lockedNote}</Text> : null}
+            {lockedNote ? <AppText style={styles.lockedNote}>{lockedNote}</AppText> : null}
 
             <TouchableOpacity style={styles.addMoneyBtn} activeOpacity={0.88} onPress={handleAddMoney}>
-              <Text style={styles.addMoneyText}>Add money</Text>
+              <AppText style={styles.addMoneyText}>Add money</AppText>
             </TouchableOpacity>
           </View>
 
           {/* Grey transaction section — reference bottom */}
           <View style={styles.historyGrey}>
-            <Text style={styles.sectionTitle}>TRANSACTION HISTORY</Text>
+            <AppText style={styles.sectionTitle}>TRANSACTION HISTORY</AppText>
 
             <ScrollView
               horizontal
@@ -202,9 +204,9 @@ export default function WalletScreen() {
                     style={[styles.filterChip, active && styles.filterChipActive]}
                     activeOpacity={0.85}
                   >
-                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                    <AppText style={[styles.filterChipText, active && styles.filterChipTextActive]}>
                       {f.label}
-                    </Text>
+                    </AppText>
                   </TouchableOpacity>
                 );
               })}
@@ -218,10 +220,10 @@ export default function WalletScreen() {
                   <View style={styles.emptyIconWrap}>
                     <Ionicons name="receipt-outline" size={32} color="#CBD5E1" />
                   </View>
-                  <Text style={styles.emptyTxTitle}>No transactions yet</Text>
-                  <Text style={styles.emptyTxText}>
+                  <AppText style={styles.emptyTxTitle}>No transactions yet</AppText>
+                  <AppText style={styles.emptyTxText}>
                     Refunds, cashback, and wallet credits will show up here.
-                  </Text>
+                  </AppText>
                 </View>
               ) : (
                 transactions.map((tx) => <TransactionRow key={tx.id} tx={tx} />)
@@ -241,13 +243,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     alignItems: "center",
     paddingTop: 28,
-    paddingBottom: 24,
+    paddingBottom: 16,
     paddingHorizontal: 16,
   },
   historyGrey: {
     backgroundColor: PAGE_BG,
     paddingHorizontal: 16,
-    paddingTop: 28,
+    paddingTop: 20,
     paddingBottom: 8,
     flexGrow: 1,
   },
@@ -263,7 +265,9 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: TEXT,
     marginTop: 6,
+    marginBottom: 0,
     letterSpacing: -1.2,
+    lineHeight: 46,
   },
   lockedNote: {
     fontSize: 12,
@@ -273,7 +277,7 @@ const styles = StyleSheet.create({
   },
   addMoneyBtn: {
     alignSelf: "stretch",
-    marginTop: 24,
+    marginTop: 10,
     backgroundColor: ACCENT,
     paddingVertical: 15,
     borderRadius: 12,
@@ -368,8 +372,13 @@ const styles = StyleSheet.create({
   txAmount: {
     fontSize: 15,
     fontWeight: "800",
-    color: TEXT,
     marginLeft: 8,
+  },
+  txAmountCredit: {
+    color: "#15803D",
+  },
+  txAmountDebit: {
+    color: GatiMitraColors.closedRed,
   },
   emptyTx: {
     alignItems: "center",

@@ -1,4 +1,6 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -20,7 +22,7 @@ export function FoodHomeUnder250Section({ title, items, loading, onPressItem }: 
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.heading}>{title}</Text>
+      <AppText style={styles.heading}>{title}</AppText>
       {loading ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled delaysContentTouches={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.row}>
           {Array.from({ length: 4 }).map((_, i) => (
@@ -47,15 +49,15 @@ export function FoodHomeUnder250Section({ title, items, loading, onPressItem }: 
                     </View>
                   )}
                   <View style={styles.priceBadge}>
-                    <Text style={styles.priceText}>₹{Math.round(item.price)}</Text>
+                    <AppText style={styles.priceText}>₹{Math.round(item.price)}</AppText>
                   </View>
                 </View>
-                <Text style={styles.name} numberOfLines={2}>
+                <AppText style={styles.name} numberOfLines={2}>
                   {item.name}
-                </Text>
-                <Text style={styles.store} numberOfLines={1}>
+                </AppText>
+                <AppText style={styles.store} numberOfLines={1}>
                   {item.storeName}
-                </Text>
+                </AppText>
               </TouchableOpacity>
             );
           })}

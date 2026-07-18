@@ -3,15 +3,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -62,12 +56,12 @@ export function AlternateContactNameSheet({
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.42} keyboardAvoiding>
       <View style={styles.content}>
-        <Text style={styles.title}>Edit contact name</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>Edit contact name</AppText>
+        <AppText style={styles.subtitle}>
           Delivery partner will call this number. You can edit how the name appears.
-        </Text>
+        </AppText>
 
-        <Text style={styles.fieldLabel}>Name</Text>
+        <AppText style={styles.fieldLabel}>Name</AppText>
         <TextInput
           value={name}
           onChangeText={setName}
@@ -79,9 +73,9 @@ export function AlternateContactNameSheet({
           editable={!saving}
         />
 
-        <Text style={styles.fieldLabel}>Phone number</Text>
+        <AppText style={styles.fieldLabel}>Phone number</AppText>
         <View style={styles.phoneReadonly}>
-          <Text style={styles.phoneText}>{maskPhone(phone) || phone}</Text>
+          <AppText style={styles.phoneText}>{maskPhone(phone) || phone}</AppText>
         </View>
 
         <TouchableOpacity
@@ -93,7 +87,7 @@ export function AlternateContactNameSheet({
           {saving ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
-            <Text style={styles.saveBtnText}>Save alternate contact</Text>
+            <AppText style={styles.saveBtnText}>Save alternate contact</AppText>
           )}
         </TouchableOpacity>
       </View>

@@ -1,5 +1,7 @@
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
@@ -68,20 +70,20 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
               {f.type === "filters" ? (
                 <>
                   <Ionicons name="options-outline" size={15} color={StoreTheme.textPrimary} />
-                  <Text style={styles.chipText}>{f.label}</Text>
+                  <AppText style={styles.chipText}>{f.label}</AppText>
                   <Ionicons name="chevron-down" size={13} color={StoreTheme.textSecondary} />
                 </>
               ) : f.type === "diet" && f.diet ? (
                 <>
                   <DietIndicator type={f.diet} />
-                  <Text style={styles.chipText}>{f.label}</Text>
+                  <AppText style={styles.chipText}>{f.label}</AppText>
                 </>
               ) : (
                 <>
                   <View style={styles.reorderIcon}>
                     <Ionicons name="refresh-circle" size={15} color={StoreTheme.reorderGreen} />
                   </View>
-                  <Text style={styles.chipText}>{f.label}</Text>
+                  <AppText style={styles.chipText}>{f.label}</AppText>
                 </>
               )}
             </TouchableOpacity>

@@ -1,5 +1,7 @@
 import React from "react";
-import { TouchableOpacity, Text, StyleSheet, Platform, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { TouchableOpacity, StyleSheet, Platform, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 
@@ -17,7 +19,7 @@ export function StoreMenuFab({ bottom, onPress }: StoreMenuFabProps) {
     >
       <View style={styles.fab}>
         <Ionicons name="restaurant-outline" size={18} color="#FFFFFF" />
-        <Text style={styles.text}>Menu</Text>
+        <AppText style={styles.text}>Menu</AppText>
       </View>
     </TouchableOpacity>
   );

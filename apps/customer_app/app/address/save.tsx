@@ -4,14 +4,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  ActivityIndicator,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Alert } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
@@ -95,9 +90,9 @@ export default function AddressSaveDeepLinkScreen() {
   if (!token) {
     return (
       <View style={styles.center}>
-        <Text style={styles.error}>Invalid address link</Text>
+        <AppText style={styles.error}>Invalid address link</AppText>
         <TouchableOpacity style={styles.btn} onPress={() => router.replace("/(tabs)")}>
-          <Text style={styles.btnText}>Go to home</Text>
+          <AppText style={styles.btnText}>Go to home</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -106,9 +101,9 @@ export default function AddressSaveDeepLinkScreen() {
   if (status === "error") {
     return (
       <View style={styles.center}>
-        <Text style={styles.error}>{errorText ?? "Something went wrong"}</Text>
+        <AppText style={styles.error}>{errorText ?? "Something went wrong"}</AppText>
         <TouchableOpacity style={styles.btn} onPress={() => router.replace("/(tabs)")}>
-          <Text style={styles.btnText}>Go to home</Text>
+          <AppText style={styles.btnText}>Go to home</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -117,7 +112,7 @@ export default function AddressSaveDeepLinkScreen() {
   return (
     <View style={styles.center}>
       <ActivityIndicator size="large" color={BRAND} />
-      <Text style={styles.loading}>Saving delivery address…</Text>
+      <AppText style={styles.loading}>Saving delivery address…</AppText>
     </View>
   );
 }

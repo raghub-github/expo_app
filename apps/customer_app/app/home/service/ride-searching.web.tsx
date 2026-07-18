@@ -1,4 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -10,12 +12,12 @@ export default function RideSearchingScreenWeb() {
     <View style={styles.container}>
       <View style={styles.body}>
         <Ionicons name="phone-portrait-outline" size={64} color="#6B7280" />
-        <Text style={styles.title}>Ride search on mobile</Text>
-        <Text style={styles.subtitle}>
+        <AppText style={styles.title}>Ride search on mobile</AppText>
+        <AppText style={styles.subtitle}>
           Please use the mobile app to search for a rider.
-        </Text>
+        </AppText>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Text style={styles.backButtonText}>Go back</Text>
+          <AppText style={styles.backButtonText}>Go back</AppText>
         </TouchableOpacity>
       </View>
     </View>

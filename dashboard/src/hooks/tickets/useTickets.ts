@@ -245,7 +245,8 @@ export function useTickets(
     return ticketsPathTicketId(cleanPath) != null ? "/dashboard/tickets" : cleanPath;
   }, [cleanPath]);
 
-  const SNAPSHOT_TTL_MS = 10_000;
+  /** Keep last list warm across reloads so agents see tickets immediately. */
+  const SNAPSHOT_TTL_MS = 30 * 60 * 1000;
   const snapshotKey = useMemo(() => {
     if (!isAllowed || !isOnTicketsRoute) return null;
     return `dashboard_snapshot:tickets:${snapshotPathKey}:${JSON.stringify(filters)}`;

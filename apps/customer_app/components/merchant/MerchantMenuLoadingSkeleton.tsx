@@ -1,5 +1,7 @@
 import React from "react";
-import { View, Text, StyleSheet, Dimensions } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useMerchantLoadingMessage } from "@/hooks/useMerchantLoadingMessage";
@@ -72,9 +74,9 @@ export function MerchantMenuLoadingSkeleton({
           pointerEvents="none"
         >
           <MerchantLoadingWave />
-          <Text style={styles.messageText} numberOfLines={3}>
+          <AppText style={styles.messageText} numberOfLines={3}>
             {message}
-          </Text>
+          </AppText>
         </View>
       ) : null}
     </View>

@@ -1,5 +1,7 @@
 import React, { useMemo } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { buildStoreOpenStatusLabel } from "@/lib/storeOpenStatusLabel";
@@ -53,7 +55,7 @@ export function MerchantClosedBanner({
       <View style={styles.closedBannerIconWrap}>
         <Ionicons name="time-outline" size={18} color="#fff" />
       </View>
-      <Text style={styles.closedBannerText}>{message}</Text>
+      <AppText style={styles.closedBannerText}>{message}</AppText>
     </View>
   );
 }

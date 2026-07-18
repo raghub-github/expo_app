@@ -2,15 +2,9 @@
  * Bottom sheet: variant + add-ons for one order line item.
  */
 
-import {
-  View,
-  Text,
-  Modal,
-  TouchableOpacity,
-  StyleSheet,
-  Pressable,
-  ScrollView,
-} from "react-native";
+import { View, Modal, TouchableOpacity, StyleSheet, Pressable, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -44,21 +38,21 @@ export function OrderItemCustomizationModal({ visible, item, onClose }: Props) {
         >
           <View style={styles.handle} />
           <View style={styles.header}>
-            <Text style={styles.title} numberOfLines={2}>
+            <AppText style={styles.title} numberOfLines={2}>
               Customizations
-            </Text>
+            </AppText>
             <TouchableOpacity onPress={onClose} hitSlop={12} accessibilityLabel="Close">
               <Ionicons name="close" size={24} color={MUTED} />
             </TouchableOpacity>
           </View>
-          <Text style={styles.itemTitle} numberOfLines={2}>
+          <AppText style={styles.itemTitle} numberOfLines={2}>
             {title}
-          </Text>
+          </AppText>
           <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
             {lines.map((line, i) => (
               <View key={`${i}-${line}`} style={styles.lineRow}>
                 <View style={styles.bullet} />
-                <Text style={styles.lineText}>{line}</Text>
+                <AppText style={styles.lineText}>{line}</AppText>
               </View>
             ))}
           </ScrollView>

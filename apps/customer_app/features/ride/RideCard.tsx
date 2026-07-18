@@ -4,7 +4,9 @@
  * Images from public/img folder when available.
  */
 
-import { View, Text, Pressable, StyleSheet, Image } from "react-native";
+import { View, Pressable, StyleSheet, Image } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -98,7 +100,7 @@ export function RideCard({ type, onPress, cardWidth }: RideCardProps) {
           >
             {showEtaTag && (
               <View style={styles.etaBadge}>
-                <Text style={styles.etaText}>{config.etaTag}</Text>
+                <AppText style={styles.etaText}>{config.etaTag}</AppText>
               </View>
             )}
             <View style={styles.iconWrap}>
@@ -116,12 +118,12 @@ export function RideCard({ type, onPress, cardWidth }: RideCardProps) {
                 />
               )}
             </View>
-            <Text style={styles.subtitle} numberOfLines={1}>
+            <AppText style={styles.subtitle} numberOfLines={1}>
               {config.subtitle}
-            </Text>
-            <Text style={styles.title} numberOfLines={1}>
+            </AppText>
+            <AppText style={styles.title} numberOfLines={1}>
               {config.title}
-            </Text>
+            </AppText>
           </LinearGradient>
         </View>
       </Pressable>

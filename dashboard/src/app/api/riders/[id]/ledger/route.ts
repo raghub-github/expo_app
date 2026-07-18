@@ -15,22 +15,17 @@ import {
   resolveServiceTypeFromLedger,
   type LedgerOrderCoreRow,
 } from "@/lib/riders/rider-ledger-resolve";
+import {
+  LEDGER_CREDIT_ENTRY_TYPES,
+  LEDGER_DEBIT_ENTRY_TYPES,
+} from "@/lib/riders/rider-ledger-display";
 
 export const runtime = "nodejs";
 
-const CREDIT_TYPES = [
-  "earning",
-  "bonus",
-  "refund",
-  "referral_bonus",
-  "penalty_reversal",
-  "manual_add",
-  "incentive",
-  "surge",
-  "failed_withdrawal_revert",
-  "cancellation_payout",
-];
-const DEBIT_TYPES = ["penalty", "onboarding_fee", "adjustment", "subscription_fee", "withdrawal"];
+// Exhaustive credit/debit partition of the wallet_entry_type enum so the
+// flow filter never silently drops rows (single source of truth in display lib).
+const CREDIT_TYPES = LEDGER_CREDIT_ENTRY_TYPES;
+const DEBIT_TYPES = LEDGER_DEBIT_ENTRY_TYPES;
 
 export async function GET(
   request: NextRequest,

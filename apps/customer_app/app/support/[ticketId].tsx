@@ -13,21 +13,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  ActivityIndicator,
-  Image,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  Linking,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image, StyleSheet, KeyboardAvoidingView, Platform, Pressable, Linking, Alert } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -327,7 +315,7 @@ export default function TicketDetailScreen() {
   if (ticketIdNum == null) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errText}>Invalid ticket</Text>
+        <AppText style={styles.errText}>Invalid ticket</AppText>
       </View>
     );
   }
@@ -341,9 +329,9 @@ export default function TicketDetailScreen() {
   if (error || !ticket) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errText}>Could not load ticket</Text>
+        <AppText style={styles.errText}>Could not load ticket</AppText>
         <TouchableOpacity onPress={() => refetch()} style={styles.retryBtn}>
-          <Text style={styles.retryText}>Retry</Text>
+          <AppText style={styles.retryText}>Retry</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -361,7 +349,7 @@ export default function TicketDetailScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.navSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
-          <Text style={styles.navTitle}>Support chat</Text>
+          <AppText style={styles.navTitle}>Support chat</AppText>
           <View style={styles.navSide} />
         </View>
 
@@ -372,26 +360,26 @@ export default function TicketDetailScreen() {
               <View style={styles.headerIconWrap}>
                 <Ionicons name="chatbubbles-outline" size={18} color={GREEN} />
               </View>
-              <Text style={styles.headerSubject} numberOfLines={2}>
+              <AppText style={styles.headerSubject} numberOfLines={2}>
                 {ticket.subject || ticket.ticket_title || "Ticket"}
-              </Text>
+              </AppText>
               <View style={[styles.badge, { backgroundColor: sb.bg }]}>
-                <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+                <AppText style={[styles.badgeText, { color: sb.color }]}>{sb.label}</AppText>
               </View>
             </View>
             <View style={styles.headerMeta}>
               <View style={styles.ticketIdPill}>
-                <Text style={styles.ticketIdText}>#{ticket.ticket_id}</Text>
+                <AppText style={styles.ticketIdText}>#{ticket.ticket_id}</AppText>
               </View>
               {ticket.order_id ? (
                 <View style={styles.orderLinkedPill}>
                   <Ionicons name="receipt-outline" size={11} color={GREEN} />
-                  <Text style={styles.orderLinkedText}>Order linked</Text>
+                  <AppText style={styles.orderLinkedText}>Order linked</AppText>
                 </View>
               ) : null}
               <View style={[styles.live, postgresLive ? styles.liveOn : styles.liveOff]}>
                 <View style={[styles.liveDot, postgresLive ? styles.liveDotOn : styles.liveDotOff]} />
-                <Text style={styles.liveText}>{postgresLive ? "Live" : "Reconnecting…"}</Text>
+                <AppText style={styles.liveText}>{postgresLive ? "Live" : "Reconnecting…"}</AppText>
               </View>
             </View>
           </View>
@@ -445,9 +433,9 @@ export default function TicketDetailScreen() {
         {isTerminal && !showRatingPrompt && !ratingSummary && (
           <View style={styles.resolvedBanner}>
             <Ionicons name="checkmark-circle" size={18} color="#15803d" />
-            <Text style={styles.resolvedText}>
+            <AppText style={styles.resolvedText}>
               This ticket is {statusNorm === "CLOSED" ? "closed" : "resolved"}. Reply below to reopen.
-            </Text>
+            </AppText>
           </View>
         )}
       </ScrollView>
@@ -455,52 +443,52 @@ export default function TicketDetailScreen() {
       {!!ratingSummary && (
         <>
           <View style={styles.ratingSummaryCard}>
-            <Text style={styles.ratingExperienceTitle}>Support experience</Text>
+            <AppText style={styles.ratingExperienceTitle}>Support experience</AppText>
             <View style={styles.ratingAutoSummaryRow}>
-              <Text style={styles.ratingAutoEmoji}>{ratingSummary.emoji}</Text>
-              <Text style={styles.ratingAutoLabel}>{ratingSummary.label}</Text>
+              <AppText style={styles.ratingAutoEmoji}>{ratingSummary.emoji}</AppText>
+              <AppText style={styles.ratingAutoLabel}>{ratingSummary.label}</AppText>
               <View style={styles.ratingAutoStarsRow}>
                 {Array.from({ length: ratingSummary.numeric }).map((_, idx) => (
                   <Ionicons key={idx} name="star" size={14} color="#FFC107" style={styles.ratingAutoStarIcon} />
                 ))}
               </View>
             </View>
-            <Text style={styles.ratingExperienceNote}>
+            <AppText style={styles.ratingExperienceNote}>
               Thank you for rating your support interaction.
-            </Text>
+            </AppText>
             {!!ratingSummary.feedback && (
-              <Text style={styles.ratingSummaryFeedback}>{`"${ratingSummary.feedback}"`}</Text>
+              <AppText style={styles.ratingSummaryFeedback}>{`"${ratingSummary.feedback}"`}</AppText>
             )}
             {!!ratingSummary.submittedAt && (
-              <Text style={styles.ratingSummaryMeta}>{`Submitted on: ${ratingSummary.submittedAt}`}</Text>
+              <AppText style={styles.ratingSummaryMeta}>{`Submitted on: ${ratingSummary.submittedAt}`}</AppText>
             )}
           </View>
 
           <View style={styles.ratingAutoCard}>
             <View style={styles.ratingAutoHeaderRow}>
               <Ionicons name="information-circle" size={16} color={GREEN} style={{ marginRight: 6 }} />
-              <Text style={styles.ratingAutoTitle}>From GatiMitra Support Team</Text>
+              <AppText style={styles.ratingAutoTitle}>From GatiMitra Support Team</AppText>
             </View>
             {ratingSummary.numeric >= 3 ? (
               <>
-                <Text style={styles.ratingAutoBody}>Thank you for sharing your feedback with us.</Text>
-                <Text style={styles.ratingAutoBody}>
-                  We're glad that the <Text style={styles.ratingAutoBold}>GatiMitra Support Team</Text> was able
+                <AppText style={styles.ratingAutoBody}>Thank you for sharing your feedback with us.</AppText>
+                <AppText style={styles.ratingAutoBody}>
+                  We're glad that the <AppText style={styles.ratingAutoBold}>GatiMitra Support Team</AppText> was able
                   to assist you and resolve your concern.
-                </Text>
-                <Text style={styles.ratingAutoSignature}>– GatiMitra Team</Text>
+                </AppText>
+                <AppText style={styles.ratingAutoSignature}>– GatiMitra Team</AppText>
               </>
             ) : (
               <>
-                <Text style={styles.ratingAutoBody}>
+                <AppText style={styles.ratingAutoBody}>
                   We sincerely apologize that your experience did not meet your expectations. The{" "}
-                  <Text style={styles.ratingAutoBold}>GatiMitra Team</Text> will review this case to improve our
+                  <AppText style={styles.ratingAutoBold}>GatiMitra Team</AppText> will review this case to improve our
                   support.
-                </Text>
-                <Text style={styles.ratingAutoBody}>
+                </AppText>
+                <AppText style={styles.ratingAutoBody}>
                   If you still need assistance, reply below to reopen this ticket.
-                </Text>
-                <Text style={styles.ratingAutoSignature}>– GatiMitra Team</Text>
+                </AppText>
+                <AppText style={styles.ratingAutoSignature}>– GatiMitra Team</AppText>
               </>
             )}
           </View>
@@ -511,21 +499,21 @@ export default function TicketDetailScreen() {
         <View style={[styles.ratingBar, { paddingBottom: ratingBarBottomPad }]}>
           <View style={styles.ratingClosedPill}>
             <Ionicons name="checkmark-circle" size={16} color="#15803d" style={{ marginRight: 6 }} />
-            <Text style={styles.ratingClosedText}>
+            <AppText style={styles.ratingClosedText}>
               {statusNorm === "CLOSED"
                 ? "This conversation has been closed"
                 : "This conversation has been resolved"}
-            </Text>
+            </AppText>
           </View>
 
-          <Text style={styles.ratingHeading}>Hey there!</Text>
-          <Text style={styles.ratingSubheading}>
+          <AppText style={styles.ratingHeading}>Hey there!</AppText>
+          <AppText style={styles.ratingSubheading}>
             {`We just ${String(ticket.status ?? "closed").toLowerCase()} ticket ${ticket.ticket_id}.`}
-          </Text>
-          <Text style={styles.ratingSubheading}>We know you're busy, so we just have one question:</Text>
-          <Text style={[styles.ratingSubheading, styles.ratingQuestion]}>
+          </AppText>
+          <AppText style={styles.ratingSubheading}>We know you're busy, so we just have one question:</AppText>
+          <AppText style={[styles.ratingSubheading, styles.ratingQuestion]}>
             Are you satisfied with the support you received in this ticket?
-          </Text>
+          </AppText>
 
           <View style={styles.ratingEmojisRow}>
             {RATING_OPTIONS.map((opt) => {
@@ -536,10 +524,10 @@ export default function TicketDetailScreen() {
                   onPress={() => setRatingValue(opt.value)}
                   style={[styles.ratingEmojiWrap, selected && styles.ratingEmojiWrapSelected]}
                 >
-                  <Text style={styles.ratingEmoji}>{opt.emoji}</Text>
-                  <Text style={[styles.ratingEmojiLabel, selected && styles.ratingEmojiLabelSelected]}>
+                  <AppText style={styles.ratingEmoji}>{opt.emoji}</AppText>
+                  <AppText style={[styles.ratingEmojiLabel, selected && styles.ratingEmojiLabelSelected]}>
                     {opt.label}
-                  </Text>
+                  </AppText>
                 </Pressable>
               );
             })}
@@ -563,9 +551,9 @@ export default function TicketDetailScreen() {
               (!ratingValue || ratingSubmitting) && styles.ratingSubmitBtnDisabled,
             ]}
           >
-            <Text style={styles.ratingSubmitText}>
+            <AppText style={styles.ratingSubmitText}>
               {ratingSubmitting ? "Submitting…" : "Submit feedback"}
-            </Text>
+            </AppText>
           </Pressable>
         </View>
       )}
@@ -597,11 +585,11 @@ export default function TicketDetailScreen() {
           <View style={[styles.composer, { paddingBottom: insets.bottom + 8 }]}>
             {ticket.status === "CLOSED" ? (
               <View style={styles.closedRow}>
-                <Text style={styles.closedText}>
+                <AppText style={styles.closedText}>
                   This ticket is closed. To get help again, raise a new ticket.
-                </Text>
+                </AppText>
                 <TouchableOpacity style={styles.closedCta} onPress={() => router.push("/support/new")}>
-                  <Text style={styles.closedCtaText}>Raise new</Text>
+                  <AppText style={styles.closedCtaText}>Raise new</AppText>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -659,7 +647,7 @@ function MessageBubble({
   if (senderType === "SYSTEM") {
     return (
       <View style={styles.systemRow}>
-        <Text style={styles.systemText}>{formatTicketMessageText(message.message_text)}</Text>
+        <AppText style={styles.systemText}>{formatTicketMessageText(message.message_text)}</AppText>
       </View>
     );
   }
@@ -686,9 +674,9 @@ function MessageBubble({
         )
       ) : null}
       <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-        {!mine && showSender ? <Text style={styles.supportLabel}>Support</Text> : null}
+        {!mine && showSender ? <AppText style={styles.supportLabel}>Support</AppText> : null}
         {bodyText ? (
-          <Text
+          <AppText
             style={[
               styles.bubbleText,
               mine && styles.bubbleTextMine,
@@ -696,7 +684,7 @@ function MessageBubble({
             ]}
           >
             {bodyText}
-          </Text>
+          </AppText>
         ) : null}
         {attachments.length > 0 && (
           <View style={styles.attachmentsInline}>
@@ -719,7 +707,7 @@ function MessageBubble({
                     size={18}
                     color={mine ? "#fff" : GatiMitraColors.emerald}
                   />
-                  <Text
+                  <AppText
                     style={[
                       styles.attachmentInlineFileText,
                       mine && { color: "#fff" },
@@ -727,13 +715,13 @@ function MessageBubble({
                     numberOfLines={1}
                   >
                     {a.name}
-                  </Text>
+                  </AppText>
                 </TouchableOpacity>
               )
             )}
           </View>
         )}
-        <Text style={[styles.timestamp, mine && styles.timestampMine]}>{formatTime(message.created_at)}</Text>
+        <AppText style={[styles.timestamp, mine && styles.timestampMine]}>{formatTime(message.created_at)}</AppText>
       </View>
     </View>
   );

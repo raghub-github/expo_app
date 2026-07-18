@@ -17,6 +17,9 @@ import {
 } from "@/hooks/queries/useOrderDetailQuery";
 // Exact color codes from reference image
 const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
+/** BULK tab active — light yellow so it stands out from mint status tabs. */
+const BULK_ACTIVE_BG = "#FDE68A";
+const BULK_ACTIVE_BORDER = "#F59E0B";
 const PAGE_BG = "#F4F6F9"; // Page background
 const CONTENT_BG = "#FFFFFF"; // White content background
 const INACTIVE_BG = "#F0F2F5"; // Inactive button background
@@ -344,6 +347,27 @@ export default function FoodOrdersClient() {
     refetch: refetchOrders,
   } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialListData);
 
+  // Always keep BULK pending count available (even when another status tab is selected).
+  const bulkFiltersForCount = useMemo(
+    (): OrdersFilters => ({ ...filtersForQuery, statusFilter: "BULK" }),
+    [filtersForQuery]
+  );
+  const { data: bulkOrdersData } = useQuery({
+    queryKey: queryKeys.ordersCore.foodList(
+      bulkFiltersForCount as unknown as Record<string, unknown>
+    ),
+    queryFn: ({ signal }) => fetchFoodOrders(bulkFiltersForCount, signal),
+    enabled: shouldFetch,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
+  });
+  const bulkPendingCount =
+    selectedStatus === "BULK"
+      ? (ordersData?.total ?? bulkOrdersData?.total ?? 0)
+      : (bulkOrdersData?.total ?? 0);
+
   // Prefetch other status tabs in the background so tab switches feel instant.
   useEffect(() => {
     if (!shouldFetch) return;
@@ -510,8 +534,13 @@ export default function FoodOrdersClient() {
           .map((p) => p.trim())
           .find((p) => p.length >= 2 && !/^\d{5,6}$/.test(p)) ||
         null;
-      const deliverProvider =
-        !row.orderSource || row.orderSource === "internal"
+      const hasAssignedRider =
+        row.riderId != null &&
+        Number.isFinite(Number(row.riderId)) &&
+        Number(row.riderId) > 0;
+      const deliverProvider = !hasAssignedRider
+        ? "—"
+        : !row.orderSource || row.orderSource === "internal"
           ? "GatiMitra"
           : row.orderSource.charAt(0).toUpperCase() + row.orderSource.slice(1);
 
@@ -595,6 +624,21 @@ export default function FoodOrdersClient() {
         backgroundColor: MINT_GREEN,
         color: DARK_TEXT,
         borderColor: BORDER_COLOR,
+      };
+    }
+    return {
+      backgroundColor: INACTIVE_BG,
+      color: INACTIVE_TEXT,
+      borderColor: BORDER_COLOR,
+    };
+  };
+
+  const getBulkButtonStyles = (isActive: boolean) => {
+    if (isActive) {
+      return {
+        backgroundColor: BULK_ACTIVE_BG,
+        color: DARK_TEXT,
+        borderColor: BULK_ACTIVE_BORDER,
       };
     }
     return {
@@ -818,9 +862,10 @@ export default function FoodOrdersClient() {
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "BULK" ? "font-bold" : "font-medium"
             }`}
-            style={getButtonStyles(selectedStatus === "BULK")}
+            style={getBulkButtonStyles(selectedStatus === "BULK")}
+            title={`${bulkPendingCount} bulk order(s) pending`}
           >
-            BULK
+            BULK ({bulkPendingCount})
           </button>
         </div>
       </div>

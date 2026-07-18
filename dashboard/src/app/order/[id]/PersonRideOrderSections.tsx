@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Car, Clock, MapPin, Phone, User, Users } from "lucide-react";
 import CustomerDetails from "./CustomerDetails";
 import PaymentDetails from "./PaymentDetails";
-import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
+import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useToast } from "@/context/ToastContext";
 
@@ -86,6 +86,7 @@ export default function PersonRideOrderSections({
   createdLabel,
   paymentDetail,
   orderRefunds,
+  recoveryRecords,
   onCopy,
   onPhoneClick,
   onRefresh,
@@ -96,6 +97,7 @@ export default function PersonRideOrderSections({
   createdLabel: string;
   paymentDetail: unknown;
   orderRefunds: unknown[];
+  recoveryRecords?: unknown[];
   onCopy: (text: string) => void;
   onPhoneClick: (title: string, phone: string) => void;
   onRefresh?: () => void;
@@ -252,6 +254,9 @@ export default function PersonRideOrderSections({
           }}
           displayId={displayId}
           orderRefunds={orderRefunds as Parameters<typeof PaymentDetails>[0]["orderRefunds"]}
+          recoveryRecords={
+            recoveryRecords as Parameters<typeof PaymentDetails>[0]["recoveryRecords"]
+          }
           paymentDetail={paymentDetail as Parameters<typeof PaymentDetails>[0]["paymentDetail"]}
           orderItemsPricing={null}
         />

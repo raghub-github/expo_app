@@ -77,3 +77,13 @@ export function seedMyOrdersStoreQueryIfCached(
   queryClient.setQueryData(queryKey, cached);
   return true;
 }
+
+/** Seed the shared My Orders list so the Orders tab paints instantly. */
+export function seedMyOrdersQueryIfCached(queryClient: QueryClient): boolean {
+  const queryKey = ["my-orders"] as const;
+  if (queryClient.getQueryData(queryKey)) return true;
+  const cached = readSyncMyOrders();
+  if (!cached?.length) return false;
+  queryClient.setQueryData(queryKey, cached);
+  return true;
+}

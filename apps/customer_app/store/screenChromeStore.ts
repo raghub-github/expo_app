@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 const DEFAULT_STATUS_BAR_BG = "#FFFFFF";
 const DEFAULT_STATUS_BAR_STYLE = "dark" as const;
+const SPLASH_BOOTSTRAP_BG = "#5eead4";
 
 /** Top tint for no-service empty state — matches GMEmptyState ambient gradient. */
 export const NON_SERVICEABLE_STATUS_BAR_BG = "#EFF9F3";
@@ -36,10 +37,10 @@ const applyImmersiveChrome = (active: boolean) =>
       };
 
 export const useScreenChromeStore = create<ScreenChromeState>((set) => ({
-  statusBarBackground: DEFAULT_STATUS_BAR_BG,
-  statusBarStyle: DEFAULT_STATUS_BAR_STYLE,
-  hideStatusBarSpacer: false,
-  bootstrapActive: false,
+  statusBarBackground: SPLASH_BOOTSTRAP_BG,
+  statusBarStyle: "light",
+  hideStatusBarSpacer: true,
+  bootstrapActive: true,
   setBootstrapActive: (active) => set({ bootstrapActive: active }),
   setStatusBarBackground: (color, style = DEFAULT_STATUS_BAR_STYLE) =>
     set({ statusBarBackground: color, statusBarStyle: style }),

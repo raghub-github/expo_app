@@ -4,7 +4,9 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Text, StyleSheet, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { StyleSheet, TouchableOpacity, View } from "react-native";
 import { StoreTheme } from "@/constants/storeTheme";
 
 const TYPE_MS = 28;
@@ -138,9 +140,9 @@ export function OfferHoldEraseText({
   if (lines.length === 0) return null;
 
   const body = (
-    <Text style={styles.text} numberOfLines={1} accessibilityLiveRegion="polite">
+    <AppText style={styles.text} numberOfLines={1} accessibilityLiveRegion="polite">
       {display}
-    </Text>
+    </AppText>
   );
 
   if (onPress) {

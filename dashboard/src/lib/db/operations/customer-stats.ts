@@ -6,6 +6,7 @@
 import { getDb } from "../client";
 import { customers, ordersCore } from "../schema";
 import { eq, and, or, isNull, sql, gte, lte, inArray } from "drizzle-orm";
+import { countPendingAccountDeletionRequests } from "./account-deletion-requests";
 
 export interface DashboardStatsFilters {
   orderType?: "food" | "parcel" | "person_ride";
@@ -43,6 +44,8 @@ export interface DashboardStats {
   inactiveUsers: number; // Account status = INACTIVE or DEACTIVATED
   suspendedUsers: number; // Account status = SUSPENDED
   fraudUsers: number; // Risk flag = HIGH or CRITICAL
+  /** Pending rows in account_deletion_requests (ops queue). */
+  deletionRequestsPending: number;
   
   // Service-wise stats
   serviceStats: ServiceStats[];
@@ -242,6 +245,8 @@ export async function getCustomerDashboardStats(
       )
     );
   const fraudUsers = Number(fraudUsersResult?.count || 0);
+
+  const deletionRequestsPending = await countPendingAccountDeletionRequests();
   
   // Service-wise stats
   const serviceStats: ServiceStats[] = [];
@@ -499,6 +504,7 @@ export async function getCustomerDashboardStats(
     inactiveUsers,
     suspendedUsers,
     fraudUsers,
+    deletionRequestsPending,
     serviceStats,
     growthTrend,
     userOrderRelationship,

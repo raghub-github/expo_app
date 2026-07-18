@@ -2,7 +2,9 @@
  * GatiMitra-style floating active-order pill — white bar above tab nav.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -39,13 +41,13 @@ export function FloatingOrderTrackingPill({
         </View>
 
         <View style={styles.centerCol}>
-          <Text style={styles.storeName} numberOfLines={1}>
+          <AppText style={styles.storeName} numberOfLines={1}>
             {storeLabel}
-          </Text>
+          </AppText>
           <View style={styles.statusRow}>
-            <Text style={styles.statusText} numberOfLines={1}>
+            <AppText style={styles.statusText} numberOfLines={1}>
               {statusLine}
-            </Text>
+            </AppText>
             <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.warmOrange} />
           </View>
         </View>
@@ -56,8 +58,8 @@ export function FloatingOrderTrackingPill({
           end={{ x: 1, y: 1 }}
           style={styles.etaPill}
         >
-          <Text style={styles.etaTop}>{showEta ? "arriving in" : "delivery"}</Text>
-          <Text style={styles.etaBottom}>{showEta ? etaLabel : "Updating…"}</Text>
+          <AppText style={styles.etaTop}>{showEta ? "arriving in" : "delivery"}</AppText>
+          <AppText style={styles.etaBottom}>{showEta ? etaLabel : "Updating…"}</AppText>
         </LinearGradient>
       </View>
     </TouchableOpacity>

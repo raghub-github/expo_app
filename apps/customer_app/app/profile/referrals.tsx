@@ -2,7 +2,9 @@
  * Rewards & Referrals — share referral code and earn GatiMitra credit.
  */
 
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
+import { View, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -45,13 +47,13 @@ export default function ReferralsScreen() {
         <View style={styles.heroIconWrap}>
           <Ionicons name="gift" size={28} color={GREEN_DARK} />
         </View>
-        <Text style={styles.heroTitle}>{t("profile.referEarnTitle")}</Text>
-        <Text style={styles.heroSub}>{t("profile.referEarnSub")}</Text>
+        <AppText style={styles.heroTitle}>{t("profile.referEarnTitle")}</AppText>
+        <AppText style={styles.heroSub}>{t("profile.referEarnSub")}</AppText>
       </View>
 
       <View style={styles.codeCard}>
-        <Text style={styles.codeLabel}>{t("profile.referralId")}</Text>
-        <Text style={styles.codeValue}>{referralCode ?? "—"}</Text>
+        <AppText style={styles.codeLabel}>{t("profile.referralId")}</AppText>
+        <AppText style={styles.codeValue}>{referralCode ?? "—"}</AppText>
         <View style={styles.codeActions}>
           <TouchableOpacity
             style={styles.secondaryBtn}
@@ -59,7 +61,7 @@ export default function ReferralsScreen() {
             onPress={() => copyReferralCode(referralCode)}
           >
             <Ionicons name="copy-outline" size={18} color={TEXT} />
-            <Text style={styles.secondaryBtnText}>Copy code</Text>
+            <AppText style={styles.secondaryBtnText}>Copy code</AppText>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.primaryBtn}
@@ -67,12 +69,12 @@ export default function ReferralsScreen() {
             onPress={() => shareReferralCode(referralCode, displayName)}
           >
             <Ionicons name="share-outline" size={18} color="#fff" />
-            <Text style={styles.primaryBtnText}>{t("profile.referNow")}</Text>
+            <AppText style={styles.primaryBtnText}>{t("profile.referNow")}</AppText>
           </TouchableOpacity>
         </View>
       </View>
 
-      <Text style={styles.sectionTitle}>How it works</Text>
+      <AppText style={styles.sectionTitle}>How it works</AppText>
       <View style={styles.stepsCard}>
         {STEPS.map((step, index) => (
           <View key={step.title} style={[styles.stepRow, index < STEPS.length - 1 && styles.stepBorder]}>
@@ -80,8 +82,8 @@ export default function ReferralsScreen() {
               <Ionicons name={step.icon} size={20} color={GREEN_DARK} />
             </View>
             <View style={styles.stepBody}>
-              <Text style={styles.stepTitle}>{step.title}</Text>
-              <Text style={styles.stepBodyText}>{step.body}</Text>
+              <AppText style={styles.stepTitle}>{step.title}</AppText>
+              <AppText style={styles.stepBodyText}>{step.body}</AppText>
             </View>
           </View>
         ))}
@@ -89,9 +91,9 @@ export default function ReferralsScreen() {
 
       <View style={styles.tipCard}>
         <Ionicons name="information-circle-outline" size={20} color={GREEN} />
-        <Text style={styles.tipText}>
+        <AppText style={styles.tipText}>
           Share via WhatsApp, SMS, or any app. Your friend must enter your code during sign-up.
-        </Text>
+        </AppText>
       </View>
     </ScrollView>
   );

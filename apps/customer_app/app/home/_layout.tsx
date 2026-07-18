@@ -6,7 +6,7 @@ export default function HomeLayout() {
     <>
       <AndroidBackHandler />
       <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" />
+      <Stack.Screen name="index" options={{ statusBarTranslucent: true }} />
       <Stack.Screen name="meals-under-price" options={{ statusBarTranslucent: true }} />
       <Stack.Screen name="category/[slug]" />
       <Stack.Screen name="service/[slug]" />

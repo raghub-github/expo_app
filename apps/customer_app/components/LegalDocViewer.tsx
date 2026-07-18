@@ -3,16 +3,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  ActivityIndicator,
-  StyleSheet,
-  Share,
-  TouchableOpacity,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, ActivityIndicator, StyleSheet, Share, TouchableOpacity, Platform } from "react-native";
 import { Stack, useRouter, type Href } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -98,7 +91,7 @@ export function LegalDocViewer({ docId, backFallback = "/(auth)/login" }: LegalD
           }}
         />
         <Ionicons name="document-outline" size={36} color={MUTED} />
-        <Text style={styles.error}>This policy is not available.</Text>
+        <AppText style={styles.error}>This policy is not available.</AppText>
       </View>
     );
   }
@@ -137,12 +130,12 @@ export function LegalDocViewer({ docId, backFallback = "/(auth)/login" }: LegalD
         {body === null && !error ? (
           <View style={styles.center}>
             <ActivityIndicator color={MUTED} />
-            <Text style={styles.loading}>Loading {doc.title}…</Text>
+            <AppText style={styles.loading}>Loading {doc.title}…</AppText>
           </View>
         ) : error ? (
           <View style={styles.center}>
             <Ionicons name="warning-outline" size={32} color="#DC2626" />
-            <Text style={styles.error}>{error}</Text>
+            <AppText style={styles.error}>{error}</AppText>
           </View>
         ) : body ? (
           <MarkdownView source={body} />

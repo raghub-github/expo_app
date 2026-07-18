@@ -692,6 +692,9 @@ export async function GET(
           fareAmount: order.fareAmount,
           riderEarning: order.riderEarning,
           walletCredited: order.walletCredited ?? false,
+          walletDebited: order.walletDebited ?? false,
+          hasLedgerEntry: order.hasLedgerEntry ?? false,
+          earningCreditPending: order.earningCreditPending ?? false,
           createdAt:
             order.createdAt instanceof Date
               ? order.createdAt.toISOString()

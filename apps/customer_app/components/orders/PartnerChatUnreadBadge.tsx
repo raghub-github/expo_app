@@ -1,4 +1,6 @@
-import { View, Text, StyleSheet, type ViewStyle } from "react-native";
+import { View, StyleSheet, type ViewStyle } from "react-native";
+import { AppText } from "@/components/AppText";
+
 
 type PartnerChatUnreadBadgeProps = {
   count: number;
@@ -11,7 +13,7 @@ export function PartnerChatUnreadBadge({ count, style }: PartnerChatUnreadBadgeP
 
   return (
     <View style={[styles.badge, style]} accessibilityLabel={`${count} unread messages`}>
-      <Text style={styles.text}>{label}</Text>
+      <AppText style={styles.text}>{label}</AppText>
     </View>
   );
 }

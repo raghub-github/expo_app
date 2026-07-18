@@ -5,24 +5,9 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../client";
 import { ordersRide } from "../schema";
+import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 
-export type PersonRideOrderDetail = {
-  passengerName: string | null;
-  passengerPhone: string | null;
-  passengerCount: number | null;
-  bookedForSelf: boolean;
-  rideType: string | null;
-  vehicleTypeRequired: string | null;
-  pickupOtp: string | null;
-  scheduledRide: boolean;
-  scheduledPickupTime: string | null;
-  returnTrip: boolean;
-  waitingCharges: number | null;
-  tollCharges: number | null;
-  parkingCharges: number | null;
-  pickupDistanceFromBookerKm: number | null;
-  intermediateStopsCount: number;
-};
+export type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 
 function parseNum(v: unknown): number | null {
   const n = Number(v);

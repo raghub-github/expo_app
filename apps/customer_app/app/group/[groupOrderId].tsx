@@ -4,15 +4,9 @@
  */
 
 import { useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  Share,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, ScrollView, Share, Alert } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -72,9 +66,9 @@ export default function GroupOrderScreen() {
   if (!groupOrderId) {
     return (
       <View style={styles.center}>
-        <Text style={styles.errorText}>Invalid group order</Text>
+        <AppText style={styles.errorText}>Invalid group order</AppText>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Text style={styles.backBtnText}>Go back</Text>
+          <AppText style={styles.backBtnText}>Go back</AppText>
         </TouchableOpacity>
       </View>
     );
@@ -88,22 +82,22 @@ export default function GroupOrderScreen() {
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+          <AppText style={styles.headerTitle} numberOfLines={1}>
             {displayName}'s group order
-          </Text>
-          <Text style={styles.headerSub} numberOfLines={1}>
+          </AppText>
+          <AppText style={styles.headerSub} numberOfLines={1}>
             From {storeName ?? "Restaurant"}
-          </Text>
+          </AppText>
         </View>
         <View style={styles.headerRight}>
           <View style={[styles.timerPill, isStoreClosed && styles.timerPillClosed]}>
-            <Text style={styles.timerText}>
+            <AppText style={styles.timerText}>
               {isStoreClosed ? "CLOSED" : `${timerMinsLeft} mins left`}
-            </Text>
+            </AppText>
           </View>
           <View style={styles.memberCountWrap}>
-            <Text style={styles.memberCountText}>{memberCount} / {MAX_GROUP_MEMBERS}</Text>
-            <Text style={styles.memberCountSub}>members</Text>
+            <AppText style={styles.memberCountText}>{memberCount} / {MAX_GROUP_MEMBERS}</AppText>
+            <AppText style={styles.memberCountSub}>members</AppText>
           </View>
           <TouchableOpacity style={styles.iconBtn} onPress={() => {}}>
             <Ionicons name="people" size={22} color={GatiMitraColors.textPrimary} />
@@ -122,11 +116,11 @@ export default function GroupOrderScreen() {
         {/* Participants / You */}
         <View style={styles.participantRow}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{(displayName[0] ?? "Y").toUpperCase()}</Text>
+            <AppText style={styles.avatarText}>{(displayName[0] ?? "Y").toUpperCase()}</AppText>
           </View>
           <View style={styles.participantInfo}>
-            <Text style={styles.participantName}>{displayName} (You)</Text>
-            <Text style={styles.participantMeta}>Just you</Text>
+            <AppText style={styles.participantName}>{displayName} (You)</AppText>
+            <AppText style={styles.participantMeta}>Just you</AppText>
           </View>
         </View>
 
@@ -134,10 +128,10 @@ export default function GroupOrderScreen() {
         <View style={styles.card}>
           <Ionicons name="location" size={20} color={GatiMitraColors.emerald} />
           <View style={styles.cardText}>
-            <Text style={styles.cardLabel}>Delivery at your location</Text>
-            <Text style={styles.cardAddress} numberOfLines={2}>
+            <AppText style={styles.cardLabel}>Delivery at your location</AppText>
+            <AppText style={styles.cardAddress} numberOfLines={2}>
               {address?.fullAddress ?? address?.primary ?? "Select address"}
-            </Text>
+            </AppText>
           </View>
         </View>
 
@@ -145,11 +139,11 @@ export default function GroupOrderScreen() {
         <View style={styles.card}>
           <View style={styles.cardRow}>
             <View style={styles.avatarSmall}>
-              <Text style={styles.avatarTextSmall}>{(displayName[0] ?? "Y").toUpperCase()}</Text>
+              <AppText style={styles.avatarTextSmall}>{(displayName[0] ?? "Y").toUpperCase()}</AppText>
             </View>
             <View style={styles.cardText}>
-              <Text style={styles.participantName}>{displayName} (You)</Text>
-              <Text style={styles.participantMeta}>No items added</Text>
+              <AppText style={styles.participantName}>{displayName} (You)</AppText>
+              <AppText style={styles.participantMeta}>No items added</AppText>
             </View>
             <TouchableOpacity
               onPress={handleAddItems}
@@ -157,9 +151,9 @@ export default function GroupOrderScreen() {
               disabled={isStoreClosed}
             >
               <Ionicons name="add" size={18} color="#fff" />
-              <Text style={styles.addItemsBtnText}>
+              <AppText style={styles.addItemsBtnText}>
                 {isStoreClosed ? "Store closed" : "Add items"}
-              </Text>
+              </AppText>
             </TouchableOpacity>
           </View>
         </View>
@@ -173,9 +167,9 @@ export default function GroupOrderScreen() {
         >
           <View style={styles.inviteLeft}>
             <Ionicons name="people" size={24} color={atMemberLimit ? "#9ca3af" : GatiMitraColors.emerald} />
-            <Text style={[styles.inviteText, atMemberLimit && styles.inviteTextDisabled]}>
+            <AppText style={[styles.inviteText, atMemberLimit && styles.inviteTextDisabled]}>
               {atMemberLimit ? "Group limit reached (30 members max)" : "Invite friends to join your group order"}
-            </Text>
+            </AppText>
           </View>
           <LinearGradient
             colors={atMemberLimit ? ["#9ca3af", "#6b7280"] : [GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
@@ -184,7 +178,7 @@ export default function GroupOrderScreen() {
             style={[styles.shareBtn, atMemberLimit && styles.shareBtnDisabled]}
           >
             <Ionicons name="share" size={20} color="#fff" />
-            <Text style={styles.shareBtnText}>Share</Text>
+            <AppText style={styles.shareBtnText}>Share</AppText>
           </LinearGradient>
         </TouchableOpacity>
       </ScrollView>

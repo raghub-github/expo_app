@@ -108,13 +108,15 @@ export function usePermissionsQuery() {
  * for backward compatibility during migration
  */
 export function usePermissions() {
-  const { data, isLoading, error } = usePermissionsQuery();
+  const { data, isLoading, isPending, error } = usePermissionsQuery();
 
   return {
     isSuperAdmin: data?.isSuperAdmin ?? false,
     canTogglePortal: data?.canTogglePortal ?? false,
     systemUserId: data?.systemUserId ?? null,
-    loading: isLoading,
+    // Treat "no answer yet" as loading — on SSR isLoading can be false while pending
+    // (no fetch), which would wrongly default isSuperAdmin to false.
+    loading: isLoading || (isPending && data === undefined && !error),
     error: error ? (error instanceof Error ? error.message : "Unknown error") : null,
     exists: data?.exists ?? false,
     roles: data?.roles ?? [],

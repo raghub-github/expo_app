@@ -1,26 +1,14 @@
 /**
  * Food floating cart + multi-order tracking dock.
- * Cart visible only on food browse: /home, /home/merchant/*, /search, /home/category/*, etc.
- * Hidden on Home tab (/(tabs)/index), Profile, Orders, checkout, and other non-food routes.
+ * Cart visible only on food browse: /home, /home/merchant/*, /home/category/*, etc.
+ * Hidden on Home tab (/(tabs)/index), Profile, Orders, checkout, search, and other non-food routes.
  * Order tracking dock: food browse + /orders when user has active deliveries.
  */
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Platform,
-  ScrollView,
-  Image,
-  Modal,
-  Pressable,
-  Alert,
-  useWindowDimensions,
-  type NativeSyntheticEvent,
-  type NativeScrollEvent,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Image, Modal, Pressable, Alert, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
 import { useRouter, useSegments, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
@@ -51,9 +39,10 @@ import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
+import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 
-const CHECKOUT_PATH = "/checkout";
+import { tryNavigateToFoodCheckout } from "@/lib/cartCheckoutGate";
 
 /** Shown instead of multi-cart checkout until the feature exists. */
 const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
@@ -68,7 +57,7 @@ const FLOAT_CART_RADIUS = 10;
 const FLOAT_BAR_BG = "#E8F5EE";
 const FLOAT_BAR_BORDER = "rgba(19, 114, 67, 0.22)";
 
-/** Show on: /home, /home/merchant/*, /home/category/*, /search. */
+/** Show on: /home, /home/merchant/*, /home/category/*. Not meals-under-price or /search. */
 function useIsFoodServicePage(): boolean {
   const pathname = usePathname();
   const segments = useSegments() as string[];
@@ -76,9 +65,13 @@ function useIsFoodServicePage(): boolean {
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
   if (p.startsWith("/checkout") || p.startsWith("/profile") || p.startsWith("/wallet")) return false;
-  if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category") || p.startsWith("/home/meals-under-price")) return true;
+  // Meals-under uses in-card "View cart" → checkout sheet — never the global floating dock.
+  if (p.startsWith("/home/meals-under-price")) return false;
+  if (segments[0] === "home" && segments[1] === "meals-under-price") return false;
+  // Search owns full-screen discovery — no floating cart dock.
+  if (p === "/search" || p.startsWith("/search")) return false;
+  if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category")) return true;
   if (p.startsWith("/home/service") || p.startsWith("/home/shop")) return false;
-  if (p === "/search") return true;
   if (p === "/" || p.startsWith("/(tabs)")) return false;
   return false;
 }
@@ -138,6 +131,14 @@ function useHideFloatingCart(): boolean {
   if (typeof pathname === "string" && pathname.startsWith("/home/meals-under-price")) {
     return true;
   }
+  if (segments[0] === "home" && segments[1] === "meals-under-price") {
+    return true;
+  }
+  // Search owns full-screen discovery — never the floating cart dock.
+  if (typeof pathname === "string" && (pathname === "/search" || pathname.startsWith("/search/"))) {
+    return true;
+  }
+  if (segments[0] === "search") return true;
   // Merchant menu renders its own Zomato-style Continue dock — never the global pill.
   if (typeof pathname === "string" && /^\/home\/merchant\/[^/]+/.test(pathname)) {
     return true;
@@ -188,6 +189,7 @@ export function GlobalFloatingCart() {
   const hideFloatingCart = useHideFloatingCart();
   const suppressMealsUnderFloating = useMealsUnderPriceCartUiStore((s) => s.suppressFloatingCart);
   const checkoutSheetVisible = useCheckoutSheetStore((s) => s.visible);
+  const outsideRangeVisible = useCartCheckoutGateStore((s) => s.outsideRangeVisible);
   /**
    * Hide cart immediately on View Cart press — pathname still points at the previous
    * food route for a few frames while checkout mounts, which caused a flicker.
@@ -308,6 +310,7 @@ export function GlobalFloatingCart() {
     !hideFloatingCart &&
     !suppressMealsUnderFloating &&
     !checkoutSheetVisible &&
+    !outsideRangeVisible &&
     !hideForCheckoutNav &&
     isFoodServicePage;
   /** Paged dock when tracking + (cart on food page or multiple orders). */
@@ -362,9 +365,13 @@ export function GlobalFloatingCart() {
     if (isCartStoreClosed) return;
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
-    setHideForCheckoutNav(true);
     void prefetchSubscriptionPlans(queryClient);
-    router.push(CHECKOUT_PATH as any);
+
+    // Wait for eligibility, then open ONLY the correct destination (checkout or
+    // Outside Delivery Range). Do not hide the cart until checkout actually opens.
+    void tryNavigateToFoodCheckout(router, queryClient).then((opened) => {
+      if (opened) setHideForCheckoutNav(true);
+    });
   };
 
   /** Store inner page (merchant menu). */
@@ -725,7 +732,7 @@ function AllCartsSheetModal({
             <View style={[styles.sheetCard, { paddingBottom: Math.max(insets.bottom, 14) }]}>
               <View style={styles.sheetHeaderTooltipBlock}>
                 <View style={styles.sheetHeaderRow}>
-                  <Text style={styles.sheetTitle}>Your Carts ({cartSlotCount})</Text>
+                  <AppText style={styles.sheetTitle}>Your Carts ({cartSlotCount})</AppText>
                   <Pressable
                     style={styles.sheetCheckoutAllBtn}
                     onPress={onCheckoutAllPress}
@@ -733,7 +740,7 @@ function AllCartsSheetModal({
                     accessibilityRole="button"
                     accessibilityLabel="Checkout all carts"
                   >
-                    <Text style={styles.sheetCheckoutAllText}>Checkout all</Text>
+                    <AppText style={styles.sheetCheckoutAllText}>Checkout all</AppText>
                     <Ionicons name="chevron-forward" size={16} color={SHEET_BRAND_RED} />
                   </Pressable>
                 </View>
@@ -746,7 +753,7 @@ function AllCartsSheetModal({
                 </View>
 
                 <View style={styles.sheetComingSoonPill}>
-                  <Text style={styles.sheetComingSoonPillText}>{CHECKOUT_ALL_COMING_SOON}</Text>
+                  <AppText style={styles.sheetComingSoonPillText}>{CHECKOUT_ALL_COMING_SOON}</AppText>
                 </View>
               </View>
 
@@ -820,13 +827,13 @@ function AllCartsSheetModal({
                           onPress={onRemoveCart}
                           hitSlop={6}
                         >
-                          <Text style={styles.sheetRemoveText}>Remove</Text>
+                          <AppText style={styles.sheetRemoveText}>Remove</AppText>
                         </Pressable>
                       ) : null}
                     </View>
                 </View>
               ) : (
-                <Text style={styles.sheetEmpty}>No active cart.</Text>
+                <AppText style={styles.sheetEmpty}>No active cart.</AppText>
               )}
             </View>
           </View>

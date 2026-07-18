@@ -12,7 +12,7 @@ import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import CustomerDetails from "./CustomerDetails";
 import MerchantDetails from "./MerchantDetails";
 import PaymentDetails from "./PaymentDetails";
-import type { OrderPaymentDetail } from "@/lib/orders/order-payment-detail";
+import type { OrderPaymentDetail } from "@/lib/orders/order-payment-types";
 import RiderDetails from "./RiderDetails";
 import type { RiderTimelineData } from "./RiderTimeline";
 import type { OrderRiderTrackingPayload } from "@/lib/db/operations/order-rider-tracking";
@@ -62,7 +62,7 @@ import {
 } from "@/lib/orders/order-sidebar-activity";
 import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
 import { hasOrderCancellationOnProgressTimeline } from "@/lib/orders/order-timeline-rider-filter";
-import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
+import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 import PersonRideOrderSections from "./PersonRideOrderSections";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
 
@@ -261,6 +261,19 @@ interface MerchantSummaryFromApi {
   is_available?: boolean | null;
   deleted_at?: string | null;
   delisted_at?: string | null;
+}
+
+/** Penalty / debit / credit record from GET /api/orders/[id]/recovery-records */
+export interface OrderRecoveryRecordItem {
+  id: string;
+  party: "rider" | "merchant";
+  partyLabel: string;
+  kind: string;
+  reason: string | null;
+  amount: number;
+  impact: "debit" | "credit" | "info";
+  status: string | null;
+  createdAt: string | null;
 }
 
 /** Refund list item from GET /api/orders/[id]/refunds */
@@ -569,6 +582,9 @@ export default function OrderDetailClient({
   >("picked_up");
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [orderRefunds, setOrderRefunds] = useState<OrderRefundListItem[]>([]);
+  const [orderRecoveryRecords, setOrderRecoveryRecords] = useState<
+    OrderRecoveryRecordItem[]
+  >([]);
   const [orderItemsPayload, setOrderItemsPayload] = useState<OrderItemsPayload | null>(null);
   const itemsPrefetchInFlight = useRef(false);
   const [orderTickets, setOrderTickets] = useState<OrderTicketSummary[]>([]);
@@ -611,6 +627,54 @@ export default function OrderDetailClient({
   const loggedInEmail = auth?.user?.email ?? null;
   const isOrderPage = useIsActiveRoute("/order");
   const pageVisible = usePageVisible();
+
+  /** Payment detail loads after first paint so /api/orders/core stays fast. */
+  useEffect(() => {
+    const orderId = order?.id;
+    if (orderId == null || !Number.isFinite(orderId)) return;
+    if (!auth?.authReady) return;
+
+    let cancelled = false;
+    void fetch(`/api/orders/${orderId}/payment-detail`, { credentials: "include" })
+      .then((r) => r.json().catch(() => null))
+      .then((body: { success?: boolean; data?: OrderPaymentDetail } | null) => {
+        if (cancelled) return;
+        if (body?.success && body.data) setPaymentDetail(body.data);
+      })
+      .catch(() => {
+        /* keep card fallbacks */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [order?.id, refetchTrigger, auth?.authReady]);
+
+  /** Rider map tracking when not embedded in core response. */
+  useEffect(() => {
+    const orderId = order?.id;
+    if (orderId == null || !Number.isFinite(orderId)) return;
+    if (riderTrackingInitial !== undefined) return;
+
+    let cancelled = false;
+    void fetch(`/api/orders/${orderId}/rider-tracking`, { credentials: "include" })
+      .then((r) => r.json().catch(() => null))
+      .then((body) => {
+        if (cancelled) return;
+        if (body && typeof body === "object") {
+          setRiderTrackingInitial(body as OrderRiderTrackingPayload);
+        } else {
+          setRiderTrackingInitial(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRiderTrackingInitial(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [order?.id, riderTrackingInitial]);
 
   useEffect(() => {
     const hard = isHardPageReload();
@@ -680,13 +744,20 @@ export default function OrderDetailClient({
 
     setOrderItemsPayload(null);
 
+    const hasMatchingOrder =
+      orderRef.current != null && orderMatchesPublicId(orderRef.current, normalizedPublicId);
+
+    // Keep prior paymentDetail until the background fetch refreshes it (avoids empty modal).
+    if (!hasMatchingOrder) {
+      setPaymentDetail(null);
+    }
+    setRiderTrackingInitial(undefined);
+    setRiderTimelineInitial(undefined);
+
     setOrder((prev) => {
       if (!prev) return null;
       return orderMatchesPublicId(prev, normalizedPublicId) ? prev : null;
     });
-
-    const hasMatchingOrder =
-      orderRef.current != null && orderMatchesPublicId(orderRef.current, normalizedPublicId);
 
     if (refetchTrigger > 0) {
       setIsRefreshing(true);
@@ -845,7 +916,9 @@ export default function OrderDetailClient({
           const paymentFromApi =
             (body as { paymentDetail?: OrderPaymentDetail }).paymentDetail ??
             (row.paymentDetail as OrderPaymentDetail | undefined);
-          setPaymentDetail(paymentFromApi ?? null);
+          if (paymentFromApi != null) {
+            setPaymentDetail(paymentFromApi);
+          }
 
           setTimelineEntries(timeline.length > 0 ? mapTimelineEntries(timeline) : []);
           if (hasEmbeddedRiderTimeline) {
@@ -865,9 +938,8 @@ export default function OrderDetailClient({
                 ? embeddedRiderTracking
                 : null
             );
-          } else {
-            setRiderTrackingInitial(null);
           }
+          // else: leave undefined / existing — background rider-tracking effect fills it
           if (coreOrderId != null && !hasEmbeddedTimeline) {
             loadTimelineInBackground(coreOrderId);
           }
@@ -936,6 +1008,25 @@ export default function OrderDetailClient({
             }
           })();
 
+          void (async () => {
+            try {
+              const recoveryRes = await fetch(`/api/orders/${row.id}/recovery-records`);
+              const recoveryBody = await recoveryRes.json().catch(() => null);
+              if (
+                !cancelled &&
+                recoveryRes.ok &&
+                recoveryBody?.success &&
+                Array.isArray(recoveryBody.data)
+              ) {
+                setOrderRecoveryRecords(recoveryBody.data as OrderRecoveryRecordItem[]);
+              } else if (!cancelled) {
+                setOrderRecoveryRecords([]);
+              }
+            } catch {
+              if (!cancelled) setOrderRecoveryRecords([]);
+            }
+          })();
+
           void itemsPromise.then((parsed) => {
             if (!cancelled && parsed) setOrderItemsPayload(parsed);
             else if (!cancelled) setOrderItemsPayload(null);
@@ -964,6 +1055,7 @@ export default function OrderDetailClient({
           setTimelineEntries(null);
           setError("Order not found.");
           setOrderRefunds([]);
+          setOrderRecoveryRecords([]);
           setOrderTickets([]);
           if (fetchGenerationRef.current === generation) {
             setLoading(false);
@@ -1670,6 +1762,7 @@ export default function OrderDetailClient({
               createdLabel={createdLabel}
               paymentDetail={paymentDetail}
               orderRefunds={orderRefunds}
+              recoveryRecords={orderRecoveryRecords}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
               onRefresh={handleRefreshOrder}
@@ -1729,6 +1822,7 @@ export default function OrderDetailClient({
               order={order}
               displayId={displayId}
               orderRefunds={orderRefunds}
+              recoveryRecords={orderRecoveryRecords}
               paymentDetail={paymentDetail}
               orderItemsPricing={orderItemsPayload?.pricing ?? null}
               onPrefetchOrderItems={ensureOrderItemsPrefetch}

@@ -8,7 +8,8 @@ import {
   useImperativeHandle,
   useState,
 } from "react";
-import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Modal, StyleSheet, TouchableOpacity, View } from "react-native";
+import { AppText } from "@/components/AppText";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as Contacts from "expo-contacts";
@@ -189,12 +190,12 @@ function AlternateContactSuccessModal({
           <View style={styles.successIconWrap}>
             <Ionicons name="checkmark" size={28} color="#fff" />
           </View>
-          <Text style={styles.successTitle}>Alternate number updated</Text>
-          <Text style={styles.successBody}>
+          <AppText style={styles.successTitle}>Alternate number updated</AppText>
+          <AppText style={styles.successBody}>
             The delivery partner will now contact you on your alternate number.
-          </Text>
+          </AppText>
           <TouchableOpacity style={styles.successBtn} onPress={onClose} activeOpacity={0.9}>
-            <Text style={styles.successBtnText}>OK</Text>
+            <AppText style={styles.successBtnText}>OK</AppText>
           </TouchableOpacity>
         </View>
       </View>

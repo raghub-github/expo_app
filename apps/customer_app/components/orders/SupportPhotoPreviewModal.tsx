@@ -1,14 +1,7 @@
 import React, { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  Image,
-  Pressable,
-  StyleSheet,
-  Platform,
-  SafeAreaView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, Modal, Image, Pressable, StyleSheet, Platform, SafeAreaView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -40,9 +33,9 @@ export function SupportPhotoPreviewModal({
             <Pressable onPress={onCancel} style={styles.headerBtn} hitSlop={8}>
               <Ionicons name="close" size={24} color="#0F172A" />
             </Pressable>
-            <Text style={styles.headerTitle}>Preview photo</Text>
+            <AppText style={styles.headerTitle}>Preview photo</AppText>
             <Pressable onPress={onConfirm} style={styles.headerBtn} hitSlop={8}>
-              <Text style={styles.doneText}>Done</Text>
+              <AppText style={styles.doneText}>Done</AppText>
             </Pressable>
           </View>
           <View style={styles.previewWrap}>
@@ -50,7 +43,7 @@ export function SupportPhotoPreviewModal({
           </View>
           <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             <Pressable onPress={onPickAnother} style={styles.secondaryBtn}>
-              <Text style={styles.secondaryBtnText}>Choose another</Text>
+              <AppText style={styles.secondaryBtnText}>Choose another</AppText>
             </Pressable>
           </View>
         </SafeAreaView>

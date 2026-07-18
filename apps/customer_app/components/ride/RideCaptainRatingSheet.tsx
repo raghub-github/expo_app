@@ -3,15 +3,9 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  TextInput,
-  ActivityIndicator,
-  ScrollView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -95,7 +89,7 @@ export function RideCaptainRatingSheet({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.sheetTitle}>Rate your captain</Text>
+        <AppText style={styles.sheetTitle}>Rate your captain</AppText>
 
         <View style={styles.starsRow}>
           {[1, 2, 3, 4, 5].map((n) => (
@@ -109,10 +103,10 @@ export function RideCaptainRatingSheet({
           ))}
         </View>
 
-        <Text style={styles.headline}>{headline}</Text>
-        <Text style={styles.captainName}>{captainName}</Text>
+        <AppText style={styles.headline}>{headline}</AppText>
+        <AppText style={styles.captainName}>{captainName}</AppText>
 
-        <Text style={styles.prompt}>What stood out?</Text>
+        <AppText style={styles.prompt}>What stood out?</AppText>
         <View style={styles.tagsWrap}>
           {RIDE_CAPTAIN_RATING_TAGS.map((tag) => {
             const active = selectedTags.includes(tag);
@@ -123,13 +117,13 @@ export function RideCaptainRatingSheet({
                 onPress={() => toggleTag(tag)}
                 activeOpacity={0.85}
               >
-                <Text style={[styles.tagText, active && styles.tagTextActive]}>{tag}</Text>
+                <AppText style={[styles.tagText, active && styles.tagTextActive]}>{tag}</AppText>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        <Text style={styles.noteLabel}>Write a review (optional)</Text>
+        <AppText style={styles.noteLabel}>Write a review (optional)</AppText>
         <TextInput
           style={styles.noteInput}
           placeholder="Share your ride experience"
@@ -156,7 +150,7 @@ export function RideCaptainRatingSheet({
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.submitText}>Submit rating</Text>
+            <AppText style={styles.submitText}>Submit rating</AppText>
           )}
         </TouchableOpacity>
       </ScrollView>

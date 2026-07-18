@@ -5,23 +5,9 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-  Image,
-  Modal,
-  Pressable,
-  ActivityIndicator,
-  useWindowDimensions,
-  Platform,
-  type ImageSourcePropType,
-  type ImageStyle,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, ScrollView, TouchableOpacity, StyleSheet, Dimensions, Image, Modal, Pressable, ActivityIndicator, useWindowDimensions, Platform, type ImageSourcePropType, type ImageStyle } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -34,6 +20,8 @@ import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
+import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
+import { DEFAULT_GRID_FIRST_UNDER_250 } from "@/lib/foodHomeLayout";
 import {
   markFoodHomeListScrollActive,
   markFoodHomeListScrollEnded,
@@ -135,9 +123,16 @@ function computeCategoryBrowseRailMetrics(windowWidth: number): {
   return { chipW, gap, icon, iconInner };
 }
 
-const OFFER_PILLS = [
+type OfferPill = {
+  id: string;
+  label: string;
+  icon?: "flash";
+  tag?: string;
+  mealsPromo?: boolean;
+};
+
+const BASE_OFFER_PILLS: OfferPill[] = [
   { id: "fast", label: "Near & Fast", icon: "flash" },
-  { id: "meals", label: "Meals under ₹250", tag: "New" },
   { id: "flat50", label: "Flat 50% OFF" },
   { id: "hyderabadi", label: "Hyderabadi" },
 ];
@@ -255,8 +250,32 @@ export default function CategoryBrowseScreen() {
     [setCategoryRoute]
   );
 
-  const { coords } = useLocationStore();
+  const { coords, address } = useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
+  const {
+    gridFirstUnder250Enabled,
+    gridFirstUnder250FilterLabel,
+    gridFirstUnder250MaxPrice,
+  } = useFoodHomeLayout(address, debouncedCoords);
+
+  const offerPills = useMemo((): OfferPill[] => {
+    const pills = [...BASE_OFFER_PILLS];
+    if (!gridFirstUnder250Enabled) return pills;
+    const label =
+      gridFirstUnder250FilterLabel.trim() ||
+      `Meals under ₹${gridFirstUnder250MaxPrice || DEFAULT_GRID_FIRST_UNDER_250.maxPrice}`;
+    pills.splice(1, 0, {
+      id: "meals",
+      label,
+      tag: "New",
+      mealsPromo: true,
+    });
+    return pills;
+  }, [
+    gridFirstUnder250Enabled,
+    gridFirstUnder250FilterLabel,
+    gridFirstUnder250MaxPrice,
+  ]);
   const { data, isLoading } = useQuery({
     queryKey: ["merchants", activeCategory, debouncedCoords?.latitude, debouncedCoords?.longitude, effectiveVegOnly],
     queryFn: () =>
@@ -466,7 +485,7 @@ export default function CategoryBrowseScreen() {
               style={[styles.sheetPanel, { paddingBottom: Math.max(insets.bottom, 12), height: SHEET_MAX_HEIGHT }]}
             >
             <View style={styles.sheetHeaderRow}>
-              <Text style={styles.sheetTitle}>Cuisines & Dishes</Text>
+              <AppText style={styles.sheetTitle}>Cuisines & Dishes</AppText>
             </View>
             <ScrollView
               style={styles.sheetScroll}
@@ -483,8 +502,8 @@ export default function CategoryBrowseScreen() {
                 </View>
               ) : cuisinesSheetRows.length === 0 ? (
                 <View style={styles.sheetStateBlock}>
-                  <Text style={styles.sheetEmptyText}>No cuisines to show yet.</Text>
-                  <Text style={styles.sheetEmptyHint}>Add rows in user_app_category (FOOD, active).</Text>
+                  <AppText style={styles.sheetEmptyText}>No cuisines to show yet.</AppText>
+                  <AppText style={styles.sheetEmptyHint}>Add rows in user_app_category (FOOD, active).</AppText>
                 </View>
               ) : (
                 cuisinesSheetRows.map((item) => {
@@ -522,7 +541,7 @@ export default function CategoryBrowseScreen() {
                         }}
                       />
                     </View>
-                    <Text
+                    <AppText
                       style={[
                         styles.sheetTileLabel,
                         sheetTileActive ? styles.sheetTileLabelActive : null,
@@ -530,7 +549,7 @@ export default function CategoryBrowseScreen() {
                       numberOfLines={2}
                     >
                       {item.label}
-                    </Text>
+                    </AppText>
                   </TouchableOpacity>
                   );
                 })
@@ -694,7 +713,7 @@ export default function CategoryBrowseScreen() {
                   />
                 </View>
               )}
-              <Text
+              <AppText
                 style={[
                   styles.categoryChipText,
                   allActive || itemActive ? styles.categoryChipTextActive : null,
@@ -702,7 +721,7 @@ export default function CategoryBrowseScreen() {
                 numberOfLines={2}
               >
                 {c.name}
-              </Text>
+              </AppText>
             </TouchableOpacity>
             );
           })}
@@ -717,7 +736,7 @@ export default function CategoryBrowseScreen() {
           {effectiveVegOnly ? (
             <View style={styles.vegModePill}>
               <Ionicons name="leaf" size={14} color={TEAL} />
-              <Text style={styles.vegModePillText}>Pure Veg</Text>
+              <AppText style={styles.vegModePillText}>Pure Veg</AppText>
             </View>
           ) : null}
           <TouchableOpacity
@@ -734,13 +753,13 @@ export default function CategoryBrowseScreen() {
             }
           >
             <Ionicons name="options-outline" size={14} color={TEXT_GRAY} />
-            <Text style={styles.vegOverridePillText}>
+            <AppText style={styles.vegOverridePillText}>
               {vegPageOverride === "use_global"
                 ? `Diet: Global (${vegOnly ? "Pure Veg" : "All"})`
                 : vegPageOverride === "force_on"
                   ? "Diet: Force Pure Veg"
                   : "Diet: Show All (Temp)"}
-            </Text>
+            </AppText>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
@@ -748,36 +767,41 @@ export default function CategoryBrowseScreen() {
             onPress={() => setFilterSheetVisible(true)}
           >
             <Ionicons name="options-outline" size={18} color={hasActiveFilters ? "#fff" : TITLE_DARK} />
-            <Text style={[styles.filterBtnText, hasActiveFilters && styles.filterBtnTextActive]}>Filters</Text>
+            <AppText style={[styles.filterBtnText, hasActiveFilters && styles.filterBtnTextActive]}>Filters</AppText>
             <Ionicons name="chevron-down" size={14} color={hasActiveFilters ? "#fff" : TEXT_GRAY} />
           </TouchableOpacity>
-          {OFFER_PILLS.map((p) => (
+          {offerPills.map((p) => (
             <TouchableOpacity
               key={p.id}
-              style={[styles.pill, p.tag && styles.pillNew]}
+              style={[styles.pill, p.mealsPromo && styles.pillMeals]}
               activeOpacity={0.8}
               onPress={() => {
                 if (p.id === "meals") navigateToMealsUnderPrice(router, queryClient);
               }}
             >
               {p.tag ? (
-                <View style={styles.pillNewTag}><Text style={styles.pillNewTagText}>{p.tag}</Text></View>
+                <View style={styles.pillMealsTag}>
+                  <AppText style={styles.pillMealsTagText}>{p.tag}</AppText>
+                </View>
               ) : null}
               {p.icon === "flash" ? (
                 <Ionicons name="flash" size={14} color={TEAL} />
               ) : null}
-              <Text style={[styles.pillText, p.tag && styles.pillTextNew]} numberOfLines={1}>
+              <AppText
+                style={[styles.pillText, p.mealsPromo && styles.pillTextMeals]}
+                numberOfLines={1}
+              >
                 {p.label}
-              </Text>
+              </AppText>
             </TouchableOpacity>
           ))}
         </ScrollView>
 
         {isCategoryFocus ? (
           <>
-            <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
+            <AppText style={styles.sectionHeading}>ALL RESTAURANTS</AppText>
             {selectedCategoryLabel ? (
-              <Text style={[styles.sectionSub, styles.sectionSubAccent]}>{selectedCategoryLabel}</Text>
+              <AppText style={[styles.sectionSub, styles.sectionSubAccent]}>{selectedCategoryLabel}</AppText>
             ) : null}
             {isLoading ? (
               <View style={styles.skeletonListWrap}>
@@ -795,7 +819,7 @@ export default function CategoryBrowseScreen() {
           </>
         ) : (
           <>
-            <Text style={styles.sectionHeading}>RECOMMENDED FOR YOU</Text>
+            <AppText style={styles.sectionHeading}>RECOMMENDED FOR YOU</AppText>
             {isLoading ? (
               <View style={styles.skeletonListWrap}>
                 <LovedMerchantsGridSkeleton count={4} />
@@ -807,8 +831,8 @@ export default function CategoryBrowseScreen() {
               />
             )}
 
-            <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
-            <Text style={styles.sectionSub}>Featured</Text>
+            <AppText style={styles.sectionHeading}>ALL RESTAURANTS</AppText>
+            <AppText style={styles.sectionSub}>Featured</AppText>
             {isLoading ? (
               <View style={styles.skeletonListWrap}>
                 <RestaurantListSkeleton count={4} />
@@ -834,15 +858,15 @@ export default function CategoryBrowseScreen() {
                         ) : null
                       )}
                       <View style={styles.featuredOfferTag}>
-                        <Text style={styles.featuredOfferText}>Flat 50% OFF</Text>
+                        <AppText style={styles.featuredOfferText}>Flat 50% OFF</AppText>
                       </View>
                       <View style={styles.featuredOverlay}>
-                        <Text style={styles.featuredTitle} numberOfLines={1}>
+                        <AppText style={styles.featuredTitle} numberOfLines={1}>
                           {m.name}
-                        </Text>
-                        <Text style={styles.featuredPrice}>
+                        </AppText>
+                        <AppText style={styles.featuredPrice}>
                           ₹{(m as MerchantSummary & { costForTwo?: number }).costForTwo ?? 299} for two
-                        </Text>
+                        </AppText>
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -876,12 +900,12 @@ export default function CategoryBrowseScreen() {
               </View>
               <View style={styles.filterSheetHeader}>
                 <View style={styles.filterSheetTitleBlock}>
-                  <Text style={styles.filterSheetTitle}>Filters</Text>
-                  <Text style={styles.filterSheetSubtitle}>
+                  <AppText style={styles.filterSheetTitle}>Filters</AppText>
+                  <AppText style={styles.filterSheetSubtitle}>
                     {activeFilterCount > 0
                       ? `${activeFilterCount} active — tap Apply to update the list`
                       : "Refine delivery time, cuisine, and offers"}
-                  </Text>
+                  </AppText>
                 </View>
                 <TouchableOpacity
                   onPress={clearFilters}
@@ -891,9 +915,9 @@ export default function CategoryBrowseScreen() {
                   accessibilityLabel="Clear all filters"
                   accessibilityState={{ disabled: !hasActiveFilters }}
                 >
-                  <Text style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
+                  <AppText style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
                     Clear all
-                  </Text>
+                  </AppText>
                 </TouchableOpacity>
               </View>
               <ScrollView
@@ -903,7 +927,7 @@ export default function CategoryBrowseScreen() {
                 keyboardShouldPersistTaps="handled"
                 bounces={false}
               >
-                <Text style={styles.filterSectionLabel}>Delivery time</Text>
+                <AppText style={styles.filterSectionLabel}>Delivery time</AppText>
                 <View style={styles.filterChipsRow}>
                   {DELIVERY_OPTIONS.map((opt) => (
                     <TouchableOpacity
@@ -912,18 +936,18 @@ export default function CategoryBrowseScreen() {
                       onPress={() => setDeliveryFilter(opt.id)}
                       activeOpacity={0.85}
                     >
-                      <Text
+                      <AppText
                         style={[
                           styles.filterSheetChipText,
                           deliveryFilter === opt.id && styles.filterSheetChipTextActive,
                         ]}
                       >
                         {opt.label}
-                      </Text>
+                      </AppText>
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={styles.filterSectionLabel}>Cuisine</Text>
+                <AppText style={styles.filterSectionLabel}>Cuisine</AppText>
                 <View style={styles.filterChipsRow}>
                   {CUISINE_OPTIONS.map((c) => (
                     <TouchableOpacity
@@ -935,18 +959,18 @@ export default function CategoryBrowseScreen() {
                       onPress={() => toggleCuisine(c)}
                       activeOpacity={0.85}
                     >
-                      <Text
+                      <AppText
                         style={[
                           styles.filterSheetChipText,
                           selectedCuisines.includes(c) && styles.filterSheetChipTextActive,
                         ]}
                       >
                         {c}
-                      </Text>
+                      </AppText>
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={styles.filterSectionLabel}>Other</Text>
+                <AppText style={styles.filterSectionLabel}>Other</AppText>
                 <TouchableOpacity
                   style={[styles.filterSheetRow, openNow && styles.filterSheetRowActive]}
                   onPress={() => setOpenNow((v) => !v)}
@@ -964,9 +988,9 @@ export default function CategoryBrowseScreen() {
                       color={openNow ? "#fff" : GatiMitraColors.primaryMint}
                     />
                   </View>
-                  <Text style={[styles.filterSheetRowText, openNow && styles.filterSheetRowTextOnMint]}>
+                  <AppText style={[styles.filterSheetRowText, openNow && styles.filterSheetRowTextOnMint]}>
                     Open Now — open first, closed below
-                  </Text>
+                  </AppText>
                   {openNow ? (
                     <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />
                   ) : null}
@@ -988,9 +1012,9 @@ export default function CategoryBrowseScreen() {
                       color={filterHasOffers ? "#fff" : GatiMitraColors.primaryMint}
                     />
                   </View>
-                  <Text style={[styles.filterSheetRowText, filterHasOffers && styles.filterSheetRowTextOnMint]}>
+                  <AppText style={[styles.filterSheetRowText, filterHasOffers && styles.filterSheetRowTextOnMint]}>
                     Has offers
-                  </Text>
+                  </AppText>
                   {filterHasOffers ? (
                     <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />
                   ) : null}
@@ -1004,7 +1028,7 @@ export default function CategoryBrowseScreen() {
                     end={{ x: 1, y: 1 }}
                     style={styles.filterApplyBtnGradient}
                   >
-                    <Text style={styles.filterApplyBtnText}>Apply</Text>
+                    <AppText style={styles.filterApplyBtnText}>Apply</AppText>
                   </LinearGradient>
                 </TouchableOpacity>
               </View>
@@ -1250,16 +1274,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  pillNew: { backgroundColor: "#fef2f2", borderColor: "#fecaca" },
-  pillNewTag: {
-    backgroundColor: "#dc2626",
+  pillMeals: {
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
+  },
+  pillMealsTag: {
+    backgroundColor: GatiMitraColors.primaryMint,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
-  pillNewTagText: { fontSize: 10, fontWeight: "700", color: "#fff" },
+  pillMealsTagText: { fontSize: 10, fontWeight: "700", color: "#fff" },
   pillText: { fontSize: 13, fontWeight: "600", color: TITLE_DARK },
-  pillTextNew: { color: "#991b1b" },
+  pillTextMeals: { color: "#15803D" },
   vegModePill: {
     flexDirection: "row",
     alignItems: "center",

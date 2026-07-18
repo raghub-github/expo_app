@@ -21,6 +21,7 @@ import {
   Pressable,
   Image,
 } from "react-native";
+import { AppText } from "@/components/AppText";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -284,28 +285,28 @@ export default function LoginScreen() {
                 />
               ) : (
                 <View style={styles.logoPlaceholder}>
-                  <Text style={styles.logoPlaceholderText}>GatiMitra</Text>
+                  <AppText style={styles.logoPlaceholderText}>GatiMitra</AppText>
                 </View>
               )}
             </View>
 
             <HeroIllustration />
 
-            <Text style={styles.title}>Login</Text>
-            <Text style={styles.subtitle}>Enter your mobile number to get OTP</Text>
+            <AppText style={styles.title}>Login</AppText>
+            <AppText style={styles.subtitle}>Enter your mobile number to get OTP</AppText>
 
             <View style={styles.fieldWrap}>
               <View style={styles.labelRow}>
-                <Text style={styles.label}>Mobile number</Text>
+                <AppText style={styles.label}>Mobile number</AppText>
                 {phoneDigits.length > 0 ? (
-                  <Text
+                  <AppText
                     style={[
                       styles.digitCounter,
                       isPhoneValid ? styles.digitCounterValid : undefined,
                     ]}
                   >
                     {phoneDigits.length}/{requiredPhoneLen}
-                  </Text>
+                  </AppText>
                 ) : null}
               </View>
               <View
@@ -321,8 +322,8 @@ export default function LoginScreen() {
                   activeOpacity={0.8}
                   disabled={loading}
                 >
-                  <Text style={styles.flagEmoji}>{selectedCountry.flag}</Text>
-                  <Text style={styles.countryCode}>{selectedCountry.dialCode}</Text>
+                  <AppText style={styles.flagEmoji}>{selectedCountry.flag}</AppText>
+                  <AppText style={styles.countryCode}>{selectedCountry.dialCode}</AppText>
                   <Ionicons name="chevron-down" size={16} color={TEXT_GRAY} />
                 </TouchableOpacity>
                 <View style={styles.inputDivider} />
@@ -344,7 +345,7 @@ export default function LoginScreen() {
                   underlineColorAndroid="transparent"
                 />
               </View>
-              {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               {error && error.toLowerCase().includes("cannot reach server") ? (
                 <TouchableOpacity
                   onPress={openApiUrlModal}
@@ -352,7 +353,7 @@ export default function LoginScreen() {
                   activeOpacity={0.85}
                 >
                   <Ionicons name="settings-outline" size={16} color={GREEN_PRIMARY} />
-                  <Text style={apiUrlStyles.configureBtnText}>Configure API URL</Text>
+                  <AppText style={apiUrlStyles.configureBtnText}>Configure API URL</AppText>
                 </TouchableOpacity>
               ) : null}
             </View>
@@ -372,29 +373,29 @@ export default function LoginScreen() {
                 {loading ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={[styles.buttonText, !canSendOtp && styles.buttonTextDisabled]}>
+                  <AppText style={[styles.buttonText, !canSendOtp && styles.buttonTextDisabled]}>
                     Send OTP
-                  </Text>
+                  </AppText>
                 )}
               </LinearGradient>
             </TouchableOpacity>
 
-            <Text style={styles.footerLine1}>By continuing, you agree to our</Text>
+            <AppText style={styles.footerLine1}>By continuing, you agree to our</AppText>
             <View style={styles.footerLinksRow}>
               <Pressable
                 onPress={() => router.push("/legal/terms-of-service" as never)}
                 hitSlop={8}
                 accessibilityRole="link"
               >
-                <Text style={styles.footerLink}>Terms of Service</Text>
+                <AppText style={styles.footerLink}>Terms of Service</AppText>
               </Pressable>
-              <Text style={styles.footerLine2}> & </Text>
+              <AppText style={styles.footerLine2}> & </AppText>
               <Pressable
                 onPress={() => router.push("/legal/privacy-policy" as never)}
                 hitSlop={8}
                 accessibilityRole="link"
               >
-                <Text style={styles.footerLink}>Privacy Policy</Text>
+                <AppText style={styles.footerLink}>Privacy Policy</AppText>
               </Pressable>
             </View>
           </View>
@@ -412,7 +413,7 @@ export default function LoginScreen() {
           >
             <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Select country</Text>
+                <AppText style={styles.modalTitle}>Select country</AppText>
                 <TouchableOpacity onPress={() => setCountryPickerVisible(false)} hitSlop={12}>
                   <Ionicons name="close" size={24} color={TITLE_DARK} />
                 </TouchableOpacity>
@@ -432,9 +433,9 @@ export default function LoginScreen() {
                     }}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.countryRowFlag}>{item.flag}</Text>
-                    <Text style={styles.countryRowName}>{item.name}</Text>
-                    <Text style={styles.countryRowDial}>{item.dialCode}</Text>
+                    <AppText style={styles.countryRowFlag}>{item.flag}</AppText>
+                    <AppText style={styles.countryRowName}>{item.name}</AppText>
+                    <AppText style={styles.countryRowDial}>{item.dialCode}</AppText>
                   </TouchableOpacity>
                 )}
               />
@@ -456,15 +457,15 @@ export default function LoginScreen() {
             onPress={() => (apiUrlSaving ? undefined : setApiUrlModalVisible(false))}
           >
             <Pressable onPress={() => {}} style={apiUrlStyles.sheet}>
-              <Text style={apiUrlStyles.sheetTitle}>Configure API URL</Text>
-              <Text style={apiUrlStyles.sheetSubtitle}>
+              <AppText style={apiUrlStyles.sheetTitle}>Configure API URL</AppText>
+              <AppText style={apiUrlStyles.sheetSubtitle}>
                 Point this installed app at a different backend without rebuilding.
                 Use your PC's LAN IP (e.g. http://10.0.0.5:3000) or an ngrok URL.
-              </Text>
-              <Text style={apiUrlStyles.sheetLabel}>Current</Text>
+              </AppText>
+              <AppText style={apiUrlStyles.sheetLabel}>Current</AppText>
               <Text style={apiUrlStyles.sheetCurrent} numberOfLines={1}>{currentApiUrl}</Text>
 
-              <Text style={apiUrlStyles.sheetLabel}>New API base URL</Text>
+              <AppText style={apiUrlStyles.sheetLabel}>New API base URL</AppText>
               <TextInput
                 value={apiUrlInput}
                 onChangeText={setApiUrlInput}
@@ -489,7 +490,7 @@ export default function LoginScreen() {
                 {apiUrlSaving ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={apiUrlStyles.sheetPrimaryText}>Save & use this URL</Text>
+                  <AppText style={apiUrlStyles.sheetPrimaryText}>Save & use this URL</AppText>
                 )}
               </TouchableOpacity>
 
@@ -499,7 +500,7 @@ export default function LoginScreen() {
                 style={apiUrlStyles.sheetSecondary}
                 activeOpacity={0.85}
               >
-                <Text style={apiUrlStyles.sheetSecondaryText}>Reset to build default</Text>
+                <AppText style={apiUrlStyles.sheetSecondaryText}>Reset to build default</AppText>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -508,7 +509,7 @@ export default function LoginScreen() {
                 style={apiUrlStyles.sheetCancel}
                 activeOpacity={0.85}
               >
-                <Text style={apiUrlStyles.sheetCancelText}>Cancel</Text>
+                <AppText style={apiUrlStyles.sheetCancelText}>Cancel</AppText>
               </TouchableOpacity>
             </Pressable>
           </Pressable>

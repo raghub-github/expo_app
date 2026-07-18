@@ -3,17 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  ActivityIndicator,
-  Linking,
-  Alert,
-  Dimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking, Alert, Dimensions } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -129,9 +121,9 @@ function SectionCard({ children, style }: { children: ReactNode; style?: object 
 function DashedDivider() {
   return (
     <View style={styles.dashedDividerWrap}>
-      <Text style={styles.dashedDivider} numberOfLines={1}>
+      <AppText style={styles.dashedDivider} numberOfLines={1}>
         - - - - - - - - - - - - - - - - - - - -
-      </Text>
+      </AppText>
     </View>
   );
 }

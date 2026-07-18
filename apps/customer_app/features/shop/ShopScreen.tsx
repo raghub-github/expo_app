@@ -5,14 +5,9 @@
  */
 
 import { useState, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -121,16 +116,16 @@ export function ShopScreen() {
         />
         <ShopPromoBanner />
         <View style={styles.filterRow}>
-          <Text style={styles.sectionTitle}>
+          <AppText style={styles.sectionTitle}>
             {filteredProducts.length} product{filteredProducts.length !== 1 ? "s" : ""}
-          </Text>
+          </AppText>
           <TouchableOpacity
             style={styles.filterBtn}
             onPress={() => setFilterSheetVisible(true)}
             activeOpacity={0.8}
           >
             <Ionicons name="options-outline" size={20} color={GatiMitraColors.textPrimary} />
-            <Text style={styles.filterBtnText}>Filter & Sort</Text>
+            <AppText style={styles.filterBtnText}>Filter & Sort</AppText>
           </TouchableOpacity>
         </View>
         <View style={styles.grid}>
@@ -145,7 +140,7 @@ export function ShopScreen() {
         {filteredProducts.length === 0 && (
           <View style={styles.empty}>
             <Ionicons name="search-outline" size={48} color={GatiMitraColors.border} />
-            <Text style={styles.emptyText}>No products match your filters</Text>
+            <AppText style={styles.emptyText}>No products match your filters</AppText>
           </View>
         )}
       </ScrollView>

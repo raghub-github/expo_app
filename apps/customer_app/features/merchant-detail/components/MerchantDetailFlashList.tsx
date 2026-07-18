@@ -6,7 +6,8 @@ import React, {
   useMemo,
   useRef,
 } from "react";
-import { View, Text, StyleSheet, Platform, ScrollView } from "react-native";
+import { View, StyleSheet, Platform, ScrollView } from "react-native";
+import { AppText } from "@/components/AppText";
 import Animated, { type ScrollHandlerProcessed } from "react-native-reanimated";
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
@@ -327,7 +328,7 @@ const MerchantDetailFlashListInner = forwardRef<
       case "section_header":
         return (
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionHeaderText}>{item.title}</Text>
+            <AppText style={styles.sectionHeaderText}>{item.title}</AppText>
           </View>
         );
 
@@ -386,7 +387,7 @@ const MerchantDetailFlashListInner = forwardRef<
       case "empty_menu":
         return (
           <View style={styles.emptyMenu}>
-            <Text style={styles.emptyMenuText}>No items match the selected filters.</Text>
+            <AppText style={styles.emptyMenuText}>No items match the selected filters.</AppText>
           </View>
         );
 

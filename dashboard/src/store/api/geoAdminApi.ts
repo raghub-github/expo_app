@@ -41,6 +41,7 @@ export const geoAdminApi = baseApi.injectEndpoints({
     geoStates: build.query<{ states: { id: string; name: string }[] }, void>({
       query: () => ({ url: "/super-admin/geo/states" }),
       providesTags: [{ type: "Geo", id: "STATES" }],
+      keepUnusedDataFor: 30 * 60,
     }),
 
     geoChildren: build.query<{ rows: GeoChildRow[] }, GeoChildrenQuery>({
@@ -330,6 +331,7 @@ export const geoAdminApi = baseApi.injectEndpoints({
       invalidatesTags: [{ type: "Geo" }],
     }),
   }),
+  overrideExisting: true,
 });
 
 export const {

@@ -3,20 +3,10 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppText } from "@/components/AppText";
+
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  Pressable,
-  ScrollView,
-  Image,
-  ActivityIndicator,
-  useWindowDimensions,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, Image, ActivityIndicator, useWindowDimensions, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -110,14 +100,14 @@ function SectionHeader({
   return (
     <View style={styles.sectionHeader}>
       <View style={styles.sectionTitleRow}>
-        <Text style={styles.sectionTitle}>{title}</Text>
+        <AppText style={styles.sectionTitle}>{title}</AppText>
         {required ? (
           <View style={styles.requiredPill}>
-            <Text style={styles.requiredPillText}>Required</Text>
+            <AppText style={styles.requiredPillText}>Required</AppText>
           </View>
         ) : null}
       </View>
-      <Text style={styles.sectionSub}>{subtitle}</Text>
+      <AppText style={styles.sectionSub}>{subtitle}</AppText>
     </View>
   );
 }
@@ -182,22 +172,22 @@ function CustomizationOptionRow({
   );
 
   const labelLine = portionLabel ? (
-    <Text
+    <AppText
       style={[styles.optionLineText, disabled && styles.optionNameDisabled]}
       numberOfLines={1}
       ellipsizeMode="tail"
     >
-      <Text style={styles.optionNameInline}>{name.trim()}</Text>
-      <Text style={styles.optionQtyInline}> · {portionLabel}</Text>
-    </Text>
+      <AppText style={styles.optionNameInline}>{name.trim()}</AppText>
+      <AppText style={styles.optionQtyInline}> · {portionLabel}</AppText>
+    </AppText>
   ) : (
-    <Text
+    <AppText
       style={[styles.optionNameInline, styles.optionLineText, disabled && styles.optionNameDisabled]}
       numberOfLines={1}
       ellipsizeMode="tail"
     >
       {name.trim()}
-    </Text>
+    </AppText>
   );
 
   return (
@@ -220,9 +210,9 @@ function CustomizationOptionRow({
           <View style={styles.optionThumbWrap}>
             {highlight ? (
               <View style={styles.mostOrderedBadge}>
-                <Text style={styles.mostOrderedText} numberOfLines={1}>
+                <AppText style={styles.mostOrderedText} numberOfLines={1}>
                   Most Ordered
-                </Text>
+                </AppText>
               </View>
             ) : null}
             <View style={styles.optionThumb}>
@@ -247,18 +237,18 @@ function CustomizationOptionRow({
             <View style={styles.optionPriceCol}>
               {bogoLabel ? (
                 <View style={styles.bogoChip}>
-                  <Text style={styles.bogoChipText} numberOfLines={1}>
+                  <AppText style={styles.bogoChipText} numberOfLines={1}>
                     {bogoLabel}
-                  </Text>
+                  </AppText>
                 </View>
               ) : null}
               {showOfferStrike ? (
                 <View style={styles.optionPriceStrikeRow}>
-                  <Text style={styles.optionPriceStrike}>{formatOfferRupee(strikePrice!)}</Text>
-                  <Text style={styles.optionPriceOffer}>{formatOfferRupee(displayPayable)}</Text>
+                  <AppText style={styles.optionPriceStrike}>{formatOfferRupee(strikePrice!)}</AppText>
+                  <AppText style={styles.optionPriceOffer}>{formatOfferRupee(displayPayable)}</AppText>
                 </View>
               ) : (
-                <Text style={styles.optionPrice}>{formatOfferRupee(displayPayable)}</Text>
+                <AppText style={styles.optionPrice}>{formatOfferRupee(displayPayable)}</AppText>
               )}
             </View>
           ) : null}
@@ -576,7 +566,7 @@ export function ItemCustomizationSheet({
             {loading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator size="large" color={StoreTheme.accentMint} />
-                <Text style={styles.loadingText}>Loading options…</Text>
+                <AppText style={styles.loadingText}>Loading options…</AppText>
               </View>
             ) : (
               <View style={styles.sheetBody}>
@@ -596,13 +586,13 @@ export function ItemCustomizationSheet({
                     </View>
 
                     <View style={styles.headerTitleCol}>
-                      <Text style={styles.headerName} numberOfLines={2}>
+                      <AppText style={styles.headerName} numberOfLines={2}>
                         {item.name}
-                      </Text>
+                      </AppText>
                       {selectedVariantDisplayName ? (
-                        <Text style={styles.headerPortion} numberOfLines={2}>
+                        <AppText style={styles.headerPortion} numberOfLines={2}>
                           {selectedVariantDisplayName}
-                        </Text>
+                        </AppText>
                       ) : null}
                     </View>
 
@@ -627,11 +617,11 @@ export function ItemCustomizationSheet({
                   !displayConfig?.variants?.length &&
                   !displayConfig?.customizations?.length ? (
                     <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionSub}>
+                      <AppText style={styles.sectionSub}>
                         {hasConfigFlags
                           ? "Customization options could not be loaded. Try again."
                           : "No customization options are available for this item right now."}
-                      </Text>
+                      </AppText>
                     </View>
                   ) : null}
 
@@ -675,7 +665,7 @@ export function ItemCustomizationSheet({
 
                   {companionItems.length > 0 ? (
                     <View style={styles.companionSection}>
-                      <Text style={styles.companionTitle}>Most ordered together</Text>
+                      <AppText style={styles.companionTitle}>Most ordered together</AppText>
                       <ScrollView
                         horizontal
                         showsHorizontalScrollIndicator={false}
@@ -683,16 +673,16 @@ export function ItemCustomizationSheet({
                       >
                         {companionItems.map(({ item: companion, orderCount, source }) => (
                           <View key={companion.id} style={styles.companionCard}>
-                            <Text style={styles.companionName} numberOfLines={2}>
+                            <AppText style={styles.companionName} numberOfLines={2}>
                               {companion.name}
-                            </Text>
-                            <Text style={styles.companionMeta}>
+                            </AppText>
+                            <AppText style={styles.companionMeta}>
                               {source === "popular_fallback"
                                 ? "Popular add-on"
                                 : `${orderCount}+ orders together`}
-                            </Text>
+                            </AppText>
                             <View style={styles.companionFooter}>
-                              <Text style={styles.companionPrice}>₹{Math.round(companion.price)}</Text>
+                              <AppText style={styles.companionPrice}>₹{Math.round(companion.price)}</AppText>
                               <TouchableOpacity
                                 style={[
                                   styles.companionAddBtn,
@@ -702,7 +692,7 @@ export function ItemCustomizationSheet({
                                 onPress={() => onAddCompanionItem?.(companion)}
                                 activeOpacity={0.85}
                               >
-                                <Text style={styles.companionAddText}>ADD</Text>
+                                <AppText style={styles.companionAddText}>ADD</AppText>
                               </TouchableOpacity>
                             </View>
                           </View>
@@ -751,7 +741,7 @@ export function ItemCustomizationSheet({
 
                 <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
                   <View style={styles.footerQtyBlock}>
-                    <Text style={styles.footerQtyLabel}>How many?</Text>
+                    <AppText style={styles.footerQtyLabel}>How many?</AppText>
                     <View style={styles.qtyRow}>
                       <TouchableOpacity
                         style={[styles.qtyBtnCircle, quantity <= 1 && styles.qtyBtnCircleDisabled]}
@@ -765,7 +755,7 @@ export function ItemCustomizationSheet({
                           color={quantity <= 1 ? StoreTheme.textMuted : StoreTheme.cartAction}
                         />
                       </TouchableOpacity>
-                      <Text style={styles.qtyValue}>{quantity}</Text>
+                      <AppText style={styles.qtyValue}>{quantity}</AppText>
                       <TouchableOpacity
                         style={styles.qtyBtnCircle}
                         onPress={() => setQuantity((q) => q + 1)}
@@ -782,33 +772,33 @@ export function ItemCustomizationSheet({
                     style={[styles.addBtn, !canAdd && styles.addBtnDisabled]}
                     activeOpacity={0.9}
                   >
-                    <Text style={[styles.addBtnText, !canAdd && styles.addBtnTextDisabled]}>
+                    <AppText style={[styles.addBtnText, !canAdd && styles.addBtnTextDisabled]}>
                       {isStoreClosed
                         ? "Store closed"
                         : isEditMode
                           ? "Update item"
                           : "Add item"}
-                    </Text>
+                    </AppText>
                     {!isStoreClosed && canAdd ? (
                       showCtaStrike ? (
                         <View style={styles.addBtnPriceRow}>
-                          <Text style={styles.addBtnSubStrike}>
+                          <AppText style={styles.addBtnSubStrike}>
                             {formatOfferRupee(catalogTotalPrice)}
-                          </Text>
-                          <Text style={styles.addBtnSub}>
+                          </AppText>
+                          <AppText style={styles.addBtnSub}>
                             {formatOfferRupee(totalPrice)}
                             {quantity > 1
                               ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
                               : ""}
-                          </Text>
+                          </AppText>
                         </View>
                       ) : (
-                        <Text style={styles.addBtnSub}>
+                        <AppText style={styles.addBtnSub}>
                           {formatOfferRupee(totalPrice)}
                           {quantity > 1
                             ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
                             : ""}
-                        </Text>
+                        </AppText>
                       )
                     ) : null}
                   </TouchableOpacity>

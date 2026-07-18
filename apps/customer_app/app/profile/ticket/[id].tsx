@@ -2,7 +2,9 @@
  * Ticket detail – open query; show subject, description, status, dates, resolution.
  */
 
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
+import { View, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
+import { AppText } from "@/components/AppText";
+
 import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -43,7 +45,7 @@ export default function TicketDetailScreen() {
   if (isNaN(ticketId)) {
     return (
       <View style={styles.center}>
-        <Text style={styles.errorText}>Invalid ticket</Text>
+        <AppText style={styles.errorText}>Invalid ticket</AppText>
       </View>
     );
   }
@@ -52,7 +54,7 @@ export default function TicketDetailScreen() {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={TEAL} />
-        <Text style={styles.loadingText}>Loading…</Text>
+        <AppText style={styles.loadingText}>Loading…</AppText>
       </View>
     );
   }
@@ -61,7 +63,7 @@ export default function TicketDetailScreen() {
     return (
       <View style={styles.center}>
         <Ionicons name="alert-circle-outline" size={48} color={TEXT_GRAY} />
-        <Text style={styles.errorText}>Could not load ticket</Text>
+        <AppText style={styles.errorText}>Could not load ticket</AppText>
       </View>
     );
   }
@@ -80,27 +82,27 @@ export default function TicketDetailScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={[styles.card, SHADOW]}>
         <View style={styles.headerRow}>
-          <Text style={styles.ticketId}>{ticket.ticket_id}</Text>
+          <AppText style={styles.ticketId}>{ticket.ticket_id}</AppText>
           <View style={[styles.statusPill, (ticket.status === "OPEN" || ticket.status === "IN_PROGRESS") ? styles.statusOpen : styles.statusClosed]}>
-            <Text style={styles.statusText}>{statusLabel(ticket.status)}</Text>
+            <AppText style={styles.statusText}>{statusLabel(ticket.status)}</AppText>
           </View>
         </View>
-        <Text style={styles.subject}>{ticket.subject}</Text>
-        <Text style={styles.meta}>Created {created}</Text>
-        {updated !== created && <Text style={styles.meta}>Updated {updated}</Text>}
+        <AppText style={styles.subject}>{ticket.subject}</AppText>
+        <AppText style={styles.meta}>Created {created}</AppText>
+        {updated !== created && <AppText style={styles.meta}>Updated {updated}</AppText>}
       </View>
 
-      <Text style={styles.sectionLabel}>Description</Text>
+      <AppText style={styles.sectionLabel}>Description</AppText>
       <View style={[styles.card, SHADOW]}>
-        <Text style={styles.body}>{ticket.description}</Text>
+        <AppText style={styles.body}>{ticket.description}</AppText>
       </View>
 
       {ticket.resolution ? (
         <>
-          <Text style={styles.sectionLabel}>Resolution</Text>
+          <AppText style={styles.sectionLabel}>Resolution</AppText>
           <View style={[styles.card, SHADOW]}>
-            <Text style={styles.body}>{ticket.resolution}</Text>
-            {resolved && <Text style={styles.meta}>Resolved {resolved}</Text>}
+            <AppText style={styles.body}>{ticket.resolution}</AppText>
+            {resolved && <AppText style={styles.meta}>Resolved {resolved}</AppText>}
           </View>
         </>
       ) : null}

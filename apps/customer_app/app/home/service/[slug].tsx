@@ -4,14 +4,8 @@
  */
 
 import { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  Modal,
-  StyleSheet,
-  Pressable,
-} from "react-native";
+import { View, TouchableOpacity, Modal, StyleSheet, Pressable } from "react-native";
+import { AppText } from "@/components/AppText";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -62,11 +56,11 @@ export default function ServicePlaceholderScreen() {
         <View style={styles.iconWrap}>
           <Ionicons name="construct-outline" size={40} color={GatiMitraColors.emerald} />
         </View>
-        <Text style={styles.pageTitle}>{title}</Text>
-        <Text style={styles.pageMessage}>We're working on this. Check back soon.</Text>
+        <AppText style={styles.pageTitle}>{title}</AppText>
+        <AppText style={styles.pageMessage}>We're working on this. Check back soon.</AppText>
         {!showComingSoonModal && (
           <TouchableOpacity onPress={() => router.back()} style={styles.backHomeBtn} activeOpacity={0.85}>
-            <Text style={styles.backHomeText}>Back to Home</Text>
+            <AppText style={styles.backHomeText}>Back to Home</AppText>
           </TouchableOpacity>
         )}
       </View>
@@ -80,14 +74,14 @@ export default function ServicePlaceholderScreen() {
       >
         <Pressable style={styles.modalOverlay} onPress={goToGatiMitra}>
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>{COMING_SOON_MODAL.title}</Text>
-            <Text style={styles.modalMessage}>{COMING_SOON_MODAL.message}</Text>
+            <AppText style={styles.modalTitle}>{COMING_SOON_MODAL.title}</AppText>
+            <AppText style={styles.modalMessage}>{COMING_SOON_MODAL.message}</AppText>
             <TouchableOpacity
               style={styles.modalButton}
               onPress={goToGatiMitra}
               activeOpacity={0.85}
             >
-              <Text style={styles.modalButtonText}>{COMING_SOON_MODAL.buttonLabel}</Text>
+              <AppText style={styles.modalButtonText}>{COMING_SOON_MODAL.buttonLabel}</AppText>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

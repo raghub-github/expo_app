@@ -21,7 +21,30 @@ export type RiderLedgerDisplayEntry = {
   orderPublicId?: string | null;
 };
 
-const CREDIT_ENTRY_TYPES = new Set([
+/** Full set of wallet_entry_type enum values (keep in sync with DB `wallet_entry_type`). */
+export const WALLET_ENTRY_TYPES = [
+  "earning",
+  "penalty",
+  "onboarding_fee",
+  "adjustment",
+  "refund",
+  "bonus",
+  "referral_bonus",
+  "withdrawal",
+  "subscription_fee",
+  "purchase",
+  "cod_order",
+  "other",
+  "incentive",
+  "surge",
+  "failed_withdrawal_revert",
+  "penalty_reversal",
+  "cancellation_payout",
+  "manual_add",
+  "manual_deduct",
+] as const;
+
+const CREDIT_ENTRY_TYPES = new Set<string>([
   "earning",
   "bonus",
   "refund",
@@ -34,11 +57,38 @@ const CREDIT_ENTRY_TYPES = new Set([
   "cancellation_payout",
 ]);
 
+/** Credit entry types as an array (single source of truth for API flow filters). */
+export const LEDGER_CREDIT_ENTRY_TYPES: string[] = WALLET_ENTRY_TYPES.filter((t) =>
+  CREDIT_ENTRY_TYPES.has(t)
+);
+
+/** Every non-credit entry type is a debit — exhaustive complement so flow filters never drop rows. */
+export const LEDGER_DEBIT_ENTRY_TYPES: string[] = WALLET_ENTRY_TYPES.filter(
+  (t) => !CREDIT_ENTRY_TYPES.has(t)
+);
+
 const ADJUSTMENT_ENTRY_TYPES = new Set(["adjustment", "refund", "onboarding_fee"]);
-const INCENTIVE_ENTRY_TYPES = new Set(["bonus", "referral_bonus"]);
+const INCENTIVE_ENTRY_TYPES = new Set([
+  "bonus",
+  "referral_bonus",
+  "incentive",
+  "surge",
+]);
 
 export function isLedgerCreditEntryType(entryType: string): boolean {
   return CREDIT_ENTRY_TYPES.has(entryType.toLowerCase());
+}
+
+/** Tips are stored as `earning` with a `rider_earn:tip:*` ref or a "tip" description. */
+export function isLedgerTipEntry(entry: {
+  entryType: string;
+  ref?: string | null;
+  description?: string | null;
+}): boolean {
+  const entryType = entry.entryType.toLowerCase();
+  const ref = entry.ref?.toLowerCase() ?? "";
+  const desc = entry.description?.toLowerCase() ?? "";
+  return entryType.includes("tip") || ref.includes("tip") || /\btip\b/.test(desc);
 }
 
 function ledgerCategoryLabel(category: string): string {
@@ -51,10 +101,14 @@ function ledgerCategoryLabel(category: string): string {
       return "Ride";
     case "incentives":
       return "Incentives";
+    case "tips":
+      return "Tips";
     case "subscriptions":
       return "Subscription";
     case "penalties":
       return "Penalties";
+    case "withdrawals":
+      return "Withdrawal";
     case "adjustments":
       return "Adjustments";
     default:
@@ -66,8 +120,12 @@ export function resolveLedgerCategory(entry: RiderLedgerDisplayEntry): string {
   const entryType = entry.entryType.toLowerCase();
   if (entryType === "subscription_fee") return "subscriptions";
   if (entryType === "penalty" || entryType === "penalty_reversal") return "penalties";
-  if (ADJUSTMENT_ENTRY_TYPES.has(entryType)) return "adjustments";
+  if (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") {
+    return "withdrawals";
+  }
+  if (isLedgerTipEntry(entry)) return "tips";
   if (INCENTIVE_ENTRY_TYPES.has(entryType)) return "incentives";
+  if (ADJUSTMENT_ENTRY_TYPES.has(entryType)) return "adjustments";
 
   const service = entry.serviceType?.trim().toLowerCase() ?? "";
   if (service === "food") return "food";
@@ -114,9 +172,22 @@ export function ledgerTransactionTitle(entry: RiderLedgerDisplayEntry): string {
   if (entry.flow === "debit") {
     if (entry.category === "penalties") return "Penalty Deduction";
     if (entry.category === "adjustments") return "Wallet Adjustment";
+    if (entryType === "manual_deduct") return "Manual Deduction";
+    if (entryType === "onboarding_fee") return "Onboarding Fee";
+    if (entryType === "purchase") return "Purchase";
+    if (entryType === "cod_order") return "COD Collected";
     return `${category} Deduction`;
   }
-  if (entry.category === "incentives") return "Incentive Credit";
+  if (entry.category === "tips") return "Customer Tip";
+  if (entry.category === "incentives") {
+    if (entryType === "surge") return "Surge Credit";
+    if (entryType === "incentive") return "Incentive Credit";
+    return "Incentive Bonus";
+  }
+  if (entryType === "refund") return "Refund Credit";
+  if (entryType === "manual_add") return "Manual Credit";
+  if (entryType === "failed_withdrawal_revert") return "Withdrawal Reverted";
+  if (entryType === "cancellation_payout") return "Cancellation Payout";
   if (entry.category === "adjustments") return "Adjustment Credit";
   if (entry.category === "food") return "Food Delivery Earnings";
   if (entry.category === "parcel") return "Parcel Delivery Earnings";
@@ -136,9 +207,14 @@ export function ledgerEarningBanner(entry: RiderLedgerDisplayEntry): string {
     return lead;
   }
 
-  const ref = entry.ref?.toLowerCase() ?? "";
-  if (entryType.includes("tip") || ref.includes("tip")) return "Customer Tip";
+  if (isLedgerTipEntry(entry)) return "Customer Tip";
+  if (entryType === "surge") return "Surge Pay";
+  if (entryType === "incentive") return "Incentive";
   if (entryType === "bonus" || entryType === "referral_bonus") return "Incentive Bonus";
+  if (entryType === "cancellation_payout") return "Cancellation Payout";
+  if (entryType === "refund") return "Refund";
+  if (entryType === "manual_add") return "Manual Credit";
+  if (entryType === "manual_deduct") return "Manual Deduction";
   if (entryType === "subscription_fee" || entry.refType?.toLowerCase() === "subscription") {
     return "Subscription fee";
   }

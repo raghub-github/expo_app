@@ -53,7 +53,7 @@ function parseBlob(raw: string | null | undefined): MerchantsListCacheBlob {
 function hydrateMemoryFromFastKvSync(): void {
   const blob = parseBlob(fastGetString(STORAGE_KEYS.MERCHANTS_LIST_CACHE));
   for (const [key, entry] of Object.entries(blob)) {
-    if (!entry?.items?.length || memoryByKey.has(key)) continue;
+    if (!entry || !Array.isArray(entry.items) || memoryByKey.has(key)) continue;
     memoryByKey.set(key, entry);
   }
 }
@@ -65,9 +65,18 @@ export function readSyncMerchantsList(
   lng: number,
   vegOnly: boolean
 ): MerchantSummary[] | undefined {
+  const entry = readSyncMerchantsListEntry(lat, lng, vegOnly);
+  return entry?.items;
+}
+
+/** Returns cached bucket even when empty — instant no-service vs still-loading. */
+export function readSyncMerchantsListEntry(
+  lat: number,
+  lng: number,
+  vegOnly: boolean
+): CachedMerchantsEntry | undefined {
   if (memoryByKey.size === 0) hydrateMemoryFromFastKvSync();
-  const entry = memoryByKey.get(merchantsListCacheKey(lat, lng, vegOnly));
-  return entry?.items?.length ? entry.items : undefined;
+  return memoryByKey.get(merchantsListCacheKey(lat, lng, vegOnly));
 }
 
 async function readPersistedBlob(): Promise<MerchantsListCacheBlob> {
@@ -96,7 +105,6 @@ export async function writeCachedMerchantsList(
   vegOnly: boolean,
   items: MerchantSummary[]
 ): Promise<void> {
-  if (!items.length) return;
   const key = merchantsListCacheKey(lat, lng, vegOnly);
   const entry: CachedMerchantsEntry = {
     items,
@@ -127,10 +135,10 @@ export function seedMerchantsListQueryIfCached(
 ): boolean {
   const queryKey = merchantsQueryKey(lat, lng, vegOnly);
   const existing = queryClient.getQueryData<MerchantSummary[]>(queryKey);
-  if (existing?.length) return true;
+  if (existing != null) return true;
 
   const cached = readSyncMerchantsList(lat, lng, vegOnly);
-  if (!cached?.length) return false;
+  if (cached == null) return false;
 
   queryClient.setQueryData(queryKey, cached);
   return true;

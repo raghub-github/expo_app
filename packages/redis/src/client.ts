@@ -94,8 +94,15 @@ function buildOptions(extra?: Partial<RedisOptions>): RedisOptions {
       return Math.min(times * 200, 2000);
     },
     reconnectOnError: (err) => {
-      const msg = err.message || "";
-      return msg.includes("READONLY");
+      const msg = (err.message || "").toUpperCase();
+      // Reconnect on READONLY failover AND transient socket drops (same class as DB ECONNRESET).
+      return (
+        msg.includes("READONLY") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("EPIPE") ||
+        msg.includes("ETIMEDOUT") ||
+        msg.includes("CONNECTION")
+      );
     },
     ...extra,
   };

@@ -4,18 +4,9 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -1205,9 +1196,9 @@ export default function RidePickupScreen() {
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.8}>
             <Ionicons name="arrow-back" size={24} color="#111827" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+          <AppText style={styles.headerTitle} numberOfLines={1}>
             {headerTitle}
-          </Text>
+          </AppText>
           <TouchableOpacity
             style={styles.forMeBtn}
             onPress={() => setRiderSheetVisible(true)}
@@ -1215,9 +1206,9 @@ export default function RidePickupScreen() {
             accessibilityRole="button"
             accessibilityLabel="Booking for"
           >
-            <Text style={styles.forMeText} numberOfLines={1}>
+            <AppText style={styles.forMeText} numberOfLines={1}>
               {displayRiderLabel}
-            </Text>
+            </AppText>
             <Ionicons name="chevron-down" size={14} color="#111827" />
           </TouchableOpacity>
         </View>
@@ -1271,7 +1262,7 @@ export default function RidePickupScreen() {
                 <View style={styles.locationRow}>
                   <View style={styles.rowIconCol}>
                     <View style={styles.stopDiamond}>
-                      <Text style={styles.stopDiamondText}>{index + 1}</Text>
+                      <AppText style={styles.stopDiamondText}>{index + 1}</AppText>
                     </View>
                     {renderConnectorSegment()}
                   </View>
@@ -1348,7 +1339,7 @@ export default function RidePickupScreen() {
               onPress={openMapPicker}
             >
               <Ionicons name="location-outline" size={16} color="#111827" />
-              <Text style={styles.actionPillText}>Select on map</Text>
+              <AppText style={styles.actionPillText}>Select on map</AppText>
             </TouchableOpacity>
             {canAddMoreStops ? (
               <TouchableOpacity style={styles.actionPill} activeOpacity={0.85} onPress={handleAddStop}>
@@ -1357,7 +1348,7 @@ export default function RidePickupScreen() {
                     <Ionicons name="add" size={11} color="#FFFFFF" style={styles.addStopsPlus} />
                   </View>
                 </View>
-                <Text style={styles.actionPillText}>Add stops</Text>
+                <AppText style={styles.actionPillText}>Add stops</AppText>
               </TouchableOpacity>
             ) : (
               <View style={styles.actionPillPlaceholder} />
@@ -1383,10 +1374,10 @@ export default function RidePickupScreen() {
               <View style={styles.stopsInfoIconWrap}>
                 <Ionicons name="navigate" size={44} color="#3B82F6" />
               </View>
-              <Text style={styles.stopsInfoTitle}>No editing on the way!</Text>
-              <Text style={styles.stopsInfoSub}>
+              <AppText style={styles.stopsInfoTitle}>No editing on the way!</AppText>
+              <AppText style={styles.stopsInfoSub}>
                 You cannot edit drop or remove stops once the ride starts
-              </Text>
+              </AppText>
             </View>
           ) : showEmptyState ? (
             <LocationSearchEmptyState />
@@ -1402,7 +1393,7 @@ export default function RidePickupScreen() {
             onPress={handleConfirm}
             disabled={!canConfirm}
           >
-            <Text style={styles.confirmBtnText}>Confirm</Text>
+            <AppText style={styles.confirmBtnText}>Confirm</AppText>
           </TouchableOpacity>
         </View>
       ) : null}

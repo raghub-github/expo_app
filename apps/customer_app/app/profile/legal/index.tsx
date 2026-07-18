@@ -4,14 +4,9 @@
  */
 
 import { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, TextInput, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -78,12 +73,12 @@ function PolicyRow({ doc }: { doc: LegalDoc }) {
         <Ionicons name={iconFor(doc.icon)} size={20} color={GREEN} />
       </View>
       <View style={styles.rowText}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
+        <AppText style={styles.rowTitle} numberOfLines={1}>
           {doc.title}
-        </Text>
-        <Text style={styles.rowSubtitle} numberOfLines={2}>
+        </AppText>
+        <AppText style={styles.rowSubtitle} numberOfLines={2}>
           {doc.subtitle}
-        </Text>
+        </AppText>
       </View>
       <Ionicons name="chevron-forward" size={18} color={MUTED} />
     </TouchableOpacity>
@@ -94,7 +89,7 @@ function Section({ title, docs }: { title: string; docs: readonly LegalDoc[] }) 
   if (docs.length === 0) return null;
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <AppText style={styles.sectionTitle}>{title}</AppText>
       <View style={styles.card}>
         {docs.map((doc, idx) => (
           <View key={doc.id}>
@@ -161,10 +156,10 @@ export default function LegalIndexScreen() {
         <Section title={CATEGORY_LABEL.subscription} docs={filtered.subscription} />
         <Section title={CATEGORY_LABEL.about} docs={filtered.about} />
 
-        <Text style={styles.footer}>
+        <AppText style={styles.footer}>
           GatiMitra Technologies Private Limited{"\n"}
           For grievances: grievance.officer@gatimitra.com
-        </Text>
+        </AppText>
       </ScrollView>
     </View>
   );

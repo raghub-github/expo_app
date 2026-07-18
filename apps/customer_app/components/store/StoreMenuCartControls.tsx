@@ -1,12 +1,7 @@
 import React, { useCallback, useEffect, useRef } from "react";
-import {
-  Text,
-  StyleSheet,
-  Platform,
-  Vibration,
-  View,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { StyleSheet, Platform, Vibration, View, Pressable } from "react-native";
 import { perfMark, perfMeasure } from "@/lib/perfTrace";
 
 /**
@@ -120,11 +115,11 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           pointerEvents="none"
         >
           {disabled ? (
-            <Text style={[styles.addBtnText, styles.addBtnTextDisabled]}>Closed</Text>
+            <AppText style={[styles.addBtnText, styles.addBtnTextDisabled]}>Closed</AppText>
           ) : (
             <View style={styles.addLabelRow}>
-              <Text style={styles.addPlusGlyph}>+</Text>
-              <Text style={styles.addBtnText}>Add</Text>
+              <AppText style={styles.addPlusGlyph}>+</AppText>
+              <AppText style={styles.addBtnText}>Add</AppText>
             </View>
           )}
         </View>
@@ -151,16 +146,16 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
         android_ripple={{ color: "rgba(19, 114, 67, 0.14)", borderless: true, radius: 20 }}
         style={({ pressed }) => [styles.qtyHit, pressed && !disabled && styles.qtyHitPressed]}
       >
-        <Text
+        <AppText
           style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}
           pointerEvents="none"
         >
           −
-        </Text>
+        </AppText>
       </Pressable>
 
       <View style={styles.qtyCenter} pointerEvents="none" collapsable={false}>
-        <Text style={[styles.qtyText, disabled && styles.qtyTextDisabled]}>{displayQty}</Text>
+        <AppText style={[styles.qtyText, disabled && styles.qtyTextDisabled]}>{displayQty}</AppText>
       </View>
 
       <Pressable
@@ -175,12 +170,12 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
         android_ripple={{ color: "rgba(19, 114, 67, 0.14)", borderless: true, radius: 20 }}
         style={({ pressed }) => [styles.qtyHit, pressed && !disabled && styles.qtyHitPressed]}
       >
-        <Text
+        <AppText
           style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}
           pointerEvents="none"
         >
           +
-        </Text>
+        </AppText>
       </Pressable>
     </View>
   );
@@ -234,11 +229,11 @@ export const StoreMenuAddButton = React.memo(function StoreMenuAddButton({
         pointerEvents="none"
       >
         {disabled ? (
-          <Text style={[styles.addBtnText, styles.addBtnTextDisabled]}>Closed</Text>
+          <AppText style={[styles.addBtnText, styles.addBtnTextDisabled]}>Closed</AppText>
         ) : (
           <View style={styles.addLabelRow}>
-            <Text style={styles.addPlusGlyph}>+</Text>
-            <Text style={styles.addBtnText}>{label === "ADD" ? "Add" : label}</Text>
+            <AppText style={styles.addPlusGlyph}>+</AppText>
+            <AppText style={styles.addBtnText}>{label === "ADD" ? "Add" : label}</AppText>
           </View>
         )}
       </View>

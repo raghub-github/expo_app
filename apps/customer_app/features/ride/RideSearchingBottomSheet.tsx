@@ -1,14 +1,7 @@
 import { useEffect } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  ImageSourcePropType,
-  Platform,
-  ScrollView,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Image, ImageSourcePropType, Platform, ScrollView } from "react-native";
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -121,11 +114,11 @@ function SearchDispatchTimeline({
 
   return (
     <View style={styles.dispatchBlock}>
-      <Text style={styles.dispatchLabel} numberOfLines={2}>
+      <AppText style={styles.dispatchLabel} numberOfLines={2}>
         {!hasActiveSupply
           ? "Searching nearby GMitra Saathi…"
           : `${declined} of ${total} GMitra Saathi didn't accept your ride`}
-      </Text>
+      </AppText>
 
       <View style={styles.progressTrack}>
         {fillRatio > 0 ? (
@@ -206,24 +199,24 @@ export function RideSearchingBottomSheet({
           </View>
 
           <View style={styles.headerTextCol}>
-            <Text style={styles.title} numberOfLines={2}>
+            <AppText style={styles.title} numberOfLines={2}>
               {isError ? title : "Finding your rider…"}
-            </Text>
-            <Text style={styles.subtitle} numberOfLines={2}>
+            </AppText>
+            <AppText style={styles.subtitle} numberOfLines={2}>
               {isError && placementError ? placementError : subtitle}
-            </Text>
+            </AppText>
           </View>
 
           {!isError && elapsedLabel ? (
             <View style={styles.elapsedBadge}>
-              <Text style={styles.elapsedText}>{elapsedLabel}</Text>
+              <AppText style={styles.elapsedText}>{elapsedLabel}</AppText>
             </View>
           ) : null}
         </View>
 
         {isError ? (
           <TouchableOpacity style={styles.retryBtn} onPress={onRetry} activeOpacity={0.9}>
-            <Text style={styles.retryBtnText}>Go back</Text>
+            <AppText style={styles.retryBtnText}>Go back</AppText>
           </TouchableOpacity>
         ) : (
           <>
@@ -239,40 +232,40 @@ export function RideSearchingBottomSheet({
 
               <View style={styles.summaryCenter}>
                 <View style={styles.rideNameRow}>
-                  <Text style={styles.rideName}>{rideName}</Text>
+                  <AppText style={styles.rideName}>{rideName}</AppText>
                   {showFastestTag ? (
                     <View style={styles.fastestTag}>
-                      <Text style={styles.fastestText}>FASTEST</Text>
+                      <AppText style={styles.fastestText}>FASTEST</AppText>
                     </View>
                   ) : null}
                 </View>
-                <Text style={styles.fareAmount}>₹{Number.isFinite(fare) ? fare : "—"}</Text>
+                <AppText style={styles.fareAmount}>₹{Number.isFinite(fare) ? fare : "—"}</AppText>
                 <View style={styles.inclusiveTag}>
-                  <Text style={styles.inclusiveText}>Inclusive of all charges</Text>
+                  <AppText style={styles.inclusiveText}>Inclusive of all charges</AppText>
                 </View>
               </View>
 
               <View style={styles.summaryMeta}>
                 <View style={styles.metaLine}>
-                  <Text style={styles.metaKey}>Pickup distance:</Text>
-                  <Text style={styles.metaVal}>{formatKmValue(pickupKm)} km</Text>
+                  <AppText style={styles.metaKey}>Pickup distance:</AppText>
+                  <AppText style={styles.metaVal}>{formatKmValue(pickupKm)} km</AppText>
                 </View>
                 <View style={styles.metaLine}>
-                  <Text style={styles.metaKey}>Ride distance:</Text>
-                  <Text style={styles.metaVal}>{formatRideDistanceKm(rideKm) ?? "—"}</Text>
+                  <AppText style={styles.metaKey}>Ride distance:</AppText>
+                  <AppText style={styles.metaVal}>{formatRideDistanceKm(rideKm) ?? "—"}</AppText>
                 </View>
                 <View style={styles.metaDivider} />
                 <View style={styles.metaLine}>
-                  <Text style={styles.metaKey}>Estimated time:</Text>
-                  <Text style={[styles.metaVal, styles.metaValGreen]}>
+                  <AppText style={styles.metaKey}>Estimated time:</AppText>
+                  <AppText style={[styles.metaVal, styles.metaValGreen]}>
                     {formatEtaRange(rideKm ?? undefined, routeEtaMins)}
-                  </Text>
+                  </AppText>
                 </View>
                 <View style={styles.metaLine}>
-                  <Text style={styles.metaKey}>Total distance:</Text>
-                  <Text style={[styles.metaVal, styles.metaValBold]}>
+                  <AppText style={styles.metaKey}>Total distance:</AppText>
+                  <AppText style={[styles.metaVal, styles.metaValBold]}>
                     {totalKm != null ? `${formatKmValue(totalKm)} km` : "—"}
-                  </Text>
+                  </AppText>
                 </View>
               </View>
             </View>
@@ -286,16 +279,16 @@ export function RideSearchingBottomSheet({
                 </View>
                 <View style={styles.routeAddrCol}>
                   <View style={styles.routeStopBlock}>
-                    <Text style={styles.routeStopLabel}>Pickup</Text>
-                    <Text style={styles.routeStopAddr} numberOfLines={2}>
+                    <AppText style={styles.routeStopLabel}>Pickup</AppText>
+                    <AppText style={styles.routeStopAddr} numberOfLines={2}>
                       {truncateText(pickupLabel, 48)}
-                    </Text>
+                    </AppText>
                   </View>
                   <View style={styles.routeStopBlock}>
-                    <Text style={styles.routeStopLabel}>Drop</Text>
-                    <Text style={styles.routeStopAddr} numberOfLines={2}>
+                    <AppText style={styles.routeStopLabel}>Drop</AppText>
+                    <AppText style={styles.routeStopAddr} numberOfLines={2}>
                       {truncateText(dropLabel, 48)}
-                    </Text>
+                    </AppText>
                   </View>
                 </View>
               </View>
@@ -304,20 +297,20 @@ export function RideSearchingBottomSheet({
 
               <View style={styles.routeMetricCol}>
                 <Ionicons name="trail-sign-outline" size={18} color="#94A3B8" />
-                <Text style={styles.routeMetricLabel}>Route distance</Text>
-                <Text style={styles.routeMetricValue}>
+                <AppText style={styles.routeMetricLabel}>Route distance</AppText>
+                <AppText style={styles.routeMetricValue}>
                   {rideKm != null ? `${formatKmValue(rideKm)} km` : "—"}
-                </Text>
+                </AppText>
               </View>
 
               <View style={styles.routeDivider} />
 
               <View style={styles.routeMetricCol}>
                 <Ionicons name="git-network-outline" size={18} color="#94A3B8" />
-                <Text style={styles.routeMetricLabel}>Via</Text>
-                <Text style={styles.routeMetricValue} numberOfLines={2}>
+                <AppText style={styles.routeMetricLabel}>Via</AppText>
+                <AppText style={styles.routeMetricValue} numberOfLines={2}>
                   {routeViaLabel}
-                </Text>
+                </AppText>
               </View>
             </View>
 
@@ -329,7 +322,7 @@ export function RideSearchingBottomSheet({
                 disabled={!shareTripEnabled || !onShareTrip}
               >
                 <Ionicons name="share-social-outline" size={16} color="#111827" />
-                <Text style={styles.actionBtnText}>Share Trip</Text>
+                <AppText style={styles.actionBtnText}>Share Trip</AppText>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.actionBtn}
@@ -338,7 +331,7 @@ export function RideSearchingBottomSheet({
                 disabled={!onTripDetails}
               >
                 <Ionicons name="receipt-outline" size={16} color="#111827" />
-                <Text style={styles.actionBtnText}>Trip Details</Text>
+                <AppText style={styles.actionBtnText}>Trip Details</AppText>
               </TouchableOpacity>
             </View>
           </>
@@ -350,8 +343,8 @@ export function RideSearchingBottomSheet({
               <Ionicons name="close" size={18} color="#FFFFFF" />
             </View>
             <View style={styles.cancelTextCol}>
-              <Text style={styles.cancelTitle}>Cancel Ride</Text>
-              <Text style={styles.cancelSub}>Free cancellation before rider accepts</Text>
+              <AppText style={styles.cancelTitle}>Cancel Ride</AppText>
+              <AppText style={styles.cancelSub}>Free cancellation before rider accepts</AppText>
             </View>
           </TouchableOpacity>
         ) : null}

@@ -4,18 +4,9 @@
  */
 
 import React, { useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  Pressable,
-  TextInput,
-  useWindowDimensions,
-  ScrollView,
-  Platform,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TouchableOpacity, StyleSheet, Modal, Pressable, TextInput, useWindowDimensions, ScrollView, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -118,8 +109,8 @@ export function GroupOrderStartSheet({
                   </View>
                 </View>
                 <View style={styles.headerRight}>
-                  <Text style={styles.headerName} numberOfLines={1}>Group Order</Text>
-                  <Text style={styles.headerSub}>Invite friends to add items</Text>
+                  <AppText style={styles.headerName} numberOfLines={1}>Group Order</AppText>
+                  <AppText style={styles.headerSub}>Invite friends to add items</AppText>
                   <View style={styles.titleRow}>
                     <TextInput
                       style={styles.titleInput}
@@ -131,7 +122,7 @@ export function GroupOrderStartSheet({
                     />
                     <BiPencilSquareIcon size={16} color={GatiMitraColors.textSecondary} />
                   </View>
-                  <Text style={styles.memberLimitSub}>Up to {MAX_GROUP_MEMBERS} members can join</Text>
+                  <AppText style={styles.memberLimitSub}>Up to {MAX_GROUP_MEMBERS} members can join</AppText>
                 </View>
               </View>
 
@@ -144,8 +135,8 @@ export function GroupOrderStartSheet({
                   bounces={true}
                 >
                   <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Delivery Location</Text>
-                    <Text style={styles.sectionSub}>Required • Tap to change</Text>
+                    <AppText style={styles.sectionTitle}>Delivery Location</AppText>
+                    <AppText style={styles.sectionSub}>Required • Tap to change</AppText>
                     <TouchableOpacity
                       style={styles.optionRow}
                       onPress={() => router.push("/profile/addresses")}
@@ -153,16 +144,16 @@ export function GroupOrderStartSheet({
                     >
                       <Ionicons name="location" size={20} color={GatiMitraColors.emerald} style={styles.optionRowIcon} />
                       <View style={styles.optionRowTextWrap}>
-                        <Text style={styles.optionRowPrimary} numberOfLines={1}>{deliveryLine}</Text>
-                        {secondaryLine ? <Text style={styles.optionRowSecondary} numberOfLines={1}>{secondaryLine}</Text> : null}
+                        <AppText style={styles.optionRowPrimary} numberOfLines={1}>{deliveryLine}</AppText>
+                        {secondaryLine ? <AppText style={styles.optionRowSecondary} numberOfLines={1}>{secondaryLine}</AppText> : null}
                       </View>
                       <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
                     </TouchableOpacity>
                   </View>
 
                   <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Add items by</Text>
-                    <Text style={styles.sectionSub}>Required • Select 1 option</Text>
+                    <AppText style={styles.sectionTitle}>Add items by</AppText>
+                    <AppText style={styles.sectionSub}>Required • Select 1 option</AppText>
                     <View style={styles.optionList}>
                       {TIMER_OPTIONS.map((opt) => (
                         <TouchableOpacity
@@ -174,18 +165,18 @@ export function GroupOrderStartSheet({
                           <View style={[styles.radioOuter, timerMins === opt.value && styles.radioOuterSelected]}>
                             {timerMins === opt.value && <View style={styles.radioInner} />}
                           </View>
-                          <Text style={styles.radioLabel}>{opt.label}</Text>
+                          <AppText style={styles.radioLabel}>{opt.label}</AppText>
                         </TouchableOpacity>
                       ))}
                     </View>
                   </View>
 
                   <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Payment</Text>
-                    <Text style={styles.sectionSub}>You are paying for this order</Text>
+                    <AppText style={styles.sectionTitle}>Payment</AppText>
+                    <AppText style={styles.sectionSub}>You are paying for this order</AppText>
                     <View style={styles.optionRow}>
                       <Ionicons name="card" size={20} color={GatiMitraColors.emerald} style={styles.optionRowIcon} />
-                      <Text style={styles.optionRowPrimary}>You are paying for this order</Text>
+                      <AppText style={styles.optionRowPrimary}>You are paying for this order</AppText>
                     </View>
                   </View>
 
@@ -207,7 +198,7 @@ export function GroupOrderStartSheet({
                   end={{ x: 1, y: 0 }}
                   style={styles.addBtn}
                 >
-                  <Text style={styles.addBtnText}>Start Group Order</Text>
+                  <AppText style={styles.addBtnText}>Start Group Order</AppText>
                 </LinearGradient>
               </TouchableOpacity>
             </View>

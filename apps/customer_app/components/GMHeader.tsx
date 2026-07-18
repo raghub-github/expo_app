@@ -31,8 +31,10 @@ export type GMHeaderProps = {
   onCartPress?: () => void;
   /** Custom center element (e.g. GMSearchBar) */
   searchElement?: React.ReactNode;
-  /** Minimal header for no-service: only Back + location label. Hides search, veg, cart. */
+  /** Minimal header for no-service: location label only (optional back). Hides search, veg, cart. */
   minimal?: boolean;
+  /** Show back control. Defaults to true; set false when system/gesture back is enough. */
+  showBack?: boolean;
   /** Transparent header on mint ambient screens (no-service empty state). */
   blendBackground?: boolean;
   /** Location line for minimal header (e.g. "Current location" or address.primary) */
@@ -57,6 +59,7 @@ export function GMHeader({
   onCartPress,
   searchElement,
   minimal = false,
+  showBack = true,
   blendBackground = false,
   locationLabel = "Current location",
   locationLabelLines = 2,
@@ -75,14 +78,18 @@ export function GMHeader({
         ]}
       >
         <View style={styles.innerMinimal}>
-          <TouchableOpacity
-            onPress={onBack}
-            style={[styles.backBtnCircle, blendBackground && styles.backBtnCircleBlend]}
-            hitSlop={12}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="chevron-back" size={21} color={GatiMitraColors.textPrimaryNew} />
-          </TouchableOpacity>
+          {showBack ? (
+            <TouchableOpacity
+              onPress={onBack}
+              style={[styles.backBtnCircle, blendBackground && styles.backBtnCircleBlend]}
+              hitSlop={12}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="chevron-back" size={21} color={GatiMitraColors.textPrimaryNew} />
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.headerSpacer} />
+          )}
           <AppText
             style={[styles.locationLabelMinimal, blendBackground && styles.locationLabelBlend]}
             numberOfLines={locationLabelLines}
@@ -201,8 +208,11 @@ const styles = StyleSheet.create({
     color: "#374151",
     textAlign: "center",
     letterSpacing: -0.12,
+    marginTop: 4,
     paddingHorizontal: 4,
     lineHeight: 18,
+    // Always reserve 2 lines so label length changes don't shift the page.
+    minHeight: 36,
   },
   locationLabelBlend: {
     color: "#1F2937",

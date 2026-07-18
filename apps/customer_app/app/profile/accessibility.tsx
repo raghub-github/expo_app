@@ -3,16 +3,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  Pressable,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -50,7 +43,7 @@ function RadioOption({
       <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
         {selected ? <View style={styles.radioInner} /> : null}
       </View>
-      <Text style={styles.radioLabel}>{label}</Text>
+      <AppText style={styles.radioLabel}>{label}</AppText>
     </Pressable>
   );
 }
@@ -68,8 +61,8 @@ function SectionCard({
     <View style={styles.sectionCard}>
       <View style={styles.sectionHeaderRow}>
         <View style={styles.sectionHeaderText}>
-          <Text style={styles.sectionTitle}>{section.title}</Text>
-          <Text style={styles.sectionSubtitle}>{section.subtitle}</Text>
+          <AppText style={styles.sectionTitle}>{section.title}</AppText>
+          <AppText style={styles.sectionSubtitle}>{section.subtitle}</AppText>
         </View>
         <View style={styles.sectionIconWrap}>
           <Ionicons name={section.icon} size={22} color={MINT_DARK} />
@@ -143,20 +136,20 @@ export default function AccessibilitySettingsScreen() {
           >
             <View style={styles.heroCard}>
               <View style={styles.heroTextCol}>
-                <Text style={styles.heroTitle}>
+                <AppText style={styles.heroTitle}>
                   We'll make the app more friendly to use based on your disability.
-                </Text>
+                </AppText>
                 <TouchableOpacity
                   activeOpacity={0.75}
                   onPress={() => router.push("/profile/legal/accessibility-statement" as never)}
                 >
-                  <Text style={styles.heroLink}>Help us improve your experience ▸</Text>
+                  <AppText style={styles.heroLink}>Help us improve your experience ▸</AppText>
                 </TouchableOpacity>
               </View>
               <View style={styles.heroPhone}>
                 <Ionicons name="phone-portrait-outline" size={28} color={MINT_DARK} />
                 <View style={styles.heroPhoneBadge}>
-                  <Text style={styles.heroPhoneBadgeText}>GM</Text>
+                  <AppText style={styles.heroPhoneBadgeText}>GM</AppText>
                 </View>
               </View>
             </View>
@@ -181,7 +174,7 @@ export default function AccessibilitySettingsScreen() {
               {saving ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={[styles.saveBtnText, !canSave && styles.saveBtnTextDisabled]}>Save</Text>
+                <AppText style={[styles.saveBtnText, !canSave && styles.saveBtnTextDisabled]}>Save</AppText>
               )}
             </TouchableOpacity>
           </View>

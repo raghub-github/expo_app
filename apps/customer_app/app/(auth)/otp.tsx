@@ -4,18 +4,9 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  ScrollView,
-  Image,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView, Image } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -262,17 +253,17 @@ export default function OtpScreen() {
               />
             ) : (
               <View style={styles.logoPlaceholder}>
-                <Text style={styles.logoPlaceholderText}>GatiMitra</Text>
+                <AppText style={styles.logoPlaceholderText}>GatiMitra</AppText>
               </View>
             )}
 
-            <Text style={styles.title}>Verify OTP</Text>
-            <Text style={styles.subtitle}>
-              Code sent to <Text style={styles.phoneHighlight}>{phoneE164}</Text>
-            </Text>
+            <AppText style={styles.title}>Verify OTP</AppText>
+            <AppText style={styles.subtitle}>
+              Code sent to <AppText style={styles.phoneHighlight}>{phoneE164}</AppText>
+            </AppText>
 
             <View style={styles.fieldWrap}>
-              <Text style={styles.label}>Enter 6-digit code</Text>
+              <AppText style={styles.label}>Enter 6-digit code</AppText>
               <View style={styles.otpBoxesRow}>
                 {digits.map((d, i) => (
                   <TouchableOpacity
@@ -288,9 +279,9 @@ export default function OtpScreen() {
                     }}
                     activeOpacity={0.8}
                   >
-                    <Text style={[styles.otpBoxDigit, d === "" && styles.otpBoxDigitPlaceholder]}>
+                    <AppText style={[styles.otpBoxDigit, d === "" && styles.otpBoxDigitPlaceholder]}>
                       {d || "0"}
-                    </Text>
+                    </AppText>
                   </TouchableOpacity>
                 ))}
                 <TextInput
@@ -312,14 +303,14 @@ export default function OtpScreen() {
                   editable={!loading}
                 />
               </View>
-              {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               <View style={styles.helperRow}>
                 <TouchableOpacity
                   disabled={resendSeconds > 0 || loading || resending}
                   onPress={handleResend}
                   activeOpacity={0.7}
                 >
-                  <Text
+                  <AppText
                     style={[
                       styles.helperLink,
                       (resendSeconds > 0 || loading || resending) && styles.helperLinkDisabled,
@@ -330,7 +321,7 @@ export default function OtpScreen() {
                       : resendSeconds > 0
                         ? `Resend OTP in 0:${resendSeconds.toString().padStart(2, "0")}`
                         : "Resend OTP"}
-                  </Text>
+                  </AppText>
                 </TouchableOpacity>
               </View>
             </View>
@@ -350,7 +341,7 @@ export default function OtpScreen() {
                 {loading ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.buttonText}>Verify & Continue</Text>
+                  <AppText style={styles.buttonText}>Verify & Continue</AppText>
                 )}
               </LinearGradient>
             </TouchableOpacity>
@@ -361,7 +352,7 @@ export default function OtpScreen() {
               disabled={loading}
               activeOpacity={0.7}
             >
-              <Text style={styles.changeNumberText}>Change mobile number</Text>
+              <AppText style={styles.changeNumberText}>Change mobile number</AppText>
             </TouchableOpacity>
 
             <LegalFooter

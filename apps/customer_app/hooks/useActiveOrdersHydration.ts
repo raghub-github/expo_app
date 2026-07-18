@@ -6,10 +6,16 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { orderService } from "@/services/order.service";
+import type { OrderSummary } from "@/services/order.service";
 import { useAuthStore } from "@/store/authStore";
 import { useOrderStore, type ActiveOrder, type OrderStatus } from "@/store/orderStore";
 import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
+import {
+  getMyOrdersCachedAt,
+  readSyncMyOrders,
+  writeCachedMyOrders,
+} from "@/lib/myOrdersCache";
 
 function toActiveOrder(
   order: import("@/services/order.service").OrderSummary,
@@ -33,13 +39,21 @@ export function useActiveOrdersHydration() {
   const hasSession = useAuthStore((s) => !!s.session);
   const addActiveOrder = useOrderStore((s) => s.addActiveOrder);
   const removeActiveOrder = useOrderStore((s) => s.removeActiveOrder);
+  const cachedOrders = readSyncMyOrders() as OrderSummary[] | undefined;
 
   const { data: orders } = useQuery({
     queryKey: ["my-orders"],
-    queryFn: () => orderService.getMyOrders({ limit: 50 }),
+    queryFn: async () => {
+      const list = await orderService.getMyOrders({ limit: 50 });
+      void writeCachedMyOrders(list);
+      return list;
+    },
     enabled: hydrated && hasSession,
     staleTime: 15_000,
     refetchInterval: 30_000,
+    initialData: cachedOrders,
+    initialDataUpdatedAt: getMyOrdersCachedAt(),
+    placeholderData: (previous) => previous ?? cachedOrders,
   });
 
   useEffect(() => {

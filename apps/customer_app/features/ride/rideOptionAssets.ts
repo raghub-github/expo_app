@@ -27,6 +27,25 @@ const BUNDLED_MAP_MARKER_BY_KEY: Record<string, ImageSourcePropType> = {
   travel: require("../../public/img/map/travel.png"),
 };
 
+/** Bundled fallbacks for Book a Ride service tiles (instant paint before CMS). */
+const BUNDLED_SERVICE_BY_ASSET_KEY: Record<string, ImageSourcePropType> = {
+  [CX.ride.bike]: BUNDLED_MAP_MARKER_BY_KEY.bike!,
+  [CX.ride.auto]: BUNDLED_MAP_MARKER_BY_KEY.auto!,
+  [CX.ride.cab]: BUNDLED_MAP_MARKER_BY_KEY.cab!,
+  [CX.ride.cabPremium]: BUNDLED_MAP_MARKER_BY_KEY.cab_premium!,
+  [CX.ride.travel]: BUNDLED_MAP_MARKER_BY_KEY.travel!,
+};
+
+/** CMS URL or bundled PNG for All Services / Intercity tiles. */
+export function resolveRideServiceIcon(assetKey: string): ImageSourcePropType | null {
+  return appAssetSource(assetKey) ?? BUNDLED_SERVICE_BY_ASSET_KEY[assetKey] ?? null;
+}
+
+/** Bundled-only fallback for AppAssetImage when CMS URL is not ready. */
+export function bundledRideServiceIcon(assetKey: string): ImageSourcePropType | null {
+  return BUNDLED_SERVICE_BY_ASSET_KEY[assetKey] ?? null;
+}
+
 /** Rider DB vehicle_type → catalog image_key for map marker. */
 const VEHICLE_TYPE_TO_IMAGE_KEY: Record<string, string> = {
   bike: "bike",
@@ -56,7 +75,14 @@ function sourceForMap(
 
 export function resolveRideImage(imageKey: string): ImageSourcePropType | null {
   const assetKey = RIDE_ASSET_BY_KEY[imageKey] ?? RIDE_ASSET_BY_KEY.bike;
-  return appAssetSource(assetKey) ?? appAssetSource(RIDE_ASSET_BY_KEY.bike);
+  return (
+    appAssetSource(assetKey) ??
+    appAssetSource(RIDE_ASSET_BY_KEY.bike) ??
+    BUNDLED_SERVICE_BY_ASSET_KEY[assetKey!] ??
+    BUNDLED_MAP_MARKER_BY_KEY[imageKey] ??
+    BUNDLED_MAP_MARKER_BY_KEY.bike ??
+    null
+  );
 }
 
 export function resolveNearbyRiderMarkerImage(imageKey: string): ImageSourcePropType | null {

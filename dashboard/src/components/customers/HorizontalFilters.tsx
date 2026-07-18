@@ -9,9 +9,14 @@ import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 
 export function HorizontalFilters() {
   const pathname = useAppPathname();
-  const { isSuperAdmin } = usePermissions();
+  const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
   const [localFilters, setLocalFilters] = useState<DashboardStatsFilters>({});
   const [appliedFilters, setAppliedFilters] = useState<DashboardStatsFilters>({});
+  const [hasMounted, setHasMounted] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
 
   // Load filters from localStorage on mount - MUST be called before any conditional returns
   useEffect(() => {
@@ -39,8 +44,9 @@ export function HorizontalFilters() {
     };
   }, []);
 
-  // Only show on customer dashboard home page - AFTER all hooks
-  if (pathname !== "/dashboard/customers" || !isSuperAdmin) {
+  // Only show on customer dashboard home page - AFTER all hooks.
+  // Wait for mount so persisted super-admin flag doesn't diverge from SSR.
+  if (!hasMounted || permissionsLoading || pathname !== "/dashboard/customers" || !isSuperAdmin) {
     return null;
   }
 

@@ -5,16 +5,23 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight, Filter, MapPinned, Search } from "lucide-react";
 
 import { Spinner } from "@/components/geo-admin/Loader";
+import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
 import { useGeoStatesQuery } from "@/store/api/geoAdminApi";
 
 export default function CxAppHomePage() {
-  const { data, isLoading, isFetching } = useGeoStatesQuery();
+  const { data, isLoading, isFetching, isError, error } = useGeoStatesQuery(undefined, {
+    // Prefer cached states from toggle prefetch so the list paints immediately.
+    refetchOnMountOrArgChange: false,
+    refetchOnFocus: false,
+    refetchOnReconnect: false,
+  });
   const states = data?.states ?? [];
   const [query, setQuery] = useState("");
   const [sortDesc, setSortDesc] = useState(false);
   const [page, setPage] = useState(1);
 
   const pageSize = 21;
+  const showInitialSpinner = isLoading && !data;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -40,15 +47,7 @@ export default function CxAppHomePage() {
               <p className="text-xs text-gray-500 mt-0.5">App Category - CXApp Home: states and UT coverage list.</p>
             </div>
           </div>
-          <div className="inline-flex items-center rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
-            <Link
-              href="/dashboard/super-admin/customer-app-categories"
-              className="rounded-md px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              App Category
-            </Link>
-            <span className="rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white">CXApp Home</span>
-          </div>
+          <CxAppHomeSectionToggle />
         </div>
 
         <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
@@ -84,29 +83,42 @@ export default function CxAppHomePage() {
             </div>
           </div>
 
-          {isLoading || isFetching ? (
+          {showInitialSpinner ? (
             <div className="flex justify-center py-10">
               <Spinner label="Loading states / UT..." className="text-slate-600" />
             </div>
+          ) : isError ? (
+            <p className="py-8 text-sm text-red-600">
+              {error && "status" in error
+                ? "Failed to load states / UT."
+                : "Failed to load states / UT."}
+            </p>
           ) : paged.length === 0 ? (
             <p className="py-8 text-sm text-slate-500">No states/UT found.</p>
           ) : (
-            <div className="mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-              {paged.map((state) => (
-                <Link
-                  key={state.id}
-                  href={`/dashboard/super-admin/cxapp-home/${state.id}`}
-                  onMouseEnter={() => {
-                    void fetch(`/api/super-admin/cxapp-home/food-layout/${state.id}`, {
-                      cache: "no-store",
-                    }).catch(() => {});
-                  }}
-                  className="group flex min-h-[40px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-slate-800 transition hover:border-cyan-300 hover:bg-cyan-50/40"
-                >
-                  <span className="truncate text-[13px] font-semibold">{state.name}</span>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-hover:text-cyan-700" />
-                </Link>
-              ))}
+            <div className="relative mt-3">
+              {isFetching ? (
+                <div className="pointer-events-none absolute right-0 top-0 z-10 rounded bg-white/90 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                  Updating…
+                </div>
+              ) : null}
+              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                {paged.map((state) => (
+                  <Link
+                    key={state.id}
+                    href={`/dashboard/super-admin/cxapp-home/${state.id}`}
+                    onMouseEnter={() => {
+                      void fetch(`/api/super-admin/cxapp-home/food-layout/${state.id}`, {
+                        cache: "force-cache",
+                      }).catch(() => {});
+                    }}
+                    className="group flex min-h-[40px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-slate-800 transition hover:border-cyan-300 hover:bg-cyan-50/40"
+                  >
+                    <span className="truncate text-[13px] font-semibold">{state.name}</span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-hover:text-cyan-700" />
+                  </Link>
+                ))}
+              </div>
             </div>
           )}
 

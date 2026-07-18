@@ -1,11 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-} from "react-native";
+import { AppText } from "@/components/AppText";
+
+import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -60,7 +56,7 @@ function FilterPill({
       activeOpacity={0.8}
     >
       {icon}
-      <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+      <AppText style={[styles.pillText, active && styles.pillTextActive]}>{label}</AppText>
     </TouchableOpacity>
   );
 }
@@ -110,14 +106,14 @@ export function StoreFilterSheet({
 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.88} flushBottom>
-      <Text style={styles.title}>Filters and Sorting</Text>
+      <AppText style={styles.title}>Filters and Sorting</AppText>
 
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.sectionLabel}>Sort by:</Text>
+        <AppText style={styles.sectionLabel}>Sort by:</AppText>
         <View style={styles.pillRow}>
           <FilterPill
             label="Price - low to high"
@@ -131,7 +127,7 @@ export function StoreFilterSheet({
           />
         </View>
 
-        <Text style={styles.sectionLabel}>Veg/Non-veg preference:</Text>
+        <AppText style={styles.sectionLabel}>Veg/Non-veg preference:</AppText>
         <View style={styles.pillRow}>
           <FilterPill
             label="Veg"
@@ -155,7 +151,7 @@ export function StoreFilterSheet({
 
         {showHighlyReordered ? (
           <>
-            <Text style={styles.sectionLabel}>Top picks:</Text>
+            <AppText style={styles.sectionLabel}>Top picks:</AppText>
             <View style={styles.pillRow}>
               <FilterPill
                 label="Highly reordered"
@@ -167,19 +163,19 @@ export function StoreFilterSheet({
           </>
         ) : null}
 
-        <Text style={styles.sectionLabel}>Dietary preference:</Text>
+        <AppText style={styles.sectionLabel}>Dietary preference:</AppText>
         <View style={styles.pillRow}>
           <FilterPill
             label="Spicy"
             active={draft.spicy}
             onPress={() => setDraft((d) => ({ ...d, spicy: !d.spicy }))}
-            icon={<Text style={styles.chiliIcon}>🌶</Text>}
+            icon={<AppText style={styles.chiliIcon}>🌶</AppText>}
           />
         </View>
 
         {offerPriceTiers.length > 0 ? (
           <>
-            <Text style={styles.sectionLabel}>Offers:</Text>
+            <AppText style={styles.sectionLabel}>Offers:</AppText>
             <View style={styles.offerGrid}>
               {offerPriceTiers.map((price) => (
                 <FilterPill
@@ -189,7 +185,7 @@ export function StoreFilterSheet({
                   onPress={() => toggleOfferPrice(price)}
                   icon={
                     <View style={styles.dealIcon}>
-                      <Text style={styles.dealIconText}>Deal</Text>
+                      <AppText style={styles.dealIconText}>Deal</AppText>
                     </View>
                   }
                 />
@@ -201,7 +197,7 @@ export function StoreFilterSheet({
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
         <TouchableOpacity onPress={clearAll} hitSlop={8}>
-          <Text style={styles.clearText}>Clear All</Text>
+          <AppText style={styles.clearText}>Clear All</AppText>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.applyBtn, matchCount === 0 && styles.applyBtnDisabled]}
@@ -211,7 +207,7 @@ export function StoreFilterSheet({
           }}
           activeOpacity={0.85}
         >
-          <Text style={styles.applyText}>{applyLabel}</Text>
+          <AppText style={styles.applyText}>{applyLabel}</AppText>
         </TouchableOpacity>
       </View>
     </StoreBottomSheetShell>
