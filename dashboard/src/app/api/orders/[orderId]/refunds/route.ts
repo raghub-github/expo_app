@@ -112,27 +112,35 @@ async function executeOrderRefundOnBackend(args: {
     "";
   const secret = process.env.INTERNAL_API_TOKEN;
   if (!base || !secret) {
-    console.warn("[order-refund] backend executor not configured; refund row saved without execution");
+    // Surface exact env-var state so the next line in the container logs
+    // tells ops which var to set.
+    console.warn(
+      "[order-refund] executor NOT called — env missing:",
+      JSON.stringify({
+        BACKEND_INTERNAL_URL: Boolean(process.env.BACKEND_INTERNAL_URL),
+        BACKEND_URL: Boolean(process.env.BACKEND_URL),
+        NEXT_PUBLIC_BACKEND_URL: Boolean(process.env.NEXT_PUBLIC_BACKEND_URL),
+        INTERNAL_API_TOKEN: Boolean(process.env.INTERNAL_API_TOKEN),
+      })
+    );
     return null;
   }
+  const url = `${base.replace(/\/+$/, "")}/v1/internal/orders/${args.orderId}/refund/execute`;
   try {
-    const upstream = await fetch(
-      `${base.replace(/\/+$/, "")}/v1/internal/orders/${args.orderId}/refund/execute`,
-      {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Internal-Secret": secret,
-        },
-        body: JSON.stringify({
-          refundId: args.refundId,
-          refundAmount: args.refundAmount,
-          refundReason: args.refundReason,
-          actor: args.actor,
-        }),
-      }
-    );
+    const upstream = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": secret,
+      },
+      body: JSON.stringify({
+        refundId: args.refundId,
+        refundAmount: args.refundAmount,
+        refundReason: args.refundReason,
+        actor: args.actor,
+      }),
+    });
     const data = (await upstream.json().catch(() => ({}))) as {
       ok?: boolean;
       result?: {
@@ -145,6 +153,15 @@ async function executeOrderRefundOnBackend(args: {
       error?: string;
     };
     if (!upstream.ok) {
+      // Full context for debugging in Docker/CloudWatch — includes upstream
+      // status + error body so we don't have to spelunk backend logs.
+      console.error("[order-refund] executor upstream failed:", {
+        url,
+        upstreamStatus: upstream.status,
+        upstreamError: data.error,
+        refundId: args.refundId,
+        orderId: args.orderId,
+      });
       return { ok: false, error: data.error ?? `executor_${upstream.status}` };
     }
     const r = data.result ?? {};
@@ -157,7 +174,12 @@ async function executeOrderRefundOnBackend(args: {
       error: r.failureReason,
     };
   } catch (e) {
-    console.error("[order-refund] executor call failed:", e);
+    console.error("[order-refund] executor unreachable:", {
+      url,
+      refundId: args.refundId,
+      orderId: args.orderId,
+      error: e instanceof Error ? e.message : String(e),
+    });
     return { ok: false, error: e instanceof Error ? e.message : "executor_unreachable" };
   }
 }
