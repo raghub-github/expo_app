@@ -50,6 +50,118 @@ async function maybeApplyMerchantCancellationDebit(args: {
   });
 }
 
+/**
+ * Extract actor identity + client fingerprint from the Next.js request so the
+ * backend refund executor can stamp it onto the audit trail. Headers may be
+ * absent (curl / server-side calls) — we don't fail; we just pass null.
+ */
+function actorContextFromRequest(
+  request: NextRequest,
+  systemUser: { id?: number | null; primaryRole?: string | null; fullName?: string | null; email?: string | null } | null,
+  user: { email?: string | null } | null
+): {
+  actorSystemUserId: number | null;
+  actorEmail: string | null;
+  actorName: string | null;
+  actorRole: string | null;
+  actorIp: string | null;
+  actorUserAgent: string | null;
+} {
+  // X-Forwarded-For may include multiple hops — take the first (client).
+  const xff = request.headers.get("x-forwarded-for") ?? "";
+  const ip = xff.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
+  const ua = request.headers.get("user-agent") || null;
+  return {
+    actorSystemUserId: systemUser?.id != null ? Number(systemUser.id) : null,
+    actorEmail: (user?.email ?? systemUser?.email ?? null) || null,
+    actorName: systemUser?.fullName ?? null,
+    actorRole: systemUser?.primaryRole ?? null,
+    actorIp: ip,
+    actorUserAgent: ua,
+  };
+}
+
+/**
+ * Fire-and-observe: call the backend refund executor with the freshly-inserted
+ * order_refunds.id. Executor routes the refund to Razorpay / customer wallet /
+ * COD-noop and stamps execution_status + actor snapshot onto the row.
+ *
+ * We DON'T fail the whole request if the executor fails — the refund row is
+ * already saved (audit trail intact) and ops can re-run via the internal
+ * endpoint. But we return the executor result inline so the dashboard UI
+ * can render "Refund processing on Razorpay" vs "Refunded to wallet".
+ */
+async function executeOrderRefundOnBackend(args: {
+  orderId: number;
+  refundId: number;
+  refundAmount: number;
+  refundReason: string;
+  actor: ReturnType<typeof actorContextFromRequest>;
+}): Promise<{
+  ok: boolean;
+  status?: string;
+  route?: string;
+  razorpayRefundId?: string | null;
+  customerWalletLedgerId?: number | null;
+  error?: string;
+} | null> {
+  const base =
+    process.env.BACKEND_INTERNAL_URL?.trim() ||
+    process.env.BACKEND_URL?.trim() ||
+    process.env.NEXT_PUBLIC_BACKEND_URL?.trim() ||
+    "";
+  const secret = process.env.INTERNAL_API_TOKEN;
+  if (!base || !secret) {
+    console.warn("[order-refund] backend executor not configured; refund row saved without execution");
+    return null;
+  }
+  try {
+    const upstream = await fetch(
+      `${base.replace(/\/+$/, "")}/v1/internal/orders/${args.orderId}/refund/execute`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Secret": secret,
+        },
+        body: JSON.stringify({
+          refundId: args.refundId,
+          refundAmount: args.refundAmount,
+          refundReason: args.refundReason,
+          actor: args.actor,
+        }),
+      }
+    );
+    const data = (await upstream.json().catch(() => ({}))) as {
+      ok?: boolean;
+      result?: {
+        status?: string;
+        route?: string;
+        razorpayRefundId?: string | null;
+        customerWalletLedgerId?: number | null;
+        failureReason?: string;
+      };
+      error?: string;
+    };
+    if (!upstream.ok) {
+      return { ok: false, error: data.error ?? `executor_${upstream.status}` };
+    }
+    const r = data.result ?? {};
+    return {
+      ok: Boolean(data.ok),
+      status: r.status,
+      route: r.route,
+      razorpayRefundId: r.razorpayRefundId ?? null,
+      customerWalletLedgerId: r.customerWalletLedgerId ?? null,
+      error: r.failureReason,
+    };
+  } catch (e) {
+    console.error("[order-refund] executor call failed:", e);
+    return { ok: false, error: e instanceof Error ? e.message : "executor_unreachable" };
+  }
+}
+
 async function maybeApplyRiderCancellationPenalty(args: {
   orderId: number;
   catalogRow: { id: number; attribute: string };
@@ -462,9 +574,22 @@ export async function POST(
             : null,
         actorSystemUserId: refundInitiatedById,
       });
+      // Execute the money movement (Razorpay / customer wallet / COD-noop).
+      // Actor identity + IP + user-agent get captured on the audit row by
+      // the executor. Failure here does NOT roll back the refund row — ops
+      // can re-run via /v1/internal/orders/:id/refund/execute.
+      const actorForExecutor = actorContextFromRequest(request, systemUser, user);
+      const executor = await executeOrderRefundOnBackend({
+        orderId,
+        refundId: Number(record.id),
+        refundAmount,
+        refundReason: refundReasonResolved,
+        actor: actorForExecutor,
+      });
+
       return NextResponse.json({
         success: true,
-        data: { ...record, riderPenalty, merchantWalletDebit },
+        data: { ...record, riderPenalty, merchantWalletDebit, executor },
         message: "Refund created successfully.",
       });
     }
@@ -481,9 +606,19 @@ export async function POST(
       actorSystemUserId: refundInitiatedById,
     });
 
+    // Execute the money movement — see executor comment above.
+    const actorForExecutor = actorContextFromRequest(request, systemUser, user);
+    const executor = await executeOrderRefundOnBackend({
+      orderId,
+      refundId: Number(record.id),
+      refundAmount,
+      refundReason: refundReasonResolved,
+      actor: actorForExecutor,
+    });
+
     return NextResponse.json({
       success: true,
-      data: { ...record, merchantWalletDebit },
+      data: { ...record, merchantWalletDebit, executor },
       message: "Refund created successfully.",
     });
   } catch (error) {

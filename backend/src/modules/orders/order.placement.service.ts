@@ -2202,6 +2202,31 @@ export async function applyRefundWebhook(
     payload: { refundId, ...gatewayPayload },
   });
 
+  // Fan-out: if a dashboard-initiated order refund routed through Razorpay,
+  // flip its execution_status from PROCESSING → COMPLETED here. Idempotent
+  // and scoped by razorpay_refund_id, so it's a no-op when no dashboard
+  // refund matches (e.g. refund initiated directly on Razorpay dashboard).
+  if (eventType === "refund.processed") {
+    try {
+      const { completeOrderRefundFromRazorpayWebhook } = await import(
+        "./order-refund-executor.js"
+      );
+      await completeOrderRefundFromRazorpayWebhook({
+        razorpayRefundId: refundId,
+        razorpayPaymentId,
+        refundStatus: args.refundStatus ?? null,
+        gatewayPayload: gatewayPayload ?? {},
+      });
+    } catch (err) {
+      // Never fail the webhook because of a dashboard-refund side-effect.
+      // Log for ops — the pending_orders update above already succeeded.
+      console.warn(
+        "[applyRefundWebhook] order-refund executor sync failed:",
+        (err as Error)?.message ?? err
+      );
+    }
+  }
+
   return { ok: true, pendingId: pending.pendingId };
 }
 

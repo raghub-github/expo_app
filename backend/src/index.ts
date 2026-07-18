@@ -288,6 +288,77 @@ app.get("/v1/razorpay-checkout", {
   return reply.type("text/html").send(html);
 });
 
+// Internal: execute an order refund that the dashboard already recorded.
+// Called by the dashboard's /api/orders/[orderId]/refunds proxy right after
+// it inserts the `order_refunds` row. Routes the refund to Razorpay / customer
+// wallet / COD-noop / mixed depending on the original payment_gateway.
+//
+// Auth: X-Internal-Secret == INTERNAL_API_TOKEN (dashboard already vouches
+// for the acting agent via Supabase; this shared secret is the network gate).
+// Also accepts BACKEND_SCHEDULE_TICK_SECRET for backward-compat with ops
+// scripts that already have that value handy.
+app.post<{
+  Params: { orderId: string };
+  Body: {
+    refundId: number;
+    refundAmount: number;
+    refundReason: string;
+    actor?: {
+      actorSystemUserId?: number | null;
+      actorEmail?: string | null;
+      actorName?: string | null;
+      actorRole?: string | null;
+      actorIp?: string | null;
+      actorUserAgent?: string | null;
+    };
+  };
+}>("/v1/internal/orders/:orderId/refund/execute", async (req, reply) => {
+  const internalSecret = process.env.INTERNAL_API_TOKEN;
+  const tickSecret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  const header = String(req.headers["x-internal-secret"] ?? "");
+  if (!header || (header !== internalSecret && header !== tickSecret)) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const orderId = Number((req.params as { orderId: string }).orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    return reply.code(400).send({ error: "invalid_order_id" });
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const refundId = Number(body.refundId);
+  const refundAmount = Number(body.refundAmount);
+  const refundReason = String(body.refundReason ?? "").trim();
+  if (!Number.isInteger(refundId) || refundId < 1) {
+    return reply.code(400).send({ error: "invalid_refund_id" });
+  }
+  if (!Number.isFinite(refundAmount) || refundAmount < 0) {
+    return reply.code(400).send({ error: "invalid_refund_amount" });
+  }
+  const actor = ((body.actor as Record<string, unknown>) ?? {}) as Record<string, unknown>;
+  try {
+    const { executeOrderRefund } = await import(
+      "./modules/orders/order-refund-executor.js"
+    );
+    const result = await executeOrderRefund({
+      refundId,
+      orderCoreId: orderId,
+      refundAmount,
+      refundReason: refundReason || "order refund",
+      actor: {
+        actorSystemUserId: actor.actorSystemUserId != null ? Number(actor.actorSystemUserId) : null,
+        actorEmail: actor.actorEmail != null ? String(actor.actorEmail) : null,
+        actorName: actor.actorName != null ? String(actor.actorName) : null,
+        actorRole: actor.actorRole != null ? String(actor.actorRole) : null,
+        actorIp: actor.actorIp != null ? String(actor.actorIp) : null,
+        actorUserAgent: actor.actorUserAgent != null ? String(actor.actorUserAgent) : null,
+      },
+    });
+    return reply.send({ ok: true, result });
+  } catch (e) {
+    req.log.error({ err: e, orderId, refundId }, "order_refund_execute_failed");
+    return reply.code(500).send({ error: "execute_failed" });
+  }
+});
+
 // Internal: manually trigger the merchant subscription lifecycle tick.
 // Runs the same reminders + renewals + expired notices the 10-min interval
 // runs — useful for on-demand testing (from a script, from ops) and for
