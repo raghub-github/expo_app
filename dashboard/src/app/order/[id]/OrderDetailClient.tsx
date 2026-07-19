@@ -1100,6 +1100,31 @@ export default function OrderDetailClient({
     return dispatchStage === "cancelled";
   }, [timelineEntries, dispatchStage]);
 
+  // Mirror of the server-side money-safety guard (order-refund-guard.ts) so
+  // the UI can pre-disable dead-end actions. The server remains authoritative.
+  const refundLock = useMemo(() => {
+    const grandTotal = Number(order?.grandTotal ?? order?.totalAmount ?? 0) || 0;
+    const alreadyRefunded = (orderRefunds ?? []).reduce((sum, r) => {
+      const status = String(r.refundStatus ?? "").toLowerCase();
+      if (status === "failed" || status === "cancelled" || status === "rejected") {
+        return sum;
+      }
+      const amt = Number(r.refundAmount ?? 0);
+      return sum + (Number.isFinite(amt) ? amt : 0);
+    }, 0);
+    const remainingRefundable = Math.max(grandTotal - alreadyRefunded, 0);
+    const fullyRefunded = grandTotal > 0 && alreadyRefunded >= grandTotal - 0.01;
+    return {
+      cancelled: orderCancelledOnTimeline,
+      fullyRefunded,
+      remainingRefundable,
+      alreadyRefunded,
+      grandTotal,
+      // Nothing further can be done: order is cancelled AND fully refunded.
+      noActionsLeft: orderCancelledOnTimeline && fullyRefunded,
+    };
+  }, [order?.grandTotal, order?.totalAmount, orderRefunds, orderCancelledOnTimeline]);
+
   const openStatusModal = useCallback(() => {
     if (!order) return;
     if (dispatchStage === "cancelled" || dispatchStage === "delivered") return;
@@ -1965,6 +1990,9 @@ export default function OrderDetailClient({
           onRefundCreated={() => setRefetchTrigger((t) => t + 1)}
           onPrefetchOrderItems={ensureOrderItemsPrefetch}
           orderCancelledOnTimeline={orderCancelledOnTimeline}
+          orderFullyRefunded={refundLock.fullyRefunded}
+          refundActionsDisabled={refundLock.noActionsLeft}
+          refundRemainingRefundable={refundLock.remainingRefundable}
         />
       </div>
     </div>

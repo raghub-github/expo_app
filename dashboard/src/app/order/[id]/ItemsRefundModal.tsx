@@ -74,6 +74,10 @@ interface ItemsRefundModalProps {
   onRefundCreated?: () => void;
   /** Order progress timeline already recorded cancellation — blocks refund+cancel type. */
   orderCancelledOnTimeline?: boolean;
+  /** Sum of non-failed refunds already covers the grand total — blocks all refund types. */
+  orderFullyRefunded?: boolean;
+  /** Remaining amount that can still be refunded (grand total − already refunded). */
+  refundRemainingRefundable?: number;
 }
 
 function discountTagLabel(tag?: OrderPricingLine['discountTag']): string | null {
@@ -508,6 +512,8 @@ export default function ItemsRefundModal({
   dashboardType: dashboardTypeProp,
   onRefundCreated,
   orderCancelledOnTimeline = false,
+  orderFullyRefunded = false,
+  refundRemainingRefundable,
 }: ItemsRefundModalProps) {
   const pathname = useAppPathname();
   const resolvedDashboard = dashboardTypeProp ?? getDashboardTypeFromPath(pathname ?? '') ?? 'ORDER_FOOD';
@@ -517,6 +523,10 @@ export default function ItemsRefundModal({
   const hasCancellationPermission = isSuperAdmin || (resolvedDashboard && canPerformAction(resolvedDashboard, 'CANCEL', { access_point_group: 'ORDER_CANCEL' }));
   const canCreateRefund = hasRefundPermission && hasCancellationPermission;
   const blockRefundWithCancellation = orderCancelledOnTimeline;
+  // Once the order is fully refunded, every refund-moving action is blocked.
+  const blockAllRefunds = orderFullyRefunded;
+  // Already-cancelled orders cannot be cancelled again (with or without refund).
+  const blockCancellation = orderCancelledOnTimeline;
 
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -1277,6 +1287,34 @@ export default function ItemsRefundModal({
     const orderId = orderIdProp ?? null;
     const totalAmount = calculateTotalRefundAmount();
     const mxDebitAmount = calculateMerchantDebitAmount();
+
+    // ── Client-side mirror of the server money-safety guard ──────────────
+    // The server (POST /api/orders/[orderId]/refunds) is authoritative and
+    // returns 409, but blocking here avoids a pointless round trip and gives
+    // instant feedback.
+    const cancelsOrder =
+      refundType === 'cancel_without_refund' || refundType === 'refund_with_cancellation';
+    const movesRefund =
+      refundType === 'refund_with_cancellation' || refundType === 'refund_without_cancellation';
+    if (cancelsOrder && blockCancellation) {
+      onToast?.('This order is already cancelled — it cannot be cancelled again.');
+      return;
+    }
+    if (movesRefund && blockAllRefunds) {
+      onToast?.('This order is already fully refunded — no further refund is allowed.');
+      return;
+    }
+    if (
+      movesRefund &&
+      typeof refundRemainingRefundable === 'number' &&
+      Number.isFinite(refundRemainingRefundable) &&
+      totalAmount - refundRemainingRefundable > 0.01
+    ) {
+      onToast?.(
+        `Refund of ₹${totalAmount.toFixed(2)} exceeds the remaining refundable amount ₹${refundRemainingRefundable.toFixed(2)}.`
+      );
+      return;
+    }
     const notificationMessages: Record<string, string> = {
       cancel_without_refund: 'Order has been cancelled successfully without refund.',
       refund_with_cancellation: 'Order has been cancelled and refund processed successfully.',
@@ -1891,20 +1929,29 @@ export default function ItemsRefundModal({
                   <div ref={refundTypeRef} className="mb-3">
                     <label className="block text-xs font-medium text-slate-700 mb-1.5">Refund type</label>
                     <div className="flex gap-2 flex-wrap">
-                      <label className={`flex items-center gap-1.5 border px-2 py-1.5 rounded cursor-pointer bg-white min-w-[140px] hover:bg-emerald-50 text-[11px] ${refundType === 'cancel_without_refund' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`}>
-                        <input type="radio" name="refundType" value="cancel_without_refund" checked={refundType === 'cancel_without_refund'} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer" />
+                      <label
+                        className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
+                          blockCancellation
+                            ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50'
+                            : `cursor-pointer hover:bg-emerald-50 ${refundType === 'cancel_without_refund' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`
+                        }`}
+                        title={blockCancellation ? 'Order is already cancelled' : undefined}
+                      >
+                        <input type="radio" name="refundType" value="cancel_without_refund" checked={refundType === 'cancel_without_refund'} disabled={blockCancellation} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed" />
                         Cancel without refund
                       </label>
                       <label
                         className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
-                          blockRefundWithCancellation
+                          blockRefundWithCancellation || blockAllRefunds
                             ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50'
                             : `cursor-pointer hover:bg-emerald-50 ${refundType === 'refund_with_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`
                         }`}
                         title={
-                          blockRefundWithCancellation
-                            ? 'Order is already cancelled on the progress timeline'
-                            : undefined
+                          blockAllRefunds
+                            ? 'Order is already fully refunded'
+                            : blockRefundWithCancellation
+                              ? 'Order is already cancelled on the progress timeline'
+                              : undefined
                         }
                       >
                         <input
@@ -1912,14 +1959,21 @@ export default function ItemsRefundModal({
                           name="refundType"
                           value="refund_with_cancellation"
                           checked={refundType === 'refund_with_cancellation'}
-                          disabled={blockRefundWithCancellation}
+                          disabled={blockRefundWithCancellation || blockAllRefunds}
                           onChange={(e) => handleRefundTypeChange(e.target.value)}
                           className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed"
                         />
                         Refund with cancellation
                       </label>
-                      <label className={`flex items-center gap-1.5 border px-2 py-1.5 rounded cursor-pointer bg-white min-w-[140px] hover:bg-emerald-50 text-[11px] ${refundType === 'refund_without_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`}>
-                        <input type="radio" name="refundType" value="refund_without_cancellation" checked={refundType === 'refund_without_cancellation'} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer" />
+                      <label
+                        className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
+                          blockAllRefunds
+                            ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50'
+                            : `cursor-pointer hover:bg-emerald-50 ${refundType === 'refund_without_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`
+                        }`}
+                        title={blockAllRefunds ? 'Order is already fully refunded' : undefined}
+                      >
+                        <input type="radio" name="refundType" value="refund_without_cancellation" checked={refundType === 'refund_without_cancellation'} disabled={blockAllRefunds} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed" />
                         Refund without cancellation
                       </label>
                     </div>
@@ -2033,16 +2087,49 @@ export default function ItemsRefundModal({
               </div>
             )}
 
-            <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-200">
-              <button type="button" onClick={handleModalClose} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 border-none rounded font-medium text-xs flex items-center gap-1.5 cursor-pointer">
-                <X className="w-4 h-4" /> Close
-              </button>
-              {canCreateRefund && showSubmit && (
-                <button type="button" ref={submitButtonRef} onClick={handleSubmit} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded font-semibold text-xs flex items-center gap-1.5 cursor-pointer">
-                  <CheckCircle className="w-4 h-4" /> Submit Refund
-                </button>
-              )}
-            </div>
+            {(() => {
+              const cancels =
+                refundType === 'cancel_without_refund' || refundType === 'refund_with_cancellation';
+              const refunds =
+                refundType === 'refund_with_cancellation' || refundType === 'refund_without_cancellation';
+              const blockedReason =
+                cancels && blockCancellation
+                  ? 'This order is already cancelled — it cannot be cancelled again.'
+                  : refunds && blockAllRefunds
+                    ? 'This order is already fully refunded — no further refund is allowed.'
+                    : null;
+              return (
+                <>
+                  {blockedReason && (
+                    <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      <i className="bi bi-exclamation-triangle-fill mt-0.5" />
+                      <span>{blockedReason}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-200">
+                    <button type="button" onClick={handleModalClose} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 border-none rounded font-medium text-xs flex items-center gap-1.5 cursor-pointer">
+                      <X className="w-4 h-4" /> Close
+                    </button>
+                    {canCreateRefund && showSubmit && (
+                      <button
+                        type="button"
+                        ref={submitButtonRef}
+                        onClick={handleSubmit}
+                        disabled={Boolean(blockedReason)}
+                        title={blockedReason ?? undefined}
+                        className={`px-4 py-2 text-white border-none rounded font-semibold text-xs flex items-center gap-1.5 ${
+                          blockedReason
+                            ? 'bg-slate-300 cursor-not-allowed'
+                            : 'bg-emerald-500 hover:bg-emerald-600 cursor-pointer'
+                        }`}
+                      >
+                        <CheckCircle className="w-4 h-4" /> Submit Refund
+                      </button>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       </div>

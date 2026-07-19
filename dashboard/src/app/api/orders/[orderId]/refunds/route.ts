@@ -10,6 +10,11 @@ import { canRefundOrder } from "@/lib/permissions/actions";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { createOrderRefund, listOrderRefunds, type RefundTypeDb } from "@/lib/db/operations/order-refunds";
+import {
+  loadOrderRefundGuardState,
+  evaluateRefundGuard,
+  type RefundGuardAction,
+} from "@/lib/db/operations/order-refund-guard";
 import { recordOrderCancellation } from "@/lib/db/operations/orders-core";
 import { getSql } from "@/lib/db/client";
 import {
@@ -382,6 +387,41 @@ export async function POST(
           error: "Missing or invalid: refundType or refundReason",
         },
         { status: 400 }
+      );
+    }
+
+    // ── Money-safety guard ────────────────────────────────────────────────
+    // Block double-cancellation and double / over-cap refunds BEFORE any
+    // ledger row is written. This is the authoritative check (the UI mirrors
+    // it but can be bypassed). Returns 409 with a human-readable reason that
+    // the modal surfaces as a toast.
+    const guardState = await loadOrderRefundGuardState(orderId);
+    const guardAmount =
+      refundType === "cancel_without_refund"
+        ? 0
+        : Number.isFinite(refundAmount)
+          ? refundAmount
+          : 0;
+    const guard = evaluateRefundGuard(
+      guardState,
+      refundType as RefundGuardAction,
+      guardAmount
+    );
+    if (!guard.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: guard.message,
+          code: guard.code,
+          guard: {
+            isCancelled: guardState.isCancelled,
+            alreadyRefunded: guardState.alreadyRefunded,
+            grandTotal: guardState.grandTotal,
+            remainingRefundable: guardState.remainingRefundable,
+            fullyRefunded: guardState.fullyRefunded,
+          },
+        },
+        { status: 409 }
       );
     }
 

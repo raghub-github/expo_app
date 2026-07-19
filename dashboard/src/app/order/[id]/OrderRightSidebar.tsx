@@ -122,6 +122,12 @@ interface OrderRightSidebarProps {
   onPrefetchOrderItems?: () => void;
   /** Order progress timeline already has a cancellation — block refund+cancel type. */
   orderCancelledOnTimeline?: boolean;
+  /** Sum of non-failed refunds already covers the order grand total. */
+  orderFullyRefunded?: boolean;
+  /** Order is both cancelled AND fully refunded — no cancel/refund action is possible. */
+  refundActionsDisabled?: boolean;
+  /** Remaining amount that can still be refunded (grand total − already refunded). */
+  refundRemainingRefundable?: number;
 }
 
 type Remark = SidebarRemark;
@@ -603,6 +609,9 @@ export default function OrderRightSidebar({
   prefetchedOrderItems = null,
   onPrefetchOrderItems,
   orderCancelledOnTimeline = false,
+  orderFullyRefunded = false,
+  refundActionsDisabled = false,
+  refundRemainingRefundable,
   onRefundCreated,
 }: OrderRightSidebarProps) {
   const auth = useAuthOptional();
@@ -1758,13 +1767,32 @@ export default function OrderRightSidebar({
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
         <button
           type="button"
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-[13px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer"
-          onPointerEnter={() => onPrefetchOrderItems?.()}
-          onClick={openItemsModal}
+          disabled={refundActionsDisabled}
+          title={
+            refundActionsDisabled
+              ? "Order is already cancelled and fully refunded — no further refund or cancellation is possible."
+              : undefined
+          }
+          className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium text-white shadow-sm transition ${
+            refundActionsDisabled
+              ? "cursor-not-allowed bg-slate-300"
+              : "cursor-pointer bg-emerald-500 hover:bg-emerald-600"
+          }`}
+          onPointerEnter={() => {
+            if (!refundActionsDisabled) onPrefetchOrderItems?.();
+          }}
+          onClick={() => {
+            if (!refundActionsDisabled) openItemsModal();
+          }}
         >
           <i className="bi bi-arrow-counterclockwise" />
           Create refund
         </button>
+        {refundActionsDisabled && (
+          <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">
+            Order cancelled &amp; fully refunded.
+          </p>
+        )}
       </section>
 
       {/* Add remarks */}
@@ -2564,6 +2592,8 @@ export default function OrderRightSidebar({
       orderId={order.id}
       prefetchedOrderItems={prefetchedOrderItems}
       orderCancelledOnTimeline={orderCancelledOnTimeline}
+      orderFullyRefunded={orderFullyRefunded}
+      refundRemainingRefundable={refundRemainingRefundable}
       onRefundCreated={onRefundCreated}
     />
 
