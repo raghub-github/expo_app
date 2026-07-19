@@ -110,8 +110,6 @@ async function loadOrderPaymentSnapshot(
       c.customer_id                     AS customer_id,
       c.grand_total                     AS grand_total,
       c.payment_method                  AS core_payment_method,
-      c.razorpay_order_id               AS core_razorpay_order_id,
-      c.razorpay_payment_id             AS core_razorpay_payment_id,
       p.id                              AS orders_core_payment_id,
       p.payment_gateway                 AS payment_gateway,
       p.payment_method                  AS payment_method,
@@ -142,11 +140,12 @@ async function loadOrderPaymentSnapshot(
     typeof r.core_payment_method === "string"
       ? String(r.core_payment_method).toLowerCase()
       : "";
+  // orders_core carries no razorpay identifiers — the captured payment id
+  // (pay_…) lives on orders_core_payments.transaction_id.
   const razorpayPaymentId =
-    (typeof r.core_razorpay_payment_id === "string" && r.core_razorpay_payment_id) ||
-    (typeof r.transaction_id === "string" && /^pay_/.test(r.transaction_id)
+    typeof r.transaction_id === "string" && /^pay_/.test(r.transaction_id)
       ? String(r.transaction_id)
-      : null);
+      : null;
 
   const effectiveGateway =
     gwFromPayments ||
