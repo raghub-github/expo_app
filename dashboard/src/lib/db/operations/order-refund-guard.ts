@@ -145,6 +145,13 @@ export function evaluateRefundGuard(
   const movesRefund =
     action === "refund_with_cancellation" || action === "refund_without_cancellation";
 
+  // Business rules:
+  //  - Cancellation is ONE-TIME. It may ride on the first, second, or any
+  //    later refund, but an already-cancelled order cannot be cancelled again.
+  //  - Refunds may repeat as many times as needed until 100% is reached, and
+  //    are explicitly still allowed AFTER a cancellation (a plain
+  //    refund_without_cancellation is never gated on isCancelled below — only
+  //    on the fully-refunded / over-cap checks).
   if (cancelsOrder && state.isCancelled) {
     return {
       ok: false,

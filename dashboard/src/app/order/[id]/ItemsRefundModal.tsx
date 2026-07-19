@@ -835,11 +835,30 @@ export default function ItemsRefundModal({
 
   useEffect(() => {
     if (!showRefundType || refundType) return;
-    setRefundType('cancel_without_refund');
-    setShowFault(false);
-    setShowMerchantDebit(false);
-    setShowSubmit(true);
-  }, [showRefundType, refundType]);
+    // Default to the first action still allowed for this order. A cancelled
+    // order can still be refunded further (until 100%), so when cancellation
+    // is no longer available we default to a plain refund instead of leaving
+    // the agent on the now-disabled "cancel without refund" option.
+    if (!blockCancellation) {
+      setRefundType('cancel_without_refund');
+      setShowFault(false);
+      setShowMerchantDebit(false);
+      setShowSubmit(true);
+    } else if (!blockAllRefunds) {
+      setRefundType('refund_without_cancellation');
+      setShowFault(true);
+      setShowMerchantDebit(false);
+      setShowSubmit(false);
+      setRefundItems((prev) =>
+        prev.map((item) => ({
+          ...item,
+          selectedQuantity: !isDeliveryFeeRow(item) ? 1 : 0,
+        }))
+      );
+    }
+    // else: nothing is allowed (cancelled + fully refunded) — leave unselected;
+    // the banner + disabled Submit explain why.
+  }, [showRefundType, refundType, blockCancellation, blockAllRefunds]);
 
   useEffect(() => {
     if (refundType !== 'cancel_without_refund') return;
@@ -905,8 +924,21 @@ export default function ItemsRefundModal({
   };
 
   const handleRefundTypeChange = (value: string) => {
+    // Cancel actions are one-time — block them once the order is cancelled.
+    if (value === 'cancel_without_refund' && blockCancellation) {
+      onToast?.('This order is already cancelled.');
+      return;
+    }
     if (value === 'refund_with_cancellation' && blockRefundWithCancellation) {
       onToast?.('This order is already cancelled. Refund with cancellation is not available.');
+      return;
+    }
+    // Refund actions are allowed repeatedly until 100% is refunded.
+    if (
+      (value === 'refund_with_cancellation' || value === 'refund_without_cancellation') &&
+      blockAllRefunds
+    ) {
+      onToast?.('This order is already fully refunded — no further refund is allowed.');
       return;
     }
     if (refundType === value) {
