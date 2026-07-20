@@ -782,11 +782,43 @@ export async function syncStoreStatusAfterOperatingHoursChange(
   storeInternalId: number,
   storeTimezone: string
 ): Promise<SyncScheduleResult | null> {
+  // Overwriting the schedule is an explicit re-intent: drop any lingering TRANSIENT
+  // manual close (temp close / "closed until reopened") so the fresh hours take effect
+  // immediately and the schedule sync below can auto-open when we are now within a slot.
+  // Without this, syncOperationalStatusFromSchedule returns early at the
+  // `manualCloseActive || manualIndefinite` guard and the store stays closed even though
+  // the merchant just edited the hours to be open now. Deliberate controls are preserved:
+  // the "Manual activation lock" (block_auto_open) and an active vacation are left alone.
+  const { data: preAvail } = await db
+    .from('merchant_store_availability')
+    .select('block_auto_open, unavailable_reason')
+    .eq('store_id', storeInternalId)
+    .maybeSingle();
+  const preUnavail = String(
+    (preAvail as { unavailable_reason?: string | null } | null)?.unavailable_reason ?? ''
+  )
+    .trim()
+    .toLowerCase();
+  const preLocked =
+    (preAvail as { block_auto_open?: boolean | null } | null)?.block_auto_open === true;
+  const clearManual =
+    !preLocked && (preUnavail === 'manual_indefinite' || preUnavail === 'manual_close');
+
   await db
     .from('merchant_store_availability')
     .update({
       schedule_end_prompted_at: null,
       schedule_end_prompt_expires_at: null,
+      ...(clearManual
+        ? {
+            manual_close_until: null,
+            unavailable_reason: null,
+            close_reason: null,
+            restriction_type: null,
+            is_manual_override: false,
+            manual_override_at: null,
+          }
+        : {}),
     })
     .eq('store_id', storeInternalId);
 

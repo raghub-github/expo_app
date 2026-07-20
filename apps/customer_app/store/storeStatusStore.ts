@@ -28,6 +28,7 @@ export const useStoreStatusStore = create<StoreStatusState>((set, get) => ({
 
   setStatus: (storeId, status) => {
     const prev = get().statusMap[storeId];
+    if (prev === status) return; // no-op: avoids re-renders on heartbeat writes
     set((s) => ({
       statusMap: { ...s.statusMap, [storeId]: status },
     }));

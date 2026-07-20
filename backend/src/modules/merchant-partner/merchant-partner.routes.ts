@@ -1328,6 +1328,33 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           (afterRows[0] as any) ?? null,
           { section: "operating_hours", route: "PATCH /merchant-partner/stores/:storeId/operating-hours" }
         );
+        // Overwriting the schedule is an explicit re-intent: drop any lingering
+        // TRANSIENT manual close (temp close / "closed until reopened") so the fresh
+        // hours take effect immediately and the tick below can auto-open when we are
+        // now within a slot. Deliberate controls are preserved: the "Manual activation
+        // lock" (block_auto_open) and an active vacation/forced-lock closure are left
+        // untouched so a locked or on-vacation store stays closed.
+        await sql`
+          UPDATE merchant_store_availability
+          SET
+            manual_close_until = NULL,
+            is_manual_override = FALSE,
+            manual_override_at = NULL,
+            schedule_end_prompted_at = NULL,
+            schedule_end_prompt_expires_at = NULL,
+            unavailable_reason = CASE
+              WHEN unavailable_reason IN ('manual_indefinite', 'manual_close') THEN NULL
+              ELSE unavailable_reason
+            END,
+            close_reason = CASE
+              WHEN unavailable_reason IN ('manual_indefinite', 'manual_close') THEN NULL
+              ELSE close_reason
+            END,
+            updated_at = NOW()
+          WHERE store_id = ${storeId}
+            AND block_auto_open IS NOT TRUE
+            AND (unavailable_reason IS NULL OR unavailable_reason NOT IN ('vacation', 'forced_lock'))
+        `;
         await runStoreScheduleTickForStore(storeId, req.log);
         return reply.send({ ok: true });
       });
@@ -4465,6 +4492,24 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         } else if (availRow?.manual_close_until != null) {
           const raw = availRow.manual_close_until instanceof Date ? availRow.manual_close_until.toISOString() : String(availRow.manual_close_until).trim();
           mergedManualCloseUntil = raw || null;
+        } else if (closingStore) {
+          // Plain manual OFF (no explicit `manual_close_until`, not "close for today"):
+          // treat it as a TEMPORARY close and reopen at the next scheduled slot start, so
+          // the store keeps following its schedule. A close that must NOT auto-reopen is
+          // expressed separately via the "Manual activation lock" (block_auto_open), which
+          // the schedule engine honours before this. Only when there is no computable next
+          // opening (24h store / no slots) does this stay null → "closed until reopened".
+          const hoursRowsForClose = await sql`
+            SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
+          `;
+          const hoursRowForClose = hoursRowsForClose[0] as Record<string, unknown> | undefined;
+          if (hoursRowForClose) {
+            const nowRefForClose = new Date();
+            const { dayOfWeek: closeDayOfWeek, minutesSinceMidnight: closeMinutesSinceMidnight } = nowInStoreTz();
+            mergedManualCloseUntil =
+              getNextOpenIso(hoursRowForClose, closeDayOfWeek, closeMinutesSinceMidnight, nowRefForClose) ??
+              getNextOpenDayStartIso(hoursRowForClose, closeDayOfWeek, nowRefForClose);
+          }
         }
         const mergedCloseReason =
           openingStore ? null
