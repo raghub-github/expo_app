@@ -1019,7 +1019,7 @@ async function evaluateAndPersistStoreScheduleState(
   ctx: ScheduleEvalContext,
   log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
 ): Promise<void> {
-  const storeId = store.store_id;
+  const storeId = Number(store.store_id); // bigint id may arrive as a string under the SQL client
   const now = ctx.now;
   const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(normalizeTz((store as any).timezone));
   const hoursRow = ctx.hoursRow;
@@ -1292,10 +1292,14 @@ async function runStoreScheduleTickOnce(
       LIMIT 500
     `;
 
+    // merchant_stores.id is bigint; the SQL client (fetch_types:false, PgBouncer mode)
+    // returns bigint as a STRING ("77"). Coerce to Number so Number.isInteger passes
+    // and the numeric-keyed maps below (hoursByStore, rushActiveStoreIds, …) match.
+    // Without this every store was `continue`d and the interval tick did nothing.
     const storeIds = [
       ...new Set(
         (storeRows as unknown as StoreRow[])
-          .map((s) => s.store_id)
+          .map((s) => Number(s.store_id))
           .filter((id) => Number.isInteger(id) && id > 0)
       ),
     ];
@@ -1356,8 +1360,9 @@ async function runStoreScheduleTickOnce(
     }
 
     for (const store of storeRows as unknown as StoreRow[]) {
-      const storeId = store.store_id;
+      const storeId = Number(store.store_id); // bigint arrives as string; see storeIds note above
       if (!Number.isInteger(storeId) || storeId < 1) continue;
+      store.store_id = storeId; // normalize so downstream reads (writes, logs) use the number
 
       try {
         await ensureAvailabilityRow(sql, storeId);
