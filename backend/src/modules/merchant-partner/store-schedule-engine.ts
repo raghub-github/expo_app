@@ -68,6 +68,33 @@ export async function syncMerchantStoresOnlineTriple(
  * `isWithinOperatingHours` in `partnersite/src/lib/merchantStoreNextOpenIso.ts`.
  */
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+
+/**
+ * `merchant_store_operating_hours.closed_days` is a Postgres `text[]`. The backend SQL client
+ * runs with `fetch_types: false` (PgBouncer transaction mode, Supabase :6543), so array columns
+ * come back as RAW array-literal STRINGS like `{tuesday,monday}` — NOT JS arrays. Calling
+ * `.some()`/`.map()` on that string throws `closedDays.some is not a function`, and because the
+ * per-store evaluation used to run unguarded inside the tick loop, that single throw aborted the
+ * WHOLE schedule tick — silently disabling auto open/close for every store with any closed day.
+ *
+ * Normalize any shape to a lowercase `string[]`: JS array (dev / other clients), Postgres literal
+ * `{a,b}` / `{"a","b"}`, JSON `["a","b"]`, or a bare CSV. Empty / null ⇒ `[]`.
+ */
+export function normalizeClosedDays(raw: unknown): string[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((d) => String(d).trim().toLowerCase()).filter((d) => d.length > 0);
+  }
+  let s = String(raw).trim();
+  if (s === "" || s === "{}" || s === "[]" || s.toLowerCase() === "null") return [];
+  if (s.startsWith("{") && s.endsWith("}")) s = s.slice(1, -1);
+  else if (s.startsWith("[") && s.endsWith("]")) s = s.slice(1, -1);
+  return s
+    .split(",")
+    .map((d) => d.trim().replace(/^["']+|["']+$/g, "").toLowerCase())
+    .filter((d) => d.length > 0);
+}
+
 const SCHEDULE_END_PROMPT_GRACE_MS = 5 * 60 * 1000; // X minutes fallback → AUTO OFF
 const SCHEDULE_TICK_INTERVAL_MS = 30_000;
 const SCHEDULE_DUE_LOOKAHEAD_MS = 45_000;
@@ -501,7 +528,7 @@ function isInBreakBetweenSlots(
   dayOfWeek: number,
   minutesSinceMidnight: number
 ): boolean {
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   const dayKey = DAY_NAMES[dayOfWeek];
   if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
   if (row[`${dayKey}_open`] !== true) return false;
@@ -519,7 +546,7 @@ export function isBeforeFirstSlotToday(
   minutesSinceMidnight: number
 ): boolean {
   const dayKey = DAY_NAMES[dayOfWeek];
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
   if (row[`${dayKey}_open`] !== true) return false;
   const sameForAll = row.same_for_all_days === true;
@@ -534,7 +561,7 @@ function isPastLastSlotEndToday(
   minutesSinceMidnight: number
 ): boolean {
   const dayKey = DAY_NAMES[dayOfWeek];
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
   if (row[`${dayKey}_open`] !== true) return false;
   const sameForAll = row.same_for_all_days === true;
@@ -569,7 +596,7 @@ export function isWithinOperatingHours(
   minutesSinceMidnight: number
 ): boolean {
   const dayKey = DAY_NAMES[dayOfWeek];
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
   if (row[`${dayKey}_open`] !== true) return false;
   const sameForAll = row.same_for_all_days === true;
@@ -614,7 +641,7 @@ export function getNextOpenClose(
 ): NextOpenClose {
   const out: NextOpenClose = { next_open_time: null, next_close_time: null };
   if (row.is_24_hours === true) return out;
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   const dayKey = DAY_NAMES[dayOfWeek];
   if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) {
     const sameForAll = row.same_for_all_days === true;
@@ -654,7 +681,7 @@ export function getNextOpenIso(
   refDate: Date
 ): string | null {
   if (row.is_24_hours === true) return null;
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   const sameForAll = row.same_for_all_days === true;
   const formatIstDate = (d: Date) => {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -744,7 +771,7 @@ export function getNextOpenIsoAfterIstCalendarDay(
   refDate: Date
 ): string | null {
   if (row.is_24_hours === true) return null;
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   const sameForAll = row.same_for_all_days === true;
   const formatIstDate = (d: Date) => {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -790,7 +817,7 @@ export function getNextOpenDayStartIso(
   refDate: Date
 ): string | null {
   if (row.is_24_hours === true) return null;
-  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const closedDays = normalizeClosedDays(row.closed_days);
   const formatIstDate = (d: Date) => {
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: STORE_TIMEZONE_DEFAULT,
@@ -1020,7 +1047,7 @@ async function evaluateAndPersistStoreScheduleState(
   let isTodayScheduledClosed = false;
   if (hoursRow) {
     const dayKey = DAY_NAMES[dayOfWeek];
-    const closedDays = (hoursRow.closed_days as string[] | null) ?? [];
+    const closedDays = normalizeClosedDays(hoursRow.closed_days);
     if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) {
       isTodayScheduledClosed = true;
     } else if (hoursRow[`${dayKey}_open`] !== true) {
@@ -1339,18 +1366,24 @@ async function runStoreScheduleTickOnce(
         continue;
       }
 
-      await evaluateAndPersistStoreScheduleState(
-        sql,
-        store,
-        {
-          now,
-          hoursRow: hoursByStore.get(storeId),
-          rushActive: rushActiveStoreIds.has(storeId),
-          activeClosureEndAtIso: activeClosureEndByStore.get(storeId) ?? null,
-          upcomingClosureStartAtIso: upcomingClosureStartByStore.get(storeId) ?? null,
-        },
-        log
-      );
+      // Guard per store: a throw here (e.g. malformed row data) must NOT abort the
+      // whole tick and silently freeze auto open/close for every OTHER store.
+      try {
+        await evaluateAndPersistStoreScheduleState(
+          sql,
+          store,
+          {
+            now,
+            hoursRow: hoursByStore.get(storeId),
+            rushActive: rushActiveStoreIds.has(storeId),
+            activeClosureEndAtIso: activeClosureEndByStore.get(storeId) ?? null,
+            upcomingClosureStartAtIso: upcomingClosureStartByStore.get(storeId) ?? null,
+          },
+          log
+        );
+      } catch (e) {
+        log.error({ storeId, err: e }, "store_schedule_tick_evaluate_failed");
+      }
 
       // Single source-of-truth write for clients that don't want to
       // recompute the schedule. See migration 0381 + @gatimitra/store-status
@@ -1533,7 +1566,7 @@ async function syncLiveScheduleColumnsForStore(
     phase = "NO_HOURS";
   } else {
     const dayKey = DAY_NAMES[dayOfWeek];
-    const closedDays = (hoursRow.closed_days as string[] | null) ?? [];
+    const closedDays = normalizeClosedDays(hoursRow.closed_days);
     const isDayClosed =
       closedDays.some((d) => String(d).trim().toLowerCase() === dayKey) ||
       hoursRow[`${dayKey}_open`] !== true;

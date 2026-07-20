@@ -19,6 +19,7 @@ import {
   runStoreScheduleTickForStore,
   emitStoreStatusChanged,
   syncMerchantStoresOnlineTriple,
+  normalizeClosedDays,
 } from "./store-schedule-engine.js";
 import {
   computeSurfaceLiveStatus,
@@ -1183,7 +1184,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           return reply.send(null);
         }
         const dayKeys = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
-        const out: any = { id: row.id, store_id: row.store_id, is_24_hours: row.is_24_hours, same_for_all_days: row.same_for_all_days, closed_days: row.closed_days ?? [] };
+        const out: any = { id: row.id, store_id: row.store_id, is_24_hours: row.is_24_hours, same_for_all_days: row.same_for_all_days, closed_days: normalizeClosedDays(row.closed_days) };
         for (const d of dayKeys) {
           out[d] = {
             open: row[`${d}_open`],
@@ -4443,7 +4444,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
           const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
           const dayKey = dayNames[dayOfWeek];
-          const closedDays = (hoursRow.closed_days as string[] | null) ?? [];
+          const closedDays = normalizeClosedDays(hoursRow.closed_days);
           const isTodayScheduledClosed =
             closedDays.some((d) => String(d).trim().toLowerCase() === dayKey) ||
             hoursRow[`${dayKey}_open`] !== true;
