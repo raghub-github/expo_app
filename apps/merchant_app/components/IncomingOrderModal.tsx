@@ -559,6 +559,40 @@ export default function IncomingOrderModal() {
     );
   }, [sheetOrder, orders]);
 
+  /** All still-pending orders (FIFO) the merchant can page through while the sheet is open. */
+  const pendingList = useMemo(
+    () =>
+      orders
+        .filter((o) => o.status === "created" && !o.id.startsWith("core-"))
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    [orders]
+  );
+  const currentIndex = useMemo(() => {
+    if (!sheetOrder) return -1;
+    return pendingList.findIndex(
+      (o) => o.id === sheetOrder.id || o.ordersCoreId === sheetOrder.ordersCoreId
+    );
+  }, [pendingList, sheetOrder]);
+  const pendingTotal = pendingList.length;
+
+  /** Move to the previous/next pending order without replaying the alert chime. */
+  const goToOrder = useCallback(
+    (delta: number) => {
+      if (currentIndex < 0 || pendingTotal <= 1) return;
+      const nextIdx = Math.min(pendingTotal - 1, Math.max(0, currentIndex + delta));
+      const target = pendingList[nextIdx];
+      if (!target || target.id === sheetOrder?.id) return;
+      soundPlayedForOrderRef.current = target.id; // suppress re-chime on manual navigation
+      shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
+      seenFoodIdsRef.current.add(target.id);
+      setRejectOpen(false);
+      setAllItemsOpen(false);
+      setCustomizationItem(null);
+      setSheetOrder(target);
+    },
+    [currentIndex, pendingTotal, pendingList, sheetOrder?.id]
+  );
+
   const showToast = useCallback((message: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ visible: true, message });
@@ -800,6 +834,54 @@ export default function IncomingOrderModal() {
                   showsVerticalScrollIndicator={false}
                   bounces={false}
                 >
+                  {pendingTotal > 1 ? (
+                    <View style={styles.pagerRow}>
+                      <Pressable
+                        onPress={() => goToOrder(-1)}
+                        disabled={currentIndex <= 0}
+                        style={({ pressed }) => [
+                          styles.pagerBtn,
+                          currentIndex <= 0 && styles.pagerBtnDisabled,
+                          pressed && styles.pressed,
+                        ]}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Previous order"
+                      >
+                        <Ionicons name="chevron-back" size={18} color={GatiMitraMerchant.textPrimary} />
+                        <Text style={styles.pagerBtnText}>Prev</Text>
+                      </Pressable>
+                      <View style={styles.pagerCenter}>
+                        <Text style={styles.pagerLabel}>
+                          Order {Math.max(1, currentIndex + 1)} of {pendingTotal}
+                        </Text>
+                        <View style={styles.pagerDots}>
+                          {pendingList.map((o, i) => (
+                            <View
+                              key={o.id}
+                              style={[styles.pagerDot, i === currentIndex && styles.pagerDotActive]}
+                            />
+                          ))}
+                        </View>
+                      </View>
+                      <Pressable
+                        onPress={() => goToOrder(1)}
+                        disabled={currentIndex >= pendingTotal - 1}
+                        style={({ pressed }) => [
+                          styles.pagerBtn,
+                          currentIndex >= pendingTotal - 1 && styles.pagerBtnDisabled,
+                          pressed && styles.pressed,
+                        ]}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Next order"
+                      >
+                        <Text style={styles.pagerBtnText}>Next</Text>
+                        <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textPrimary} />
+                      </Pressable>
+                    </View>
+                  ) : null}
+
                   <View style={styles.deliveryBanner}>
                     <Ionicons name="bicycle-outline" size={14} color={GatiMitraMerchant.primaryDark} />
                     <Text style={styles.deliveryBannerText}>GatiMitra delivery</Text>
@@ -1190,6 +1272,41 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 16,
   },
+  pagerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 2,
+    marginBottom: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  pagerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  pagerBtnDisabled: { opacity: 0.35 },
+  pagerBtnText: { fontSize: 13, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  pagerCenter: { flex: 1, alignItems: "center" },
+  pagerLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textSecondary,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  pagerDots: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 5 },
+  pagerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: GatiMitraMerchant.border },
+  pagerDotActive: { width: 16, backgroundColor: GatiMitraMerchant.primaryDark },
   deliveryBanner: {
     flexDirection: "row",
     alignItems: "center",

@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { usePathname, useRouter } from 'next/navigation';
 import { Lora, Poppins } from 'next/font/google';
-import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed } from 'lucide-react';
+import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { fetchStoreById } from '@/lib/database';
@@ -242,8 +242,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const pathname = usePathname() || '';
   const { storeId, storeInternalId, ready: storeReady } = usePartnerSelectedStore(restaurantId);
   const [muted, setMuted] = useState(false);
-  /** FIFO queue: oldest pending order is always index 0 (front card). */
+  /** FIFO queue: oldest pending order is index 0. The merchant can page through with the pager. */
   const [queue, setQueue] = useState<OrdersFoodRow[]>([]);
+  /** Which queued order the merchant is currently viewing / acting on. */
+  const [viewIndex, setViewIndex] = useState(0);
+  const viewIndexRef = useRef(0);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [itemsSheetOpen, setItemsSheetOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -267,24 +270,63 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const closeModalRef = useRef<() => void>(() => {});
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
 
-  const modalOrder = queue[0] ?? null;
   const pendingCount = queue.length;
+  /** Clamp the view index into the queue so it never points past the end. */
+  const activeIndex = pendingCount ? Math.min(Math.max(0, viewIndex), pendingCount - 1) : 0;
+  const modalOrder = queue[activeIndex] ?? null;
+
+  /** Viewed order for a given queue + index (used to keep the sync/realtime ref in step). */
+  const clampIndex = (len: number, idx: number) => (len ? Math.min(Math.max(0, idx), len - 1) : 0);
 
   useEffect(() => {
     queueRef.current = queue;
-    modalOrderRef.current = queue[0] ?? null;
-  }, [queue]);
+    const i = clampIndex(queue.length, viewIndex);
+    viewIndexRef.current = i;
+    modalOrderRef.current = queue[i] ?? null;
+    if (i !== viewIndex) setViewIndex(i);
+  }, [queue, viewIndex]);
 
   const upsertOrderInQueue = useCallback((full: OrdersFoodRow) => {
     const prev = queueRef.current;
+    const viewedId = prev[clampIndex(prev.length, viewIndexRef.current)]?.order_id;
     const idx = prev.findIndex((o) => Number(o.order_id) === Number(full.order_id));
     const next =
       idx < 0
         ? sortOrdersFifo([...prev, full])
         : sortOrdersFifo(prev.map((o, i) => (i === idx ? full : o)));
+    // Keep viewing the same order even if the FIFO re-sort shifted its index.
+    let i = next.findIndex((o) => Number(o.order_id) === Number(viewedId));
+    if (i < 0) i = clampIndex(next.length, viewIndexRef.current);
     queueRef.current = next;
-    modalOrderRef.current = next[0] ?? null;
+    viewIndexRef.current = i;
+    modalOrderRef.current = next[i] ?? null;
     setQueue(next);
+    setViewIndex(i);
+  }, []);
+
+  /** Remove one order from the queue by id (accept/reject/remote status change), keeping the pager sane. */
+  const removeOrderFromQueueById = useCallback((orderId: number) => {
+    const prev = queueRef.current;
+    const viewedId = prev[clampIndex(prev.length, viewIndexRef.current)]?.order_id;
+    const next = prev.filter((o) => Number(o.order_id) !== Number(orderId));
+    if (next.length === prev.length) return;
+    // Preserve the viewed order when it wasn't the one removed.
+    let i = next.findIndex((o) => Number(o.order_id) === Number(viewedId));
+    if (i < 0) i = clampIndex(next.length, viewIndexRef.current);
+    queueRef.current = next;
+    viewIndexRef.current = i;
+    modalOrderRef.current = next[i] ?? null;
+    setQueue(next);
+    setViewIndex(i);
+    if (next.length === 0 && typeof window !== 'undefined') {
+      invalidatePartnerPendingCountCache();
+      window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
+      window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+    }
+  }, []);
+
+  const goToOrder = useCallback((delta: number) => {
+    setViewIndex((i) => clampIndex(queueRef.current.length, i + delta));
   }, []);
 
   const getDismissed = () => {
@@ -659,13 +701,16 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           const prev = payload.old as { status?: string } | null;
           const nextStatus = String(row.status || '').toLowerCase();
           const prevStatus = String(prev?.status || '').toLowerCase();
-          const open = modalOrderRef.current;
           const coreId = Number(row.id);
-          if (open && Number.isFinite(coreId) && coreId === Number(open.order_id)) {
-            if (nextStatus !== 'assigned') {
-              closeModalRef.current();
-              return;
-            }
+          // Any queued order that leaves 'assigned' (accepted/cancelled here or elsewhere)
+          // is dropped from the pager — not just the one being viewed.
+          if (
+            Number.isFinite(coreId) &&
+            nextStatus !== 'assigned' &&
+            queueRef.current.some((o) => Number(o.order_id) === coreId)
+          ) {
+            removeOrderFromQueueById(coreId);
+            return;
           }
           // Some flows create the row first, then UPDATE to assigned — handle both.
           if (nextStatus !== 'assigned') return;
@@ -690,19 +735,17 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           const prev = payload.old as { order_status?: string } | null;
           const prevSt = resolvePartnerPipeline(prev?.order_status ?? null, 'assigned', null);
           const st = resolvePartnerPipeline(row.order_status, 'assigned', null);
-          const open = modalOrderRef.current;
-          if (open) {
+          if (st !== 'CREATED') {
             const rowFoodId = Number(row.id);
             const rowCoreId = Number(row.order_id);
-            const matchesOpen =
-              (Number.isFinite(rowFoodId) && rowFoodId === Number(open.id)) ||
-              (Number.isFinite(rowCoreId) && rowCoreId === Number(open.order_id));
-            if (matchesOpen && st !== 'CREATED') {
-              closeModalRef.current();
-              return;
-            }
+            const match = queueRef.current.find(
+              (o) =>
+                (Number.isFinite(rowFoodId) && rowFoodId === Number(o.id)) ||
+                (Number.isFinite(rowCoreId) && rowCoreId === Number(o.order_id))
+            );
+            if (match) removeOrderFromQueueById(Number(match.order_id));
+            return;
           }
-          if (st !== 'CREATED') return;
           if (prevSt === 'CREATED') return;
           const fid = Number(row.id);
           if (!Number.isFinite(fid)) return;
@@ -716,7 +759,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     return () => {
       ch.unsubscribe();
     };
-  }, [storeId, storeInternalId, storeReady, fetchByCoreId, fetchByFoodRow, openIfNew]);
+  }, [storeId, storeInternalId, storeReady, fetchByCoreId, fetchByFoodRow, openIfNew, removeOrderFromQueueById]);
 
   useEffect(() => {
     if (!storeReady || !storeId) return;
@@ -899,20 +942,26 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
   };
 
-  /** After accept/reject (or remote status change): show next FIFO card, or close if empty. */
+  /** After accept/reject (or dismiss): drop the VIEWED card, show a neighbour, or close if empty. */
   const advanceOrClose = (opts?: { markDismissed?: boolean }) => {
     const markDismissed = opts?.markDismissed !== false;
     const prev = queueRef.current;
-    const current = prev[0];
+    const idx = clampIndex(prev.length, viewIndexRef.current);
+    const current = prev[idx];
     if (current && markDismissed) addDismissed(current.order_id);
     if (current && !markDismissed) {
       shownInsertIds.current.delete(`o:${current.order_id}`);
     }
     stopChime();
-    const next = prev.slice(1);
+    const next = current
+      ? prev.filter((o) => Number(o.order_id) !== Number(current.order_id))
+      : prev.slice(1);
+    const newIdx = clampIndex(next.length, idx);
     queueRef.current = next;
-    modalOrderRef.current = next[0] ?? null;
+    viewIndexRef.current = newIdx;
+    modalOrderRef.current = next[newIdx] ?? null;
     setQueue(next);
+    setViewIndex(newIdx);
     setRejectOpen(false);
     setItemsSheetOpen(false);
     if (typeof window !== 'undefined') {
@@ -1161,6 +1210,53 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                       </button>
                     </div>
                   </div>
+
+                  {/* Pager: move between multiple pending orders and act on the one shown. */}
+                  {pendingCount > 1 ? (
+                    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-stone-50/80 px-2.5 py-1.5 sm:px-4">
+                      <button
+                        type="button"
+                        onClick={() => goToOrder(-1)}
+                        disabled={activeIndex <= 0}
+                        aria-label="Previous order"
+                        className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-[12px] font-semibold text-stone-700 transition hover:bg-stone-200/70 disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        <ChevronLeft size={17} />
+                        <span className="hidden sm:inline">Prev</span>
+                      </button>
+                      <div className="flex min-w-0 flex-col items-center">
+                        <span className="incoming-num text-[11px] font-bold uppercase tracking-wide text-stone-600">
+                          Order {activeIndex + 1} of {pendingCount}
+                        </span>
+                        <div className="mt-1 flex items-center gap-1.5">
+                          {queue.map((o, i) => (
+                            <button
+                              key={o.order_id}
+                              type="button"
+                              aria-label={`Go to order ${i + 1}`}
+                              aria-current={i === activeIndex}
+                              onClick={() => setViewIndex(i)}
+                              className={`h-1.5 rounded-full transition-all ${
+                                i === activeIndex
+                                  ? 'w-4 bg-emerald-600'
+                                  : 'w-1.5 bg-stone-300 hover:bg-stone-400'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => goToOrder(1)}
+                        disabled={activeIndex >= pendingCount - 1}
+                        aria-label="Next order"
+                        className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-[12px] font-semibold text-stone-700 transition hover:bg-stone-200/70 disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        <span className="hidden sm:inline">Next</span>
+                        <ChevronRight size={17} />
+                      </button>
+                    </div>
+                  ) : null}
 
                   {/* Body grows with content; scrolls only when over max-h — no empty flex gap */}
                   <div className="min-h-0 overflow-y-auto overscroll-contain px-4 pt-2.5 sm:px-5">
