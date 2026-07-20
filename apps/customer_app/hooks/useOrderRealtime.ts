@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useOrderStore } from "@/store/orderStore";
 import { orderService } from "@/services/order.service";
 import { etaService } from "@/services/eta.service";
@@ -12,6 +13,7 @@ import { buildPrepDelayMessage, resolveLiveEtaMinutes } from "@/lib/order-eta-di
 const POLL_INTERVAL_MS = 1200;
 
 export function useOrderRealtime() {
+  const queryClient = useQueryClient();
   const activeOrders = useOrderStore((s) => s.activeOrders);
   const updateOrderStatus = useOrderStore((s) => s.updateOrderStatus);
   const removeActiveOrder = useOrderStore((s) => s.removeActiveOrder);
@@ -43,13 +45,21 @@ export function useOrderRealtime() {
             const status = (detail?.status ?? "").toUpperCase();
             if (status === "DELIVERED" || status === "CANCELLED") {
               removeActiveOrder(orderId);
+              // Terminal now: refresh the My Orders list so the order moves into
+              // History immediately instead of lingering / vanishing.
+              void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
               return;
             }
             const etaMins = resolveLiveEtaMinutes(eta);
             updateOrderStatus(
               orderId,
               status as import("@/store/orderStore").OrderStatus,
-              etaMins ?? undefined
+              etaMins ?? undefined,
+              {
+                // Upgrade the optimistic order once the backend has the GMF id / store name.
+                formattedOrderId: detail?.formattedOrderId ?? null,
+                storeName: detail?.merchantPublicName ?? detail?.merchantName ?? null,
+              }
             );
 
             const liveReason = eta?.live?.reason ?? "";
@@ -82,7 +92,7 @@ export function useOrderRealtime() {
         pollRef.current = null;
       }
     };
-  }, [orderIds.join(","), updateOrderStatus, removeActiveOrder, showPrepDelayBanner]);
+  }, [orderIds.join(","), updateOrderStatus, removeActiveOrder, showPrepDelayBanner, queryClient]);
 
   // TODO: When Supabase realtime is enabled, subscribe to order_status_changes
   // and call updateStatus/clearActiveOrder on payload instead of polling.

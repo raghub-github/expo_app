@@ -41,7 +41,13 @@ type OrderState = {
   addActiveOrder: (order: ActiveOrder) => void;
   removeActiveOrder: (orderId: string) => void;
   updateStatus: (status: OrderStatus, etaMinutes?: number) => void;
-  updateOrderStatus: (orderId: string, status: OrderStatus, etaMinutes?: number) => void;
+  updateOrderStatus: (
+    orderId: string,
+    status: OrderStatus,
+    etaMinutes?: number,
+    /** Live data can upgrade the optimistic order: GM… → GMF… id, resolved store name. */
+    patch?: { formattedOrderId?: string | null; storeName?: string | null }
+  ) => void;
   showPrepDelayBanner: (orderId: string, message: string, durationMs?: number) => void;
   clearPrepDelayBanner: () => void;
   clearActiveOrder: () => void;
@@ -99,13 +105,20 @@ export const useOrderStore = create<OrderState>((set) => ({
         : s
     ),
 
-  updateOrderStatus: (orderId, status, etaMinutes) =>
-    set((s) => ({
-      activeOrder: s.activeOrder?.orderId === orderId ? { ...s.activeOrder, status, ...(etaMinutes != null && { etaMinutes }) } : s.activeOrder,
-      activeOrders: s.activeOrders.map((o) =>
-        o.orderId === orderId ? { ...o, status, ...(etaMinutes != null && { etaMinutes }) } : o
-      ),
-    })),
+  updateOrderStatus: (orderId, status, etaMinutes, patch) =>
+    set((s) => {
+      const apply = (o: ActiveOrder): ActiveOrder => ({
+        ...o,
+        status,
+        ...(etaMinutes != null && { etaMinutes }),
+        ...(patch?.formattedOrderId ? { formattedOrderId: patch.formattedOrderId } : {}),
+        ...(patch?.storeName ? { storeName: patch.storeName } : {}),
+      });
+      return {
+        activeOrder: s.activeOrder?.orderId === orderId ? apply(s.activeOrder) : s.activeOrder,
+        activeOrders: s.activeOrders.map((o) => (o.orderId === orderId ? apply(o) : o)),
+      };
+    }),
 
   showPrepDelayBanner: (orderId, message, durationMs = 20_000) =>
     set({

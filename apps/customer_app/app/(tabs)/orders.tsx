@@ -541,6 +541,9 @@ export default function OrdersScreen() {
   useFocusEffect(
     useCallback(() => {
       seedMyOrdersQueryIfCached(queryClient);
+      // Always pull the latest on focus so History fills with just-cancelled /
+      // just-delivered orders instead of showing a stale (or empty) cached list.
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
     }, [queryClient])
   );
 
