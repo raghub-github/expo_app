@@ -63,8 +63,11 @@ export async function loadOrderRefundGuardState(
     SELECT
       c.id                              AS id,
       c.grand_total                     AS grand_total,
-      LOWER(COALESCE(c.status, ''))          AS status,
-      LOWER(COALESCE(c.current_status, ''))  AS current_status,
+      -- c.status is the order_status_type enum; cast to text BEFORE COALESCE so
+      -- the '' fallback isn't coerced into the enum (that throws
+      -- "invalid input value for enum order_status_type: ''").
+      LOWER(COALESCE(c.status::text, ''))          AS status,
+      LOWER(COALESCE(c.current_status::text, ''))  AS current_status,
       COALESCE(agg.refunded, 0)         AS already_refunded,
       COALESCE(agg.cnt, 0)              AS active_refund_count
     FROM orders_core c
