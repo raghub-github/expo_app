@@ -5,6 +5,7 @@ import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.js";
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "../lib/apply-merchant-cancellation-ledger.js";
+import { autoRefundOnCancellation } from "../lib/auto-refund-on-cancellation.js";
 import { clearMerchantStoreOrderNotifications } from "../lib/clear-merchant-order-notifications.js";
 import { emitEvent } from "../modules/notifications/eventBus.js";
 
@@ -298,6 +299,26 @@ async function finalizeCancelledRow(
       );
     } catch (ledgerErr) {
       log.error({ err: ledgerErr, coreId }, "order_acceptance_timeout_ledger_failed");
+    }
+    // Auto-refund the customer 100% — merchant never accepted, so anything they
+    // paid must go back automatically. Best-effort: a refund failure leaves a
+    // retriable order_refunds row and must not abort the cancellation.
+    try {
+      const outcome = await autoRefundOnCancellation(
+        {
+          orderCoreId: coreId,
+          reason: `${MERCHANT_ACCEPT_TIMEOUT_LABEL} — ${MERCHANT_ACCEPT_TIMEOUT_REASON}`,
+          actorEmail: null,
+          actorRole: "system",
+        },
+        sql
+      );
+      log.info(
+        { coreId, triggered: outcome.triggered, skipped: outcome.skippedReason, status: outcome.result?.status },
+        "order_acceptance_timeout_auto_refund"
+      );
+    } catch (refundErr) {
+      log.error({ err: refundErr, coreId }, "order_acceptance_timeout_auto_refund_failed");
     }
     try {
       const ownerRows = (await sql`

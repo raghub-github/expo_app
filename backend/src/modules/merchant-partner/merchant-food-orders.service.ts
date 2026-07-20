@@ -32,6 +32,7 @@ import {
 } from "../../lib/financial-rule-executor.js";
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
+import { autoRefundOnCancellation } from "../../lib/auto-refund-on-cancellation.js";
 import { creditMerchantOrderEarningOnDelivered } from "../../lib/credit-merchant-order-on-delivered.js";
 import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
 import {
@@ -2244,6 +2245,29 @@ export async function patchMerchantFoodOrderStatus(
       });
     } catch {
       /* non-fatal */
+    }
+    // Auto-refund the customer when the MERCHANT (store) or the SYSTEM cancelled
+    // — the customer paid and didn't get the order, so their money goes back.
+    // The agent/admin path is excluded (agents follow the dashboard rule-engine
+    // refund flow) and so is the customer path (customers forfeit; that flow
+    // lives in food.order-cancel.service.ts and never calls this). Amount uses
+    // the rule engine's computed refund, falling back to 100% of what was paid.
+    // Best-effort: leaves a retriable order_refunds row on failure.
+    if (cancelledByType === "store" || cancelledByType === "system") {
+      try {
+        const engineAmount = Number(refund.refundAmount);
+        await autoRefundOnCancellation(
+          {
+            orderCoreId: corePk,
+            reason: displayReason || "Order cancelled by merchant",
+            actorRole: cancelledByType,
+            amount: Number.isFinite(engineAmount) && engineAmount > 0 ? engineAmount : null,
+          },
+          sql
+        );
+      } catch {
+        /* non-fatal — refund can be retried via /v1/internal/orders/:id/refund/execute */
+      }
     }
     if (!engineResult.applied) {
       try {
