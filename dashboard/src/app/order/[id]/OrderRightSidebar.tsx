@@ -7,6 +7,7 @@ import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { Bell, ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
+import { classifyRefund, orderRefundState } from "@/lib/orders/refund-status";
 import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import {
@@ -111,6 +112,8 @@ interface OrderRightSidebarProps {
     refundDescription: string | null;
     refundAmount: string;
     refundStatus: string | null;
+    executionStatus?: string | null;
+    failureReason?: string | null;
     initiatedByEmail: string | null;
     createdAt: string;
   }>;
@@ -746,39 +749,73 @@ export default function OrderRightSidebar({
     let cancellationEntry: (RejectionInfoEntry & { atIso: string | null }) | null = null;
     const refundEntries: Array<RejectionInfoEntry & { atIso: string | null }> = [];
 
+    // A refund row existing does not mean money moved. Only show a refunded
+    // amount once it is actually settled, and surface failures explicitly so a
+    // cancellation whose refund was rejected can't read as a clean refund.
+    const refundState = orderRefundState(orderRefunds);
+    const anyRefundAttempted = orderRefunds.length > 0;
+
     const cancellation = order.cancellationInfo;
     if (hasOrderCancellationInfo(cancellation)) {
       const display = dashboardRejectionCancellationDisplay(cancellation!);
+      const cancellationStatus =
+        refundState === "refund_failed"
+          ? "REFUND FAILED"
+          : refundState === "refunded"
+            ? cancellation!.refundStatus?.trim() || "REFUNDED"
+            : anyRefundAttempted
+              ? "REFUND PENDING"
+              : cancellation!.refundStatus?.trim() || null;
 
       cancellationEntry = {
         id: "cancellation",
         kind: "cancellation",
         reason: display.reason,
-        detail: display.detail,
+        detail:
+          refundState === "refund_failed"
+            ? [display.detail, "Refund was attempted but rejected — no money returned."]
+                .filter(Boolean)
+                .join(" · ")
+            : display.detail,
         source: display.canceledBy,
         by: display.rejectedBy,
         at: formatRejectionAt(cancellation!.cancelledAtIso),
         atIso: cancellation!.cancelledAtIso ?? null,
         rider: null,
-        amount: formatRejectionAmount(cancellation!.refundAmount),
-        status: cancellation!.refundStatus?.trim() || null,
+        // Only claim an amount once a refund actually settled.
+        amount:
+          refundState === "refunded"
+            ? formatRejectionAmount(cancellation!.refundAmount)
+            : null,
+        status: cancellationStatus,
       };
     }
 
     for (const r of orderRefunds) {
       const createdIso = String(r.createdAt ?? "");
+      const outcome = classifyRefund(r);
       refundEntries.push({
         id: `refund-${r.id}`,
         kind: "refund",
         reason: r.refundReason?.trim() || "Refund / cancellation",
-        detail: r.refundDescription?.trim() || null,
+        detail:
+          outcome === "failed"
+            ? [r.refundDescription?.trim(), r.failureReason?.trim()]
+                .filter(Boolean)
+                .join(" · ") || "Refund failed — no money returned."
+            : r.refundDescription?.trim() || null,
         source: null,
         by: r.initiatedByEmail?.trim() || null,
         at: formatRejectionAt(createdIso),
         atIso: createdIso || null,
         rider: null,
-        amount: formatRejectionAmount(r.refundAmount),
-        status: r.refundStatus?.trim() || null,
+        amount: outcome === "settled" ? formatRejectionAmount(r.refundAmount) : null,
+        status:
+          outcome === "failed"
+            ? "FAILED"
+            : outcome === "settled"
+              ? r.refundStatus?.trim() || "REFUNDED"
+              : "PENDING",
       });
     }
 

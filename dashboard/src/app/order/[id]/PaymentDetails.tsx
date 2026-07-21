@@ -12,6 +12,11 @@ import {
   customerDeliveryFromOrderPricing,
 } from '@/lib/orderItemsPayload';
 import type { OrderDiscountOfferSource } from '@/lib/merchant-billing-discount';
+import {
+  isRefundSettled,
+  isRefundFailed,
+  settledRefundTotal,
+} from '@/lib/orders/refund-status';
 
 interface OrderForPaymentCard {
   id: number;
@@ -32,6 +37,9 @@ interface OrderRefundForDisplay {
   refundReason: string;
   refundAmount: string;
   refundStatus: string | null;
+  /** Executor state — decides whether money actually moved. */
+  executionStatus?: string | null;
+  failureReason?: string | null;
   initiatedByEmail: string | null;
   createdAt: string;
 }
@@ -514,11 +522,12 @@ export default function PaymentDetails({
     onPrefetchOrderItems?.();
   }, [onPrefetchOrderItems]);
 
-  const hasRefundRecords = orderRefunds.length > 0;
-  const totalRefundFromRefunds = orderRefunds.reduce(
-    (sum, r) => sum + (Number(r.refundAmount) || 0),
-    0
-  );
+  // Only refunds that actually moved money count towards "Refunded" / totals —
+  // a FAILED or never-executed row must not make the order look refunded.
+  const hasRefundRecords = orderRefunds.some(isRefundSettled);
+  const hasFailedRefundOnly =
+    !hasRefundRecords && orderRefunds.some(isRefundFailed);
+  const totalRefundFromRefunds = settledRefundTotal(orderRefunds);
 
   const resolved = useMemo(() => {
     const customerFromItems = orderItemsPricing?.customer?.totalOrderAmount;
@@ -729,12 +738,20 @@ export default function PaymentDetails({
               <span>Payment details</span>
             </span>
           </span>
-          {resolved.isRefunded && (
+          {resolved.isRefunded ? (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-100">
               <i className="bi bi-check-circle-fill text-[12px]" />
               Refunded
             </span>
-          )}
+          ) : hasFailedRefundOnly ? (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-red-50 text-red-700 border border-red-100"
+              title="A refund was attempted but the payment gateway rejected it. No money has been returned."
+            >
+              <i className="bi bi-exclamation-triangle-fill text-[12px]" />
+              Refund failed
+            </span>
+          ) : null}
         </div>
         <div className="space-y-1.5">
           <p className="text-[12px]">
