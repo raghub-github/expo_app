@@ -19,7 +19,8 @@
         "gradleCommand": ":app:assembleRelease"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_PHONE_OTP_USE_BACKEND": "true"
       }
     },
     "production": {
@@ -29,7 +30,8 @@
         "gradleCommand": ":app:bundleRelease"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_PHONE_OTP_USE_BACKEND": "true"
       }
     }
   },
