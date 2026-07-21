@@ -80,6 +80,9 @@ interface ItemsRefundModalProps {
   refundRemainingRefundable?: number;
 }
 
+/** Payment gateways (Razorpay) reject refunds below ₹1. */
+const MIN_GATEWAY_REFUND = 1;
+
 function discountTagLabel(tag?: OrderPricingLine['discountTag']): string | null {
   if (tag === 'platform') return 'Platform discount';
   if (tag === 'store') return 'Store discount';
@@ -1137,6 +1140,21 @@ export default function ItemsRefundModal({
   };
 
   /** Merchant CTM amount to debit from wallet (uses frozen merchant line amounts, not customer CTC). */
+  /**
+   * What the CUSTOMER actually gets back. Item percentages apply to item prices
+   * (≈ merchant CTM), so convert the selection to a ratio and apply it to the
+   * customer's paid total (CTC). This is the figure we refund and display.
+   */
+  const calculateCustomerPayableRefund = (): number => {
+    const selected = calculateTotalRefundAmount();
+    const itemBillTotal = refundItems.reduce(
+      (sum, i) => sum + i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity),
+      0
+    );
+    if (itemBillTotal <= 0 || customerCtcTotal <= 0) return roundMoney(selected);
+    return roundMoney((selected / itemBillTotal) * customerCtcTotal);
+  };
+
   const calculateMerchantDebitAmount = (): number => {
     if (merchantDebit === 'no_debit' || !merchantDebit) return 0;
     const merchantTotal = pricing?.totalOrderAmount ?? 0;
@@ -1398,15 +1416,44 @@ export default function ItemsRefundModal({
       onToast?.('Refund amount must be greater than 0.');
       return;
     }
+    // ── Refund basis: ALWAYS what the CUSTOMER actually paid (CTC) ──────────
+    // Item-level percentages are applied to item prices, which sum to roughly
+    // the merchant CTM — not the customer's bill. So turn the selection into a
+    // ratio and apply that ratio to the customer's paid total instead. A 60%
+    // item selection on a ₹1.83 order now refunds ₹1.10, not ₹0.60.
+    // (refund_with_cancellation already derives its amount from the CTC total,
+    // so it needs no scaling.)
     const fullOrderAmount = refundItems.reduce(
       (sum, i) => sum + (i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity)),
       0
     );
+    const refundRatio = fullOrderAmount > 0 ? totalAmount / fullOrderAmount : 0;
+    const scaledCustomerRefund =
+      customerCtcTotal > 0 ? roundMoney(refundRatio * customerCtcTotal) : totalAmount;
     const refundAmount =
-      refundType === 'refund_with_cancellation'
-        ? customerRefundAmount
-        : totalAmount;
-    const amountToSend = Math.max(0.01, refundAmount);
+      refundType === 'refund_with_cancellation' ? customerRefundAmount : scaledCustomerRefund;
+
+    // Razorpay rejects refunds below ₹1 — lift to the minimum, but never beyond
+    // what is still refundable on this order.
+    const remainingRefundable =
+      typeof refundRemainingRefundable === 'number' && Number.isFinite(refundRemainingRefundable)
+        ? refundRemainingRefundable
+        : refundAmount;
+    let amountToSend = roundMoney(refundAmount);
+    if (amountToSend > 0 && amountToSend < MIN_GATEWAY_REFUND) {
+      const lifted = roundMoney(Math.min(MIN_GATEWAY_REFUND, Math.max(remainingRefundable, 0)));
+      if (lifted < MIN_GATEWAY_REFUND) {
+        onToast?.(
+          `Refund must be at least ₹${MIN_GATEWAY_REFUND} (payment gateway minimum) — only ₹${Math.max(remainingRefundable, 0).toFixed(2)} is still refundable on this order.`
+        );
+        return;
+      }
+      amountToSend = lifted;
+    }
+    if (amountToSend <= 0) {
+      onToast?.('Refund amount must be greater than 0.');
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -2059,11 +2106,22 @@ export default function ItemsRefundModal({
                             ))}
                           </tbody>
                         </table>
-                        <div className="mt-2 flex justify-end">
+                        <div className="mt-2 flex flex-col items-end gap-1">
                           <div className={`px-3 py-1.5 rounded border text-xs ${calculateTotalPercentageRefundAmount() > 0 ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
-                            <span className="font-medium text-slate-700">Total: </span>
+                            <span className="font-medium text-slate-700">Items selected: </span>
                             <span className={calculateTotalPercentageRefundAmount() > 0 ? 'font-bold text-green-600' : 'text-slate-400'}>₹{calculateTotalPercentageRefundAmount().toFixed(2)}</span>
                           </div>
+                          {calculateCustomerPayableRefund() > 0 ? (
+                            <div className="px-3 py-1.5 rounded border border-emerald-300 bg-emerald-50 text-xs">
+                              <span className="font-medium text-slate-700">Customer refund: </span>
+                              <span className="font-bold text-emerald-700">
+                                ₹{calculateCustomerPayableRefund().toFixed(2)}
+                              </span>
+                              <span className="ml-1 text-[10px] text-slate-500">
+                                (same % of ₹{customerCtcTotal.toFixed(2)} paid)
+                              </span>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     )}
