@@ -44,7 +44,18 @@ export interface OrderRefundGuardState {
   /** max(grandTotal - alreadyRefunded, 0). */
   remainingRefundable: number;
   fullyRefunded: boolean;
+  /** Amount actually captured from the customer (0 when COD / unpaid). */
+  capturedAmount: number;
+  /** Gateway of the captured payment (razorpay / wallet / …), '' when none. */
+  paymentGateway: string;
+  /** orders_core.payment_method (upi / card / cash / …). */
+  paymentMethod: string;
+  /** True when a captured payment exists that money can be pushed back through. */
+  hasCapturedPayment: boolean;
 }
+
+/** Payment gateways (Razorpay) reject refunds below ₹1. */
+export const MIN_GATEWAY_REFUND = 1;
 
 function toNum(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
@@ -68,9 +79,20 @@ export async function loadOrderRefundGuardState(
       -- "invalid input value for enum order_status_type: ''").
       LOWER(COALESCE(c.status::text, ''))          AS status,
       LOWER(COALESCE(c.current_status::text, ''))  AS current_status,
+      LOWER(COALESCE(c.payment_method::text, ''))  AS payment_method,
       COALESCE(agg.refunded, 0)         AS already_refunded,
-      COALESCE(agg.cnt, 0)              AS active_refund_count
+      COALESCE(agg.cnt, 0)              AS active_refund_count,
+      pay.amount                        AS captured_amount,
+      LOWER(COALESCE(pay.payment_gateway::text, '')) AS payment_gateway
     FROM orders_core c
+    LEFT JOIN LATERAL (
+      SELECT op.amount, op.payment_gateway
+      FROM orders_core_payments op
+      WHERE op.order_id = c.order_id
+        AND UPPER(COALESCE(op.payment_status, '')) IN ('PAID','CAPTURED','SUCCESS','COMPLETED')
+      ORDER BY op.paid_at DESC NULLS LAST, op.id DESC
+      LIMIT 1
+    ) pay ON TRUE
     LEFT JOIN LATERAL (
       SELECT
         SUM(r.refund_amount)::numeric AS refunded,
@@ -94,6 +116,10 @@ export async function loadOrderRefundGuardState(
       activeRefundCount: 0,
       remainingRefundable: 0,
       fullyRefunded: false,
+      capturedAmount: 0,
+      paymentGateway: "",
+      paymentMethod: "",
+      hasCapturedPayment: false,
     };
   }
 
@@ -110,6 +136,8 @@ export async function loadOrderRefundGuardState(
   const fullyRefunded =
     grandTotal > 0 && alreadyRefunded >= grandTotal - MONEY_EPSILON;
 
+  const capturedAmount = toNum(r.captured_amount);
+
   return {
     orderId,
     found: true,
@@ -119,6 +147,10 @@ export async function loadOrderRefundGuardState(
     activeRefundCount: Math.trunc(toNum(r.active_refund_count)),
     remainingRefundable,
     fullyRefunded,
+    capturedAmount,
+    paymentGateway: String(r.payment_gateway ?? ""),
+    paymentMethod: String(r.payment_method ?? ""),
+    hasCapturedPayment: capturedAmount > 0,
   };
 }
 
@@ -176,6 +208,33 @@ export function evaluateRefundGuard(
       };
     }
     const amt = toNum(refundAmount);
+
+    // ── Payment preflight ────────────────────────────────────────────────
+    // Catch gateway-level failures BEFORE anything mutates, so a rejected
+    // refund never leaves a half-applied cancellation behind.
+    // COD / unpaid orders have nothing captured — the executor NOOPs them, so
+    // they're allowed through; only gateway-backed refunds get these checks.
+    if (state.hasCapturedPayment) {
+      if (amt - state.capturedAmount > MONEY_EPSILON) {
+        return {
+          ok: false,
+          code: "exceeds_captured_amount",
+          message: `Refund of ₹${amt.toFixed(2)} exceeds the ₹${state.capturedAmount.toFixed(
+            2
+          )} actually captured from the customer — the gateway would reject it.`,
+          state,
+        };
+      }
+      if (amt > 0 && amt < MIN_GATEWAY_REFUND) {
+        return {
+          ok: false,
+          code: "below_gateway_minimum",
+          message: `Refund must be at least ₹${MIN_GATEWAY_REFUND} (payment gateway minimum).`,
+          state,
+        };
+      }
+    }
+
     if (amt > 0 && amt - state.remainingRefundable > MONEY_EPSILON) {
       return {
         ok: false,
