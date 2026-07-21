@@ -41,10 +41,17 @@ export interface AutoRefundArgs {
 
 export interface AutoRefundOutcome {
   triggered: boolean;
-  skippedReason?: "already_refunded" | "nothing_paid" | "order_not_found";
+  skippedReason?:
+    | "already_refunded"
+    | "nothing_paid"
+    | "order_not_found"
+    | "below_gateway_minimum";
   refundId?: number;
   result?: RefundExecutionResult;
 }
+
+/** Payment gateways (Razorpay) reject refunds below ₹1. */
+const MIN_GATEWAY_REFUND = 1;
 
 /**
  * Resolve the amount to refund at 100%: the customer's captured payment for
@@ -103,15 +110,26 @@ export async function autoRefundOnCancellation(
     return { triggered: false, skippedReason: "already_refunded" };
   }
 
-  const amount =
+  const paidAmount = await resolvePaidAmount(sql, orderCoreId);
+  if (paidAmount < 0) return { triggered: false, skippedReason: "order_not_found" };
+
+  let amount =
     typeof args.amount === "number" && Number.isFinite(args.amount) && args.amount > 0
       ? Math.round(args.amount * 100) / 100
-      : await resolvePaidAmount(sql, orderCoreId);
+      : paidAmount;
 
-  if (amount < 0) return { triggered: false, skippedReason: "order_not_found" };
   if (amount === 0) {
     // Nothing was paid (COD / unpaid) — no money to return.
     return { triggered: false, skippedReason: "nothing_paid" };
+  }
+  // Never refund more than the customer actually paid.
+  if (paidAmount > 0 && amount > paidAmount) amount = paidAmount;
+  if (amount < MIN_GATEWAY_REFUND) {
+    // Razorpay rejects sub-₹1 refunds (they come back FAILED). Lift to the
+    // minimum when the customer paid at least that much; otherwise there is
+    // nothing the gateway will accept — skip and leave it for ops.
+    if (paidAmount >= MIN_GATEWAY_REFUND) amount = MIN_GATEWAY_REFUND;
+    else return { triggered: false, skippedReason: "below_gateway_minimum" };
   }
 
   // Create the refund ledger row the executor will fill in.

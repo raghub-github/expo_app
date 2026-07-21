@@ -30,6 +30,9 @@ import { applyMerchantOrderCancellationLedger } from "@/lib/orders/apply-merchan
 
 export const runtime = "nodejs";
 
+/** Payment gateways (Razorpay) reject refunds below ₹1. */
+const MIN_GATEWAY_REFUND = 1;
+
 function parseOrderId(param: string | undefined): number | null {
   if (!param) return null;
   const id = Number(param);
@@ -539,6 +542,28 @@ export async function POST(
       );
     }
 
+    // Payment gateways (Razorpay) reject refunds below ₹1 — they come back as
+    // FAILED. Lift sub-₹1 refunds to the minimum, never past what is still
+    // refundable. The modal does the same, so this only guards direct API use.
+    let effectiveRefundAmount = Math.round(refundAmount * 100) / 100;
+    if (effectiveRefundAmount < MIN_GATEWAY_REFUND) {
+      const lifted =
+        Math.round(Math.min(MIN_GATEWAY_REFUND, guardState.remainingRefundable) * 100) / 100;
+      if (lifted < MIN_GATEWAY_REFUND) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "below_gateway_minimum",
+            error: `Refund must be at least ₹${MIN_GATEWAY_REFUND} (payment gateway minimum) — only ₹${guardState.remainingRefundable.toFixed(
+              2
+            )} is still refundable on this order.`,
+          },
+          { status: 409 }
+        );
+      }
+      effectiveRefundAmount = lifted;
+    }
+
     const systemUser = await getSystemUserByEmail(user.email ?? "");
     const refundInitiatedById = systemUser?.id ?? null;
     const refundInitiatedBy = systemUser?.primaryRole ?? "agent";
@@ -556,7 +581,7 @@ export async function POST(
       orderStage: orderMilestone,
       triggeredBy: refundInitiatedBy,
       orderGross: orderCtx.grandTotal,
-      refundAmount,
+      refundAmount: effectiveRefundAmount,
       cancellationReasonId: catalogRow.id,
       actorSystemUserId: refundInitiatedById,
       postDelivery: refundType === "refund_with_cancellation",
@@ -577,9 +602,9 @@ export async function POST(
       refundType: toRefundTypeDb(refundType),
       refundReason: refundReasonResolved,
       refundDescription: refundDescription?.trim() ?? null,
-      refundAmount,
+      refundAmount: effectiveRefundAmount,
       refundFee: 0,
-      netRefundAmount: refundAmount,
+      netRefundAmount: effectiveRefundAmount,
       productType: "order",
       mxDebitAmount: resolvedMxDebitAmount > 0 ? resolvedMxDebitAmount : 0,
       mxDebitReason: mxDebitReason?.trim() ?? null,
@@ -605,7 +630,7 @@ export async function POST(
         reasonCode,
         reasonText,
         refundStatus: "completed",
-        refundAmount,
+        refundAmount: effectiveRefundAmount,
         metadata: cancellationMetadata,
         catalogReasonId: catalogRow.id,
         cancelledByType: "admin",
@@ -644,7 +669,7 @@ export async function POST(
       const executor = await executeOrderRefundOnBackend({
         orderId,
         refundId: Number(record.id),
-        refundAmount,
+        refundAmount: effectiveRefundAmount,
         refundReason: refundReasonResolved,
         actor: actorForExecutor,
       });
@@ -673,7 +698,7 @@ export async function POST(
     const executor = await executeOrderRefundOnBackend({
       orderId,
       refundId: Number(record.id),
-      refundAmount,
+      refundAmount: effectiveRefundAmount,
       refundReason: refundReasonResolved,
       actor: actorForExecutor,
     });
