@@ -654,7 +654,20 @@ export async function authRoutes(app: FastifyInstance) {
       schema: {
         body: OtpVerifySchema,
         response: {
-          200: SessionSchema,
+          // The merchant branch returns `partner: { parent, childStores }` on top
+          // of the base session. Fastify serialises the 200 through this schema and
+          // STRIPS anything not declared here — without `partner` the merchant app
+          // received a 200 with no partner and threw "Merchant session response
+          // missing partner information", making a successful login look failed.
+          // `z.any()` for the inner values so nested fields are not stripped either.
+          200: SessionSchema.extend({
+            partner: z
+              .object({
+                parent: z.any(),
+                childStores: z.array(z.any()),
+              })
+              .optional(),
+          }),
           400: z.object({ error: z.string() }),
           403: z.object({ error: z.string(), message: z.string() }),
           404: z.object({ error: z.string(), message: z.string() }).optional(),
