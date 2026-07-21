@@ -14,6 +14,9 @@ import {
   FlatList,
   ScrollView,
   Switch,
+  Modal,
+  Animated,
+  PanResponder,
   NativeSyntheticEvent,
   NativeScrollEvent,
   type ListRenderItemInfo,
@@ -396,6 +399,7 @@ function buildNonCircularData(plans: MerchantPlan[]): MerchantPlan[] {
 export default function PlansScreen() {
   const listRef = useRef<FlatList>(null);
   const [plans, setPlans] = useState<MerchantPlan[]>(DEFAULT_PLANS);
+  const [plansError, setPlansError] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [activePlanCode, setActivePlanCode] = useState(FALLBACK_ACTIVE_PLAN_CODE);
   const [autoRenew, setAutoRenew] = useState(false);
@@ -414,23 +418,45 @@ export default function PlansScreen() {
   const displayData = buildNonCircularData(sortedPlans);
   const realCount = sortedPlans.length;
 
+  /**
+   * Pricing is owned by the DB (`/v1/plans`). DEFAULT_PLANS is only a shape
+   * placeholder for first paint — its prices WILL drift from the real catalogue.
+   * This used to `.catch(() => {})`, so a failed fetch silently rendered those
+   * stale numbers as if they were real (showing ₹149 while the catalogue and the
+   * partner site both said ₹3). Surface the failure and let the merchant retry
+   * instead of quoting a price we can't stand behind.
+   */
+  const loadPlans = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/plans?type=MERCHANT`, { method: "GET" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!Array.isArray(data?.plans) || data.plans.length === 0) {
+        throw new Error("empty plan catalogue");
+      }
+      setPlans(data.plans);
+      setPlansError(null);
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // eslint-disable-next-line no-console
+      console.warn("[plans] catalogue fetch failed — showing placeholder pricing:", msg);
+      setPlansError("Couldn't load current pricing. Pull to retry.");
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const t = setTimeout(() => {
       if (cancelled) return;
-      fetch(`${API_BASE_URL}/v1/plans?type=MERCHANT`, { method: "GET" })
-        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-        .then((data) => {
-          if (cancelled) return;
-          if (Array.isArray(data?.plans) && data.plans.length > 0) setPlans(data.plans);
-        })
-        .catch(() => {});
+      void loadPlans();
     }, 0);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
-  }, []);
+  }, [loadPlans]);
 
   useEffect(() => {
     let cancelled = false;
@@ -550,6 +576,60 @@ export default function PlansScreen() {
 
   const [checkoutPlan, setCheckoutPlan] = useState<MerchantPlan | null>(null);
 
+  /**
+   * Subscription history sheet. Kept closed by default so the plan cards own the
+   * screen; opens on demand and can be dismissed by swiping the grabber down,
+   * tapping the backdrop, the ✕, or the Android back button.
+   */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const sheetTranslateY = useRef(new Animated.Value(0)).current;
+
+  const openHistory = useCallback(() => {
+    sheetTranslateY.setValue(0);
+    setHistoryOpen(true);
+  }, [sheetTranslateY]);
+
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    sheetTranslateY.setValue(0);
+  }, [sheetTranslateY]);
+
+  const sheetPan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_evt, g) => g.dy > 4 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderMove: (_evt, g) => {
+        // Only track downward drags — never let the sheet be pulled above its rest position.
+        if (g.dy > 0) sheetTranslateY.setValue(g.dy);
+      },
+      onPanResponderRelease: (_evt, g) => {
+        const dismissed = g.dy > 110 || g.vy > 0.8;
+        if (dismissed) {
+          Animated.timing(sheetTranslateY, {
+            toValue: 600,
+            duration: 160,
+            useNativeDriver: true,
+          }).start(() => {
+            setHistoryOpen(false);
+            sheetTranslateY.setValue(0);
+          });
+        } else {
+          Animated.spring(sheetTranslateY, {
+            toValue: 0,
+            useNativeDriver: true,
+            bounciness: 2,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(sheetTranslateY, {
+          toValue: 0,
+          useNativeDriver: true,
+          bounciness: 2,
+        }).start();
+      },
+    })
+  ).current;
+
   const refreshSubscriptionState = useCallback(async () => {
     if (!token || !selectedStore?.id) return;
     try {
@@ -624,13 +704,73 @@ export default function PlansScreen() {
         ))}
       </View>
 
-      {/* Combined subscription history — purchases + refunds in one merchant-
-          view timeline. Backend endpoint strips agent identity server-side
-          so this list can never accidentally leak actor_* fields. */}
-      {selectedStore?.id && token ? (
-        <View style={{ paddingHorizontal: H_PADDING, marginTop: 20 }}>
-          <SubscriptionHistoryList storeId={selectedStore.id} token={token} />
+      {plansError ? (
+        <View style={styles.plansErrorWrap}>
+          <Ionicons name="warning-outline" size={16} color="#B45309" />
+          <Text style={styles.plansErrorText}>{plansError}</Text>
+          <Pressable onPress={() => void loadPlans()} hitSlop={8}>
+            <Text style={styles.plansErrorRetry}>Retry</Text>
+          </Pressable>
         </View>
+      ) : null}
+
+      {/* History lives behind a button, not inline: rendering the timeline here
+          pushed the plan cards off-screen on small devices and this screen is a
+          fixed View (no vertical scroll), so the list had nowhere to go. */}
+      {selectedStore?.id && token ? (
+        <View style={styles.historyCtaWrap}>
+          <Pressable
+            onPress={openHistory}
+            style={({ pressed }) => [styles.historyCta, pressed && styles.historyCtaPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="View subscription history"
+          >
+            <Ionicons name="time-outline" size={18} color={GatiMitraMerchant.textPrimary} />
+            <Text style={styles.historyCtaText}>Subscription history</Text>
+            <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textSecondary} />
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* Bottom sheet: swipe the handle down or tap the backdrop / ✕ to close. */}
+      {selectedStore?.id && token ? (
+        <Modal
+          visible={historyOpen}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={closeHistory}
+        >
+          <View style={styles.sheetOverlay}>
+            <Pressable style={styles.sheetBackdrop} onPress={closeHistory} />
+            <Animated.View
+              style={[styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}
+            >
+              <View style={styles.sheetGrabArea} {...sheetPan.panHandlers}>
+                <View style={styles.sheetGrabber} />
+              </View>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Subscription history</Text>
+                <Pressable
+                  onPress={closeHistory}
+                  hitSlop={10}
+                  style={styles.sheetClose}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close subscription history"
+                >
+                  <Ionicons name="close" size={20} color={GatiMitraMerchant.textPrimary} />
+                </Pressable>
+              </View>
+              <ScrollView
+                style={styles.sheetBody}
+                contentContainerStyle={styles.sheetBodyContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <SubscriptionHistoryList storeId={selectedStore.id} token={token} />
+              </ScrollView>
+            </Animated.View>
+          </View>
+        </Modal>
       ) : null}
 
       {checkoutPlan && token && selectedStore?.id ? (
@@ -660,6 +800,78 @@ export default function PlansScreen() {
 }
 
 const styles = StyleSheet.create({
+  plansErrorWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: H_PADDING,
+    marginTop: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  plansErrorText: { flex: 1, fontSize: 12, fontWeight: "600", color: "#92400E" },
+  plansErrorRetry: { fontSize: 12, fontWeight: "800", color: "#B45309" },
+  historyCtaWrap: { paddingHorizontal: H_PADDING, marginTop: 18 },
+  historyCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: BUTTON_RADIUS,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  historyCtaPressed: { opacity: 0.85 },
+  historyCtaText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  sheetOverlay: { flex: 1, justifyContent: "flex-end" },
+  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,23,42,0.5)" },
+  sheet: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    maxHeight: "82%",
+    paddingBottom: 8,
+    overflow: "hidden",
+  },
+  sheetGrabArea: { paddingTop: 10, paddingBottom: 6, alignItems: "center" },
+  sheetGrabber: {
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#D1D5DB",
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  sheetTitle: { fontSize: 17, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  sheetClose: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F3F4F6",
+  },
+  sheetBody: { flexGrow: 0 },
+  sheetBodyContent: { paddingHorizontal: H_PADDING, paddingTop: 12, paddingBottom: 24 },
+
   container: { flex: 1, backgroundColor: GatiMitraMerchant.background },
   header: { paddingHorizontal: H_PADDING, marginBottom: 20 },
   title: {
