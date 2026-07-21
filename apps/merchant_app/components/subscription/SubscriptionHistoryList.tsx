@@ -41,10 +41,41 @@ function inr(rupees: number): string {
 function paise(p: number): string {
   return inr(Math.round(p) / 100);
 }
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
+/**
+ * Parse a timestamp the way the API may actually send it.
+ *
+ * `new Date(bad)` does NOT throw — it yields an Invalid Date whose
+ * toLocaleString() renders the literal string "Invalid Date", which is what the
+ * refund rows were showing. Hermes is also stricter than browsers: it rejects
+ * the Postgres wire form "2026-07-21 08:51:00+00" (space separator, 2-digit
+ * offset), so normalise before parsing and always guard the NaN case.
+ */
+function parseTimestamp(raw: string | number | Date | null | undefined): Date | null {
+  if (raw == null || raw === "") return null;
+  if (raw instanceof Date) return Number.isNaN(raw.getTime()) ? null : raw;
+  if (typeof raw === "number") {
+    // Accept both seconds and milliseconds epochs.
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  let s = String(raw).trim();
+  if (!s) return null;
+  s = s.replace(" ", "T");
+  // "+00" / "+0530" -> "+00:00" / "+05:30"
+  if (!/[zZ]$/.test(s)) {
+    s = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2").replace(/([+-]\d{2})$/, "$1:00");
+  }
+  let d = new Date(s);
+  if (Number.isNaN(d.getTime())) d = new Date(String(raw));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatDate(iso: string | number | Date | null | undefined): string {
+  const d = parseTimestamp(iso);
+  if (!d) return "—";
   try {
-    return new Date(iso).toLocaleString("en-IN", {
+    return d.toLocaleString("en-IN", {
       day: "2-digit",
       month: "short",
       year: "numeric",

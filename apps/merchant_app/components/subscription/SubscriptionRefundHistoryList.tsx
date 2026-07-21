@@ -42,10 +42,35 @@ function paise(p: number): string {
   return inr(Math.round(p) / 100);
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
+/**
+ * `new Date(bad)` does NOT throw — it yields an Invalid Date that renders as the
+ * literal "Invalid Date" (what the refund rows showed). Hermes also rejects the
+ * Postgres wire form "2026-07-21 08:51:00+00", so normalise then guard NaN.
+ */
+function parseTimestamp(raw: string | number | Date | null | undefined): Date | null {
+  if (raw == null || raw === "") return null;
+  if (raw instanceof Date) return Number.isNaN(raw.getTime()) ? null : raw;
+  if (typeof raw === "number") {
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  let s = String(raw).trim();
+  if (!s) return null;
+  s = s.replace(" ", "T");
+  if (!/[zZ]$/.test(s)) {
+    s = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2").replace(/([+-]\d{2})$/, "$1:00");
+  }
+  let d = new Date(s);
+  if (Number.isNaN(d.getTime())) d = new Date(String(raw));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatDate(iso: string | number | Date | null | undefined): string {
+  const d = parseTimestamp(iso);
+  if (!d) return "—";
   try {
-    return new Date(iso).toLocaleString("en-IN", {
+    return d.toLocaleString("en-IN", {
       day: "2-digit",
       month: "short",
       year: "numeric",
