@@ -16,7 +16,7 @@ import {
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
-import { createReviewModeService } from "./reviewMode.js";
+import { createReviewBypasses, matchReviewBypass } from "./reviewMode.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
 import { riders, userProfiles, customers } from "../../db/schema.js";
@@ -229,7 +229,10 @@ async function persistMerchantDeviceSessionForMerchant(
  */
 export async function authRoutes(app: FastifyInstance) {
   const env = getEnv();
-  const reviewMode = createReviewModeService(env);
+  // Two independent store-review bypasses (customer app + merchant app). The
+  // OTP request body carries no appType, so the phone number is the
+  // discriminator — each bypass owns a distinct, separately-configured number.
+  const reviewBypasses = createReviewBypasses(env);
 
   // Dev-only in-memory OTP store. In production, use Redis/DB.
   const otpStore = new Map<
@@ -568,15 +571,16 @@ export async function authRoutes(app: FastifyInstance) {
       // and only when the env flag is on. Everything else runs the real
       // SMS path. The OTP is stored in the SAME otpStore with the SAME shape
       // so /otp/verify sees no difference.
-      if (reviewMode.isReviewLogin(phoneE164)) {
-        const otp = reviewMode.getReviewOtp();
+      const requestBypass = matchReviewBypass(reviewBypasses, phoneE164);
+      if (requestBypass) {
+        const otp = requestBypass.getReviewOtp();
         otpStore.set(requestId, {
           phoneE164,
           otp,
           expiresAtMs: Date.now() + expiresInSec * 1000,
           attempts: 0,
         });
-        reviewMode.logReviewLogin(req.log, {
+        requestBypass.logReviewLogin(req.log, {
           phone: phoneE164,
           ip: req.ip ?? null,
           stage: "request",
@@ -692,8 +696,9 @@ export async function authRoutes(app: FastifyInstance) {
 
       if (entry.otp !== otp) {
         req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid code");
-        if (reviewMode.isReviewLogin(phoneE164)) {
-          reviewMode.logReviewLogin(req.log, {
+        const failBypass = matchReviewBypass(reviewBypasses, phoneE164);
+        if (failBypass) {
+          failBypass.logReviewLogin(req.log, {
             phone: phoneE164,
             ip: req.ip ?? null,
             stage: "verify",
@@ -705,8 +710,9 @@ export async function authRoutes(app: FastifyInstance) {
       otpStore.delete(requestId);
 
       req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verified");
-      if (reviewMode.isReviewLogin(phoneE164)) {
-        reviewMode.logReviewLogin(req.log, {
+      const okBypass = matchReviewBypass(reviewBypasses, phoneE164);
+      if (okBypass) {
+        okBypass.logReviewLogin(req.log, {
           phone: phoneE164,
           ip: req.ip ?? null,
           stage: "verify",

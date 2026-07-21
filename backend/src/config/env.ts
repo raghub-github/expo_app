@@ -326,13 +326,16 @@ const EnvSchema = z.object({
   ).default(22),
 
   /**
-   * Review Login OTP Bypass (Play Store / App Store reviewers).
+   * MERCHANT APP review login OTP bypass (Play Store / App Store reviewers).
    *
-   * When ALL three are set AND `REVIEW_LOGIN_BYPASS_ENABLED=true`, the OTP
+   * Completely independent of the customer-app bypass below — separate flag,
+   * separate phone, separate OTP. Neither falls back to the other.
+   *
+   * When all three are set AND `REVIEW_LOGIN_BYPASS_ENABLED=true`, the OTP
    * /request path skips the SMS provider for the single phone
    * `REVIEW_LOGIN_PHONE` and seeds the stored OTP as `REVIEW_LOGIN_FIXED_OTP`.
    * Verification continues through the existing pipeline — same store, same
-   * expiry, same attempt limits, same JWT / session / role / middleware.
+   * expiry, same attempt limits, same JWT / session / merchant context / roles.
    *
    * Any other phone, or the flag set to false, behaves exactly as before
    * (real SMS via MSG91). Disabling is a single env flip — no code change.
@@ -340,22 +343,21 @@ const EnvSchema = z.object({
    * Security: server-only. Never returned in any API response, never logged in
    * full, never read by the client. The fixed OTP is only ever seeded for
    * `REVIEW_LOGIN_PHONE`, so it cannot authenticate any other number.
-   *
-   * Backward compatibility: the original `GOOGLE_REVIEW_*` names are still
-   * honoured as a fallback (they are live in production). The `REVIEW_LOGIN_*`
-   * names take precedence when set, so the two can be migrated without downtime.
    */
   REVIEW_LOGIN_BYPASS_ENABLED: z.preprocess(
-    (v) => (v === undefined || v === "" ? undefined : v === true || v === "true" || v === "1"),
-    z.boolean().optional()
-  ),
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
   REVIEW_LOGIN_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),
   REVIEW_LOGIN_FIXED_OTP: z.preprocess(
     emptyToUndefined,
     z.string().regex(/^\d{4,8}$/).optional()
   ),
 
-  /** @deprecated Legacy names for the review bypass — superseded by REVIEW_LOGIN_*. */
+  /**
+   * CUSTOMER APP review login OTP bypass. Same mechanics as the merchant one
+   * above, for a different app and a different review phone. Independent flag.
+   */
   GOOGLE_REVIEW_MODE: z.preprocess(
     (v) => v === true || v === "true" || v === "1",
     z.boolean()
