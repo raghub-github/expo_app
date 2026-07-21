@@ -27,6 +27,10 @@ import { dashboardCancellationFromCatalog } from "@/lib/orders/merchant-cancella
 import { resolveCancellationCatalogForOrder } from "@/lib/db/operations/order-cancellation-reason-catalog";
 import { applyRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
 import { applyMerchantOrderCancellationLedger } from "@/lib/orders/apply-merchant-cancellation-debit";
+import {
+  captureCancellationSnapshot,
+  restoreCancellationSnapshot,
+} from "@/lib/orders/cancellation-snapshot";
 
 export const runtime = "nodejs";
 
@@ -619,10 +623,25 @@ export async function POST(
       },
     });
 
-    // When refund type is refund_with_cancellation, create cancellation reason and update orders_core
+    // ── ATOMIC CANCEL + REFUND ────────────────────────────────────────────
+    // Cancelling and refunding together must be all-or-nothing. A gateway
+    // refund cannot be reversed, so the reversible half (the cancellation) is
+    // applied first and undone if the money is rejected:
+    //
+    //   snapshot → cancel → execute refund
+    //     accepted → keep cancellation, THEN apply money side-effects
+    //     rejected → restore snapshot, mark refund FAILED, report failure
+    //
+    // Every money side-effect (merchant debit, rider penalty) is deferred until
+    // the refund is accepted, so a rollback leaves no ledger entries to unwind.
+    // Phase 0 (the guard above) already validated the payment can be refunded,
+    // so a rejection here is rare (gateway outage) rather than routine.
     if (refundType === "refund_with_cancellation") {
       const reasonCode = catalogRow.reasonCode.slice(0, 200);
       const reasonText = (refundDescription ?? catalogRow.label).trim().slice(0, 2000) || null;
+
+      // PHASE 1 — capture undo point, then apply the cancellation.
+      const snapshot = await captureCancellationSnapshot(orderId);
       const cancellation = await recordOrderCancellation({
         orderId,
         cancelledBy: refundInitiatedBy,
@@ -641,7 +660,53 @@ export async function POST(
         actionSource: "admin",
         cancelMode: "manual",
         cancellationDetails: merchantCancel.cancellationDetails,
+        skipLedgerSync: true,
       });
+
+      // PHASE 2 — irreversible money movement (idempotent via execution_key).
+      const actorForExecutor = actorContextFromRequest(request, systemUser, user);
+      const executor = await executeOrderRefundOnBackend({
+        orderId,
+        refundId: Number(record.id),
+        refundAmount: effectiveRefundAmount,
+        refundReason: refundReasonResolved,
+        actor: actorForExecutor,
+      });
+
+      // PHASE 3 — resolve. Razorpay refunds settle asynchronously, so the
+      // gateway ACCEPTING the refund (PROCESSING) counts as success just like
+      // COMPLETED/NOOP; only an outright rejection rolls back.
+      const executorStatus = String(executor?.status ?? "").toUpperCase();
+      const refundAccepted =
+        Boolean(executor?.ok) &&
+        (executorStatus === "COMPLETED" ||
+          executorStatus === "PROCESSING" ||
+          executorStatus === "NOOP");
+
+      if (!refundAccepted) {
+        const failureReason =
+          executor?.error ?? (executor === null ? "refund_executor_not_configured" : "refund_rejected");
+        await restoreCancellationSnapshot(snapshot, {
+          markRefundFailedId: Number(record.id),
+          failureReason,
+        });
+        console.error("[order-refund] refund rejected — cancellation rolled back", {
+          orderId,
+          refundId: Number(record.id),
+          failureReason,
+        });
+        return NextResponse.json(
+          {
+            success: false,
+            code: "refund_rejected_cancellation_rolled_back",
+            error: `Refund could not be processed (${failureReason}). The cancellation was rolled back — the order is unchanged. Nothing was refunded; please retry.`,
+            executor,
+          },
+          { status: 502 }
+        );
+      }
+
+      // Refund accepted — now (and only now) apply the money side-effects.
       const riderPenalty = await maybeApplyRiderCancellationPenalty({
         orderId,
         catalogRow,
@@ -661,23 +726,11 @@ export async function POST(
             : null,
         actorSystemUserId: refundInitiatedById,
       });
-      // Execute the money movement (Razorpay / customer wallet / COD-noop).
-      // Actor identity + IP + user-agent get captured on the audit row by
-      // the executor. Failure here does NOT roll back the refund row — ops
-      // can re-run via /v1/internal/orders/:id/refund/execute.
-      const actorForExecutor = actorContextFromRequest(request, systemUser, user);
-      const executor = await executeOrderRefundOnBackend({
-        orderId,
-        refundId: Number(record.id),
-        refundAmount: effectiveRefundAmount,
-        refundReason: refundReasonResolved,
-        actor: actorForExecutor,
-      });
 
       return NextResponse.json({
         success: true,
         data: { ...record, riderPenalty, merchantWalletDebit, executor },
-        message: "Refund created successfully.",
+        message: "Order cancelled and refund initiated successfully.",
       });
     }
 

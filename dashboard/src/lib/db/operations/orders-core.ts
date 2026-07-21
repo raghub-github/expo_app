@@ -1439,6 +1439,13 @@ export interface RecordOrderCancellationInput
   /** When false, only inserts reason row + links orders_core (status already cancelled). */
   fullCoreSync?: boolean;
   previousStatus?: string | null;
+  /**
+   * Skip the merchant cancellation ledger debit. Used by the atomic
+   * cancel+refund flow, which defers every money side-effect until the gateway
+   * has accepted the refund (so a rejected refund leaves no ledger entries to
+   * unwind). Callers that skip are responsible for applying it afterwards.
+   */
+  skipLedgerSync?: boolean;
 }
 
 /**
@@ -1464,7 +1471,7 @@ export async function recordOrderCancellation(
   const linkedId = Number(existing[0]?.cancellation_reason_id);
   const latestId = Number(existing[0]?.id);
   if (Number.isFinite(linkedId) && linkedId > 0) {
-    await syncOrderCancellationLedger(input);
+    if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
     return { cancellationReasonId: linkedId, updated: true };
   }
   if (Number.isFinite(latestId) && latestId > 0) {
@@ -1474,7 +1481,7 @@ export async function recordOrderCancellation(
     await sql`
       UPDATE orders_food SET cancellation_reason_id = ${latestId} WHERE order_id = ${input.orderId}
     `;
-    await syncOrderCancellationLedger(input);
+    if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
     return { cancellationReasonId: latestId, updated: true };
   }
 
@@ -1524,7 +1531,7 @@ export async function recordOrderCancellation(
           rejected_reason: input.displayReason,
         } as Record<string, unknown>),
     });
-    await syncOrderCancellationLedger(input);
+    if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
     return { cancellationReasonId, updated: true };
   }
 
@@ -1537,7 +1544,7 @@ export async function recordOrderCancellation(
     cancelledByLabel: input.cancelledByLabel,
     cancellationDetails: input.cancellationDetails,
   });
-  await syncOrderCancellationLedger(input);
+  if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
   return { cancellationReasonId, updated };
 }
 
