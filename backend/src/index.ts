@@ -359,6 +359,74 @@ app.post<{
   }
 });
 
+// Internal: auto-refund a cancelled order — CREATES the order_refunds row and
+// executes it (Razorpay / wallet / COD-noop) in one call.
+//
+// Why this exists: the Partner Site records merchant cancellations by writing
+// orders_food/orders_core DIRECTLY in its own Next.js routes, so it never reaches
+// merchant-food-orders.service (the one place a merchant/system cancel normally
+// auto-refunds). Without this hop the portal only stamped refund INTENT
+// (order_cancellation refund_status=pending) and the customer never got paid back.
+//
+// Policy (who gets money back automatically):
+//   • system / auto-cancel            → full refund
+//   • merchant (store) cancel/reject  → full refund
+//   • rider-caused cancel             → full refund (fault only decides who is debited)
+//   • customer cancel                 → NEVER auto-refunded (rejected below)
+//   • agent/admin                     → dashboard engine flow, not this route
+//
+// Idempotent: autoRefundOnCancellation no-ops when a non-failed refund already
+// exists for the order, so retries / double webhooks can't double-pay.
+//
+// Auth: X-Internal-Secret == INTERNAL_API_TOKEN (or BACKEND_SCHEDULE_TICK_SECRET).
+app.post<{
+  Params: { orderId: string };
+  Body: {
+    reason?: string;
+    actorEmail?: string | null;
+    actorRole?: string | null;
+    /** Optional override. Omit for a full refund of what the customer paid. */
+    amount?: number | null;
+  };
+}>("/v1/internal/orders/:orderId/auto-refund", async (req, reply) => {
+  const internalSecret = process.env.INTERNAL_API_TOKEN;
+  const tickSecret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  const header = String(req.headers["x-internal-secret"] ?? "");
+  if (!header || (header !== internalSecret && header !== tickSecret)) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const orderId = Number((req.params as { orderId: string }).orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    return reply.code(400).send({ error: "invalid_order_id" });
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const actorRole = String(body.actorRole ?? "system").trim().toLowerCase();
+
+  // Customer-initiated cancellations must never auto-refund.
+  if (actorRole === "customer" || actorRole === "cx") {
+    return reply.send({ ok: true, skipped: "customer_cancellation_no_auto_refund" });
+  }
+
+  const rawAmount = body.amount != null ? Number(body.amount) : NaN;
+  try {
+    const { autoRefundOnCancellation } = await import(
+      "./lib/auto-refund-on-cancellation.js"
+    );
+    const outcome = await autoRefundOnCancellation({
+      orderCoreId: orderId,
+      reason: String(body.reason ?? "").trim() || "Order cancelled",
+      actorEmail: body.actorEmail != null ? String(body.actorEmail) : null,
+      actorRole,
+      amount: Number.isFinite(rawAmount) && rawAmount > 0 ? rawAmount : null,
+    });
+    req.log.info({ orderId, actorRole, outcome }, "order_auto_refund_result");
+    return reply.send({ ok: true, outcome });
+  } catch (e) {
+    req.log.error({ err: e, orderId }, "order_auto_refund_failed");
+    return reply.code(500).send({ error: "auto_refund_failed" });
+  }
+});
+
 // Internal: manually trigger the merchant subscription lifecycle tick.
 // Runs the same reminders + renewals + expired notices the 10-min interval
 // runs — useful for on-demand testing (from a script, from ops) and for

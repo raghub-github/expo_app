@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { mapPartnerUiToCoreStatus } from '@/lib/partner-orders-unify';
+import { triggerOrderAutoRefund } from '@/lib/triggerOrderAutoRefund';
 import {
   actorTypeFromSource,
   recordOrderCancellation,
@@ -157,6 +158,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       } catch (cancelErr) {
         console.warn('[orders-core PATCH] order_cancellation_reasons failed:', cancelErr);
       }
+
+      // Move the money: recordOrderCancellation only stamps refund intent. Any
+      // non-customer cancel refunds the customer in full; customer-initiated
+      // cancels are refused by the helper and the backend.
+      await triggerOrderAutoRefund({
+        orderCorePk: coreId,
+        reason: displayReason,
+        actorRole: actorTypeFromSource(actionSource),
+      });
     }
 
     return NextResponse.json({ ok: true, core_id: coreId, status: nextCore });

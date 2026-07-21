@@ -4,6 +4,7 @@ import { executeOrderCancellationFinancials, lookupOrderContext } from '@/lib/fi
 import { refundFieldsFromEngineResult } from '@gatimitra/financial-rules';
 import { labelsForStatusUpdate, normalizeActionMode, normalizeActionSource } from '@/lib/merchantOrderFoodActions';
 import { recordOrderCancellation } from '@/lib/record-order-cancellation';
+import { triggerOrderAutoRefund } from '@/lib/triggerOrderAutoRefund';
 
 /** Machine reason — must match backend `MERCHANT_ACCEPT_TIMEOUT_REASON`. */
 export const AUTO_CANCEL_REASON = 'MERCHANT_ACCEPT_TIMEOUT';
@@ -204,6 +205,13 @@ async function autoCancelOneFoodOrder(
         reason_code: AUTO_CANCEL_REASON,
         ...(engineResult.raw ? { financial_rule_engine: engineResult.raw } : {}),
       },
+    });
+    // Auto-cancel = merchant never accepted, so the customer gets 100% back.
+    // recordOrderCancellation only stamps intent; this moves the money.
+    await triggerOrderAutoRefund({
+      orderCorePk: coreId,
+      reason: AUTO_CANCEL_REASON,
+      actorRole: 'system',
     });
   } catch {
     /* ignore financial side-effects — row is already cancelled */
