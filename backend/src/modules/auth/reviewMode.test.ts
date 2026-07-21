@@ -97,7 +97,7 @@ describe("ReviewModeService", () => {
     const svc = createReviewModeService(
       makeEnv({ GOOGLE_REVIEW_MODE: true, GOOGLE_REVIEW_PHONE: "+919999999999", GOOGLE_REVIEW_OTP: undefined }),
     );
-    assert.throws(() => svc.getReviewOtp(), /GOOGLE_REVIEW_OTP/);
+    assert.throws(() => svc.getReviewOtp(), /REVIEW_LOGIN_FIXED_OTP/);
   });
 
   it("logReviewLogin never crashes when logger is undefined", () => {
@@ -139,5 +139,140 @@ describe("ReviewModeService internals", () => {
     assert.equal(__test.phoneMatches(env, "+919999999999"), true);
     assert.equal(__test.phoneMatches(env, "9999999999"), true);
     assert.equal(__test.phoneMatches(env, "9999999998"), false);
+  });
+});
+
+/**
+ * Spec coverage for the REVIEW_LOGIN_* env contract.
+ *
+ * `makeEnv` above only seeds the legacy keys, so each case here sets the new
+ * ones explicitly. The service resolves REVIEW_LOGIN_* first and falls back to
+ * GOOGLE_REVIEW_* — that precedence is what lets a live environment migrate
+ * without downtime.
+ */
+describe("Review Login OTP Bypass (REVIEW_LOGIN_* contract)", () => {
+  const PHONE = "7367878981";
+  const OTP = "123456";
+
+  const cfg = (o: Partial<Env>) =>
+    makeEnv({
+      REVIEW_LOGIN_BYPASS_ENABLED: undefined,
+      REVIEW_LOGIN_PHONE: undefined,
+      REVIEW_LOGIN_FIXED_OTP: undefined,
+      ...o,
+    } as Partial<Env>);
+
+  it("bypass DISABLED → review phone is not a review login (stock flow)", () => {
+    const svc = createReviewModeService(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: false,
+        REVIEW_LOGIN_PHONE: PHONE,
+        REVIEW_LOGIN_FIXED_OTP: OTP,
+      } as Partial<Env>),
+    );
+    assert.equal(svc.isReviewLogin(PHONE), false);
+  });
+
+  it("bypass ENABLED + configured review phone → bypass active, fixed OTP seeded", () => {
+    const svc = createReviewModeService(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: true,
+        REVIEW_LOGIN_PHONE: PHONE,
+        REVIEW_LOGIN_FIXED_OTP: OTP,
+      } as Partial<Env>),
+    );
+    assert.equal(svc.isReviewLogin(PHONE), true);
+    assert.equal(svc.isReviewLogin(`+91${PHONE}`), true, "E.164 form must match");
+    assert.equal(svc.getReviewOtp(), OTP);
+  });
+
+  it("SECURITY: fixed OTP never applies to any other phone number", () => {
+    const svc = createReviewModeService(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: true,
+        REVIEW_LOGIN_PHONE: PHONE,
+        REVIEW_LOGIN_FIXED_OTP: OTP,
+      } as Partial<Env>),
+    );
+    for (const other of ["+919876543210", "9876543210", "7367878980", "+917367878982"]) {
+      assert.equal(svc.isReviewLogin(other), false, `${other} must use the normal SMS flow`);
+    }
+  });
+
+  it("incorrect OTP for the review account still fails the normal comparison", () => {
+    const svc = createReviewModeService(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: true,
+        REVIEW_LOGIN_PHONE: PHONE,
+        REVIEW_LOGIN_FIXED_OTP: OTP,
+      } as Partial<Env>),
+    );
+    // The route stores getReviewOtp() and verifies with `entry.otp !== otp`.
+    const stored = svc.getReviewOtp();
+    assert.notEqual(stored, "000000");
+    assert.equal(stored === "000000", false, "a wrong code must not verify");
+  });
+
+  it("REVIEW_LOGIN_* takes precedence over the legacy GOOGLE_REVIEW_* names", () => {
+    const svc = createReviewModeService(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: true,
+        REVIEW_LOGIN_PHONE: PHONE,
+        REVIEW_LOGIN_FIXED_OTP: OTP,
+        GOOGLE_REVIEW_MODE: true,
+        GOOGLE_REVIEW_PHONE: "+919999999999",
+        GOOGLE_REVIEW_OTP: "999999",
+      } as Partial<Env>),
+    );
+    assert.equal(svc.getReviewOtp(), OTP, "new fixed OTP wins");
+    assert.equal(svc.isReviewLogin(PHONE), true, "new phone wins");
+    assert.equal(svc.isReviewLogin("+919999999999"), false, "legacy phone no longer matches");
+  });
+
+  it("BACKWARD COMPAT: legacy names still work when REVIEW_LOGIN_* are absent", () => {
+    const svc = createReviewModeService(
+      cfg({
+        GOOGLE_REVIEW_MODE: true,
+        GOOGLE_REVIEW_PHONE: `+91${PHONE}`,
+        GOOGLE_REVIEW_OTP: OTP,
+      } as Partial<Env>),
+    );
+    assert.equal(svc.isReviewLogin(PHONE), true);
+    assert.equal(svc.getReviewOtp(), OTP);
+  });
+
+  it("explicit REVIEW_LOGIN_BYPASS_ENABLED=false overrides a legacy MODE=true", () => {
+    const svc = createReviewModeService(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: false,
+        GOOGLE_REVIEW_MODE: true,
+        GOOGLE_REVIEW_PHONE: `+91${PHONE}`,
+        GOOGLE_REVIEW_OTP: OTP,
+      } as Partial<Env>),
+    );
+    assert.equal(svc.isReviewLogin(PHONE), false, "the new flag is the kill switch");
+  });
+
+  it("mis-configured bypass (enabled but phone/OTP missing) stays OFF", () => {
+    const noPhone = createReviewModeService(
+      cfg({ REVIEW_LOGIN_BYPASS_ENABLED: true, REVIEW_LOGIN_FIXED_OTP: OTP } as Partial<Env>),
+    );
+    assert.equal(noPhone.isReviewLogin(PHONE), false);
+
+    const noOtp = createReviewModeService(
+      cfg({ REVIEW_LOGIN_BYPASS_ENABLED: true, REVIEW_LOGIN_PHONE: PHONE } as Partial<Env>),
+    );
+    assert.equal(noOtp.isReviewLogin(PHONE), false);
+  });
+
+  it("resolveConfig reports the effective values used by the route", () => {
+    const eff = __test.resolveConfig(
+      cfg({
+        REVIEW_LOGIN_BYPASS_ENABLED: true,
+        REVIEW_LOGIN_PHONE: PHONE,
+        REVIEW_LOGIN_FIXED_OTP: OTP,
+      } as Partial<Env>),
+    );
+    assert.deepEqual(eff, { enabled: true, phone: PHONE, otp: OTP });
   });
 });

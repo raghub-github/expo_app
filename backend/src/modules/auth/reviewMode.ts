@@ -1,20 +1,29 @@
 /**
- * Google Play Review Mode — isolated helper.
+ * Review Login OTP Bypass — isolated helper.
  *
- * The Play reviewer needs to log in without an SMS arriving on a phone they
- * don't possess. This module is the SINGLE place in the codebase that knows
- * about that exception. The auth route consults `isReviewLogin(phone)` at
- * exactly two checkpoints — request and verify — and otherwise nothing in
- * the existing OTP / JWT / middleware logic changes.
+ * A Play Store / App Store reviewer needs to log in without an SMS arriving on
+ * a phone they don't possess. This module is the SINGLE place in the codebase
+ * that knows about that exception. The auth route consults
+ * `isReviewLogin(phone)` at exactly two checkpoints — request and verify — and
+ * otherwise nothing in the existing OTP / JWT / session / middleware logic
+ * changes. There is no separate authentication path.
  *
  * Activation requires ALL of:
- *   - `GOOGLE_REVIEW_MODE = true`
- *   - `GOOGLE_REVIEW_PHONE` is set
- *   - `GOOGLE_REVIEW_OTP` is set (4–8 digits)
- *   - request phone matches `GOOGLE_REVIEW_PHONE` after normalisation
+ *   - `REVIEW_LOGIN_BYPASS_ENABLED = true`
+ *   - `REVIEW_LOGIN_PHONE` is set
+ *   - `REVIEW_LOGIN_FIXED_OTP` is set (4–8 digits)
+ *   - request phone matches `REVIEW_LOGIN_PHONE` after normalisation
  *
  * Any other phone, or the flag flipped to false, returns `false` from
- * `isReviewLogin()` and the normal path runs.
+ * `isReviewLogin()` and the normal path runs. Because the fixed OTP is only
+ * ever SEEDED for the review phone, it can never authenticate another number.
+ *
+ * Backward compatibility: the legacy `GOOGLE_REVIEW_MODE / _PHONE / _OTP` names
+ * are still honoured when the new ones are absent, so an environment already
+ * running the old names keeps working until it is migrated. The new
+ * `REVIEW_LOGIN_*` names win whenever they are present.
+ *
+ * No value here is hardcoded — everything is read from the environment.
  */
 import type { FastifyBaseLogger } from "fastify";
 import type { Env } from "../../config/env.js";
@@ -24,11 +33,29 @@ function digitsOnly(phone: string | undefined | null): string {
   return (phone ?? "").replace(/\D/g, "");
 }
 
-/** Compare the inbound phone against `GOOGLE_REVIEW_PHONE`, ignoring +/spaces. */
+/** Effective bypass config: new REVIEW_LOGIN_* names take precedence over legacy. */
+function resolveConfig(env: Env): {
+  enabled: boolean;
+  phone: string | undefined;
+  otp: string | undefined;
+} {
+  const enabled =
+    env.REVIEW_LOGIN_BYPASS_ENABLED !== undefined
+      ? env.REVIEW_LOGIN_BYPASS_ENABLED
+      : env.GOOGLE_REVIEW_MODE === true;
+  return {
+    enabled,
+    phone: env.REVIEW_LOGIN_PHONE ?? env.GOOGLE_REVIEW_PHONE,
+    otp: env.REVIEW_LOGIN_FIXED_OTP ?? env.GOOGLE_REVIEW_OTP,
+  };
+}
+
+/** Compare the inbound phone against the configured review phone, ignoring +/spaces. */
 function phoneMatches(env: Env, phone: string): boolean {
-  if (!env.GOOGLE_REVIEW_PHONE) return false;
+  const { phone: reviewPhone } = resolveConfig(env);
+  if (!reviewPhone) return false;
   const a = digitsOnly(phone);
-  const b = digitsOnly(env.GOOGLE_REVIEW_PHONE);
+  const b = digitsOnly(reviewPhone);
   if (a.length === 0 || b.length === 0) return false;
   // tolerate country-code differences by matching the trailing 10 digits.
   const tailA = a.slice(-10);
@@ -54,25 +81,28 @@ export interface ReviewModeService {
 export function createReviewModeService(env: Env): ReviewModeService {
   return {
     isReviewLogin(phone: string): boolean {
-      if (!env.GOOGLE_REVIEW_MODE) return false;
-      if (!env.GOOGLE_REVIEW_PHONE || !env.GOOGLE_REVIEW_OTP) return false;
+      const cfg = resolveConfig(env);
+      // Disabled by default, and a mis-configured (half-set) bypass stays off.
+      if (!cfg.enabled) return false;
+      if (!cfg.phone || !cfg.otp) return false;
       return phoneMatches(env, phone);
     },
 
     getReviewOtp(): string {
-      if (!env.GOOGLE_REVIEW_OTP) {
+      const { otp } = resolveConfig(env);
+      if (!otp) {
         throw new Error(
-          "ReviewModeService.getReviewOtp() called without GOOGLE_REVIEW_OTP configured",
+          "ReviewModeService.getReviewOtp() called without REVIEW_LOGIN_FIXED_OTP configured",
         );
       }
-      return env.GOOGLE_REVIEW_OTP;
+      return otp;
     },
 
     logReviewLogin(log, args) {
       const phoneTail = digitsOnly(args.phone).slice(-4);
       log?.info?.(
         {
-          event: "google_review_login",
+          event: "review_login_bypass",
           stage: args.stage,
           ok: args.ok,
           phoneTail,
@@ -87,4 +117,4 @@ export function createReviewModeService(env: Env): ReviewModeService {
 }
 
 // Exported for tests.
-export const __test = { digitsOnly, phoneMatches };
+export const __test = { digitsOnly, phoneMatches, resolveConfig };
