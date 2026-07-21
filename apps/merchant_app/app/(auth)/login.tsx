@@ -117,6 +117,16 @@ export default function LoginScreen() {
   const [otpKeyboardVisible, setOtpKeyboardVisible] = useState(false);
   const otpAutoSubmittedRef = useRef<string | null>(null);
   const verifyOtpRef = useRef<(() => Promise<void>) | null>(null);
+  /**
+   * Hard re-entry guards for OTP verify. `loading` is React state, so it only
+   * blocks a second call one render later — the auto-submit effect and a manual
+   * "Verify" tap can still both fire. A backend OTP requestId is SINGLE USE, so
+   * the second call hits an already-consumed code and comes back 400
+   * invalid_request_id, whose error then overwrites a login that actually
+   * succeeded. Refs update synchronously, so they close that window.
+   */
+  const verifyInFlightRef = useRef(false);
+  const verifySucceededRef = useRef(false);
 
   const scrollPhoneFormIntoView = useCallback(() => {
     const end = () => sheetScrollRef.current?.scrollToEnd({ animated: true });
@@ -291,6 +301,10 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
+      // New OTP session → re-arm the single-use verify guards.
+      verifySucceededRef.current = false;
+      verifyInFlightRef.current = false;
+      otpAutoSubmittedRef.current = null;
       setResendSeconds(60);
       setStep("otp");
     } catch (e: unknown) {
@@ -307,6 +321,11 @@ export default function LoginScreen() {
     setResending(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
+      // A fresh OTP means a fresh requestId, so re-arm the verify guards and
+      // clear the auto-submit memo (otherwise the new code is never submitted).
+      verifySucceededRef.current = false;
+      verifyInFlightRef.current = false;
+      otpAutoSubmittedRef.current = null;
       setResendSeconds(60);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
@@ -337,6 +356,9 @@ export default function LoginScreen() {
       setError("Enter the 6-digit code from SMS");
       return;
     }
+    // Never send the same single-use OTP requestId twice (see refs above).
+    if (verifyInFlightRef.current || verifySucceededRef.current) return;
+    verifyInFlightRef.current = true;
     clearErrors();
     setLoading(true);
     setLastExchange("otp");
@@ -347,6 +369,10 @@ export default function LoginScreen() {
         otp,
         deviceId,
       });
+      // The OTP is consumed server-side the moment verify returns 200, so mark
+      // success before any follow-up work. That way a stray re-submit can never
+      // replay the dead requestId and surface a false "invalid code" error.
+      verifySucceededRef.current = true;
       const partner = partnerDataFromExchange(session.partner);
       await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
       setDeviceSessionMode(false);
@@ -364,6 +390,7 @@ export default function LoginScreen() {
         setError(msg);
       }
     } finally {
+      verifyInFlightRef.current = false;
       setLoading(false);
     }
   };
