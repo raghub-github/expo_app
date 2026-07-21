@@ -117,6 +117,10 @@ export interface OrderRefundListItem {
   refundDescription: string | null;
   refundAmount: string;
   refundStatus: string | null;
+  /** Executor state: INITIATED | PROCESSING | COMPLETED | FAILED | NOOP. */
+  executionStatus: string | null;
+  executionRoute: string | null;
+  failureReason: string | null;
   refundInitiatedBy: string | null;
   refundInitiatedById: number | null;
   initiatedByEmail: string | null;
@@ -136,6 +140,9 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
       r.refund_description AS "refundDescription",
       r.refund_amount AS "refundAmount",
       r.refund_status AS "refundStatus",
+      r.execution_status::text AS "executionStatus",
+      r.execution_route::text AS "executionRoute",
+      r.failure_reason AS "failureReason",
       r.refund_initiated_by AS "refundInitiatedBy",
       r.refund_initiated_by_id AS "refundInitiatedById",
       u.email AS "initiatedByEmail",

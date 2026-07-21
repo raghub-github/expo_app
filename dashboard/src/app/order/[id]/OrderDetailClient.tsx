@@ -285,6 +285,10 @@ export interface OrderRefundListItem {
   refundDescription: string | null;
   refundAmount: string;
   refundStatus: string | null;
+  /** Executor state — decides whether money actually moved. */
+  executionStatus: string | null;
+  executionRoute: string | null;
+  failureReason: string | null;
   refundInitiatedBy: string | null;
   refundInitiatedById: number | null;
   initiatedByEmail: string | null;
