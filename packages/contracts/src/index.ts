@@ -50,6 +50,14 @@ export const OtpRequestResponseSchema = z.object({
   expiresInSec: z.number().int().positive(),
   /** Whether MSG91 accepted the SMS send (OTP is never returned to clients). */
   smsSent: z.boolean().optional(),
+  /**
+   * When true, the client must deliver the OTP itself via Supabase
+   * signInWithOtp instead of relying on a backend-sent SMS. Used for registered
+   * merchant numbers: the existence check + review bypass run on the backend,
+   * but real delivery goes through Supabase (the backend MSG91 OTP channels ack
+   * but do not deliver on this account). requestId is empty in this case.
+   */
+  useSupabase: z.boolean().optional(),
 });
 export type OtpRequestResponse = z.infer<typeof OtpRequestResponseSchema>;
 
