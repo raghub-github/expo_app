@@ -52,6 +52,8 @@ function navIcon(id: string) {
       return FileText;
     case "help":
       return HelpCircle;
+    case "account-deletion":
+      return Store;
     default:
       return FileText;
   }
