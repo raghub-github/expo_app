@@ -66,7 +66,7 @@ export const MENU_FAB_HEIGHT = 48;
 export const SCREEN_WIDTH_EXPORT = SCREEN_WIDTH;
 
 /** Menu row height — fixed for zero layout shift / stable scrollTo. */
-export const MENU_ITEM_ROW_HEIGHT = 210;
+export const MENU_ITEM_ROW_HEIGHT = 202;
 
 /** Min height for menu-loading skeleton — fills viewport below hero/info so scroll never hits blank. */
 export const MENU_LOADING_FILL_MIN_HEIGHT = Math.max(

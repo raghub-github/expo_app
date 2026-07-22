@@ -78,6 +78,11 @@ export function CartOutsideDeliveryRangeScreen({
     return () => sub.remove();
   }, [visible, onClose]);
 
+  useEffect(() => {
+    if (!visible) return;
+    StatusBar.setHidden(false, "none");
+  }, [visible]);
+
   return (
     <Modal
       visible={visible}
@@ -87,7 +92,12 @@ export function CartOutsideDeliveryRangeScreen({
       statusBarTranslucent
     >
       <View style={styles.screen}>
-        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <StatusBar
+          hidden={false}
+          barStyle="light-content"
+          backgroundColor="transparent"
+          translucent
+        />
 
         <ScrollView
           style={styles.scroll}

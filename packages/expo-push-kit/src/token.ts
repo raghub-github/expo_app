@@ -1,5 +1,7 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
+import { loadNotificationsModule, readNotificationPermission } from "./permission";
+import type { NativePushTokenType } from "./types";
 
 export type AndroidChannelOptions = {
   channelId: string;
@@ -9,24 +11,13 @@ export type AndroidChannelOptions = {
   lightColor?: string;
 };
 
-/** Avoid static import of expo-notifications so Expo Go / web fail gracefully. */
-async function loadNotifications(): Promise<typeof import("expo-notifications") | null> {
-  try {
-    if (Constants.appOwnership === "expo") {
-      return null;
-    }
-    return await import("expo-notifications");
-  } catch {
-    return null;
-  }
-}
-
 function resolveProjectId(): string | undefined {
   const extra = Constants.expoConfig?.extra as Record<string, unknown> | undefined;
   const eas = extra?.eas as Record<string, unknown> | undefined;
   const fromExtra = typeof eas?.projectId === "string" ? eas.projectId : undefined;
   const fromEasConfig =
-    typeof (Constants as unknown as { easConfig?: { projectId?: string } }).easConfig?.projectId === "string"
+    typeof (Constants as unknown as { easConfig?: { projectId?: string } }).easConfig?.projectId ===
+    "string"
       ? (Constants as unknown as { easConfig?: { projectId?: string } }).easConfig!.projectId
       : undefined;
   return fromExtra || fromEasConfig || undefined;
@@ -36,7 +27,7 @@ function resolveProjectId(): string | undefined {
  * Foreground presentation defaults. Call once at app startup (before registering token).
  */
 export async function setNotificationHandlerDefaults(): Promise<void> {
-  const Notifications = await loadNotifications();
+  const Notifications = await loadNotificationsModule({ allowExpoGo: true });
   if (!Notifications) return;
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -51,7 +42,7 @@ export async function setNotificationHandlerDefaults(): Promise<void> {
 
 export async function ensureAndroidChannel(opts: AndroidChannelOptions): Promise<void> {
   if (Platform.OS !== "android") return;
-  const Notifications = await loadNotifications();
+  const Notifications = await loadNotificationsModule({ allowExpoGo: true });
   if (!Notifications) return;
   await Notifications.setNotificationChannelAsync(opts.channelId, {
     name: opts.name,
@@ -61,13 +52,24 @@ export async function ensureAndroidChannel(opts: AndroidChannelOptions): Promise
   });
 }
 
+export async function ensureAndroidChannels(channels: AndroidChannelOptions[]): Promise<void> {
+  for (const ch of channels) {
+    await ensureAndroidChannel(ch);
+  }
+}
+
 /**
  * Always obtains the token from Expo (getExpoPushTokenAsync). Never reads a persisted/cached
  * token as the source of truth — callers may compare with a previous value in memory to avoid
  * redundant API calls, but registration should use this fresh value.
+ *
+ * When `requestIfNeeded` is false, returns null if permission is not already granted
+ * (controller owns the request/settings flow).
  */
-export async function getFreshExpoPushToken(): Promise<string | null> {
-  const Notifications = await loadNotifications();
+export async function getFreshExpoPushToken(opts?: {
+  requestIfNeeded?: boolean;
+}): Promise<string | null> {
+  const Notifications = await loadNotificationsModule({ allowExpoGo: false });
   if (!Notifications) return null;
 
   let Device: typeof import("expo-device");
@@ -78,9 +80,12 @@ export async function getFreshExpoPushToken(): Promise<string | null> {
   }
   if (!Device.isDevice) return null;
 
-  const { status: existing } = await Notifications.getPermissionsAsync();
-  if (existing !== "granted") {
-    const { status } = await Notifications.requestPermissionsAsync();
+  const perm = await readNotificationPermission();
+  if (perm.osStatus !== "granted") {
+    if (opts?.requestIfNeeded === false) return null;
+    const { status } = await Notifications.requestPermissionsAsync({
+      ios: { allowAlert: true, allowBadge: true, allowSound: true },
+    });
     if (status !== "granted") return null;
   }
 
@@ -91,7 +96,55 @@ export async function getFreshExpoPushToken(): Promise<string | null> {
       : await Notifications.getExpoPushTokenAsync();
     const token = tokenData?.data?.trim() ?? "";
     return token.length > 0 ? token : null;
+  } catch (e) {
+    console.warn("[push] getExpoPushTokenAsync failed:", (e as Error)?.message ?? e);
+    return null;
+  }
+}
+
+export type DevicePushTokenResult = {
+  token: string;
+  type: NativePushTokenType;
+};
+
+/**
+ * Native FCM (Android) / APNs (iOS) device token. Requires a real build with
+ * Firebase / APNs credentials — fails loudly (returns null + warn) on mismatch.
+ */
+export async function getFreshNativePushToken(): Promise<DevicePushTokenResult | null> {
+  const Notifications = await loadNotificationsModule({ allowExpoGo: false });
+  if (!Notifications) return null;
+
+  let Device: typeof import("expo-device");
+  try {
+    Device = await import("expo-device");
   } catch {
     return null;
   }
+  if (!Device.isDevice) return null;
+
+  const perm = await readNotificationPermission();
+  if (perm.osStatus !== "granted") return null;
+
+  try {
+    const deviceToken = await Notifications.getDevicePushTokenAsync();
+    const raw = String(deviceToken?.data ?? "").trim();
+    if (!raw) {
+      console.warn("[push] getDevicePushTokenAsync returned empty token — check FCM/APNs credentials");
+      return null;
+    }
+    const type: NativePushTokenType =
+      deviceToken.type === "ios" || Platform.OS === "ios" ? "apns" : "fcm";
+    return { token: raw, type };
+  } catch (e) {
+    console.warn(
+      "[push] getDevicePushTokenAsync failed (credentials/project mismatch?):",
+      (e as Error)?.message ?? e
+    );
+    return null;
+  }
+}
+
+export function resolveEasProjectId(): string | undefined {
+  return resolveProjectId();
 }

@@ -21,6 +21,10 @@ import {
   computeSurfaceLiveStatus,
   customerOperationalFromStoreRow,
 } from "../../lib/store-surface-online.js";
+// Single source of truth for the customer status label — the SAME shared engine the
+// partner site / merchant dashboard use. The customer app renders `statusMessage`
+// verbatim instead of doing its own client-side "opens tomorrow" date math.
+import { formatStoreStatusLabel, type LiveSchedulePhase } from "@gatimitra/store-status";
 import { getPrimaryOfferHeadlinesForStores } from "./merchant-offer-headline.js";
 import { getStoreRatingsForStores, getStorePersonalizedRating } from "./merchant-store-ratings.js";
 import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
@@ -197,6 +201,9 @@ export async function merchantRoutes(app: FastifyInstance) {
                 totalReviews: z.number().nullable().optional(),
                 nextCloseAt: z.union([z.string(), z.number()]).nullable().optional(),
                 nextOpenAt: z.union([z.string(), z.number()]).nullable().optional(),
+                /** Backend-formatted status label (shared engine) — render verbatim, do NOT recompute. */
+                statusMessage: z.string().nullable().optional(),
+                statusChip: z.string().nullable().optional(),
                 completedOrderCount: z.number().optional(),
                 packagingChargeAmount: z.number().nullable().optional(),
               })
@@ -224,6 +231,11 @@ export async function merchantRoutes(app: FastifyInstance) {
           banner_url: string | null;
           gallery_images: string[] | null;
           packaging_charge_amount: number | null;
+          // Tick-written schedule state — the SAME columns the merchant dashboard reads.
+          live_schedule_phase: string | null;
+          next_open_at: string | null;
+          next_close_at: string | null;
+          manual_override_active: boolean;
         }
       >();
       if (storeInternalIds.length > 0) {
@@ -231,7 +243,9 @@ export async function merchantRoutes(app: FastifyInstance) {
           const supabase = getSupabase();
           const { data: mediaRows, error: mediaErr } = await supabase
             .from("merchant_stores")
-            .select("id, banner_url, gallery_images, packaging_charge_amount")
+            .select(
+              "id, banner_url, gallery_images, packaging_charge_amount, live_schedule_phase, next_open_at, next_close_at, manual_override_active"
+            )
             .in("id", storeInternalIds);
           if (mediaErr) throw mediaErr;
           for (const row of (mediaRows ??
@@ -240,6 +254,10 @@ export async function merchantRoutes(app: FastifyInstance) {
             banner_url?: string | null;
             gallery_images?: string[] | null;
             packaging_charge_amount?: number | string | null;
+            live_schedule_phase?: string | null;
+            next_open_at?: string | null;
+            next_close_at?: string | null;
+            manual_override_active?: boolean | null;
           }>) {
             const packagingRaw = row.packaging_charge_amount;
             const packagingNum =
@@ -253,6 +271,10 @@ export async function merchantRoutes(app: FastifyInstance) {
                 : null,
               packaging_charge_amount:
                 packagingNum != null && Number.isFinite(packagingNum) ? packagingNum : null,
+              live_schedule_phase: row.live_schedule_phase ?? null,
+              next_open_at: row.next_open_at ?? null,
+              next_close_at: row.next_close_at ?? null,
+              manual_override_active: row.manual_override_active === true,
             });
           }
         } catch (err) {
@@ -357,6 +379,19 @@ export async function merchantRoutes(app: FastifyInstance) {
           sched?.withinOperatingHours ?? false
         );
         const isOpen = liveStatus === "OPEN";
+        // Server-format the status label via the shared engine so the customer app
+        // renders it verbatim (no client-side schedule/date math). Uses the tick-written
+        // merchant_stores columns — identical inputs to the merchant dashboard.
+        const schedMeta = mediaRow;
+        const nextOpenAuthoritative = schedMeta?.next_open_at ?? sched?.nextOpenAt ?? null;
+        const nextCloseAuthoritative = schedMeta?.next_close_at ?? sched?.nextCloseAt ?? null;
+        const statusLabel = formatStoreStatusLabel({
+          phase: (schedMeta?.live_schedule_phase ?? null) as LiveSchedulePhase | null,
+          nextOpenAt: nextOpenAuthoritative,
+          nextCloseAt: nextCloseAuthoritative,
+          manualOverrideActive: schedMeta?.manual_override_active ?? false,
+          isOpenNow: isOpen,
+        });
         return {
           id: s.store_id,
           name: s.store_display_name ?? s.store_name,
@@ -386,8 +421,10 @@ export async function merchantRoutes(app: FastifyInstance) {
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? ratingSummaries.get(storeInternalId)?.totalReviews ?? null
               : null,
-          nextCloseAt: sched?.nextCloseAt ?? null,
-          nextOpenAt: sched?.nextOpenAt ?? null,
+          nextCloseAt: nextCloseAuthoritative ?? sched?.nextCloseAt ?? null,
+          nextOpenAt: nextOpenAuthoritative ?? sched?.nextOpenAt ?? null,
+          statusMessage: statusLabel.primary,
+          statusChip: statusLabel.chip,
           completedOrderCount:
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? orderCounts.get(storeInternalId) ?? 0

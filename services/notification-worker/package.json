@@ -15,13 +15,13 @@
     "@gatimitra/queue": "*",
     "@gatimitra/redis": "*",
     "bullmq": "^5.34.5",
-    "ioredis": "^5.10.0",
     "dotenv": "^16.4.7",
+    "ioredis": "^5.10.0",
     "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@gatimitra/shared-config": "*",
     "@types/node": "^22.10.5",
-    "typescript": "^5.9.2"
+    "typescript": "~6.0.3"
   }
 }

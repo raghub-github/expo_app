@@ -1,6 +1,6 @@
 import React from "react";
 import { View, StyleSheet, ViewStyle } from "react-native";
-import { AppAssetImage } from "@/src/components/AppAssetImage";
+import { AppAssetImage, useAppAssetUrl } from "@/src/components/AppAssetImage";
 import { RX } from "@/src/lib/appAssetKeys";
 
 export interface LogoProps {
@@ -23,13 +23,22 @@ export function Logo({
   style,
 }: LogoProps) {
   const config = sizeConfig[size];
-  const assetKey = iconOnly ? RX.auth.onlyLogo : RX.auth.logo;
+  const remoteAppIcon = useAppAssetUrl(RX.brand.appIcon);
+  const assetKey = iconOnly
+    ? remoteAppIcon
+      ? RX.brand.appIcon
+      : RX.auth.onlyLogo
+    : RX.auth.logo;
+  const iconSize = iconOnly ? Math.round(config.width * 0.55) : config.width;
 
   return (
     <View style={[styles.container, style]}>
       <AppAssetImage
         assetKey={assetKey}
-        style={{ width: config.width, height: config.width * 0.45 }}
+        style={{
+          width: iconSize,
+          height: iconOnly ? iconSize : config.width * 0.45,
+        }}
         resizeMode="contain"
         accessibilityLabel="GatiMitra"
       />

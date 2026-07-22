@@ -1,7 +1,7 @@
 {
-  "extends": "@gatimitra/shared-config/tsconfig.node.json",
+  "extends": "../../packages/shared-config/tsconfig.node.json",
   "compilerOptions": {
-    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "rootDir": "./src",
     "noEmit": true
   },

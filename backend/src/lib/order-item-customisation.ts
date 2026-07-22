@@ -2,6 +2,8 @@
  * Structured customisation display for order line items (variant, add-ons, snapshot notes).
  */
 
+import { readOrderItemSpecialInstructions } from "./order-item-special-instructions.js";
+
 export type OrderItemAddonDetail = {
   name: string;
   quantity: number;
@@ -247,15 +249,21 @@ function addonsFromSnapshot(snap: Record<string, unknown> | null): OrderItemAddo
   return [];
 }
 
-function notesFromSnapshot(snap: Record<string, unknown> | null): string[] {
-  if (!snap) return [];
+function notesFromSnapshot(
+  snap: Record<string, unknown> | null,
+  relationalInstructions?: string | null,
+): string[] {
+  if (!snap && !relationalInstructions) return [];
   const notes: string[] = [];
-  const free = readSnapString(snap, [
-    "item_note",
-    "special_instructions",
-    "instructions",
-    "note",
-  ]);
+  const free =
+    relationalInstructions?.trim() ||
+    readSnapString(snap, [
+      "item_instructions",
+      "item_note",
+      "special_instructions",
+      "instructions",
+      "note",
+    ]);
   if (free) notes.push(free);
   const cat = readSnapString(snap, ["category_name", "categoryName"]);
   if (cat) notes.push(`Category: ${cat}`);
@@ -268,6 +276,7 @@ export function buildCustomisationDetail(args: {
   itemSnapshot?: Record<string, unknown> | null;
   cartLine?: Record<string, unknown> | null;
   storedAddonPrice?: number;
+  specialInstructions?: string | null;
   addons: Array<{
     name: string;
     quantity: number;
@@ -321,7 +330,14 @@ export function buildCustomisationDetail(args: {
     variantName,
   });
 
-  const notes = notesFromSnapshot(snap);
+  const notes = notesFromSnapshot(
+    snap,
+    readOrderItemSpecialInstructions({
+      relational: args.specialInstructions,
+      itemSnapshot: snap,
+      cartLine: args.cartLine ?? null,
+    }),
+  );
 
   const lines: OrderItemCustomisationLine[] = [];
 

@@ -72,7 +72,7 @@ export async function getScheduleTimesForStores(
   const rows = await sql`
     SELECT *
     FROM merchant_store_operating_hours
-    WHERE store_id = ANY(${ids})
+    WHERE store_id = ANY(${ids}::int[])
   `;
 
   const nowRef = new Date();

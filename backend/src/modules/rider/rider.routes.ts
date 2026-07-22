@@ -42,6 +42,10 @@ function toDutyIsoTimestamp(value: Date | string | null | undefined): string {
 }
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
+import {
+  validatePickupScan,
+  validatePickupByOtp,
+} from "../orders/order-pickup-token.service.js";
 import { deactivateRiderDeviceSessions } from "../../lib/rider-app-session.js";
 import { registerRiderDeviceSessionRoutes } from "./rider-device-session.routes.js";
 import {
@@ -91,6 +95,84 @@ export async function riderRoutes(app: FastifyInstance) {
   registerRiderIncentiveRoutes(app);
   registerRiderPenaltyPaymentRoutes(app);
   registerRiderDeviceSessionRoutes(app, parseRiderIdFromAuth);
+
+  // ── Pickup verification (backend-only validation for BOTH QR token + OTP) ──────
+  // Either method, when all validations pass, marks the order Picked Up, consumes
+  // the shared pickup token (one-time), stamps timestamps, and audits. The order-row
+  // update (rider_picked_up_at) is what existing realtime subscribers observe.
+  app.post(
+    "/pickup/scan",
+    {
+      schema: {
+        body: z.object({
+          token: z.string().min(10).max(128),
+          latitude: z.number().optional(),
+          longitude: z.number().optional(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (riderId == null) return (reply as any).status(403).send({ success: false, error: "Invalid rider session" });
+      const body = req.body as { token: string; latitude?: number; longitude?: number };
+      const result = await validatePickupScan({
+        token: body.token,
+        riderId,
+        device: req.auth?.device_id ?? null,
+        latitude: body.latitude ?? null,
+        longitude: body.longitude ?? null,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = reply as any;
+      if (!result.ok) return r.status(result.status).send({ success: false, reason: result.reason, message: result.message });
+      return r.status(200).send({
+        success: true,
+        order_id: result.orderId,
+        formatted_order_id: result.publicOrderId,
+        status: "PICKED_UP",
+        picked_up_at: result.pickedUpAt,
+      });
+    }
+  );
+
+  app.post(
+    "/pickup/otp",
+    {
+      schema: {
+        body: z.object({
+          order_id: z.coerce.number().int().positive(),
+          otp: z.string().min(3).max(8),
+          latitude: z.number().optional(),
+          longitude: z.number().optional(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (riderId == null) return (reply as any).status(403).send({ success: false, error: "Invalid rider session" });
+      const body = req.body as { order_id: number; otp: string; latitude?: number; longitude?: number };
+      const result = await validatePickupByOtp({
+        orderId: body.order_id,
+        otp: body.otp,
+        riderId,
+        device: req.auth?.device_id ?? null,
+        latitude: body.latitude ?? null,
+        longitude: body.longitude ?? null,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = reply as any;
+      if (!result.ok) return r.status(result.status).send({ success: false, reason: result.reason, message: result.message });
+      return r.status(200).send({
+        success: true,
+        order_id: result.orderId,
+        formatted_order_id: result.publicOrderId,
+        status: "PICKED_UP",
+        picked_up_at: result.pickedUpAt,
+      });
+    }
+  );
 
   app.post(
     "/logout",
@@ -1431,7 +1513,10 @@ export async function riderRoutes(app: FastifyInstance) {
       if (allowed.length === 0) {
         return reply.status(403).send({
           error: "ALL_SERVICES_BLOCKED",
-          message: "You cannot go online — all requested services are restricted.",
+          message:
+            restrictionSnapshot.allServicesBlocked || restrictionSnapshot.accountRestricted
+              ? "You cannot go online — account is restricted. Add balance to wallet to unlock."
+              : "You cannot go online — all requested services are restricted.",
           blockedServiceTypes: blocked,
         });
       }
@@ -2098,6 +2183,8 @@ export async function riderRoutes(app: FastifyInstance) {
     atCustomer: z.boolean().optional(),
     foodOrderStatus: z.string().nullable().optional(),
     merchantOrderReady: z.boolean().optional(),
+    pickupAcknowledged: z.boolean().optional(),
+    pickupAcknowledgedAt: z.string().nullable().optional(),
     pickupWaitStartedAt: z.string().nullable().optional(),
     pickupWaitSeconds: z.number().nullable().optional(),
     pickupWaitFinalized: z.boolean().optional(),
@@ -2733,6 +2820,38 @@ export async function riderRoutes(app: FastifyInstance) {
           return reply.status(403).send({ error: err.message || "Incorrect OTP" });
         }
         return reply.status(status as 409).send({ error: err.message || "Verification failed" });
+      }
+    }
+  );
+
+  app.post(
+    "/orders/:id/acknowledge-food-pickup",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({}).optional(),
+        response: {
+          200: RiderOrderSummarySchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { acknowledgeFoodPickupForRider } = await import("./rider.orders.service.js");
+        return await acknowledgeFoodPickupForRider(riderId, id);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const status = err.statusCode ?? 500;
+        return reply.status(status as 409).send({ error: err.message || "Update failed" });
       }
     }
   );

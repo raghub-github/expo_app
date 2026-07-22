@@ -216,5 +216,6 @@ export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 // tolerates the `.js` even though the source is `.ts`).
 export * from "./wallet.js";
 export * from "./pricing.js";
+export * from "./push.js";
 
 

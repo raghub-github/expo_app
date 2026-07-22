@@ -72,7 +72,21 @@ export async function ensureAppStaticAssetSeeds(): Promise<void> {
   }
 }
 
+let seedsOnce: Promise<void> | null = null;
+
+/** One-shot seed so new registry slots appear without waiting for a migration deploy. */
+export function ensureAppStaticAssetSeedsOnce(): Promise<void> {
+  if (!seedsOnce) {
+    seedsOnce = ensureAppStaticAssetSeeds().catch((err) => {
+      seedsOnce = null;
+      throw err;
+    });
+  }
+  return seedsOnce;
+}
+
 export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppStaticAssetRow[]> {
+  await ensureAppStaticAssetSeedsOnce().catch(() => undefined);
   const sql = getSql();
   const rows = await sql`
     SELECT id, app, section, label, description, r2_key, proxy_url, sort_order

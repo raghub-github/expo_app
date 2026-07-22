@@ -9,6 +9,9 @@ import type { CalculateBillItem, CalculateBillPayload } from "@/services/billing
 export type BillingCalculateKeyParams = {
   merchantId: string | null | undefined;
   addressId: string | null | undefined;
+  /** Rounded GPS drop used for provisional bills before address selection. */
+  dropLat?: number | null;
+  dropLon?: number | null;
   billingCartKey: string;
   tipAmount: number;
   donationAmount: number;
@@ -27,6 +30,8 @@ export function buildBillingCalculateQueryKey(p: BillingCalculateKeyParams): rea
     "billing-calculate",
     p.merchantId,
     p.addressId,
+    p.dropLat ?? null,
+    p.dropLon ?? null,
     p.billingCartKey,
     p.tipAmount,
     p.donationAmount,
@@ -53,7 +58,12 @@ export type BillingCalculateParamsInput = BillingCalculateKeyParams & {
 export function buildBillingCalculateParams(p: BillingCalculateParamsInput): CalculateBillPayload {
   return {
     merchantId: p.merchantId!,
-    addressId: p.addressId!,
+    ...(p.addressId != null && String(p.addressId).trim() !== ""
+      ? { addressId: String(p.addressId) }
+      : {}),
+    ...(p.addressId == null && p.dropLat != null && p.dropLon != null
+      ? { dropLat: p.dropLat, dropLon: p.dropLon }
+      : {}),
     items: p.items,
     tipAmount: p.tipAmount,
     donationAmount: p.donationAmount,

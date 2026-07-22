@@ -1,26 +1,25 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, and, inArray } from "drizzle-orm";
-import { getDb } from "../../db/client.js";
+import {
+  PushRegisterBodySchema,
+  PushUnregisterBodySchema,
+  isExpoPushTokenString,
+} from "@gatimitra/contracts";
+import { getDb, getSql } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
-import { expoPushTokens, expoPushNotificationLogs } from "../../db/schema.js";
+import {
+  expoPushTokens,
+  expoPushNotificationLogs,
+  nativeDevicePushTokens,
+} from "../../db/schema.js";
 import { auth } from "../../plugins/auth.js";
 import { countTicketOutcomes, sendExpoPushWithRetry, type ExpoPushMessage } from "./expoPushSend.js";
+import { desiredFcmTopics, reconcileFcmTopics } from "./topicReconcile.js";
+import { getPartnerParentId } from "../merchant-partner/merchant-subscription.routes.helpers.js";
 
-const registerBodySchema = z.object({
-  expo_push_token: z.string().min(10),
-  device_type: z.enum(["ios", "android", "web", "unknown"]),
-  // Optional device / app / locale fingerprint (migration 0419). Older
-  // client builds don't send these — schema stays permissive so no client
-  // regresses. Server stores what it gets, leaves the rest NULL.
-  device_model: z.string().max(120).optional().nullable(),
-  device_brand: z.string().max(60).optional().nullable(),
-  os_name: z.string().max(30).optional().nullable(),
-  os_version: z.string().max(40).optional().nullable(),
-  app_version: z.string().max(20).optional().nullable(),
-  locale: z.string().max(20).optional().nullable(),
-  timezone: z.string().max(60).optional().nullable(),
-});
+const registerBodySchema = PushRegisterBodySchema;
+const unregisterBodySchema = PushUnregisterBodySchema;
 
 const sendBodySchema = z.object({
   title: z.string().min(1).max(200),
@@ -52,7 +51,9 @@ function buildExpoMessage(
   input: z.infer<typeof sendBodySchema>
 ): Omit<ExpoPushMessage, "to"> & { to: string[] } {
   const image =
-    input.image && typeof input.image === "string" && input.image.trim().length > 0 ? input.image.trim() : undefined;
+    input.image && typeof input.image === "string" && input.image.trim().length > 0
+      ? input.image.trim()
+      : undefined;
   const emojiRaw = input.emoji != null && typeof input.emoji === "string" ? input.emoji.trim() : "";
   const title = emojiRaw ? `${emojiRaw} ${input.title}`.trim() : input.title;
   const body = input.message;
@@ -93,6 +94,21 @@ function buildExpoMessage(
 }
 
 const PUSH_TOKEN_CHUNK = 100;
+
+async function assertMerchantOwnsStore(
+  userId: string,
+  storeId: number
+): Promise<boolean> {
+  const parentId = await getPartnerParentId(userId);
+  if (parentId == null) return false;
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id FROM merchant_stores
+    WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
 
 export async function pushRoutes(app: FastifyInstance) {
   /** POST /v1/push/send-notification — admin / dashboard (secret header). */
@@ -198,13 +214,29 @@ export async function pushRoutes(app: FastifyInstance) {
         const {
           expo_push_token,
           device_type,
-          device_model, device_brand,
-          os_name, os_version,
-          app_version, locale, timezone,
+          device_model,
+          device_brand,
+          os_name,
+          os_version,
+          app_version,
+          locale,
+          timezone,
+          native_push_token,
+          native_token_type,
+          store_id,
         } = parsed.data;
         const userId = req.auth!.sub;
         const db = getDb();
         const now = new Date();
+
+        let validatedStoreId: number | null = null;
+        if (role === "merchant" && store_id != null) {
+          const owns = await assertMerchantOwnsStore(userId, store_id);
+          if (!owns) {
+            return reply.code(403).send({ error: "store_not_owned" });
+          }
+          validatedStoreId = store_id;
+        }
 
         await db
           .insert(expoPushTokens)
@@ -232,9 +264,6 @@ export async function pushRoutes(app: FastifyInstance) {
               deviceType: device_type,
               updatedAt: now,
               lastSeenAt: now,
-              // Only overwrite metadata when the client actually sent it —
-              // otherwise preserve the last known values so a downgrade to
-              // an older APK doesn't clobber richer data we already had.
               ...(device_model ? { deviceModel: device_model } : {}),
               ...(device_brand ? { deviceBrand: device_brand } : {}),
               ...(os_name ? { osName: os_name } : {}),
@@ -245,17 +274,199 @@ export async function pushRoutes(app: FastifyInstance) {
             },
           });
 
+        let topics: string[] = [];
+        const nativeToken =
+          typeof native_push_token === "string" && native_push_token.trim().length >= 8
+            ? native_push_token.trim()
+            : null;
+        let tokenType =
+          native_token_type === "fcm" || native_token_type === "apns"
+            ? native_token_type
+            : null;
+
+        if (nativeToken) {
+          if (isExpoPushTokenString(nativeToken)) {
+            req.log.warn(
+              { userId: userId.slice(0, 8) },
+              "native_token_looks_like_expo_token_ignored"
+            );
+          } else {
+            if (!tokenType) {
+              tokenType = device_type === "ios" ? "apns" : "fcm";
+            }
+
+            const existing = await db
+              .select()
+              .from(nativeDevicePushTokens)
+              .where(eq(nativeDevicePushTokens.nativeToken, nativeToken))
+              .limit(1);
+            const currentTopics = (existing[0]?.subscribedTopics as string[] | undefined) ?? [];
+
+            const desired =
+              tokenType === "fcm"
+                ? desiredFcmTopics({ role, storeId: validatedStoreId })
+                : [];
+            topics = await reconcileFcmTopics({
+              nativeToken,
+              tokenType,
+              currentTopics,
+              desiredTopics: desired,
+              log: req.log,
+            });
+
+            await db
+              .insert(nativeDevicePushTokens)
+              .values({
+                userId,
+                role,
+                platform: device_type,
+                tokenType,
+                nativeToken,
+                storeId: validatedStoreId,
+                subscribedTopics: topics,
+                source: "app",
+                createdAt: now,
+                updatedAt: now,
+                lastSeenAt: now,
+                deviceModel: device_model ?? null,
+                deviceBrand: device_brand ?? null,
+                osName: os_name ?? null,
+                osVersion: os_version ?? null,
+                appVersion: app_version ?? null,
+                locale: locale ?? null,
+                timezone: timezone ?? null,
+              })
+              .onConflictDoUpdate({
+                target: nativeDevicePushTokens.nativeToken,
+                set: {
+                  userId,
+                  role,
+                  platform: device_type,
+                  tokenType,
+                  storeId: validatedStoreId,
+                  subscribedTopics: topics,
+                  source: "app",
+                  updatedAt: now,
+                  lastSeenAt: now,
+                  ...(device_model ? { deviceModel: device_model } : {}),
+                  ...(device_brand ? { deviceBrand: device_brand } : {}),
+                  ...(os_name ? { osName: os_name } : {}),
+                  ...(os_version ? { osVersion: os_version } : {}),
+                  ...(app_version ? { appVersion: app_version } : {}),
+                  ...(locale ? { locale } : {}),
+                  ...(timezone ? { timezone } : {}),
+                },
+              });
+          }
+        }
+
         req.log.info(
           {
             role,
             device_type,
             userId: userId.slice(0, 8),
+            has_native: !!nativeToken,
+            native_type: tokenType,
+            topics,
+            store_id: validatedStoreId,
             device_model: device_model ?? null,
             os: os_name && os_version ? `${os_name} ${os_version}` : null,
             app_version: app_version ?? null,
           },
-          "expo_push_token_registered",
+          "push_tokens_registered"
         );
+        return reply.send({ ok: true, topics });
+      }
+    );
+
+    inner.post(
+      "/unregister",
+      {
+        schema: {
+          body: unregisterBodySchema,
+        },
+      },
+      async (req, reply) => {
+        const role = req.auth!.role;
+        if (role !== "customer" && role !== "merchant" && role !== "rider") {
+          return reply.code(403).send({ error: "unsupported_role_for_push" });
+        }
+        const parsed = unregisterBodySchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.code(400).send({ error: "invalid_body" });
+        }
+        const userId = req.auth!.sub;
+        const db = getDb();
+        const expo = parsed.data.expo_push_token?.trim() || null;
+        const native = parsed.data.native_push_token?.trim() || null;
+
+        if (expo) {
+          await db
+            .delete(expoPushTokens)
+            .where(
+              and(eq(expoPushTokens.expoPushToken, expo), eq(expoPushTokens.userId, userId))
+            );
+        }
+
+        if (native && !isExpoPushTokenString(native)) {
+          const rows = await db
+            .select()
+            .from(nativeDevicePushTokens)
+            .where(
+              and(
+                eq(nativeDevicePushTokens.nativeToken, native),
+                eq(nativeDevicePushTokens.userId, userId)
+              )
+            )
+            .limit(1);
+          const row = rows[0];
+          if (row) {
+            const topics = (row.subscribedTopics as string[] | undefined) ?? [];
+            if (row.tokenType === "fcm" && topics.length > 0) {
+              await reconcileFcmTopics({
+                nativeToken: native,
+                tokenType: "fcm",
+                currentTopics: topics,
+                desiredTopics: [],
+                log: req.log,
+              });
+            }
+            await db
+              .delete(nativeDevicePushTokens)
+              .where(eq(nativeDevicePushTokens.nativeToken, native));
+          }
+        }
+
+        // If no specific tokens provided, clear all tokens for this user+role.
+        if (!expo && !native) {
+          const nativeRows = await db
+            .select()
+            .from(nativeDevicePushTokens)
+            .where(
+              and(eq(nativeDevicePushTokens.userId, userId), eq(nativeDevicePushTokens.role, role))
+            );
+          for (const row of nativeRows) {
+            const topics = (row.subscribedTopics as string[] | undefined) ?? [];
+            if (row.tokenType === "fcm" && topics.length > 0 && !isExpoPushTokenString(row.nativeToken)) {
+              await reconcileFcmTopics({
+                nativeToken: row.nativeToken,
+                tokenType: "fcm",
+                currentTopics: topics,
+                desiredTopics: [],
+                log: req.log,
+              });
+            }
+          }
+          await db
+            .delete(nativeDevicePushTokens)
+            .where(
+              and(eq(nativeDevicePushTokens.userId, userId), eq(nativeDevicePushTokens.role, role))
+            );
+          await db
+            .delete(expoPushTokens)
+            .where(and(eq(expoPushTokens.userId, userId), eq(expoPushTokens.role, role)));
+        }
+
         return reply.send({ ok: true });
       }
     );

@@ -28,14 +28,32 @@ export class DbSlotTimeoutError extends Error {
   }
 }
 
-/** Align slot limit with postgres pool — one in-flight HTTP request ≈ one slot. */
-export function dbSlotLimit(): number {
+/**
+ * The postgres.js pool `max` — the single source of truth for DB concurrency.
+ * createPool() in db/client.ts uses this too, so the slot limit and the real
+ * connection count can never drift apart.
+ */
+export function resolvePoolMax(): number {
   const env = getEnv();
-  const poolMax =
-    env.DATABASE_POOL_MAX ??
-    (env.NODE_ENV === "production" ? 30 : 20);
-  const hardCap = env.NODE_ENV === "production" ? 30 : 24;
-  return Math.max(2, Math.min(poolMax, hardCap));
+  // Dev raised 8 → 16: one dev backend shares this pool between the app bursts
+  // (rider + customer polling) AND ~10 background ticks (schedule, dispatch, ETA,
+  // reconciler …). Eight connections saturated instantly → database_slot_timeout /
+  // "Database is busy" 503s that froze the apps. Supabase (max_connections=60, via
+  // the Supavisor transaction pooler) has ample headroom. Prod unchanged.
+  return env.DATABASE_POOL_MAX ?? (env.NODE_ENV === "production" ? 25 : 16);
+}
+
+/**
+ * Align the slot limit with the actual pool size — "one in-flight ≈ one slot".
+ *
+ * Must NOT exceed the pool `max`: if it does, the semaphore admits more concurrent
+ * DB work than there are connections, and the excess queues *inside* postgres.js
+ * while still holding slots — which cascades into `database_slot_timeout` 503s even
+ * though Postgres itself is healthy. (Previously dev admitted 20 with only 8
+ * connections.) Setting DATABASE_POOL_MAX now scales both together.
+ */
+export function dbSlotLimit(): number {
+  return Math.max(2, resolvePoolMax());
 }
 
 function acquireTimeoutMs(): number {
@@ -43,7 +61,9 @@ function acquireTimeoutMs(): number {
   if (env.DATABASE_SLOT_ACQUIRE_TIMEOUT_MS != null) {
     return env.DATABASE_SLOT_ACQUIRE_TIMEOUT_MS;
   }
-  return env.NODE_ENV === "production" ? 12_000 : 25_000;
+  // Dev lowered 25s → 10s: a 25s hang is what made the app feel "stuck". Fail fast so
+  // the client can retry/show state instead of freezing on one blocked request.
+  return env.NODE_ENV === "production" ? 12_000 : 10_000;
 }
 
 export function getDbSlotStats(): { active: number; waiting: number; limit: number } {

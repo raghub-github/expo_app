@@ -8,9 +8,25 @@ import { eq, and, asc } from "drizzle-orm";
 import { riderOnboardingVehicleTypes } from "../db/schema.js";
 import { expandVehicleTypeCodesForCatalogMatch } from "./rider-vehicle-db-map.js";
 
+export type VehicleTypeServiceAssignmentAppRow = {
+  vehicleTypeCode: string;
+  serviceType: RiderDispatchService;
+  isAssigned: boolean;
+  mapsToVehicleType: string | null;
+  categoryCode: string | null;
+  vehicleLabel: string;
+};
+
 const DISPATCH_SERVICES: RiderDispatchService[] = ["food", "parcel", "person_ride"];
 
+const APP_VEHICLE_LIST_CACHE_MS = 60_000;
+let appVehicleListCache: {
+  at: number;
+  rows: VehicleTypeServiceAssignmentAppRow[];
+} | null = null;
+
 export function invalidateVehicleTypeServiceAssignmentCache(): void {
+  appVehicleListCache = null;
   invalidateCategoryServiceAssignmentCache();
 }
 
@@ -108,20 +124,14 @@ async function loadAssignmentsByMapsToVehicleType(): Promise<
   return map;
 }
 
-export type VehicleTypeServiceAssignmentAppRow = {
-  vehicleTypeCode: string;
-  serviceType: RiderDispatchService;
-  isAssigned: boolean;
-  mapsToVehicleType: string | null;
-  categoryCode: string | null;
-  vehicleLabel: string;
-};
-
 export async function listVehicleTypeServiceAssignmentsForApp(): Promise<
   VehicleTypeServiceAssignmentAppRow[]
 > {
+  if (appVehicleListCache && Date.now() - appVehicleListCache.at < APP_VEHICLE_LIST_CACHE_MS) {
+    return appVehicleListCache.rows;
+  }
   const sql = getSql();
-  return (await sql`
+  const rows = (await sql`
     SELECT
       a.vehicle_type_code AS "vehicleTypeCode",
       a.service_type AS "serviceType",
@@ -133,6 +143,8 @@ export async function listVehicleTypeServiceAssignmentsForApp(): Promise<
     INNER JOIN rider_onboarding_vehicle_types vt ON vt.code = a.vehicle_type_code
     ORDER BY vt.category_code ASC, vt.sort_order ASC, a.service_type ASC
   `) as VehicleTypeServiceAssignmentAppRow[];
+  appVehicleListCache = { at: Date.now(), rows };
+  return rows;
 }
 
 export async function getAssignedDispatchServicesForVehicleTypes(

@@ -100,6 +100,8 @@ export async function computeBillForRide(
         addon_total: 0,
         discount_total: 0,
         delivery_fee: 0,
+        delivery_fee_gross: 0,
+        delivery_subsidy: 0,
         platform_fee: 0,
         packaging_fee: 0,
         surge_fee: 0,

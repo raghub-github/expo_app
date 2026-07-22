@@ -14,6 +14,15 @@ import { Platform } from "react-native";
 /** Default status bar height when insets are not yet available (e.g. 24dp Android). */
 export const DEFAULT_STATUS_BAR_HEIGHT = 24;
 
+/**
+ * Top safe inset that never collapses to 0 on Android (avoids content falling
+ * under the status bar while SafeAreaProvider is still settling).
+ */
+export function resolveTopSafeInset(insetsTop: number): number {
+  if (insetsTop > 0) return insetsTop;
+  return DEFAULT_STATUS_BAR_HEIGHT;
+}
+
 /** Fallback when Android edge-to-edge reports 0 but 3-button nav is present. */
 export const ANDROID_FALLBACK_BOTTOM_INSET = 48;
 

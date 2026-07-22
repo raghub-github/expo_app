@@ -210,6 +210,35 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const coreIds = coreRows.map((c) => Number(c.id)).filter((n) => Number.isFinite(n));
+    const pickupTokenByCoreId = new Map<
+      number,
+      { token: string | null; kot_number: string | null }
+    >();
+    if (coreIds.length > 0) {
+      try {
+        const { data: toks } = await db
+          .from('order_pickup_tokens')
+          .select('order_id, token, kot_number')
+          .in('order_id', coreIds);
+        for (const t of toks || []) {
+          const row = t as {
+            order_id: number;
+            token: string | null;
+            kot_number: string | null;
+          };
+          const oid = Number(row.order_id);
+          if (!Number.isFinite(oid)) continue;
+          pickupTokenByCoreId.set(oid, {
+            token: row.token != null ? String(row.token) : null,
+            kot_number: row.kot_number != null ? String(row.kot_number) : null,
+          });
+        }
+      } catch (tokErr) {
+        console.warn('[food-orders GET] order_pickup_tokens:', tokErr);
+      }
+    }
+
     const customerIds = [
       ...new Set(coreRows.map((c) => c.customer_id).filter((x) => x != null).map((x) => Number(x))),
     ];
@@ -299,7 +328,6 @@ export async function GET(req: NextRequest) {
       .filter(Boolean);
     const snapshotsByOrderText = await loadSnapshotsByOrderTexts(db, orderTexts, store.id);
 
-    const coreIds = coreRows.map((c) => Number(c.id)).filter((id) => Number.isFinite(id));
     const uniformByCoreId = await loadMerchantRiderUniformByOrderCoreIds(db, coreIds);
 
     const ordersWithDetails = await Promise.all(
@@ -628,6 +656,7 @@ export async function GET(req: NextRequest) {
               ? Number(core.eta_seconds)
               : null,
           formatted_order_id: (core.formatted_order_id as string) ?? (food?.formatted_order_id as string) ?? null,
+          tax_invoice_number: (core as Record<string, unknown>).tax_invoice_number as string | null ?? null,
           is_bulk_order: Boolean((core as Record<string, unknown>).is_bulk_order),
           order_status: uiStatus,
           accepted_at: (food?.accepted_at as string | null) ?? null,
@@ -654,6 +683,12 @@ export async function GET(req: NextRequest) {
           pickup_otp:
             (food?.pickup_otp as string | null) ??
             ((core as Record<string, unknown>).pickup_otp as string | null) ??
+            null,
+          pickup_token: pickupTokenByCoreId.get(coreId)?.token ?? null,
+          kot_number: pickupTokenByCoreId.get(coreId)?.kot_number ?? null,
+          payment_method:
+            ((core as Record<string, unknown>).payment_method as string | null) ??
+            (food?.payment_method as string | null) ??
             null,
           rto_otp:
             (food?.rto_otp as string | null) ??

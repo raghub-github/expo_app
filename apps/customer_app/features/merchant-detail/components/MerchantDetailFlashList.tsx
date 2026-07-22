@@ -80,6 +80,7 @@ export type MerchantDetailFlashListProps = {
   filtersActive: boolean;
   getQty: (itemId: string, menuItemId?: number) => number;
   onAdd: (item: MenuItem) => void;
+  onItemPress: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
   isStoreClosed: boolean;
@@ -99,6 +100,8 @@ export type MerchantDetailFlashListProps = {
   heroActions: MerchantHeroTopBarActions;
   onListLayout?: () => void;
   itemOfferById?: Map<string, ItemOfferDisplay>;
+  /** Shared visit sentence index so inline skeleton matches shutter / full-screen loader. */
+  loadingMessageIndex?: number;
 };
 
 const MerchantDetailFlashListInner = forwardRef<
@@ -133,6 +136,7 @@ const MerchantDetailFlashListInner = forwardRef<
     filtersActive,
     getQty,
     onAdd,
+    onItemPress,
     onIncrement,
     onDecrement,
     isStoreClosed,
@@ -151,6 +155,7 @@ const MerchantDetailFlashListInner = forwardRef<
     heroActions,
     onListLayout,
     itemOfferById,
+    loadingMessageIndex,
   } = props;
 
   const scrollRef = useRef<ScrollView>(null);
@@ -300,6 +305,7 @@ const MerchantDetailFlashListInner = forwardRef<
             items={item.items}
             merchantId={merchantId}
             onAdd={onAdd}
+            onItemPress={onItemPress}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
             isStoreClosed={isStoreClosed}
@@ -312,6 +318,7 @@ const MerchantDetailFlashListInner = forwardRef<
           <StoreComboSection
             combos={item.combos}
             onAddCombo={onAddCombo}
+            onItemPress={onItemPress}
             isStoreClosed={isStoreClosed}
           />
         );
@@ -347,6 +354,7 @@ const MerchantDetailFlashListInner = forwardRef<
             merchantId={merchantId}
             goesWithName={null}
             onAdd={onAdd}
+            onItemPress={onItemPress}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
             isStoreClosed={isStoreClosed}
@@ -374,6 +382,7 @@ const MerchantDetailFlashListInner = forwardRef<
             companions={item.companions}
             merchantId={merchantId}
             onAdd={onAdd}
+            onItemPress={onItemPress}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
             isStoreClosed={isStoreClosed}
@@ -392,12 +401,22 @@ const MerchantDetailFlashListInner = forwardRef<
         );
 
       case "menu_skeleton":
-        return <MerchantMenuLoadingSkeleton merchantId={merchantId} variant="inline" />;
+        return (
+          <MerchantMenuLoadingSkeleton
+            merchantId={merchantId}
+            startMessageIndex={loadingMessageIndex}
+            variant="inline"
+          />
+        );
 
       case "menu_loading":
         return (
           <View style={[styles.menuLoading, { minHeight: MENU_LOADING_FILL_MIN_HEIGHT }]}>
-            <MerchantMenuLoadingSkeleton merchantId={merchantId} variant="inline" />
+            <MerchantMenuLoadingSkeleton
+              merchantId={merchantId}
+              startMessageIndex={loadingMessageIndex}
+              variant="inline"
+            />
           </View>
         );
 
@@ -444,6 +463,8 @@ const MerchantDetailFlashListInner = forwardRef<
             style={[
               styles.rowShell,
               item.type === "menu_item" ? { minHeight: MENU_ITEM_ROW_HEIGHT } : null,
+              // Info card tucks over the hero — must paint above banner, not clip into it.
+              item.type === "info" ? styles.infoRowShell : null,
             ]}
             onLayout={(event) => {
               recordRowLayout(item.key, event.nativeEvent.layout.height);
@@ -486,12 +507,19 @@ const styles = StyleSheet.create({
   },
   rowShell: {
     backgroundColor: StoreTheme.background,
-    overflow: "visible",
+    overflow: "hidden",
     zIndex: 1,
+  },
+  infoRowShell: {
+    // Let the rounded card sit above the banner; never clip name / rating / info.
+    overflow: "visible",
+    zIndex: 3,
+    backgroundColor: "transparent",
   },
   heroCell: {
     position: "relative",
     backgroundColor: StoreTheme.background,
+    zIndex: 0,
   },
   heroActionsOverlay: {
     position: "absolute",

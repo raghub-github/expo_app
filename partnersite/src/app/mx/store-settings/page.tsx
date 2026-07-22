@@ -12,7 +12,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
-import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
+import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, Filter } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
@@ -36,6 +36,7 @@ import {
   readCachedStoreOperationsPanel,
   writeCachedStoreOperationsPanel,
 } from '@/lib/store-operations-panel-cache'
+import { settlementNoteVisibleUntil } from '@/lib/refund-settlement'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
@@ -44,6 +45,58 @@ export const dynamic = 'force-dynamic'
 
 // Day types
 type DayType = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+type PlanHistoryFilter = 'all' | 'paid' | 'refund' | 'expired' | 'upgraded' | 'cancelled'
+
+function planHistoryEntryDate(entry: any): Date | null {
+  const raw =
+    entry?.payment_date ??
+    entry?.expired_at ??
+    entry?.billing_period_start ??
+    entry?.billing_period_end ??
+    null
+  if (!raw) return null
+  const date = new Date(raw)
+  return Number.isFinite(date.getTime()) ? date : null
+}
+
+function matchesPlanHistoryFilter(
+  entry: any,
+  statusFilter: PlanHistoryFilter,
+  fromDate: string,
+  toDate: string
+): boolean {
+  const subscriptionStatus = String(entry?.subscription_status ?? '').toUpperCase()
+  const paymentStatus = String(entry?.payment_status ?? 'PAID').toUpperCase()
+  let statusMatches = statusFilter === 'all'
+  if (statusFilter === 'refund') {
+    statusMatches = paymentStatus === 'REFUND_PENDING' || paymentStatus === 'REFUNDED'
+  } else if (statusFilter === 'expired') {
+    statusMatches = entry?.kind === 'expired' || subscriptionStatus === 'EXPIRED'
+  } else if (statusFilter === 'upgraded') {
+    statusMatches = entry?.kind === 'upgraded' || subscriptionStatus === 'UPGRADED'
+  } else if (statusFilter === 'cancelled') {
+    statusMatches = entry?.kind === 'cancelled' || subscriptionStatus === 'CANCELLED'
+  } else if (statusFilter === 'paid') {
+    statusMatches =
+      paymentStatus === 'PAID' &&
+      !['EXPIRED', 'UPGRADED', 'CANCELLED'].includes(subscriptionStatus)
+  }
+  if (!statusMatches) return false
+
+  if (!fromDate && !toDate) return true
+  const entryDate = planHistoryEntryDate(entry)
+  if (!entryDate) return false
+  const time = entryDate.getTime()
+  if (fromDate) {
+    const from = new Date(`${fromDate}T00:00:00`).getTime()
+    if (time < from) return false
+  }
+  if (toDate) {
+    const to = new Date(`${toDate}T23:59:59.999`).getTime()
+    if (time > to) return false
+  }
+  return true
+}
 
 interface TimeSlot {
   id: string
@@ -267,6 +320,11 @@ function StoreSettingsContent() {
   const [currentPlan, setCurrentPlan] = useState<any>(null)
   const [paymentHistory, setPaymentHistory] = useState<any[]>([])
   const [planHistory, setPlanHistory] = useState<any[]>([])
+  const [planHistoryFilter, setPlanHistoryFilter] = useState<PlanHistoryFilter>('all')
+  const [planHistoryFromDate, setPlanHistoryFromDate] = useState('')
+  const [planHistoryToDate, setPlanHistoryToDate] = useState('')
+  const [refundMessageNow, setRefundMessageNow] = useState(() => Date.now())
+  const [copiedRefundId, setCopiedRefundId] = useState<string | null>(null)
   const [loadingPlans, setLoadingPlans] = useState(false)
   const [upgradingPlanId, setUpgradingPlanId] = useState<number | null>(null)
   const [pendingSubscriptionOrderId, setPendingSubscriptionOrderId] = useState<string | null>(null)
@@ -296,6 +354,7 @@ function StoreSettingsContent() {
   const [avgPreparationTimeMinutes, setAvgPreparationTimeMinutes] = useState(30)
   const [preparationBufferMinutes, setPreparationBufferMinutes] = useState(0)
   const [manualActivationLock, setManualActivationLock] = useState(false)
+  const [thermalPrinterWidthMm, setThermalPrinterWidthMm] = useState<58 | 80>(80)
   const [licenseBlockedForOps, setLicenseBlockedForOps] = useState(false)
   
   // Menu & Capacity Controls state
@@ -684,6 +743,7 @@ function StoreSettingsContent() {
       preparationBufferMinutes: number
       manualActivationLock: boolean
       licenseBlockedForOps: boolean
+      thermalPrinterWidthMm: 58 | 80
     }) => {
       setAutoAcceptOrders(panel.autoAcceptOrders)
       setAutoAcceptTimeSeconds(panel.autoAcceptTimeSeconds)
@@ -691,6 +751,7 @@ function StoreSettingsContent() {
       setPreparationBufferMinutes(panel.preparationBufferMinutes)
       setManualActivationLock(panel.manualActivationLock)
       setLicenseBlockedForOps(panel.licenseBlockedForOps)
+      setThermalPrinterWidthMm(panel.thermalPrinterWidthMm === 58 ? 58 : 80)
     },
     []
   )
@@ -759,6 +820,7 @@ function StoreSettingsContent() {
               panelPatch.preparationBufferMinutes ?? cached?.preparationBufferMinutes ?? 0,
             manualActivationLock: cached?.manualActivationLock ?? false,
             licenseBlockedForOps: cached?.licenseBlockedForOps ?? false,
+            thermalPrinterWidthMm: panelPatch.thermalPrinterWidthMm ?? cached?.thermalPrinterWidthMm ?? 80,
           })
           writeCachedStoreOperationsPanel(storeId, panelPatch)
         }
@@ -887,6 +949,24 @@ function StoreSettingsContent() {
     () => buildStoreSettingsBreadcrumbs(activeTab, storeId),
     [activeTab, storeId]
   )
+
+  const filteredPlanHistory = useMemo(
+    () =>
+      planHistory.filter((entry: any) =>
+        matchesPlanHistoryFilter(
+          entry,
+          planHistoryFilter,
+          planHistoryFromDate,
+          planHistoryToDate
+        )
+      ),
+    [planHistory, planHistoryFilter, planHistoryFromDate, planHistoryToDate]
+  )
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setRefundMessageNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   // Address search: click outside to close results
   useEffect(() => {
@@ -1083,6 +1163,47 @@ function StoreSettingsContent() {
     void loadPlans()
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  // Realtime: when the Super Admin changes any plan (price / limits / features) in
+  // merchant_plans, refresh the "Available Plans" cards INSTANTLY — no manual reload.
+  // The realtime event is only a trigger; we re-fetch the authoritative plans from the
+  // API (single source of truth) and refresh the cache so a later mount isn't stale.
+  useEffect(() => {
+    const CACHE_KEY = 'mx_merchant_plans_cache_v1'
+    const refetchPlans = async () => {
+      try {
+        const res = await fetch('/api/merchant/plans', { cache: 'no-store' })
+        const data = await res.json().catch(() => ({}))
+        if (res.ok && Array.isArray(data?.plans)) {
+          setPlans(data.plans)
+          try {
+            sessionStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), plans: data.plans }))
+          } catch {
+            // ignore cache write errors
+          }
+        }
+      } catch {
+        // ignore — next event / focus will refresh
+      }
+    }
+    const channel = supabase
+      .channel('merchant-plans-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'merchant_plans' },
+        () => {
+          void refetchPlans()
+        }
+      )
+      .subscribe()
+    return () => {
+      try {
+        supabase.removeChannel(channel)
+      } catch {
+        // ignore teardown errors
+      }
     }
   }, [])
 
@@ -1609,6 +1730,7 @@ function StoreSettingsContent() {
               typeof preparationBufferMinutes === 'number' && !isNaN(preparationBufferMinutes)
                 ? preparationBufferMinutes
                 : 0,
+            thermal_printer_width_mm: thermalPrinterWidthMm,
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -1621,6 +1743,7 @@ function StoreSettingsContent() {
           autoAcceptTimeSeconds,
           avgPreparationTimeMinutes,
           preparationBufferMinutes,
+          thermalPrinterWidthMm,
         })
         toast.success('✅ Store operations saved successfully!')
         return
@@ -1821,6 +1944,25 @@ function StoreSettingsContent() {
       console.error('Error reloading subscription data:', error);
     }
   };
+
+  // Auto-refresh while a refund is still settling at Razorpay. The refund sits in
+  // REFUND_PENDING until the gateway confirms; poll the backend (the single source
+  // of truth) so the locked overlay clears and the badge flips to "Refunded" with
+  // NO manual refresh. Self-limiting: only runs while a refund is in flight.
+  const hasPendingRefund =
+    Array.isArray(planHistory) &&
+    planHistory.some(
+      (e: any) =>
+        e?.kind === 'payment' && String(e?.payment_status ?? '').toUpperCase() === 'REFUND_PENDING'
+    );
+  useEffect(() => {
+    if (!hasPendingRefund) return;
+    const t = setInterval(() => {
+      void reloadSubscriptionData();
+    }, 15000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPendingRefund]);
 
   // Poll subscription order status when user may have paid but closed tab (or webhook completed)
   const SUB_POLL_INTERVAL_MS = 3000;
@@ -3238,6 +3380,15 @@ function StoreSettingsContent() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                       {plans.map((plan) => {
                         const subscriptionIsActive = isStoreSubscriptionActive(currentSubscription);
+                        // The card shown as ACTIVE/Current must reflect the LIVE entitlement, not the
+                        // API's display `plan` (which still returns the expired plan for reference).
+                        // When the subscription is expired/inactive, entitlements fall back to Free —
+                        // so Free is the current plan and the previously-paid plan must NOT show ACTIVE.
+                        const freePlanId =
+                          plans.find((pp: any) => String(pp?.plan_code ?? '').toLowerCase() === 'free')?.id ?? null;
+                        const effectiveCurrentPlanId = subscriptionIsActive
+                          ? (currentPlan?.id ?? null)
+                          : freePlanId;
                         const isLowerThanCurrent = Boolean(
                           currentPlan &&
                             subscriptionIsActive &&
@@ -3249,9 +3400,23 @@ function StoreSettingsContent() {
                         const isPremium = planCode === 'PREMIUM' || planCode === 'GROWTH' || (plan.price > 0 && !isEnterprise);
                         const tier = isEnterprise ? 'enterprise' : isPremium ? 'premium' : 'free';
 
+                        // Refund-in-progress lock: while a payment for THIS plan is still
+                        // settling at Razorpay (REFUND_PENDING), the card is locked and all
+                        // actions disabled until the gateway confirms. Derived only from the
+                        // backend payment_status (source of truth) — the overlay clears
+                        // automatically once the webhook flips REFUND_PENDING → REFUNDED.
+                        const isRefundSettling =
+                          Array.isArray(planHistory) &&
+                          planHistory.some(
+                            (e: any) =>
+                              e?.kind === 'payment' &&
+                              String(e?.payment_status ?? '').toUpperCase() === 'REFUND_PENDING' &&
+                              String(e?.plan_code ?? '').toUpperCase() === planCode
+                          );
+
                         const cardStyles = {
                           free: {
-                            wrapper: `rounded-2xl border-2 bg-white border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden ${selectedPlanId === plan.id ? 'ring-2 ring-gray-400 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-gray-500 ring-offset-2' : ''}`,
+                            wrapper: `rounded-2xl border-2 bg-white border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden ${selectedPlanId === plan.id ? 'ring-2 ring-gray-400 ring-offset-2' : ''} ${effectiveCurrentPlanId === plan.id ? 'ring-2 ring-gray-500 ring-offset-2' : ''}`,
                             headerBg: 'bg-gradient-to-r from-slate-700 to-slate-600',
                             badge: null,
                             priceColor: 'text-white',
@@ -3259,7 +3424,7 @@ function StoreSettingsContent() {
                             cta: 'bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200 hover:border-slate-400 active:scale-[0.98] transition-all duration-200',
                           },
                           premium: {
-                            wrapper: `rounded-2xl border-2 bg-white border-orange-300 shadow-md hover:shadow-lg hover:border-orange-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative lg:-mt-3 lg:scale-[1.03] z-[1] ${selectedPlanId === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`,
+                            wrapper: `rounded-2xl border-2 bg-white border-orange-300 shadow-md hover:shadow-lg hover:border-orange-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative lg:-mt-3 lg:scale-[1.03] z-[1] ${selectedPlanId === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''} ${effectiveCurrentPlanId === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`,
                             headerBg: 'bg-gradient-to-r from-orange-600 to-amber-500',
                             badge: 'inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
                             priceColor: 'text-white',
@@ -3267,7 +3432,7 @@ function StoreSettingsContent() {
                             cta: 'bg-gradient-to-r from-orange-600 to-amber-600 text-white border-0 shadow-sm hover:from-orange-700 hover:to-amber-700 active:scale-[0.98] transition-all duration-200',
                           },
                           enterprise: {
-                            wrapper: `rounded-2xl border-2 bg-white border-purple-300 shadow-sm hover:shadow-md hover:border-purple-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative ${selectedPlanId === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''}`,
+                            wrapper: `rounded-2xl border-2 bg-white border-purple-300 shadow-sm hover:shadow-md hover:border-purple-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative ${selectedPlanId === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''} ${effectiveCurrentPlanId === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''}`,
                             headerBg: 'bg-gradient-to-r from-indigo-700 to-purple-700',
                             badge: 'inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
                             priceColor: 'text-white',
@@ -3287,12 +3452,28 @@ function StoreSettingsContent() {
                         <div
                           key={plan.id}
                           onClick={() => {
-                            if (!isDisabled && currentPlan?.id !== plan.id) {
+                            if (!isRefundSettling && !isDisabled && effectiveCurrentPlanId !== plan.id) {
                               setSelectedPlanId((prev) => (prev === plan.id ? null : plan.id));
                             }
                           }}
                           className={`relative cursor-pointer ${isDisabled ? 'opacity-70 cursor-not-allowed' : ''} ${style.wrapper}`}
                         >
+                          {/* Locked overlay — refund still settling at the gateway. Blocks
+                              every action on this card until the refund lifecycle completes. */}
+                          {isRefundSettling && (
+                            <div
+                              className="absolute inset-0 z-30 rounded-2xl bg-white/70 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 cursor-not-allowed"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-orange-100 text-orange-700 text-xs font-extrabold shadow-sm ring-1 ring-orange-200">
+                                <span className="h-2 w-2 rounded-full bg-orange-500 animate-pulse" />
+                                Refund Processing
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-gray-700 text-[11px] font-semibold">
+                                🔒 Locked until refund settles
+                              </span>
+                            </div>
+                          )}
                           {/* Curved header (keeps light theme; just brand accents) */}
                           <div className={`relative px-4 pt-4 pb-10 sm:pb-11 ${style.headerBg}`}>
                             <div className="absolute inset-x-0 bottom-0 h-10 bg-white rounded-t-[2.25rem]" />
@@ -3304,7 +3485,7 @@ function StoreSettingsContent() {
                               ) : (
                                 <span aria-hidden="true" className="h-0" />
                               )}
-                              {currentPlan?.id === plan.id && (
+                              {effectiveCurrentPlanId === plan.id && (
                                 <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm">
                                   ACTIVE
                                 </span>
@@ -3324,18 +3505,18 @@ function StoreSettingsContent() {
                               <div className="flex items-center gap-1.5 pt-0.5">
                                 <input
                                   type="checkbox"
-                                  checked={selectedPlanId === plan.id || currentPlan?.id === plan.id}
+                                  checked={selectedPlanId === plan.id || effectiveCurrentPlanId === plan.id}
                                   onChange={() => {
-                                    if (!isDisabled && currentPlan?.id !== plan.id) {
+                                    if (!isDisabled && effectiveCurrentPlanId !== plan.id) {
                                       setSelectedPlanId((prev) => (prev === plan.id ? null : plan.id));
                                     }
                                   }}
-                                  disabled={isDisabled || currentPlan?.id === plan.id}
+                                  disabled={isDisabled || effectiveCurrentPlanId === plan.id}
                                   className="w-4 h-4 rounded border-white/60 bg-white/10 text-white focus:ring-2 focus:ring-white/60 cursor-pointer disabled:opacity-60"
                                   onClick={(e) => e.stopPropagation()}
                                 />
                                 <span className="text-[11px] font-semibold text-white/85 whitespace-nowrap">
-                                  {currentPlan?.id === plan.id
+                                  {effectiveCurrentPlanId === plan.id
                                     ? 'Current'
                                     : isDisabled
                                       ? 'Locked'
@@ -3408,7 +3589,7 @@ function StoreSettingsContent() {
                           </div>
 
                           {/* Auto Renew (shown on active paid plan only) */}
-                          {currentPlan?.id === plan.id && Number(plan.price ?? 0) > 0 && (
+                          {effectiveCurrentPlanId === plan.id && Number(plan.price ?? 0) > 0 && (
                             <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 flex items-center justify-between gap-3">
                               <div className="min-w-0">
                                 <p className="text-[11px] sm:text-xs font-semibold text-gray-900 leading-tight">Auto Renew</p>
@@ -3431,25 +3612,25 @@ function StoreSettingsContent() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (selectedPlanId === plan.id || currentPlan?.id !== plan.id) {
+                              if (selectedPlanId === plan.id || effectiveCurrentPlanId !== plan.id) {
                                 handleUpgradePlan(plan.id);
                               }
                             }}
                             disabled={
-                              currentPlan?.id === plan.id ||
+                              effectiveCurrentPlanId === plan.id ||
                               upgradingPlanId === plan.id ||
                               isDisabled ||
-                              (selectedPlanId !== plan.id && currentPlan?.id !== plan.id)
+                              (selectedPlanId !== plan.id && effectiveCurrentPlanId !== plan.id)
                             }
                             className={`w-full py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition-all duration-200 flex items-center justify-center gap-2 ${style.cta} ${
-                              currentPlan?.id === plan.id ? '!bg-gray-100 !text-gray-700 !border !border-gray-300 cursor-not-allowed hover:!scale-100' : ''
+                              effectiveCurrentPlanId === plan.id ? '!bg-gray-100 !text-gray-700 !border !border-gray-300 cursor-not-allowed hover:!scale-100' : ''
                             } ${upgradingPlanId === plan.id ? '!bg-orange-400 !text-white cursor-wait' : ''} ${
-                              isDisabled || (selectedPlanId !== plan.id && currentPlan?.id !== plan.id) ? '!bg-gray-100 !text-gray-700 !border !border-gray-300 cursor-not-allowed hover:!scale-100' : ''
+                              isDisabled || (selectedPlanId !== plan.id && effectiveCurrentPlanId !== plan.id) ? '!bg-gray-100 !text-gray-700 !border !border-gray-300 cursor-not-allowed hover:!scale-100' : ''
                             }`}
                             title={
                               isDisabled
                                 ? `Lower than your active ${currentPlan?.plan_name ?? 'plan'} — upgrade only to higher plans`
-                                : selectedPlanId !== plan.id && currentPlan?.id !== plan.id
+                                : selectedPlanId !== plan.id && effectiveCurrentPlanId !== plan.id
                                 ? 'Please select this plan first'
                                 : undefined
                             }
@@ -3459,7 +3640,7 @@ function StoreSettingsContent() {
                                 <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
                                 Processing...
                               </>
-                            ) : currentPlan?.id === plan.id ? (
+                            ) : effectiveCurrentPlanId === plan.id ? (
                               'Current Plan'
                             ) : isDisabled ? (
                               'Lower Plan'
@@ -3477,29 +3658,124 @@ function StoreSettingsContent() {
                   )}
                 </div>
 
-                {/* Payment History - Store Specific */}
+                {/* Payment History - Store Specific.
+                    Sticky header only (no nested overflow) so page scroll works smoothly both ways;
+                    purchase rows slide underneath the header. */}
                 {planHistory.length > 0 && (
-                  <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4 shadow-sm">
-                    <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-3">Plan Purchase History</h3>
-                    <div className="space-y-2">
-                      {planHistory.slice(0, 10).map((entry: any) => {
+                  <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+                    <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-white/95 px-3 py-3 backdrop-blur-sm sm:px-4">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h3 className="text-base sm:text-lg font-bold text-gray-900">Plan Purchase History</h3>
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-600">
+                          {filteredPlanHistory.length}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <label className="relative flex items-center">
+                          <Calendar className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-gray-500" />
+                          <input
+                            type="date"
+                            value={planHistoryFromDate}
+                            max={planHistoryToDate || undefined}
+                            onChange={(event) => setPlanHistoryFromDate(event.target.value)}
+                            aria-label="Plan history from date"
+                            className="h-8 rounded-lg border border-gray-300 bg-white py-1 pl-8 pr-2 text-xs font-medium text-gray-700 outline-none hover:border-gray-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-100"
+                          />
+                        </label>
+                        <span className="text-xs text-gray-400">to</span>
+                        <label className="relative flex items-center">
+                          <Calendar className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-gray-500" />
+                          <input
+                            type="date"
+                            value={planHistoryToDate}
+                            min={planHistoryFromDate || undefined}
+                            onChange={(event) => setPlanHistoryToDate(event.target.value)}
+                            aria-label="Plan history to date"
+                            className="h-8 rounded-lg border border-gray-300 bg-white py-1 pl-8 pr-2 text-xs font-medium text-gray-700 outline-none hover:border-gray-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-100"
+                          />
+                        </label>
+                        {(planHistoryFromDate || planHistoryToDate) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPlanHistoryFromDate('')
+                              setPlanHistoryToDate('')
+                            }}
+                            className="h-8 rounded-lg px-2 text-xs font-semibold text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                          >
+                            Clear dates
+                          </button>
+                        )}
+                        <label className="relative flex items-center gap-1.5">
+                          <Filter className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-gray-500" />
+                          <select
+                            value={planHistoryFilter}
+                            onChange={(event) => setPlanHistoryFilter(event.target.value as PlanHistoryFilter)}
+                            aria-label="Filter plan purchase history"
+                            className="h-8 cursor-pointer appearance-none rounded-lg border border-gray-300 bg-white py-1 pl-8 pr-8 text-xs font-semibold text-gray-700 outline-none transition-colors hover:border-gray-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-100"
+                          >
+                            <option value="all">All records</option>
+                            <option value="paid">Paid</option>
+                            <option value="refund">Refunds</option>
+                            <option value="expired">Expired</option>
+                            <option value="upgraded">Upgraded</option>
+                            <option value="cancelled">Cancelled</option>
+                          </select>
+                          <ChevronDown className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-gray-500" />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="space-y-2 p-3 sm:p-4">
+                      {filteredPlanHistory.map((entry: any) => {
                         const isExpiredEntry = entry.kind === 'expired' || entry.subscription_status === 'EXPIRED'
                         const isUpgraded = entry.kind === 'upgraded' || entry.subscription_status === 'UPGRADED'
                         const isCancelled = entry.kind === 'cancelled' || entry.subscription_status === 'CANCELLED'
+                        // Refund lifecycle: while Razorpay is still settling the money the
+                        // payment sits in REFUND_PENDING — show "Refund Processing", NOT
+                        // "Refunded". Only after the gateway confirms (webhook flips to
+                        // REFUNDED) do we show "Refunded". Single source of truth = the
+                        // backend payment_status, never a locally inferred state.
+                        const rawPayStatus = String(entry.payment_status ?? 'PAID').toUpperCase()
+                        const isRefundPending = rawPayStatus === 'REFUND_PENDING'
+                        const isRefunded = rawPayStatus === 'REFUNDED'
+                        // Once Razorpay has ACCEPTED the refund request (whether still
+                        // processing or already settled) the merchant must be able to
+                        // TRACK it — so the badge always reads "Refund Initiated" and the
+                        // live gateway status is shown in the refund details block below.
+                        const isRefundInitiated = isRefundPending || isRefunded
                         const statusLabel = isExpiredEntry
                           ? 'EXPIRED'
                           : isUpgraded
                             ? 'UPGRADED'
                             : isCancelled
                               ? 'CANCELLED'
-                              : (entry.payment_status ?? 'PAID')
-                        const statusClass = isExpiredEntry || isCancelled
-                          ? 'bg-red-100 text-red-700'
-                          : isUpgraded
-                            ? 'bg-blue-100 text-blue-700'
-                            : entry.payment_status === 'PAID'
-                              ? 'bg-green-100 text-green-700'
-                              : 'bg-yellow-100 text-yellow-700'
+                              : isRefundInitiated
+                                ? 'Refund Initiated'
+                                : (entry.payment_status ?? 'PAID')
+                        const statusClass = isRefundInitiated
+                          ? 'bg-amber-100 text-amber-700'
+                          : isExpiredEntry || isCancelled
+                            ? 'bg-red-100 text-red-700'
+                            : isUpgraded
+                              ? 'bg-blue-100 text-blue-700'
+                              : rawPayStatus === 'PAID'
+                                ? 'bg-green-100 text-green-700'
+                                : 'bg-yellow-100 text-yellow-700'
+                        // Live refund status from the gateway (audit SSOT): PENDING while
+                        // Razorpay settles, COMPLETED once confirmed, FAILED on error.
+                        const refundLive = String(entry.refund?.status ?? '').toUpperCase()
+                        const refundLiveLabel = refundLive === 'COMPLETED'
+                          ? 'Refunded'
+                          : refundLive === 'FAILED'
+                            ? 'Refund Failed'
+                            : refundLive === 'PENDING'
+                              ? 'Refund Processing'
+                              : (isRefundPending ? 'Refund Processing' : isRefunded ? 'Refunded' : '—')
+                        const refundLiveClass = refundLive === 'COMPLETED'
+                          ? 'text-green-700'
+                          : refundLive === 'FAILED'
+                            ? 'text-red-700'
+                            : 'text-amber-700'
                         const purchasedDate = entry.payment_date
                           ? new Date(entry.payment_date)
                           : null
@@ -3508,6 +3784,17 @@ function StoreSettingsContent() {
                           : entry.billing_period_end
                             ? new Date(entry.billing_period_end)
                             : null
+                        const refundCompletedAt = entry.refund?.completed_at ?? null
+                        const refundSevenDayUntil = settlementNoteVisibleUntil(refundCompletedAt, 7)
+                        const refundTenDayUntil = settlementNoteVisibleUntil(refundCompletedAt, 10)
+                        const nowMs = refundMessageNow
+                        const showInitialSettlementNote =
+                          Boolean(refundSevenDayUntil) &&
+                          nowMs < Date.parse(String(refundSevenDayUntil))
+                        const showDelayedSettlementNote =
+                          Boolean(refundSevenDayUntil && refundTenDayUntil) &&
+                          nowMs >= Date.parse(String(refundSevenDayUntil)) &&
+                          nowMs < Date.parse(String(refundTenDayUntil))
                         return (
                         <div key={entry.id} className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
                           <div className="flex items-start justify-between mb-2">
@@ -3546,7 +3833,12 @@ function StoreSettingsContent() {
                             </div>
                             <div className="text-right ml-3">
                               {entry.amount != null ? (
-                                <p className="font-bold text-sm text-gray-900">₹{entry.amount}</p>
+                                <p className="font-bold text-sm text-gray-900">₹{Number(entry.amount).toFixed(2)}</p>
+                              ) : null}
+                              {entry.kind === 'payment' && entry.gst_amount_paise != null && entry.gst_amount_paise > 0 ? (
+                                <p className="text-[10px] text-gray-500 leading-tight">
+                                  incl. GST ₹{(Number(entry.gst_amount_paise) / 100).toFixed(2)}
+                                </p>
                               ) : null}
                               <span className={`text-xs px-2 py-0.5 rounded ${statusClass}`}>
                                 {statusLabel}
@@ -3577,9 +3869,105 @@ function StoreSettingsContent() {
                               </div>
                             </div>
                           )}
+                          {/* Refund details — SSOT is merchant_subscription_refunds
+                              (real Razorpay refund id + live status). Merchant can
+                              always track the refund; the Refund ID is copyable for
+                              support. Never a fabricated id — only shown when present. */}
+                          {entry.refund && isRefundInitiated && (
+                            <div className="pt-2 mt-1">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                <span className="text-xs font-bold text-amber-700">Refund Details</span>
+                              </div>
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+                                {entry.refund.refund_id && (
+                                  <div>
+                                    <span className="font-semibold">Refund ID:</span>{' '}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        const rid = entry.refund?.refund_id
+                                        if (!rid) return
+                                        navigator.clipboard?.writeText(rid).catch(() => {})
+                                        setCopiedRefundId(rid)
+                                        setTimeout(() => setCopiedRefundId((c) => (c === rid ? null : c)), 1500)
+                                      }}
+                                      title="Click to copy Refund ID"
+                                      className="font-mono text-blue-600 hover:text-blue-800 underline decoration-dotted cursor-pointer"
+                                    >
+                                      {entry.refund.refund_id}
+                                    </button>
+                                    {copiedRefundId === entry.refund.refund_id && (
+                                      <span className="ml-1 text-green-600 font-semibold">✓ copied</span>
+                                    )}
+                                  </div>
+                                )}
+                                {entry.refund.requested_at && (
+                                  <div>
+                                    <span className="font-semibold">Refund Requested:</span>{' '}
+                                    {new Date(entry.refund.requested_at).toLocaleString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                      year: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </div>
+                                )}
+                                {entry.refund.amount != null && (
+                                  <div>
+                                    <span className="font-semibold">Refund Amount:</span>{' '}
+                                    ₹{Number(entry.refund.amount).toFixed(2)}
+                                  </div>
+                                )}
+                                <div>
+                                  <span className="font-semibold">Status:</span>{' '}
+                                  <span className={`font-semibold ${refundLiveClass}`}>{refundLiveLabel}</span>
+                                </div>
+                                {entry.refund.completed_at && (
+                                  <div>
+                                    <span className="font-semibold">Completed:</span>{' '}
+                                    {new Date(entry.refund.completed_at).toLocaleString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                      year: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </div>
+                                )}
+                                {entry.refund.failure_reason && (
+                                  <div className="text-red-600">
+                                    <span className="font-semibold">Failure:</span> {entry.refund.failure_reason}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {/* Settlement note changes after 7 working days and hides after 10. */}
+                          {entry.refund &&
+                            String(entry.refund.status ?? '').toUpperCase() === 'COMPLETED' &&
+                            (showInitialSettlementNote || showDelayedSettlementNote) && (
+                              <div className="mt-2 flex items-start gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2">
+                                <svg className="h-4 w-4 shrink-0 text-green-600 mt-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                </svg>
+                                <p className="text-xs leading-relaxed text-green-800">
+                                  {showInitialSettlementNote
+                                    ? <>Refund has been successfully processed from GatiMitra&apos;s end. The refunded amount will be credited to your original payment method within 5–7 working days, depending on your bank or payment provider.</>
+                                    : <>Refund completed successfully. If the refunded amount is still not reflected in your original payment method, please contact your bank or GatiMitra Support with your Refund ID for assistance.</>}
+                                </p>
+                              </div>
+                            )}
                         </div>
                         )
                       })}
+                      {filteredPlanHistory.length === 0 && (
+                        <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 text-center text-sm text-gray-500">
+                          No purchase history found for this filter.
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -3645,6 +4033,8 @@ function StoreSettingsContent() {
                   setManualActivationLock(enabled)
                   await saveManualActivationLock(enabled)
                 }}
+                thermalPrinterWidthMm={thermalPrinterWidthMm}
+                onThermalPrinterWidthMmChange={setThermalPrinterWidthMm}
                 licenseBlockedForOps={licenseBlockedForOps}
                 isSaving={isSaving}
                 onSave={handleSaveSettings}

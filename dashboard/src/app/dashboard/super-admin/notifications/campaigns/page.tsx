@@ -464,7 +464,9 @@ function CampaignDetail({
                 <div className="mt-1 text-xs text-amber-800/90">
                   Target: {targetLabel}. Registered push tokens in the system:{" "}
                   {campaignCount(meta?.token_stats?.merchant_store_tokens)} merchant store,{" "}
-                  {campaignCount(meta?.token_stats?.expo_tokens)} expo (customer/rider).
+                  {campaignCount(meta?.token_stats?.expo_tokens)} expo,{" "}
+                  {campaignCount((meta?.token_stats as { native_fcm_tokens?: number } | undefined)?.native_fcm_tokens)}{" "}
+                  native/web FCM.
                   Open the merchant app on a phone (logged into the target store) with notifications enabled, then Resend.
                 </div>
               </div>

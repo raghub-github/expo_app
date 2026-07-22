@@ -1,12 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   BackHandler,
   Modal,
   Platform,
+  StatusBar as NativeStatusBar,
   StyleSheet,
   useWindowDimensions,
   View,
 } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
@@ -39,6 +41,24 @@ export function MerchantNavTransitionShutter() {
     return () => clearTimeout(t);
   }, [active, merchantId]);
 
+  const prevActiveRef = useRef(active);
+
+  /**
+   * Nav shutter Modal uses statusBarTranslucent. After dismiss, Android can keep
+   * translucent chrome until the merchant screen re-applies a solid status bar.
+   */
+  useEffect(() => {
+    const wasActive = prevActiveRef.current;
+    prevActiveRef.current = active;
+    if (!wasActive || active) return;
+    NativeStatusBar.setHidden(false, "none");
+    if (Platform.OS === "android") {
+      NativeStatusBar.setTranslucent(false);
+      NativeStatusBar.setBackgroundColor("#FFFFFF", true);
+      NativeStatusBar.setBarStyle("dark-content", true);
+    }
+  }, [active]);
+
   useEffect(() => {
     if (!active || Platform.OS !== "android") return;
     const onHardwareBack = () => {
@@ -56,6 +76,9 @@ export function MerchantNavTransitionShutter() {
       visible={active}
       animationType="none"
       transparent={false}
+      // Draw the skeleton BEHIND a translucent status bar (edge-to-edge) instead of
+      // reserving an opaque status-bar strip — that strip was the top white gap and
+      // it hid the bar on this full-screen Modal (Android renders it in its own window).
       statusBarTranslucent
       presentationStyle="fullScreen"
       onRequestClose={() => {
@@ -64,6 +87,9 @@ export function MerchantNavTransitionShutter() {
         safeRouterBack(router, FOOD_HOME_FALLBACK);
       }}
     >
+      {/* Own the Modal's status bar: always visible, transparent, dark icons over
+          the light skeleton. The root-tree StatusBar does not apply inside this window. */}
+      <StatusBar style="dark" translucent backgroundColor="transparent" hidden={false} />
       <View style={[styles.host, { minHeight: height }]} collapsable={false}>
         <MerchantMenuLoadingSkeleton
           key={`nav-load-${loadingMessageIndex}-${merchantId ?? ""}`}

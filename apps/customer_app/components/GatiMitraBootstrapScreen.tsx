@@ -1,12 +1,14 @@
-/**
- * Premium launch splash: full-bleed mint gradient, translucent status bar,
- * centered wordmark, optional “double door” exit (root) when app is ready.
- */
-
 import { useEffect, useRef, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { ActivityIndicator, StyleSheet, useWindowDimensions, View } from "react-native";
+import {
+  ActivityIndicator,
+  Platform,
+  StatusBar as NativeStatusBar,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import * as NavigationBar from "expo-navigation-bar";
@@ -25,8 +27,22 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 const GRADIENT_TOP = "#5eead4";
 const GRADIENT_BOTTOM = "#0d9488";
 const DOOR_COLOR = "#0f766e";
-/** Match gradient top so status bar blends with splash (not white strip). */
-const SPLASH_STATUS_BAR = GRADIENT_TOP;
+/** Match gradient top so status bar blends with splash (never white). */
+export const SPLASH_STATUS_BAR = GRADIENT_TOP;
+
+function applySplashStatusBarChrome() {
+  NativeStatusBar.setHidden(false, "none");
+  if (Platform.OS === "android") {
+    NativeStatusBar.setTranslucent(true);
+    NativeStatusBar.setBackgroundColor(SPLASH_STATUS_BAR, true);
+    NativeStatusBar.setBarStyle("light-content", true);
+  }
+  void SystemUI.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
+  void NavigationBar.setVisibilityAsync("visible").catch(() => {});
+  void NavigationBar.setPositionAsync("relative").catch(() => {});
+  void NavigationBar.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
+  void NavigationBar.setButtonStyleAsync("light").catch(() => {});
+}
 
 export type GatiMitraBootstrapScreenProps = {
   /**
@@ -66,11 +82,7 @@ export function GatiMitraBootstrapScreen({
     chrome.setBootstrapActive(true);
     chrome.setStatusBarBackground(SPLASH_STATUS_BAR, "light");
     chrome.setImmersiveStatusBarChrome(true);
-    void SystemUI.setBackgroundColorAsync(SPLASH_STATUS_BAR);
-    void NavigationBar.setVisibilityAsync("visible").catch(() => {});
-    void NavigationBar.setPositionAsync("relative").catch(() => {});
-    void NavigationBar.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
-    void NavigationBar.setButtonStyleAsync("light").catch(() => {});
+    applySplashStatusBarChrome();
     return () => {
       const reset = useScreenChromeStore.getState();
       reset.setBootstrapActive(false);
@@ -115,7 +127,12 @@ export function GatiMitraBootstrapScreen({
 
   return (
     <View style={rootStyle} accessibilityLabel="GatiMitra loading">
-      <StatusBar hidden style="light" backgroundColor={SPLASH_STATUS_BAR} translucent />
+      <StatusBar
+        hidden={false}
+        style="light"
+        backgroundColor={SPLASH_STATUS_BAR}
+        translucent
+      />
       <LinearGradient
         colors={[GRADIENT_TOP, GatiMitraColors.splashMint, GRADIENT_BOTTOM]}
         locations={[0, 0.45, 1]}

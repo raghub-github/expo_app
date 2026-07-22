@@ -84,6 +84,8 @@ export type MerchantFoodOrderItem = {
   applied_offer_type?: string | null;
   /** Frozen from merchant_ctm_pricing_snapshot — do not rescale from live menu. */
   ctm_from_snapshot?: boolean;
+  special_instructions?: string | null;
+  specialInstructions?: string | null;
 };
 
 export type MerchantOrderPricing = {
@@ -129,6 +131,10 @@ export type MerchantFoodOrderDto = {
   payment_status: string | null;
   items: MerchantFoodOrderItem[];
   pickup_otp: string | null;
+  /** Secure QR token from order_pickup_tokens (merchant/partner print only). */
+  pickup_token: string | null;
+  /** Backend-generated store-scoped KOT number. */
+  kot_number: string | null;
   rto_otp: string | null;
   payment_method: string | null;
   accepted_at: string | null;
@@ -313,6 +319,8 @@ function mergeDbItemFields(
     is_item_promo: db.is_item_promo ?? it.is_item_promo,
     applied_offer_type: db.applied_offer_type ?? it.applied_offer_type,
     ctm_from_snapshot: db.ctm_from_snapshot === true || it.ctm_from_snapshot === true,
+    special_instructions: db.special_instructions ?? it.special_instructions ?? null,
+    specialInstructions: db.specialInstructions ?? it.specialInstructions ?? db.special_instructions ?? it.special_instructions ?? null,
   };
 }
 
@@ -347,6 +355,12 @@ function normalizeItems(raw: unknown): MerchantFoodOrderItem[] {
       const t = String(custText).trim();
       if (t) customizations = t.split(/[,;|•]+/).map((s) => s.trim()).filter(Boolean);
     }
+    const instructionRaw =
+      r.item_instructions ?? r.special_instructions ?? r.specialInstructions ?? null;
+    const specialInstructions =
+      instructionRaw != null && String(instructionRaw).trim()
+        ? String(instructionRaw).trim().slice(0, 100)
+        : null;
     out.push({
       qty,
       name,
@@ -354,6 +368,8 @@ function normalizeItems(raw: unknown): MerchantFoodOrderItem[] {
       veg_nonveg,
       customizations: customizations?.length ? customizations : undefined,
       has_customizations: (customizations?.length ?? 0) > 0,
+      special_instructions: specialInstructions,
+      specialInstructions,
     });
   }
   return out;
@@ -998,9 +1014,11 @@ async function buildOrderDto(
     itemsByOrderTextId: Map<string, MerchantFoodOrderItem[]>;
     otpByCoreId: Map<number, { pickup: string | null; rto: string | null }>;
     activeRiderByCoreId: Map<number, ActiveRiderSnapshot>;
+    pickupTokenByCoreId: Map<number, { token: string | null; kot_number: string | null }>;
   }
 ): Promise<MerchantFoodOrderDto> {
   const otps = opts.otpByCoreId.get(core.id);
+  const pickupMeta = opts.pickupTokenByCoreId.get(core.id);
   const coreOnly = food == null;
   const tl = opts.timelineSnapByCoreId?.get(core.id);
   const scheduledMeta = resolveScheduledMeta(core);
@@ -1158,6 +1176,8 @@ async function buildOrderDto(
     payment_status: core.payment_status ?? null,
     items,
     pickup_otp: food?.pickup_otp ?? otps?.pickup ?? null,
+    pickup_token: pickupMeta?.token ?? null,
+    kot_number: pickupMeta?.kot_number ?? null,
     rto_otp: food?.rto_otp ?? otps?.rto ?? null,
     payment_method: core.payment_method,
     accepted_at: toIsoOrNull(food?.accepted_at) ?? tl?.accepted_at ?? null,
@@ -1504,6 +1524,34 @@ export async function loadMerchantFoodOrders(
     /* optional table */
   }
 
+  const pickupTokenByCoreId = new Map<
+    number,
+    { token: string | null; kot_number: string | null }
+  >();
+  if (coreIds.length > 0) {
+    try {
+      const tokRows = await sql`
+        SELECT order_id, token, kot_number
+        FROM order_pickup_tokens
+        WHERE order_id IN ${sql(coreIds)}
+      `;
+      for (const t of tokRows as unknown as Array<{
+        order_id: number;
+        token: string | null;
+        kot_number: string | null;
+      }>) {
+        const cid = Number(t.order_id);
+        if (!Number.isFinite(cid)) continue;
+        pickupTokenByCoreId.set(cid, {
+          token: t.token != null ? String(t.token) : null,
+          kot_number: t.kot_number != null ? String(t.kot_number) : null,
+        });
+      }
+    } catch {
+      /* optional — migration 0438/0439 */
+    }
+  }
+
   const storeOrdinalByCoreId = new Map<number, number>();
   if (coreIds.length > 0) {
     try {
@@ -1708,6 +1756,7 @@ export async function loadMerchantFoodOrders(
     itemsByOrderTextId,
     otpByCoreId,
     activeRiderByCoreId,
+    pickupTokenByCoreId,
   };
 
   type CancelCatalogRow = {

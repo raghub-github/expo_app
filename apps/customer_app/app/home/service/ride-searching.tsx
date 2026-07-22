@@ -85,7 +85,7 @@ const SEARCH_TIMEOUT_APOLOGY = {
 
 type SearchPhase = "placing" | "searching" | "tip_boost" | "timeout" | "cancelled" | "error";
 
-const RIDE_SEARCH_POLL_MS = 2000;
+const RIDE_SEARCH_POLL_MS = 4_000;
 type CancelFlowStep = null | "reason" | "confirm";
 
 type TripState = {

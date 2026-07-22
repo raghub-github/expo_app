@@ -40,6 +40,12 @@ async function pollOnce(): Promise<void> {
           variables: vars,
           target,
           campaignId: campaign.id,
+          overrides: {
+            title: campaign.override_title,
+            body: campaign.override_body,
+            imageUrl: campaign.override_image,
+            deepLink: campaign.override_deep_link,
+          },
         });
         await finalizeCampaignSend(campaign.id, "completed");
         if (result.queued === 0 && result.failedSync === 0 && result.skipped === 0) {

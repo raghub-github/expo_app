@@ -23,8 +23,10 @@ export function LegalConsentGate() {
   const triedOnce = useRef(false);
 
   useEffect(() => {
-    // Only run when the user is actually authenticated AND past the auth flow.
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      triedOnce.current = false;
+      return;
+    }
 
     // Skip if already on consent screen (prevent infinite loop).
     if (segments[0] === "(onboarding)" && segments[1] === "consent") return;
@@ -42,7 +44,7 @@ export function LegalConsentGate() {
           router.push("/(onboarding)/consent" as never);
         }
       } catch {
-        // Storage read failed — do nothing; the next launch will retry.
+        // Storage/API read failed — retry on next navigation.
       }
     })();
 

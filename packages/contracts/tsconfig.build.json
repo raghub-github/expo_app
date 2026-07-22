@@ -4,7 +4,9 @@
     "noEmit": false,
     "outDir": "./dist",
     "emitDeclarationOnly": false
-  }
+  },
+  "exclude": ["src/**/*.test.ts"]
 }
+
 
 

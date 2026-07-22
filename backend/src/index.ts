@@ -21,6 +21,7 @@ import { storageRoutes } from "./modules/storage/storage.routes.js";
 import { paymentRoutes } from "./modules/payment/payment.routes.js";
 import { meRoutes } from "./modules/me/me.routes.js";
 import { meWalletRoutes } from "./modules/me/me.wallet.routes.js";
+import { meLegalConsentRoutes } from "./modules/me/me.legal-consent.routes.js";
 import { supportRoutes } from "./modules/support/support.routes.js";
 import { customerSupportRoutes } from "./modules/customer-support/customer-support.routes.js";
 import { merchantRoutes } from "./modules/merchants/merchant.routes.js";
@@ -458,6 +459,7 @@ await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });
 await app.register(storageRoutes, { prefix: "/v1/storage" });
 await app.register(paymentRoutes, { prefix: "/v1/payment" });
 await app.register(meRoutes, { prefix: "/v1/me" });
+await app.register(meLegalConsentRoutes, { prefix: "/v1/me" });
 await app.register(meWalletRoutes, { prefix: "/v1/me" });
 await app.register(addressRoutes, { prefix: "/v1/me" });
 const { addressShareMeRoutes, addressSharePublicRoutes } = await import(

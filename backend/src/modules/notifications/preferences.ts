@@ -119,7 +119,7 @@ export function allowedChannelsFor(
   mask: ChannelMask,
 ): NotificationChannel[] {
   const allOptions: NotificationChannel[] =
-    templateChannel === "all" ? ["push", "in_app"] : [templateChannel];
+    templateChannel === "all" ? ["push", "in_app", "browser"] : [templateChannel];
   return allOptions.filter((ch) => {
     if (ch === "push") return mask.push;
     if (ch === "in_app") return mask.in_app;

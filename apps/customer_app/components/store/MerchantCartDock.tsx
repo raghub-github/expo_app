@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCartStore, type CartItem } from "@/store/cartStore";
+import { useCartChromeStore } from "@/store/cartChromeStore";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
 import { billingService } from "@/services/billing.service";
@@ -12,7 +13,6 @@ import { MerchantMenuCartSheet } from "@/components/store/MerchantMenuCartSheet"
 import type { Address } from "@/services/address.service";
 import type { MenuItem } from "@/services/merchant.service";
 import { perfMeasure } from "@/lib/perfTrace";
-import { useRenderCount } from "@/hooks/useRenderCount";
 
 const EMPTY_CART_ITEMS: CartItem[] = [];
 
@@ -31,11 +31,8 @@ export type MerchantCartDockProps = {
 
 /**
  * Isolated cart-total subscriber for the merchant menu's Continue dock.
- * The merchant screen it lives on renders its entire menu unvirtualized (no FlashList
- * recycling — see MerchantDetailFlashList's "full-mount" comment), so any hook the parent
- * subscribes to that changes on every +/- tap forces that whole screen to re-render.
- * This component owns those per-tap-changing selectors instead, so quantity/price/offer
- * updates only re-render this small dock, not the full menu screen.
+ * Shows immediately from cartChrome flash (pressIn) — does not wait for the
+ * Zustand cart write / menu-host work that used to block the first paint.
  */
 export function MerchantCartDock({
   merchantId,
@@ -49,7 +46,12 @@ export function MerchantCartDock({
   bottomInset,
   reserveOfferStrip,
 }: MerchantCartDockProps) {
-  useRenderCount("MerchantCartDock");
+  const flashMerchantId = useCartChromeStore((s) => s.flashMerchantId);
+  const flashCount = useCartChromeStore((s) => s.flashCount);
+  const flashPending = useCartChromeStore((s) => s.flashPending);
+  const clearFlash = useCartChromeStore((s) => s.clearFlash);
+  const flashActive =
+    flashPending && merchantCartMatchesRoute(flashMerchantId, merchantId);
 
   const cartLineCount = useCartStore((s) =>
     merchantCartMatchesRoute(s.merchantId, merchantId) ? s.items.length : 0
@@ -70,7 +72,6 @@ export function MerchantCartDock({
       return sum + line + addonLine;
     }, 0);
   });
-  /** Primitive join — avoid returning a new array from getSnapshot (infinite loop). */
   const cartMenuItemIdsKey = useCartStore((s) => {
     if (!merchantCartMatchesRoute(s.merchantId, merchantId)) return "";
     const ids = new Set<string>();
@@ -96,7 +97,17 @@ export function MerchantCartDock({
   );
   const syncCartPrices = useCartStore((s) => s.syncPricesFromMap);
 
+  // Flash is authoritative while pending — including flashCount === 0 (instant hide).
+  const displayCount = flashActive ? flashCount : totalInCart;
+  const showDock = displayCount > 0;
   const hasCart = cartLineCount > 0;
+
+  useEffect(() => {
+    if (!flashActive) return;
+    if (totalInCart === flashCount) {
+      clearFlash();
+    }
+  }, [flashActive, flashCount, totalInCart, clearFlash]);
 
   const checkoutOffersQuery = useQuery({
     queryKey: [
@@ -130,31 +141,34 @@ export function MerchantCartDock({
     return formatStoreCartOfferBannerText(best);
   }, [hasCart, checkoutOffersQuery.data, cartSubtotalForOffers]);
 
-  // Keep the floating-cart total in sync with the live menu — if commission
-  // changed since the user added an item, the cart price for those items
-  // updates as soon as the menu fetch returns fresh values.
+  // Price sync after first paint — never on the pressIn frame.
   useEffect(() => {
     if (!merchantMenu || !hasCart) return;
-    const priceById: Record<string, number> = {};
-    for (const m of merchantMenu) {
-      if (typeof m.price === "number" && Number.isFinite(m.price)) {
-        priceById[m.id] = m.price;
+    const t = setTimeout(() => {
+      const priceById: Record<string, number> = {};
+      for (const m of merchantMenu) {
+        if (typeof m.price === "number" && Number.isFinite(m.price)) {
+          priceById[m.id] = m.price;
+        }
       }
-    }
-    if (Object.keys(priceById).length > 0) syncCartPrices(priceById);
-  }, [merchantMenu, syncCartPrices, hasCart]);
+      if (Object.keys(priceById).length > 0) {
+        useCartStore.getState().syncPricesFromMap(priceById);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [merchantMenu, hasCart]);
 
-  /** Dev-only: "Continue button updated" — measured from the most recent tap on any row. */
   useEffect(() => {
+    if (!showDock) return;
     perfMeasure("tap:last", "dock:rendered");
-  }, [totalInCart]);
+  }, [showDock, displayCount]);
 
-  if (!hasCart) return null;
+  if (!showDock) return null;
 
   return (
     <MerchantMenuCartSheet
       items={cartItemsForDock}
-      totalCount={totalInCart}
+      totalCount={displayCount}
       onContinue={onContinue}
       disabled={isStoreClosedForStatus}
       isStoreClosed={isStoreClosedForStatus}

@@ -97,6 +97,17 @@ const EnvSchema = z.object({
     .transform((v) => v === "true")
     .default(false),
 
+  /**
+   * Push delivery mode for Expo tokens.
+   * - "0" / unset (default): send inline via Expo Push API (campaigns work without worker)
+   * - "1": enqueue to Redis BullMQ `q.push.send` (requires notification-worker + REDIS_URL);
+   *        falls back to inline if enqueue fails
+   */
+  PUSH_USE_QUEUE: z
+    .preprocess((v) => (typeof v === "string" ? v.trim() : v), z.enum(["0", "1", "true", "false"]).optional())
+    .transform((v) => v === "1" || v === "true")
+    .default(false),
+
   // Cloudflare R2 (backend-only)
   R2_TOKEN_VALUE: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   R2_BUCKET_NAME: z.preprocess(emptyToUndefined, z.string().min(3).optional()),

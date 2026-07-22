@@ -7,7 +7,7 @@
 import { randomUUID } from "crypto";
 import { getDb } from "../../db/client.js";
 import { customerAddresses, customerActiveLocation } from "../../db/schema.js";
-import { eq, and, desc, isNull, sql } from "drizzle-orm";
+import { eq, and, desc, isNull, ne, sql } from "drizzle-orm";
 import { forwardGeocodeAddress, reverseGeocodeCoords } from "../../services/mapbox/geocoding.js";
 import { attachmentsProxyUrlFromKeyForApi } from "../../utils/attachments-proxy-url.js";
 
@@ -321,6 +321,21 @@ export async function updateAddress(
   const set: Partial<typeof customerAddresses.$inferInsert> = {};
   if (data.label !== undefined) {
     const { label: addressType, customLabel } = toLabelAndCustom(data.label);
+    // One active Home/Work per customer — demote the previous one when re-labeling.
+    if (addressType === "HOME" || addressType === "WORK") {
+      await db
+        .update(customerAddresses)
+        .set({ label: "OTHER", customLabel: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(customerAddresses.customerId, customerId),
+            eq(customerAddresses.label, addressType),
+            eq(customerAddresses.isActive, true),
+            isNull(customerAddresses.deletedAt),
+            ne(customerAddresses.id, addressId)
+          )
+        );
+    }
     set.label = addressType;
     set.customLabel = customLabel;
   }

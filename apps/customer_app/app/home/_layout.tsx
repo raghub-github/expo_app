@@ -5,9 +5,23 @@ export default function HomeLayout() {
   return (
     <>
       <AndroidBackHandler />
-      <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" options={{ statusBarTranslucent: true }} />
-      <Stack.Screen name="meals-under-price" options={{ statusBarTranslucent: true }} />
+      <Stack screenOptions={{ headerShown: false, statusBarHidden: false, statusBarStyle: "dark" }}>
+      <Stack.Screen
+        name="index"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: "dark",
+        }}
+      />
+      <Stack.Screen
+        name="meals-under-price"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: "dark",
+        }}
+      />
       <Stack.Screen name="category/[slug]" />
       <Stack.Screen name="service/[slug]" />
       <Stack.Screen name="service/ride" />
@@ -23,6 +37,9 @@ export default function HomeLayout() {
           animationDuration: 0,
           freezeOnBlur: true,
           statusBarTranslucent: false,
+          statusBarHidden: false,
+          statusBarStyle: "dark",
+          statusBarBackgroundColor: "#FFFFFF",
           // Match shutter / skeleton — never flash a grey/blank route.
           contentStyle: { backgroundColor: "#FFFFFF" },
           gestureEnabled: true,

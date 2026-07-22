@@ -75,6 +75,14 @@ export interface RiderSummary {
     createdAt: string;
   } | null;
   recentOrders: any[];
+  /** Subscription fee outstanding + dispatch block (wallet settlement dues). */
+  subscriptionDues?: {
+    duesOutstanding: number;
+    totalDue: number;
+    dispatchBlocked: boolean;
+    penaltyStreakDays: number;
+    walletBalance: number;
+  } | null;
   recentWithdrawals: any[];
   recentTickets: any[];
   recentPenalties: {

@@ -26,6 +26,7 @@ import { getEnv } from "../../config/env.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../services/payment/razorpayService.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
+import { resolveStoreDeliveryQuote } from "../distance/storeQuote.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
 import {
@@ -693,6 +694,38 @@ export async function createPendingOrder(
     subscriptionBillingCycle,
   } = input;
 
+  // Production-critical serviceability gate. Run this before idempotency
+  // lookup and independently of billing flags so even retries cannot reuse a
+  // pending delivery after its address becomes unserviceable.
+  if ((input.deliveryType ?? "delivery") === "delivery") {
+    const deliveryQuote = await resolveStoreDeliveryQuote({
+      storeId: String(input.merchantId),
+      customerId,
+      addressId,
+      actor: "customer",
+      serviceType: "FOOD",
+      skipCache: true,
+    });
+    if (!deliveryQuote.ok) {
+      return {
+        ok: false,
+        code: deliveryQuote.code,
+        message: deliveryQuote.message,
+      };
+    }
+    if (!deliveryQuote.quote.serviceable) {
+      const storeInactive =
+        deliveryQuote.quote.unserviceable_reason === "store_inactive";
+      return {
+        ok: false,
+        code: storeInactive ? "STORE_CLOSED" : "OUT_OF_DELIVERY_ZONE",
+        message: storeInactive
+          ? "This restaurant is not accepting orders right now."
+          : "This address is outside the restaurant's delivery area. Please select a deliverable address or add a new one.",
+      };
+    }
+  }
+
   const idemKey = input.idempotencyKey?.trim() || null;
   if (idemKey) {
     const [existing] = await db
@@ -749,6 +782,42 @@ export async function createPendingOrder(
       longitude: store.longitude != null ? Number(store.longitude) : null,
       is_accepting_orders: store.is_accepting_orders === true,
     };
+  }
+
+  // Defense-in-depth entitlement gate: a plan-locked menu item must NEVER be orderable,
+  // even if it was cached/bookmarked/reordered before the merchant's plan downgraded.
+  // The customer menu/search/recommendation APIs already hide `is_locked_by_plan` items;
+  // this is the authoritative backend check that rejects any that slip through to checkout.
+  {
+    const orderedItemIds = Array.from(
+      new Set(items.map((i) => Number(i.menuItemId)).filter((n) => Number.isFinite(n) && n > 0))
+    );
+    if (orderedItemIds.length > 0) {
+      // Local import matches the read-only-lookup pattern used elsewhere in this function
+      // (getSql is re-imported per-block below), avoiding the function-scope shadow.
+      const { getSql: getSqlRo } = await import("../../db/client.js");
+      const sqlRo = getSqlRo();
+      const lockedRows = await sqlRo<Array<{ item_name: string | null }>>`
+        SELECT item_name
+        FROM merchant_menu_items
+        WHERE id IN ${sqlRo(orderedItemIds)}
+          AND store_id = ${merchantStoreId}
+          AND COALESCE(is_locked_by_plan, FALSE) = TRUE
+      `;
+      if (lockedRows.length > 0) {
+        const names = lockedRows
+          .map((r) => (r.item_name ?? "").trim())
+          .filter(Boolean)
+          .join(", ");
+        return {
+          ok: false,
+          code: "ITEM_UNAVAILABLE",
+          message: names
+            ? `These items are no longer available: ${names}. Please remove them from your cart and try again.`
+            : "Some items in your cart are no longer available. Please review your cart and try again.",
+        };
+      }
+    }
   }
 
   const { customerAddresses } = await import("../../db/schema.js");
@@ -808,6 +877,24 @@ export async function createPendingOrder(
     });
     if (!billRes.ok) {
       return { ok: false, code: billRes.code, message: billRes.message };
+    }
+    if (billRes.snapshot?.serviceable === false) {
+      const reason =
+        billRes.snapshot?.unserviceableReason === "store_inactive"
+          ? "This restaurant is not accepting orders right now."
+          : "This address is outside the restaurant delivery zone. Please choose another address.";
+      return {
+        ok: false,
+        code: "OUT_OF_DELIVERY_ZONE",
+        message: reason,
+      };
+    }
+    if (storeForOrder?.is_accepting_orders === false) {
+      return {
+        ok: false,
+        code: "STORE_CLOSED",
+        message: "This restaurant is not accepting orders right now.",
+      };
     }
     grandTotal = billRes.billing.final_amount;
     billingSnapshot = billRes.snapshot;
@@ -1174,6 +1261,7 @@ export async function finalizeOrder(
           addonPrice: sanitizeNumeric(addonPerUnit),
           totalPrice: sanitizeNumeric(lineTotal),
           itemSnapshot: i.itemSnapshot ?? undefined,
+          specialInstructions: i.specialInstructions ?? undefined,
           isDiscountEligible: elig,
           effectiveUnitPrice: pricing.effectiveUnitPrice,
           effectiveLineTotal: pricing.effectiveLineTotal,
@@ -1792,6 +1880,7 @@ export async function finalizePendingOrderFromWebhook(
           addonPrice: sanitizeNumeric(addonPerUnit),
           totalPrice: sanitizeNumeric(lineTotal),
           itemSnapshot: i.itemSnapshot ?? undefined,
+          specialInstructions: i.specialInstructions ?? undefined,
           isDiscountEligible:
             pricing.isDiscountEligible ?? eligibilityByMenuIdWh.get(String(i.menuItemId)),
           effectiveUnitPrice: pricing.effectiveUnitPrice,

@@ -204,6 +204,15 @@ export type BillingResult = {
   addon_total: number;
   discount_total: number;
   delivery_fee: number;
+  /**
+   * Standard/gross delivery fare from the delivery rate engine BEFORE any
+   * customer-facing subsidy (free delivery, coupons, membership, platform
+   * campaigns). This — never the net `delivery_fee` — is the Rider Fare Engine's
+   * `customerFare` base, so rider payout is independent of what the customer pays.
+   */
+  delivery_fee_gross: number;
+  /** Platform-absorbed delivery subsidy = delivery_fee_gross − delivery_fee. Platform cost only; never reduces rider payout. */
+  delivery_subsidy: number;
   platform_fee: number;
   packaging_fee: number;
   surge_fee: number;

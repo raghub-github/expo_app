@@ -2,24 +2,20 @@
  * Onboarding consent screen — Indian law requires explicit consent for
  * Terms + Privacy. Shown once at signup and again when LEGAL_PACK_VERSION
  * is bumped (handled at app root via a version gate).
- *
- * Layout: hero, two policy links opened in the markdown viewer, a single
- * "I have read and accept both" checkbox, and an Accept button. Users can
- * decline — that returns them to the login screen without storing consent.
  */
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
-import { useRouter } from "expo-router";
-import { StatusBar } from "expo-status-bar";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import { ONBOARDING_CONSENT_DOCS, LEGAL_PACK_VERSION } from "@/lib/legal-registry";
 import { recordConsent } from "@/lib/legal-consent";
 import { profileService } from "@/services/profile.service";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const TEXT = "#111827";
 const MUTED = "#6B7280";
@@ -34,6 +30,20 @@ export default function ConsentScreen() {
   const [accepted, setAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  useFocusEffect(
+    useCallback(() => {
+      useScreenChromeStore.setState({
+        statusBarBackground: PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+        bootstrapActive: false,
+      });
+      return () => {
+        useScreenChromeStore.getState().resetStatusBarBackground();
+      };
+    }, []),
+  );
+
   const onAccept = async () => {
     if (!accepted || submitting) return;
     setSubmitting(true);
@@ -42,9 +52,6 @@ export default function ConsentScreen() {
         appVersion: Constants.expoConfig?.version ?? undefined,
       });
 
-      // Where to go after acceptance depends on whether the user has finished
-      // onboarding already. New users → continue onboarding. Returning users
-      // (whose pack version was bumped) → straight back to the tabs.
       try {
         const profile = await profileService.getProfile();
         if (profile?.profile_completed === true) {
@@ -81,8 +88,7 @@ export default function ConsentScreen() {
   };
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-      <StatusBar style="dark" backgroundColor={PAGE_BG} />
+    <View style={[styles.screen, { paddingTop: 12 }]}>
       <ScrollView
         contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 140 }}
         showsVerticalScrollIndicator={false}
@@ -128,21 +134,6 @@ export default function ConsentScreen() {
           ))}
         </View>
 
-        {/*
-          Consent checkbox — reliability notes for the "tap does nothing" bug:
-
-          1. hitSlop expands the touch surface 12px around the entire card
-             so users don't have to hit the 22px checkbox itself precisely.
-          2. android_ripple gives immediate visual feedback so users see
-             their tap registered even before the state re-renders.
-          3. `pointerEvents="none"` on the inner <AppText> block prevents
-             nested <AppText> children (Terms/Privacy styled fragments) from
-             absorbing the touch on Android — a well-known RN quirk where
-             child Text with different styling becomes its own hit target.
-          4. delayPressIn=0 so the ripple + toggle fire immediately on
-             finger-down instead of after the ~130ms default long-press
-             gate (which felt like "the checkbox is dead" to users).
-        */}
         <Pressable
           style={styles.acceptBox}
           onPress={() => setAccepted((v) => !v)}
@@ -195,7 +186,7 @@ export default function ConsentScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: PAGE_BG },
-  hero: { alignItems: "center", marginTop: 24, marginBottom: 24, paddingHorizontal: 8 },
+  hero: { alignItems: "center", marginTop: 8, marginBottom: 24, paddingHorizontal: 8 },
   heroIcon: {
     width: 64,
     height: 64,
@@ -235,10 +226,6 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     padding: 14,
     marginTop: 16,
-    // Explicit minHeight guarantees at least 48pt touch target height
-    // (Material + iOS HIG minimum). Fixes the "checkbox does nothing"
-    // report when the wrapped text is short enough to make the whole
-    // card < 44pt tall on small phones.
     minHeight: 56,
     overflow: "hidden",
   },

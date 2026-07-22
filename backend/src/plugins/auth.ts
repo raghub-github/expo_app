@@ -3,7 +3,7 @@ import fp from "fastify-plugin";
 import { jwtVerify } from "jose";
 import { createSecretKey } from "node:crypto";
 import { getEnv } from "../config/env.js";
-import { getDb, getSql, withSqlRetry, isDbConnectionError, withDbSlot } from "../db/client.js";
+import { getDb, getSql, withSqlRetry, isDbConnectionError } from "../db/client.js";
 import { isTransientDbError, hasTransientDbCause } from "../lib/db/is-transient-db-error.js";
 import { DbSlotTimeoutError } from "../lib/db/db-slot.js";
 import { customers } from "../db/schema.js";
@@ -36,6 +36,8 @@ type CustomerSessionCacheEntry = {
 
 const customerSessionCache = new Map<string, CustomerSessionCacheEntry>();
 const CUSTOMER_SESSION_CACHE_MS = 45_000;
+/** When DB is contended, keep serving last-known session state a bit longer. */
+const CUSTOMER_SESSION_STALE_MS = 5 * 60_000;
 
 /** Throw (don't reply.send) so route Zod response schemas don't reject auth errors. */
 export class AuthHttpError extends Error {
@@ -61,10 +63,15 @@ type MerchantDeviceSessionCacheEntry = {
 
 const merchantDeviceSessionCache = new Map<string, MerchantDeviceSessionCacheEntry>();
 const MERCHANT_DEVICE_SESSION_CACHE_MS = 45_000;
+const MERCHANT_DEVICE_SESSION_STALE_MS = 5 * 60_000;
 
-function readMerchantDeviceSessionCache(sub: string, deviceId: string): boolean | null {
+function readMerchantDeviceSessionCache(
+  sub: string,
+  deviceId: string,
+  maxAgeMs = MERCHANT_DEVICE_SESSION_CACHE_MS
+): boolean | null {
   const cached = merchantDeviceSessionCache.get(`${sub}:${deviceId}`);
-  if (!cached || Date.now() - cached.checkedAt > MERCHANT_DEVICE_SESSION_CACHE_MS) return null;
+  if (!cached || Date.now() - cached.checkedAt > maxAgeMs) return null;
   return cached.valid;
 }
 
@@ -72,9 +79,13 @@ function writeMerchantDeviceSessionCache(sub: string, deviceId: string, valid: b
   merchantDeviceSessionCache.set(`${sub}:${deviceId}`, { valid, checkedAt: Date.now() });
 }
 
-function readCustomerSessionCache(sub: string, iat: number): CustomerSessionCacheEntry | "revoked" | null {
+function readCustomerSessionCache(
+  sub: string,
+  iat: number,
+  maxAgeMs = CUSTOMER_SESSION_CACHE_MS
+): CustomerSessionCacheEntry | "revoked" | null {
   const cached = customerSessionCache.get(sub);
-  if (!cached || Date.now() - cached.checkedAt > CUSTOMER_SESSION_CACHE_MS) return null;
+  if (!cached || Date.now() - cached.checkedAt > maxAgeMs) return null;
   if (cached.invalidBeforeSec > 0 && iat > 0 && iat < cached.invalidBeforeSec) return "revoked";
   return cached;
 }
@@ -154,9 +165,11 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
         if (cached) {
           if (cached.customerPk != null) req.auth!.customerPk = cached.customerPk;
         } else {
-          await withDbSlot(
-            () =>
-            withSqlRetry(async () => {
+          try {
+            // Intentionally NOT wrapped in withDbSlot: every authenticated request
+            // hits this path. Queuing behind heavy route work caused cascading
+            // database_slot_timeout 503s ("Database is busy") while JWT was fine.
+            await withSqlRetry(async () => {
               const db = getDb();
               const rows = await db
                 .select({
@@ -180,9 +193,22 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
               if (invalidBeforeSec > 0 && iat > 0 && iat < invalidBeforeSec) {
                 throwAuthError(401, "session_revoked", "Signed out from all devices.");
               }
-            }),
-            req
-          );
+            });
+          } catch (sessionErr) {
+            if (sessionErr instanceof AuthHttpError) throw sessionErr;
+            if (!isDbUnavailable(sessionErr)) throw sessionErr;
+            const stale = readCustomerSessionCache(sub, iat, CUSTOMER_SESSION_STALE_MS);
+            if (stale === "revoked") {
+              throwAuthError(401, "session_revoked", "Signed out from all devices.");
+            }
+            if (stale && stale.customerPk != null) {
+              req.auth!.customerPk = stale.customerPk;
+            }
+            req.log?.warn?.(
+              { err: sessionErr, sub },
+              "[auth] customer session check skipped — DB unavailable after JWT verify"
+            );
+          }
         }
       }
 
@@ -193,45 +219,53 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
           if (cachedValid === false) {
             throwAuthError(401, "session_revoked", "Signed out from this device.");
           } else if (cachedValid !== true) {
-            await withDbSlot(
-              () =>
-                withSqlRetry(async () => {
-                  const sql = getSql();
-                  const rows = await sql`
+            try {
+              await withSqlRetry(async () => {
+                const sql = getSql();
+                const rows = await sql`
               SELECT id
               FROM user_device_sessions
               WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
               LIMIT 1
             `;
-                  if (!rows[0]) {
-                    writeMerchantDeviceSessionCache(sub, deviceId, false);
-                    throwAuthError(401, "session_revoked", "Signed out from this device.");
-                  }
-                  writeMerchantDeviceSessionCache(sub, deviceId, true);
-                }),
-              req
-            );
-            void withSqlRetry(async () => {
-              const sql = getSql();
-              await sql`
+                if (!rows[0]) {
+                  writeMerchantDeviceSessionCache(sub, deviceId, false);
+                  throwAuthError(401, "session_revoked", "Signed out from this device.");
+                }
+                writeMerchantDeviceSessionCache(sub, deviceId, true);
+              });
+              void withSqlRetry(async () => {
+                const sql = getSql();
+                await sql`
               UPDATE user_device_sessions
               SET last_active = now()
               WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
             `;
-            }).catch(() => undefined);
+              }).catch(() => undefined);
+            } catch (sessionErr) {
+              if (sessionErr instanceof AuthHttpError) throw sessionErr;
+              if (!isDbUnavailable(sessionErr)) throw sessionErr;
+              const staleValid = readMerchantDeviceSessionCache(
+                sub,
+                deviceId,
+                MERCHANT_DEVICE_SESSION_STALE_MS
+              );
+              if (staleValid === false) {
+                throwAuthError(401, "session_revoked", "Signed out from this device.");
+              }
+              req.log?.warn?.(
+                { err: sessionErr, sub, deviceId },
+                "[auth] device session check skipped — DB unavailable after JWT verify"
+              );
+            }
           }
         }
       }
     } catch (err) {
       if (err instanceof AuthHttpError) throw err;
       if (!required) return;
-      if (isDbUnavailable(err)) {
-        throwAuthError(
-          503,
-          "database_unavailable",
-          "Database is busy. Please try again in a moment."
-        );
-      }
+      // JWT already failed (or unexpected error). Do not map slot timeouts here —
+      // session-check DB unavailability is handled above with fail-open / stale cache.
       throwAuthError(401, "invalid_token", "Invalid token");
     }
   });

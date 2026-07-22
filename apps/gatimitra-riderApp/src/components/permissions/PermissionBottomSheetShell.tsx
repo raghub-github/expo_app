@@ -2,29 +2,73 @@ import React from "react";
 import {
   View,
   Modal,
+  Pressable,
   StyleSheet,
   Platform,
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
+import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { colors } from "@/src/theme";
+
+/** Same central-hump wave as Customer StoreMenuItemDetailSheet. */
+const WAVE_HEIGHT = 36;
+const WAVE_SIDE_Y = 28;
+const WAVE_PEAK_Y = 2;
+const WAVE_STROKE = colors.primary[700];
+
+function WaveTopEdge({ width }: { width: number }) {
+  const w = Math.max(320, width);
+  const sy = WAVE_SIDE_Y;
+  const py = WAVE_PEAK_Y;
+  const fillPath = [
+    `M 0 ${WAVE_HEIGHT}`,
+    `L 0 ${sy}`,
+    `L ${w * 0.18} ${sy}`,
+    `C ${w * 0.28} ${sy} ${w * 0.3} ${py} ${w * 0.5} ${py}`,
+    `C ${w * 0.7} ${py} ${w * 0.72} ${sy} ${w * 0.82} ${sy}`,
+    `L ${w} ${sy}`,
+    `L ${w} ${WAVE_HEIGHT}`,
+    "Z",
+  ].join(" ");
+  const strokePath = [
+    `M 0 ${sy}`,
+    `L ${w * 0.18} ${sy}`,
+    `C ${w * 0.28} ${sy} ${w * 0.3} ${py} ${w * 0.5} ${py}`,
+    `C ${w * 0.7} ${py} ${w * 0.72} ${sy} ${w * 0.82} ${sy}`,
+    `L ${w} ${sy}`,
+  ].join(" ");
+
+  return (
+    <Svg width={w} height={WAVE_HEIGHT} style={styles.wave} pointerEvents="none">
+      <Path d={fillPath} fill="#FFFFFF" />
+      <Path d={strokePath} stroke={WAVE_STROKE} strokeWidth={1.5} fill="none" />
+    </Svg>
+  );
+}
 
 type PermissionBottomSheetShellProps = {
   visible: boolean;
   children: React.ReactNode;
   maxHeightRatio?: number;
   sheetStyle?: ViewStyle;
+  /** When false, backdrop tap and Android back do not dismiss. Default true for permission flows. */
+  dismissible?: boolean;
+  onDismiss?: () => void;
 };
 
-/** Bottom sheet shell for mandatory permission prompts — no dismiss on backdrop tap. */
+/** Bottom sheet shell for mandatory permission prompts — Customer-style wave header. */
 export function PermissionBottomSheetShell({
   visible,
   children,
-  maxHeightRatio = 0.72,
+  maxHeightRatio = 0.82,
   sheetStyle,
+  dismissible = false,
+  onDismiss,
 }: PermissionBottomSheetShellProps) {
   const insets = useSafeAreaInsets();
-  const { height: winH } = useWindowDimensions();
+  const { height: winH, width: winW } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
 
   return (
@@ -34,19 +78,29 @@ export function PermissionBottomSheetShell({
       animationType="slide"
       statusBarTranslucent
       presentationStyle="overFullScreen"
+      onRequestClose={dismissible ? onDismiss : undefined}
     >
       <View style={styles.root}>
-        <View style={styles.backdrop} />
-        <View style={[styles.anchor, { maxHeight: maxH }]}>
-          <View style={styles.handle} />
-          <View
-            style={[
-              styles.sheet,
-              { paddingBottom: Math.max(insets.bottom, 16) },
-              sheetStyle,
-            ]}
-          >
-            {children}
+        {/* Tap outside the sheet (on the dimmed backdrop) to dismiss — only when
+            dismissible. Non-dismissible flows still absorb the tap (no close). */}
+        <Pressable
+          style={styles.backdrop}
+          onPress={dismissible ? onDismiss : undefined}
+          accessibilityRole={dismissible ? "button" : undefined}
+          accessibilityLabel={dismissible ? "Close" : undefined}
+        />
+        <View style={[styles.anchor, { maxHeight: maxH }]} pointerEvents="box-none">
+          <View style={styles.sheetOuter} pointerEvents="box-none">
+            <WaveTopEdge width={winW} />
+            <View
+              style={[
+                styles.sheet,
+                { paddingBottom: Math.max(insets.bottom, 16) },
+                sheetStyle,
+              ]}
+            >
+              {children}
+            </View>
           </View>
         </View>
       </View>
@@ -66,20 +120,8 @@ const styles = StyleSheet.create({
   anchor: {
     width: "100%",
   },
-  handle: {
-    alignSelf: "center",
-    width: 44,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.85)",
-    marginBottom: 8,
-  },
-  sheet: {
+  sheetOuter: {
     width: "100%",
-    backgroundColor: "#ffffff",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    overflow: "hidden",
     ...(Platform.OS === "android"
       ? { elevation: 16 }
       : {
@@ -88,5 +130,15 @@ const styles = StyleSheet.create({
           shadowOpacity: 0.12,
           shadowRadius: 12,
         }),
+  },
+  wave: {
+    width: "100%",
+  },
+  sheet: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    // Join body under the wave side plateau (same trick as customer item sheet).
+    marginTop: -(WAVE_HEIGHT - WAVE_SIDE_Y),
+    overflow: "hidden",
   },
 });

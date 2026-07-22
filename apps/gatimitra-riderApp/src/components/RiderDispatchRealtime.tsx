@@ -7,6 +7,7 @@ import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { showAcceptedByAnotherRiderToast } from "@/src/lib/riderDispatchTakenToast";
 import { riderDispatchLog, riderDispatchWarn } from "@/src/lib/rider-dispatch-log";
+import { useRiderWsStore } from "@/src/stores/riderWsStore";
 
 const RECONNECT_BASE_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -62,6 +63,8 @@ export function RiderDispatchRealtime() {
     if (!hydrated || !session?.accessToken || session.role !== "rider" || !isOnDuty) {
       cancelledRef.current = true;
       connectGenRef.current += 1;
+      useRiderWsStore.getState().setGatewayReachable(false);
+      useRiderWsStore.getState().setSocketConnected(false);
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
       wsRef.current?.close();
@@ -152,6 +155,7 @@ export function RiderDispatchRealtime() {
 
       try {
         const gatewayUp = await isWsGatewayReachable(wsOrigin);
+        useRiderWsStore.getState().setGatewayReachable(gatewayUp);
         if (!gatewayUp) {
           failureCountRef.current += 1;
           const now = Date.now();
@@ -204,6 +208,7 @@ export function RiderDispatchRealtime() {
             return;
           }
           failureCountRef.current = 0;
+          useRiderWsStore.getState().setSocketConnected(true);
           touchActivity();
           startHeartbeat(ws);
           riderDispatchLog("ws connected");
@@ -251,6 +256,7 @@ export function RiderDispatchRealtime() {
 
         ws.onclose = (event) => {
           clearHeartbeat();
+          useRiderWsStore.getState().setSocketConnected(false);
           if (wsRef.current === ws) wsRef.current = null;
           riderDispatchLog("ws closed", { code: event.code, reason: event.reason });
           if (!cancelledRef.current && gen === connectGenRef.current) {

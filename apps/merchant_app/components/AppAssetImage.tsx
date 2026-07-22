@@ -5,6 +5,10 @@ import { resolveImageUrl } from "@/services/outletApi";
 
 type Props = {
   assetKey: string;
+  /** Used when `assetKey` has no uploaded URL yet. */
+  fallbackAssetKey?: string;
+  /** Bundled image when neither CMS key has a URL (e.g. splash before assets load). */
+  fallbackSource?: ImageSourcePropType | null;
   style?: StyleProp<ImageStyle>;
   resizeMode?: "cover" | "contain" | "stretch" | "repeat" | "center";
   accessibilityLabel?: string;
@@ -12,15 +16,21 @@ type Props = {
 
 export function AppAssetImage({
   assetKey,
+  fallbackAssetKey,
+  fallbackSource = null,
   style,
   resizeMode = "contain",
   accessibilityLabel,
 }: Props) {
-  const url = useAppAssetUrl(assetKey);
-  if (!url) return null;
+  const primary = useAppAssetUrl(assetKey);
+  const fallback = useAppAssetUrl(fallbackAssetKey ?? "");
+  const url = primary || fallback;
+  const resolved = url ? resolveImageUrl(url) : null;
+  const source = resolved ? { uri: resolved } : fallbackSource;
+  if (!source) return null;
   return (
     <Image
-      source={{ uri: url }}
+      source={source}
       style={style}
       resizeMode={resizeMode}
       accessibilityLabel={accessibilityLabel}

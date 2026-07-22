@@ -1,18 +1,14 @@
-// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import { useEffect, useRef, useCallback } from "react";
-import { AppState, Platform, type AppStateStatus } from "react-native";
-import * as Notifications from "expo-notifications";
+import { useEffect, useMemo, useRef, useCallback } from "react";
+import Constants from "expo-constants";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  ensureAndroidChannel,
-  getFreshExpoPushToken,
   navigateFromPushData,
-  registerExpoPushTokenOnBackend,
-  setNotificationHandlerDefaults,
-  subscribeToPushNotificationResponse,
+  usePushPermissionController,
+  type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { usePermissionStore } from "@/src/stores/permissionStore";
 import { getRiderAppConfig } from "@/src/config/env";
 import {
   notificationFromPushPayload,
@@ -20,77 +16,42 @@ import {
 } from "@/src/stores/notificationInboxStore";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 
-function deviceType(): "ios" | "android" | "web" | "unknown" {
-  if (Platform.OS === "ios") return "ios";
-  if (Platform.OS === "android") return "android";
-  if (Platform.OS === "web") return "web";
-  return "unknown";
-}
-
 /**
- * Registers a fresh Expo token with /v1/push/register (JWT role = rider).
+ * Registers Expo + native tokens via shared push controller (JWT role = rider).
+ * Keeps rider-specific inbox, order invalidation, and deep-link callbacks.
  */
 export function RiderPushSetup() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const hydrated = useSessionStore((s) => s.hydrated);
-  const lastTokenRef = useRef<string | null>(null);
+  const setPermissionStepGranted = usePermissionStore((s) => s.setPermissionStepGranted);
 
-  const sync = useCallback(async () => {
-    if (!hydrated || !session?.accessToken || session.role !== "rider") return;
-    await setNotificationHandlerDefaults();
-    await ensureAndroidChannel({
-      channelId: "default",
-      name: "Orders & alerts",
-      lightColor: "#0d9488",
-    });
-    const token = await getFreshExpoPushToken();
-    if (!token || lastTokenRef.current === token) return;
-    const { apiBaseUrl } = getRiderAppConfig();
-    const res = await registerExpoPushTokenOnBackend(apiBaseUrl, session.accessToken, {
-      expo_push_token: token,
-      device_type: deviceType(),
-    });
-    if (res.ok) lastTokenRef.current = token;
-  }, [hydrated, session?.accessToken, session?.role]);
+  const handleOpen = useCallback(
+    (payload: PushNotificationOpenPayload) => {
+      navigateFromPushData(router, {
+        ...payload.data,
+        appRole: "rider",
+        orderPath:
+          payload.data.orderId != null ? `/order/${String(payload.data.orderId)}` : undefined,
+      });
+    },
+    [router]
+  );
 
-  useEffect(() => {
-    void setNotificationHandlerDefaults();
-  }, []);
-
-  useEffect(() => {
-    void sync();
-    const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
-      if (s === "active") void sync();
-    });
-    return () => sub.remove();
-  }, [sync]);
-
-  useEffect(() => {
-    const a = subscribeToPushNotificationResponse(({ data }) => {
-      navigateFromPushData(router, data);
-    });
-    return () => {
-      a.remove();
-    };
-  }, [router]);
-
-  useEffect(() => {
-    const sub = Notifications.addNotificationReceivedListener((notification) => {
-      const content = notification.request.content;
-      const data = (content.data ?? {}) as Record<string, unknown>;
+  const handleForeground = useCallback(
+    (payload: PushNotificationOpenPayload) => {
       const title =
-        (typeof content.title === "string" && content.title) ||
-        (typeof data.gmTitle === "string" ? data.gmTitle : "") ||
+        (typeof payload.title === "string" && payload.title) ||
+        (typeof payload.data.gmTitle === "string" ? payload.data.gmTitle : "") ||
         "GatiMitra";
       const body =
-        (typeof content.body === "string" && content.body) ||
-        (typeof data.gmMessage === "string" ? data.gmMessage : "") ||
+        (typeof payload.body === "string" && payload.body) ||
+        (typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "") ||
         "";
-      useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, data));
+      useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, payload.data));
 
-      const type = typeof data.type === "string" ? data.type : "";
+      const type = typeof payload.data.type === "string" ? payload.data.type : "";
       if (
         type === "new_order" ||
         type === "order_assigned" ||
@@ -100,9 +61,64 @@ export function RiderPushSetup() {
       ) {
         void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
       }
-    });
-    return () => sub.remove();
-  }, [queryClient]);
+    },
+    [queryClient]
+  );
+
+  const { apiBaseUrl } = getRiderAppConfig();
+  const authRef = useRef({ session, hydrated });
+  authRef.current = { session, hydrated };
+
+  const pushOptions = useMemo(
+    () => ({
+      apiBaseUrl,
+      androidPackageName:
+        Constants.expoConfig?.android?.package || "com.raghubhunia.gatimitrariderapp",
+      androidChannels: [
+        { channelId: "default", name: "Orders & alerts", lightColor: "#0d9488" },
+      ],
+      getAuth: () => {
+        const { session: s, hydrated: h } = authRef.current;
+        if (!h || !s?.accessToken || s.role !== "rider") return null;
+        return { accessToken: s.accessToken, role: "rider" as const };
+      },
+      onNotificationOpen: handleOpen,
+      onForeground: handleForeground,
+    }),
+    [apiBaseUrl, handleOpen, handleForeground]
+  );
+
+  const { snapshot, controller } = usePushPermissionController(pushOptions);
+
+  useEffect(() => {
+    if (!hydrated || !session?.accessToken || session.role !== "rider") return;
+    void controller.refresh({ syncIfGranted: true });
+  }, [hydrated, session?.accessToken, session?.role, controller]);
+
+  useEffect(() => {
+    if (snapshot.osStatus === "granted") {
+      void controller.syncTokens();
+    }
+  }, [snapshot.osStatus, controller]);
+
+  useEffect(() => {
+    const granted = snapshot.osStatus === "granted";
+    setPermissionStepGranted("notifications", granted);
+    const prev = usePermissionStore.getState().permissions;
+    const notifStatus = granted
+      ? "granted"
+      : snapshot.osStatus === "blocked"
+        ? "blocked"
+        : snapshot.osStatus === "undetermined"
+          ? "undetermined"
+          : "denied";
+    if (prev) {
+      usePermissionStore.getState().setPermissions({
+        ...prev,
+        notifications: notifStatus,
+      });
+    }
+  }, [snapshot.osStatus, setPermissionStepGranted]);
 
   return null;
 }

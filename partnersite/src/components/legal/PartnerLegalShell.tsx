@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   CalendarDays,
@@ -62,6 +63,18 @@ function formatTocLabel(text: string, index: number): string {
   return `${index + 1}. ${stripped}`;
 }
 
+function resolveSameOriginPath(raw: string | null | undefined): string | null {
+  if (!raw || typeof window === "undefined") return null;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin) return null;
+    if (url.pathname === window.location.pathname) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 export default function PartnerLegalShell({
   slug,
   doc,
@@ -74,8 +87,40 @@ export default function PartnerLegalShell({
   bodyMarkdown,
   toc,
 }: Props) {
+  const router = useRouter();
   const [activeSection, setActiveSection] = useState(toc[0]?.id ?? "");
   const h2Toc = useMemo(() => toc.filter((t) => t.level === 2), [toc]);
+
+  const handleBack = useCallback(() => {
+    if (typeof window === "undefined") {
+      router.push("/");
+      return;
+    }
+
+    // Explicit return targets from deep links / merchant app (?returnUrl= / ?from=)
+    const params = new URLSearchParams(window.location.search);
+    const returnPath =
+      resolveSameOriginPath(params.get("returnUrl")) ??
+      resolveSameOriginPath(params.get("from"));
+    if (returnPath) {
+      router.push(returnPath);
+      return;
+    }
+
+    // Prefer browser history — takes user to the page they came from.
+    if (window.history.length > 1) {
+      router.back();
+      return;
+    }
+
+    const referrerPath = resolveSameOriginPath(document.referrer);
+    if (referrerPath) {
+      router.push(referrerPath);
+      return;
+    }
+
+    router.push("/");
+  }, [router]);
 
   useEffect(() => {
     if (!h2Toc.length) return;
@@ -103,24 +148,28 @@ export default function PartnerLegalShell({
   return (
     <div className="min-h-screen bg-[#f4f6f8] text-slate-900 print:bg-white">
       <header className="sticky top-0 z-50 border-b border-slate-200/90 bg-white/95 backdrop-blur-sm print:hidden">
-        <div className="mx-auto flex h-[60px] max-w-[1440px] items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="relative mx-auto flex h-[60px] max-w-[1440px] items-center justify-between px-4 sm:px-6 lg:px-8">
           <button
             type="button"
-            onClick={() => window.history.back()}
-            className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 transition-colors hover:text-emerald-700"
+            onClick={handleBack}
+            className="relative z-20 inline-flex items-center gap-2 text-sm font-medium text-slate-600 transition-colors hover:text-emerald-700"
+            aria-label="Go back to previous page"
           >
             <ArrowLeft size={18} />
             Back
           </button>
 
-          <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2.5">
-            <img src="/logo.png" alt="GatiMitra" className="h-8 w-auto object-contain" />
+          <div
+            className="pointer-events-none absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-2.5"
+            aria-hidden
+          >
+            <img src="/logo.png" alt="" className="h-8 w-auto object-contain" />
             <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
               Partner Legal
             </span>
           </div>
 
-          <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600">
+          <div className="relative z-20 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600">
             <Globe size={15} className="text-slate-400" />
             <span>English</span>
             <ChevronDown size={14} className="text-slate-400" />

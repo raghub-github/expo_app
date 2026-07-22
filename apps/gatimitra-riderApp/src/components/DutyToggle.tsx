@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { OffDutyConfirmModal } from "@/src/components/home/OffDutyConfirmModal";
+import { SubscriptionDutyBlockedSheet } from "@/src/components/subscription/SubscriptionDutyBlockedSheet";
 import { LORA_BOLD } from "@/src/theme/headerFonts";
 
 interface DutyToggleProps {
@@ -13,31 +14,46 @@ interface DutyToggleProps {
 
 export function DutyToggle({ compact = false, variant = "default" }: DutyToggleProps) {
   const { t } = useTranslation();
-  const { isOnDuty, setDuty, isPending } = useDutyToggle();
-  const { data: subscriptionStatus } = useRiderSubscriptionStatus();
-  const dutyLocked = subscriptionStatus?.dues?.dispatchBlocked === true;
+  const { isOnDuty, setDuty, isPending, dutyGoOnBlocked } = useDutyToggle();
+  const { refetch: refetchSubscription } = useRiderSubscriptionStatus();
   const [confirmVisible, setConfirmVisible] = useState(false);
+  const [blockedSheetVisible, setBlockedSheetVisible] = useState(false);
 
   const requestToggle = useCallback(() => {
-    if (isPending || dutyLocked) return;
+    if (isPending) return;
     if (isOnDuty) {
       setConfirmVisible(true);
       return;
     }
-    void setDuty(true);
-  }, [dutyLocked, isOnDuty, isPending, setDuty]);
+    if (dutyGoOnBlocked) {
+      void refetchSubscription();
+      setBlockedSheetVisible(true);
+      return;
+    }
+    void setDuty(true).then((result) => {
+      if (result?.blockedFromGoingOn) {
+        setBlockedSheetVisible(true);
+      }
+    });
+  }, [dutyGoOnBlocked, isOnDuty, isPending, refetchSubscription, setDuty]);
 
   const handleConfirmOffDuty = useCallback(() => {
     void setDuty(false).finally(() => setConfirmVisible(false));
   }, [setDuty]);
 
   const modal = (
-    <OffDutyConfirmModal
-      visible={confirmVisible}
-      onCancel={() => setConfirmVisible(false)}
-      onConfirm={handleConfirmOffDuty}
-      loading={isPending}
-    />
+    <>
+      <OffDutyConfirmModal
+        visible={confirmVisible}
+        onCancel={() => setConfirmVisible(false)}
+        onConfirm={handleConfirmOffDuty}
+        loading={isPending}
+      />
+      <SubscriptionDutyBlockedSheet
+        visible={blockedSheetVisible}
+        onClose={() => setBlockedSheetVisible(false)}
+      />
+    </>
   );
 
   if (variant === "status") {
@@ -45,10 +61,10 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
       <View style={styles.host} collapsable={false}>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending || dutyLocked}
-          style={[styles.statusPill, (isPending || dutyLocked) && { opacity: 0.75 }]}
+          disabled={isPending}
+          style={[styles.statusPill, isPending && { opacity: 0.75 }]}
           accessibilityRole="switch"
-          accessibilityState={{ checked: isOnDuty }}
+          accessibilityState={{ checked: isOnDuty, disabled: dutyGoOnBlocked }}
         >
           <View style={[styles.statusDot, { backgroundColor: isOnDuty ? "#22C55E" : "#9CA3AF" }]} />
           <Text style={[styles.statusText, { color: isOnDuty ? "#16A34A" : "#6B7280" }]}>
@@ -69,20 +85,21 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
       <View style={styles.pillHost} collapsable={false}>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending || dutyLocked}
+          disabled={isPending}
           style={({ pressed }) => [
             isPending && { opacity: 0.75 },
-            dutyLocked && { opacity: 0.55 },
-            pressed && !dutyLocked && styles.pillPressed,
+            dutyGoOnBlocked && !isOnDuty && { opacity: 0.72 },
+            pressed && styles.pillPressed,
           ]}
           accessibilityRole="switch"
-          accessibilityState={{ checked: isOnDuty }}
+          accessibilityState={{ checked: isOnDuty, disabled: dutyGoOnBlocked }}
           accessibilityLabel={dutyLabel}
         >
           <View
             style={[
               styles.pill,
               isOnDuty ? styles.pillOn : styles.pillOff,
+              dutyGoOnBlocked && !isOnDuty && styles.pillLocked,
               styles.pillShadow,
             ]}
           >
@@ -97,12 +114,12 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
     );
   }
 
-  if (variant === "compact") {
+  if (variant === "compact" || compact) {
     return (
       <View style={styles.host} collapsable={false}>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending || dutyLocked}
+          disabled={isPending}
           style={{
             width: 48,
             height: 28,
@@ -110,7 +127,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
             backgroundColor: isOnDuty ? "#16A34A" : "#D1D5DB",
             justifyContent: "center",
             paddingHorizontal: 3,
-            opacity: isPending || dutyLocked ? 0.55 : 1,
+            opacity: isPending ? 0.55 : 1,
           }}
         >
           <View
@@ -136,7 +153,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         </Text>
         <Pressable
           onPress={requestToggle}
-          disabled={isPending || dutyLocked}
+          disabled={isPending}
           style={{
             width: 56,
             height: 28,
@@ -144,7 +161,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
             backgroundColor: isOnDuty ? "#16A34A" : "#D1D5DB",
             justifyContent: "center",
             paddingHorizontal: 3,
-            opacity: isPending || dutyLocked ? 0.55 : 1,
+            opacity: isPending ? 0.55 : 1,
           }}
         >
           <View
@@ -211,6 +228,9 @@ const styles = StyleSheet.create({
   },
   pillOff: {
     backgroundColor: "#334155",
+  },
+  pillLocked: {
+    backgroundColor: "#7F1D1D",
   },
   pillShadow: Platform.select({
     ios: {

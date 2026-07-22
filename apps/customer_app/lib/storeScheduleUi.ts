@@ -37,17 +37,24 @@ export function countdownString(msLeft: number, compact = false): string {
 
 export function formatNextOpenTime(ts: number): string {
   const d = new Date(ts);
-  const today = new Date();
-  const isTomorrow =
-    d.getDate() !== today.getDate() ||
-    d.getMonth() !== today.getMonth() ||
-    d.getFullYear() !== today.getFullYear();
+  const now = new Date();
   const timeStr = d.toLocaleTimeString("en-IN", {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
   });
-  return isTomorrow ? `Opens tomorrow ${timeStr}` : `Opens at ${timeStr}`;
+  // Real calendar-day difference — NOT just "is it a different day". Naming the actual
+  // day matters when the next open skips a closed weekday (e.g. store shut Tue → opens
+  // Wed, which is 2 days out). Previously this said "tomorrow" for ANY future day, so it
+  // disagreed with the merchant dashboard ("Wed, 22 Jul"). Now it matches.
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
+  if (dayDiff <= 0) return `Opens at ${timeStr}`;
+  if (dayDiff === 1) return `Opens tomorrow ${timeStr}`;
+  const weekday = d.toLocaleDateString("en-IN", { weekday: "short" }); // e.g. "Wed"
+  if (dayDiff < 7) return `Opens ${weekday} ${timeStr}`;
+  const dateStr = d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  return `Opens ${weekday}, ${dateStr} ${timeStr}`;
 }
 
 export type OpenSoonState = {

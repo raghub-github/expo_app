@@ -601,8 +601,41 @@ async function loadOnDutyRiderIds(
 }
 
 /**
+ * Structured dispatch tracing. Toggle LIVE (no code change / no restart needed if
+ * your process manager reloads env, else set before boot) via DISPATCH_TRACE=1.
+ * Off by default so production is never spammed; on, it records the full per-rider
+ * decision (rider GPS, pickup, distance, active-wave radius, result, reason).
+ */
+function dispatchTraceEnabled(): boolean {
+  const v = process.env.DISPATCH_TRACE;
+  return v === "1" || v === "true" || v === "TRACE";
+}
+
+type DispatchRiderTrace = {
+  riderId: number;
+  serviceType: DispatchServiceType;
+  orderId: string;
+  configuredRadiusMeters: number;
+  result: "eligible" | "rejected";
+  reason: string;
+  riderLat?: number;
+  riderLng?: number;
+  pickupLat?: number;
+  pickupLng?: number;
+  distanceMeters?: number;
+};
+
+function traceRiderDecision(data: DispatchRiderTrace): void {
+  if (!dispatchTraceEnabled()) return;
+  console.info("[dispatch-trace] rider_eval", JSON.stringify(data));
+}
+
+/**
  * Full eligibility for a specific order dispatch target (push, socket, pool, accept).
  * Uses live GPS and the supplied effective pickup radius (wave-aware).
+ *
+ * Behaviour is unchanged from the un-instrumented version — every early return is
+ * still `null`; tracing (DISPATCH_TRACE=1) only observes the decision + reason.
  */
 export async function evaluateRiderDispatchEligibility(
   riderId: number,
@@ -616,20 +649,33 @@ export async function evaluateRiderDispatchEligibility(
     | "personRideVehicleTypes"
   >
 ): Promise<EligibleDispatchRider | null> {
+  const reject = (reason: string, extra?: Partial<DispatchRiderTrace>): null => {
+    traceRiderDecision({
+      riderId,
+      serviceType: target.serviceType,
+      orderId: target.orderId,
+      configuredRadiusMeters: target.effectiveRadiusMeters,
+      result: "rejected",
+      reason,
+      ...extra,
+    });
+    return null;
+  };
+
   const preEligible = await computeRiderEligibleDispatchServices(riderId);
-  if (!preEligible?.includes(target.serviceType)) return null;
+  if (!preEligible?.includes(target.serviceType)) return reject("service_not_eligible");
 
   const { isRiderSubscriptionDispatchBlocked } = await import("./rider-subscription-wallet.js");
-  if (await isRiderSubscriptionDispatchBlocked(riderId)) return null;
+  if (await isRiderSubscriptionDispatchBlocked(riderId)) return reject("subscription_blocked");
 
   const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
-  if (!ctx) return null;
-  if (!ctx.eligibleServices.includes(target.serviceType)) return null;
+  if (!ctx) return reject("no_context_offduty_or_stale_gps");
+  if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
 
   if (target.serviceType === "person_ride") {
     const riderVehicleTypes = await getRiderActiveVehicleTypeCodes(riderId);
     if (!riderMatchesPersonRideVehicleTypes(riderVehicleTypes, target.personRideVehicleTypes)) {
-      return null;
+      return reject("vehicle_type_mismatch", { riderLat: ctx.lat, riderLng: ctx.lng });
     }
   }
 
@@ -638,9 +684,11 @@ export async function evaluateRiderDispatchEligibility(
     orderId: target.orderId,
     eventContext: "dispatch_offer",
   });
-  if (!assignmentOk) return null;
-  if (!ctx.eligibleServices.includes(target.serviceType)) return null;
-  if (await isRiderBlacklistedForService(riderId, target.serviceType)) return null;
+  if (!assignmentOk) return reject("assignment_limit_or_active_order", { riderLat: ctx.lat, riderLng: ctx.lng });
+  if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
+  if (await isRiderBlacklistedForService(riderId, target.serviceType)) {
+    return reject("blacklisted_for_service", { riderLat: ctx.lat, riderLng: ctx.lng });
+  }
 
   const distanceMeters = haversineDistanceMeters(
     ctx.lat,
@@ -657,8 +705,28 @@ export async function evaluateRiderDispatchEligibility(
       target.effectiveRadiusMeters
     )
   ) {
-    return null;
+    return reject("outside_wave_radius", {
+      riderLat: ctx.lat,
+      riderLng: ctx.lng,
+      pickupLat: target.pickup.latitude,
+      pickupLng: target.pickup.longitude,
+      distanceMeters: Math.round(distanceMeters),
+    });
   }
+
+  traceRiderDecision({
+    riderId,
+    serviceType: target.serviceType,
+    orderId: target.orderId,
+    configuredRadiusMeters: target.effectiveRadiusMeters,
+    result: "eligible",
+    reason: "within_wave_radius",
+    riderLat: ctx.lat,
+    riderLng: ctx.lng,
+    pickupLat: target.pickup.latitude,
+    pickupLng: target.pickup.longitude,
+    distanceMeters: Math.round(distanceMeters),
+  });
 
   return {
     riderId: ctx.riderId,
@@ -687,7 +755,23 @@ export async function listEligibleRidersForDispatchOrder(
     if (row) eligible.push(row);
   }
 
-  return eligible.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  const sorted = eligible.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  // Always-on, low-volume (one line per order per wave): proves the wave radius
+  // gate from Super Admin → Rider Assignment Controls is being applied live.
+  console.info(
+    "[dispatch] wave_eligibility",
+    JSON.stringify({
+      orderId: target.orderId,
+      serviceType: target.serviceType,
+      waveNumber: target.waveNumber,
+      configuredRadiusMeters: target.effectiveRadiusMeters,
+      onDutyCandidates: candidateIds.length,
+      excluded: excludedRiderIds.size,
+      eligibleWithinRadius: sorted.length,
+      nearestMeters: sorted[0]?.distanceMeters != null ? Math.round(sorted[0].distanceMeters) : null,
+    })
+  );
+  return sorted;
 }
 
 /**

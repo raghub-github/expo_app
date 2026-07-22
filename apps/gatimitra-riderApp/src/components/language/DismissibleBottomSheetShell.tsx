@@ -230,11 +230,18 @@ export function DismissibleBottomSheetShell({
 
   const ratioMaxH = Math.round(winH * maxHeightRatio);
   const androidEmbeddedResize = embedded && Platform.OS === "android" && keyboardAware;
-  const windowResizedForKeyboard =
-    androidEmbeddedResize &&
-    keyboardOpen &&
-    baselineWinHRef.current > 0 &&
-    baselineWinHRef.current - winH >= WINDOW_RESIZE_THRESHOLD;
+  // The app is configured with android:windowSoftInputMode="adjustResize" AND
+  // softwareKeyboardLayoutMode="resize", so the window is GUARANTEED to shrink by
+  // the keyboard height. For an embedded flex-end overlay that means the sheet
+  // already sits flush on the keyboard with zero manual lift, so "keyboard open" ⇒
+  // "window resized" here — which collapses sheetBottom to 0.
+  //
+  // The old mount-time baseline delta was unreliable: with autoFocus the keyboard
+  // opens as the sheet mounts, so baseline was captured post-resize (delta ≈ 0),
+  // and the code then added a full keyboard-height lift ON TOP of the already-
+  // resized window — the persistent gap in the OTP sheet. Trusting the guaranteed
+  // resize removes both the gap and the re-layout flicker.
+  const windowResizedForKeyboard = androidEmbeddedResize && keyboardOpen;
 
   if (useLegacyKeyboard) {
     const legacyEvent = legacyKeyboardEventRef.current;

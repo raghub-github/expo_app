@@ -151,6 +151,7 @@ export type OrderPanelProps = {
   onOpenAllItems: () => void;
   onOpenTimeline: () => void;
   onPrintBill: () => void;
+  onPrintKot?: () => void;
   onClose?: () => void;
   /** Live-order actions (accept, mark ready, etc.). Omit on read-only views like order history. */
   primaryAction?: React.ReactNode;
@@ -184,6 +185,7 @@ export function OrderPanel({
   onOpenAllItems,
   onOpenTimeline,
   onPrintBill,
+  onPrintKot,
   onClose,
   primaryAction,
   otpCode,
@@ -338,32 +340,43 @@ export function OrderPanel({
     return (
       <div className={`relative flex flex-col bg-white ${className ?? ''}`}>
         <div className="flex flex-col gap-4 p-4 sm:p-5">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 min-w-0 flex-nowrap">
             <span
-              className={`inline-flex w-fit items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide ${
+              className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
                 panelMode === 'history'
                   ? 'bg-slate-100 text-slate-700'
                   : 'bg-violet-100 text-violet-800'
               }`}
+              title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             >
               {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onOpenTimeline}
-                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
-              >
-                <Clock size={13} />
-                Timeline
-              </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {onPrintKot ? (
+                <button
+                  type="button"
+                  onClick={onPrintKot}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
+                >
+                  <UtensilsCrossed size={13} />
+                  KOT
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onPrintBill}
-                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
               >
                 <Printer size={13} />
                 Print bill
+              </button>
+              <button
+                type="button"
+                onClick={onOpenTimeline}
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                <Clock size={13} />
+                Timeline
               </button>
             </div>
           </div>
@@ -516,21 +529,32 @@ export function OrderPanel({
     >
       <div className="flex flex-col xl:flex-row xl:items-stretch divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
         <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0">
-          <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="mb-3 flex items-center justify-between gap-2 min-w-0 flex-nowrap">
             <span
-              className={`inline-flex w-fit items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide ${
+              className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
                 panelMode === 'history'
                   ? 'bg-slate-100 text-slate-700'
                   : 'bg-violet-100 text-violet-800'
               }`}
+              title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             >
               {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             </span>
             <div className="flex items-center gap-2 shrink-0">
+              {onPrintKot ? (
+                <button
+                  type="button"
+                  onClick={onPrintKot}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
+                >
+                  <UtensilsCrossed size={13} />
+                  KOT
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onPrintBill}
-                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
               >
                 <Printer size={13} />
                 Print bill

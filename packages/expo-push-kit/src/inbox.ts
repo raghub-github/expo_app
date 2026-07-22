@@ -48,7 +48,12 @@ async function authedFetch<T>(cfg: NotificationApiConfig, path: string, init: Re
     },
   });
   if (!res.ok) throw new Error(`notification api ${path} → ${res.status}`);
-  return res.json();
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export async function loadInbox(cfg: NotificationApiConfig, opts: { limit?: number; offset?: number } = {}): Promise<InboxPage> {

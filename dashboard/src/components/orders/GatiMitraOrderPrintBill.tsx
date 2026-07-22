@@ -69,8 +69,17 @@ function buildPrintHtml(
       const qty = item.quantity || 1;
       const unit = Number(item.price || 0);
       const amount = Number(item.total || unit * qty);
+      const note =
+        (item as { specialInstructions?: string | null; special_instructions?: string | null })
+          .specialInstructions?.trim() ||
+        (item as { special_instructions?: string | null }).special_instructions?.trim() ||
+        '';
       return `<tr>
-          <td class="item-name">${escapeHtml(item.name ?? 'Item')}</td>
+          <td class="item-name">${escapeHtml(item.name ?? 'Item')}${
+            note
+              ? `<div style="font-size:11px;color:#92400e;font-weight:600;margin-top:2px">Cooking: ${escapeHtml(note)}</div>`
+              : ''
+          }</td>
           <td class="item-qty">${qty} x ${unit}</td>
           <td class="item-amt">${formatMoney(amount)}</td>
         </tr>`;

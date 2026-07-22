@@ -16,6 +16,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { printKot } from "@/lib/printKot";
+import { buildKotPrintContext } from "@/lib/printContext";
+import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
 import {
   fetchFoodOrder,
   fetchFoodOrderTimeline,
@@ -122,6 +125,7 @@ export default function OrderDetailScreen() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const printContext = useMerchantPrintContext();
 
   const routeId = id ?? "";
   const ordersFoodId = parseOrdersFoodId(routeId);
@@ -310,6 +314,17 @@ export default function OrderDetailScreen() {
             />
           ) : null}
         </View>
+        {order && !loading ? (
+          <Pressable
+            onPress={() => void printKot(order, buildKotPrintContext(printContext))}
+            style={({ pressed }) => [styles.kotBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
+            accessibilityRole="button"
+            accessibilityLabel="Print kitchen order ticket"
+          >
+            <Ionicons name="restaurant-outline" size={16} color={GatiMitraMerchant.textPrimary} />
+            <Text style={styles.kotBtnText}>KOT</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       <ScrollView
@@ -524,6 +539,24 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   backBtn: { padding: 8, marginRight: 8 },
+  kotBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginLeft: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.cardBg,
+  },
+  kotBtnText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    letterSpacing: 0.5,
+  },
   headerTitle: {
     fontSize: 18,
     fontWeight: "600",

@@ -200,6 +200,9 @@ function toRad(deg: number) {
   return (deg * Math.PI) / 180;
 }
 
+/** Live GPS within this many metres of a saved address ⇒ it is the user's current location. */
+const CURRENT_LOCATION_BADGE_RADIUS_M = 100;
+
 function distanceMeters(aLat: number, aLon: number, bLat: number, bLon: number) {
   const R = 6371000;
   const dLat = toRad(bLat - aLat);
@@ -1208,6 +1211,18 @@ export default function SelectLocationScreen() {
               const phoneLine = formatPhoneLine(saved.contactMobile);
               const icon = savedAddressIcon(saved);
               const isSelected = saved.id === matchedSavedIdForPill;
+              // Distance-based badge: compare LIVE GPS (not a selected pin) to this saved
+              // address. Derived from store `coords`, so it re-evaluates automatically on
+              // every GPS change / screen open / address refresh — no manual refresh.
+              const liveDistM =
+                coords?.latitude != null &&
+                coords?.longitude != null &&
+                Number.isFinite(saved.latitude) &&
+                Number.isFinite(saved.longitude)
+                  ? distanceMeters(coords.latitude, coords.longitude, saved.latitude, saved.longitude)
+                  : null;
+              const isAtCurrentLocation =
+                liveDistM != null && liveDistM <= CURRENT_LOCATION_BADGE_RADIUS_M;
               const openEdit = () => {
                 router.push({
                   pathname: "/location-address",
@@ -1244,6 +1259,15 @@ export default function SelectLocationScreen() {
                           ) : (
                             <View style={styles.unselectedRadio} />
                           )}
+                        </View>
+                        <View
+                          style={isAtCurrentLocation ? styles.badgeCurrent : styles.badgeSaved}
+                        >
+                          <AppText
+                            style={isAtCurrentLocation ? styles.badgeCurrentText : styles.badgeSavedText}
+                          >
+                            {isAtCurrentLocation ? "● Current Location" : "📍 Saved Location"}
+                          </AppText>
                         </View>
                         <AppText style={styles.savedAddressLine} numberOfLines={3}>
                           {saved.fullAddress}
@@ -1623,6 +1647,32 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     flex: 1,
     lineHeight: 20,
+  },
+  badgeCurrent: {
+    alignSelf: "flex-start",
+    backgroundColor: "#DCFCE7",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 5,
+  },
+  badgeCurrentText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#15803D",
+  },
+  badgeSaved: {
+    alignSelf: "flex-start",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 5,
+  },
+  badgeSavedText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#64748B",
   },
   savedAddressLine: {
     fontSize: 13,

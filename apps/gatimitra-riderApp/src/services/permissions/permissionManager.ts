@@ -5,7 +5,6 @@ import {
   openLocationPermissionSettings,
   openNotificationPermissionSettings,
   openCameraPermissionSettings,
-  openBatteryOptimizationSettings,
   openBackgroundRunningSettings,
 } from "./androidIntents";
 
@@ -185,15 +184,19 @@ class PermissionManager {
    */
   async requestBackgroundRunning(): Promise<PermissionResult> {
     try {
-      if (Platform.OS === "web" || Platform.OS === "ios") {
-        // iOS handles this automatically, web doesn't need it
+      const { getBackgroundRunningStatus } = await import("./backgroundExecution");
+      const live = await getBackgroundRunningStatus();
+      if (live.status === "granted") {
         return { status: "granted", canAskAgain: false };
       }
 
-      // On Android, this is typically handled via battery optimization
-      // We'll check if battery optimization is disabled
-      // For now, return granted as this is more of a system setting
-      return { status: "granted", canAskAgain: false };
+      await openBackgroundRunningSettings();
+
+      const after = await getBackgroundRunningStatus();
+      return {
+        status: this.normalizeStatus(after.status),
+        canAskAgain: after.canAskAgain,
+      };
     } catch (error) {
       console.warn("Error requesting background running (non-critical):", error);
       return { status: "denied", canAskAgain: false };
@@ -254,13 +257,22 @@ class PermissionManager {
       console.warn("Could not check media library permissions (non-critical):", error);
     }
 
+    let backgroundRunningStatus: PermissionStatus = "undetermined";
+    try {
+      const { getBackgroundRunningStatus } = await import("./backgroundExecution");
+      const bg = await getBackgroundRunningStatus();
+      backgroundRunningStatus = this.normalizeStatus(bg.status);
+    } catch (error) {
+      console.warn("Could not check background running (non-critical):", error);
+    }
+
     return {
       location_foreground: this.normalizeStatus(locationForeground.status),
       location_background: this.normalizeStatus(locationBackground?.status ?? "undetermined"),
       notifications: notificationsStatus,
       camera: this.normalizeStatus(camera.status),
       media_library: mediaLibraryStatus,
-      background_running: "granted", // System-level, assume granted
+      background_running: backgroundRunningStatus,
       sms: "undetermined", // Android only, handled separately if needed
       phone: "undetermined", // Android only, handled separately if needed
     };

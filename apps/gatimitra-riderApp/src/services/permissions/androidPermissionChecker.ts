@@ -1,21 +1,22 @@
 import { Platform } from "react-native";
-import Constants from "expo-constants";
 import { getItem, setItem } from "@/src/utils/storage";
+import {
+  getBackgroundRunningStatus,
+  getBatteryOptimizationStatus,
+} from "./backgroundExecution";
 
 /**
- * Android Permission Checker
- * 
- * Since Android doesn't provide easy APIs to check battery optimization,
- * background running, and display over apps status without native code,
- * we use a workaround approach:
- * 
- * 1. Store "assumed granted" state after user returns from settings
- * 2. Check with timestamp to allow re-checking if needed
- * 3. For permissions we CAN check (location, notifications), use actual APIs
+ * Android / iOS permission checker for settings-gated onboarding steps.
+ *
+ * Battery + Background Running use real OS APIs (expo-battery / location).
+ * Display-over-apps still uses a short-lived cache only as a soft hint because
+ * Expo has no Settings.canDrawOverlays() wrapper; Allow always opens the real
+ * system screen and never auto-grants on undetermined.
  */
 
 const PERMISSION_STATE_KEY = "android_permission_states";
-const PERMISSION_CHECK_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+/** Overlay cache TTL — short so revoked settings resurface quickly. */
+const OVERLAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 interface PermissionStateCache {
   [key: string]: {
@@ -24,9 +25,6 @@ interface PermissionStateCache {
   };
 }
 
-/**
- * Get cached permission states
- */
 async function getCachedPermissionStates(): Promise<PermissionStateCache> {
   try {
     const cached = await getItem(PERMISSION_STATE_KEY);
@@ -39,9 +37,6 @@ async function getCachedPermissionStates(): Promise<PermissionStateCache> {
   return {};
 }
 
-/**
- * Save permission state to cache
- */
 async function savePermissionState(
   permissionKey: string,
   status: "granted" | "denied" | "undetermined"
@@ -58,105 +53,61 @@ async function savePermissionState(
   }
 }
 
-/**
- * Check if cached permission state is still valid
- */
 function isCacheValid(
-  cachedState: PermissionStateCache[string] | undefined
+  cachedState: PermissionStateCache[string] | undefined,
+  ttlMs: number
 ): boolean {
   if (!cachedState) return false;
-  const age = Date.now() - cachedState.timestamp;
-  return age < PERMISSION_CHECK_TIMEOUT;
+  return Date.now() - cachedState.timestamp < ttlMs;
 }
 
-/**
- * Android Permission Checker Class
- */
 export class AndroidPermissionChecker {
-  /**
-   * Check battery optimization status
-   * 
-   * Since we can't check this programmatically without native code,
-   * we use a cache-based approach:
-   * - If user recently returned from battery optimization settings, assume granted
-   * - Otherwise, return undetermined (will show permission step)
-   */
   async checkBatteryOptimization(): Promise<{
     status: "granted" | "denied" | "undetermined";
     canAskAgain: boolean;
   }> {
-    if (Platform.OS !== "android") {
-      return { status: "granted", canAskAgain: false };
+    const live = await getBatteryOptimizationStatus();
+    if (live.status === "granted") {
+      await savePermissionState("battery_optimization", "granted");
+    } else if (live.status === "denied") {
+      await savePermissionState("battery_optimization", "denied");
     }
-
-    try {
-      const cached = await getCachedPermissionStates();
-      const cachedState = cached["battery_optimization"];
-
-      if (isCacheValid(cachedState)) {
-        return {
-          status: cachedState.status,
-          canAskAgain: cachedState.status !== "granted",
-        };
-      }
-
-      // No valid cache - return undetermined (will show permission step)
-      return { status: "undetermined", canAskAgain: true };
-    } catch (error) {
-      console.warn("Error checking battery optimization:", error);
-      return { status: "undetermined", canAskAgain: true };
-    }
+    return live;
   }
 
-  /**
-   * Mark battery optimization as granted (called after user returns from settings)
-   */
   async markBatteryOptimizationGranted(): Promise<void> {
-    await savePermissionState("battery_optimization", "granted");
+    const live = await getBatteryOptimizationStatus();
+    await savePermissionState(
+      "battery_optimization",
+      live.status === "granted" ? "granted" : "denied"
+    );
   }
 
-  /**
-   * Check background running status
-   * 
-   * Similar to battery optimization - use cache-based approach
-   */
   async checkBackgroundRunning(): Promise<{
     status: "granted" | "denied" | "undetermined";
     canAskAgain: boolean;
   }> {
-    if (Platform.OS !== "android") {
-      return { status: "granted", canAskAgain: false };
+    const live = await getBackgroundRunningStatus();
+    if (live.status === "granted") {
+      await savePermissionState("background_running", "granted");
+    } else if (live.status === "denied") {
+      await savePermissionState("background_running", "denied");
     }
-
-    try {
-      const cached = await getCachedPermissionStates();
-      const cachedState = cached["background_running"];
-
-      if (isCacheValid(cachedState)) {
-        return {
-          status: cachedState.status,
-          canAskAgain: cachedState.status !== "granted",
-        };
-      }
-
-      return { status: "undetermined", canAskAgain: true };
-    } catch (error) {
-      console.warn("Error checking background running:", error);
-      return { status: "undetermined", canAskAgain: true };
-    }
+    return live;
   }
 
-  /**
-   * Mark background running as granted
-   */
   async markBackgroundRunningGranted(): Promise<void> {
-    await savePermissionState("background_running", "granted");
+    const live = await getBackgroundRunningStatus();
+    await savePermissionState(
+      "background_running",
+      live.status === "granted" ? "granted" : "denied"
+    );
   }
 
   /**
-   * Check display over apps status
-   * 
-   * Similar to battery optimization - use cache-based approach
+   * Overlay permission cannot be read from JS without a native module.
+   * Cache is only a soft hint after the user visited settings — never treat
+   * undetermined as granted.
    */
   async checkDisplayOverApps(): Promise<{
     status: "granted" | "denied" | "undetermined";
@@ -170,11 +121,8 @@ export class AndroidPermissionChecker {
       const cached = await getCachedPermissionStates();
       const cachedState = cached["display_over_apps"];
 
-      if (isCacheValid(cachedState)) {
-        return {
-          status: cachedState.status,
-          canAskAgain: cachedState.status !== "granted",
-        };
+      if (isCacheValid(cachedState, OVERLAY_CACHE_TTL_MS) && cachedState.status === "granted") {
+        return { status: "granted", canAskAgain: false };
       }
 
       return { status: "undetermined", canAskAgain: true };
@@ -184,16 +132,10 @@ export class AndroidPermissionChecker {
     }
   }
 
-  /**
-   * Mark display over apps as granted
-   */
   async markDisplayOverAppsGranted(): Promise<void> {
     await savePermissionState("display_over_apps", "granted");
   }
 
-  /**
-   * Clear all cached permission states (useful for testing or reset)
-   */
   async clearCache(): Promise<void> {
     try {
       await setItem(PERMISSION_STATE_KEY, JSON.stringify({}));
@@ -202,9 +144,6 @@ export class AndroidPermissionChecker {
     }
   }
 
-  /**
-   * Invalidate a specific permission cache (force re-check)
-   */
   async invalidateCache(permissionKey: string): Promise<void> {
     try {
       const cached = await getCachedPermissionStates();

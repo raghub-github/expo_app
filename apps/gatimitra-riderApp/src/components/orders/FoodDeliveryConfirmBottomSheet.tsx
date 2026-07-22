@@ -1,10 +1,10 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
-import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
-import { OrderOtpVerifySheetContent } from "@/src/components/orders/OrderOtpVerifySheetContent";
+import { OtpVerifySheetModal } from "@gatimitra/otp-verify-ui";
 import { colors } from "@/src/theme";
+import { riderOtpVerifyTheme } from "@/src/theme/otpVerifyTheme";
 
 type Props = {
   visible: boolean;
@@ -27,16 +27,29 @@ export function FoodDeliveryConfirmBottomSheet({
   error,
   resetKey = 0,
   customerName,
-  bottomOffset = 0,
-  embedded = true,
   onDismiss,
   onSubmit,
   onClearError,
 }: Props) {
   const { t } = useTranslation();
+  const [otp, setOtp] = useState("");
 
   const displayName =
     customerName?.trim() || t("orders.activeRide.customerFallback", "Customer");
+
+  useEffect(() => {
+    if (!visible) {
+      setOtp("");
+      return;
+    }
+    setOtp("");
+  }, [visible, resetKey]);
+
+  useEffect(() => {
+    if (error?.trim()) {
+      setOtp("");
+    }
+  }, [error, resetKey]);
 
   const photoSection = (
     <>
@@ -56,56 +69,43 @@ export function FoodDeliveryConfirmBottomSheet({
   );
 
   return (
-    <DismissibleBottomSheetShell
+    <OtpVerifySheetModal
       visible={visible}
-      onDismiss={onDismiss}
-      maxHeightRatio={0.82}
-      showOuterHandle={false}
-      bottomOffset={bottomOffset}
-      keyboardAware
-      compactBottomInset
-      fitContent
-      embedded={embedded}
-    >
-      <OrderOtpVerifySheetContent
-        title={t("orders.activeFood.deliveryOtpSheetTitle", "Verify delivery OTP")}
-        subtitle={t(
-          "orders.activeFood.deliveryOtpSheetSubtitle",
-          "Ask {{name}} for the 4-digit delivery OTP",
-          { name: displayName }
-        )}
-        compactSubtitle={t(
-          "orders.activeFood.deliveryOtpSheetCompact",
-          "Enter delivery OTP from {{name}} — photo saves after verify",
-          { name: displayName }
-        )}
-        iconName="shield-checkmark"
-        headerGradient={["#EFF6FF", "#FFFFFF"]}
-        badgeGradient={[colors.secondary[600], colors.secondary[400]]}
-        error={error}
-        loading={loading}
-        resetKey={resetKey}
-        otpMode="delivery"
-        inputMode="system"
-        autoFocus
-        onSubmit={onSubmit}
-        onClearError={onClearError}
-        prependContent={photoSection}
-      />
-    </DismissibleBottomSheetShell>
+      title={t("auth.verifyOtp", "Verify OTP")}
+      subtitle={t(
+        "orders.activeFood.deliveryOtpSheetSubtitle",
+        "Ask {{name}} for the 4-digit delivery OTP",
+        { name: displayName }
+      )}
+      otpLength={4}
+      value={otp}
+      onChange={(next) => {
+        if (error?.trim()) onClearError?.();
+        setOtp(next);
+      }}
+      onVerify={onSubmit}
+      onCancel={onDismiss}
+      loading={loading}
+      error={error}
+      autoSubmitOnComplete
+      hideVerifyButton
+      hideCancelButton
+      dockToKeyboard
+      dismissOnBackdropPress={false}
+      theme={riderOtpVerifyTheme}
+      prependContent={photoSection}
+    />
   );
 }
 
 const styles = StyleSheet.create({
   sectionTitle: {
-    marginHorizontal: 20,
     marginBottom: 10,
     fontSize: 14,
     fontWeight: "700",
     color: colors.gray[800],
   },
   photoBox: {
-    marginHorizontal: 20,
     height: 140,
     borderRadius: 16,
     borderWidth: 2,

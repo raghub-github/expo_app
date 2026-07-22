@@ -26,7 +26,8 @@ import {
   PERMISSION_ONBOARDING_STEPS,
   type PermissionOnboardingStep,
 } from "@/src/constants/permissionOnboardingSteps";
-
+import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
+import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
 export default function PermissionRequestScreen() {
   const setPermissions = usePermissionStore((s) => s.setPermissions);
   const setHasRequestedPermissions = usePermissionStore((s) => s.setHasRequestedPermissions);
@@ -38,10 +39,17 @@ export default function PermissionRequestScreen() {
   const postPermissionReplaceRef = useRef<string | null>(null);
 
   const onboardingSteps: PermissionOnboardingStep[] = React.useMemo(
-    () =>
-      Platform.OS === "web"
-        ? PERMISSION_ONBOARDING_STEPS.filter((s) => s.key === "notifications")
-        : PERMISSION_ONBOARDING_STEPS,
+    () => {
+      if (Platform.OS === "web") {
+        return PERMISSION_ONBOARDING_STEPS.filter((s) => s.key === "notifications");
+      }
+      // iOS has no per-app battery-optimization toggle — skip that step entirely
+      // (treated as already satisfied; Background Running validates Always location).
+      if (Platform.OS === "ios") {
+        return PERMISSION_ONBOARDING_STEPS.filter((s) => s.key !== "battery_optimization");
+      }
+      return PERMISSION_ONBOARDING_STEPS;
+    },
     []
   );
 
@@ -100,6 +108,14 @@ export default function PermissionRequestScreen() {
 
   const handleSkip = useCallback(() => {
     const step = onboardingSteps[currentStep];
+    // Required system-gated steps — no skip (must open Settings / OS dialog).
+    if (
+      step?.key === "location" ||
+      step?.key === "background_running" ||
+      step?.key === "battery_optimization"
+    ) {
+      return;
+    }
     if (step) {
       setPermissionStepGranted(step.key, false);
     }
@@ -117,23 +133,33 @@ export default function PermissionRequestScreen() {
 
   const applyLocationStatus = useCallback(
     async (advanceOnSuccess = true) => {
+      // Passive recheck (e.g. return from Settings): do not open settings again.
       const locationStatus = await smartPermissionHandler.isLocationFullyEnabled();
-      if (locationStatus.enabled) {
-        const step = onboardingSteps[currentStep];
-        if (step?.key === "location") {
-          setPermissionStepGranted("location", true);
+      if (!locationStatus.enabled) {
+        if (locationStatus.reason) {
+          setLocationIssue(locationStatus.reason);
         }
-        setLocationIssue(null);
-        if (advanceOnSuccess) {
-          setTimeout(() => handleNextStep(), 400);
-        }
-        return true;
+        return false;
       }
 
-      if (locationStatus.reason) {
-        setLocationIssue(locationStatus.reason);
+      const existing = useRiderLocationStore.getState().coords;
+      if (!existing) {
+        const acquisition = await acquireAndCommitRiderLocation({ assumeReady: true });
+        if (!acquisition.ok) {
+          setLocationIssue("denied");
+          return false;
+        }
       }
-      return false;
+
+      const step = onboardingSteps[currentStep];
+      if (step?.key === "location") {
+        setPermissionStepGranted("location", true);
+      }
+      setLocationIssue(null);
+      if (advanceOnSuccess) {
+        setTimeout(() => handleNextStep(), 400);
+      }
+      return true;
     },
     [currentStep, onboardingSteps, handleNextStep, setPermissionStepGranted]
   );
@@ -148,20 +174,23 @@ export default function PermissionRequestScreen() {
 
     const check = await smartPermissionHandler.checkPermission(step.key);
     if (check.status === "granted") {
+      // Only persist granted when OS actually reports granted (no fake undetermined).
       await smartPermissionHandler.markPermissionGranted(step.key);
       applyStepGranted(step.key);
+      pendingSettingsReturnRef.current = false;
       return true;
     }
 
+    // Display-over-apps: Expo cannot read Settings.canDrawOverlays. After the
+    // user returns from the real system screen, accept a soft completion once.
     if (
-      check.status === "undetermined" &&
-      (step.key === "battery_optimization" ||
-        step.key === "background_running" ||
-        step.key === "display_over_apps")
+      step.key === "display_over_apps" &&
+      pendingSettingsReturnRef.current &&
+      Platform.OS === "android"
     ) {
-      setPermissionStepGranted(step.key, true);
+      pendingSettingsReturnRef.current = false;
       await smartPermissionHandler.markPermissionGranted(step.key);
-      setTimeout(() => handleNextStep(), 400);
+      applyStepGranted(step.key);
       return true;
     }
 
@@ -170,9 +199,8 @@ export default function PermissionRequestScreen() {
       pendingSettingsReturnRef.current &&
       check.status !== "denied"
     ) {
+      // Re-read after settings; only advance if truly granted (handled above).
       pendingSettingsReturnRef.current = false;
-      applyStepGranted(step.key);
-      return true;
     }
 
     pendingSettingsReturnRef.current = false;
@@ -182,9 +210,11 @@ export default function PermissionRequestScreen() {
     applyStepGranted,
     currentStep,
     onboardingSteps,
-    handleNextStep,
-    setPermissionStepGranted,
   ]);
+
+  /** Skip steps that are already configured in the OS (never re-prompt). */
+  // Chained via the currentStep effect below — when a step is already granted,
+  // we auto-advance until we hit one that still needs user action.
 
   const runLocationAllowFlow = useCallback(async () => {
     const step = onboardingSteps[currentStep];
@@ -192,19 +222,67 @@ export default function PermissionRequestScreen() {
 
     setLoading(true);
     try {
-      await smartPermissionHandler.handleLocationAllowAction();
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      await applyLocationStatus(true);
+      const pipeline = await smartPermissionHandler.runLocationAllowPipeline({
+        acquireFix: true,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      if (pipeline.enabled && pipeline.fixAcquired) {
+        setPermissionStepGranted("location", true);
+        setLocationIssue(null);
+        setTimeout(() => handleNextStep(), 400);
+        return;
+      }
+
+      if (pipeline.reason === "fix_failed") {
+        setLocationIssue("denied");
+      } else if (pipeline.reason) {
+        setLocationIssue(pipeline.reason);
+      }
     } catch (error) {
       console.warn("Error handling location allow:", error);
     } finally {
       setLoading(false);
     }
-  }, [applyLocationStatus, currentStep, onboardingSteps]);
+  }, [currentStep, onboardingSteps, handleNextStep, setPermissionStepGranted]);
 
   useEffect(() => {
     setLocationIssue(null);
-  }, [currentStep]);
+    let cancelled = false;
+    // When landing on a step, auto-advance if the OS is already configured.
+    void (async () => {
+      const step = onboardingSteps[currentStep];
+      if (!step || !permissionHydrated || hasRequestedPermissions) return;
+
+      if (step.key === "location") {
+        const ok = await smartPermissionHandler.isLocationFullyEnabled();
+        if (cancelled || !ok.enabled) return;
+        setPermissionStepGranted("location", true);
+        setTimeout(() => {
+          if (!cancelled) handleNextStep();
+        }, 300);
+        return;
+      }
+
+      const check = await smartPermissionHandler.checkPermission(step.key);
+      if (cancelled || check.status !== "granted") return;
+      setPermissionStepGranted(step.key, true);
+      await smartPermissionHandler.markPermissionGranted(step.key);
+      setTimeout(() => {
+        if (!cancelled) handleNextStep();
+      }, 300);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentStep,
+    permissionHydrated,
+    hasRequestedPermissions,
+    onboardingSteps,
+    setPermissionStepGranted,
+    handleNextStep,
+  ]);
 
   useEffect(() => {
     Animated.timing(progressAnim, {
@@ -351,7 +429,13 @@ export default function PermissionRequestScreen() {
         loading={loading}
         locationIssue={locationIssue}
         onAllow={step.key === "location" ? runLocationAllowFlow : handleAllow}
-        onSkip={handleSkip}
+        onSkip={
+          step.key === "location" ||
+          step.key === "background_running" ||
+          step.key === "battery_optimization"
+            ? undefined
+            : handleSkip
+        }
       />
     </View>
   );

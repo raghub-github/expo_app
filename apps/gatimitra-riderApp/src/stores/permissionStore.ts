@@ -59,12 +59,51 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
   refreshPermissions: async () => {
     try {
       const { permissionManager } = await import("@/src/services/permissions/permissionManager");
+      const {
+        getBackgroundRunningStatus,
+        getBatteryOptimizationStatus,
+      } = await import("@/src/services/permissions/backgroundExecution");
+      const { getNotificationPermissions } = await import(
+        "@/src/services/permissions/notificationsWrapper"
+      );
+
       const states = await permissionManager.getPermissionStates();
       get().setPermissions(states);
+
+      const [bg, battery, notif, locationGranted] = await Promise.all([
+        getBackgroundRunningStatus(),
+        getBatteryOptimizationStatus(),
+        getNotificationPermissions(),
+        permissionManager.isLocationGranted(),
+      ]);
+
+      const steps = new Set(get().grantedPermissionSteps);
+      if (bg.status === "granted") steps.add("background_running");
+      else steps.delete("background_running");
+
+      if (battery.status === "granted") steps.add("battery_optimization");
+      else steps.delete("battery_optimization");
+
+      if (notif.status === "granted") steps.add("notifications");
+      else steps.delete("notifications");
+
+      if (locationGranted) steps.add("location");
+      else steps.delete("location");
+
+      set({ grantedPermissionSteps: steps });
+      void setItem(GRANTED_PERMISSIONS_KEY, JSON.stringify(Array.from(steps)));
+
+      // If previously completed onboarding but a required OS setting was revoked,
+      // send the rider through permissions again (matches "ask again if disabled").
+      const requiredOk =
+        steps.has("location") &&
+        steps.has("notifications") &&
+        (steps.has("battery_optimization") || steps.has("background_running"));
+      if (get().hasRequestedPermissions && !requiredOk) {
+        get().setHasRequestedPermissions(false);
+      }
     } catch (error) {
       console.warn("Error refreshing permissions (non-critical):", error);
-      // Don't throw - just log the warning
-      // App should continue to work even if permission refresh fails
     }
   },
 
@@ -77,9 +116,6 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
 
     console.log('[PermissionStore] Starting hydration');
     try {
-      set({ hydrated: true });
-      console.log('[PermissionStore] Set hydrated to true');
-      
       const [permissionsJson, hasRequestedJson, grantedStepsJson] = await Promise.all([
         getItem(PERMISSION_STORE_KEY),
         getItem("rider_has_requested_permissions"),
@@ -121,22 +157,15 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
         }
       }
 
-      // Refresh location status in background (non-blocking)
-      // Don't await this - let it run in background
-      import("@/src/services/permissions/permissionManager")
-        .then(({ permissionManager }) => permissionManager.isLocationGranted())
-        .then((locationGranted) => {
-          if (get().permissions) {
-            const updated = { ...get().permissions! };
-            updated.location_foreground = locationGranted ? "granted" : "denied";
-            get().setPermissions(updated);
-          }
-        })
-        .catch((locationError) => {
-          console.warn("[PermissionStore] Could not check location during hydrate (non-critical):", locationError);
-        });
+      // Mark hydrated only after storage values are applied so routing cannot race.
+      set({ hydrated: true });
+      console.log('[PermissionStore] Set hydrated to true');
+
+      // Sync real OS state (location, notifications, background) without blocking first paint.
+      void get().refreshPermissions();
     } catch (error) {
       console.error("[PermissionStore] Error hydrating permission store:", error);
+      set({ hydrated: true });
     }
   },
 }));

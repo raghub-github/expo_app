@@ -63,6 +63,7 @@ import {
   resolveRidePickupFreeRemainingSeconds,
   resolveRidePickupWaitElapsedSeconds,
 } from "@/lib/ride-pickup-wait";
+import { pollIntervalWithBackoff, queryRetryDelay } from "@/lib/query-poll-backoff";
 import { buildActiveRideTripFareBreakdown, resolveRideMapMarkerImageKey, resolveRideVehicleImage } from "@/lib/ride-order-display";
 
 const ACCENT_BLUE = "#4285F4";
@@ -125,8 +126,10 @@ export function RideAcceptedTrackingScreen({
   const { data: liveRideStatus } = useQuery({
     queryKey: ["rideOrderStatus", order.orderId],
     queryFn: () => getRideOrderStatus(order.orderId),
-    refetchInterval: 3000,
-    staleTime: 1500,
+    refetchInterval: (query) => pollIntervalWithBackoff(query, 5_000),
+    staleTime: 2_500,
+    retry: 2,
+    retryDelay: queryRetryDelay,
   });
 
   useEffect(() => {

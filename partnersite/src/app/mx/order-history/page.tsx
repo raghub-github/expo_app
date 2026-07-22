@@ -30,7 +30,12 @@ import { type OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { FormattedOrderId } from '@/components/FormattedOrderId';
 import { OrderPanel } from '@/components/orders/OrderPanel';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
-import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import {
+  GatiMitraOrderPrintBill,
+  printOrderBill,
+  type GatiMitraPrintStoreInfo,
+} from '@/components/orders/GatiMitraOrderPrintBill';
+import { printOrderKot } from '@/components/orders/GatiMitraOrderPrintKOT';
 import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
@@ -236,6 +241,7 @@ function OrderHistoryInner() {
   const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
   const [timelineModalOpen, setTimelineModalOpen] = useState(false);
   const [printBillOpen, setPrintBillOpen] = useState(false);
+  const [thermalPrinterWidthMm, setThermalPrinterWidthMm] = useState<58 | 80>(80);
   const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
@@ -270,6 +276,22 @@ function OrderHistoryInner() {
   useEffect(() => {
     if (storeRecord) setStore(storeRecord);
   }, [storeRecord]);
+
+  useEffect(() => {
+    if (!storeId) return;
+    let cancelled = false;
+    fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`)
+      .then((res) => (res.ok ? res.json() : {}))
+      .then((data: { thermal_printer_width_mm?: number }) => {
+        if (!cancelled) {
+          setThermalPrinterWidthMm(data.thermal_printer_width_mm === 58 ? 58 : 80);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId]);
 
   const fetchOrders = useCallback(async () => {
     if (!storeId) return;
@@ -397,6 +419,59 @@ function OrderHistoryInner() {
       0
     );
   }, [selected]);
+
+  // Direct KOT print — kitchen ticket only (no pricing), built from the live order.
+  const handlePrintKot = useCallback(() => {
+    if (!selected) return;
+    printOrderKot(selected, {
+      storeName: store?.store_name ?? selected.restaurant_name ?? null,
+      storePhone:
+        (Array.isArray(store?.store_phones) ? store?.store_phones?.[0] : null) ??
+        selected.restaurant_phone ??
+        null,
+      storeAddress:
+        store != null
+          ? [store.full_address, store.landmark, store.city, store.state, store.postal_code]
+              .map((s) => (s ?? '').toString().trim())
+              .filter(Boolean)
+              .join(', ') || null
+          : null,
+      thermalPrinterWidthMm,
+      address:
+        store != null
+          ? {
+              full_address: store.full_address,
+              landmark: store.landmark,
+              city: store.city,
+              state: store.state,
+              postal_code: store.postal_code,
+            }
+          : null,
+    });
+  }, [selected, store, thermalPrinterWidthMm]);
+
+  // Direct print — no preview modal — with the store's full invoice address.
+  const handlePrintBill = useCallback(() => {
+    if (!selected) return;
+    const storeInfo: GatiMitraPrintStoreInfo = store
+      ? {
+          storeName: store.store_name,
+          fullAddress:
+            [store.full_address, store.landmark, store.postal_code]
+              .map((s) => (s ?? '').toString().trim())
+              .filter(Boolean)
+              .join(', ') || null,
+          city: store.city,
+          cuisineLabel: store.cuisine_types?.[0] ?? null,
+          fssaiNumber: store.fssai_number ?? null,
+        }
+      : { storeName: selected.restaurant_name ?? 'Store' };
+    printOrderBill(
+      selected,
+      selectedOrderPricing ?? { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 },
+      storeInfo
+    );
+  }, [selected, selectedOrderPricing, store]);
 
   useEffect(() => {
     if (selected?.id) prefetchMerchantOrderTimelineBundle(selected.id, storeId);
@@ -880,7 +955,8 @@ function OrderHistoryInner() {
                   setBillSheetOpen(true);
                 }}
                 onOpenTimeline={() => setTimelineModalOpen(true)}
-                onPrintBill={() => setPrintBillOpen(true)}
+                onPrintBill={handlePrintBill}
+                onPrintKot={handlePrintKot}
                 onViewPastRiders={() => {
                   setRidersLogModalOrderId(selected.id);
                   setRidersLogModalOrderLabel(

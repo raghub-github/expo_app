@@ -1,17 +1,24 @@
 /**
- * Merchant push notification bootstrap — permissions, channels, token registration.
+ * Merchant push notification bootstrap — shared dual-token controller +
+ * permission recovery gate for authenticated merchants.
  */
-import { useEffect, useRef } from "react";
-import { Alert, AppState, Platform, type AppStateStatus } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AppState,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type AppStateStatus,
+} from "react-native";
 import { useRouter } from "expo-router";
 import Constants from "expo-constants";
 import {
-  ensureAndroidChannel,
-  getFreshExpoPushToken,
   navigateFromPushData,
-  registerExpoPushTokenOnBackend,
-  setNotificationHandlerDefaults,
-  subscribeToPushNotificationResponse,
+  usePushPermissionController,
+  type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -21,39 +28,13 @@ import { fetchFoodOrder } from "@/services/ordersApi";
 import { registerStorePushToken } from "@/services/pushTokenApi";
 import { getConfig } from "@/config/env";
 
-function deviceType(): "ios" | "android" | "web" | "unknown" {
-  if (Platform.OS === "ios") return "ios";
-  if (Platform.OS === "android") return "android";
-  if (Platform.OS === "web") return "web";
-  return "unknown";
-}
-
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
-}
-
-function resolveEasProjectId(): string | undefined {
-  const extra = Constants.expoConfig?.extra as Record<string, unknown> | undefined;
-  const eas = extra?.eas as Record<string, unknown> | undefined;
-  return typeof eas?.projectId === "string" && eas.projectId.trim() ? eas.projectId.trim() : undefined;
 }
 
 function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
   const t = String(data.type ?? data.event ?? "").toLowerCase();
   return t === "merchant_new_order" || t === "new_order" || data.screen === "new_order";
-}
-
-async function ensurePushChannels(): Promise<void> {
-  await ensureAndroidChannel({
-    channelId: "merchant_default",
-    name: "Store & Orders",
-    lightColor: "#3EB489",
-  });
-  await ensureAndroidChannel({
-    channelId: "merchant_online",
-    name: "Store online status",
-    lightColor: "#3EB489",
-  });
 }
 
 /**
@@ -69,74 +50,13 @@ export default function NotificationSetup() {
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const ordersRef = useRef(orders);
   ordersRef.current = orders;
-  const lastUnifiedTokenRef = useRef<string | null>(null);
-  const warnedMissingProjectRef = useRef(false);
+  const [gateVisible, setGateVisible] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const dismissedRef = useRef(false);
 
-  useEffect(() => {
-    let mounted = true;
-
-    const run = async () => {
-      if (isExpoGo()) {
-        if (!warnedMissingProjectRef.current) {
-          warnedMissingProjectRef.current = true;
-          console.warn("[push] Expo Go does not support remote push — use a dev/production build.");
-        }
-        return;
-      }
-
-      if (!resolveEasProjectId() && !warnedMissingProjectRef.current) {
-        warnedMissingProjectRef.current = true;
-        console.warn("[push] EAS projectId missing — set EAS_PROJECT_ID in .env for push tokens.");
-      }
-
-      await setNotificationHandlerDefaults();
-      await ensurePushChannels();
-
-      const token = await getFreshExpoPushToken();
-      if (!mounted) return;
-
-      if (!token) {
-        if (authToken && Platform.OS === "android") {
-          Alert.alert(
-            "Notifications disabled",
-            "Allow notifications so you receive new orders, ratings, and rider pickup alerts."
-          );
-        }
-        return;
-      }
-
-      if (!authToken) return;
-
-      if (selectedStore?.id) {
-        try {
-          await registerStorePushToken(selectedStore.id, token, authToken, Platform.OS);
-        } catch {
-          // best-effort store token
-        }
-      }
-
-      if (lastUnifiedTokenRef.current === token) return;
-      const { apiBaseUrl } = getConfig();
-      const res = await registerExpoPushTokenOnBackend(apiBaseUrl, authToken, {
-        expo_push_token: token,
-        device_type: deviceType(),
-      });
-      if (res.ok) lastUnifiedTokenRef.current = token;
-    };
-
-    void run();
-    const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
-      if (s === "active") void run();
-    });
-
-    return () => {
-      mounted = false;
-      sub.remove();
-    };
-  }, [authToken, selectedStore?.id]);
-
-  useEffect(() => {
-    const sub = subscribeToPushNotificationResponse(({ data }) => {
+  const handleOpen = useCallback(
+    (payload: PushNotificationOpenPayload) => {
+      const data = payload.data;
       if (data?.action === "reopen_prompt" && data?.url && typeof data.url === "string") {
         router.push(`${data.url}${String(data.url).includes("?") ? "&" : "?"}reopen_prompt=1` as never);
         return;
@@ -185,10 +105,180 @@ export default function NotificationSetup() {
         router.push(`/order/${String(data.orderId)}` as never);
         return;
       }
-      navigateFromPushData({ push: (href) => router.push(href as never) }, data);
+      navigateFromPushData({ push: (href) => router.push(href as never) }, {
+        ...data,
+        appRole: "merchant",
+      });
+    },
+    [router, storeId, authToken, openIncomingOrderSheet, upsertOrder]
+  );
+
+  const { apiBaseUrl } = getConfig();
+  const authRef = useRef({ authToken, storeId });
+  authRef.current = { authToken, storeId };
+
+  const pushOptions = useMemo(
+    () => ({
+      apiBaseUrl,
+      androidPackageName: "com.gatimitra.partner",
+      androidChannels: [
+        { channelId: "merchant_default", name: "Store & Orders", lightColor: "#3EB489" },
+        { channelId: "merchant_online", name: "Store online status", lightColor: "#3EB489" },
+        { channelId: "default", name: "Store & Orders", lightColor: "#3EB489" },
+      ],
+      getAuth: () => {
+        const { authToken: t, storeId: sid } = authRef.current;
+        if (!t) return null;
+        return {
+          accessToken: t,
+          role: "merchant" as const,
+          storeId: sid,
+        };
+      },
+      registerStoreExpoToken: async ({ storeId: sid, expoPushToken, accessToken, platform }) => {
+        await registerStorePushToken(sid, expoPushToken, accessToken, platform);
+      },
+      onNotificationOpen: handleOpen,
+    }),
+    [apiBaseUrl, handleOpen]
+  );
+
+  const { snapshot, controller } = usePushPermissionController(pushOptions, {
+    autoStart: !isExpoGo(),
+  });
+
+  // Re-register when auth or selected store changes (merchant_store_<id> topic).
+  useEffect(() => {
+    if (isExpoGo() || !authToken) return;
+    void controller.refresh({ syncIfGranted: true });
+  }, [authToken, storeId, controller]);
+
+  useEffect(() => {
+    if (isExpoGo()) return;
+    if (!authToken) {
+      setGateVisible(false);
+      return;
+    }
+    if (snapshot.osStatus === "granted") {
+      setGateVisible(false);
+      dismissedRef.current = false;
+      return;
+    }
+    if (
+      !dismissedRef.current &&
+      (snapshot.osStatus === "denied" ||
+        snapshot.osStatus === "blocked" ||
+        snapshot.osStatus === "undetermined")
+    ) {
+      setGateVisible(true);
+    }
+  }, [authToken, snapshot.osStatus]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
+      if (s === "active" && authToken) {
+        void controller.refresh({ syncIfGranted: true }).then((snap) => {
+          if (snap.osStatus === "granted") setGateVisible(false);
+        });
+      }
     });
     return () => sub.remove();
-  }, [router, storeId, authToken, openIncomingOrderSheet, upsertOrder]);
+  }, [authToken, controller]);
 
-  return null;
+  const onAllow = async () => {
+    setBusy(true);
+    try {
+      const result = await controller.requestOrOpenSettings();
+      if (result.granted) setGateVisible(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      visible={gateVisible && !!authToken && !isExpoGo()}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        dismissedRef.current = true;
+        setGateVisible(false);
+      }}
+    >
+      <Pressable
+        style={styles.backdrop}
+        onPress={() => {
+          dismissedRef.current = true;
+          setGateVisible(false);
+        }}
+      >
+        <Pressable style={styles.card} onPress={() => {}}>
+          <Text style={styles.title}>Enable notifications</Text>
+          <Text style={styles.body}>
+            Allow notifications so you receive new orders, ratings, and rider pickup alerts.
+            {snapshot.osStatus === "blocked"
+              ? " Notifications are blocked — open Settings to turn them back on."
+              : ""}
+          </Text>
+          <Pressable
+            style={[styles.btn, busy && styles.btnDisabled]}
+            onPress={() => void onAllow()}
+            disabled={busy}
+          >
+            <Text style={styles.btnText}>
+              {snapshot.osStatus === "blocked" || !snapshot.canAskAgain
+                ? "Open Settings"
+                : "Allow notifications"}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={styles.later}
+            onPress={() => {
+              dismissedRef.current = true;
+              setGateVisible(false);
+            }}
+          >
+            <Text style={styles.laterText}>Not now</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 }
+
+const styles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "flex-end",
+    padding: 16,
+  },
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: Platform.OS === "ios" ? 24 : 12,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#0f172a",
+    marginBottom: 8,
+  },
+  body: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#475569",
+    marginBottom: 16,
+  },
+  btn: {
+    backgroundColor: "#3EB489",
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  btnDisabled: { opacity: 0.6 },
+  btnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  later: { alignItems: "center", paddingVertical: 12 },
+  laterText: { color: "#64748b", fontSize: 14, fontWeight: "600" },
+});

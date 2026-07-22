@@ -9,6 +9,8 @@ interface PremiumAllowButtonProps {
   loading?: boolean;
   disabled?: boolean;
   mandatory?: boolean;
+  /** Defaults to "Allow". */
+  label?: string;
 }
 
 /**
@@ -23,6 +25,7 @@ export function PremiumAllowButton({
   loading = false,
   disabled = false,
   mandatory = false,
+  label = "Allow",
 }: PremiumAllowButtonProps) {
   const isDisabled = disabled || loading;
 
@@ -57,7 +60,7 @@ export function PremiumAllowButton({
               <ActivityIndicator color="#FFFFFF" size="small" />
             ) : (
               <>
-                <Text style={styles.buttonText}>Allow</Text>
+                <Text style={styles.buttonText}>{label}</Text>
                 {mandatory && (
                   <View style={styles.mandatoryIndicator}>
                     <Text style={styles.mandatoryText}>Required</Text>
@@ -75,54 +78,54 @@ export function PremiumAllowButton({
 const styles = StyleSheet.create({
   buttonContainer: {
     width: "100%",
-    maxWidth: 400,
-    marginHorizontal: "auto",
-    shadowColor: "#000",
+    borderRadius: 14,
+    overflow: "hidden",
+    shadowColor: colors.primary[800],
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.18,
     shadowRadius: 8,
-    elevation: 8,
+    elevation: 4,
   },
   buttonDisabled: {
-    opacity: 0.6,
+    opacity: 0.7,
   },
   buttonPressed: {
-    transform: [{ scale: 0.98 }],
+    opacity: 0.92,
+    transform: [{ scale: 0.99 }],
   },
   gradient: {
-    borderRadius: 16,
-    paddingVertical: 18,
-    paddingHorizontal: 32,
-    minHeight: 64,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    minHeight: 52,
     justifyContent: "center",
     alignItems: "center",
   },
   gradientPressed: {
-    opacity: 0.9,
+    opacity: 0.95,
   },
   content: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
+    gap: 8,
   },
   buttonText: {
-    fontSize: 20,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "800",
     color: "#FFFFFF",
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     textTransform: "uppercase",
   },
   mandatoryIndicator: {
-    backgroundColor: "rgba(255, 255, 255, 0.25)",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.22)",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
   },
   mandatoryText: {
     fontSize: 11,
     fontWeight: "700",
     color: "#FFFFFF",
-    letterSpacing: 0.5,
   },
 });

@@ -110,6 +110,8 @@ const profileResponseSchema = z.object({
   hearing_accessibility: hearingAccessibilitySchema.optional(),
   vision_accessibility: visionAccessibilitySchema.optional(),
   mobility_accessibility: mobilityAccessibilitySchema.optional(),
+  legal_consent_pack_version: z.string().nullable().optional(),
+  legal_consent_at: z.string().nullable().optional(),
 });
 
 const patchBodySchema = z.object({
@@ -190,6 +192,8 @@ function toResponseFromCustomer(row: typeof customers.$inferSelect) {
     hearing_accessibility: row.hearingAccessibility ?? "none",
     vision_accessibility: row.visionAccessibility ?? "none",
     mobility_accessibility: row.mobilityAccessibility ?? "none",
+    legal_consent_pack_version: row.legalConsentPackVersion ?? null,
+    legal_consent_at: row.legalConsentAt?.toISOString() ?? null,
   };
 }
 

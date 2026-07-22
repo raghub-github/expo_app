@@ -10,10 +10,19 @@ export type CategoryServiceAssignmentRow = {
   isAssigned: boolean;
 };
 
+export type CategoryServiceAssignmentAppRow = {
+  categoryCode: string;
+  serviceType: RiderDispatchService;
+  isAssigned: boolean;
+};
+
 const DISPATCH_SERVICES: RiderDispatchService[] = ["food", "parcel", "person_ride"];
 
+const APP_LIST_CACHE_MS = 60_000;
+let appListCache: { at: number; rows: CategoryServiceAssignmentAppRow[] } | null = null;
+
 export function invalidateCategoryServiceAssignmentCache(): void {
-  // Assignments are read fresh from DB on each dispatch decision (small tables).
+  appListCache = null;
 }
 
 /** Map legacy / display vehicle_category labels to onboarding category codes. */
@@ -50,14 +59,11 @@ async function loadCategoryAssignmentsMap(): Promise<Map<string, Set<RiderDispat
   return map;
 }
 
-export type CategoryServiceAssignmentAppRow = {
-  categoryCode: string;
-  serviceType: RiderDispatchService;
-  isAssigned: boolean;
-};
-
-/** Full matrix for rider app / dashboard (includes disabled rows). */
+/** Full matrix for rider app / dashboard (includes disabled rows). Cached briefly — static config. */
 export async function listCategoryServiceAssignmentsForApp(): Promise<CategoryServiceAssignmentAppRow[]> {
+  if (appListCache && Date.now() - appListCache.at < APP_LIST_CACHE_MS) {
+    return appListCache.rows;
+  }
   const sql = getSql();
   const rows = (await sql`
     SELECT
@@ -67,6 +73,7 @@ export async function listCategoryServiceAssignmentsForApp(): Promise<CategorySe
     FROM rider_vehicle_category_service_assignments
     ORDER BY category_code ASC, service_type ASC
   `) as CategoryServiceAssignmentAppRow[];
+  appListCache = { at: Date.now(), rows };
   return rows;
 }
 

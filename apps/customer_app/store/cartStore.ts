@@ -8,6 +8,14 @@ import { getItem, setItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 import { captureCartDeliveryAnchor, type CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
+import {
+  buildCartLineId,
+  buildCompositeMenuItemId,
+  cartItemBaseId,
+  cartLinesMatch,
+  hydrateCartLine,
+} from "@/lib/cart-line-identity";
+import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-instructions";
 
 export type { CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
 
@@ -23,6 +31,8 @@ export type CartItemAddon = {
 };
 
 export type CartItem = {
+  /** Stable line identity for qty updates / checkout edits. */
+  lineId: string;
   menuItemId: string;
   name: string;
   price: number;
@@ -37,6 +47,8 @@ export type CartItem = {
   variantSizeValue?: string | null;
   variantSizeUnit?: string | null;
   addons?: CartItemAddon[];
+  /** Item-level cooking / special instructions (max 100 chars). */
+  specialInstructions?: string | null;
   /**
    * false = already promoted (MRP / Boost / BOGO strike). Hint for UI;
    * billing server recomputes authoritatively.
@@ -61,6 +73,8 @@ export type StashedMerchantCart = {
   lastUpdatedAt: number;
 };
 
+type CartLineInput = Omit<CartItem, "quantity" | "lineId"> & { lineId?: string };
+
 type CartState = {
   merchantId: string | null;
   merchantName: string | null;
@@ -76,12 +90,16 @@ type CartState = {
   addItem: (
     merchantId: string,
     merchantName: string,
-    item: Omit<CartItem, "quantity">,
+    item: CartLineInput,
     quantity?: number,
     merchantBannerUrl?: string | null,
   ) => void;
-  updateQuantity: (menuItemId: string, delta: number) => void;
-  removeItem: (menuItemId: string) => void;
+  updateQuantity: (lineId: string, delta: number) => void;
+  removeItem: (lineId: string) => void;
+  /** Atomic line replace — used by checkout edit flows. */
+  replaceLine: (lineId: string, next: CartLineInput, quantity: number) => void;
+  /** Partial line update (e.g. instruction-only edit). */
+  updateLine: (lineId: string, patch: Partial<CartLineInput>) => void;
   clearCart: () => void;
   /** Replace cart entirely — used for reorder flow. */
   setCartForReorder: (
@@ -191,11 +209,42 @@ function flushCartPersistNow(get: () => CartState): Promise<void> {
   });
 }
 
+function normalizeCartLineInput(item: CartLineInput, quantity: number): CartItem {
+  const specialInstructions = normalizeOrderItemSpecialInstructions(item.specialInstructions);
+  const addonIds = (item.addons ?? []).map((a) => String(a.addonId).trim()).filter(Boolean);
+  const baseMenuItemId = cartItemBaseId(item.menuItemId);
+  const menuItemId =
+    item.variantId || addonIds.length > 0
+      ? buildCompositeMenuItemId({
+          baseMenuItemId,
+          variantId: item.variantId,
+          addonIds,
+        })
+      : baseMenuItemId;
+  const line: CartItem = {
+    ...item,
+    menuItemId,
+    specialInstructions,
+    quantity: Math.max(1, quantity),
+    lineId: buildCartLineId({
+      menuItemId,
+      variantId: item.variantId,
+      addons: item.addons,
+      specialInstructions,
+    }),
+  };
+  return hydrateCartLine(line);
+}
+
+function findLineIndex(items: CartItem[], lineKey: string): number {
+  return items.findIndex((i) => i.lineId === lineKey || i.menuItemId === lineKey);
+}
+
 function mergeCartLine(items: CartItem[], line: CartItem): CartItem[] {
-  const existing = items.find((i) => i.menuItemId === line.menuItemId);
-  if (!existing) return [...items, line];
-  return items.map((i) =>
-    i.menuItemId === line.menuItemId
+  const idx = items.findIndex((i) => cartLinesMatch(i, line));
+  if (idx < 0) return [...items, line];
+  return items.map((i, iIdx) =>
+    iIdx === idx
       ? {
           ...i,
           quantity: i.quantity + line.quantity,
@@ -203,6 +252,17 @@ function mergeCartLine(items: CartItem[], line: CartItem): CartItem[] {
         }
       : i,
   );
+}
+
+function maybeCaptureDeliveryAnchor(get: () => CartState, set: (partial: Partial<CartState>) => void, cartWasEmpty: boolean): void {
+  if (!cartWasEmpty || get().deliveryAnchor) return;
+  queueMicrotask(() => {
+    const anchor = captureCartDeliveryAnchor();
+    if (!anchor) return;
+    const s = get();
+    if (s.items.length === 0 || s.deliveryAnchor) return;
+    set({ deliveryAnchor: anchor });
+  });
 }
 
 export const useCartStore = create<CartState>((set, get) => ({
@@ -218,6 +278,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     } = get();
     const now = Date.now();
     const keepDeliveryAnchor = get().deliveryAnchor;
+    const line = normalizeCartLineInput(item, quantity);
 
     if (currentMerchant && currentMerchant !== merchantId) {
       const stash: Record<string, StashedMerchantCart> = { ...stashedCarts };
@@ -232,11 +293,10 @@ export const useCartStore = create<CartState>((set, get) => ({
       const restored = stash[merchantId];
       const restStash = { ...stash };
       delete restStash[merchantId];
-      const line: CartItem = { ...item, quantity };
       const nextItems =
         restored && restored.items.length > 0
           ? mergeCartLine(
-              restored.items.map((i) => ({ ...i })),
+              restored.items.map((i) => hydrateCartLine(i)),
               line,
             )
           : [line];
@@ -249,45 +309,51 @@ export const useCartStore = create<CartState>((set, get) => ({
         items: nextItems,
         stashedCarts: restStash,
         lastUpdatedAt: now,
-        deliveryAnchor:
-          hadActiveItems || restoringStash
-            ? keepDeliveryAnchor
-            : captureCartDeliveryAnchor(),
+        deliveryAnchor: keepDeliveryAnchor,
       });
+      if (!hadActiveItems && !restoringStash) {
+        maybeCaptureDeliveryAnchor(get, set, true);
+      }
       queueCartPersist(get);
       return;
     }
 
     const nextBanner = merchantBannerUrl ?? (currentMerchant === merchantId ? prevBanner : null) ?? null;
-    const existing = items.find((i) => i.menuItemId === item.menuItemId);
+    const existingIdx = items.findIndex((i) => cartLinesMatch(i, line));
     const cartWasEmpty = items.length === 0;
-    const next = existing
-      ? items.map((i) =>
-          i.menuItemId === item.menuItemId
-            ? {
-                ...i,
-                quantity: i.quantity + quantity,
-                imageUrl: i.imageUrl ?? item.imageUrl ?? null,
-              }
-            : i
-        )
-      : [...items, { ...item, quantity }];
+    const next =
+      existingIdx >= 0
+        ? items.map((i, idx) =>
+            idx === existingIdx
+              ? {
+                  ...i,
+                  quantity: i.quantity + line.quantity,
+                  imageUrl: i.imageUrl ?? line.imageUrl ?? null,
+                }
+              : i,
+          )
+        : [...items, line];
     set({
       merchantId,
       merchantName,
       merchantBannerUrl: nextBanner,
       items: next,
       lastUpdatedAt: now,
-      deliveryAnchor: cartWasEmpty ? captureCartDeliveryAnchor() : keepDeliveryAnchor,
+      deliveryAnchor: keepDeliveryAnchor,
     });
+    if (cartWasEmpty) {
+      maybeCaptureDeliveryAnchor(get, set, true);
+    }
     queueCartPersist(get);
   },
 
-  updateQuantity: (menuItemId, delta) => {
+  updateQuantity: (lineId, delta) => {
     const { items } = get();
     const now = Date.now();
+    const idx = findLineIndex(items, lineId);
+    if (idx < 0) return;
     const next = items
-      .map((i) => (i.menuItemId === menuItemId ? { ...i, quantity: i.quantity + delta } : i))
+      .map((i, iIdx) => (iIdx === idx ? { ...i, quantity: i.quantity + delta } : i))
       .filter((i) => i.quantity > 0);
     const merchantId = next.length ? get().merchantId : null;
     const merchantName = next.length ? get().merchantName : null;
@@ -309,8 +375,57 @@ export const useCartStore = create<CartState>((set, get) => ({
     };
   },
 
-  removeItem: (menuItemId) => {
-    get().updateQuantity(menuItemId, -999);
+  removeItem: (lineId) => {
+    get().updateQuantity(lineId, -999);
+  },
+
+  replaceLine: (lineId, nextItem, quantity) => {
+    const { items } = get();
+    const idx = findLineIndex(items, lineId);
+    if (idx < 0) return;
+    const replacement = normalizeCartLineInput(nextItem, quantity);
+    const mergeIdx = items.findIndex((i, iIdx) => iIdx !== idx && cartLinesMatch(i, replacement));
+    let next: CartItem[];
+    if (mergeIdx >= 0) {
+      next = items
+        .map((i, iIdx) => {
+          if (iIdx === mergeIdx) {
+            return { ...i, quantity: i.quantity + replacement.quantity };
+          }
+          return i;
+        })
+        .filter((_, iIdx) => iIdx !== idx);
+    } else {
+      next = items.map((i, iIdx) => (iIdx === idx ? replacement : i));
+    }
+    set({ items: next, lastUpdatedAt: Date.now() });
+    queueCartPersist(get);
+  },
+
+  updateLine: (lineId, patch) => {
+    const { items } = get();
+    const idx = findLineIndex(items, lineId);
+    if (idx < 0) return;
+    const current = items[idx]!;
+    const merged = normalizeCartLineInput(
+      {
+        ...current,
+        ...patch,
+        menuItemId: patch.menuItemId ?? current.menuItemId,
+        addons: patch.addons ?? current.addons,
+      },
+      current.quantity,
+    );
+    const without = items.filter((_, iIdx) => iIdx !== idx);
+    const mergeIdx = without.findIndex((i) => cartLinesMatch(i, merged));
+    const next =
+      mergeIdx >= 0
+        ? without.map((i, iIdx) =>
+            iIdx === mergeIdx ? { ...i, quantity: i.quantity + merged.quantity } : i,
+          )
+        : [...without, merged];
+    set({ items: next, lastUpdatedAt: Date.now() });
+    queueCartPersist(get);
   },
 
   syncPricesFromMap: (pricesByMenuItemId) => {
@@ -318,7 +433,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     if (items.length === 0) return;
     let changed = false;
     const next = items.map((i) => {
-      const baseMenuId = i.menuItemId.includes("_") ? i.menuItemId.split("_")[0]! : i.menuItemId;
+      const baseMenuId = cartItemBaseId(i.menuItemId);
       if (i.variantId || (i.addons?.length ?? 0) > 0 || i.menuItemId.includes("_")) {
         return i;
       }
@@ -339,11 +454,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     if (items.length === 0) return;
     let changed = false;
     const next = items.map((i) => {
-      const baseId = i.menuItemId.includes("::")
-        ? i.menuItemId.split("::")[0]!
-        : i.menuItemId.includes("_")
-          ? i.menuItemId.split("_")[0]!
-          : i.menuItemId;
+      const baseId = cartItemBaseId(i.menuItemId);
       const flagged =
         eligibleByMenuItemId[i.menuItemId] ?? eligibleByMenuItemId[baseId];
       if (flagged == null || flagged === i.isDiscountEligible) return i;
@@ -357,11 +468,6 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   clearCart: () => {
     useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
-    // CRITICAL: keep `hydrated: true`. Spreading `defaultState` would reset
-    // hydrated → false, and the root layout's `!cartHydrated` guard would
-    // immediately swap the entire app to the teal splash screen — which is
-    // exactly what stranded the user after Simulate Success / order placement.
-    // The cart IS hydrated; we are clearing its CONTENTS, not unloading the store.
     set({
       merchantId: null,
       merchantName: null,
@@ -370,7 +476,6 @@ export const useCartStore = create<CartState>((set, get) => ({
       stashedCarts: {},
       lastUpdatedAt: 0,
       deliveryAnchor: null,
-      // hydrated intentionally NOT touched — stays true
     });
     void flushCartPersistNow(get);
   },
@@ -381,7 +486,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       merchantId,
       merchantName,
       merchantBannerUrl: merchantBannerUrl ?? null,
-      items: items.map((i) => ({ ...i })),
+      items: items.map((i) => hydrateCartLine(i)),
       lastUpdatedAt: now,
       deliveryAnchor: captureCartDeliveryAnchor(),
     });
@@ -402,13 +507,27 @@ export const useCartStore = create<CartState>((set, get) => ({
           lastUpdatedAt?: number;
           deliveryAnchor?: CartDeliveryAnchor | null;
         };
+        const hydratedItems = Array.isArray(parsed.items)
+          ? parsed.items.map((i) => hydrateCartLine(i))
+          : [];
+        const stashed =
+          parsed.stashedCarts && typeof parsed.stashedCarts === "object"
+            ? Object.fromEntries(
+                Object.entries(parsed.stashedCarts).map(([k, v]) => [
+                  k,
+                  {
+                    ...v,
+                    items: Array.isArray(v.items) ? v.items.map((i) => hydrateCartLine(i)) : [],
+                  },
+                ]),
+              )
+            : {};
         set({
           merchantId: parsed.merchantId ?? null,
           merchantName: parsed.merchantName ?? null,
           merchantBannerUrl: parsed.merchantBannerUrl ?? null,
-          items: Array.isArray(parsed.items) ? parsed.items : [],
-          stashedCarts:
-            parsed.stashedCarts && typeof parsed.stashedCarts === "object" ? parsed.stashedCarts : {},
+          items: hydratedItems,
+          stashedCarts: stashed,
           lastUpdatedAt: parsed.lastUpdatedAt ?? 0,
           deliveryAnchor: parsed.deliveryAnchor ?? null,
           hydrated: true,

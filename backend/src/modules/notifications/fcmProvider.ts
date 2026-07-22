@@ -62,7 +62,12 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
   const data: Record<string, string> = {
     notification_id: input.notificationId,
   };
-  if (input.deepLink) data.deep_link = input.deepLink;
+  if (input.deepLink) {
+    // Clients read screen / deepLink; partnersite may use deep_link.
+    data.deep_link = input.deepLink;
+    data.deepLink = input.deepLink;
+    data.screen = input.deepLink;
+  }
   if (input.data) {
     for (const [k, v] of Object.entries(input.data)) {
       if (v === undefined || v === null) continue;

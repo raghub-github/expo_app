@@ -54,10 +54,40 @@ export function primaryMatchScore(primary: string, query: string): number {
   return 0;
 }
 
+/**
+ * Best textual match across ALL display fields, not just `primary`.
+ *
+ * A location's typed match often lands in its address / locality / POI context
+ * (villages, roads, landmarks, buildings, stations) rather than its short name.
+ * Scoring only `primary` silently drops those valid results.
+ */
+export function bestMatchScore(result: EnrichedPlaceResult, query: string): number {
+  const fields = [
+    result.primary,
+    result.matchText,
+    result.area,
+    result.city,
+    result.secondary,
+    result.fullAddress,
+  ];
+  let best = 0;
+  for (const field of fields) {
+    if (!field) continue;
+    const score = primaryMatchScore(field, query);
+    if (score > best) best = score;
+    if (best >= 9) break;
+  }
+  return best;
+}
+
 export function isRapidoRelevantSuggestion(result: EnrichedPlaceResult, query: string): boolean {
   const q = query.trim();
-  if (q.length < 3) return primaryMatchScore(result.primary, q) >= 2;
-  return primaryMatchScore(result.primary, q) >= 3;
+  // Mapbox Search Box `suggest` already applies server-side text-relevance + proximity
+  // ranking (the same engine Rapido/Uber use). Re-filtering its suggestions against only
+  // `primary` wrongly discards valid results whose match lies in the address/locality.
+  // Trust Mapbox suggestions; only relevance-gate local/DB fallback entries.
+  if (result.source === "mapbox") return true;
+  return bestMatchScore(result, q) >= 2;
 }
 
 function featureRank(result: EnrichedPlaceResult): number {
@@ -92,7 +122,7 @@ export function finalizeRapidoSuggestions(
   const filtered = trimmed
     ? deduped.filter((r) => {
         if (r.resultSection === "saved" || r.resultSection === "recent") {
-          return primaryMatchScore(r.primary, trimmed) >= 2 || r.fullAddress.toLowerCase().includes(trimmed.toLowerCase());
+          return bestMatchScore(r, trimmed) >= 2 || r.fullAddress.toLowerCase().includes(trimmed.toLowerCase());
         }
         return isRapidoRelevantSuggestion(r, trimmed);
       })

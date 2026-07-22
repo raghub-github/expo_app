@@ -19,6 +19,7 @@ import {
   printOrderKot,
 } from "@/lib/orderCardActions";
 import { LiveOrderSupportSheet } from "@/components/order/LiveOrderSupportSheet";
+import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
 
 export type MerchantOrderMenuAction =
   | "support"
@@ -28,9 +29,13 @@ export type MerchantOrderMenuAction =
   | "print_kot"
   | "print_order";
 
+import type { MerchantPrintStoreContext } from "@/lib/printContext";
+
 type Props = {
   visible: boolean;
   order: OrderRecord | null;
+  printContext?: MerchantPrintStoreContext | null;
+  /** @deprecated use printContext */
   storeName?: string | null;
   onClose: () => void;
   onOpenTimeline: () => void;
@@ -53,6 +58,7 @@ const MENU: {
 export function MerchantOrderActionsSheet({
   visible,
   order,
+  printContext,
   storeName,
   onClose,
   onOpenTimeline,
@@ -60,6 +66,12 @@ export function MerchantOrderActionsSheet({
 }: Props) {
   const insets = useSafeAreaInsets();
   const [liveSupportOpen, setLiveSupportOpen] = useState(false);
+  const defaultPrintContext = useMerchantPrintContext();
+  const ctx =
+    printContext ??
+    (storeName?.trim()
+      ? { ...defaultPrintContext, storeName: storeName.trim() }
+      : defaultPrintContext);
 
   useEffect(() => {
     if (!visible) setLiveSupportOpen(false);
@@ -86,11 +98,11 @@ export function MerchantOrderActionsSheet({
         break;
       case "print_kot":
         onClose();
-        await printOrderKot(order, storeName);
+        await printOrderKot(order, ctx);
         break;
       case "print_order":
         onClose();
-        await printOrderBill(order, storeName);
+        await printOrderBill(order, ctx);
         break;
       default:
         onClose();

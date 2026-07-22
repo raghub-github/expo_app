@@ -49,11 +49,13 @@ console.log('📱 App directory:', APP_DIR);
 console.log('📁 Packages directory:', PACKAGES_DIR);
 
 function packageIsReady(packageName) {
-  const packageJsonPath = path.join(NODE_MODULES_DIR, packageName, 'package.json');
-  return fs.existsSync(packageJsonPath);
+  const packageRoot = path.join(NODE_MODULES_DIR, packageName);
+  const packageJsonPath = path.join(packageRoot, 'package.json');
+  const entryPath = path.join(packageRoot, 'src', 'index.ts');
+  return fs.existsSync(packageJsonPath) && fs.existsSync(entryPath);
 }
 
-const workspacePackages = ['contracts', 'sdk', 'expo-push-kit'];
+const workspacePackages = ['contracts', 'sdk', 'expo-push-kit', 'expo-location-kit'];
 const packagesReady = Object.fromEntries(
   workspacePackages.map((pkg) => [pkg, packageIsReady(pkg)])
 );
@@ -139,20 +141,32 @@ for (const pkg of workspacePackages) {
   }
 
   if (source && fs.existsSync(source)) {
-    log('INFO', `Copying ${pkg} package`, {
+    log('INFO', `Linking/copying ${pkg} package`, {
       source,
       dest,
       sourceExists: fs.existsSync(source),
     });
-    console.log(`📋 Copying @gatimitra/${pkg}...`);
+    console.log(`📋 Preparing @gatimitra/${pkg}...`);
     if (fs.existsSync(dest)) {
       fs.rmSync(dest, { recursive: true, force: true });
     }
-    copyDirectory(source, dest);
-    log('INFO', `${pkg} package copied successfully`, {
+    // Prefer a Windows junction / POSIX symlink so Metro always sees live package sources.
+    let mode = 'copy';
+    try {
+      fs.symlinkSync(source, dest, process.platform === 'win32' ? 'junction' : 'dir');
+      mode = process.platform === 'win32' ? 'junction' : 'symlink';
+    } catch (err) {
+      log('WARN', `Symlink failed for ${pkg}, copying instead`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      copyDirectory(source, dest);
+    }
+    log('INFO', `${pkg} package prepared successfully`, {
       destExists: fs.existsSync(dest),
+      entryExists: fs.existsSync(path.join(dest, 'src', 'index.ts')),
+      mode,
     });
-    console.log(`✅ @gatimitra/${pkg} copied`);
+    console.log(`✅ @gatimitra/${pkg} prepared (${mode})`);
   } else {
     log('WARN', `${pkg} package not found`, {
       source,

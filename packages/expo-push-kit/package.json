@@ -13,15 +13,20 @@
   "files": ["src"],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts",
     "lint": "echo \"(expo-push-kit) no lint configured\""
   },
   "peerDependencies": {
     "expo-constants": ">=16",
     "expo-device": ">=7",
+    "expo-intent-launcher": ">=12",
     "expo-linking": ">=7",
     "expo-notifications": ">=0.30",
     "react": ">=18",
     "react-native": ">=0.76"
+  },
+  "peerDependenciesMeta": {
+    "expo-intent-launcher": { "optional": true }
   },
   "devDependencies": {
     "typescript": "~5.9.2"

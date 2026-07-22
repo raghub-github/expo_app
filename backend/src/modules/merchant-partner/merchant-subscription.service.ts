@@ -838,6 +838,29 @@ async function findSubscriptionPaymentByRazorpayId(
 }
 
 /**
+ * Re-run the plan-limit entitlement engine for a store (Postgres
+ * `enforce_plan_limits`). After a refund revokes the subscription, the store
+ * falls back to the Free plan, so premium menu items must be re-locked
+ * (customer-facing surfaces already hide is_locked_by_plan items). Non-blocking:
+ * a refund must never fail because entitlement re-lock hiccuped. Safe if the
+ * function is absent on some environment.
+ */
+async function enforcePlanLimitsForStoreSafe(
+  sql: ReturnType<typeof getSql>,
+  storeId: number
+): Promise<void> {
+  if (!Number.isFinite(storeId) || storeId <= 0) return;
+  try {
+    await sql`SELECT enforce_plan_limits(${storeId}::bigint)`;
+  } catch (err) {
+    console.warn(
+      "[merchant-sub] enforce_plan_limits after refund failed (non-blocking):",
+      (err as Error)?.message ?? err
+    );
+  }
+}
+
+/**
  * Business rule: subscription payments can only be refunded within
  * REFUND_WINDOW_DAYS of the payment date. Enforced server-side so a client
  * that removes the frontend guard still can't backdate a refund.
@@ -1078,6 +1101,8 @@ export async function refundMerchantSubscriptionPayment(args: {
 
   const refundIdempotencyKey = `merchant_sub_refund_${args.paymentId}`;
   let refundReference: string;
+  // Raw Razorpay refund object — persisted verbatim for a fully-auditable trail.
+  let refundGatewayResponse: Record<string, unknown> | null = null;
 
   if (gateway === "WALLET") {
     // Credit merchant_wallet AVAILABLE. Idempotent via the ledger unique key.
@@ -1143,6 +1168,7 @@ export async function refundMerchantSubscriptionPayment(args: {
         },
       });
       refundReference = String(refund.id);
+      refundGatewayResponse = refund as unknown as Record<string, unknown>;
     } catch (err) {
       const msg = (err as Error)?.message ?? String(err);
       // Razorpay dedupes by receipt — if it's already been filed, they return
@@ -1193,6 +1219,10 @@ export async function refundMerchantSubscriptionPayment(args: {
       AND store_id = ${storeId}
   `;
 
+  // Entitlement cascade — store is now on the Free plan, so re-lock any premium
+  // menu items over the Free limit. Customer app/site already hide locked items.
+  await enforcePlanLimitsForStoreSafe(sql, storeId);
+
   // Durable audit trail — one immutable row per refund (see migration 0420).
   // Captures actor identity at write time so historical rows are stable if
   // the agent user is later deleted or renamed. Merchant-facing endpoints
@@ -1209,7 +1239,7 @@ export async function refundMerchantSubscriptionPayment(args: {
         payment_id, subscription_id, merchant_id, store_id, plan_id,
         gateway, amount, total_paise, currency,
         refund_reference, wallet_ledger_id, razorpay_refund_id, razorpay_payment_id,
-        status, reason,
+        status, reason, refund_notes, gateway_response, last_refund_sync_at,
         actor_subject_id, actor_system_user_id, actor_email, actor_name, actor_role,
         initiated_at, completed_at
       ) VALUES (
@@ -1219,7 +1249,9 @@ export async function refundMerchantSubscriptionPayment(args: {
         ${gateway === "WALLET" ? Number(refundReference) || null : null},
         ${gateway === "RAZORPAY" ? refundReference : null},
         ${gateway === "RAZORPAY" ? String(p.payment_gateway_id ?? "") : null},
-        ${status}, ${args.reason ?? `Refunded by ${args.actorRole}`},
+        ${status}, ${args.reason ?? `Refunded by ${args.actorRole}`}, ${args.reason ?? null},
+        ${refundGatewayResponse ? JSON.stringify(refundGatewayResponse) : null}::jsonb,
+        ${now.toISOString()},
         ${args.actorSubjectId}, ${actor.system_user_id}, ${actor.email}, ${actor.name}, ${args.actorRole},
         ${now.toISOString()},
         ${status === "COMPLETED" ? now.toISOString() : null}
@@ -1266,6 +1298,7 @@ export async function handleMerchantSubscriptionRefundWebhook(args: {
     UPDATE merchant_subscription_refunds
     SET status = 'COMPLETED',
         completed_at = NOW(),
+        last_refund_sync_at = NOW(),
         razorpay_refund_id = COALESCE(razorpay_refund_id, ${args.razorpayRefundId}),
         razorpay_payment_id = COALESCE(razorpay_payment_id, ${args.razorpayPaymentId})
     WHERE payment_id = ${found.id}
@@ -1295,6 +1328,8 @@ export async function handleMerchantSubscriptionRefundWebhook(args: {
     WHERE id = ${found.subscription_id}
       AND subscription_status <> 'REFUNDED'
   `;
+  // Re-lock premium menu items to the now-effective Free plan (non-blocking).
+  await enforcePlanLimitsForStoreSafe(sql, found.store_id);
   return { ok: true, matched: true };
 }
 
@@ -1615,8 +1650,44 @@ export async function listMerchantSubscriptionHistory(args: {
     `.catch(() => []), // Gracefully handle missing table (migration 0420 not applied yet)
   ]);
 
+  // Collapse duplicate gateway payments: one Razorpay/wallet payment can end up inserted
+  // more than once under the SAME payment_gateway_id (e.g. an initial row without the GST
+  // breakdown + a later webhook/verify row carrying total_paise). Keep ONE record per
+  // gateway id — the most complete (has total_paise/gst), tie-broken by latest date — so
+  // Purchase History never shows the same payment twice. Rows without a gateway id
+  // (distinct events) are each kept as-is.
+  const dedupePurchaseRows = (rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
+    const byGateway = new Map<string, Record<string, unknown>>();
+    const passthrough: Array<Record<string, unknown>> = [];
+    const completeness = (x: Record<string, unknown>) =>
+      (x.total_paise != null ? 2 : 0) + (x.gst_amount_paise != null ? 1 : 0);
+    const eventMs = (x: Record<string, unknown>) => {
+      const t = x.event_at ? new Date(String(x.event_at)).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    };
+    for (const r of rows) {
+      const gid = r.gateway_id != null ? String(r.gateway_id).trim() : "";
+      if (!gid) {
+        passthrough.push(r);
+        continue;
+      }
+      const existing = byGateway.get(gid);
+      if (!existing) {
+        byGateway.set(gid, r);
+        continue;
+      }
+      const cr = completeness(r);
+      const ce = completeness(existing);
+      const keep = cr > ce ? r : cr < ce ? existing : eventMs(r) >= eventMs(existing) ? r : existing;
+      byGateway.set(gid, keep);
+    }
+    return [...passthrough, ...byGateway.values()];
+  };
+
   const nowMs = Date.now();
-  const purchases: SubscriptionHistoryPurchase[] = (purchaseRows as unknown as Array<Record<string, unknown>>).map((r) => {
+  const purchases: SubscriptionHistoryPurchase[] = dedupePurchaseRows(
+    purchaseRows as unknown as Array<Record<string, unknown>>
+  ).map((r) => {
     const paymentDateStr = r.event_at ? String(r.event_at) : null;
     const paymentDate = paymentDateStr ? new Date(paymentDateStr) : null;
     const gateway = String(r.gateway ?? "").toUpperCase();
@@ -1646,7 +1717,13 @@ export async function listMerchantSubscriptionHistory(args: {
       planName: r.plan_name != null ? String(r.plan_name) : null,
       planCode: r.plan_code != null ? String(r.plan_code) : null,
       amount: Number(r.amount ?? 0),
-      totalPaise: Number(r.total_paise ?? 0),
+      // Older/webhook-inserted rows stored only `amount` (no GST breakdown), so total_paise
+      // was null and the admin/Refund UI showed ₹0. Derive it from `amount` when missing —
+      // the same fallback the refund service uses — so the displayed & refundable amounts match.
+      totalPaise:
+        r.total_paise != null
+          ? Number(r.total_paise)
+          : Math.round(Number(r.amount ?? 0) * 100),
       gstPercent: r.gst_percent != null ? Number(r.gst_percent) : 0,
       gstAmountPaise: r.gst_amount_paise != null ? Number(r.gst_amount_paise) : 0,
       gateway,
@@ -1735,6 +1812,34 @@ async function insertSubscriptionPayment(
   }
 ) {
   try {
+    // Idempotent on the gateway payment id: the SAME Razorpay/wallet payment can reach
+    // this path more than once (payment-verify + webhook, or a legacy insert that stored
+    // only `amount` without the GST breakdown). NEVER create a duplicate — if a row for
+    // this gateway id already exists, UPDATE it with the complete/authoritative breakdown.
+    // (This is why store 77 had two "16 Jun" rows: id 11 = ₹5 no-GST legacy insert, id 12 =
+    // ₹5.90 full insert. With this guard the second occurrence patches the first.)
+    if (p.gatewayId && String(p.gatewayId).trim()) {
+      const existing = await sql<Array<{ id: number }>>`
+        SELECT id FROM subscription_payments
+        WHERE payment_gateway_id = ${p.gatewayId} LIMIT 1
+      `;
+      if (existing.length > 0) {
+        await sql`
+          UPDATE subscription_payments SET
+            merchant_id = ${p.merchantId}, store_id = ${p.storeId},
+            subscription_id = ${p.subscriptionId}, plan_id = ${p.planId},
+            amount = ${Math.round(p.totalPaise) / 100},
+            subtotal_paise = ${p.subtotalPaise}, gst_percent_applied = ${p.gstPercent},
+            gst_amount_paise = ${p.gstAmountPaise}, total_paise = ${p.totalPaise},
+            payment_gateway = ${p.gateway}, payment_status = 'PAID',
+            billing_period_start = ${p.now.toISOString()},
+            billing_period_end = ${p.expiry.toISOString()},
+            updated_at = NOW()
+          WHERE id = ${existing[0]!.id}
+        `;
+        return;
+      }
+    }
     await sql`
       INSERT INTO subscription_payments (
         merchant_id, store_id, subscription_id, plan_id, amount,

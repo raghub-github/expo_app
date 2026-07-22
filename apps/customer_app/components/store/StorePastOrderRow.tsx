@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, StyleSheet } from "react-native";
+import { Pressable, View, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -26,6 +26,7 @@ export type StorePastOrderRowProps = {
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
+  onItemPress?: (item: MenuItem) => void;
   isStoreClosed?: boolean;
   itemOffer?: ItemOfferDisplay | null;
 };
@@ -53,6 +54,7 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   onAdd,
   onIncrement,
   onDecrement,
+  onItemPress,
   isStoreClosed = false,
   itemOffer = null,
 }: StorePastOrderRowProps) {
@@ -104,7 +106,12 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   }, [isStoreClosed, menuItem.id, menuItem.menuItemId, onDecrement]);
 
   return (
-    <View style={styles.row}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`View ${menuItem.name} details`}
+      onPress={() => onItemPress?.(menuItem)}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+    >
       <View style={styles.imageCol} pointerEvents="none">
         <View style={styles.imageWrap}>
           {imageUri && !imageFailed ? (
@@ -172,8 +179,10 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
       <View style={styles.actionCol} collapsable={false} pointerEvents="auto">
         <StoreMenuInstantCartControl
           itemKey={itemKey}
+          merchantId={merchantId}
           quantity={cartQty}
           disabled={isStoreClosed}
+          allowOptimisticAdd={!isCustomisable}
           onAdd={handleAdd}
           onIncrement={handleIncrement}
           onDecrement={handleDecrement}
@@ -183,7 +192,7 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
           <StoreText style={styles.customisable}>customisable</StoreText>
         ) : null}
       </View>
-    </View>
+    </Pressable>
   );
 });
 
@@ -193,6 +202,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
     gap: 12,
+  },
+  rowPressed: {
+    backgroundColor: "rgba(19, 114, 67, 0.045)",
   },
   imageCol: {
     width: IMAGE,

@@ -112,6 +112,13 @@ export type SendIntent = {
   idempotencyKey?: string;
   /** Extra metadata persisted on the log row for analytics. */
   metadata?: Record<string, unknown>;
+  /** Campaign-level title/body/image/deep-link overrides (applied after template render). */
+  overrides?: {
+    title?: string | null;
+    body?: string | null;
+    imageUrl?: string | null;
+    deepLink?: string | null;
+  };
 };
 
 /** Result of one send across all resolved recipients. */
@@ -121,6 +128,8 @@ export type SendResult = {
   skipped: number;          // due to preferences, opt-out, no token, etc.
   failedSync: number;       // hard fail before enqueue
   notificationIds: string[]; // notification_logs.notification_id UUIDs
+  /** Why a campaign produced zero deliveries (quiet hours, empty audience, etc.). */
+  skipReason?: "no_recipients" | "quiet_hours" | "template_missing";
 };
 
 /** Resolved per-recipient delivery descriptor (one row in notification_logs). */

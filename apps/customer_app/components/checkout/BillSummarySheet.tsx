@@ -26,6 +26,7 @@ import {
   formatDeliveryDistanceKmLabel,
   formatDeliverySlabExplainSubtext,
 } from "@/lib/deliverySlabBreakdown";
+import { computeCheckoutToPayAmount } from "@/lib/checkoutToPayAmount";
 
 const GM = GatiMitraColors;
 const BILL_DISCOUNT_COLOR = "#2563EB";
@@ -295,6 +296,8 @@ export type BillSummarySheetProps = {
   billingLoading: boolean;
   deliveryType: "delivery" | "self_pickup";
   showDeliveryFeeRow: boolean;
+  /** When true, show Delivery Fee as pending (before address selection). */
+  deliveryFeePending?: boolean;
   deliveryFeeStrikeAmount: number | null;
   distanceKm: number | null;
   subscriptionPlanName: string;
@@ -312,6 +315,11 @@ export type BillSummarySheetProps = {
   /** Unlocked missed-offer discount on this order (INR). */
   missedOfferUnlockDiscount?: number;
   missedOfferUnlockLabel?: string;
+  /**
+   * Authoritative payable from checkout (Total Bill / Place Order). When set, "To pay"
+   * must use this — never a divergent local recalculation.
+   */
+  toPayAmount?: number | null;
 } & CheckoutGratitudeSectionsProps;
 
 export function BillSummarySheet({
@@ -324,6 +332,7 @@ export function BillSummarySheet({
   billingLoading,
   deliveryType,
   showDeliveryFeeRow,
+  deliveryFeePending = false,
   deliveryFeeStrikeAmount,
   distanceKm,
   subscriptionPlanName,
@@ -337,6 +346,7 @@ export function BillSummarySheet({
   missedOfferWalletPendingAmount = 0,
   missedOfferUnlockDiscount = 0,
   missedOfferUnlockLabel = "Offer unlocked",
+  toPayAmount: toPayAmountProp = null,
   tipValue,
   onTipSelect,
   tipCustomMode,
@@ -457,21 +467,25 @@ export function BillSummarySheet({
     missedOfferUnlockDiscount > 0.005
       ? Math.round(missedOfferUnlockDiscount * 100) / 100
       : 0;
-  const toPayAfterWallet =
-    serverBill != null
-      ? Math.max(
-          0,
-          Math.round(
-            (serverBill.finalAmount -
-              walletDeduction -
-              missedOfferDiscount +
-              pendingWalletCredit) *
-              100
-          ) / 100
-        )
-      : 0;
-  const hasCheckoutAdjustments =
-    walletDeduction > 0.005 || missedOfferDiscount > 0.005 || pendingWalletCredit > 0.005;
+  const pendingDeliveryFee = Math.max(
+    0,
+    serverBill?.deliveryFee ?? serverBill?.components.delivery.taxable_value ?? 0
+  );
+  /** Same engine as Total Bill / Place Order — never diverge. */
+  const toPayDisplay =
+    toPayAmountProp != null && Number.isFinite(toPayAmountProp)
+      ? Math.max(0, Math.round(toPayAmountProp * 100) / 100)
+      : serverBill != null
+        ? computeCheckoutToPayAmount({
+            finalAmount: serverBill.finalAmount,
+            deliveryType,
+            deliveryFeePending,
+            pendingDeliveryFee,
+            gatiCashApplyAmount: walletDeduction,
+            missedOfferUnlockDiscount: missedOfferDiscount,
+            missedOfferWalletPendingAmount: pendingWalletCredit,
+          })
+        : 0;
 
   return (
     <>
@@ -532,6 +546,12 @@ export function BillSummarySheet({
                   ) : null}
 
                   {showDeliveryFeeRow ? (
+                    deliveryFeePending ? (
+                      <BillLineRow
+                        label="Delivery fee"
+                        value="Calculated after address selection"
+                      />
+                    ) : (
                     <BillLineRow
                       label="Delivery partner fee"
                       dashedUnderline
@@ -543,6 +563,7 @@ export function BillSummarySheet({
                         />
                       }
                     />
+                    )
                   ) : null}
 
                   {serverBill.components.platform.taxable_value > 0.005 ? (
@@ -653,10 +674,7 @@ export function BillSummarySheet({
 
                   <View style={styles.toPayRow}>
                     <CheckoutText style={styles.toPayLabel}>To pay</CheckoutText>
-                    <AnimatedBillValue
-                      value={hasCheckoutAdjustments ? toPayAfterWallet : serverBill.finalAmount}
-                      style={styles.toPayValue}
-                    />
+                    <AnimatedBillValue value={toPayDisplay} style={styles.toPayValue} />
                   </View>
 
                   {showSavingsBanner ? (

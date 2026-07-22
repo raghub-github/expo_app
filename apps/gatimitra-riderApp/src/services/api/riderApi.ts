@@ -45,6 +45,8 @@ const OrderSummarySchema = z.object({
   atCustomer: z.boolean().optional(),
   foodOrderStatus: z.string().nullable().optional(),
   merchantOrderReady: z.boolean().optional(),
+  pickupAcknowledged: z.boolean().optional(),
+  pickupAcknowledgedAt: z.string().nullable().optional(),
   pickupWaitStartedAt: z.string().nullable().optional(),
   pickupWaitSeconds: z.number().nullable().optional(),
   pickupWaitFinalized: z.boolean().optional(),
@@ -72,7 +74,6 @@ const OrderSummarySchema = z.object({
         name: z.string(),
         quantity: z.number(),
         variantName: z.string().nullable().optional(),
-        customization: z.string().nullable().optional(),
       })
     )
     .optional(),
@@ -617,6 +618,19 @@ export const riderApi = {
       body: JSON.stringify(gps ?? {}),
       responseSchema: OrderSummarySchema,
     });
+  },
+
+  async acknowledgeFoodPickup(orderId: string) {
+    const client = createApiClient();
+    return client.request<RiderOrderSummary>(
+      `/v1/rider/orders/${orderId}/acknowledge-food-pickup`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+        responseSchema: OrderSummarySchema,
+      }
+    );
   },
 
   async submitMerchantPickupFeedback(

@@ -722,6 +722,8 @@ export const customers = pgTable(
     mobilityAccessibility: customerMobilityAccessibilityEnum("mobility_accessibility")
       .notNull()
       .default("none"),
+    legalConsentPackVersion: text("legal_consent_pack_version"),
+    legalConsentAt: timestamp("legal_consent_at", { withTimezone: true }),
   },
   (table) => ({
     customerIdIdx: index("customers_customer_id_idx").on(table.customerId),
@@ -1678,6 +1680,14 @@ export const ordersCore = pgTable(
     deliveryAddress: text("delivery_address"),
     /** Full billing engine snapshot at checkout (copied from pending_orders on finalize). */
     billingSnapshot: jsonb("billing_snapshot"),
+    /**
+     * Standard/gross delivery fare (pre-subsidy) — the Rider Fare Engine's % base,
+     * independent of the customer delivery fee. Kept in sync with
+     * billing_snapshot.delivery_fee_gross by a DB trigger (migration 0440).
+     */
+    deliveryFeeGross: numeric("delivery_fee_gross", { precision: 10, scale: 2 }),
+    /** Platform-absorbed delivery subsidy = delivery_fee_gross − net delivery fee. Never reduces rider payout. */
+    deliverySubsidy: numeric("delivery_subsidy", { precision: 10, scale: 2 }),
     /** Merchant-funded cart/precision discount (₹, CTM scale) frozen at placement. */
     merchantPrecisionDiscount: numeric("merchant_precision_discount", {
       precision: 12,
@@ -1753,6 +1763,8 @@ export const ordersCoreItems = pgTable(
     addonPrice: numeric("addon_price", { precision: 12, scale: 2 }).default("0"),
     totalPrice: numeric("total_price", { precision: 12, scale: 2 }).notNull(),
     itemSnapshot: jsonb("item_snapshot"),
+    /** Per-line customer cooking / special instructions (merchant-facing only). */
+    specialInstructions: text("special_instructions"),
     /** Offer Engine v2 — false when MRP / Boost / BOGO already on the line. */
     isDiscountEligible: boolean("is_discount_eligible"),
     /** Customer-visible unit price after store item offers (null = legacy). */
@@ -4861,6 +4873,39 @@ export const expoPushTokens = pgTable(
   })
 );
 
+/** Native FCM / APNs device tokens (migration 0436). */
+export const nativeDevicePushTokens = pgTable(
+  "native_device_push_tokens",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull(),
+    platform: text("platform").notNull(),
+    tokenType: text("token_type").notNull(),
+    nativeToken: text("native_token").notNull().unique(),
+    storeId: bigint("store_id", { mode: "number" }),
+    subscribedTopics: jsonb("subscribed_topics").$type<string[]>().notNull().default([]),
+    /** app | partnersite | dashboard | browser */
+    source: text("source").notNull().default("app"),
+    deviceModel: text("device_model"),
+    deviceBrand: text("device_brand"),
+    osName: text("os_name"),
+    osVersion: text("os_version"),
+    appVersion: text("app_version"),
+    locale: text("locale"),
+    timezone: text("timezone"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userRoleIdx: index("native_device_push_tokens_user_role_idx").on(t.userId, t.role),
+    roleIdx: index("native_device_push_tokens_role_idx").on(t.role),
+    storeIdx: index("native_device_push_tokens_store_idx").on(t.storeId),
+    typeIdx: index("native_device_push_tokens_type_idx").on(t.tokenType),
+  })
+);
+
 // ============================================================================
 // RIDER INCENTIVE RELATIONS
 // ============================================================================
@@ -5539,5 +5584,66 @@ export const verificationAuditLogs = pgTable(
     actorIdx: index("verification_audit_logs_actor_idx").on(t.actorId, t.createdAt),
     targetIdx: index("verification_audit_logs_target_idx").on(t.targetKind, t.targetId, t.createdAt),
   }),
+);
+
+/** Secure KOT pickup QR tokens — see drizzle/0438_order_pickup_tokens.sql */
+export const orderPickupTokens = pgTable(
+  "order_pickup_tokens",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    merchantId: bigint("merchant_id", { mode: "number" }),
+    storeId: bigint("store_id", { mode: "number" }),
+    token: text("token").notNull(),
+    status: text("status").notNull().default("ACTIVE"),
+    assignedRiderId: bigint("assigned_rider_id", { mode: "number" }),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    scannedAt: timestamp("scanned_at", { withTimezone: true }),
+    scannedByRiderId: bigint("scanned_by_rider_id", { mode: "number" }),
+    scannedDevice: text("scanned_device"),
+    kotNumber: text("kot_number"),
+    kotVersion: integer("kot_version").notNull().default(1),
+    lastKotPrintedAt: timestamp("last_kot_printed_at", { withTimezone: true }),
+    kotPrintCount: integer("kot_print_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orderUq: uniqueIndex("order_pickup_tokens_order_uq").on(t.orderId),
+    tokenUq: uniqueIndex("order_pickup_tokens_token_uq").on(t.token),
+  })
+);
+
+export const storeKotCounters = pgTable("store_kot_counters", {
+  storeId: bigint("store_id", { mode: "number" }).primaryKey(),
+  lastValue: bigint("last_value", { mode: "number" }).notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const orderKotPrintEvents = pgTable(
+  "order_kot_print_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    storeId: bigint("store_id", { mode: "number" }),
+    tokenId: bigint("token_id", { mode: "number" }),
+    kotNumber: text("kot_number"),
+    printedAt: timestamp("printed_at", { withTimezone: true }).notNull().defaultNow(),
+    printedBy: text("printed_by"),
+    printChannel: text("print_channel"),
+    kotVersion: integer("kot_version").notNull().default(1),
+    payloadSnapshot: jsonb("payload_snapshot"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orderIdx: index("order_kot_print_events_order_idx").on(t.orderId),
+    storeIdx: index("order_kot_print_events_store_idx").on(t.storeId),
+  })
 );
 

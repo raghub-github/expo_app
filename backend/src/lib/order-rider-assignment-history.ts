@@ -45,6 +45,8 @@ export type ActiveRiderAssignmentMilestones = {
   pickedUpAt: Date | string | null;
   reachedCustomerAt: Date | string | null;
   deliveredAt: Date | string | null;
+  pickupAcknowledged: boolean;
+  pickupAcknowledgedAt: Date | string | null;
 };
 
 type AssignmentMilestoneRow = {
@@ -53,6 +55,8 @@ type AssignmentMilestoneRow = {
   picked_up_at: Date | string | null;
   reached_customer_at: Date | string | null;
   delivered_at: Date | string | null;
+  pickup_acknowledged: boolean | null;
+  pickup_acknowledged_at: Date | string | null;
 };
 
 function mapAssignmentMilestoneRow(
@@ -65,6 +69,8 @@ function mapAssignmentMilestoneRow(
     pickedUpAt: row.picked_up_at ?? null,
     reachedCustomerAt: row.reached_customer_at ?? null,
     deliveredAt: row.delivered_at ?? null,
+    pickupAcknowledged: row.pickup_acknowledged === true,
+    pickupAcknowledgedAt: row.pickup_acknowledged_at ?? null,
   };
 }
 
@@ -80,7 +86,9 @@ export async function loadActiveRiderAssignmentMilestones(
       reached_merchant_at,
       picked_up_at,
       reached_customer_at,
-      delivered_at
+      delivered_at,
+      pickup_acknowledged,
+      pickup_acknowledged_at
     FROM order_rider_assignments
     WHERE order_core_id = ${orderCorePk}
       AND rider_id = ${riderId}
@@ -107,7 +115,9 @@ export async function loadActiveRiderAssignmentMilestonesForRider(
       reached_merchant_at,
       picked_up_at,
       reached_customer_at,
-      delivered_at
+      delivered_at,
+      pickup_acknowledged,
+      pickup_acknowledged_at
     FROM order_rider_assignments
     WHERE rider_id = ${riderId}
       AND is_active = TRUE
@@ -277,6 +287,9 @@ export async function recordRiderAssignmentAccepted(
         picked_up_at = NULL,
         reached_customer_at = NULL,
         delivered_at = NULL,
+        pickup_acknowledged = FALSE,
+        pickup_acknowledged_at = NULL,
+        pickup_acknowledged_by = NULL,
         distance_to_merchant_km = COALESCE(${distance?.merchantDistanceKm ?? null}, distance_to_merchant_km),
         distance_to_customer_km = COALESCE(${distance?.customerDistanceKm ?? null}, distance_to_customer_km),
         assignment_metadata = assignment_metadata || ${JSON.stringify({ serviceType })}::jsonb,

@@ -27,6 +27,13 @@ export function setCached(key: string, value: unknown, ttlMs = DEFAULT_TTL_MS): 
   }
 }
 
+/** Drop in-memory entries whose key starts with `prefix` (e.g. after rider mutations). */
+export function deleteCachedByPrefix(prefix: string): void {
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
+}
+
 export const CACHE_KEYS = {
   TICKETS_REFERENCE_DATA: "tickets:reference-data",
   TICKETS_AGENTS_LIST: "tickets:agents:list",

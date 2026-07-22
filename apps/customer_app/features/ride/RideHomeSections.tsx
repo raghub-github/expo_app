@@ -249,10 +249,7 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
         contentContainerStyle={promoStyles.scrollContent}
       >
         {loopSlides.map((slide) => (
-          <View
-            key={slide.id}
-            style={[promoStyles.cardShadowClip, { width: CARD_W, marginRight: SLIDE_GAP }]}
-          >
+          <View key={slide.id} style={[promoStyles.slideWrap, { width: CARD_W, marginRight: SLIDE_GAP }]}>
             <PromoSlideCard slide={slide} onBookNow={onBookNow} />
           </View>
         ))}
@@ -271,20 +268,14 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
 }
 
 const promoStyles = StyleSheet.create({
-  wrap: { marginBottom: 16 },
+  wrap: { marginBottom: 16, overflow: "hidden" },
   scrollContent: { paddingTop: 2 },
-  cardShadowClip: {
+  slideWrap: {
     overflow: "hidden",
-    paddingLeft: 10,
-    marginLeft: -10,
+    borderRadius: 20,
   },
   cardOuter: {
     borderRadius: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 4, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
   },
   card: {
     borderRadius: 20,

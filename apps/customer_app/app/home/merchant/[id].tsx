@@ -71,6 +71,7 @@ import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
 import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
 import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
+import { StoreMenuItemDetailSheet } from "@/components/store/StoreMenuItemDetailSheet";
 import {
   prefetchMenuItemFullConfig,
   prefetchMenuItemFullConfigsForMenu,
@@ -115,7 +116,6 @@ import { useMerchantScrollAnimation } from "@/features/merchant-detail/hooks/use
 import { useMerchantScrollChromeState } from "@/features/merchant-detail/hooks/useMerchantScrollChromeState";
 import {
   DEFAULT_STATUS_BAR_HEIGHT,
-  MERCHANT_FLOATING_UI_LIFT,
   resolveTabBarBottomInset,
 } from "@/constants/layout";
 import { resolveStoreContinueBarHeight } from "@/components/store/MerchantMenuCartSheet";
@@ -200,14 +200,18 @@ export default function MerchantDetailScreen() {
   const scrollStickyOffset = menuScrollStickyOffset(topPad);
   const heroActionsTopPad = merchantHeroActionsTopPad(topPad);
   const merchantId = id ?? "";
+  const hasMerchantCartItems = useCartStore(
+    (s) =>
+      merchantCartMatchesRoute(s.merchantId, merchantId) &&
+      s.items.some((cartItem) => cartItem.quantity > 0)
+  );
   // Capture once at mount so shutter + page share the same sentence after hide().
-  const [loadingMessageIndex] = useState(() => {
-    const nav = useMerchantNavTransitionStore.getState();
-    if (nav.merchantId === (id ?? "") || nav.active) {
-      return nav.loadingMessageIndex;
-    }
-    return undefined;
-  });
+  // When nav shutter didn't run, pick a fresh sentence for this store entry.
+  const [loadingMessageIndex] = useState(() =>
+    useMerchantNavTransitionStore
+      .getState()
+      .consumeLoadingMessageIndex(id ?? "")
+  );
   const scrollListRef = useRef<MerchantScrollListHandle>(null);
   const menuScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [filter, setFilter] = useState<StoreFilterId>("all");
@@ -223,6 +227,7 @@ export default function MerchantDetailScreen() {
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [customizationSheetVisible, setCustomizationSheetVisible] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<MenuItem | null>(null);
+  const [detailItem, setDetailItem] = useState<MenuItem | null>(null);
   const focusItemHandledRef = useRef<string | null>(null);
   const pendingMenuNavRef = useRef<{
     scrollTarget: MenuSheetScrollTarget;
@@ -338,17 +343,42 @@ export default function MerchantDetailScreen() {
       statusBarBackground: "#FFFFFF",
       statusBarStyle: "dark",
       hideStatusBarSpacer: false,
+      bootstrapActive: false,
     });
+    StatusBar.setHidden(false, "none");
+    if (Platform.OS === "android") {
+      StatusBar.setTranslucent(false);
+      StatusBar.setBackgroundColor("#FFFFFF", true);
+      StatusBar.setBarStyle("dark-content", true);
+    }
   }, [merchantId]);
+
+  // Declared BEFORE the focus effect below — that effect reads queryClient in its
+  // callback and dependency array, so a later `const` here was a temporal-dead-zone
+  // ReferenceError ("Cannot access 'queryClient' before initialization") that
+  // crashed the screen on render.
+  const queryClient = useQueryClient();
+
+  const navShutterActive = useMerchantNavTransitionStore((s) => s.active);
+
+  const assertMerchantStatusBarChrome = useCallback(() => {
+    StatusBar.setHidden(false, "none");
+    if (Platform.OS === "android") {
+      StatusBar.setTranslucent(false);
+      StatusBar.setBackgroundColor("#FFFFFF", true);
+      StatusBar.setBarStyle("dark-content", true);
+    }
+    useScreenChromeStore.setState({
+      statusBarBackground: "#FFFFFF",
+      statusBarStyle: "dark",
+      hideStatusBarSpacer: false,
+      bootstrapActive: false,
+    });
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      // Keep the root status-bar strip — never draw under the system bar on this screen.
-      useScreenChromeStore.setState({
-        statusBarBackground: "#FFFFFF",
-        statusBarStyle: "dark",
-        hideStatusBarSpacer: false,
-      });
+      assertMerchantStatusBarChrome();
       // Same freshness strategy as Food Home cards: refetch offers on focus (silent).
       if (merchantId) {
         void syncStoreOffersInBackground(queryClient, merchantId);
@@ -356,10 +386,15 @@ export default function MerchantDetailScreen() {
       return () => {
         useScreenChromeStore.getState().resetStatusBarBackground();
       };
-    }, [merchantId, queryClient])
+    }, [assertMerchantStatusBarChrome, merchantId, queryClient])
   );
 
-  const queryClient = useQueryClient();
+  // Focus/layout can run while the nav shutter Modal is still up — re-assert when it drops.
+  useEffect(() => {
+    if (navShutterActive) return;
+    assertMerchantStatusBarChrome();
+  }, [navShutterActive, assertMerchantStatusBarChrome]);
+
   useMerchantMenuRealtime(merchantId, queryClient);
   useStoreOffersRealtime(merchantId, queryClient);
 
@@ -774,7 +809,13 @@ export default function MerchantDetailScreen() {
       void writeCachedMyOrders(orders);
       return orders;
     },
-    enabled: !!merchantId && (secondaryQueriesReady || !!cachedMyOrders?.length),
+    // "Your Orders & Collections" is core to this screen, not a secondary query:
+    // fetch immediately on mount (don't gate behind secondaryQueriesReady) so past
+    // orders are present BEFORE the user can scroll. A late arrival is otherwise
+    // suppressed for the whole session (suppressLatePastOrdersRef) to avoid a
+    // layout jump, which is the root cause of the section "sometimes" not showing.
+    // Cache initialData keeps warm revisits instant; the fetch reconciles in place.
+    enabled: !!merchantId,
     staleTime: 2 * 60 * 1000,
     initialData: cachedMyOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
@@ -963,20 +1004,11 @@ export default function MerchantDetailScreen() {
   );
   const addItem = useCartStore((s) => s.addItem);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
-  const cartMerchantId = useCartStore((s) => s.merchantId);
-  const isCartForThisMerchant = merchantCartMatchesRoute(cartMerchantId, merchantId);
-
   /**
-   * Narrow selector — avoid re-rendering the whole (non-virtualized, full-mount) menu
-   * host on every cart line change. Line *count* only changes on first-add of a new
-   * dish or last-unit-removed, unlike total quantity/price which change on every +/-
-   * tap — so this is safe to read here just to gate the Continue dock's visibility.
-   * The dock's own totals/price/offer-banner selectors live in MerchantCartDock so a
-   * quantity tap only re-renders that small component, not this whole screen.
+   * Do NOT subscribe to cart line count / merchantId here. First-add used to flip
+   * `cartLineCount` 0→1 and re-render this entire full-mount menu host before the
+   * Continue dock could paint. Dock + per-row qty own their own store selectors.
    */
-  const cartLineCount = useCartStore((s) =>
-    merchantCartMatchesRoute(s.merchantId, merchantId) ? s.items.length : 0
-  );
 
   const getQty = useCallback(
     (itemId: string, menuItemId?: number) => {
@@ -993,7 +1025,7 @@ export default function MerchantDetailScreen() {
   );
 
   const handleAddItem = useCallback(
-    (item: MenuItem) => {
+    (item: MenuItem, quantity = 1, specialInstructions?: string | null) => {
       // Never no-op after optimistic UI — menu rows only render when we have an id.
       const storeName = (merchant?.name ?? "Restaurant").trim() || "Restaurant";
       if (!merchantId) return;
@@ -1018,8 +1050,9 @@ export default function MerchantDetailScreen() {
           price: item.price,
           isVeg: item.isVeg,
           imageUrl: item.imageUrl ?? null,
+          specialInstructions: specialInstructions ?? null,
         },
-        1,
+        Math.max(1, quantity),
         cartMerchantBannerUrl
       );
       const pairingKey = item.listRowKey ?? item.id;
@@ -1027,14 +1060,17 @@ export default function MerchantDetailScreen() {
         itemOfferById.get(item.id) ??
         (item.menuItemId != null ? itemOfferById.get(String(item.menuItemId)) : undefined) ??
         null;
-      // Defer list-mutating work so ADD→stepper paint is never blocked by a remount.
-      requestAnimationFrame(() => {
+      // Pairing strip rebuilds the full-mount menu — never on the ADD paint path.
+      // ~1.2s idle delay so stepper + Continue stay instant.
+      setTimeout(() => {
         setPairingAnchorKey(pairingKey);
+      }, 1200);
+      setTimeout(() => {
         useCartStore.getState().syncDiscountEligibility({
           [String(item.menuItemId != null ? item.menuItemId : item.id)]:
             computeIsDiscountEligible(item, offer),
         });
-      });
+      }, 1400);
     },
     [merchantId, merchant?.name, addItem, cartMerchantBannerUrl, queryClient, itemOfferById]
   );
@@ -1122,6 +1158,7 @@ export default function MerchantDetailScreen() {
         addonSizeUnit?: string | null;
       }>;
       imageUrl?: string | null;
+      specialInstructions?: string | null;
     }) => {
       if (!merchant) return;
       const offerKey = customizationItem?.id;
@@ -1143,6 +1180,7 @@ export default function MerchantDetailScreen() {
         variantSizeUnit: params.variantSizeUnit,
         addons: params.addons,
         imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
+        specialInstructions: params.specialInstructions ?? null,
         isDiscountEligible: computeIsDiscountEligible(customizationItem, offer),
       }, params.quantity, cartMerchantBannerUrl);
       setCustomizationSheetVisible(false);
@@ -1161,7 +1199,7 @@ export default function MerchantDetailScreen() {
           i.menuItemId.startsWith(itemId + "_") ||
           (numId != null && (i.menuItemId === numId || i.menuItemId.startsWith(numId + "_")))
       );
-      return line?.menuItemId ?? null;
+      return line?.lineId ?? null;
     },
     [merchantId]
   );
@@ -1187,15 +1225,14 @@ export default function MerchantDetailScreen() {
   const handleIncrement = useCallback(
     (itemId: string, menuItemId?: number) => {
       const lineId = getCartLineIdForItem(itemId, menuItemId);
-      if (lineId) {
-        updateQuantity(lineId, 1);
-        return;
-      }
-      // Optimistic UI can be ahead of the store for one frame — never drop a + tap.
-      const item = findMenuItemForCart(itemId, menuItemId);
-      if (item) handleAddItem(item);
+      // An increment only ever bumps an EXISTING line. If the line is gone (item was
+      // removed), do nothing — never auto-add. Re-adding must be an explicit +Add /
+      // Add Item tap (which routes through onAdd → handleAddItem, not onIncrement).
+      // A "+" is only reachable while the stepper is shown, i.e. the line exists; the
+      // add write for a brand-new item lands within a frame, so this never drops a tap.
+      if (lineId) updateQuantity(lineId, 1);
     },
-    [findMenuItemForCart, getCartLineIdForItem, handleAddItem, updateQuantity]
+    [getCartLineIdForItem, updateQuantity]
   );
   const handleDecrement = useCallback(
     (itemId: string, menuItemId?: number) => {
@@ -1203,6 +1240,52 @@ export default function MerchantDetailScreen() {
       if (lineId) updateQuantity(lineId, -1);
     },
     [getCartLineIdForItem, updateQuantity]
+  );
+
+  const handleOpenItemDetails = useCallback(
+    (item: MenuItem) => {
+      const needsCustomization = !!(
+        item.hasVariants ||
+        item.hasAddons ||
+        item.hasCustomizations
+      );
+      if (needsCustomization) {
+        // Open customization sheet immediately — no prefetch wait.
+        setCustomizationItem(item);
+        setCustomizationSheetVisible(true);
+        if (merchantId) {
+          void prefetchMenuItemFullConfig(
+            queryClient,
+            merchantId,
+            resolveFullConfigItemId(item)
+          );
+        }
+        return;
+      }
+      setDetailItem(item);
+    },
+    [merchantId, queryClient]
+  );
+
+  const handleCloseItemDetails = useCallback(() => {
+    setDetailItem(null);
+  }, []);
+
+  const handleAddFromItemDetails = useCallback(
+    (item: MenuItem, quantity: number, specialInstructions?: string | null) => {
+      const needsCustomization = !!(
+        item.hasVariants ||
+        item.hasAddons ||
+        item.hasCustomizations
+      );
+      setDetailItem(null);
+      if (needsCustomization) {
+        setTimeout(() => handleAddItem(item), 180);
+        return;
+      }
+      handleAddItem(item, quantity, specialInstructions);
+    },
+    [handleAddItem]
   );
 
   const sections = useMemo(() => {
@@ -1280,23 +1363,24 @@ export default function MerchantDetailScreen() {
   const isStoreClosedForStatus =
     merchant != null && effectiveLiveStatus === "CLOSED";
 
-  const showStoreContinueBar = cartLineCount > 0 && isCartForThisMerchant;
-
-  /** Reserve offer strip height immediately so dock never overlaps menu on first paint. */
-  const reserveCartDockOfferStrip = showStoreContinueBar;
-
+  /** Always reserve Continue-bar height so first-add never flips list padding / remounts rows. */
   const listContentContainerStyle = useMemo(
     () => {
-      const continueBarHeight = showStoreContinueBar
-        ? resolveStoreContinueBarHeight(reserveCartDockOfferStrip, cartDockBottomInset)
-        : 0;
+      const continueBarHeight = resolveStoreContinueBarHeight(true, cartDockBottomInset);
       return {
-        paddingBottom: showStoreContinueBar
-          ? continueBarHeight + MENU_FAB_HEIGHT + 16
-          : MENU_FAB_HEIGHT + 40 + cartDockBottomInset + 14,
+        paddingBottom: continueBarHeight + MENU_FAB_HEIGHT + 16,
       };
     },
-    [cartDockBottomInset, showStoreContinueBar, reserveCartDockOfferStrip]
+    [cartDockBottomInset]
+  );
+
+  /** FAB sits above the reserved Continue dock slot (dock self-hides when cart empty). */
+  const floatingFabBottom = useMemo(
+    () =>
+      hasMerchantCartItems
+        ? resolveStoreContinueBarHeight(true, cartDockBottomInset) + 14
+        : cartDockBottomInset + 14,
+    [cartDockBottomInset, hasMerchantCartItems]
   );
 
   const handleStoreCartContinue = useCallback(() => {
@@ -1397,11 +1481,11 @@ export default function MerchantDetailScreen() {
   }, [focusItemId, sections, flashIndexMap]);
 
   useEffect(() => {
-    if (openCart !== "1" || !merchantId || !isCartForThisMerchant) {
-      return;
-    }
+    if (openCart !== "1" || !merchantId) return;
+    const mid = useCartStore.getState().merchantId;
+    if (!merchantCartMatchesRoute(mid, merchantId)) return;
     void tryNavigateToFoodCheckout(router, queryClient);
-  }, [openCart, merchantId, isCartForThisMerchant, queryClient, router]);
+  }, [openCart, merchantId, queryClient, router]);
 
   const handleShareRestaurant = useCallback(async () => {
     closeOptionsSheet();
@@ -1718,6 +1802,12 @@ export default function MerchantDetailScreen() {
 
   return (
     <GestureHandlerRootView style={styles.container}>
+      <StatusBar
+        hidden={false}
+        translucent={false}
+        backgroundColor="#FFFFFF"
+        barStyle="dark-content"
+      />
       <MerchantStickyChrome
         topGutter={headerTopGutter}
         stickySearchStyle={stickySearchStyle}
@@ -1798,6 +1888,7 @@ export default function MerchantDetailScreen() {
         offerTickerTexts={offerTickerTexts}
         visibleOffersCount={storeOffersBadgeCount}
         reserveOfferRow={reserveOfferRow}
+        loadingMessageIndex={loadingMessageIndex}
         onInfoPress={handleMerchantInfoPress}
         onOffersPress={openOffersSheet}
         onSchedulePress={openScheduleSheet}
@@ -1809,6 +1900,7 @@ export default function MerchantDetailScreen() {
         filtersActive={filtersActive}
         getQty={getQty}
         onAdd={handleAddItem}
+        onItemPress={handleOpenItemDetails}
         onIncrement={handleIncrement}
         onDecrement={handleDecrement}
         isStoreClosed={isStoreClosedForStatus}
@@ -1930,6 +2022,32 @@ export default function MerchantDetailScreen() {
         onStarted={() => setGroupOrderSheetVisible(false)}
       />
 
+      <StoreMenuItemDetailSheet
+        visible={detailItem != null}
+        item={detailItem}
+        isStoreClosed={isStoreClosedForStatus}
+        isBookmarked={
+          detailItem != null &&
+          (() => {
+            const itemPk = resolveMenuItemPk(detailItem);
+            return itemPk != null && bookmarkMenuItemIdSet.has(itemPk);
+          })()
+        }
+        itemOffer={
+          detailItem
+            ? itemOfferById.get(detailItem.id) ??
+              (detailItem.menuItemId != null
+                ? itemOfferById.get(String(detailItem.menuItemId))
+                : undefined) ??
+              null
+            : null
+        }
+        onClose={handleCloseItemDetails}
+        onAdd={handleAddFromItemDetails}
+        onBookmark={handleBookmarkMenuItem}
+        onShare={handleShareMenuItem}
+      />
+
       {customizationItem && (
         <ItemCustomizationSheet
           visible={customizationSheetVisible}
@@ -1972,30 +2090,24 @@ export default function MerchantDetailScreen() {
         </Pressable>
       </Modal>
 
-      {showStoreContinueBar ? (
-        <View style={styles.cartDock} pointerEvents="box-none">
-          <MerchantCartDock
-            merchantId={merchantId}
-            merchantMenu={merchant?.menu}
-            resolvedDeliveryAddress={resolvedDeliveryAddress}
-            pincode={pincode}
-            state={state}
-            city={city}
-            isStoreClosedForStatus={isStoreClosedForStatus}
-            onContinue={handleStoreCartContinue}
-            bottomInset={cartDockBottomInset}
-            reserveOfferStrip={reserveCartDockOfferStrip}
-          />
-        </View>
-      ) : null}
+      <View style={styles.cartDock} pointerEvents="box-none">
+        <MerchantCartDock
+          merchantId={merchantId}
+          merchantMenu={merchant?.menu}
+          resolvedDeliveryAddress={resolvedDeliveryAddress}
+          pincode={pincode}
+          state={state}
+          city={city}
+          isStoreClosedForStatus={isStoreClosedForStatus}
+          onContinue={handleStoreCartContinue}
+          bottomInset={cartDockBottomInset}
+          reserveOfferStrip
+        />
+      </View>
 
       {!menuSheetVisible ? (
         <MerchantFloatingFab
-          bottom={
-            showStoreContinueBar
-              ? resolveStoreContinueBarHeight(reserveCartDockOfferStrip, cartDockBottomInset) + 14
-              : 36 + cartDockBottomInset / 2 + MERCHANT_FLOATING_UI_LIFT
-          }
+          bottom={floatingFabBottom}
           onPress={() => setMenuSheetVisible(true)}
           animatedStyle={fabStyle}
         />

@@ -30,6 +30,8 @@ export type ApiFoodOrderItem = {
   offer_label?: string | null;
   is_item_promo?: boolean;
   applied_offer_type?: string | null;
+  special_instructions?: string | null;
+  specialInstructions?: string | null;
 };
 
 export type ApiFoodOrderPricing = {
@@ -88,6 +90,10 @@ export type ApiFoodOrder = {
   payment_status?: string | null;
   items: ApiFoodOrderItem[];
   pickup_otp: string | null;
+  /** Secure QR pickup token (order_pickup_tokens.token). */
+  pickup_token?: string | null;
+  /** Backend-generated store-scoped KOT number. */
+  kot_number?: string | null;
   rto_otp: string | null;
   requires_utensils?: boolean | null;
   delivery_instructions?: string | null;

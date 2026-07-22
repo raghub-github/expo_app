@@ -13,19 +13,36 @@
  */
 
 import { create } from "zustand";
-import * as Location from "expo-location";
-import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { haversineKm } from "@/lib/billSummary";
+import {
+  LOCATION_SIGNIFICANT_MOVE_METERS,
+  coordsMovedSignificantly,
+  getBestEffortPosition,
+  getDeviceLocationReadiness,
+  withTimeout,
+  type LocationPermissionStatus,
+  type DeviceLocationReadiness,
+} from "@gatimitra/expo-location-kit";
+import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
+import { isSmsBlockingLocationPrompts } from "@/store/smsPermissionStore";
 
-/** Avoid indefinite hang from getCurrentPositionAsync (common with Highest accuracy indoors). */
-const GPS_ATTEMPT_MS = 14_000;
+export {
+  LOCATION_SIGNIFICANT_MOVE_METERS,
+  coordsMovedSignificantly,
+  getDeviceLocationReadiness,
+};
+export type { LocationPermissionStatus, DeviceLocationReadiness };
+
 const GEOCODE_MS = 10_000;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
-/** Refresh merchants when the user moves at least this far (meters). */
-export const LOCATION_SIGNIFICANT_MOVE_METERS = 350;
-/** Max age for last-known GPS fallback when a fresh fix fails. */
-const LAST_KNOWN_MAX_AGE_MS = 60_000;
+/** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
+const LOCATION_DEBUG = true;
+
+function logLocation(event: string, data: Record<string, unknown>): void {
+  if (!LOCATION_DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.log(`[location] ${event}`, { ...data, ts: new Date().toISOString() });
+}
 
 type PersistedSelectedLocation = {
   coords: { latitude: number; longitude: number };
@@ -33,51 +50,38 @@ type PersistedSelectedLocation = {
   savedAt: number;
 };
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("Location request timed out")), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
-
 async function getDeviceCoords(): Promise<{ latitude: number; longitude: number }> {
-  const accAttempts = [Location.Accuracy.Balanced, Location.Accuracy.Lowest];
-  let lastErr: unknown;
-  for (const accuracy of accAttempts) {
-    try {
-      const loc = await withTimeout(Location.getCurrentPositionAsync({ accuracy }), GPS_ATTEMPT_MS);
-      return { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  try {
-    const lastKnown = await Location.getLastKnownPositionAsync({ maxAge: LAST_KNOWN_MAX_AGE_MS });
-    if (lastKnown?.coords) {
-      return {
-        latitude: lastKnown.coords.latitude,
-        longitude: lastKnown.coords.longitude,
-      };
-    }
-  } catch {
-    // ignore
-  }
-  if (lastErr instanceof Error) throw lastErr;
-  throw new Error("Could not get device location");
+  const v = await getBestEffortPosition({
+    log: logLocation,
+  });
+  return { latitude: v.latitude, longitude: v.longitude };
 }
 
 async function geocodeOrFallback(longitude: number, latitude: number): Promise<ReverseGeocodeResult> {
   try {
-    return await withTimeout(reverseGeocode(longitude, latitude), GEOCODE_MS);
+    const result = await withTimeout(reverseGeocode(longitude, latitude), GEOCODE_MS);
+    logLocation("reverse-geocode", {
+      latitude,
+      longitude,
+      provider: result.provider,
+      primary: result.primary,
+      city: result.city,
+      state: result.state,
+      pincode: result.pincode,
+      distanceM: result.distanceM,
+      approximate: result.approximate,
+      fullAddress: result.fullAddress,
+    });
+    if (result.approximate) {
+      logLocation("reverse-geocode-approximate", {
+        latitude,
+        longitude,
+        nearestFeatureM: result.distanceM,
+        pincode: result.pincode,
+        note: "nearest mapped feature is far from GPS — street/PIN is a best-effort approximation for this area",
+      });
+    }
+    return result;
   } catch {
     const coords = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
     return {
@@ -91,40 +95,15 @@ async function geocodeOrFallback(longitude: number, latitude: number): Promise<R
   }
 }
 
-export function coordsMovedSignificantly(
-  a: { latitude: number; longitude: number } | null | undefined,
-  b: { latitude: number; longitude: number } | null | undefined,
-  thresholdMeters = LOCATION_SIGNIFICANT_MOVE_METERS
-): boolean {
-  if (!a || !b) return a !== b;
-  return haversineKm(a.latitude, a.longitude, b.latitude, b.longitude) * 1000 >= thresholdMeters;
-}
-
-export type LocationPermissionStatus = "undetermined" | "granted" | "denied";
-
-export type DeviceLocationReadiness = {
-  permissionStatus: LocationPermissionStatus;
-  servicesEnabled: boolean;
-  isReady: boolean;
-};
-
-/** App permission + device GPS/location toggle (quick settings). */
-export async function getDeviceLocationReadiness(): Promise<DeviceLocationReadiness> {
-  const [{ status }, servicesEnabled] = await Promise.all([
-    Location.getForegroundPermissionsAsync(),
-    Location.hasServicesEnabledAsync(),
-  ]);
-  const permissionStatus: LocationPermissionStatus =
-    status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined";
-  return {
-    permissionStatus,
-    servicesEnabled,
-    isReady: permissionStatus === "granted" && servicesEnabled,
-  };
-}
-
 /** User-chosen pin vs device GPS – selected wins for listing until explicit "use current location". */
 export type LocationSource = "selected" | "current";
+
+/**
+ * Monotonic token for live-GPS fetches. getDeviceCoords()+reverseGeocode() is async, so two
+ * overlapping fetches can finish out of order; a fetch only commits its coords/address if its
+ * token is still the latest — an older (slower) reverse-geocode can never overwrite a newer GPS fix.
+ */
+let locationFetchSeq = 0;
 
 type LocationState = {
   permissionStatus: LocationPermissionStatus;
@@ -184,6 +163,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }),
 
   promptLocationPermissionIfNeeded: async (options) => {
+    // SMS step owns the screen first — never open location sheet or GPS dialogs over it.
+    if (isSmsBlockingLocationPrompts()) {
+      return;
+    }
     try {
       const readiness = await getDeviceLocationReadiness();
       if (readiness.isReady) {
@@ -248,6 +231,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   },
 
   requestPermissionAndFetch: async (options) => {
+    if (isSmsBlockingLocationPrompts()) {
+      return;
+    }
     const forceDevice = options?.forceDevice === true;
     // Mark hydrated on first attempt; hydration may also come from AsyncStorage clear.
     if (!get().locationHydrated) set({ locationHydrated: true });
@@ -262,8 +248,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       const readiness = await getDeviceLocationReadiness();
       if (readiness.isReady) {
         set({ permissionStatus: "granted", showPermissionModal: false });
+        const seq = ++locationFetchSeq;
         const { latitude, longitude } = await getDeviceCoords();
         const address = await geocodeOrFallback(longitude, latitude);
+        if (seq !== locationFetchSeq) return; // superseded by a newer GPS fetch — don't overwrite
         AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
         set({
           coords: { latitude, longitude },
@@ -306,6 +294,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   },
 
   refetchLocation: async (options) => {
+    if (isSmsBlockingLocationPrompts()) {
+      return;
+    }
     const forceDevice = options?.forceDevice === true;
     if (!forceDevice && get().locationSource === "selected") return;
 
@@ -313,8 +304,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     if (permissionStatus !== "granted") return;
     set({ loading: true, error: null });
     try {
+      const seq = ++locationFetchSeq;
       const { latitude, longitude } = await getDeviceCoords();
       const address = await geocodeOrFallback(longitude, latitude);
+      if (seq !== locationFetchSeq) return; // superseded by a newer GPS fetch — don't overwrite
       AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
       set({
         coords: { latitude, longitude },

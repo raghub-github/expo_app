@@ -6,9 +6,11 @@ export type PushNotificationOpenPayload = {
   data: Record<string, unknown>;
 };
 
-async function loadNotifications(): Promise<typeof import("expo-notifications") | null> {
+async function loadNotifications(
+  allowExpoGo = false
+): Promise<typeof import("expo-notifications") | null> {
   try {
-    if (Constants.appOwnership === "expo") {
+    if (!allowExpoGo && Constants.appOwnership === "expo") {
       return null;
     }
     return await import("expo-notifications");
@@ -23,7 +25,7 @@ export function subscribeToPushNotificationResponse(
 ): { remove: () => void } {
   let sub: { remove: () => void } = { remove: () => {} };
   void (async () => {
-    const Notifications = await loadNotifications();
+    const Notifications = await loadNotifications(true);
     if (!Notifications) return;
     sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const c = response.notification.request.content;
@@ -46,7 +48,7 @@ export function subscribeToForegroundNotifications(
 ): { remove: () => void } {
   let sub: { remove: () => void } = { remove: () => {} };
   void (async () => {
-    const Notifications = await loadNotifications();
+    const Notifications = await loadNotifications(true);
     if (!Notifications) return;
     sub = Notifications.addNotificationReceivedListener((notification) => {
       const c = notification.request.content;
@@ -61,4 +63,22 @@ export function subscribeToForegroundNotifications(
   return {
     remove: () => sub.remove(),
   };
+}
+
+/** Drain the cold-start notification that launched the app (if any). */
+export async function getLastNotificationOpenPayload(): Promise<PushNotificationOpenPayload | null> {
+  const Notifications = await loadNotifications(true);
+  if (!Notifications) return null;
+  try {
+    const last = await Notifications.getLastNotificationResponseAsync();
+    if (!last) return null;
+    const c = last.notification.request.content;
+    return {
+      title: c.title ?? null,
+      body: c.body ?? null,
+      data: (c.data ?? {}) as Record<string, unknown>,
+    };
+  } catch {
+    return null;
+  }
 }

@@ -29,6 +29,7 @@ import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
 import { RiderLogoutSessionInline } from '@/components/riders/RiderLogoutSessionInline';
 import { RiderLogoutHistorySideSheet } from '@/components/riders/RiderLogoutHistorySideSheet';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
 const RiderBankAccountVerifySideSheet = dynamic(
   () =>
@@ -301,8 +302,51 @@ export default function RidersPage() {
   const [actioningCreditRequestId, setActioningCreditRequestId] = useState<number | null>(null);
   const [rejectCreditRequestModal, setRejectCreditRequestModal] = useState<{ id: number; reason: string } | null>(null);
   const [creditRequestsModalOpen, setCreditRequestsModalOpen] = useState(false);
+  const [clearingSubscriptionDues, setClearingSubscriptionDues] = useState(false);
+  const [clearSubscriptionConfirmOpen, setClearSubscriptionConfirmOpen] = useState(false);
 
   const PENALTY_TYPES = ['cancellation', 'fraud', 'extra_charges', 'late_delivery', 'customer_complaint', 'order_mistake', 'other'] as const;
+
+  const clearSubscriptionPreview = useMemo(() => {
+    const dues = (summaryData ?? riderSummary)?.subscriptionDues;
+    const outstanding = Number(dues?.duesOutstanding ?? dues?.totalDue ?? 0);
+    const blocked = dues?.dispatchBlocked === true;
+    const walletBal = Number(dues?.walletBalance ?? (summaryData ?? riderSummary)?.wallet?.totalBalance ?? 0);
+    return {
+      outstanding: Number.isFinite(outstanding) ? outstanding : 0,
+      blocked,
+      walletBal: Number.isFinite(walletBal) ? walletBal : 0,
+      canClear: outstanding > 0 || blocked,
+    };
+  }, [summaryData, riderSummary]);
+
+  const handleClearSubscriptionDues = useCallback(async () => {
+    if (!riderId || clearingSubscriptionDues) return;
+    if (!clearSubscriptionPreview.canClear) {
+      setClearSubscriptionConfirmOpen(false);
+      return;
+    }
+    setClearingSubscriptionDues(true);
+    try {
+      const res = await fetch(`/api/riders/${riderId}/subscription-dues/clear`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        window.alert(typeof json?.error === "string" ? json.error : "Failed to clear subscription dues.");
+        return;
+      }
+      setClearSubscriptionConfirmOpen(false);
+      invalidateRiderSummary(queryClient, riderId);
+      await refetchRiderSummary();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Failed to clear subscription dues.");
+    } finally {
+      setClearingSubscriptionDues(false);
+    }
+  }, [riderId, clearingSubscriptionDues, clearSubscriptionPreview.canClear, queryClient, refetchRiderSummary]);
+
 
   const handleAddPenaltySubmit = useCallback(async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -998,18 +1042,27 @@ export default function RidersPage() {
                   View Full Details
                 </button>
               </div>
-              {riderSummary?.wallet && (
+              {(displaySummary ?? riderSummary)?.wallet && (() => {
+                const wallet = (displaySummary ?? riderSummary)!.wallet!;
+                const totalBal = formatWalletNum(wallet.totalBalance);
+                const withdrawableBal = Math.max(0, formatWalletNum(wallet.withdrawable));
+                const totalColor =
+                  totalBal < 0 ? "text-red-700" : totalBal > 0 ? "text-emerald-700" : "text-gray-900";
+                const withdrawableColor =
+                  withdrawableBal > 0 ? "text-emerald-700" : "text-gray-900";
+                return (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200/80 text-xs">
                   <Wallet className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  <span className="text-gray-600">Total <span className="font-semibold text-gray-900 tabular-nums">₹{formatWalletNum(riderSummary.wallet.totalBalance).toFixed(2)}</span></span>
+                  <span className="text-gray-600">Total <span className={`font-semibold tabular-nums ${totalColor}`}>₹{totalBal.toFixed(2)}</span></span>
                   <span className="text-gray-300">|</span>
-                  <span className="text-gray-600">Withdrawable <span className="text-emerald-700 font-medium tabular-nums">₹{formatWalletNum(riderSummary.wallet.withdrawable).toFixed(2)}</span></span>
+                  <span className="text-gray-600">Withdrawable <span className={`font-medium tabular-nums ${withdrawableColor}`}>₹{withdrawableBal.toFixed(2)}</span></span>
                   <span className="text-gray-300">|</span>
-                  <span className="text-gray-600">Locked <span className="text-amber-600 font-medium tabular-nums">₹{formatWalletNum(riderSummary.wallet.locked).toFixed(2)}</span></span>
+                  <span className="text-gray-600">Locked <span className="text-amber-600 font-medium tabular-nums">₹{formatWalletNum(wallet.locked).toFixed(2)}</span></span>
                   <span className="text-gray-300">|</span>
-                  <span className="text-gray-600">Security <span className="text-slate-600 font-medium tabular-nums">₹{formatWalletNum(riderSummary.wallet.securityBalance).toFixed(2)}</span></span>
+                  <span className="text-gray-600">Security <span className="text-slate-600 font-medium tabular-nums">₹{formatWalletNum(wallet.securityBalance).toFixed(2)}</span></span>
                 </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Dense info row – single row on large screens, minimal vertical space */}
@@ -2395,6 +2448,83 @@ export default function RidersPage() {
             return (
               <>
                 <div className="flex flex-col gap-4 sm:gap-5 lg:gap-6 w-full min-w-0">
+                  {/* Subscription dues — directly above Recent Orders */}
+                  {(() => {
+                    const dues = summary.subscriptionDues;
+                    const totalDue = Number(dues?.totalDue ?? 0);
+                    const outstanding = Number(dues?.duesOutstanding ?? 0);
+                    const streak = Number(dues?.penaltyStreakDays ?? 0);
+                    const blocked = dues?.dispatchBlocked === true;
+                    const walletBal = Number(dues?.walletBalance ?? summary.wallet?.totalBalance ?? 0);
+                    if (totalDue <= 0 && !blocked && streak <= 0) return null;
+                    return (
+                      <div className="w-full min-w-0 rounded-2xl border border-amber-200 bg-amber-50 shadow-sm overflow-hidden">
+                        <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4 py-3">
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 ring-1 ring-amber-200">
+                              <Wallet className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-bold text-amber-950 leading-tight">
+                                Subscription Dues
+                              </h3>
+                              <p className="text-[11px] text-amber-800/90 leading-snug mt-0.5">
+                                {blocked
+                                  ? "Duty stopped — clear subscription dues for the rider to go online."
+                                  : streak > 0
+                                    ? `Day ${streak} penalty streak. Outstanding subscription fee pending settlement from wallet.`
+                                    : "Outstanding subscription fee pending settlement from wallet / payment."}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs shrink-0">
+                            <span className="text-amber-900">
+                              Outstanding{" "}
+                              <span className="font-bold tabular-nums">
+                                ₹{outstanding.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                              </span>
+                            </span>
+                            <span className="text-amber-300">|</span>
+                            <span className="text-amber-900">
+                              Total due{" "}
+                              <span className="font-bold tabular-nums text-red-700">
+                                ₹{totalDue.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                              </span>
+                            </span>
+                            <span className="text-amber-300">|</span>
+                            <span className="text-amber-900">
+                              Wallet{" "}
+                              <span className={`font-semibold tabular-nums ${walletBal < 0 ? "text-red-700" : walletBal > 0 ? "text-emerald-700" : "text-gray-900"}`}>
+                                ₹{walletBal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                              </span>
+                            </span>
+                            {blocked ? (
+                              <span className="inline-flex items-center rounded-md bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                                Duty blocked
+                              </span>
+                            ) : null}
+                            {(outstanding > 0 || blocked) ? (
+                              <button
+                                type="button"
+                                disabled={clearingSubscriptionDues}
+                                onClick={() => setClearSubscriptionConfirmOpen(true)}
+                                className="inline-flex items-center gap-1 rounded-md bg-amber-700 hover:bg-amber-800 disabled:opacity-60 text-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide cursor-pointer"
+                              >
+                                {clearingSubscriptionDues ? (
+                                  <>
+                                    <RefreshCw className="h-3 w-3 animate-spin" />
+                                    Clearing…
+                                  </>
+                                ) : (
+                                  "Clear"
+                                )}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* Full-width rows: one section per row */}
                   <div className="w-full min-w-0 flex flex-col">
                     {ordersSection}
@@ -2601,6 +2731,54 @@ export default function RidersPage() {
                     </div>
                   );
                 })()}
+
+                <ConfirmModal
+                  open={clearSubscriptionConfirmOpen}
+                  title="Clear subscription dues?"
+                  variant="danger"
+                  confirmBusy={clearingSubscriptionDues}
+                  confirmLabel={
+                    clearSubscriptionPreview.outstanding > 0
+                      ? `Clear ₹${clearSubscriptionPreview.outstanding.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`
+                      : "Clear duty block"
+                  }
+                  cancelLabel="Cancel"
+                  onClose={() => {
+                    if (!clearingSubscriptionDues) setClearSubscriptionConfirmOpen(false);
+                  }}
+                  onConfirm={() => void handleClearSubscriptionDues()}
+                  description={
+                    <div className="space-y-3">
+                      <p className="text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm font-medium">
+                        This action cannot be undone from the rider app. An admin audit record will be saved.
+                      </p>
+                      {clearSubscriptionPreview.outstanding > 0 ? (
+                        <ul className="list-disc pl-5 space-y-1.5 text-gray-700">
+                          <li>
+                            Outstanding dues of{" "}
+                            <strong className="tabular-nums">
+                              ₹{clearSubscriptionPreview.outstanding.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                            </strong>{" "}
+                            will be cleared.
+                          </li>
+                          <li>
+                            Rider wallet will be debited by the same amount (balance goes further negative). Current wallet:{" "}
+                            <strong className={`tabular-nums ${clearSubscriptionPreview.walletBal < 0 ? "text-red-700" : "text-emerald-700"}`}>
+                              ₹{clearSubscriptionPreview.walletBal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                            </strong>
+                            .
+                          </li>
+                          <li>Wallet ledger will update immediately with a subscription fee entry.</li>
+                          <li>Subscription duty block / penalty streak will be reset.</li>
+                        </ul>
+                      ) : (
+                        <p>
+                          No outstanding amount — this will only clear the subscription <strong>duty blocked</strong> flags for the rider.
+                        </p>
+                      )}
+                    </div>
+                  }
+                />
 
                 {/* Add Amount (wallet credit request) modal */}
                 {addAmountFromOrder && riderId && (

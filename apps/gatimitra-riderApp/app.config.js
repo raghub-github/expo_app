@@ -61,7 +61,13 @@ module.exports = {
         "WRITE_EXTERNAL_STORAGE",
         "CAMERA",
         "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO"
+        "READ_MEDIA_VIDEO",
+        "POST_NOTIFICATIONS",
+        "VIBRATE",
+        "RECEIVE_BOOT_COMPLETED",
+        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
       ],
       queries: {
         schemes: ["google.navigation", "geo", "comgooglemaps", "https"],
@@ -83,6 +89,19 @@ module.exports = {
     plugins: [
       "expo-router",
       "expo-asset",
+      [
+        "expo-location",
+        {
+          locationAlwaysAndWhenInUsePermission:
+            "GatiMitra needs your location in the background during active duties for safety and accurate order tracking.",
+          locationAlwaysPermission:
+            "GatiMitra needs your location in the background during active duties for safety and accurate order tracking.",
+          locationWhenInUsePermission:
+            "GatiMitra needs your location to show nearby orders, enable navigation, and verify deliveries. Location is mandatory for receiving orders.",
+          isAndroidBackgroundLocationEnabled: true,
+          isIosBackgroundLocationEnabled: true,
+        },
+      ],
       // Mapbox — runtime token via resolveMapboxPublicToken(); download token for native builds
       "@rnmapbox/maps",
       [
@@ -98,7 +117,8 @@ module.exports = {
         {
           icon: "./assets/images/onlylogo.png",
           color: "#FFFFFF",
-          sounds: []
+          sounds: [],
+          defaultChannel: "default",
         }
       ],
       [

@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Trash2 } from "lucide-react";
 import type { AccountDeletionRequestRow } from "@/lib/customers/account-deletion-request-types";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { useToast } from "@/context/ToastContext";
 
 async function fetchDeletionRequests(): Promise<AccountDeletionRequestRow[]> {
   const res = await fetch("/api/customers/deletion-requests?status=pending_review");
@@ -16,6 +17,7 @@ async function fetchDeletionRequests(): Promise<AccountDeletionRequestRow[]> {
 
 export default function AccountDeletionRequestsPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["customers", "deletion-requests", "pending_review"],
     queryFn: fetchDeletionRequests,
@@ -39,14 +41,21 @@ export default function AccountDeletionRequestsPage() {
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "Delete failed");
       setConfirmRow(null);
+      toast(
+        `${row.customerId} deleted — removed from database and signed out of the app.`,
+        "success"
+      );
       await refetch();
       void queryClient.invalidateQueries({ queryKey: ["customers", "stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["customers"] });
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Delete failed");
+      const msg = e instanceof Error ? e.message : "Delete failed";
+      setActionError(msg);
+      toast(msg, "error");
     } finally {
       setBusyId(null);
     }
-  }, [confirmRow, queryClient, refetch]);
+  }, [confirmRow, queryClient, refetch, toast]);
 
   const rows = data ?? [];
 
@@ -63,8 +72,8 @@ export default function AccountDeletionRequestsPage() {
           </Link>
           <h1 className="text-2xl font-semibold text-gray-900">Account deletion requests</h1>
           <p className="text-sm text-gray-600 mt-1">
-            Active requests from the customer app. Completing a request deactivates the account and
-            logs the user out.
+            Active requests from the customer app. Completing a request permanently deletes the
+            customer record, removes it from this queue, and signs them out of the app.
           </p>
         </div>
       </div>
@@ -179,7 +188,9 @@ export default function AccountDeletionRequestsPage() {
                 ?
               </p>
               <p className="text-gray-500">
-                This deactivates the account and signs them out of the app. This cannot be undone.
+                This permanently deletes the customer from the database and signs them out of the
+                app. Order history is kept but no longer linked to this customer. This cannot be
+                undone.
               </p>
             </div>
           ) : null

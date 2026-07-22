@@ -47,6 +47,8 @@ export type LineItem = {
   offer_label?: string | null;
   is_item_promo?: boolean;
   applied_offer_type?: string | null;
+  special_instructions?: string | null;
+  specialInstructions?: string | null;
 };
 
 export type OrderRecord = {
@@ -90,6 +92,11 @@ export type OrderRecord = {
   riderStoreWaitLive?: boolean;
   riderStoreWaitAnchorAt?: string | null;
   pickupOtp?: string;
+  /** Secure QR pickup token (order_pickup_tokens.token). */
+  pickupToken?: string | null;
+  /** Backend-generated KOT number (store-scoped). */
+  kotNumber?: string | null;
+  paymentMethod?: string | null;
   rtoOtp?: string;
   rejectedReason?: string | null;
   acceptedByLabel?: string | null;
@@ -232,6 +239,7 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
       offer_label: it.offer_label ?? null,
       is_item_promo: it.is_item_promo === true,
       applied_offer_type: it.applied_offer_type ?? null,
+      specialInstructions: it.special_instructions ?? it.specialInstructions ?? null,
     })),
     total: resolveMerchantOrderTotal({
       pricing: o.pricing
@@ -297,6 +305,9 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     riderStoreWaitLive: o.rider_store_wait_live === true,
     riderStoreWaitAnchorAt: coerceTimestamp(o.rider_store_wait_anchor_at),
     pickupOtp: o.pickup_otp ?? undefined,
+    pickupToken: o.pickup_token?.trim() || null,
+    kotNumber: o.kot_number?.trim() || null,
+    paymentMethod: o.payment_method?.trim() || null,
     rtoOtp: o.rto_otp ?? undefined,
     rejectedReason: o.rejected_reason ?? null,
     acceptedByLabel: o.accepted_by_label ?? null,

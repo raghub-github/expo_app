@@ -1,5 +1,8 @@
 /** Short keys matching GET /v1/app-assets/rider → assets map. */
 export const RX = {
+  brand: {
+    appIcon: "brand.app_icon",
+  },
   auth: {
     hero: "auth.hero",
     logo: "auth.logo",

@@ -153,6 +153,9 @@ export async function onboardingRoutes(app: FastifyInstance) {
   app.get(
     "/category-service-assignments",
     {
+      // Platform config matrix — not rider-specific. Skip JWT/device-session DB
+      // so a busy pool cannot hang this boot-critical call for 30s+.
+      config: { skipAuth: true },
       schema: {
         response: {
           200: z.object({
@@ -189,10 +192,45 @@ export async function onboardingRoutes(app: FastifyInstance) {
       const { listVehicleTypeServiceAssignmentsForApp } = await import(
         "../../lib/rider-vehicle-type-service-assignments.js"
       );
-      const [rows, vehicleRows] = await Promise.all([
-        listCategoryServiceAssignmentsForApp(),
-        listVehicleTypeServiceAssignmentsForApp(),
-      ]);
+
+      const FALLBACK_BY_CATEGORY: Record<string, Array<"food" | "parcel" | "person_ride">> = {
+        "2_wheeler": ["food", "parcel", "person_ride"],
+        "3_wheeler": ["parcel", "person_ride"],
+        "4_wheeler_non_ac": ["person_ride"],
+        "4_wheeler_ac": ["person_ride"],
+        "4_wheeler": ["person_ride"],
+      };
+
+      const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+        new Promise<T>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`db_timeout_${ms}ms`)), ms);
+          p.then(
+            (v) => {
+              clearTimeout(timer);
+              resolve(v);
+            },
+            (e) => {
+              clearTimeout(timer);
+              reject(e);
+            }
+          );
+        });
+
+      let rows: Awaited<ReturnType<typeof listCategoryServiceAssignmentsForApp>> = [];
+      let vehicleRows: Awaited<ReturnType<typeof listVehicleTypeServiceAssignmentsForApp>> = [];
+      try {
+        const settled = await Promise.allSettled([
+          withTimeout(listCategoryServiceAssignmentsForApp(), 5_000),
+          withTimeout(listVehicleTypeServiceAssignmentsForApp(), 5_000),
+        ]);
+        if (settled[0].status === "fulfilled") rows = settled[0].value;
+        else console.warn("[category-service-assignments] category query failed", settled[0].reason);
+        if (settled[1].status === "fulfilled") vehicleRows = settled[1].value;
+        else console.warn("[category-service-assignments] vehicle query failed", settled[1].reason);
+      } catch (err) {
+        console.warn("[category-service-assignments] unexpected failure", err);
+      }
+
       const byCategory: Record<string, Array<"food" | "parcel" | "person_ride">> = {};
       for (const row of rows) {
         if (!row.isAssigned) continue;
@@ -217,6 +255,16 @@ export async function onboardingRoutes(app: FastifyInstance) {
           }
         }
       }
+
+      if (Object.keys(byCategory).length === 0) {
+        return {
+          rows: [],
+          byCategory: FALLBACK_BY_CATEGORY,
+          vehicleRows: [],
+          byMapsToVehicleType: {},
+        };
+      }
+
       return { rows, byCategory, vehicleRows, byMapsToVehicleType };
     }
   );

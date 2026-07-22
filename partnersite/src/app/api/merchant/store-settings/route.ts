@@ -65,6 +65,7 @@ export async function GET(req: NextRequest) {
             'settings_metadata',
             'delivery_priority',
             'show_floating_orders',
+            'thermal_printer_width_mm',
           ].join(',')
         )
         .eq('store_id', internalId)
@@ -198,6 +199,8 @@ export async function GET(req: NextRequest) {
       delivery_priority: (settingsData as any)?.delivery_priority ?? 'GATIMITRA',
       // Backward-compatible default: floating orders UI is ON unless explicitly disabled.
       show_floating_orders: (settingsData as any)?.show_floating_orders ?? true,
+      thermal_printer_width_mm:
+        (settingsData as any)?.thermal_printer_width_mm === 58 ? 58 : 80,
 
       ...(preparationBufferMinutes !== undefined && { preparation_buffer_minutes: preparationBufferMinutes }),
       avg_preparation_time_minutes: avgPreparationTimeMinutes,
@@ -277,6 +280,10 @@ export async function PATCH(req: NextRequest) {
         ? String(body.delivery_priority).trim().toUpperCase()
         : undefined;
     const show_floating_orders = typeof body.show_floating_orders === 'boolean' ? body.show_floating_orders : undefined;
+    const thermal_printer_width_mm =
+      body.thermal_printer_width_mm === 58 || body.thermal_printer_width_mm === 80
+        ? body.thermal_printer_width_mm
+        : undefined;
     const preparation_buffer_minutes =
       typeof body.preparation_buffer_minutes === 'number' && !Number.isNaN(body.preparation_buffer_minutes) && body.preparation_buffer_minutes >= 0 && body.preparation_buffer_minutes <= 120
         ? body.preparation_buffer_minutes
@@ -337,6 +344,7 @@ export async function PATCH(req: NextRequest) {
       delivery_charge_amount !== undefined ||
       delivery_priority !== undefined ||
       show_floating_orders !== undefined ||
+      thermal_printer_width_mm !== undefined ||
       preparation_buffer_minutes !== undefined ||
       communication_settings !== undefined;
 
@@ -463,6 +471,9 @@ export async function PATCH(req: NextRequest) {
       if (delivery_charge_amount !== undefined) payload.delivery_charge_amount = delivery_charge_amount;
       if (delivery_priority !== undefined) payload.delivery_priority = delivery_priority;
       if (show_floating_orders !== undefined) payload.show_floating_orders = show_floating_orders;
+      if (thermal_printer_width_mm !== undefined) {
+        payload.thermal_printer_width_mm = thermal_printer_width_mm;
+      }
       if (preparation_buffer_minutes !== undefined) {
         payload.preparation_buffer_minutes = preparation_buffer_minutes;
         const currentMeta = (settingsBefore?.settings_metadata as Record<string, unknown>) || {};

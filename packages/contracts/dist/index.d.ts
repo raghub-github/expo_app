@@ -1,7 +1,7 @@
 import { z } from "zod";
 export declare const RoleSchema: z.ZodEnum<{
-    rider: "rider";
     customer: "customer";
+    rider: "rider";
     merchant: "merchant";
     admin: "admin";
     support: "support";
@@ -68,8 +68,8 @@ export declare const OtpVerifySchema: z.ZodObject<{
     otp: z.ZodString;
     deviceId: z.ZodString;
     appType: z.ZodOptional<z.ZodEnum<{
-        rider: "rider";
         customer: "customer";
+        rider: "rider";
         merchant: "merchant";
     }>>;
 }, z.core.$strip>;
@@ -92,8 +92,8 @@ export declare const SessionSchema: z.ZodObject<{
     accessToken: z.ZodString;
     expiresAt: z.ZodNumber;
     role: z.ZodEnum<{
-        rider: "rider";
         customer: "customer";
+        rider: "rider";
         merchant: "merchant";
         admin: "admin";
         support: "support";
@@ -250,4 +250,5 @@ export declare const ApiErrorResponseSchema: z.ZodObject<{
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 export * from "./wallet.js";
 export * from "./pricing.js";
+export * from "./push.js";
 //# sourceMappingURL=index.d.ts.map

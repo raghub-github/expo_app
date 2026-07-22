@@ -74,7 +74,12 @@ import { resolvePreparedLateMinutes } from '@/lib/order-prep-time';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
-import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import {
+  GatiMitraOrderPrintBill,
+  printOrderBill,
+  type GatiMitraPrintStoreInfo,
+} from '@/components/orders/GatiMitraOrderPrintBill';
+import { printOrderKot } from '@/components/orders/GatiMitraOrderPrintKOT';
 import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
@@ -326,6 +331,7 @@ function OrdersPageContent() {
   const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
   const [timelineModalOpen, setTimelineModalOpen] = useState(false);
   const [printBillOpen, setPrintBillOpen] = useState(false);
+  const [thermalPrinterWidthMm, setThermalPrinterWidthMm] = useState<58 | 80>(80);
   const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
   const [isStoreOpen, setIsStoreOpen] = useState<boolean | null>(null);
   const [showStoreCloseModal, setShowStoreCloseModal] = useState(false);
@@ -530,6 +536,22 @@ function OrdersPageContent() {
     setIsStoreOpen(storeRecord.operational_status === 'OPEN');
   }, [storeRecord]);
 
+  useEffect(() => {
+    if (!storeId) return;
+    let cancelled = false;
+    fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`)
+      .then((res) => (res.ok ? res.json() : {}))
+      .then((data: { thermal_printer_width_mm?: number }) => {
+        if (!cancelled) {
+          setThermalPrinterWidthMm(data.thermal_printer_width_mm === 58 ? 58 : 80);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId]);
+
   const fetchStoreStatus = useCallback(async () => {
     if (!storeId) return;
     try {
@@ -580,9 +602,26 @@ function OrdersPageContent() {
       setOrders(cached);
       setLoading(false);
     }
-    try {
-      const res = await fetch(`/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200`);
+    const url = `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200`;
+    const loadOnce = async () => {
+      const res = await fetch(url, { cache: 'no-store' });
       const data = await res.json();
+      return { res, data };
+    };
+    try {
+      let result: Awaited<ReturnType<typeof loadOnce>> | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          result = await loadOnce();
+          break;
+        } catch (err) {
+          const isLast = attempt >= 2;
+          if (isLast) throw err;
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        }
+      }
+      if (!result) return;
+      const { res, data } = result;
       if (res.ok) {
         if (Array.isArray(data.orders)) {
           setOrders(data.orders);
@@ -1264,6 +1303,61 @@ function OrdersPageContent() {
     };
   }, [selectedOrder]);
 
+  // Direct print — no preview modal. Builds the store invoice header (incl. full
+  // address) and opens the browser's native print dialog immediately.
+  const handlePrintBill = useCallback(() => {
+    if (!selectedOrder) return;
+    const storeInfo: GatiMitraPrintStoreInfo = store
+      ? {
+          storeName: store.store_name,
+          fullAddress:
+            [store.full_address, store.landmark, store.postal_code]
+              .map((s) => (s ?? '').toString().trim())
+              .filter(Boolean)
+              .join(', ') || null,
+          city: store.city,
+          cuisineLabel: store.cuisine_types?.[0] ?? null,
+          fssaiNumber: store.fssai_number ?? null,
+        }
+      : { storeName: selectedOrder.restaurant_name ?? 'Store' };
+    printOrderBill(
+      selectedOrder,
+      selectedOrderPricing ?? { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 },
+      storeInfo
+    );
+  }, [selectedOrder, selectedOrderPricing, store]);
+
+  // Direct KOT print — kitchen ticket only, built from the LIVE order so any change
+  // before printing is reflected. Completely separate from the bill (no pricing).
+  const handlePrintKot = useCallback(() => {
+    if (!selectedOrder) return;
+    printOrderKot(selectedOrder, {
+      storeName: store?.store_name ?? selectedOrder.restaurant_name ?? null,
+      storePhone:
+        (Array.isArray(store?.store_phones) ? store?.store_phones?.[0] : null) ??
+        selectedOrder.restaurant_phone ??
+        null,
+      storeAddress:
+        store != null
+          ? [store.full_address, store.landmark, store.city, store.state, store.postal_code]
+              .map((s) => (s ?? '').toString().trim())
+              .filter(Boolean)
+              .join(', ') || null
+          : null,
+      thermalPrinterWidthMm,
+      address:
+        store != null
+          ? {
+              full_address: store.full_address,
+              landmark: store.landmark,
+              city: store.city,
+              state: store.state,
+              postal_code: store.postal_code,
+            }
+          : null,
+    });
+  }, [selectedOrder, store, thermalPrinterWidthMm]);
+
   const selectedOrderLineSum = useMemo(() => {
     if (!selectedOrder?.items?.length) return 0;
     return selectedOrder.items.reduce(
@@ -1739,7 +1833,8 @@ function OrdersPageContent() {
                             }
                             setTimelineModalOpen(true);
                           }}
-                          onPrintBill={() => setPrintBillOpen(true)}
+                          onPrintBill={handlePrintBill}
+                          onPrintKot={handlePrintKot}
                           onClose={closeOrderPanel}
                           onViewPastRiders={() => {
                             setRidersLogModalOrderId(selectedOrder.id);
@@ -1868,7 +1963,7 @@ function OrdersPageContent() {
                       }
                       setTimelineModalOpen(true);
                     }}
-                    onPrintBill={() => setPrintBillOpen(true)}
+                    onPrintBill={handlePrintBill}
                   />
                 </div>
               </>
@@ -3276,17 +3371,6 @@ function OrderCard({
           />
         </div>
 
-        {!hideDetails ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onClick();
-            }}
-            className="self-start text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
-          >
-            Details <ChevronRight size={14} />
-          </button>
-        ) : null}
       </div>
         </div>
       </div>

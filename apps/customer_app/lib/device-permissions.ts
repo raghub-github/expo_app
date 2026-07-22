@@ -1,39 +1,30 @@
-import { Platform, PermissionsAndroid } from "react-native";
+import { Platform, PermissionsAndroid, Linking } from "react-native";
 import * as Contacts from "expo-contacts";
+import {
+  getSmsPermissionGranted as getSmsGrantedFromManager,
+  runSmsAllowPipeline,
+  requestSmsPermissionOrOpenSettings as requestSmsFromManager,
+} from "@/lib/smsPermissionManager";
 
-/** READ_SMS is the permission that matters for OTP autofill on Android. */
+export type SmsPermissionRequestResult = {
+  status: "granted" | "denied";
+  openedSettings: boolean;
+};
+
+/** Android: READ_SMS. iOS: always granted (Message AutoFill). */
 export async function getSmsPermissionGranted(): Promise<boolean> {
-  if (Platform.OS !== "android") return true;
-  try {
-    return await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_SMS);
-  } catch {
-    return false;
-  }
+  return getSmsGrantedFromManager();
 }
 
 export async function requestSmsPermission(): Promise<"granted" | "denied"> {
-  if (Platform.OS !== "android") return "granted";
-  try {
-    const read = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.READ_SMS, {
-      title: "Read SMS",
-      message:
-        "GatiMitra can read OTP messages to verify your login. Order updates may use SMS on some devices.",
-      buttonPositive: "Allow",
-      buttonNegative: "Deny",
-    });
-    if (read !== PermissionsAndroid.RESULTS.GRANTED) {
-      return "denied";
-    }
-    await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS, {
-      title: "SMS notifications",
-      message: "Optional: receive SMS-related events. You can still use the app if you deny this.",
-      buttonPositive: "Allow",
-      buttonNegative: "Skip",
-    });
-    return "granted";
-  } catch {
-    return "denied";
-  }
+  const result = await runSmsAllowPipeline();
+  return result.status;
+}
+
+export async function requestSmsPermissionOrOpenSettings(options?: {
+  openSettingsOnDeny?: boolean;
+}): Promise<SmsPermissionRequestResult> {
+  return requestSmsFromManager(options);
 }
 
 export async function getContactsPermissionGranted(): Promise<boolean> {
@@ -44,3 +35,18 @@ export async function getContactsPermissionGranted(): Promise<boolean> {
     return false;
   }
 }
+
+/** @deprecated kept for any stray imports */
+export async function openAppPermissionSettingsLegacy(): Promise<void> {
+  try {
+    if (Platform.OS === "ios") {
+      await Linking.openURL("app-settings:");
+    } else {
+      await Linking.openSettings();
+    }
+  } catch {
+    await Linking.openSettings().catch(() => undefined);
+  }
+}
+
+export { PermissionsAndroid };

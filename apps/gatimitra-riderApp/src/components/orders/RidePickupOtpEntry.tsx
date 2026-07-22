@@ -24,10 +24,13 @@ type Props = {
   inputMode?: "system" | "keypad";
   /** Bottom-sheet layout with keypad docked below OTP boxes. */
   layout?: "default" | "ride-sheet";
+  /** Boxed digits (default) vs underline slots (CIBIL-style sheet). */
+  pinStyle?: "boxes" | "underline";
   /** Sheet header already shows title/hint — omit duplicate copy. */
   hideSectionCopy?: boolean;
   onSubmit: (otp: string) => void;
   onErrorClear?: () => void;
+  onOtpChange?: (otp: string) => void;
 };
 
 const DIGIT_SLOTS = [0, 1, 2, 3] as const;
@@ -40,9 +43,11 @@ export function RidePickupOtpEntry({
   autoSubmit = true,
   inputMode = "system",
   layout = "default",
+  pinStyle = "boxes",
   hideSectionCopy = false,
   onSubmit,
   onErrorClear,
+  onOtpChange,
 }: Props) {
   const { t } = useTranslation();
   const [otp, setOtp] = useState("");
@@ -56,6 +61,7 @@ export function RidePickupOtpEntry({
 
   const usesKeypad = inputMode === "keypad";
   const isRideSheet = layout === "ride-sheet";
+  const isUnderline = pinStyle === "underline";
   const isFood = mode === "food";
   const isDelivery = mode === "delivery";
   const isComplete = otp.length === 4;
@@ -64,12 +70,13 @@ export function RidePickupOtpEntry({
 
   const resetOtpState = useCallback(() => {
     setOtp("");
+    onOtpChange?.("");
     submittedRef.current = false;
     lastSubmittedOtpRef.current = null;
     lastHandledErrorRef.current = null;
     rowScale.setValue(1);
     statusOpacity.setValue(0);
-  }, [rowScale, statusOpacity]);
+  }, [onOtpChange, rowScale, statusOpacity]);
 
   const tryAutoSubmit = useCallback(
     (code: string) => {
@@ -98,12 +105,13 @@ export function RidePickupOtpEntry({
     if (lastHandledErrorRef.current === err) return;
     lastHandledErrorRef.current = err;
     setOtp("");
+    onOtpChange?.("");
     submittedRef.current = false;
     lastSubmittedOtpRef.current = null;
     if (usesKeypad) return;
     const focusTimer = setTimeout(() => inputRef.current?.focus(), 80);
     return () => clearTimeout(focusTimer);
-  }, [error, usesKeypad]);
+  }, [error, onOtpChange, usesKeypad]);
 
   useEffect(() => {
     if (!isInvalid) return;
@@ -156,9 +164,10 @@ export function RidePickupOtpEntry({
         onErrorClear?.();
       }
       setOtp(next);
+      onOtpChange?.(next);
       tryAutoSubmit(next);
     },
-    [error, onErrorClear, tryAutoSubmit]
+    [error, onErrorClear, onOtpChange, tryAutoSubmit]
   );
 
   const handleChange = useCallback(
@@ -206,15 +215,57 @@ export function RidePickupOtpEntry({
         : t("orders.activeRide.otpInvalidMessage", "The pickup OTP did not match. Please try again."));
 
   const digitBoxes = (
-    <View style={[styles.digitTapArea, isRideSheet && styles.digitTapAreaSheet]}>
+    <View
+      style={[
+        styles.digitTapArea,
+        isRideSheet && styles.digitTapAreaSheet,
+        isUnderline && styles.digitTapAreaUnderline,
+      ]}
+    >
       <Animated.View
-        style={[styles.digitRow, { transform: [{ scale: rowScale }] }]}
+        style={[
+          styles.digitRow,
+          isUnderline && styles.digitRowUnderline,
+          { transform: [{ scale: rowScale }] },
+        ]}
         pointerEvents="none"
       >
         {DIGIT_SLOTS.map((slot) => {
           const char = otp[slot] ?? "";
           const isActive = showActiveSlot && activeIndex === slot && !char && !isVerifying;
           const isFilled = !!char;
+
+          if (isUnderline) {
+            return (
+              <View key={slot} style={styles.underlineSlot}>
+                <View style={styles.underlineCharWrap}>
+                  {char ? (
+                    <Text
+                      style={[
+                        styles.underlineDigit,
+                        isInvalid && styles.digitTextInvalid,
+                      ]}
+                    >
+                      {char}
+                    </Text>
+                  ) : isActive ? (
+                    <View style={styles.underlineCursor} />
+                  ) : (
+                    <Text style={styles.underlinePlaceholder}>-</Text>
+                  )}
+                </View>
+                <View
+                  style={[
+                    styles.underlineBar,
+                    isActive && styles.underlineBarActive,
+                    isFilled && !isInvalid && styles.underlineBarFilled,
+                    isInvalid && styles.underlineBarInvalid,
+                  ]}
+                />
+              </View>
+            );
+          }
+
           return (
             <View
               key={slot}
@@ -241,24 +292,39 @@ export function RidePickupOtpEntry({
         })}
       </Animated.View>
 
-      <Animated.View
-        style={[styles.statusBanner, { opacity: statusOpacity }]}
-        pointerEvents="none"
-      >
-        {isInvalid ? (
-          <View style={styles.invalidRow}>
-            <Ionicons name="alert-circle" size={18} color={colors.error[600]} />
-            <Text style={styles.invalidText}>{invalidMessage}</Text>
-          </View>
-        ) : isVerifying ? (
-          <View style={styles.verifyingRow}>
-            <ActivityIndicator size="small" color={colors.primary[700]} />
-            <Text style={styles.verifyingText}>
-              {t("orders.activeFood.otpVerifying", "Verifying…")}
-            </Text>
-          </View>
-        ) : null}
-      </Animated.View>
+      {!isUnderline ? (
+        <Animated.View
+          style={[styles.statusBanner, { opacity: statusOpacity }]}
+          pointerEvents="none"
+        >
+          {isInvalid ? (
+            <View style={styles.invalidRow}>
+              <Ionicons name="alert-circle" size={18} color={colors.error[600]} />
+              <Text style={styles.invalidText}>{invalidMessage}</Text>
+            </View>
+          ) : isVerifying ? (
+            <View style={styles.verifyingRow}>
+              <ActivityIndicator size="small" color={colors.primary[700]} />
+              <Text style={styles.verifyingText}>
+                {t("orders.activeFood.otpVerifying", "Verifying…")}
+              </Text>
+            </View>
+          ) : null}
+        </Animated.View>
+      ) : isInvalid || isVerifying ? (
+        <View style={styles.underlineStatus}>
+          {isInvalid ? (
+            <Text style={styles.underlineStatusError}>{invalidMessage}</Text>
+          ) : (
+            <View style={styles.verifyingRow}>
+              <ActivityIndicator size="small" color={colors.gray[600]} />
+              <Text style={styles.underlineStatusVerifying}>
+                {t("orders.activeFood.otpVerifying", "Verifying…")}
+              </Text>
+            </View>
+          )}
+        </View>
+      ) : null}
 
       {usesKeypad ? null : (
         <TextInput
@@ -329,7 +395,13 @@ export function RidePickupOtpEntry({
   }
 
   return (
-    <View style={[styles.wrap, usesKeypad && styles.wrapKeypad]}>
+    <View
+      style={[
+        styles.wrap,
+        usesKeypad && styles.wrapKeypad,
+        isUnderline && styles.wrapUnderline,
+      ]}
+    >
       {hideSectionCopy ? null : (
         <>
           <Text style={styles.sectionLabel}>
@@ -399,7 +471,7 @@ export function RidePickupOtpEntry({
         </Pressable>
       ) : null}
 
-      {footerHints}
+      {isUnderline ? null : footerHints}
     </View>
   );
 }
@@ -413,6 +485,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 4,
   },
+  wrapUnderline: {
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+    paddingTop: 0,
+  },
   sheetRoot: {
     width: "100%",
   },
@@ -424,6 +501,79 @@ const styles = StyleSheet.create({
   },
   digitTapAreaSheet: {
     marginBottom: 4,
+  },
+  digitTapAreaUnderline: {
+    minHeight: 40,
+    marginBottom: 0,
+  },
+  digitRowUnderline: {
+    gap: 8,
+    justifyContent: "space-between",
+    paddingHorizontal: 0,
+  },
+  underlineSlot: {
+    flex: 1,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    paddingBottom: 6,
+  },
+  underlineCharWrap: {
+    minHeight: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 0,
+  },
+  underlineDigit: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#0F172A",
+    includeFontPadding: false,
+    textAlign: "center",
+  },
+  underlinePlaceholder: {
+    fontSize: 20,
+    fontWeight: "400",
+    color: "#94A3B8",
+    includeFontPadding: false,
+    lineHeight: 24,
+  },
+  underlineCursor: {
+    width: 2,
+    height: 20,
+    backgroundColor: "#0F172A",
+    borderRadius: 1,
+  },
+  underlineBar: {
+    width: "100%",
+    height: 1.5,
+    backgroundColor: "#94A3B8",
+    borderRadius: 1,
+  },
+  underlineBarActive: {
+    height: 1.5,
+    backgroundColor: "#3EB489",
+  },
+  underlineBarFilled: {
+    backgroundColor: "#64748B",
+  },
+  underlineBarInvalid: {
+    backgroundColor: colors.error[500],
+  },
+  underlineStatus: {
+    marginTop: 10,
+    minHeight: 18,
+  },
+  underlineStatusError: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: colors.error[600],
+    textAlign: "left",
+  },
+  underlineStatusVerifying: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: colors.gray[600],
   },
   digitBoxSheet: {
     maxHeight: 58,

@@ -71,6 +71,11 @@ export function OrderCardItemRow({
             </View>
           ) : null}
         </View>
+        {item.specialInstructions?.trim() ? (
+          <Text style={styles.cookingNote} numberOfLines={2}>
+            Cooking instructions: {item.specialInstructions.trim()}
+          </Text>
+        ) : null}
       </View>
       {expandable ? (
         <Ionicons name="chevron-down" size={18} color="#0F766E" style={styles.chevron} />
@@ -133,6 +138,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#0F766E",
     letterSpacing: 0.2,
+  },
+  cookingNote: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#B45309",
+    lineHeight: 15,
   },
   offerPill: {
     alignSelf: "flex-start",

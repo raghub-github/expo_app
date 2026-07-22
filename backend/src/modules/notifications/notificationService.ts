@@ -15,8 +15,9 @@
  *   8. Return SendResult with counts + notification IDs (for click tracking)
  */
 import { randomUUID } from "node:crypto";
+import { isExpoPushTokenString } from "@gatimitra/contracts";
 import { getSql } from "../../db/client.js";
-import { enqueuePush } from "../push/enqueuePush.js";
+import { deliverExpoPush } from "../push/deliverExpoPush.js";
 import { renderTemplate, findMissingVariables } from "./templateRenderer.js";
 import { resolveChannelMasks, allowedChannelsFor } from "./preferences.js";
 import { resolveTarget } from "./targetResolver.js";
@@ -45,6 +46,73 @@ import type {
 } from "./types.js";
 
 const FCM_TOPIC_PREFIX = "topic:";
+
+function isExpoDeviceToken(token: string): boolean {
+  return isExpoPushTokenString(token);
+}
+
+function channelIdForRecipient(recipient: Recipient): string {
+  if (recipient.role === "merchant") return "merchant_default";
+  if (recipient.role === "rider") return "default";
+  return "default";
+}
+
+function applyOverrides(
+  rendered: ReturnType<typeof renderTemplate>,
+  overrides?: SendIntent["overrides"],
+): ReturnType<typeof renderTemplate> {
+  if (!overrides) return rendered;
+  return {
+    ...rendered,
+    title: overrides.title?.trim() || rendered.title,
+    body: overrides.body?.trim() || rendered.body,
+    imageUrl: overrides.imageUrl !== undefined ? overrides.imageUrl : rendered.imageUrl,
+    deepLink: overrides.deepLink !== undefined ? overrides.deepLink : rendered.deepLink,
+  };
+}
+
+function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
+  const deepLink = row.deepLink ?? undefined;
+  return {
+    notification_id: row.notificationId,
+    campaign_id: row.campaignId ?? undefined,
+    template_code: row.templateCode,
+    ...(deepLink
+      ? {
+          screen: deepLink,
+          deepLink,
+          deep_link: deepLink,
+        }
+      : {}),
+    ...(row.metadata ?? {}),
+  };
+}
+
+async function dispatchExpoRow(row: CreateLogRow): Promise<boolean> {
+  const result = await deliverExpoPush({
+    to: row.recipient.deviceToken,
+    title: row.title,
+    body: row.body,
+    data: pushDataForRow(row),
+    screen: row.deepLink ?? undefined,
+    imageUrl: row.imageUrl ?? undefined,
+    channelId: channelIdForRecipient(row.recipient),
+    sound: "default",
+  });
+  if (!result.ok) {
+    await updateLogStatus(row.notificationId, "failed", {
+      errorCode: result.mode === "queued" ? "ENQUEUE_FAILED" : "EXPO_SEND_FAILED",
+      errorMessage: result.error ?? "expo_send_failed",
+    });
+    return false;
+  }
+  // Inline Expo acceptance ≈ provider accepted; queue path stays "sent" until worker reports.
+  await updateLogStatus(
+    row.notificationId,
+    result.mode === "inline" ? "delivered" : "sent",
+  );
+  return true;
+}
 
 /**
  * Check whether a HH:MM value falls inside a wrap-capable time window.
@@ -89,6 +157,7 @@ export async function send(intent: SendIntent): Promise<SendResult> {
       skipped: 0,
       failedSync: 1,
       notificationIds: [],
+      skipReason: "template_missing",
     };
   }
 
@@ -120,12 +189,22 @@ export async function send(intent: SendIntent): Promise<SendResult> {
     // silently drop a status update.
     console.warn(`[notifications] template ${template.code} missing vars:`, missing.join(","));
   }
-  const rendered = renderTemplate(template, vars);
+  const rendered = applyOverrides(renderTemplate(template, vars), intent.overrides);
 
   // 3. Resolve recipients
   const recipients = await resolveTarget(intent.target);
   if (recipients.length === 0) {
-    return { campaignId: intent.campaignId, queued: 0, skipped: 0, failedSync: 0, notificationIds: [] };
+    if (intent.campaignId) {
+      await syncCampaignCountsFromLogs(intent.campaignId);
+    }
+    return {
+      campaignId: intent.campaignId,
+      queued: 0,
+      skipped: 0,
+      failedSync: 0,
+      notificationIds: [],
+      skipReason: "no_recipients",
+    };
   }
 
   // 3b. Quiet-hours + rate-limit enforcement (skips critical priority).
@@ -149,7 +228,17 @@ export async function send(intent: SendIntent): Promise<SendResult> {
       }).format(now);
       const inQuiet = isInsideWindow(hh, quiet.start, quiet.end);
       if (inQuiet) {
-        return { campaignId: intent.campaignId, queued: 0, skipped: recipients.length, failedSync: 0, notificationIds: [] };
+        if (intent.campaignId) {
+          await syncCampaignCountsFromLogs(intent.campaignId);
+        }
+        return {
+          campaignId: intent.campaignId,
+          queued: 0,
+          skipped: recipients.length,
+          failedSync: 0,
+          notificationIds: [],
+          skipReason: "quiet_hours",
+        };
       }
     }
   }
@@ -267,10 +356,14 @@ export async function send(intent: SendIntent): Promise<SendResult> {
           body: row.body,
           imageUrl: row.imageUrl ?? null,
           deepLink: row.deepLink ?? null,
+          data: {
+            template_code: row.templateCode,
+            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
+          },
           priority: row.priority as never,
           silent: template.silent,
         });
-        await updateLogStatus(row.notificationId, res.ok ? "sent" : "failed", {
+        await updateLogStatus(row.notificationId, res.ok ? "delivered" : "failed", {
           errorCode: res.errorCode,
           errorMessage: res.errorMessage,
         });
@@ -278,27 +371,9 @@ export async function send(intent: SendIntent): Promise<SendResult> {
         continue;
       }
       if (row.recipient.userId === "__direct__") {
-        // Pick the right carrier from the token format:
-        //   • Expo tokens look like "ExponentPushToken[xxx]" — go via Expo queue
-        //   • Anything else is treated as a native FCM token
-        const isExpo = row.recipient.deviceToken.startsWith("ExponentPushToken[")
-          || row.recipient.deviceToken.startsWith("ExpoPushToken[");
+        const isExpo = isExpoDeviceToken(row.recipient.deviceToken);
         if (isExpo) {
-          await enqueuePush({
-            to: row.recipient.deviceToken,
-            title: row.title,
-            body: row.body,
-            data: {
-              notification_id: row.notificationId,
-              template_code: row.templateCode,
-              ...(row.metadata ?? {}),
-            },
-            screen: row.deepLink ?? undefined,
-            imageUrl: row.imageUrl ?? undefined,
-            channelId: "default",
-          });
-          await updateLogStatus(row.notificationId, "sent");
-          queued++;
+          if (await dispatchExpoRow(row)) queued++;
           continue;
         }
         const res = await sendFcmV1({
@@ -308,10 +383,14 @@ export async function send(intent: SendIntent): Promise<SendResult> {
           body: row.body,
           imageUrl: row.imageUrl ?? null,
           deepLink: row.deepLink ?? null,
+          data: {
+            template_code: row.templateCode,
+            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
+          },
           priority: row.priority as never,
           silent: template.silent,
         });
-        await updateLogStatus(row.notificationId, res.ok ? "sent" : "failed", {
+        await updateLogStatus(row.notificationId, res.ok ? "delivered" : "failed", {
           errorCode: res.errorCode,
           errorMessage: res.errorMessage,
         });
@@ -319,30 +398,34 @@ export async function send(intent: SendIntent): Promise<SendResult> {
         continue;
       }
 
-      // Standard mobile path — Expo Push via the existing BullMQ queue.
-      // The notification-worker consumes the queue and calls Expo's API.
-      // notification_id is passed in `data` so the mobile SDK can echo it
-      // back on click for delivery confirmation.
-      if (row.channel === "push") {
-        await enqueuePush({
-          to: row.recipient.deviceToken,
+      // Standard mobile / web path
+      if (row.channel === "push" || row.channel === "browser") {
+        const token = row.recipient.deviceToken;
+        if (isExpoDeviceToken(token)) {
+          if (await dispatchExpoRow(row)) queued++;
+          continue;
+        }
+
+        // Native FCM (Android app without Expo, or partnersite/dashboard web)
+        const res = await sendFcmV1({
+          notificationId: row.notificationId,
+          token,
           title: row.title,
           body: row.body,
+          imageUrl: row.imageUrl ?? null,
+          deepLink: row.deepLink ?? null,
           data: {
-            notification_id: row.notificationId,
-            campaign_id: row.campaignId ?? undefined,
             template_code: row.templateCode,
-            ...(row.metadata ?? {}),
+            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
-          screen: row.deepLink ?? undefined,
-          imageUrl: row.imageUrl ?? undefined,
-          channelId: "default",
-          sound: row.priority === "critical" ? "default" : "default",
+          priority: row.priority as never,
+          silent: template.silent,
         });
-        // Mark as sent — the worker will overwrite to delivered/failed via
-        // a future webhook. For now "sent to queue" is the best signal we have.
-        await updateLogStatus(row.notificationId, "sent");
-        queued++;
+        await updateLogStatus(row.notificationId, res.ok ? "delivered" : "failed", {
+          errorCode: res.errorCode,
+          errorMessage: res.errorMessage,
+        });
+        if (res.ok) queued++;
         continue;
       }
       if (row.channel === "in_app") {
@@ -351,7 +434,7 @@ export async function send(intent: SendIntent): Promise<SendResult> {
         queued++;
         continue;
       }
-      // browser / socket channels — implemented in Phase 6 / Phase 4 respectively.
+      // socket / unknown — leave queued
       await updateLogStatus(row.notificationId, "queued");
       queued++;
     } catch (e) {
@@ -426,12 +509,16 @@ export async function schedule(opts: {
   createdBy?: string | null;
   overrideTitle?: string | null;
   overrideBody?: string | null;
+  overrideImage?: string | null;
+  overrideDeepLink?: string | null;
 }): Promise<{ campaignId: number }> {
   const c = await createCampaign({
     name: opts.name,
     templateCode: opts.templateCode,
     overrideTitle: opts.overrideTitle ?? null,
     overrideBody: opts.overrideBody ?? null,
+    overrideImage: opts.overrideImage ?? null,
+    overrideDeepLink: opts.overrideDeepLink ?? null,
     targetFilter: opts.target as unknown as Record<string, unknown>,
     variables: (opts.variables ?? {}) as Record<string, unknown>,
     scheduledAt: opts.scheduledAt.toISOString(),
@@ -477,6 +564,12 @@ export async function resendCampaign(
       variables: campaign.variables as TemplateVariables,
       target: campaign.target_filter as TargetFilter,
       campaignId,
+      overrides: {
+        title: campaign.override_title,
+        body: campaign.override_body,
+        imageUrl: campaign.override_image,
+        deepLink: campaign.override_deep_link,
+      },
     });
     await finalizeCampaignSend(campaignId, "completed");
     return { ...result, campaignId, status: "completed" };

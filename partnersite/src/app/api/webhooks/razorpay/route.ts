@@ -128,11 +128,24 @@ export async function POST(request: NextRequest) {
               .eq("store_id", storeIdPublic)
               .single();
             if (store?.id && store?.parent_id) {
-              const { data: plan } = await db.from("merchant_plans").select("id, price").eq("id", planId).single();
+              const { data: plan } = await db.from("merchant_plans").select("id, price, gst_percent").eq("id", planId).single();
               if (plan) {
                 const now = new Date();
                 const expiryDate = new Date(now);
                 expiryDate.setMonth(expiryDate.getMonth() + 1);
+                // Capture the AUTHORITATIVE charged amount + full GST breakdown so the
+                // record is complete (Refund/admin UIs read total_paise). The truth is
+                // what Razorpay actually charged = the order amount (paise); fall back to
+                // plan price + current GST only if the order amount is somehow absent.
+                const gstPercent = Number(plan.gst_percent ?? 0);
+                const orderAmountPaise = Number(orderData?.amount);
+                const totalPaise =
+                  Number.isFinite(orderAmountPaise) && orderAmountPaise > 0
+                    ? Math.round(orderAmountPaise)
+                    : Math.round(Number(plan.price || 0) * 100 * (1 + (gstPercent > 0 ? gstPercent : 0) / 100));
+                const subtotalPaise =
+                  gstPercent > 0 ? Math.round((totalPaise * 100) / (100 + gstPercent)) : totalPaise;
+                const gstAmountPaise = Math.max(0, totalPaise - subtotalPaise);
                 const { data: existingSub } = await db
                   .from("merchant_subscriptions")
                   .select("id")
@@ -182,7 +195,13 @@ export async function POST(request: NextRequest) {
                   store_id: store.id,
                   subscription_id: subscriptionId,
                   plan_id: planId,
-                  amount: Number(plan.price) || 0,
+                  // `amount` = the actual TOTAL charged (rupees), consistent with the
+                  // client verify-payment path — so Refund/admin show the real value.
+                  amount: Math.round(totalPaise) / 100,
+                  subtotal_paise: subtotalPaise,
+                  gst_percent_applied: gstPercent,
+                  gst_amount_paise: gstAmountPaise,
+                  total_paise: totalPaise,
                   payment_gateway: "RAZORPAY",
                   payment_gateway_id: paymentId,
                   payment_gateway_response: { razorpay_order_id: orderId, razorpay_payment_id: paymentId, webhook: true },

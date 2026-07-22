@@ -189,7 +189,7 @@ type OffDutyBannerProps = {
   visible: boolean;
   onTurnOn: () => void;
   loading?: boolean;
-  /** Subscription penalty duty stop — hide Turn On CTA. */
+  /** Subscription penalty duty stop — Turn On opens blocked sheet instead. */
   dutyLocked?: boolean;
 };
 
@@ -217,15 +217,17 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
             : t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders")}
         </Text>
       </View>
-      {dutyLocked ? null : (
-        <Pressable
-          style={[styles.turnOnBtn, loading && { opacity: 0.7 }]}
-          onPress={onTurnOn}
-          disabled={loading}
-        >
-          <Text style={styles.turnOnBtnText}>{t("home.turnOn", "Turn On")}</Text>
-        </Pressable>
-      )}
+      <Pressable
+        style={[styles.turnOnBtn, loading && { opacity: 0.7 }, dutyLocked && styles.turnOnBtnLocked]}
+        onPress={onTurnOn}
+        disabled={loading}
+      >
+        <Text style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]}>
+          {dutyLocked
+            ? t("home.whyDutyBlocked", "Why?")
+            : t("home.turnOn", "Turn On")}
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -393,10 +395,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
+  turnOnBtnLocked: {
+    backgroundColor: "#FEF2F2",
+  },
   turnOnBtnText: {
     fontSize: 13,
     fontWeight: "800",
     color: "#16A34A",
+  },
+  turnOnBtnTextLocked: {
+    color: "#B91C1C",
   },
   bannerTextCol: {
     flex: 1,
