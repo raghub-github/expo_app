@@ -628,6 +628,21 @@ export async function authRoutes(app: FastifyInstance) {
               "This number isn't registered as a GatiMitra partner yet. Please complete your parent registration at partner.gatimitra.com, then add your store — after that you can log in here.",
           });
         }
+
+        // Registered merchant → deliver the OTP via Supabase, not the backend.
+        // The backend MSG91 OTP channels (v5 / sendotp.php) return HTTP 200
+        // "success" but do NOT deliver on this account, so real numbers got no
+        // SMS. Supabase's phone auth (same path the customer app uses) does
+        // deliver. The app calls supabase.signInWithOtp next and verifies
+        // through Supabase. Review numbers never reach here (handled above and
+        // still use the backend fixed-OTP path).
+        req.log?.info?.({ phoneTail }, "[OTP] merchant registered — delivering via Supabase");
+        return {
+          requestId: "",
+          expiresInSec,
+          smsSent: false,
+          useSupabase: true,
+        };
       }
 
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
