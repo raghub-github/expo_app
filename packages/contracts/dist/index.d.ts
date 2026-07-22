@@ -54,6 +54,11 @@ export declare const KycStatusSchema: z.ZodEnum<{
 export type KycStatus = z.infer<typeof KycStatusSchema>;
 export declare const OtpRequestSchema: z.ZodObject<{
     phoneE164: z.ZodString;
+    appType: z.ZodOptional<z.ZodEnum<{
+        rider: "rider";
+        customer: "customer";
+        merchant: "merchant";
+    }>>;
 }, z.core.$strip>;
 export type OtpRequest = z.infer<typeof OtpRequestSchema>;
 export declare const OtpRequestResponseSchema: z.ZodObject<{

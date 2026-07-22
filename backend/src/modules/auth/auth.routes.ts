@@ -560,17 +560,18 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { phoneE164 } = OtpRequestSchema.parse(req.body);
+      const { phoneE164, appType } = OtpRequestSchema.parse(req.body);
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
       const phoneTail = phoneE164.replace(/\D/g, "").slice(-4);
 
-      req.log?.info?.({ phoneE164, phoneTail, requestId }, "[OTP] Requested");
+      req.log?.info?.({ phoneE164, phoneTail, requestId, appType }, "[OTP] Requested");
 
       // Google Play Review Mode — only this single phone is short-circuited,
       // and only when the env flag is on. Everything else runs the real
       // SMS path. The OTP is stored in the SAME otpStore with the SAME shape
-      // so /otp/verify sees no difference.
+      // so /otp/verify sees no difference. Checked BEFORE the merchant-existence
+      // gate below so the review number never needs a registered account.
       const requestBypass = matchReviewBypass(reviewBypasses, phoneE164);
       if (requestBypass) {
         const otp = requestBypass.getReviewOtp();
@@ -591,6 +592,42 @@ export async function authRoutes(app: FastifyInstance) {
           expiresInSec,
           smsSent: true,
         };
+      }
+
+      // Merchant app: do NOT spend an SMS on a number that has no partner
+      // account. Verify was already rejecting these AFTER the OTP was sent —
+      // check existence up front instead and tell the user to register. The
+      // review number never reaches here (handled above), so it needs no
+      // account. Customer / rider requests skip this gate entirely.
+      if (appType === "merchant") {
+        const normalizedPhone = phoneE164.replace(/\D/g, "");
+        let parentExists = false;
+        try {
+          const sql = getSql();
+          const rows = await sql`
+            SELECT 1
+            FROM merchant_parents
+            WHERE registered_phone = ${phoneE164}
+               OR registered_phone_normalized = ${normalizedPhone}
+               OR registered_phone LIKE ${"%" + normalizedPhone.slice(-10)}
+            LIMIT 1
+          `;
+          parentExists = rows.length > 0;
+        } catch (lookupErr) {
+          // If the lookup itself fails (e.g. table missing), fail open to the
+          // SMS path rather than block a legitimate login — verify still guards.
+          req.log?.error?.({ err: lookupErr, phoneTail }, "[OTP] merchant existence check failed");
+          parentExists = true;
+        }
+        if (!parentExists) {
+          req.log?.info?.({ phoneTail, requestId }, "[OTP] merchant not registered — OTP not sent");
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (reply as any).code(404).send({
+            error: "not_registered",
+            message:
+              "This number isn't registered as a GatiMitra partner yet. Please complete your parent registration at partner.gatimitra.com, then add your store — after that you can log in here.",
+          });
+        }
       }
 
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
