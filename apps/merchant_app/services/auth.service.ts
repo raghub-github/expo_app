@@ -43,9 +43,13 @@ const { apiBaseUrl } = getConfig();
 let _lastBackendOtpRequestId: string | null = null;
 
 function shouldSendPhoneOtpViaBackend(): boolean {
-  const { phoneOtpUseBackendOnly } = getConfig();
-  if (phoneOtpUseBackendOnly) return true;
-  return getSupabaseAuth() == null;
+  // Merchant phone OTP ALWAYS goes through the backend. The backend is the only
+  // place that (a) applies the Google-Play review-number bypass and (b) checks
+  // that the number is a registered partner before sending an SMS. Falling back
+  // to Supabase's signInWithOtp would skip both — sending a real SMS to the
+  // review number and to unregistered numbers. Google OAuth still uses Supabase;
+  // only the phone-OTP send is pinned here.
+  return true;
 }
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
@@ -118,7 +122,9 @@ export const merchantAuthService = {
       const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/otp/request`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phoneE164: payload.phoneE164 }),
+        // appType lets the backend reject unregistered numbers up front (and
+        // not waste an SMS) instead of only failing at verify.
+        body: JSON.stringify({ phoneE164: payload.phoneE164, appType: "merchant" }),
       });
       const raw = await res.text();
       let dataJson: any;

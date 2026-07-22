@@ -23,6 +23,8 @@ export const KycStatusSchema = z.enum(["NOT_SUBMITTED", "PENDING", "VERIFIED", "
 // =========================
 export const OtpRequestSchema = z.object({
     phoneE164: z.string().min(10),
+    /** Which app is requesting — lets the backend gate merchant existence checks. */
+    appType: z.enum(["customer", "rider", "merchant"]).optional(),
 });
 export const OtpRequestResponseSchema = z.object({
     requestId: z.string(),
