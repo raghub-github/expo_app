@@ -326,7 +326,10 @@ const EnvSchema = z.object({
   ).default(22),
 
   /**
-   * MERCHANT APP review login OTP bypass (Play Store / App Store reviewers).
+   * MERCHANT + RIDER ("partner") app review login OTP bypass (Play Store / App
+   * Store reviewers). Both apps sign in through the same backend OTP endpoints
+   * with the same review phone, so ONE bypass serves both; verify's appType
+   * routes to the correct pipeline (merchant session vs rider profile / KYC).
    *
    * Completely independent of the customer-app bypass below — separate flag,
    * separate phone, separate OTP. Neither falls back to the other.
@@ -334,8 +337,8 @@ const EnvSchema = z.object({
    * When all three are set AND `REVIEW_LOGIN_BYPASS_ENABLED=true`, the OTP
    * /request path skips the SMS provider for the single phone
    * `REVIEW_LOGIN_PHONE` and seeds the stored OTP as `REVIEW_LOGIN_FIXED_OTP`.
-   * Verification continues through the existing pipeline — same store, same
-   * expiry, same attempt limits, same JWT / session / merchant context / roles.
+   * Verification continues through the existing pipeline — same expiry, same
+   * attempt limits, same JWT / session / profile / onboarding / roles.
    *
    * Any other phone, or the flag set to false, behaves exactly as before
    * (real SMS via MSG91). Disabling is a single env flip — no code change.

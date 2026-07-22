@@ -716,6 +716,7 @@ export async function authRoutes(app: FastifyInstance) {
             ip: req.ip ?? null,
             stage: "verify",
             ok: false,
+            appType,
           });
         }
         return reply.code(400).send({ error: "invalid_otp" });
@@ -730,6 +731,7 @@ export async function authRoutes(app: FastifyInstance) {
           ip: req.ip ?? null,
           stage: "verify",
           ok: true,
+          appType,
         });
       }
 
