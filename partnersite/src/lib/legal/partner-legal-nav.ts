@@ -51,4 +51,11 @@ export const PARTNER_LEGAL_NAV: PartnerLegalNavItem[] = [
     subtitle: "Get Assistance",
     href: "/help-support",
   },
+  {
+    id: "account-deletion",
+    slug: "account-deletion",
+    title: "Account & Store Deletion",
+    subtitle: "Close & Delete",
+    href: "/delete-account",
+  },
 ];

@@ -9,7 +9,8 @@ export type PartnerLegalSlug =
   | "coc"
   | "partnership-agreement"
   | "service-policies"
-  | "help-support";
+  | "help-support"
+  | "account-deletion";
 
 export type PartnerLegalDoc = {
   slug: PartnerLegalSlug;
@@ -70,6 +71,14 @@ export const PARTNER_LEGAL_DOCS: PartnerLegalDoc[] = [
     description:
       "How merchant partners can get help with onboarding, orders, payments, legal documents, and account issues.",
     path: "/help-support",
+  },
+  {
+    slug: "account-deletion",
+    file: "merchant-account-deletion.md",
+    title: "Account & Store Deletion",
+    description:
+      "How a GatiMitra merchant permanently closes their outlet and deletes their partner account — the in-app closure request, what data is removed, and what records are retained.",
+    path: "/delete-account",
   },
 ];
 
