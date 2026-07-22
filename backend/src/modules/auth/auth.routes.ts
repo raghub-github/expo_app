@@ -641,8 +641,12 @@ export async function authRoutes(app: FastifyInstance) {
 
       req.log?.info?.({ requestId, expiresInSec }, "[OTP] Generated");
 
-      // Send SMS via MSG91 — dedicated OTP APIs first (v5/otp, sendotp.php), not Flow template.
-      const delivered = await deliverSupabaseOtpViaMsg91(env, phoneE164, otp, { preferLegacyOtpApi: true });
+      // Send SMS via MSG91 using the SAME channel order as the Supabase Send SMS
+      // hook (v5/otp first) — the path the customer app uses and that actually
+      // delivers. The old `preferLegacyOtpApi:true` here skipped v5 and fell to
+      // sendotp.php, which returns HTTP 200 "success" but never delivers on this
+      // MSG91 account, so real numbers silently got no OTP.
+      const delivered = await deliverSupabaseOtpViaMsg91(env, phoneE164, otp);
       const smsSent = delivered.ok;
       if (!smsSent) {
         otpStore.delete(requestId);
