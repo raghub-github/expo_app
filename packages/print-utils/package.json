@@ -13,8 +13,11 @@
       "require": "./src/index.ts"
     }
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "scripts": {
+    "build": "echo \"(@gatimitra/print-utils) source-only; transpiled by consumers\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo \"(print-utils) no lint configured\""
   },

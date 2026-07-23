@@ -164,8 +164,11 @@ export function createPushPermissionController(
         return snapshot;
       }
       if (snapshot.osStatus !== "granted") {
-        await refreshPermissionOnly();
-        if (snapshot.osStatus !== "granted") {
+        // Use the returned snapshot, not the closure `snapshot`: refreshPermissionOnly
+        // reassigns it internally, but TS keeps the `!== "granted"` narrowing above
+        // across the await and would flag the re-check as impossible (TS2367).
+        const refreshed = await refreshPermissionOnly();
+        if (refreshed.osStatus !== "granted") {
           emit({ syncStatus: "idle" });
           return snapshot;
         }
@@ -327,8 +330,10 @@ export function createPushPermissionController(
     }
 
     await openNotificationSettings(options.androidPackageName);
+    // Every "granted" path above already returned, so perm.osStatus is never
+    // "granted" here — the old `=== "granted"` branch was dead (TS2367).
     emit({
-      osStatus: perm.osStatus === "granted" ? "granted" : perm.canAskAgain ? "denied" : "blocked",
+      osStatus: perm.canAskAgain ? "denied" : "blocked",
       canAskAgain: perm.canAskAgain,
     });
     return { granted: false, openedSettings: true, snapshot };

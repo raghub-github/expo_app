@@ -40,6 +40,11 @@ COPY packages/shared-config/package.json ./packages/shared-config/package.json
 # "Can't resolve '@gatimitra/merchant-payout'".
 COPY packages/merchant-payout/package.json ./packages/merchant-payout/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
+# Source-only print packages (bill/KOT); Next transpiles them via transpilePackages.
+# Their package.json must be present so `npm ci` links the workspace.
+COPY packages/print-utils/package.json ./packages/print-utils/package.json
+COPY packages/bill-print/package.json ./packages/bill-print/package.json
+COPY packages/kot-print/package.json ./packages/kot-print/package.json
 RUN npm ci --no-audit --no-fund --ignore-scripts
 
 # ────────────────────────────────────────────────────────────────────────
@@ -62,6 +67,9 @@ COPY packages/store-status    ./packages/store-status
 COPY packages/shared-config   ./packages/shared-config
 COPY packages/contracts       ./packages/contracts
 COPY packages/merchant-payout ./packages/merchant-payout
+COPY packages/print-utils     ./packages/print-utils
+COPY packages/bill-print      ./packages/bill-print
+COPY packages/kot-print       ./packages/kot-print
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
@@ -98,6 +106,9 @@ RUN npm run build \
       --workspace=@gatimitra/merchant-payout \
       --workspace=@gatimitra/financial-rules \
       --workspace=@gatimitra/store-status \
+      --workspace=@gatimitra/print-utils \
+      --workspace=@gatimitra/bill-print \
+      --workspace=@gatimitra/kot-print \
       --workspace=gmmportal
 
 # ────────────────────────────────────────────────────────────────────────
