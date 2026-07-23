@@ -2,7 +2,7 @@
  * Partner login — phone OTP, device-session retry; Google sign-in coming soon.
  */
 
-import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   Text,
@@ -52,41 +52,14 @@ function partnerDataFromExchange(partner: { parent: unknown; childStores: unknow
   return partner as PartnerData;
 }
 
-const useAndroidSmsOtp = (step: "phone" | "otp", setOtp: Dispatch<SetStateAction<string>>) => {
-  useEffect(() => {
-    if (Platform.OS !== "android" || step !== "otp") return;
-    let cancelled = false;
-    const ReadSMS = require("@maniac-tech/react-native-expo-read-sms");
-    const parseOtpFromSms = (sms: string): string | null => {
-      if (!sms || typeof sms !== "string") return null;
-      const body = sms.includes(",") ? sms.split(",").slice(1).join(",").trim() : sms;
-      const match = body.match(/\b(\d{6})\b/) ?? body.match(/(\d{6})/);
-      return match ? match[1] : null;
-    };
-    const run = async () => {
-      try {
-        await ReadSMS.requestReadSMSPermission();
-        if (cancelled) return;
-        const { hasReadSmsPermission, hasReceiveSmsPermission } = await ReadSMS.checkIfHasSMSPermission();
-        if (!hasReadSmsPermission || !hasReceiveSmsPermission) return;
-        ReadSMS.startReadSMS((status: string, sms: string) => {
-          if (cancelled || status !== "success" || !sms) return;
-          const code = parseOtpFromSms(sms);
-          if (code) setOtp((prev) => (prev.length === OTP_LEN ? prev : code));
-        });
-      } catch (_) {
-        // Native module not available (e.g. Expo Go)
-      }
-    };
-    run();
-    return () => {
-      cancelled = true;
-      try {
-        ReadSMS.stopReadSMS?.();
-      } catch (_) {}
-    };
-  }, [step, setOtp]);
-};
+// NOTE: We deliberately do NOT auto-read SMS to fill the OTP. Reading SMS needs
+// READ_SMS / RECEIVE_SMS, which Google Play Protect blocks as "sensitive data"
+// (the app then won't install) and Google Play restricts to default SMS
+// handlers — an OTP-autofill use case no longer qualifies. The user types the
+// OTP manually (same as the customer app). If autofill is ever wanted back, use
+// the permission-free SMS Retriever API, not READ_SMS. (The old @maniac-tech
+// expo-read-sms path was removed: it required READ_SMS and was only ever present
+// transitively via expo-floating-bubble, so it also broke once that was dropped.)
 
 type LastExchange = null | "otp";
 
@@ -215,8 +188,6 @@ export default function LoginScreen() {
     });
     return unsub;
   }, [navigation, step, otp.length, loading, deviceSessionMode]);
-
-  useAndroidSmsOtp(step, setOtp);
 
   useEffect(() => {
     if (step !== "phone") {
