@@ -640,14 +640,16 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         `;
         let native: unknown[] = [];
         try {
-          native = await sql`
-            SELECT id, user_id, role, platform, native_token AS token,
-                   token_type AS token_kind, source, created_at, last_seen_at
-            FROM public.native_device_push_tokens
-            WHERE user_id = ${uid}
-            ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
-            LIMIT 50
-          `;
+          native = [
+            ...(await sql`
+              SELECT id, user_id, role, platform, native_token AS token,
+                     token_type AS token_kind, source, created_at, last_seen_at
+              FROM public.native_device_push_tokens
+              WHERE user_id = ${uid}
+              ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
+              LIMIT 50
+            `),
+          ];
         } catch {
           native = [];
         }
