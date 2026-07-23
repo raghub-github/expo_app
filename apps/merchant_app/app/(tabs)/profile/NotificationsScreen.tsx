@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   Switch,
-  Platform,
   ActivityIndicator,
   Alert,
   TextInput,
@@ -319,7 +318,7 @@ export default function NotificationsScreen() {
                 Floating live order count
               </Text>
               <Text style={styles.cardSubtitle}>
-                Show the in-app new-order pill and Android overlay bubble when you have orders waiting to accept. Off hides both.
+                Show the in-app new-order pill while you use the app, so orders waiting to accept stay visible. Off hides it.
               </Text>
             </View>
             <Switch
@@ -333,22 +332,12 @@ export default function NotificationsScreen() {
               thumbColor={localValue ? "#FFFFFF" : "#F9FAFB"}
             />
           </View>
-          <View style={styles.metaRow}>
-            <Text style={styles.metaBadge}>
-              Requires "Display over other apps" permission
-            </Text>
-          </View>
         </View>
 
         <View style={styles.helperNote}>
           <Text style={styles.helperText}>
-            The floating bubble always respects your store&apos;s privacy and only shows a live count, never order details.
+            The pill only shows a live count, never order details. New orders also arrive as push notifications even when the app is closed.
           </Text>
-          {Platform.OS !== "android" && (
-            <Text style={styles.helperTextDim}>
-              Floating overlay is available on Android. On other platforms the toggle has no effect.
-            </Text>
-          )}
         </View>
         <View style={styles.prefsSectionHeaderRow}>
           <Text style={styles.prefsTitle}>Store preferences</Text>

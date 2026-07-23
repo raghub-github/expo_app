@@ -15,8 +15,8 @@ import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import { LiveSupportTicketProvider } from "@/context/LiveSupportTicketContext";
-import FloatingOrdersManager from "../components/FloatingOrdersManager";
 import { FloatingLiveSupportTicket } from "@/components/FloatingLiveSupportTicket";
+import LiveOrdersOngoingNotification from "../components/LiveOrdersOngoingNotification";
 import IncomingOrderModal from "../components/IncomingOrderModal";
 import IncomingOrderNotificationBridge from "../components/IncomingOrderNotificationBridge";
 import AcceptanceTimeoutSync from "../components/AcceptanceTimeoutSync";
@@ -70,7 +70,7 @@ export default function RootLayout() {
                               <OrderAlertPushHandler />
                               <WaitingForOrderNotifier />
                               <StoreOnlineStatusNotifier />
-                              <FloatingOrdersManager />
+                              <LiveOrdersOngoingNotification />
                               <FloatingLiveSupportTicket />
                               <IncomingOrderModal />
                               <IncomingOrderNotificationBridge />

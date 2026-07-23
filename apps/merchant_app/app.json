@@ -1,12 +1,12 @@
 {
   "expo": {
     "name": "GatiMitra Merchant",
-    "slug": "gatimitra-merchant",
+    "slug": "merchantapp",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "gatimitra-merchant",
     "userInterfaceStyle": "automatic",
-    "icon": "./assets/onlylogo.png",
+    "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/onlylogo.png",
       "backgroundColor": "#16A34A"
@@ -25,17 +25,20 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/onlylogo.png",
-        "backgroundColor": "#16A34A"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
       },
       "package": "com.gatimitra.partner",
       "permissions": [
-        "READ_SMS",
-        "RECEIVE_SMS",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
         "POST_NOTIFICATIONS",
         "WAKE_LOCK"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_SMS",
+        "android.permission.RECEIVE_SMS",
+        "android.permission.SYSTEM_ALERT_WINDOW"
       ],
       "useNextNotificationsApi": true
     },
@@ -44,8 +47,12 @@
       "output": "single"
     },
     "plugins": [
-      "expo-router",
-      "expo-floating-bubble"
-    ]
+      "expo-router"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2a277edd-b33f-4f8b-a5ae-c7d4477b3534"
+      }
+    }
   }
 }
