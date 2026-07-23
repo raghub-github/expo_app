@@ -208,11 +208,10 @@ export default function OffersScreen() {
     resetForm();
     const mapped =
       presetType === "BOGO" || presetType === "BUY_N_GET_M" ? "BUY_X_GET_Y" : presetType;
+    // BOGO / BUY_N_GET_M were already normalized to BUY_X_GET_Y above, so that
+    // single check covers every "buy X get Y" preset.
     const path: OfferCreatePath =
-      createPath ??
-      (mapped === "BUY_X_GET_Y" || mapped === "BUY_N_GET_M" || mapped === "BOGO"
-        ? "bogo"
-        : "boost");
+      createPath ?? (mapped === "BUY_X_GET_Y" ? "bogo" : "boost");
     const base = emptyOfferFormValues(mapped);
     setFormValues({
       ...base,

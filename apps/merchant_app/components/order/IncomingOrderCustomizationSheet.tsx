@@ -130,7 +130,7 @@ export function IncomingOrderCustomizationSheet({
 
         <View style={styles.lineTotalRow}>
           <Text style={styles.lineTotalLabel}>Line total</Text>
-          <Text style={styles.lineTotalAmount}>{formatMerchantRs(lineTotal)}</Text>
+          <Text style={styles.lineTotalAmount}>{formatMerchantRs(net)}</Text>
         </View>
       </ScrollView>
 

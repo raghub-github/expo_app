@@ -135,7 +135,17 @@ export default function NotificationSetup() {
           storeId: sid,
         };
       },
-      registerStoreExpoToken: async ({ storeId: sid, expoPushToken, accessToken, platform }) => {
+      registerStoreExpoToken: async ({
+        storeId: sid,
+        expoPushToken,
+        accessToken,
+        platform,
+      }: {
+        storeId: number;
+        expoPushToken: string;
+        accessToken: string;
+        platform: string;
+      }) => {
         await registerStorePushToken(sid, expoPushToken, accessToken, platform);
       },
       onNotificationOpen: handleOpen,

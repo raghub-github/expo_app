@@ -298,6 +298,32 @@ export default function PartnerHomeScreen() {
     });
   }, [partner]);
 
+  // Entry animation — MUST run before the `if (!partner)` guard below. On sign
+  // out `partner` becomes null; if this hook lived after the early return it
+  // would be skipped on that render, tripping React's "rendered fewer hooks
+  // than expected" and crashing the logout transition.
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(heroAnim, {
+        toValue: 1,
+        duration: 420,
+        useNativeDriver: true,
+      }),
+      Animated.timing(bannerAnim, {
+        toValue: 1,
+        duration: 460,
+        delay: 120,
+        useNativeDriver: true,
+      }),
+      Animated.timing(cardsAnim, {
+        toValue: 1,
+        duration: 900,
+        delay: 220,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [heroAnim, bannerAnim, cardsAnim]);
+
   if (!partner) {
     return (
       <View style={styles.centered}>
@@ -323,28 +349,6 @@ export default function PartnerHomeScreen() {
   const openAddStore = () => {
     void Linking.openURL(onboardingUrl(parent.id));
   };
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(heroAnim, {
-        toValue: 1,
-        duration: 420,
-        useNativeDriver: true,
-      }),
-      Animated.timing(bannerAnim, {
-        toValue: 1,
-        duration: 460,
-        delay: 120,
-        useNativeDriver: true,
-      }),
-      Animated.timing(cardsAnim, {
-        toValue: 1,
-        duration: 900,
-        delay: 220,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [heroAnim, bannerAnim, cardsAnim]);
 
   const heroOpacity = heroAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
   const bannerTranslate = bannerAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] });

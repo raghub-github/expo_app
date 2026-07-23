@@ -130,17 +130,20 @@ export default function EarningsScreen() {
   );
 
   useEffect(() => {
-    if (!storeId || !token || !currentCycleCard) {
+    if (
+      !storeId ||
+      !token ||
+      !currentCycleCard ||
+      !currentCycleCard.periodStart ||
+      !currentCycleCard.periodEnd
+    ) {
       setCurrentCycleEstPayout(null);
       return;
     }
+    const periodStart = currentCycleCard.periodStart;
+    const periodEnd = currentCycleCard.periodEnd;
     let cancelled = false;
-    void fetchPayoutSettlement(
-      storeId,
-      token,
-      currentCycleCard.periodStart,
-      currentCycleCard.periodEnd,
-    )
+    void fetchPayoutSettlement(storeId, token, periodStart, periodEnd)
       .then((summary) => {
         if (!cancelled) {
           setCurrentCycleEstPayout(Math.max(0, summary.estimatedPayout ?? 0));
