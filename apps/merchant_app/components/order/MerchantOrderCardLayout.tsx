@@ -26,6 +26,7 @@ export type MerchantOrderCardLayoutProps = {
   showToolbar?: boolean;
   speakingActive?: boolean;
   onSpeak?: () => void;
+  onPrint?: () => void;
   onMenu?: () => void;
   headerRight?: ReactNode;
   headerBelow?: ReactNode;
@@ -49,6 +50,7 @@ export function MerchantOrderCardLayout({
   showToolbar = true,
   speakingActive,
   onSpeak,
+  onPrint,
   onMenu,
   headerRight,
   headerBelow,
@@ -102,7 +104,16 @@ export function MerchantOrderCardLayout({
       <View style={[styles.card, outerBanner ? styles.cardUnderBanner : null]}>
         {statusBadge ? <View style={styles.statusBadgeRow}>{statusBadge}</View> : null}
         <View style={styles.headerRow}>
-          <View style={styles.headerLeft}>
+          <Pressable
+            onPress={openDetail}
+            disabled={!onViewDetail}
+            style={({ pressed }) => [
+              styles.headerLeft,
+              pressed && onViewDetail ? styles.pressed : null,
+            ]}
+            accessibilityRole={onViewDetail ? "button" : undefined}
+            accessibilityLabel={onViewDetail ? "Open order details" : undefined}
+          >
             <MerchantOrderIdRow
               formattedOrderId={order.formattedOrderId}
               fallbackOrderId={order.ordersCoreId}
@@ -112,10 +123,11 @@ export function MerchantOrderCardLayout({
                 {storeName}
               </Text>
             ) : null}
-          </View>
+          </Pressable>
           {headerRight ??
             (showToolbar ? (
               <MerchantOrderCardToolbar
+                onPrint={onPrint ? () => onPrint() : undefined}
                 onSpeak={() => onSpeak?.()}
                 onMenu={() => onMenu?.()}
                 speakingActive={speakingActive}

@@ -344,7 +344,7 @@ export function createPushPermissionController(
   };
 
   const attachNotificationListeners = async () => {
-    const Notifications = await loadNotificationsModule({ allowExpoGo: true });
+    const Notifications = await loadNotificationsModule();
     if (!Notifications) return;
 
     if (!responseSub) {

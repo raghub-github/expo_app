@@ -1,39 +1,57 @@
-import { ActivityIndicator, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import {
+  ActivityIndicator,
+  Image,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { AppAssetImage } from "@/components/AppAssetImage";
-import { MX } from "@/lib/appAssetKeys";
 import { GatiMitraMerchant } from "@/constants/theme";
 
-const FALLBACK_APP_ICON = require("@/assets/mxappicon.png");
+/** Partner splash mark — `mxappicon.png` (dark green GatiMitra wordmark). */
+const APP_ICON = require("../assets/mxappicon.png");
+
+const LORA_BOLD = "Lora_700Bold";
+const LORA_REGULAR = "Lora_400Regular";
 
 type Props = {
   statusMessage?: string | null;
 };
 
-/** Startup / session loading mark — uses Super Admin `merchant.brand.app_icon`. */
+/** Startup / session loading — icon + title + subtitle. */
 export function MerchantBootstrapScreen({ statusMessage = null }: Props) {
   const insets = useSafeAreaInsets();
-  const { height } = useWindowDimensions();
+  const { height, width } = useWindowDimensions();
+  const iconSize = Math.min(200, Math.round(width * 0.46));
 
   return (
     <View
       style={[styles.root, { minHeight: height }]}
-      accessibilityLabel="GatiMitra Merchant loading"
+      accessibilityLabel="GatiMitra Partner loading"
     >
       <StatusBar style="dark" backgroundColor="#FFFFFF" />
       <View style={styles.center}>
-        <View style={styles.iconShadow}>
-          <AppAssetImage
-            assetKey={MX.brand.appIcon}
-            fallbackAssetKey={MX.auth.logo}
-            fallbackSource={FALLBACK_APP_ICON}
-            style={styles.appIcon}
-            resizeMode="contain"
-            accessibilityLabel="GatiMitra Merchant app icon"
+        <View
+          style={[
+            styles.iconShadow,
+            { width: iconSize, height: iconSize, borderRadius: Math.round(iconSize * 0.18) },
+          ]}
+        >
+          <Image
+            source={APP_ICON}
+            style={{
+              width: iconSize,
+              height: iconSize,
+              borderRadius: Math.round(iconSize * 0.18),
+            }}
+            resizeMode="cover"
+            accessibilityLabel="GatiMitra Partner app icon"
           />
         </View>
-        <Text style={styles.title}>GatiMitra Merchant</Text>
+        <Text style={styles.title}>GatiMitra Partner</Text>
+        <Text style={styles.subtitle}>Powering Local Businesses.</Text>
         <ActivityIndicator
           style={styles.spinner}
           size="small"
@@ -62,25 +80,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
   },
   iconShadow: {
-    borderRadius: 22,
-    marginBottom: 18,
-    backgroundColor: "#FFFFFF",
+    marginBottom: 20,
+    backgroundColor: "#002B22",
+    overflow: "hidden",
     shadowColor: "#0F172A",
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.2,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
   },
-  appIcon: {
-    width: 96,
-    height: 96,
-    borderRadius: 22,
-  },
   title: {
-    fontSize: 20,
-    fontWeight: "700",
+    fontFamily: LORA_BOLD,
+    fontSize: 24,
     color: "#0F172A",
     letterSpacing: 0.2,
+    textAlign: "center",
+  },
+  subtitle: {
+    fontFamily: LORA_REGULAR,
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#475569",
+    letterSpacing: 0.2,
+    textAlign: "center",
+    paddingHorizontal: 12,
   },
   spinner: {
     marginTop: 22,

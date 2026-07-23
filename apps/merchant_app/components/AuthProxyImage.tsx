@@ -174,7 +174,7 @@ export function AuthProxyImage({
   if (!renderUri) {
     if (!showPlaceholder) return null;
     return (
-      <View style={[styles.placeholder, style]}>
+      <View style={[styles.placeholder, style, { overflow: "hidden" }]}>
         <Ionicons name="image-outline" size={28} color={GatiMitraMerchant.textTertiary} />
       </View>
     );
@@ -182,7 +182,7 @@ export function AuthProxyImage({
 
   if (needsAuthDownload(renderUri) && loading) {
     return (
-      <View style={[styles.placeholder, style]}>
+      <View style={[styles.placeholder, style, { overflow: "hidden" }]}>
         <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
       </View>
     );
@@ -191,18 +191,24 @@ export function AuthProxyImage({
   if (failed) {
     if (!showPlaceholder) return null;
     return (
-      <View style={[styles.placeholder, style]}>
+      <View style={[styles.placeholder, style, { overflow: "hidden" }]}>
         <Ionicons name="image-outline" size={28} color={GatiMitraMerchant.textTertiary} />
       </View>
     );
   }
 
+  const flat = StyleSheet.flatten(style) as ImageStyle | undefined;
+  const radius = flat?.borderRadius;
+
   return (
-    <View style={style}>
+    <View style={[style, { overflow: "hidden" }]}>
       <Image
         {...imageProps}
         source={{ uri: renderUri }}
-        style={StyleSheet.absoluteFill}
+        style={[
+          StyleSheet.absoluteFillObject,
+          radius != null ? { borderRadius: radius } : null,
+        ]}
         onError={handleError}
       />
     </View>

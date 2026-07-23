@@ -2,8 +2,9 @@ import type { ApiFoodOrderItem } from "@/services/ordersApi";
 import { merchantBillPartsFromFoodItems } from "@/lib/merchant-line-total";
 import { merchantFundedDiscountFromBilling } from "@/lib/merchant-billing-discount";
 
-function menuRupee(n: number): number {
-  return Math.round(Number.isFinite(n) ? n : 0);
+/** Partner Site / payout-engine money rounding (2dp). */
+function round2(n: number): number {
+  return Math.round((Number.isFinite(n) ? n : 0) * 100) / 100;
 }
 
 export type MerchantOrderPricingLike = {
@@ -41,6 +42,8 @@ export type MerchantOrderTotalInput = {
   pricing?: MerchantOrderPricingLike;
   total?: number;
   grand_total?: number;
+  /** Frozen CTM from orders_core.total_ctm (Partner Site / payout SSOT). */
+  total_ctm?: number | null;
   food_items_total_value?: number | null;
   lineItems?: MerchantBillLineItem[];
   items?: ApiFoodOrderItem[];
@@ -110,25 +113,34 @@ function billFromItems(order: MerchantOrderTotalInput) {
 }
 
 /**
- * Same merchant-visible total as Partner Site:
- * Σ(net_line_total) + packaging − merchant_precision_discount.
- * Prefer line recompute over API pricing.total (older backends omitted precision).
+ * Merchant-visible order payout / CTM — same priority as Partner Site
+ * `resolveMerchantCtm` (partnersite/src/lib/merchant-order-item-display.ts):
+ * 1) pricing.total (API / payout engine SSOT)
+ * 2) total_ctm (orders_core frozen)
+ * 3) line recompute
+ * 4) food_items_total_value
+ *
+ * Do not prefer local line recompute over API totals — that caused Merchant App
+ * vs Partner Site mismatches for the same order.
  */
 export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): number {
-  const fromItems = billFromItems(order);
-  if (fromItems && fromItems.total > 0) return fromItems.total;
-
   const fromPricing = Number(order.pricing?.total);
-  if (Number.isFinite(fromPricing) && fromPricing > 0) return menuRupee(fromPricing);
+  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
+
+  const fromFrozen = Number(order.total_ctm);
+  if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
+
+  const fromItems = billFromItems(order);
+  if (fromItems && fromItems.total > 0.005) return round2(fromItems.total);
 
   const fromFood = Number(order.food_items_total_value);
-  if (Number.isFinite(fromFood) && fromFood > 0) return menuRupee(fromFood);
+  if (Number.isFinite(fromFood) && fromFood > 0) return round2(fromFood);
 
   const fromMapped = Number(order.total);
-  if (Number.isFinite(fromMapped) && fromMapped > 0) return menuRupee(fromMapped);
+  if (Number.isFinite(fromMapped) && fromMapped > 0) return round2(fromMapped);
 
   const fromGrand = Number(order.grand_total);
-  if (Number.isFinite(fromGrand) && fromGrand > 0) return menuRupee(fromGrand);
+  if (Number.isFinite(fromGrand) && fromGrand > 0) return round2(fromGrand);
 
   return 0;
 }
@@ -145,20 +157,36 @@ export type MerchantBillParts = {
   total: number;
 };
 
-/** Bill summary parts aligned with partnersite MerchantOrderBillSummary. */
+/**
+ * Bill summary parts aligned with partnersite MerchantOrderBillSummary /
+ * resolveMerchantCtm — prefer API pricing SSOT for the headline total.
+ */
 export function merchantBillPartsFromOrder(order: MerchantOrderTotalInput): MerchantBillParts {
+  const total = resolveMerchantOrderTotal(order);
   const fromItems = billFromItems(order);
+
+  // When API pricing.total is the SSOT, keep API subtotal/packaging/discount for breakdown.
+  const fromPricing = Number(order.pricing?.total);
+  if (Number.isFinite(fromPricing) && fromPricing > 0) {
+    return {
+      itemsSubtotal: Number(order.pricing?.subtotal) || fromItems?.itemsSubtotal || 0,
+      packaging: resolvePackaging(order),
+      discount: resolveMerchantDiscount(order),
+      taxes: Number(order.pricing?.taxes) || 0,
+      total,
+    };
+  }
+
   if (fromItems) {
     return {
       itemsSubtotal: fromItems.itemsSubtotal,
       packaging: fromItems.packaging,
       discount: fromItems.discount,
       taxes: 0,
-      total: fromItems.total,
+      total,
     };
   }
 
-  const total = resolveMerchantOrderTotal(order);
   return {
     itemsSubtotal: Number(order.pricing?.subtotal) || 0,
     packaging: resolvePackaging(order),

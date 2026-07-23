@@ -35,13 +35,18 @@ import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderV
 import { OrderItemDetails } from "@/components/order/OrderItemDetails";
 import { OrderBillDetails } from "@/components/order/OrderBillDetails";
 import { OrderDetailCustomerCard } from "@/components/order/OrderDetailCustomerCard";
+import { OrderDetailCustomerSection } from "@/components/order/OrderDetailCustomerSection";
 import { OrderDetailRiderCard } from "@/components/order/OrderDetailRiderCard";
 import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
-import { OrderDetailOtpRow } from "@/components/order/OrderDetailOtpRow";
-import { FormattedOrderId } from "@/components/order/FormattedOrderId";
+import { LiveOrderSupportSheet } from "@/components/order/LiveOrderSupportSheet";
 import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
-import { apiStatusToStage, type OrderStage } from "@/hooks/useOrders";
+import { apiStatusToStage, mapApiOrder, type OrderStage } from "@/hooks/useOrders";
 import { apiFoodOrderToRiderLog } from "@/lib/orderAssignedRider";
+import {
+  isPostPickupCancellation,
+  resolvePostPickupRider,
+} from "@/lib/postPickupCancellation";
+import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -55,36 +60,19 @@ const STAGE_UI: Record<
   OrderStage,
   { label: string; bg: string; color: string }
 > = {
-  created: { label: "New", bg: GatiMitraMerchant.statusPendingBg, color: GatiMitraMerchant.statusPending },
-  preparing: { label: "Preparing", bg: GatiMitraMerchant.statusPreparingBg, color: GatiMitraMerchant.statusPreparing },
-  ready: { label: "Ready", bg: "#CCFBF1", color: "#0F766E" },
-  picked_up: { label: "Dispatched", bg: "#DBEAFE", color: "#1D4ED8" },
-  delivered: { label: "Delivered", bg: GatiMitraMerchant.statusCompletedBg, color: GatiMitraMerchant.statusCompleted },
-  rejected: { label: "Cancelled", bg: "#FEE2E2", color: "#DC2626" },
-  rto: { label: "RTO", bg: "#FFEDD5", color: "#EA580C" },
+  created: { label: "NEW", bg: GatiMitraMerchant.statusPendingBg, color: GatiMitraMerchant.statusPending },
+  preparing: { label: "PREPARING", bg: GatiMitraMerchant.statusPreparingBg, color: GatiMitraMerchant.statusPreparing },
+  ready: { label: "READY", bg: "#CCFBF1", color: "#0F766E" },
+  picked_up: { label: "DISPATCHED", bg: "#DBEAFE", color: "#1D4ED8" },
+  delivered: { label: "DELIVERED", bg: "#22C55E", color: "#FFFFFF" },
+  rejected: { label: "REJECTED", bg: "#FEE2E2", color: "#B91C1C" },
+  rto: { label: "RTO", bg: "#FFEDD5", color: "#C2410C" },
 };
 
 function parseOrdersFoodId(routeId: string): number | null {
   if (!routeId || routeId.startsWith("core-")) return null;
   const n = parseInt(routeId, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-function paymentLabel(method: string | null | undefined): string {
-  const m = (method ?? "").trim();
-  if (!m) return "—";
-  return m;
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.detailRow}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={[styles.detailValue, !value || value === "—" ? styles.detailMuted : null]}>
-        {value || "—"}
-      </Text>
-    </View>
-  );
 }
 
 function ActionButton({
@@ -137,10 +125,12 @@ export default function OrderDetailScreen() {
   const [timeline, setTimeline] = useState<FoodOrderTimelineEntry[]>([]);
   const [actions, setActions] = useState<MerchantOrderActionForTimeline[]>([]);
   const [riderReachedAt, setRiderReachedAt] = useState<string | null>(null);
+  const [ridersLog, setRidersLog] = useState<FoodOrderRiderLogEntry[]>([]);
   const [activeRider, setActiveRider] = useState<FoodOrderRiderLogEntry | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const markReadyInFlightRef = useRef(false);
   const [eta, setEta] = useState<OrderEtaResponse | null>(null);
+  const [supportOpen, setSupportOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!token || !storeId || ordersFoodId == null) {
@@ -165,6 +155,7 @@ export default function OrderDetailScreen() {
       setOrder(o);
       setTimeline(tl);
       setActions(act);
+      setRidersLog(riders);
       const active =
         [...riders]
           .reverse()
@@ -188,6 +179,7 @@ export default function OrderDetailScreen() {
       setOrder(null);
       setTimeline([]);
       setActions([]);
+      setRidersLog([]);
       setRiderReachedAt(null);
       setActiveRider(null);
       setError(e instanceof Error ? e.message : "Failed to load order");
@@ -217,11 +209,26 @@ export default function OrderDetailScreen() {
 
   const prepByIso = prepDeadlineIso(eta);
   const prepMinsLeft = minutesUntil(prepByIso);
-  const displayRider = useMemo(
-    () => activeRider ?? (order ? apiFoodOrderToRiderLog(order) : null),
-    [activeRider, order]
-  );
+  const displayRider = useMemo(() => {
+    if (order && isPostPickupCancellation(order, ridersLog)) {
+      return resolvePostPickupRider(ridersLog, order) ?? apiFoodOrderToRiderLog(order);
+    }
+    return activeRider ?? (order ? apiFoodOrderToRiderLog(order) : null);
+  }, [activeRider, order, ridersLog]);
   const displayRiderReachedAt = riderReachedAt ?? order?.rider_reached_at ?? null;
+  const showDeliveryPartner = useMemo(
+    () => Boolean(order && isPostPickupCancellation(order, ridersLog)),
+    [order, ridersLog]
+  );
+  const headerSubtitle = useMemo(() => {
+    if (!order) return "";
+    const id =
+      formatOrderIdDisplay(order.formatted_order_id, order.orders_core_id).replace(/^#?/i, "") ||
+      String(order.orders_core_id);
+    const store = (selectedStore?.store_name ?? "").trim();
+    return store ? `ID: ${id}, ${store}` : `ID: ${id}`;
+  }, [order, selectedStore?.store_name]);
+  const supportOrder = useMemo(() => (order ? mapApiOrder(order) : null), [order]);
 
   const runAction = async (nextApiStatus: string) => {
     if (!token || !storeId || ordersFoodId == null || !order) return;
@@ -239,6 +246,7 @@ export default function OrderDetailScreen() {
       ]);
       setTimeline(tl);
       setActions(act);
+      setRidersLog(riders);
       setRiderReachedAt(riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null);
       setActiveRider(
         [...riders]
@@ -264,6 +272,7 @@ export default function OrderDetailScreen() {
     ]);
     setTimeline(tl);
     setActions(act);
+    setRidersLog(riders);
     setRiderReachedAt(riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null);
     setActiveRider(
       [...riders]
@@ -304,26 +313,31 @@ export default function OrderDetailScreen() {
         </Pressable>
         <View style={styles.headerTitles}>
           <Text style={styles.headerTitle}>Order details</Text>
-          {order && !loading ? (
-            <FormattedOrderId
-              formattedOrderId={order.formatted_order_id}
-              fallbackCoreId={order.orders_core_id}
-              fallbackFoodId={order.orders_food_id}
-              size="md"
-              showHash
-            />
+          {order && !loading && headerSubtitle ? (
+            <Text style={styles.headerSubtitle} numberOfLines={1}>
+              {headerSubtitle}
+            </Text>
           ) : null}
         </View>
         {order && !loading ? (
-          <Pressable
-            onPress={() => void printKot(order, buildKotPrintContext(printContext))}
-            style={({ pressed }) => [styles.kotBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
-            accessibilityRole="button"
-            accessibilityLabel="Print kitchen order ticket"
-          >
-            <Ionicons name="restaurant-outline" size={16} color={GatiMitraMerchant.textPrimary} />
-            <Text style={styles.kotBtnText}>KOT</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              onPress={() => void printKot(order, buildKotPrintContext(printContext))}
+              style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
+              accessibilityRole="button"
+              accessibilityLabel="Print kitchen order ticket"
+            >
+              <Ionicons name="print-outline" size={22} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+            <Pressable
+              onPress={() => setSupportOpen(true)}
+              style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
+              accessibilityRole="button"
+              accessibilityLabel="Order support chat"
+            >
+              <Ionicons name="chatbubble-ellipses-outline" size={22} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+          </View>
         ) : null}
       </View>
 
@@ -349,6 +363,7 @@ export default function OrderDetailScreen() {
                 order={order}
                 stage={stage}
                 statusStyle={statusStyle}
+                storeName={selectedStore?.store_name}
                 prepBanner={
                   prepByIso ? (
                     <View style={styles.prepBanner}>
@@ -383,6 +398,10 @@ export default function OrderDetailScreen() {
             </View>
 
             <View style={styles.detailSection}>
+              <OrderDetailCustomerSection order={order} />
+            </View>
+
+            <View style={styles.detailSection}>
               <OrderItemDetails order={order} />
             </View>
 
@@ -390,39 +409,27 @@ export default function OrderDetailScreen() {
               <OrderBillDetails order={order} />
             </View>
 
-            <View style={{ marginHorizontal: H_PADDING }}>
-              <OrderDetailRiderCard
-                rider={displayRider}
-                deliveryType={order.delivery_type}
-                riderReachedAt={displayRiderReachedAt}
-                orderStage={stage}
-              />
-            </View>
-
-            <View style={styles.infoCard}>
-              <Text style={styles.infoCardTitle}>Delivery & payment</Text>
-              <DetailRow label="Payment" value={paymentLabel(order.payment_method)} />
-              {order.drop_address ? (
-                <View style={styles.addressRow}>
-                  <Ionicons name="location-outline" size={16} color="#666" />
-                  <Text style={styles.addressText}>{order.drop_address}</Text>
-                </View>
-              ) : null}
-              <OrderDetailOtpRow
-                orderStatus={order.order_status}
-                pickupOtp={order.pickup_otp}
-                rtoOtp={order.rto_otp}
-              />
-            </View>
+            {showDeliveryPartner ? (
+              <View style={{ marginHorizontal: H_PADDING, marginTop: 18 }}>
+                <OrderDetailRiderCard
+                  rider={displayRider}
+                  deliveryType={order.delivery_type}
+                  riderReachedAt={displayRiderReachedAt}
+                  orderStage={stage}
+                />
+              </View>
+            ) : null}
 
             <View style={styles.timelineSection}>
               <Text style={styles.timelineSectionTitle}>Order timeline</Text>
-              <MerchantOrderVerticalTimeline
-                order={apiFoodOrderToTimelineOrder(order)}
-                timelineEntries={timelineEntries}
-                actions={actions}
-                riderReachedAt={displayRiderReachedAt}
-              />
+              <View style={styles.timelineCard}>
+                <MerchantOrderVerticalTimeline
+                  order={apiFoodOrderToTimelineOrder(order)}
+                  timelineEntries={timelineEntries}
+                  actions={actions}
+                  riderReachedAt={displayRiderReachedAt}
+                />
+              </View>
             </View>
 
             <View style={styles.actions}>
@@ -513,6 +520,14 @@ export default function OrderDetailScreen() {
           </>
         ) : null}
       </ScrollView>
+
+      {supportOrder ? (
+        <LiveOrderSupportSheet
+          visible={supportOpen}
+          order={supportOrder}
+          onClose={() => setSupportOpen(false)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -534,104 +549,41 @@ const styles = StyleSheet.create({
   headerTitles: { flex: 1, minWidth: 0 },
   headerSubtitle: {
     fontSize: 12,
-    fontWeight: "600",
+    fontWeight: "500",
     color: GatiMitraMerchant.textSecondary,
     marginTop: 2,
   },
-  backBtn: { padding: 8, marginRight: 8 },
-  kotBtn: {
+  backBtn: { padding: 8, marginRight: 4 },
+  headerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    marginLeft: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 11,
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    backgroundColor: GatiMitraMerchant.cardBg,
+    gap: 4,
   },
-  kotBtnText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
-    letterSpacing: 0.5,
+  iconBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 40,
+    height: 40,
+    borderRadius: 10,
   },
   headerTitle: {
     fontSize: 18,
-    fontWeight: "600",
+    fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
   },
   scroll: { flex: 1 },
   scrollContent: { paddingTop: 0 },
-  infoCard: {
-    marginBottom: 14,
-    marginHorizontal: H_PADDING,
-    marginTop: 14,
-    padding: CARD_PADDING,
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    ...GatiMitraMerchant.shadowSm,
-  },
-  infoCardTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
-    marginBottom: 12,
-  },
-  addressRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    marginTop: 4,
-    marginBottom: 8,
-  },
-  addressText: {
-    flex: 1,
-    fontSize: FONT_LABEL,
-    fontWeight: "500",
-    color: GatiMitraMerchant.textPrimary,
-    lineHeight: 20,
-  },
   card: {
     marginBottom: 14,
     marginHorizontal: H_PADDING,
     marginTop: 14,
     padding: CARD_PADDING,
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: CARD_RADIUS,
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    borderColor: "#E5E7EB",
     ...GatiMitraMerchant.shadowSm,
   },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textPrimary,
-    marginBottom: 12,
-  },
-  detailRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 8,
-    gap: 12,
-  },
-  detailLabel: {
-    fontSize: FONT_SECONDARY,
-    color: GatiMitraMerchant.textSecondary,
-    flexShrink: 0,
-  },
-  detailValue: {
-    fontSize: FONT_LABEL,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textPrimary,
-    flex: 1,
-    textAlign: "right",
-  },
-  detailMuted: { color: GatiMitraMerchant.textTertiary, fontWeight: "500" },
   prepBanner: {
     marginTop: 12,
     flexDirection: "row",
@@ -651,14 +603,23 @@ const styles = StyleSheet.create({
   },
   timelineSection: {
     marginHorizontal: H_PADDING,
-    marginTop: 14,
+    marginTop: 18,
     marginBottom: 14,
   },
   timelineSectionTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
     marginBottom: 10,
+  },
+  timelineCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    ...GatiMitraMerchant.shadowSm,
   },
   actions: { marginHorizontal: H_PADDING, marginTop: 4, gap: 10 },
   actionBtn: {

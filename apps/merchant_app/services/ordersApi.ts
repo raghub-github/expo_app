@@ -83,6 +83,8 @@ export type ApiFoodOrder = {
   rider_store_wait_anchor_at?: string | null;
   grand_total: number;
   food_items_total_value?: number | null;
+  /** Frozen merchant CTM from orders_core.total_ctm (payout / Partner Site SSOT). */
+  total_ctm?: number | null;
   /** Frozen SSOT precision discount (orders_core.merchant_precision_discount) — pass-through, never recomputed. */
   merchant_precision_discount?: number | null;
   pricing?: ApiFoodOrderPricing | null;
@@ -154,13 +156,27 @@ export async function fetchFoodOrders(
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
   const qs = q.toString();
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
-    token
-  );
+  const HARD_TIMEOUT_MS = 20_000;
+  const res = await Promise.race([
+    authFetch(
+      `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
+      token,
+      { timeoutMs: HARD_TIMEOUT_MS }
+    ),
+    new Promise<never>((_, reject) => {
+      setTimeout(
+        () => reject(new Error("Request timed out. Pull to refresh and try again.")),
+        HARD_TIMEOUT_MS
+      );
+    }),
+  ]);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error || "Failed to load orders");
+    const code = (err as { error?: string }).error;
+    if (code === "orders_load_timeout") {
+      throw new Error("Orders took too long to load. Pull to refresh and try again.");
+    }
+    throw new Error(code || "Failed to load orders");
   }
   const data = (await res.json()) as { orders?: ApiFoodOrder[] };
   return Array.isArray(data.orders) ? data.orders : [];

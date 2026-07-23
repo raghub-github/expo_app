@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "GatiMitra Merchant",
+    "name": "GatiMitra Partner",
     "slug": "merchantapp",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -9,7 +9,8 @@
     "icon": "./assets/mxappicon.png",
     "splash": {
       "image": "./assets/mxappicon.png",
-      "backgroundColor": "#002B22"
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
     },
     "androidStatusBar": {
       "translucent": false,

@@ -1,6 +1,7 @@
 /**
- * Profile / Settings — Quick settings style grid UI.
+ * Profile / Settings — light-mode section grid (icon tiles + label below).
  * Outlet card at top, then grid sections: Manage outlet, Settings, Orders, Support.
+ * Navigation / handlers unchanged — UI shell only.
  */
 
 import { useState, useEffect, useCallback } from "react";
@@ -34,19 +35,14 @@ import { prefetchOperatingHours, prefetchOutlet } from "@/services/outletApi";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 
 const CONTENT_TOP = 12;
-const TILE_GAP = 10;
+const TILE_GAP = 12;
+const TILE_ICON_RADIUS = 14;
 /**
- * Fixed column counts per section type instead of one global count that flipped
- * 3↔4 at 400px. That flip reshaped every section between devices (a 4-tile
- * section became 3+1 on one phone and 4 on another) and left ragged, oddly
- * spaced rows. Now each section owns a stable column count and the tile width is
- * a pure fraction of the available width, so the grid looks proportionally
- * IDENTICAL on every phone. Tablets (≥ TABLET_WIDTH) get one extra column so
- * tiles don't become oversized.
+ * 4-up grid on phones (reference layout). Tablets get one extra column so
+ * tiles do not stretch too wide.
  */
 const TABLET_WIDTH = 600;
-const SETTINGS_COLS_PHONE = 2; // Manage outlet / Settings / Marketing / Support
-const ORDERS_COLS_PHONE = 3; // compact Orders row
+const GRID_COLS_PHONE = 4;
 
 function GridCard({
   icon,
@@ -63,40 +59,47 @@ function GridCard({
   tileWidth: number;
   active?: boolean;
 }) {
-  const iconColor = active ? GatiMitraMerchant.primary : GatiMitraMerchant.textSecondary;
+  const boxSize = Math.min(64, Math.max(52, tileWidth - 4));
+  const iconColor = active ? GatiMitraMerchant.primary : GatiMitraMerchant.textPrimary;
+  const badgeOn = badge != null && String(badge).toUpperCase() === "ON";
+
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
         styles.tile,
-        {
-          width: tileWidth,
-          minHeight: tileWidth * 0.78,
-          transform: [{ scale: pressed ? 0.97 : 1 }],
-        },
-        active ? styles.tileActive : styles.tileInactive,
+        { width: tileWidth, opacity: pressed ? 0.75 : 1 },
         GatiMitraMerchant.cursorPointer,
       ]}
+      accessibilityRole="button"
+      accessibilityLabel={badge != null ? `${label}, ${badge}` : label}
     >
-      <View style={[styles.tileIconWrap, active && styles.tileIconWrapActive]}>
-        <Ionicons name={icon} size={24} color={iconColor} />
+      <View
+        style={[
+          styles.tileIconBox,
+          {
+            width: boxSize,
+            height: boxSize,
+            borderRadius: TILE_ICON_RADIUS,
+          },
+          active ? styles.tileIconBoxActive : null,
+        ]}
+      >
+        <Ionicons name={icon} size={26} color={iconColor} />
+        {badge != null && (
+          <View style={[styles.tileBadge, badgeOn ? styles.tileBadgeOn : styles.tileBadgeOff]}>
+            <Text style={styles.tileBadgeText} numberOfLines={1}>
+              {badge}
+            </Text>
+          </View>
+        )}
       </View>
-      <View style={[styles.tileLabelWrap, active && styles.tileLabelWrapActive]}>
-        <Text
-          style={[styles.tileLabel, active ? styles.tileLabelActive : styles.tileLabelInactive]}
-          numberOfLines={2}
-        >
-          {label}
-        </Text>
-      </View>
-      {badge != null && (
-        <Text
-          style={[styles.tileStatus, active ? styles.tileStatusActive : styles.tileStatusInactive]}
-          numberOfLines={1}
-        >
-          {badge}
-        </Text>
-      )}
+      <Text
+        style={[styles.tileLabel, active ? styles.tileLabelActive : null]}
+        numberOfLines={2}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -110,12 +113,11 @@ export default function ProfileScreen() {
   const { lastProfileSlug, setLastProfileSlug } = useProfileNav();
 
   const isTablet = width >= TABLET_WIDTH;
-  const settingsCols = SETTINGS_COLS_PHONE + (isTablet ? 1 : 0);
-  const ordersCols = ORDERS_COLS_PHONE + (isTablet ? 1 : 0);
-  const colWidth = (cols: number) =>
-    (width - H_PADDING * 2 - TILE_GAP * (cols - 1)) / cols;
-  const settingsTileWidth = colWidth(settingsCols);
-  const ordersTileWidth = colWidth(ordersCols);
+  const gridCols = GRID_COLS_PHONE + (isTablet ? 1 : 0);
+  const tileWidth =
+    (width - H_PADDING * 2 - TILE_GAP * (gridCols - 1)) / gridCols;
+  const settingsTileWidth = tileWidth;
+  const ordersTileWidth = tileWidth;
 
   const [subscriptionPlan, setSubscriptionPlan] = useState<SubscriptionPlan | null>(null);
   const subscriptionActive = subscriptionPlan != null;
@@ -446,84 +448,72 @@ const styles = StyleSheet.create({
   },
   warningText: { flex: 1, fontSize: 12, fontWeight: "500", color: "#92400E" },
 
-  section: { marginBottom: 20 },
+  section: { marginBottom: 22 },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   tileGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
   },
+  /** Icon box + label below (reference grid). */
   tile: {
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  tileIconBox: {
     alignItems: "center",
     justifyContent: "center",
-    ...(Platform.OS === "ios"
-      ? { shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3 }
-      : { elevation: 2 }),
-  },
-  tileActive: {
-    backgroundColor: "#E8F5E9",
-    borderWidth: 1,
-    borderColor: "#C8E6C9",
-  },
-  tileInactive: {
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: "#F3F4F6",
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
+    marginBottom: 8,
+    overflow: "visible",
+    ...(Platform.OS === "ios"
+      ? { shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 2 }
+      : { elevation: 1 }),
   },
-  tileIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 6,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-  },
-  tileIconWrapActive: {
-    backgroundColor: "#C8E6C9",
-  },
-  tileLabelWrap: {
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    backgroundColor: "rgba(0,0,0,0.03)",
-    alignSelf: "stretch",
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 30,
-  },
-  tileLabelWrapActive: {
-    backgroundColor: "rgba(255,255,255,0.7)",
+  tileIconBoxActive: {
+    backgroundColor: "#E8F5E9",
+    borderColor: "#C8E6C9",
   },
   tileLabel: {
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: 11,
+    fontWeight: "500",
     textAlign: "center",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 14,
+    paddingHorizontal: 2,
+    minHeight: 28,
   },
   tileLabelActive: {
-    color: GatiMitraMerchant.textPrimary,
-  },
-  tileLabelInactive: {
-    color: GatiMitraMerchant.textSecondary,
-  },
-  tileStatus: {
-    marginTop: 4,
-    fontSize: 10,
+    color: GatiMitraMerchant.primary,
     fontWeight: "600",
   },
-  tileStatusActive: {
-    color: GatiMitraMerchant.primary,
+  tileBadge: {
+    position: "absolute",
+    right: -4,
+    bottom: -4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+    minWidth: 28,
+    alignItems: "center",
   },
-  tileStatusInactive: {
-    color: GatiMitraMerchant.textTertiary,
+  tileBadgeOff: {
+    backgroundColor: "#EF4444",
+  },
+  tileBadgeOn: {
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  tileBadgeText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#fff",
+    letterSpacing: 0.2,
   },
 
   planCard: {

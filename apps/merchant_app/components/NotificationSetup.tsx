@@ -42,6 +42,13 @@ function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
  * Requires a dev/production build (not Expo Go) + FCM via google-services.json + EAS credentials.
  */
 export default function NotificationSetup() {
+  // Expo Go cannot register remote push (SDK 53+); skip entirely so we never
+  // import expo-notifications and spam the Metro error overlay.
+  if (isExpoGo()) return null;
+  return <NotificationSetupImpl />;
+}
+
+function NotificationSetupImpl() {
   const router = useRouter();
   const { token: authToken } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -154,17 +161,16 @@ export default function NotificationSetup() {
   );
 
   const { snapshot, controller } = usePushPermissionController(pushOptions, {
-    autoStart: !isExpoGo(),
+    autoStart: true,
   });
 
   // Re-register when auth or selected store changes (merchant_store_<id> topic).
   useEffect(() => {
-    if (isExpoGo() || !authToken) return;
+    if (!authToken) return;
     void controller.refresh({ syncIfGranted: true });
   }, [authToken, storeId, controller]);
 
   useEffect(() => {
-    if (isExpoGo()) return;
     if (!authToken) {
       setGateVisible(false);
       return;

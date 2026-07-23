@@ -21,8 +21,8 @@ const TIME_COL_WIDTH = 72;
 
 /** Zomato-style short labels for the vertical timeline rows. */
 const COMPACT_LABELS: Record<string, string> = {
-  placed: "Placed",
-  accepted: "Accepted",
+  placed: "Order placed",
+  accepted: "Accepted by manager",
   preparing: "Preparing",
   rider_arrived: "Delivery partner arrived",
   ready: "Ready",
@@ -147,7 +147,7 @@ export function MerchantOrderVerticalTimeline({
                     style={styles.infoBtn}
                   >
                     <Ionicons
-                      name="information-circle-outline"
+                      name={expanded ? "chevron-up" : "chevron-down"}
                       size={16}
                       color={GatiMitraMerchant.textTertiary}
                     />

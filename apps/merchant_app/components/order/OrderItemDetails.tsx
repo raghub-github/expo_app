@@ -41,13 +41,7 @@ export function OrderItemDetails({ order }: Props) {
 
   return (
     <View style={styles.section}>
-      <View style={styles.sectionHead}>
-        <Ionicons name="bag-handle-outline" size={18} color="#444444" />
-        <Text style={styles.sectionHeading}>Order items</Text>
-        <Text style={styles.sectionMeta}>
-          {items.length} {items.length === 1 ? "item" : "items"}
-        </Text>
-      </View>
+      <Text style={styles.sectionHeading}>Item details</Text>
 
       <View style={styles.itemsCard}>
         {items.length === 0 ? (
@@ -77,7 +71,7 @@ export function OrderItemDetails({ order }: Props) {
                   />
                   <View style={styles.itemTitleWrap}>
                     <Text style={styles.itemName} numberOfLines={2}>
-                      {qty} × {item.name}
+                      {qty} x {item.name}
                     </Text>
                     <View style={styles.tagRow}>
                       {variantLabel ? (
@@ -155,30 +149,19 @@ export function OrderItemDetails({ order }: Props) {
 
 const styles = StyleSheet.create({
   section: {
-    marginTop: 14,
-  },
-  sectionHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 10,
+    marginTop: 18,
   },
   sectionHeading: {
-    flex: 1,
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-  },
-  sectionMeta: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 10,
   },
   itemsCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: CARD_RADIUS,
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    borderColor: "#E5E7EB",
     overflow: "hidden",
     ...GatiMitraMerchant.shadowSm,
   },

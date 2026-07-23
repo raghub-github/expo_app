@@ -6,11 +6,15 @@ export type PushNotificationOpenPayload = {
   data: Record<string, unknown>;
 };
 
-async function loadNotifications(
-  allowExpoGo = false
-): Promise<typeof import("expo-notifications") | null> {
+/**
+ * Never load `expo-notifications` inside Expo Go (SDK 53+).
+ * Importing the package triggers DevicePushTokenAutoRegistration and a loud
+ * console.error about remote push being removed from Expo Go — even for local
+ * notification APIs. Remote push does not work in Expo Go anyway.
+ */
+async function loadNotifications(): Promise<typeof import("expo-notifications") | null> {
   try {
-    if (!allowExpoGo && Constants.appOwnership === "expo") {
+    if (Constants.appOwnership === "expo") {
       return null;
     }
     return await import("expo-notifications");
@@ -25,7 +29,7 @@ export function subscribeToPushNotificationResponse(
 ): { remove: () => void } {
   let sub: { remove: () => void } = { remove: () => {} };
   void (async () => {
-    const Notifications = await loadNotifications(true);
+    const Notifications = await loadNotifications();
     if (!Notifications) return;
     sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const c = response.notification.request.content;
@@ -48,7 +52,7 @@ export function subscribeToForegroundNotifications(
 ): { remove: () => void } {
   let sub: { remove: () => void } = { remove: () => {} };
   void (async () => {
-    const Notifications = await loadNotifications(true);
+    const Notifications = await loadNotifications();
     if (!Notifications) return;
     sub = Notifications.addNotificationReceivedListener((notification) => {
       const c = notification.request.content;
@@ -67,7 +71,7 @@ export function subscribeToForegroundNotifications(
 
 /** Drain the cold-start notification that launched the app (if any). */
 export async function getLastNotificationOpenPayload(): Promise<PushNotificationOpenPayload | null> {
-  const Notifications = await loadNotifications(true);
+  const Notifications = await loadNotifications();
   if (!Notifications) return null;
   try {
     const last = await Notifications.getLastNotificationResponseAsync();

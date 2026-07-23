@@ -238,12 +238,17 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const parentMerchantId = req.auth.sub;
           const sql = getSql();
           const parentRows = await sql`
-            SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
+            SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone,
+                   store_logo
           FROM merchant_parents WHERE parent_merchant_id = ${parentMerchantId} LIMIT 1
           `;
           const parentRow = parentRows[0];
         if (!parentRow) return reply.code(404).send({ error: "partner_not_found" });
           const parentId = Number(parentRow.id);
+          const parentLogoUrl =
+            parentRow.store_logo != null && String(parentRow.store_logo).trim()
+              ? String(parentRow.store_logo).trim()
+              : null;
           const storeRows = await sql`
             SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
                    ms.banner_url,
@@ -278,6 +283,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               full_address: s?.full_address ?? "",
               approval_status: s?.approval_status ?? "DRAFT",
               banner_url: s?.banner_url ?? null,
+              parent_logo_url: parentLogoUrl,
               current_step: step,
               total_steps: total,
               payment_status: paymentStatus,
@@ -307,6 +313,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             owner_email: parentRow.owner_email ?? "",
             brand_name: parentRow.brand_name ?? "",
             registered_phone: parentRow.registered_phone,
+            store_logo: parentLogoUrl,
           },
           childStores,
           activeDevices,
@@ -7634,11 +7641,23 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const limit = Number.isFinite(limitRaw) ? limitRaw : 200;
           try {
             const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-            const orders = await loadMerchantFoodOrders(sql, storeId, { limit });
+            const FOOD_ORDERS_DEADLINE_MS = 12_000;
+            const orders = await Promise.race([
+              loadMerchantFoodOrders(sql, storeId, { limit }),
+              new Promise<never>((_, reject) => {
+                setTimeout(
+                  () => reject(new Error("food_orders_timeout")),
+                  FOOD_ORDERS_DEADLINE_MS
+                );
+              }),
+            ]);
             return reply.send({ orders });
           } catch (e) {
             req.log.error({ err: e, storeId }, "[food-orders GET] failed");
             const msg = e instanceof Error ? e.message : "load_failed";
+            if (msg === "food_orders_timeout") {
+              return reply.code(504).send({ error: "orders_load_timeout" });
+            }
             return reply.code(500).send({ error: msg });
           }
         }

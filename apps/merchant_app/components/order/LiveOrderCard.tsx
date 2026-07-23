@@ -9,6 +9,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 import type { OrderRecord, OrderStage, DeliveryType, LineItem } from "@/hooks/useOrders";
 import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
+import { RecentCompletedOrderCard } from "@/components/order/RecentCompletedOrderCard";
 import { MerchantPreparingOrderCard } from "@/components/order/MerchantPreparingOrderCard";
 import { MerchantReadyOrderCard } from "@/components/order/MerchantReadyOrderCard";
 import { MerchantOutForDeliveryOrderCard } from "@/components/order/MerchantOutForDeliveryOrderCard";
@@ -16,6 +17,7 @@ import { NewOrderCard } from "@/components/order/NewOrderCard";
 import { OrderItemDetailsSheet } from "@/components/order/OrderItemDetailsSheet";
 import { SlideToConfirm } from "@/components/order/SlideToConfirm";
 import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
+import { isOrderWithinLast24Hours } from "@/lib/orderRecency";
 import { formatOrderCardCustomerLabel } from "@/components/order/orderFormatters";
 import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
@@ -152,7 +154,15 @@ export function LiveOrderCard({
   let card: ReactNode;
 
   if (isTerminalStatus(order.status)) {
-    card = (
+    card = isOrderWithinLast24Hours(order) ? (
+      <RecentCompletedOrderCard
+        order={order}
+        rejectedReason={order.rejectedReason}
+        storeName={storeName}
+        onPress={onViewDetail}
+        onItemPress={onItemPress}
+      />
+    ) : (
       <TerminalOrderCard
         order={order}
         rejectedReason={order.rejectedReason}

@@ -125,6 +125,7 @@ export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
   const bill = merchantBillPartsFromOrder({
     pricing: order.pricing,
     grand_total: order.grand_total,
+    total_ctm: order.total_ctm ?? null,
     food_items_total_value: order.food_items_total_value ?? null,
     items,
     billingSnapshot: order.billing_snapshot ?? null,
