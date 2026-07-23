@@ -35,9 +35,18 @@ import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 10;
-const NUM_COLS_SMALL = 3;
-const NUM_COLS_LARGE = 4;
-const BREAKPOINT = 400;
+/**
+ * Fixed column counts per section type instead of one global count that flipped
+ * 3↔4 at 400px. That flip reshaped every section between devices (a 4-tile
+ * section became 3+1 on one phone and 4 on another) and left ragged, oddly
+ * spaced rows. Now each section owns a stable column count and the tile width is
+ * a pure fraction of the available width, so the grid looks proportionally
+ * IDENTICAL on every phone. Tablets (≥ TABLET_WIDTH) get one extra column so
+ * tiles don't become oversized.
+ */
+const TABLET_WIDTH = 600;
+const SETTINGS_COLS_PHONE = 2; // Manage outlet / Settings / Marketing / Support
+const ORDERS_COLS_PHONE = 3; // compact Orders row
 
 function GridCard({
   icon,
@@ -100,9 +109,13 @@ export default function ProfileScreen() {
   const { signOut, token } = useAuth();
   const { lastProfileSlug, setLastProfileSlug } = useProfileNav();
 
-  const numCols = width >= BREAKPOINT ? NUM_COLS_LARGE : NUM_COLS_SMALL;
-  const tileWidth =
-    (width - H_PADDING * 2 - TILE_GAP * (numCols - 1)) / numCols;
+  const isTablet = width >= TABLET_WIDTH;
+  const settingsCols = SETTINGS_COLS_PHONE + (isTablet ? 1 : 0);
+  const ordersCols = ORDERS_COLS_PHONE + (isTablet ? 1 : 0);
+  const colWidth = (cols: number) =>
+    (width - H_PADDING * 2 - TILE_GAP * (cols - 1)) / cols;
+  const settingsTileWidth = colWidth(settingsCols);
+  const ordersTileWidth = colWidth(ordersCols);
 
   const [subscriptionPlan, setSubscriptionPlan] = useState<SubscriptionPlan | null>(null);
   const subscriptionActive = subscriptionPlan != null;
@@ -256,10 +269,10 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Manage outlet</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} tileWidth={tileWidth} active={isActive("edit-store")} />
-          <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} tileWidth={tileWidth} active={isActive("hours")} />
-          <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} tileWidth={tileWidth} active={isActive("business-details")} />
-          <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} tileWidth={tileWidth} active={isActive("staff")} />
+          <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} tileWidth={settingsTileWidth} active={isActive("edit-store")} />
+          <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} tileWidth={settingsTileWidth} active={isActive("hours")} />
+          <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} tileWidth={settingsTileWidth} active={isActive("business-details")} />
+          <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} tileWidth={settingsTileWidth} active={isActive("staff")} />
         </View>
       </View>
 
@@ -267,11 +280,11 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Settings</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("notifications")} tileWidth={tileWidth} active={isActive("notifications")} />
-          <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={tileWidth} active={isActive("communications")} />
-          <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={tileWidth} active={isActive("address")} />
-          <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={tileWidth} active={isActive("preparation-time")} />
-          <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={tileWidth} active={isActive("vacation")} />
+          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("notifications")} tileWidth={settingsTileWidth} active={isActive("notifications")} />
+          <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={settingsTileWidth} active={isActive("communications")} />
+          <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={settingsTileWidth} active={isActive("address")} />
+          <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={settingsTileWidth} active={isActive("preparation-time")} />
+          <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={settingsTileWidth} active={isActive("vacation")} />
         </View>
       </View>
 
@@ -279,8 +292,8 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Marketing</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="pricetag-outline" label="Offers & Promotions" onPress={navigate("offers")} tileWidth={tileWidth} active={isActive("offers")} />
-          <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={tileWidth} active={isActive("activity-feed")} />
+          <GridCard icon="pricetag-outline" label="Offers & Promotions" onPress={navigate("offers")} tileWidth={settingsTileWidth} active={isActive("offers")} />
+          <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={settingsTileWidth} active={isActive("activity-feed")} />
         </View>
       </View>
 
@@ -288,9 +301,9 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Orders</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="list-outline" label="Order history" onPress={() => router.push("/order-history")} tileWidth={tileWidth} />
-          <GridCard icon="alert-circle-outline" label="Complaints" onPress={() => router.push("/(tabs)/profile/complaints")} tileWidth={tileWidth} />
-          <GridCard icon="chatbubble-outline" label="Reviews" onPress={() => router.push("/(tabs)/profile/reviews")} tileWidth={tileWidth} />
+          <GridCard icon="list-outline" label="Order history" onPress={() => router.push("/order-history")} tileWidth={ordersTileWidth} />
+          <GridCard icon="alert-circle-outline" label="Complaints" onPress={() => router.push("/(tabs)/profile/complaints")} tileWidth={ordersTileWidth} />
+          <GridCard icon="chatbubble-outline" label="Reviews" onPress={() => router.push("/(tabs)/profile/reviews")} tileWidth={ordersTileWidth} />
         </View>
       </View>
 
@@ -298,8 +311,8 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Support</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="help-circle-outline" label="Help & support" onPress={navigate("contact")} tileWidth={tileWidth} active={isActive("contact")} />
-          <GridCard icon="chatbubbles-outline" label="My tickets" onPress={navigate("tickets")} tileWidth={tileWidth} active={isActive("tickets")} />
+          <GridCard icon="help-circle-outline" label="Help & support" onPress={navigate("contact")} tileWidth={settingsTileWidth} active={isActive("contact")} />
+          <GridCard icon="chatbubbles-outline" label="My tickets" onPress={navigate("tickets")} tileWidth={settingsTileWidth} active={isActive("tickets")} />
         </View>
       </View>
 
