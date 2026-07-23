@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { getRideAvailability } from "@/services/rideAvailability.service";
 
 type PickupGeoHints = {
@@ -47,6 +47,7 @@ export function useNearbyRideAvailability(
     refetchInterval: 15_000,
     staleTime: 10_000,
     retry: 1,
+    placeholderData: keepPreviousData,
     // Don't leave the book sheet stuck on a spinner if the API hangs.
     networkMode: "online",
   });

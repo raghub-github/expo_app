@@ -1,0 +1,1 @@
+export { printHtmlDocument } from "./printHtmlDocument";

@@ -158,7 +158,8 @@ export default function AppImagesPage() {
         <h1 className="mt-2 text-2xl font-bold text-slate-900">App images</h1>
         <p className="mt-1 text-sm text-slate-600">
           Upload images to R2 for Customer, Rider & Merchant apps. Images are served via backend
-          proxy — no bundled assets in app code.
+          proxy — no bundled assets in app code. Branding → App icon updates in-app after the next
+          app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild.
         </p>
       </div>
 

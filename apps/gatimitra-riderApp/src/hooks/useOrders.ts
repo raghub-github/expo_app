@@ -7,6 +7,7 @@ import {
   isRiderFullyDispatchBlocked,
   mergeRiderBlockedServices,
 } from "@/src/lib/rider-blocked-services";
+import { isRiderDispatchRealtimeActive } from "@/src/stores/riderWsStore";
 
 export const RIDER_ORDER_DETAIL_QUERY_KEY = (orderId: string) =>
   ["rider", "orders", "detail", orderId] as const;
@@ -67,14 +68,27 @@ export function useAvailableOrders() {
   return useQuery({
     queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY,
     queryFn: () => riderApi.getAvailableOrders(),
-    enabled:
-      sessionHydrated && Boolean(session?.accessToken) && isOnDuty && !dispatchBlocked,
-    refetchInterval: 5000,
-    refetchIntervalInBackground: true,
+    // Do NOT gate `enabled` on dispatchBlocked: a stale/optimistic block flag from
+    // useDutyStatus would otherwise disable the query entirely, turning the WS
+    // `dispatch_offer` invalidate into a no-op and permanently dropping offers with
+    // no polling safety net. The server (getAvailableOrdersForRider) is the SSOT and
+    // returns [] for a genuinely blocked rider, so we keep polling — just slowly.
+    enabled: sessionHydrated && Boolean(session?.accessToken) && isOnDuty,
+    refetchInterval: (query) => {
+      // Genuinely-blocked riders still poll, but at a floor so a stale flag
+      // self-heals within 30s instead of never; WS-invalidate stays instant.
+      if (dispatchBlocked) return 30_000;
+      if (isRiderDispatchRealtimeActive()) return 12_000;
+      const err = query.state.error as { status?: number } | null;
+      if (err?.status === 503 || err?.status === 429) return 12_000;
+      return 4_000;
+    },
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
     staleTime: 3000,
     retry: 2,
+    retryDelay: (attempt) => Math.min(1_500 * 2 ** attempt, 12_000),
   });
 }
 
@@ -309,15 +323,32 @@ export function syncRiderOrderDetailCache(
   void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
 }
 
+const VERIFY_PICKUP_OTP_TIMEOUT_MS = 15_000;
+
 export function useVerifyPickupOtp() {
   return useMutation({
-    mutationFn: (args: {
+    mutationFn: async (args: {
       orderId: string;
       otp: string;
       lat?: number;
       lng?: number;
       deviceTimestamp?: string;
-    }) => riderApi.verifyPickupOtp(args.orderId, args),
+    }) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          riderApi.verifyPickupOtp(args.orderId, args),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error("Request timed out. Check your network and try again.")),
+              VERIFY_PICKUP_OTP_TIMEOUT_MS
+            );
+          }),
+        ]);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
+    },
   });
 }
 
@@ -337,6 +368,18 @@ export function useMarkFoodPickup() {
       lng?: number;
       deviceTimestamp?: string;
     }) => riderApi.markFoodPickup(args.orderId, args),
+  });
+}
+
+export function useAcknowledgeFoodPickup() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (orderId: string) => riderApi.acknowledgeFoodPickup(orderId),
+    onSuccess: (data, orderId) => {
+      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+    },
   });
 }
 

@@ -17,6 +17,8 @@ export interface OrdersFoodRow {
   id: number;
   order_id: number;
   formatted_order_id?: string | null;
+  /** Unique, immutable tax invoice number (GM/<FY>/<serial>) — same across every surface. */
+  tax_invoice_number?: string | null;
   merchant_store_id: number | null;
   merchant_parent_id: number | null;
   restaurant_name: string | null;
@@ -134,7 +136,12 @@ export interface OrdersFoodRow {
   cancellation_details?: any;
   cancellation_compensation?: import('@/lib/merchantCancellationCompensation').MerchantCancellationCompensationDisplay | null;
   pickup_otp?: string | null;
+  /** Secure pickup QR token (order_pickup_tokens.token) — merchant/partner print only. */
+  pickup_token?: string | null;
+  /** Backend-generated KOT number (store-scoped). */
+  kot_number?: string | null;
   rto_otp?: string | null;
+  payment_method?: string | null;
   /** True when this order has been returned to merchant (RTO). */
   is_rto?: boolean | null;
   /** GATIMITRA_RIDER | SELF_DELIVERY | SELF_PICKUP — drives merchant-complete UI. */

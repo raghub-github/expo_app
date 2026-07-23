@@ -194,7 +194,8 @@ function MainHeader({
             </Pressable>
           ) : (
             <AppAssetImage
-              assetKey={MX.auth.logo}
+              assetKey={MX.brand.appIcon}
+              fallbackAssetKey={MX.auth.logo}
               style={styles.logo}
               resizeMode="contain"
               accessibilityLabel="GatiMitra"
@@ -1551,7 +1552,8 @@ export function MerchantCustomHeader() {
 export function MerchantHeaderLogo() {
   return (
     <AppAssetImage
-      assetKey={MX.auth.logo}
+      assetKey={MX.brand.appIcon}
+      fallbackAssetKey={MX.auth.logo}
       style={styles.logo}
       resizeMode="contain"
       accessibilityLabel="GatiMitra"

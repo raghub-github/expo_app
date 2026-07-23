@@ -1,98 +1,46 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
-  Modal,
   Pressable,
   Platform,
   ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-
-const BRAND_GREEN = "#2E7D32";
-const BRAND_GREEN_LIGHT = "#E8F5E9";
-const BRAND_GREEN_SOFT = "#C8E6C9";
-const OTP_ACCENT = "#F9A825";
-const OTP_ACCENT_LIGHT = "#FFF8E1";
-const CONTENT_PAD = 16;
+import { readCameraPermission } from "@/src/lib/cameraPermission";
+import { colors } from "@/src/theme";
+import { LORA_BOLD, LORA_SEMIBOLD } from "@/src/theme/headerFonts";
+import { PermissionBottomSheetShell } from "@/src/components/permissions/PermissionBottomSheetShell";
+import { PremiumAllowButton } from "@/src/components/permissions/PremiumAllowButton";
+import { PickupCameraPermissionSheet } from "@/src/components/orders/PickupCameraPermissionSheet";
 
 type Props = {
   visible: boolean;
   barcodeEnabled?: boolean;
   otpEnabled?: boolean;
   onBack: () => void;
-  onScanBarcode: () => void;
+  onScanBarcode: (opts?: { cameraGranted?: boolean }) => void;
   onEnterOtp: () => void;
 };
 
-type FeatureTag = {
-  icon: keyof typeof Ionicons.glyphMap;
-  labelKey: string;
-  fallback: string;
-};
-
-const BARCODE_TAGS: FeatureTag[] = [
-  { icon: "flash-outline", labelKey: "orders.activeFood.verifyTagFast", fallback: "Fast" },
-  { icon: "shield-checkmark-outline", labelKey: "orders.activeFood.verifyTagSecure", fallback: "Secure" },
-  { icon: "checkmark-circle-outline", labelKey: "orders.activeFood.verifyTagEasy", fallback: "Easy" },
-];
-
-const OTP_TAGS: FeatureTag[] = [
-  { icon: "shield-checkmark-outline", labelKey: "orders.activeFood.verifyTagSecure", fallback: "Secure" },
-  { icon: "person-outline", labelKey: "orders.activeFood.verifyTagSimple", fallback: "Simple" },
-  { icon: "checkmark-done-outline", labelKey: "orders.activeFood.verifyTagReliable", fallback: "Reliable" },
-];
-
-function FeatureTags({ tags }: { tags: FeatureTag[] }) {
-  const { t } = useTranslation();
+function ScanIllustration() {
   return (
-    <View style={styles.tagRow}>
-      {tags.map((tag) => (
-        <View key={tag.fallback} style={styles.tagPill}>
-          <Ionicons name={tag.icon} size={12} color={BRAND_GREEN} />
-          <Text style={styles.tagText}>{t(tag.labelKey, tag.fallback)}</Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-function BarcodeIllustration() {
-  return (
-    <View style={styles.illusWrap}>
-      <View style={styles.scanBracketTL} />
-      <View style={styles.scanBracketTR} />
-      <View style={styles.scanBracketBL} />
-      <View style={styles.scanBracketBR} />
-      <View style={styles.phoneMock}>
-        <View style={styles.qrGrid}>
-          {Array.from({ length: 9 }).map((_, i) => (
-            <View
-              key={i}
-              style={[
-                styles.qrCell,
-                (i === 0 || i === 2 || i === 6 || i === 8) && styles.qrCellDark,
-              ]}
-            />
-          ))}
-        </View>
-      </View>
+    <View style={styles.illusCircle}>
+      <View style={styles.bracketTL} />
+      <View style={styles.bracketTR} />
+      <View style={styles.bracketBL} />
+      <View style={styles.bracketBR} />
+      <Ionicons name="qr-code-outline" size={28} color={colors.primary[700]} />
     </View>
   );
 }
 
 function OtpIllustration() {
   return (
-    <View style={[styles.illusWrap, styles.otpIllusWrap]}>
-      <Ionicons name="lock-closed" size={28} color={OTP_ACCENT} />
-      <View style={styles.otpDots}>
-        {Array.from({ length: 4 }).map((_, i) => (
-          <View key={i} style={styles.otpDot} />
-        ))}
-      </View>
+    <View style={[styles.illusCircle, styles.illusCircleOtp]}>
+      <Ionicons name="keypad" size={28} color={colors.primary[700]} />
     </View>
   );
 }
@@ -106,312 +54,219 @@ export function FoodPickupVerificationScreen({
   onEnterOtp,
 }: Props) {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
-  const topPad = Math.max(insets.top, Platform.OS === "android" ? 8 : 4);
-  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 4);
+  const [cameraSheetVisible, setCameraSheetVisible] = useState(false);
+
+  const openScanner = useCallback(
+    (cameraGranted = false) => {
+      onScanBarcode({ cameraGranted });
+    },
+    [onScanBarcode]
+  );
+
+  const handleScanPress = useCallback(async () => {
+    const permission = await readCameraPermission();
+    if (permission.granted) {
+      openScanner(true);
+      return;
+    }
+    setCameraSheetVisible(true);
+  }, [openScanner]);
+
+  const handleCameraGranted = useCallback(() => {
+    setCameraSheetVisible(false);
+    openScanner(true);
+  }, [openScanner]);
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onBack}>
-      <View style={styles.root}>
-        <View style={[styles.header, { paddingTop: topPad }]}>
-          <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={22} color={BRAND_GREEN} />
-          </Pressable>
-          <View style={styles.headerCenter}>
-            <Text style={styles.headerTitle}>
-              {t("orders.activeFood.verifyPickupTitle", "Verify Pickup")}
-            </Text>
-            <View style={styles.secureRow}>
-              <Ionicons name="shield-checkmark" size={14} color={BRAND_GREEN} />
-              <Text style={styles.secureLabel}>
-                {t("orders.activeFood.secureVerification", "Secure Verification")}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.headerSpacer} />
-        </View>
-
-        <View style={styles.edgeBannerTop}>
-            <View style={styles.infoBannerIcon}>
-              <Ionicons name="shield-checkmark" size={22} color="#fff" />
-            </View>
-            <View style={styles.infoBannerText}>
-              <Text style={styles.infoBannerTitle}>
-                {t("orders.activeFood.verifyNeedTitle", "We need to verify this pickup")}
-              </Text>
-              <Text style={styles.infoBannerDesc}>
-                {t(
-                  "orders.activeFood.verifyNeedDesc",
-                  "Choose one of the options below to confirm the order pickup."
-                )}
-              </Text>
-            </View>
-            <View style={styles.infoBannerArt}>
-              <Ionicons name="clipboard-outline" size={28} color={BRAND_GREEN} />
-              <View style={styles.verifiedBadge}>
-                <Ionicons name="checkmark" size={10} color="#fff" />
-              </View>
-            </View>
-          </View>
-
+    <>
+      <PermissionBottomSheetShell
+        visible={visible}
+        maxHeightRatio={0.72}
+        dismissible
+        onDismiss={onBack}
+      >
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           bounces={false}
         >
-          <Text style={styles.sectionTitle}>
+          <View style={styles.heroIconWrap}>
+            <Ionicons name="shield-checkmark" size={30} color={colors.primary[700]} />
+          </View>
+
+          <Text style={styles.title}>
+            {t("orders.activeFood.verifyPickupTitle", "Verify Pickup")}
+          </Text>
+          <Text style={styles.subtitle}>
             {t(
-              "orders.activeFood.verifyPickupSubtitle",
-              "Choose how you want to verify the order pickup"
+              "orders.activeFood.verifyNeedDesc",
+              "Choose one of the options below to confirm the order pickup."
             )}
           </Text>
 
+          <View style={styles.infoBox}>
+            <Text style={styles.infoBoxTitle}>
+              {t("orders.activeFood.verifyNeedTitle", "We need to verify this pickup")}
+            </Text>
+            <Text style={styles.infoBoxText}>
+              {t(
+                "orders.activeFood.verifySafeDesc",
+                "This verification helps ensure a smooth and secure delivery experience."
+              )}
+            </Text>
+          </View>
+
           {barcodeEnabled ? (
             <View style={styles.optionCard}>
-              <Pressable style={styles.optionTopRow} onPress={onScanBarcode}>
-                <View style={styles.optionIllusCol}>
-                  <BarcodeIllustration />
-                </View>
-                <View style={styles.optionBody}>
-                  <View style={styles.recommendedBadge}>
+              <View style={styles.optionHeader}>
+                <ScanIllustration />
+                <View style={styles.optionHeaderText}>
+                  <View style={styles.recommendedPill}>
                     <Ionicons name="star" size={10} color="#fff" />
                     <Text style={styles.recommendedText}>
                       {t("orders.activeFood.recommended", "Recommended")}
                     </Text>
                   </View>
-                  <View style={styles.optionTitleRow}>
-                    <Text style={styles.optionTitle}>
-                      {t("orders.activeFood.verifyBarcodeTitle", "Scan Barcode")}
-                    </Text>
-                    <Ionicons name="chevron-forward" size={18} color={BRAND_GREEN} />
-                  </View>
+                  <Text style={styles.optionTitle}>
+                    {t("orders.activeFood.verifyBarcodeTitle", "Scan Barcode")}
+                  </Text>
                   <Text style={styles.optionDesc}>
                     {t(
                       "orders.activeFood.verifyBarcodeDesc",
-                      "Scan the barcode or QR code available on the restaurant bill, invoice, or merchant screen."
+                      "Scan the barcode or QR code on the restaurant bill, invoice, or merchant KOT."
                     )}
                   </Text>
-                  <FeatureTags tags={BARCODE_TAGS} />
                 </View>
-              </Pressable>
-              <Pressable style={styles.primaryBtn} onPress={onScanBarcode}>
-                <Ionicons name="scan-outline" size={20} color="#fff" />
-                <Text style={styles.primaryBtnText}>
-                  {t("orders.activeFood.scanBarcode", "Scan Barcode")}
-                </Text>
-              </Pressable>
+              </View>
+              <PremiumAllowButton
+                onPress={handleScanPress}
+                label={t("orders.activeFood.scanBarcode", "Scan Barcode")}
+              />
             </View>
           ) : null}
 
           {otpEnabled ? (
             <View style={styles.optionCard}>
-              <Pressable style={styles.optionTopRow} onPress={onEnterOtp}>
-                <View style={styles.optionIllusCol}>
-                  <OtpIllustration />
-                </View>
-                <View style={styles.optionBody}>
-                  <View style={styles.optionTitleRow}>
-                    <Text style={styles.optionTitle}>
-                      {t("orders.activeFood.verifyOtpTitle", "Continue with OTP")}
-                    </Text>
-                    <Ionicons name="chevron-forward" size={18} color={BRAND_GREEN} />
-                  </View>
+              <View style={styles.optionHeader}>
+                <OtpIllustration />
+                <View style={styles.optionHeaderText}>
+                  <Text style={styles.optionTitle}>
+                    {t("orders.activeFood.verifyOtpTitle", "Continue with OTP")}
+                  </Text>
                   <Text style={styles.optionDesc}>
                     {t(
                       "orders.activeFood.verifyOtpDesc",
                       "Enter the pickup OTP provided by the merchant."
                     )}
                   </Text>
-                  <FeatureTags tags={OTP_TAGS} />
                 </View>
-              </Pressable>
-              <Pressable style={styles.outlineBtn} onPress={onEnterOtp}>
-                <Ionicons name="keypad-outline" size={20} color={BRAND_GREEN} />
-                <Text style={styles.outlineBtnText}>
+              </View>
+              <Pressable style={styles.secondaryBtn} onPress={onEnterOtp}>
+                <Ionicons name="keypad-outline" size={18} color={colors.primary[700]} />
+                <Text style={styles.secondaryBtnText}>
                   {t("orders.activeFood.enterOtp", "Enter OTP")}
                 </Text>
               </Pressable>
             </View>
           ) : null}
         </ScrollView>
+      </PermissionBottomSheetShell>
 
-        <View style={[styles.edgeBannerBottom, { paddingBottom: Math.max(bottomPad, 14) }]}>
-            <View style={styles.footerIcon}>
-              <Ionicons name="shield-checkmark" size={18} color="#fff" />
-            </View>
-            <View style={styles.footerText}>
-              <Text style={styles.footerTitle}>
-                {t("orders.activeFood.verifySafeTitle", "Your information is safe with us")}
-              </Text>
-              <Text style={styles.footerDesc}>
-                {t(
-                  "orders.activeFood.verifySafeDesc",
-                  "This verification helps ensure a smooth and secure delivery experience."
-                )}
-              </Text>
-            </View>
-            <View style={styles.footerArt}>
-              <Ionicons name="bicycle" size={30} color={BRAND_GREEN} />
-            </View>
-          </View>
-      </View>
-    </Modal>
+      <PickupCameraPermissionSheet
+        visible={cameraSheetVisible && visible}
+        onGranted={handleCameraGranted}
+        onDismiss={() => setCameraSheetVisible(false)}
+      />
+    </>
   );
 }
 
-const ILLUS_SIZE = 72;
-
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    paddingHorizontal: CONTENT_PAD,
-    paddingBottom: 8,
-    backgroundColor: "#FFFFFF",
-  },
-  backBtn: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerCenter: {
-    flex: 1,
-    alignItems: "center",
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#111827",
-  },
-  secureRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 4,
-  },
-  secureLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: BRAND_GREEN,
-  },
-  headerSpacer: {
-    width: 40,
-  },
-  edgeBannerTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "stretch",
-    width: "100%",
-    backgroundColor: BRAND_GREEN_LIGHT,
-    paddingHorizontal: CONTENT_PAD,
-    paddingVertical: 14,
-    gap: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: BRAND_GREEN_SOFT,
-  },
   scroll: {
-    flex: 1,
+    maxHeight: "100%",
   },
   scrollContent: {
-    paddingHorizontal: CONTENT_PAD,
-    paddingTop: 14,
-    paddingBottom: 14,
+    paddingHorizontal: 24,
+    paddingTop: 4,
+    paddingBottom: 4,
     gap: 14,
   },
-  edgeBannerBottom: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "stretch",
-    width: "100%",
-    backgroundColor: BRAND_GREEN_LIGHT,
-    paddingHorizontal: CONTENT_PAD,
-    paddingTop: 14,
-    gap: 12,
-    borderTopWidth: 1,
-    borderTopColor: BRAND_GREEN_SOFT,
-  },
-  infoBannerIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: BRAND_GREEN,
+  heroIconWrap: {
+    alignSelf: "center",
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: colors.primary[50],
+    borderWidth: 1,
+    borderColor: colors.primary[100],
     alignItems: "center",
     justifyContent: "center",
   },
-  infoBannerText: {
-    flex: 1,
-  },
-  infoBannerTitle: {
-    fontSize: 15,
-    fontWeight: "700",
+  title: {
+    fontFamily: LORA_BOLD,
+    fontSize: 22,
     color: "#111827",
-    marginBottom: 4,
+    textAlign: "center",
   },
-  infoBannerDesc: {
+  subtitle: {
+    fontFamily: LORA_SEMIBOLD,
+    fontSize: 13,
+    color: colors.gray[600],
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  infoBox: {
+    backgroundColor: colors.primary[50],
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.primary[100],
+  },
+  infoBoxTitle: {
+    fontFamily: LORA_BOLD,
     fontSize: 12,
-    color: "#4B5563",
-    lineHeight: 17,
+    color: colors.primary[800],
+    marginBottom: 4,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
-  infoBannerArt: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-  verifiedBadge: {
-    position: "absolute",
-    right: 2,
-    bottom: 2,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: BRAND_GREEN,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#111827",
+  infoBoxText: {
+    fontSize: 13,
+    color: colors.gray[700],
+    lineHeight: 19,
   },
   optionCard: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  optionTopRow: {
-    flexDirection: "row",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
     padding: 14,
+    borderWidth: 1,
+    borderColor: colors.primary[100],
+    gap: 14,
+    ...(Platform.OS === "android"
+      ? { elevation: 2 }
+      : {
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 8,
+        }),
+  },
+  optionHeader: {
+    flexDirection: "row",
     gap: 12,
+    alignItems: "flex-start",
   },
-  optionIllusCol: {
-    width: ILLUS_SIZE,
-    alignItems: "center",
-  },
-  optionBody: {
+  optionHeaderText: {
     flex: 1,
     minWidth: 0,
   },
-  recommendedBadge: {
+  recommendedPill: {
     alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: BRAND_GREEN,
+    backgroundColor: colors.primary[600],
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -424,196 +279,92 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.3,
   },
-  optionTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 6,
-  },
   optionTitle: {
-    flex: 1,
+    fontFamily: LORA_BOLD,
     fontSize: 17,
-    fontWeight: "700",
     color: "#111827",
+    marginBottom: 4,
   },
   optionDesc: {
-    fontSize: 13,
-    color: "#6B7280",
+    fontFamily: LORA_SEMIBOLD,
+    fontSize: 12,
+    color: colors.gray[600],
     lineHeight: 18,
-    marginBottom: 10,
   },
-  tagRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  tagPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: BRAND_GREEN_LIGHT,
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  tagText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: BRAND_GREEN,
-  },
-  primaryBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: BRAND_GREEN,
-    marginHorizontal: 14,
-    marginBottom: 14,
-    borderRadius: 12,
-    paddingVertical: 14,
-  },
-  primaryBtnText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  outlineBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: "#fff",
-    borderWidth: 2,
-    borderColor: BRAND_GREEN,
-    marginHorizontal: 14,
-    marginBottom: 14,
-    borderRadius: 12,
-    paddingVertical: 13,
-  },
-  outlineBtnText: {
-    color: BRAND_GREEN,
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  illusWrap: {
-    width: ILLUS_SIZE,
-    height: ILLUS_SIZE,
-    borderRadius: ILLUS_SIZE / 2,
-    backgroundColor: BRAND_GREEN_LIGHT,
+  illusCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.primary[50],
+    borderWidth: 1,
+    borderColor: colors.primary[100],
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
   },
-  otpIllusWrap: {
-    backgroundColor: OTP_ACCENT_LIGHT,
+  illusCircleOtp: {
+    backgroundColor: colors.primary[50],
   },
-  scanBracketTL: {
+  bracketTL: {
     position: "absolute",
-    top: 10,
-    left: 10,
-    width: 14,
-    height: 14,
-    borderTopWidth: 2.5,
-    borderLeftWidth: 2.5,
-    borderColor: BRAND_GREEN,
-    borderTopLeftRadius: 3,
+    top: 7,
+    left: 7,
+    width: 11,
+    height: 11,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+    borderColor: colors.primary[600],
+    borderTopLeftRadius: 2,
   },
-  scanBracketTR: {
+  bracketTR: {
     position: "absolute",
-    top: 10,
-    right: 10,
-    width: 14,
-    height: 14,
-    borderTopWidth: 2.5,
-    borderRightWidth: 2.5,
-    borderColor: BRAND_GREEN,
-    borderTopRightRadius: 3,
+    top: 7,
+    right: 7,
+    width: 11,
+    height: 11,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderColor: colors.primary[600],
+    borderTopRightRadius: 2,
   },
-  scanBracketBL: {
+  bracketBL: {
     position: "absolute",
-    bottom: 10,
-    left: 10,
-    width: 14,
-    height: 14,
-    borderBottomWidth: 2.5,
-    borderLeftWidth: 2.5,
-    borderColor: BRAND_GREEN,
-    borderBottomLeftRadius: 3,
+    bottom: 7,
+    left: 7,
+    width: 11,
+    height: 11,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderColor: colors.primary[600],
+    borderBottomLeftRadius: 2,
   },
-  scanBracketBR: {
+  bracketBR: {
     position: "absolute",
-    bottom: 10,
-    right: 10,
-    width: 14,
-    height: 14,
-    borderBottomWidth: 2.5,
-    borderRightWidth: 2.5,
-    borderColor: BRAND_GREEN,
-    borderBottomRightRadius: 3,
+    bottom: 7,
+    right: 7,
+    width: 11,
+    height: 11,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+    borderColor: colors.primary[600],
+    borderBottomRightRadius: 2,
   },
-  phoneMock: {
-    width: 34,
-    height: 42,
-    borderRadius: 6,
-    backgroundColor: "#fff",
+  secondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     borderWidth: 1.5,
-    borderColor: "#D1D5DB",
-    alignItems: "center",
-    justifyContent: "center",
+    borderColor: colors.primary[300],
+    borderRadius: 14,
+    paddingVertical: 13,
+    backgroundColor: "#FFFFFF",
   },
-  qrGrid: {
-    width: 22,
-    height: 22,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 2,
-  },
-  qrCell: {
-    width: 6,
-    height: 6,
-    backgroundColor: "#E5E7EB",
-    borderRadius: 1,
-  },
-  qrCellDark: {
-    backgroundColor: "#374151",
-  },
-  otpDots: {
-    flexDirection: "row",
-    gap: 4,
-    marginTop: 6,
-  },
-  otpDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: OTP_ACCENT,
-  },
-  footerIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: BRAND_GREEN,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  footerText: {
-    flex: 1,
-  },
-  footerTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 3,
-  },
-  footerDesc: {
-    fontSize: 11,
-    color: "#4B5563",
-    lineHeight: 15,
-  },
-  footerArt: {
-    width: 40,
-    alignItems: "center",
-    justifyContent: "center",
+  secondaryBtnText: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: colors.primary[700],
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
   },
 });

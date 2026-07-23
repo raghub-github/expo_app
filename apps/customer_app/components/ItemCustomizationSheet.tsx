@@ -6,8 +6,21 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AppText } from "@/components/AppText";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { View, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, Image, ActivityIndicator, useWindowDimensions, Platform } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  View,
+  TouchableOpacity,
+  StyleSheet,
+  Modal,
+  Pressable,
+  ScrollView,
+  Image,
+  ActivityIndicator,
+  useWindowDimensions,
+  Platform,
+  TextInput,
+  Keyboard,
+  Animated,
+} from "react-native";
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "@/components/store/DietIndicator";
@@ -33,14 +46,27 @@ import {
   formatOfferRupee,
   type ItemOfferDisplay,
 } from "@/lib/itemOfferDisplay";
+import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
+
+import {
+  normalizeOrderItemSpecialInstructions,
+  ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH,
+} from "@/lib/order-item-special-instructions";
 
 const SHEET_MAX_HEIGHT_RATIO = 0.84;
+const CTA_HEIGHT = 56;
+const STEPPER_WIDTH = 118;
+const ADD_GREEN = "#137243";
+const QTY_FILL = "#E8F5EE";
+const THUMB = 48;
+const ADDON_IMG = 40;
 
 export type ItemCustomizationInitialSelection = {
   variantId?: string | null;
   variantName?: string | null;
   addons?: Array<{ addonId: string }>;
   quantity?: number;
+  specialInstructions?: string | null;
 };
 
 export type ItemCustomizationSheetProps = {
@@ -78,6 +104,7 @@ export type ItemCustomizationSheetProps = {
       addonSizeUnit?: string | null;
     }>;
     imageUrl?: string | null;
+    specialInstructions?: string | null;
   }) => void;
 };
 
@@ -300,15 +327,17 @@ export function ItemCustomizationSheet({
   itemOffer = null,
   onAdd,
 }: ItemCustomizationSheetProps) {
-  const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const { height: screenHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(screenHeight * SHEET_MAX_HEIGHT_RATIO);
+  const { keyboardLift, reset } = useCookingSheetKeyboardDock(visible);
 
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<Record<string, string[]>>({});
   const [quantity, setQuantity] = useState(1);
+  const [cookingRequest, setCookingRequest] = useState("");
   const appliedConfigKeyRef = useRef<string | null>(null);
+  const addTapLockRef = useRef(false);
 
   const configItemKey = resolveFullConfigItemId(item);
   const isEditMode = initialSelection != null;
@@ -363,6 +392,7 @@ export function ItemCustomizationSheet({
   useEffect(() => {
     if (!visible) {
       appliedConfigKeyRef.current = null;
+      reset();
       return;
     }
     if (!displayConfig) return;
@@ -376,7 +406,14 @@ export function ItemCustomizationSheet({
       setSelectedAddons,
       setQuantity
     );
-  }, [visible, displayConfig, storeId, configItemKey, initialSelection]);
+    setCookingRequest(initialSelection?.specialInstructions ?? "");
+  }, [visible, displayConfig, storeId, configItemKey, initialSelection, reset]);
+
+  const handleClose = useCallback(() => {
+    Keyboard.dismiss();
+    reset();
+    onClose();
+  }, [onClose, reset]);
 
   const variantPrice = useMemo(() => {
     if (!displayConfig?.variants?.length) return displayConfig?.item?.price ?? item.price;
@@ -465,7 +502,9 @@ export function ItemCustomizationSheet({
   );
 
   const handleAdd = useCallback(() => {
-    if (!canAdd) return;
+    if (!canAdd || addTapLockRef.current) return;
+    addTapLockRef.current = true;
+    Keyboard.dismiss();
     const addonIds = displayConfig?.customizations?.flatMap((c) => selectedAddons[c.id] ?? []) ?? [];
     const addonsList: Array<{
       addonId: string;
@@ -527,10 +566,15 @@ export function ItemCustomizationSheet({
           })
         : undefined,
       imageUrl: displayConfig?.item?.imageUrl ?? item.imageUrl ?? null,
+      specialInstructions: normalizeOrderItemSpecialInstructions(cookingRequest),
     });
     onClose();
+    setTimeout(() => {
+      addTapLockRef.current = false;
+    }, 400);
   }, [
     canAdd,
+    cookingRequest,
     displayConfig,
     item,
     selectedVariantId,
@@ -544,20 +588,129 @@ export function ItemCustomizationSheet({
 
   if (!visible) return null;
 
+  const cookingField = (
+    <View style={styles.cookingSection}>
+      <AppText style={styles.cookingLabel}>Add a cooking request (optional)</AppText>
+      <View style={styles.cookingInputWrap}>
+        <TextInput
+          style={styles.cookingInput}
+          placeholder="e.g. Don’t make it too spicy"
+          placeholderTextColor={StoreTheme.textMuted}
+          value={cookingRequest}
+          onChangeText={(t) =>
+            setCookingRequest(t.slice(0, ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH))
+          }
+          maxLength={ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH}
+          multiline
+          textAlignVertical="top"
+          blurOnSubmit={false}
+          accessibilityLabel="Cooking request"
+        />
+        <AppText style={styles.cookingCounter}>
+          {ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH - cookingRequest.length}
+        </AppText>
+      </View>
+    </View>
+  );
+
+  const footerBar = (
+    <View style={[styles.footer, { paddingBottom: 8 }]}>
+      <View style={styles.stepper}>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Decrease quantity"
+          style={styles.stepperButton}
+          onPress={() => setQuantity((q) => Math.max(1, q - 1))}
+          disabled={quantity <= 1}
+          activeOpacity={0.7}
+        >
+          <AppText
+            style={[styles.stepperGlyph, quantity <= 1 && styles.stepperGlyphDisabled]}
+          >
+            −
+          </AppText>
+        </TouchableOpacity>
+        <AppText style={styles.stepperQuantity}>{quantity}</AppText>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Increase quantity"
+          style={styles.stepperButton}
+          onPress={() => setQuantity((q) => q + 1)}
+          activeOpacity={0.7}
+        >
+          <AppText style={styles.stepperGlyph}>+</AppText>
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity
+        onPress={handleAdd}
+        disabled={!canAdd}
+        style={[styles.addBtn, !canAdd && styles.addBtnDisabled]}
+        activeOpacity={0.9}
+      >
+        <AppText style={[styles.addBtnText, !canAdd && styles.addBtnTextDisabled]}>
+          {isStoreClosed
+            ? "Store closed"
+            : isEditMode
+              ? "Update item"
+              : "Add item"}
+        </AppText>
+        {!isStoreClosed && canAdd ? (
+          showCtaStrike ? (
+            <View style={styles.addBtnPriceRow}>
+              <AppText style={styles.addBtnSubStrike}>
+                {formatOfferRupee(catalogTotalPrice)}
+              </AppText>
+              <AppText style={styles.addBtnSub}>
+                {formatOfferRupee(totalPrice)}
+                {quantity > 1
+                  ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
+                  : ""}
+              </AppText>
+            </View>
+          ) : (
+            <AppText style={styles.addBtnSub}>
+              {formatOfferRupee(totalPrice)}
+              {quantity > 1
+                ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
+                : ""}
+            </AppText>
+          )
+        ) : null}
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
-      onRequestClose={onClose}
-      statusBarTranslucent
+      animationType="none"
+      onRequestClose={handleClose}
+      statusBarTranslucent={false}
       presentationStyle="overFullScreen"
     >
       <View style={styles.root}>
-        <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button" />
+        <Pressable
+          style={styles.backdrop}
+          onPress={handleClose}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+        />
 
-        <View style={[styles.anchor, { maxHeight: sheetMaxHeight }]}>
-          <TouchableOpacity style={styles.closeBtn} onPress={onClose} hitSlop={12} activeOpacity={0.85}>
+        {/*
+          SINGLE TREE — keyboard only lifts via marginBottom.
+          Never swap to a compact tree (that remounted TextInput and auto-dismissed).
+        */}
+        <Animated.View
+          style={[styles.anchor, { maxHeight: sheetMaxHeight, marginBottom: keyboardLift }]}
+        >
+          <TouchableOpacity
+            style={styles.closeBtn}
+            onPress={handleClose}
+            hitSlop={12}
+            activeOpacity={0.85}
+          >
             <Ionicons name="close" size={22} color="#fff" />
           </TouchableOpacity>
 
@@ -574,7 +727,11 @@ export function ItemCustomizationSheet({
                   <View style={styles.headerTopRow}>
                     <View style={styles.headerImageWrap}>
                       {item.imageUrl ? (
-                        <Image source={{ uri: item.imageUrl }} style={styles.headerImage} resizeMode="cover" />
+                        <Image
+                          source={{ uri: item.imageUrl }}
+                          style={styles.headerImage}
+                          resizeMode="cover"
+                        />
                       ) : (
                         <View style={styles.headerImagePlaceholder}>
                           <MenuItemImagePlaceholder size="sm" />
@@ -597,10 +754,22 @@ export function ItemCustomizationSheet({
                     </View>
 
                     <View style={styles.headerIcons}>
-                      <TouchableOpacity hitSlop={8} style={styles.headerIconCircle} activeOpacity={0.75}>
-                        <Ionicons name="bookmark-outline" size={18} color={StoreTheme.textPrimary} />
+                      <TouchableOpacity
+                        hitSlop={8}
+                        style={styles.headerIconCircle}
+                        activeOpacity={0.75}
+                      >
+                        <Ionicons
+                          name="bookmark-outline"
+                          size={18}
+                          color={StoreTheme.textPrimary}
+                        />
                       </TouchableOpacity>
-                      <TouchableOpacity hitSlop={8} style={styles.headerIconCircle} activeOpacity={0.75}>
+                      <TouchableOpacity
+                        hitSlop={8}
+                        style={styles.headerIconCircle}
+                        activeOpacity={0.75}
+                      >
                         <Feather name="share-2" size={17} color={StoreTheme.textPrimary} />
                       </TouchableOpacity>
                     </View>
@@ -611,7 +780,8 @@ export function ItemCustomizationSheet({
                   style={[styles.scroll, { maxHeight: Math.max(sheetMaxHeight - 200, 180) }]}
                   contentContainerStyle={styles.scrollContent}
                   showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
+                  keyboardShouldPersistTaps="always"
+                  keyboardDismissMode="none"
                 >
                   {!loading &&
                   !displayConfig?.variants?.length &&
@@ -682,7 +852,9 @@ export function ItemCustomizationSheet({
                                 : `${orderCount}+ orders together`}
                             </AppText>
                             <View style={styles.companionFooter}>
-                              <AppText style={styles.companionPrice}>₹{Math.round(companion.price)}</AppText>
+                              <AppText style={styles.companionPrice}>
+                                ₹{Math.round(companion.price)}
+                              </AppText>
                               <TouchableOpacity
                                 style={[
                                   styles.companionAddBtn,
@@ -715,7 +887,8 @@ export function ItemCustomizationSheet({
                         {c.addons.map((a) => {
                           const selected = (selectedAddons[c.id] ?? []).includes(a.id);
                           const isSingleSelect = c.maxSelection === 1;
-                          const atMax = (selectedAddons[c.id] ?? []).length >= c.maxSelection;
+                          const atMax =
+                            (selectedAddons[c.id] ?? []).length >= c.maxSelection;
                           const disabled = !isSingleSelect && !selected && atMax;
                           return (
                             <CustomizationOptionRow
@@ -737,83 +910,19 @@ export function ItemCustomizationSheet({
                       </View>
                     </View>
                   ))}
+
+                  {cookingField}
                 </ScrollView>
 
-                <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-                  <View style={styles.footerQtyBlock}>
-                    <AppText style={styles.footerQtyLabel}>How many?</AppText>
-                    <View style={styles.qtyRow}>
-                      <TouchableOpacity
-                        style={[styles.qtyBtnCircle, quantity <= 1 && styles.qtyBtnCircleDisabled]}
-                        onPress={() => setQuantity((q) => Math.max(1, q - 1))}
-                        disabled={quantity <= 1}
-                        hitSlop={6}
-                      >
-                        <Ionicons
-                          name="remove"
-                          size={20}
-                          color={quantity <= 1 ? StoreTheme.textMuted : StoreTheme.cartAction}
-                        />
-                      </TouchableOpacity>
-                      <AppText style={styles.qtyValue}>{quantity}</AppText>
-                      <TouchableOpacity
-                        style={styles.qtyBtnCircle}
-                        onPress={() => setQuantity((q) => q + 1)}
-                        hitSlop={6}
-                      >
-                        <Ionicons name="add" size={20} color={StoreTheme.cartAction} />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
-                  <TouchableOpacity
-                    onPress={handleAdd}
-                    disabled={!canAdd}
-                    style={[styles.addBtn, !canAdd && styles.addBtnDisabled]}
-                    activeOpacity={0.9}
-                  >
-                    <AppText style={[styles.addBtnText, !canAdd && styles.addBtnTextDisabled]}>
-                      {isStoreClosed
-                        ? "Store closed"
-                        : isEditMode
-                          ? "Update item"
-                          : "Add item"}
-                    </AppText>
-                    {!isStoreClosed && canAdd ? (
-                      showCtaStrike ? (
-                        <View style={styles.addBtnPriceRow}>
-                          <AppText style={styles.addBtnSubStrike}>
-                            {formatOfferRupee(catalogTotalPrice)}
-                          </AppText>
-                          <AppText style={styles.addBtnSub}>
-                            {formatOfferRupee(totalPrice)}
-                            {quantity > 1
-                              ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
-                              : ""}
-                          </AppText>
-                        </View>
-                      ) : (
-                        <AppText style={styles.addBtnSub}>
-                          {formatOfferRupee(totalPrice)}
-                          {quantity > 1
-                            ? ` · ${quantity} × ${formatOfferRupee(payableUnit)}`
-                            : ""}
-                        </AppText>
-                      )
-                    ) : null}
-                  </TouchableOpacity>
-                </View>
+                {footerBar}
               </View>
             )}
           </View>
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   );
 }
-
-const THUMB = 48;
-const ADDON_IMG = 40;
 
 const styles = StyleSheet.create({
   root: {
@@ -1284,7 +1393,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     paddingHorizontal: 16,
     paddingTop: 14,
     gap: 12,
@@ -1301,60 +1410,52 @@ const styles = StyleSheet.create({
       android: { elevation: 8 },
     }),
   },
-  footerQtyBlock: {
-    minWidth: 118,
-    gap: 6,
-  },
-  footerQtyLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: StoreTheme.textSecondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  qtyRow: {
+  stepper: {
+    width: STEPPER_WIDTH,
+    height: CTA_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1.5,
-    borderColor: StoreTheme.cartAction,
-    borderRadius: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    backgroundColor: "#ECFDF5",
-    gap: 4,
+    borderColor: ADD_GREEN,
+    borderRadius: 10,
+    paddingHorizontal: 4,
+    backgroundColor: QTY_FILL,
+    flexGrow: 0,
+    flexShrink: 0,
   },
-  qtyBtnCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#fff",
+  stepperButton: {
+    width: 36,
+    height: CTA_HEIGHT,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(21, 128, 61, 0.35)",
   },
-  qtyBtnCircleDisabled: {
-    backgroundColor: "#F9FAFB",
-    borderColor: StoreTheme.border,
+  stepperGlyph: {
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: "700",
+    color: ADD_GREEN,
   },
-  qtyValue: {
-    fontSize: 17,
+  stepperGlyphDisabled: {
+    color: "#9CA3AF",
+  },
+  stepperQuantity: {
+    fontSize: 16,
     fontWeight: "800",
-    color: StoreTheme.textPrimary,
-    minWidth: 28,
+    color: ADD_GREEN,
+    minWidth: 24,
     textAlign: "center",
   },
   addBtn: {
     flex: 1,
-    backgroundColor: StoreTheme.cartAction,
-    borderRadius: 12,
-    paddingVertical: 12,
+    height: CTA_HEIGHT,
+    backgroundColor: ADD_GREEN,
+    borderRadius: 10,
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
-    minHeight: 52,
+    minHeight: CTA_HEIGHT,
     ...Platform.select({
       ios: {
         shadowColor: StoreTheme.cartActionPressed,
@@ -1386,5 +1487,41 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: "rgba(255,255,255,0.92)",
+  },
+  cookingSection: {
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 16,
+    gap: 6,
+  },
+  cookingLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: StoreTheme.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  cookingInputWrap: {
+    position: "relative",
+  },
+  cookingInput: {
+    borderWidth: 1,
+    borderColor: StoreTheme.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    paddingBottom: 22,
+    minHeight: 72,
+    fontSize: 14,
+    color: StoreTheme.textPrimary,
+    textAlignVertical: "top",
+    backgroundColor: "#FAFAFA",
+  },
+  cookingCounter: {
+    position: "absolute",
+    right: 10,
+    bottom: 8,
+    fontSize: 11,
+    color: StoreTheme.textMuted,
   },
 });

@@ -22,6 +22,7 @@ import {
   type ScreenPoint,
 } from "@/features/ride/ride-map-pill-layout";
 import { RideMapLocationPin } from "@/features/ride/RideMapLocationPin";
+import { latLngKey, nearlySameScreenPoint } from "@/lib/ride-map-sync";
 
 const PICKUP_GREEN = "#22C55E";
 const DROP_RED = "#EF4444";
@@ -148,16 +149,34 @@ export function RideRouteMapPillOverlay({
       const nextDrop = dropPoint ? await map.pointForCoordinate(dropPoint) : null;
       if (generation !== syncGen.current) return;
 
-      setPickupPin(nextPickup ? { x: nextPickup.x, y: nextPickup.y } : null);
-      setDropPin(nextDrop ? { x: nextDrop.x, y: nextDrop.y } : null);
+      const pickupScreen = nextPickup ? { x: nextPickup.x, y: nextPickup.y } : null;
+      const dropScreen = nextDrop ? { x: nextDrop.x, y: nextDrop.y } : null;
+
+      setPickupPin((prev) => (nearlySameScreenPoint(prev, pickupScreen) ? prev : pickupScreen));
+      setDropPin((prev) => (nearlySameScreenPoint(prev, dropScreen) ? prev : dropScreen));
     } catch {
       // Map not ready.
     }
-  }, [dropPoint, mapRef, mapSize.height, mapSize.width, pickupPoint]);
+  }, [
+    dropPoint?.latitude,
+    dropPoint?.longitude,
+    mapRef,
+    mapSize.height,
+    mapSize.width,
+    pickupPoint?.latitude,
+    pickupPoint?.longitude,
+  ]);
+
+  const endpointKey = `${latLngKey(pickupPoint)}|${latLngKey(dropPoint)}`;
+
+  useEffect(() => {
+    setPickupPin(null);
+    setDropPin(null);
+  }, [endpointKey, syncToken]);
 
   useEffect(() => {
     void syncPositions();
-  }, [syncPositions, syncToken, mapFrameTick]);
+  }, [syncPositions, syncToken, mapFrameTick, endpointKey]);
 
   const { pickup: pickupLayout, drop: dropLayout } = resolveMarkerOverlays(
     pickupPin,

@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
 import { riders, riderPenalties, riderWallet, walletLedger } from "../db/schema.js";
 import { resolveRiderDeliveryFeeFromCore } from "./credit-rider-order-on-delivered.js";
@@ -723,6 +723,22 @@ export async function applyRiderAppCancellationPenalty(args: {
 
   const ledgerRef = penaltyLedgerRef(args.orderCoreId, args.riderId, preview.scenarioCode);
   if (await ledgerRefExists(args.riderId, ledgerRef)) {
+    return { applied: false, skipped: "already_applied" };
+  }
+
+  // One active penalty per order — do not stack a second debit that can be reverted again.
+  const existingActive = await getDb()
+    .select({ id: riderPenalties.id })
+    .from(riderPenalties)
+    .where(
+      and(
+        eq(riderPenalties.riderId, args.riderId),
+        eq(riderPenalties.orderId, args.orderCoreId),
+        sql`${riderPenalties.status} IS DISTINCT FROM 'reversed'`
+      )
+    )
+    .limit(1);
+  if (existingActive[0]) {
     return { applied: false, skipped: "already_applied" };
   }
 

@@ -1,156 +1,112 @@
 'use client';
 
+/**
+ * Order bill print — Partner Site entry.
+ * HTML template is owned by @gatimitra/bill-print (single source of truth).
+ */
+
 import React, { useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Printer, X } from 'lucide-react';
+import {
+  buildBillHtml,
+  formatOrderIdForPrint,
+  formatOrderPlacedAt,
+  formatOrderRs,
+  merchantBillPartsFromItems,
+  merchantItemCatalogAndNet,
+  itemCookingNote,
+  type BillLineItem,
+  type BillPrintPayload,
+  type BillStoreInfo,
+} from '@gatimitra/bill-print';
+import { printHtmlDocument } from '@gatimitra/print-utils';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
+import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
-import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
-import { merchantItemCatalogAndNet } from '@/lib/merchant-order-item-display';
 
-export type GatiMitraPrintStoreInfo = {
-  storeName: string;
-  city?: string | null;
-  cuisineLabel?: string | null;
-  fssaiNumber?: string | null;
-};
+export type GatiMitraPrintStoreInfo = BillStoreInfo;
 
 function formatMoney(n: number) {
   return `₹${Math.round(Number(n))}`;
 }
 
-function formatOrderPlacedAt(iso: string) {
-  try {
-    return new Date(iso).toLocaleString('en-IN', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata',
-    });
-  } catch {
-    return iso;
-  }
+function mapBillItem(item: NormalizedOrderLineItem): BillLineItem {
+  const special =
+    (item as { specialInstructions?: string | null }).specialInstructions ??
+    (item as { special_instructions?: string | null }).special_instructions ??
+    null;
+  return {
+    name: item.name,
+    quantity: item.quantity || 1,
+    price: item.price,
+    total: item.total,
+    variantName: item.variantName ?? null,
+    variantTag: item.variantTag ?? null,
+    specialInstructions: special,
+    customizationLines: (item.customizationLines ?? []).map((l) => ({
+      kind: l.kind,
+      name: l.name,
+      amount: l.amount ?? null,
+      quantity: null,
+    })),
+    customizations: item.customizations,
+    customizationsTotal: item.customizationsTotal ?? null,
+    baseAmount: item.baseAmount ?? null,
+    capturedBaseAmount: item.capturedBaseAmount ?? null,
+    capturedAddonAmount: item.capturedAddonAmount ?? null,
+    hasCustomizations: item.hasCustomizations ?? null,
+    catalogLineTotal: item.catalogLineTotal ?? null,
+    netLineTotal: item.netLineTotal ?? null,
+    offerDiscount: item.offerDiscount ?? null,
+    offerLabel: item.offerLabel ?? null,
+    isItemPromo: item.isItemPromo ?? null,
+    appliedOfferType: item.appliedOfferType ?? null,
+    ctmFromSnapshot: item.ctmFromSnapshot ?? null,
+  };
 }
 
-function formatOrderIdForPrint(order: OrdersFoodRow): string {
-  const raw = order.formatted_order_id?.trim() || String(order.order_id);
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length >= 10) {
-    const mid = Math.ceil(digits.length / 2);
-    return `${digits.slice(0, mid)} ${digits.slice(mid)}`;
-  }
-  return raw.startsWith('#') ? raw.slice(1) : raw;
+export function orderToBillPayload(
+  order: OrdersFoodRow,
+  pricing: OrderPricingBreakdown,
+  store: GatiMitraPrintStoreInfo
+): BillPrintPayload {
+  const items = (order.items ?? []) as NormalizedOrderLineItem[];
+  return {
+    formattedOrderId: order.formatted_order_id?.trim() || String(order.order_id),
+    orderCreatedAt: order.created_at,
+    taxInvoiceNumber: order.tax_invoice_number ?? null,
+    customerName: order.customer_name?.trim() || null,
+    dropAddress: formatOrderDropAddress(order.drop_address_normalized, order.drop_address_raw) || null,
+    pickupOtp: order.pickup_otp?.trim() || null,
+    items: items.map(mapBillItem),
+    pricing: {
+      subtotal: pricing.subtotal,
+      packaging: pricing.packaging,
+      discount: pricing.discount,
+      total: pricing.total,
+    },
+    store,
+    printTimestamp: new Date().toISOString(),
+  };
 }
 
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function buildPrintHtml(
+export function buildPrintHtml(
   order: OrdersFoodRow,
   pricing: OrderPricingBreakdown,
   store: GatiMitraPrintStoreInfo
 ): string {
-  const items = order.items ?? [];
-  const address = formatOrderDropAddress(order.drop_address_normalized, order.drop_address_raw);
-  const utensils = getUtensilsCustomerLabel(order);
-  const instructions = order.delivery_instructions?.trim();
-  const otp = order.pickup_otp?.trim();
+  return buildBillHtml(orderToBillPayload(order, pricing, store));
+}
 
-  const itemRows = items
-    .map((item) => {
-      const qty = item.quantity || 1;
-      const { catalog, net, showStrike, offerBadge } = merchantItemCatalogAndNet(item);
-      const amtLabel = showStrike
-        ? `<span style="text-decoration:line-through;color:#888;margin-right:4px">${formatMoney(catalog)}</span>${formatMoney(net)}`
-        : formatMoney(net);
-      const unitLabel = showStrike
-        ? `${qty} x ${Math.round(net / Math.max(1, qty))}`
-        : `${qty} x ${Math.round(Number(item.price || 0))}`;
-      return `<tr>
-          <td class="item-name">${escapeHtml(item.name)}${
-            offerBadge
-              ? `<div style="font-size:10px;color:#b45309;font-weight:700">${escapeHtml(offerBadge)}</div>`
-              : ''
-          }</td>
-          <td class="item-qty">${unitLabel}</td>
-          <td class="item-amt">${amtLabel}</td>
-        </tr>`;
-    })
-    .join('');
-
-  const notes: string[] = [];
-  if (utensils) notes.push(`<p class="note">${escapeHtml(utensils)}</p>`);
-  if (instructions) notes.push(`<p class="note">${escapeHtml(instructions)}</p>`);
-
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>GatiMitra order ${escapeHtml(formatOrderIdForPrint(order))}</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 0; padding: 16px 20px; font-size: 13px; line-height: 1.45; }
-    .brand { font-size: 11px; color: #444; margin-bottom: 4px; }
-    h1 { font-size: 15px; font-weight: 700; margin: 0 0 8px; }
-    .order-id { font-size: 28px; font-weight: 800; letter-spacing: 0.02em; margin: 0 0 12px; }
-    .store { font-size: 16px; font-weight: 700; margin: 0 0 4px; }
-    .muted { color: #555; font-size: 12px; margin: 0 0 2px; }
-    .divider { border-top: 1px solid #ccc; margin: 12px 0; }
-    .meta-row { font-size: 12px; margin-bottom: 4px; }
-    .paid { font-weight: 800; font-size: 13px; }
-    .section-title { text-align: center; font-weight: 800; font-size: 14px; margin: 12px 0 8px; }
-    table { width: 100%; border-collapse: collapse; }
-    .item-name { text-align: left; padding: 4px 8px 4px 0; vertical-align: top; }
-    .item-qty { text-align: center; white-space: nowrap; padding: 4px; color: #333; }
-    .item-amt { text-align: right; white-space: nowrap; padding: 4px 0 4px 8px; font-weight: 600; }
-    .summary { margin-top: 10px; font-size: 13px; }
-    .summary div { display: flex; justify-content: space-between; margin-bottom: 4px; }
-    .summary .discount { color: #b45309; }
-    .total-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; font-size: 22px; font-weight: 800; }
-    .otp { font-size: 22px; font-weight: 800; }
-    .note { margin: 8px 0 0; font-size: 12px; }
-    .footer { margin-top: 20px; font-size: 11px; color: #666; text-align: center; }
-    @media print { body { padding: 8px 12px; } }
-  </style>
-</head>
-<body>
-  <p class="brand">GatiMitra — Restaurant Partner</p>
-  <h1>GatiMitra order:</h1>
-  <p class="order-id">${escapeHtml(formatOrderIdForPrint(order))}</p>
-  <p class="store">${escapeHtml(store.storeName)}</p>
-  ${store.cuisineLabel ? `<p class="muted">${escapeHtml(store.cuisineLabel)}</p>` : ''}
-  ${store.city ? `<p class="muted">${escapeHtml(store.city)}</p>` : ''}
-  ${store.fssaiNumber ? `<p class="muted">FSSAI Lic. No. ${escapeHtml(store.fssaiNumber)}</p>` : ''}
-  <div class="divider"></div>
-  <p class="meta-row">${escapeHtml(formatOrderPlacedAt(order.created_at))}</p>
-  <p class="meta-row paid">PAID</p>
-  <p class="meta-row">Delivery by GatiMitra</p>
-  <div class="divider"></div>
-  ${order.customer_name ? `<p><strong>Name:</strong> ${escapeHtml(order.customer_name)}</p>` : ''}
-  ${address ? `<p><strong>Address:</strong> ${escapeHtml(address.toUpperCase())}</p>` : ''}
-  ${otp ? `<p><strong>OTP:</strong> <span class="otp">${escapeHtml(otp)}</span></p>` : ''}
-  <div class="divider"></div>
-  <p class="section-title">Summary</p>
-  <table><tbody>${itemRows || '<tr><td colspan="3">No items</td></tr>'}</tbody></table>
-  <div class="summary">
-    ${pricing.packaging > 0 ? `<div><span>Restaurant Packaging Charges</span><span>${formatMoney(pricing.packaging)}</span></div>` : ''}
-    <div><span>Taxes</span><span>${formatMoney(pricing.taxes)}</span></div>
-    ${pricing.discount > 0 ? `<div class="discount"><span>Discount</span><span>−${formatMoney(pricing.discount)}</span></div>` : ''}
-  </div>
-  <div class="total-row"><span>Total</span><span>${formatMoney(pricing.total)}</span></div>
-  ${notes.join('')}
-  <p class="footer">Powered by GatiMitra</p>
-</body>
-</html>`;
+export function printOrderBill(
+  order: OrdersFoodRow | null | undefined,
+  pricing: OrderPricingBreakdown,
+  store: GatiMitraPrintStoreInfo | null | undefined
+): void {
+  if (typeof document === 'undefined' || !order || !store) return;
+  printHtmlDocument(buildPrintHtml(order, pricing, store));
 }
 
 export type GatiMitraOrderPrintBillProps = {
@@ -178,28 +134,14 @@ export function GatiMitraOrderPrintBill({
   }, [open, onClose]);
 
   const runPrint = useCallback(() => {
-    if (!order || !store) return;
-    const html = buildPrintHtml(order, pricing, store);
-
-    const win = window.open('', '_blank', 'noopener,noreferrer,width=480,height=720');
-    if (!win) return;
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    setTimeout(() => {
-      try {
-        win.print();
-      } catch {
-        /* ignore */
-      }
-    }, 350);
+    printOrderBill(order, pricing, store);
   }, [order, pricing, store]);
 
   if (!open || !order || !store || typeof document === 'undefined') return null;
 
   const address = formatOrderDropAddress(order.drop_address_normalized, order.drop_address_raw);
-  const items = order.items ?? [];
+  const items = (order.items ?? []) as NormalizedOrderLineItem[];
+  const bill = merchantBillPartsFromItems(items.map(mapBillItem), pricing);
 
   return createPortal(
     <div className="fixed inset-0 z-[2600] flex items-center justify-center p-4" role="presentation">
@@ -233,7 +175,7 @@ export function GatiMitraOrderPrintBill({
         <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-gray-800 hide-scrollbar">
           <p className="text-xs text-violet-700 font-bold mb-2">GatiMitra — Restaurant Partner</p>
           <p className="text-xs text-gray-500 mb-1">GatiMitra order:</p>
-          <p className="text-2xl font-extrabold tracking-tight mb-3">{formatOrderIdForPrint(order)}</p>
+          <p className="text-2xl font-extrabold tracking-tight mb-3">{formatOrderIdForPrint(order.formatted_order_id?.trim() || String(order.order_id))}</p>
           <p className="font-bold text-base">{store.storeName}</p>
           {store.cuisineLabel ? <p className="text-gray-600 text-xs">{store.cuisineLabel}</p> : null}
           {store.city ? <p className="text-gray-600 text-xs">{store.city}</p> : null}
@@ -263,7 +205,8 @@ export function GatiMitraOrderPrintBill({
           <ul className="space-y-2">
             {items.map((item, idx) => {
               const qty = item.quantity || 1;
-              const { catalog, net, showStrike, offerBadge } = merchantItemCatalogAndNet(item);
+              const { catalog, net, showStrike, offerBadge } = merchantItemCatalogAndNet(mapBillItem(item));
+              const note = itemCookingNote(mapBillItem(item));
               return (
                 <li key={idx} className="flex justify-between gap-2 text-xs">
                   <span className="min-w-0 flex-1">
@@ -271,6 +214,11 @@ export function GatiMitraOrderPrintBill({
                     {offerBadge ? (
                       <span className="mt-0.5 block text-[10px] font-bold text-amber-700">
                         {offerBadge}
+                      </span>
+                    ) : null}
+                    {note ? (
+                      <span className="mt-0.5 block text-[11px] font-semibold text-amber-800">
+                        Cooking: {note}
                       </span>
                     ) : null}
                   </span>
@@ -291,25 +239,21 @@ export function GatiMitraOrderPrintBill({
             })}
           </ul>
           <div className="mt-3 space-y-1 text-xs border-t border-gray-100 pt-3">
-            {pricing.packaging > 0 ? (
+            {bill.packaging > 0.005 ? (
               <div className="flex justify-between">
                 <span>Packaging</span>
-                <span>{formatMoney(pricing.packaging)}</span>
+                <span>{formatOrderRs(bill.packaging)}</span>
               </div>
             ) : null}
-            <div className="flex justify-between">
-              <span>Taxes</span>
-              <span>{formatMoney(pricing.taxes)}</span>
-            </div>
-            {pricing.discount > 0 ? (
+            {bill.discount > 0 ? (
               <div className="flex justify-between text-amber-700">
                 <span>Discount</span>
-                <span>−{formatMoney(pricing.discount)}</span>
+                <span>−{formatOrderRs(bill.discount)}</span>
               </div>
             ) : null}
             <div className="flex justify-between text-lg font-extrabold pt-1">
               <span>Total</span>
-              <span>{formatMoney(pricing.total)}</span>
+              <span>{formatOrderRs(bill.total)}</span>
             </div>
           </div>
         </div>

@@ -25,6 +25,7 @@ import StoreStatusScreen from "./StoreStatusScreen";
 import OffersScreen from "./OffersScreen";
 import ActivityFeedScreen from "./ActivityFeedScreen";
 import AutoAcceptScreen from "./AutoAcceptScreen";
+import PrinterSettingsScreen from "./PrinterSettingsScreen";
 import { useProfileNav } from "@/context/ProfileNavContext";
 
 const SLUG_TITLES: Record<string, string> = {
@@ -42,6 +43,7 @@ const SLUG_TITLES: Record<string, string> = {
   vacation: "Vacation Mode",
   "preparation-time": "Preparation Time",
   "auto-accept": "Auto Accept Orders",
+  "printer-settings": "Thermal Printer",
   earnings: "Earnings Summary",
   settlements: "Settlement History",
   commission: "Commission Details",
@@ -106,6 +108,10 @@ export default function ProfileSlugScreen() {
 
   if (slug === "auto-accept") {
     return <AutoAcceptScreen />;
+  }
+
+  if (slug === "printer-settings") {
+    return <PrinterSettingsScreen />;
   }
 
   if (slug === "vacation") {

@@ -43,6 +43,8 @@ import { RestaurantFeedbackBottomSheet } from "@/src/components/orders/Restauran
 import { CustomerFeedbackBottomSheet } from "@/src/components/orders/CustomerFeedbackBottomSheet";
 import { FoodPickupVerificationScreen } from "@/src/components/orders/FoodPickupVerificationScreen";
 import { FoodBarcodeScannerScreen } from "@/src/components/orders/FoodBarcodeScannerScreen";
+import { PickupCameraPermissionSheet } from "@/src/components/orders/PickupCameraPermissionSheet";
+import { readCameraPermission } from "@/src/lib/cameraPermission";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
@@ -66,6 +68,7 @@ import {
   useVerifyPickupBarcode,
   useFoodPickupVerificationSettings,
   useMarkFoodPickup,
+  useAcknowledgeFoodPickup,
   useStartRide,
   useCompleteRide,
   useVerifyDeliveryOtp,
@@ -187,6 +190,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const verifyPickupOtp = useVerifyPickupOtp();
   const verifyPickupBarcode = useVerifyPickupBarcode();
   const markFoodPickup = useMarkFoodPickup();
+  const acknowledgeFoodPickup = useAcknowledgeFoodPickup();
   const { data: pickupVerificationSettings } = useFoodPickupVerificationSettings();
   const startRide = useStartRide();
   const completeRide = useCompleteRide();
@@ -214,6 +218,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [riderFoodPickupConfirmed, setRiderFoodPickupConfirmed] = useState(false);
   const [pickupVerificationOpen, setPickupVerificationOpen] = useState(false);
   const [barcodeScannerOpen, setBarcodeScannerOpen] = useState(false);
+  const [scannerCameraGranted, setScannerCameraGranted] = useState(false);
+  const [pickupCameraSheetOpen, setPickupCameraSheetOpen] = useState(false);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
   const foodPickupOtpFromVerificationRef = useRef(false);
   const prevRiderMarkedPickupRef = useRef<boolean | null>(null);
@@ -430,6 +436,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const showFoodPickOrderSheet =
     isFoodOrder &&
     reachSliderDone &&
+    !order?.pickupAcknowledged &&
     !pickOrderSheetDismissed &&
     !pickOrderDetailOpen &&
     !foodDeliveryActive &&
@@ -445,10 +452,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       return;
     }
     if (reachSliderDone && !prevReachSliderDoneRef.current) {
-      setPickOrderSheetDismissed(false);
+      if (!order?.pickupAcknowledged) {
+        setPickOrderSheetDismissed(false);
+      }
     }
     prevReachSliderDoneRef.current = reachSliderDone;
-  }, [isFoodOrder, reachSliderDone, foodDeliveryActive, orderDelivered]);
+  }, [isFoodOrder, reachSliderDone, foodDeliveryActive, orderDelivered, order?.pickupAcknowledged]);
 
   useEffect(() => {
     if (foodDeliveryActive || otpSheetOpen) {
@@ -1224,9 +1233,50 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const handlePickOrderConfirm = useCallback(() => {
     if (!order?.merchantOrderReady) return;
-    setPickOrderSheetDismissed(true);
-    setPickOrderDetailOpen(true);
-  }, [order?.merchantOrderReady]);
+    void acknowledgeFoodPickup
+      .mutateAsync(orderId)
+      .then((data) => {
+        syncRiderOrderDetailCache(queryClient, orderId, data);
+        setPickOrderSheetDismissed(true);
+        setPickOrderDetailOpen(true);
+      })
+      .catch((err) => {
+        Alert.alert(
+          t("orders.activeRide.updateFailedTitle", "Update failed"),
+          extractApiErrorMessage(
+            err,
+            t("orders.activeFood.pickupAckFailed", "Could not confirm pickup. Try again.")
+          )
+        );
+      });
+  }, [order?.merchantOrderReady, acknowledgeFoodPickup, orderId, queryClient, t]);
+
+  const openBarcodeScanner = useCallback(
+    async (opts?: { cameraGranted?: boolean }) => {
+      let granted = opts?.cameraGranted === true;
+      if (!granted) {
+        const permission = await readCameraPermission();
+        granted = permission.granted;
+      }
+      if (!granted) {
+        setPickupCameraSheetOpen(true);
+        return;
+      }
+      setBarcodeError(null);
+      setPickupVerificationOpen(false);
+      setScannerCameraGranted(true);
+      setBarcodeScannerOpen(true);
+    },
+    []
+  );
+
+  const handlePickupCameraGranted = useCallback(() => {
+    setPickupCameraSheetOpen(false);
+    setBarcodeError(null);
+    setPickupVerificationOpen(false);
+    setScannerCameraGranted(true);
+    setBarcodeScannerOpen(true);
+  }, []);
 
   const barcodeVerificationEnabled = pickupVerificationSettings?.barcodeEnabled !== false;
   const otpVerificationEnabled = pickupVerificationSettings?.otpEnabled !== false;
@@ -1288,7 +1338,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     }
 
     if (barcodeVerificationEnabled && !otpVerificationEnabled) {
-      setBarcodeScannerOpen(true);
+      void openBarcodeScanner();
       return;
     }
 
@@ -1311,6 +1361,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     orderId,
     completeFoodPickupVerification,
     t,
+    openBarcodeScanner,
   ]);
 
   const handlePickedOrderSlide = useCallback(() => {
@@ -1608,6 +1659,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const handleVerifyOtp = useCallback(
     (otp: string) => {
+      if (verifyPickupOtp.isPending) return;
+      if (otp.replace(/\D/g, "").length !== 4) return;
       setOtpError(null);
       const gps = riderGps();
       void verifyPickupOtp
@@ -1626,9 +1679,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           setOtpSheetOpen(false);
           setRideStartedOptimistic(true);
           setCameraFitTrigger((n) => n + 1);
-          const gps = riderGps();
+          const rideGps = riderGps();
           void startRide
-            .mutateAsync({ orderId, ...gps })
+            .mutateAsync({ orderId, ...rideGps })
             .then(() => {
               setPickupBannerMessage(
                 t(
@@ -1652,17 +1705,19 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
             });
         })
         .catch((err) => {
+          verifyPickupOtp.reset();
+          setOtpResetKey((k) => k + 1);
           setOtpError(
             extractApiErrorMessage(
               err,
               isFoodOrder
                 ? t(
-                    "orders.activeFood.pickupOtpFailed",
-                    "Incorrect pickup OTP. Check with the restaurant and try again."
+                    "orders.activeFood.pickupOtpInvalid",
+                    "OTP invalid hai. Restaurant se sahi pickup OTP le kar dubara enter karein."
                   )
                 : t(
-                    "orders.activeRide.pickupOtpFailed",
-                    "Incorrect pickup OTP. Ask the passenger for the code in their app."
+                    "orders.activeRide.pickupOtpInvalid",
+                    "OTP invalid hai. Passenger se sahi OTP le kar dubara enter karein."
                   )
             )
           );
@@ -1727,8 +1782,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
               extractApiErrorMessage(
                 err,
                 t(
-                  "orders.activeFood.deliveryOtpFailed",
-                  "Incorrect delivery OTP. Ask the customer for the code shown in their app (Delivery OTP)."
+                  "orders.activeFood.deliveryOtpInvalid",
+                  "OTP invalid hai. Customer se sahi delivery OTP le kar dubara enter karein."
                 )
               )
             );
@@ -1751,10 +1806,19 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   useEffect(() => {
     const deliveryLegActive = isFoodOrder ? foodDeliveryActive : rideStarted;
-    if (deliveryLegActive) {
-      setOtpSheetOpen(false);
-    }
-  }, [isFoodOrder, foodDeliveryActive, rideStarted]);
+    if (!deliveryLegActive) return;
+    if (verifyPickupOtp.isPending || verifyDeliveryOtp.isPending) return;
+    if (otpSheetOpen || deliveryOtpSheetOpen) return;
+    setOtpSheetOpen(false);
+  }, [
+    isFoodOrder,
+    foodDeliveryActive,
+    rideStarted,
+    verifyPickupOtp.isPending,
+    verifyDeliveryOtp.isPending,
+    otpSheetOpen,
+    deliveryOtpSheetOpen,
+  ]);
 
   const navSheetHeight = useMemo(
     () => (isFoodOrder ? FOOD_NAV_SHEET_HEIGHT : PERSON_RIDE_NAV_SHEET_HEIGHT),
@@ -2151,10 +2215,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           barcodeEnabled={barcodeVerificationEnabled}
           otpEnabled={otpVerificationEnabled}
           onBack={() => setPickupVerificationOpen(false)}
-          onScanBarcode={() => {
-            setBarcodeError(null);
-            setPickupVerificationOpen(false);
-            setBarcodeScannerOpen(true);
+          onScanBarcode={(opts) => {
+            void openBarcodeScanner(opts);
           }}
           onEnterOtp={() => {
             setPickupVerificationOpen(false);
@@ -2169,17 +2231,27 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       {isFoodOrder && order ? (
         <FoodBarcodeScannerScreen
           visible={barcodeScannerOpen && !foodDeliveryActive && !orderDelivered}
+          cameraGrantedHint={scannerCameraGranted}
           loading={verifyPickupBarcode.isPending}
           error={barcodeError}
           onClose={() => {
             if (verifyPickupBarcode.isPending) return;
             setBarcodeScannerOpen(false);
+            setScannerCameraGranted(false);
             setBarcodeError(null);
             if (barcodeVerificationEnabled && otpVerificationEnabled) {
               setPickupVerificationOpen(true);
             }
           }}
           onScanned={handleBarcodeScanned}
+        />
+      ) : null}
+
+      {isFoodOrder && order ? (
+        <PickupCameraPermissionSheet
+          visible={pickupCameraSheetOpen && !barcodeScannerOpen}
+          onGranted={handlePickupCameraGranted}
+          onDismiss={() => setPickupCameraSheetOpen(false)}
         />
       ) : null}
 

@@ -33,6 +33,10 @@ const applyImmersiveChrome = (active: boolean) =>
         hideStatusBarSpacer: true,
       }
     : {
+        // Always restore a solid strip — leaving transparent + spacer-off makes
+        // content fall under the system status bar on the next screen.
+        statusBarBackground: DEFAULT_STATUS_BAR_BG,
+        statusBarStyle: DEFAULT_STATUS_BAR_STYLE,
         hideStatusBarSpacer: false,
       };
 

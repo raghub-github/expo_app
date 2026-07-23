@@ -567,14 +567,17 @@ export default function OrdersScreen() {
 
   const visibleOrders = orders.filter((o) => !hiddenOrderIds.has(o.orderId));
 
-  const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
 
   useFocusEffect(
     useCallback(() => {
-      setStatusBarBackground(PAGE_BG, "dark");
+      useScreenChromeStore.setState({
+        statusBarBackground: PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
       return () => resetStatusBarBackground();
-    }, [setStatusBarBackground, resetStatusBarBackground])
+    }, [resetStatusBarBackground])
   );
 
   const activeOrders = useMemo(

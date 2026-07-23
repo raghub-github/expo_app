@@ -35,9 +35,9 @@ export const PERMISSION_ONBOARDING_STEPS: PermissionOnboardingStep[] = [
     key: "battery_optimization",
     title: "Battery Optimization",
     description:
-      "Allow the app to run efficiently in the background so you receive order notifications on time.",
+      "Turn off battery optimization for GatiMitra so order alerts and live tracking keep working when the screen is off.",
     microText:
-      "Disabling battery optimization helps with continuous location tracking and timely notifications.",
+      "Android opens the system “Ignore battery optimizations” dialog. On MIUI / ColorOS / OneUI / Vivo you may also need Battery → Unrestricted or Auto-start.",
     icon: "🔋",
     gradient: ["#f59e0b", "#d97706"],
   },
@@ -47,7 +47,7 @@ export const PERMISSION_ONBOARDING_STEPS: PermissionOnboardingStep[] = [
     description:
       "Allow the app to run in the background so you can receive orders even when the app is not active.",
     microText:
-      "In app settings, enable background activity or remove background restrictions for GatiMitra.",
+      "In app settings, set Battery → Unrestricted (or Allow background usage). On some phones also enable Autostart.",
     icon: "🔄",
     gradient: ["#8b5cf6", "#7c3aed"],
   },

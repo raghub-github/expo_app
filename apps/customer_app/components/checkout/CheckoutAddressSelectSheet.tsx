@@ -18,10 +18,14 @@ import { useQuery, useQueries } from "@tanstack/react-query";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useAddresses } from "@/hooks/useAddresses";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
+import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
 import { getStoreDeliveryQuote, type StoreDeliveryQuote } from "@/services/distance.service";
 import { merchantService } from "@/services/merchant.service";
 import type { Address } from "@/services/address.service";
+
+import { openCheckoutAddAddress } from "@/lib/openCheckoutAddAddress";
+import { OutOfDeliveryZoneSheet } from "@/components/checkout/OutOfDeliveryZoneSheet";
 
 const CX = {
   mint: "#2DB5A0",
@@ -88,6 +92,7 @@ export function CheckoutAddressSelectSheet({
   const { height: windowHeight } = useWindowDimensions();
   const { data: addresses = [], isLoading: addressesLoading } = useAddresses();
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [outOfZoneMessageVisible, setOutOfZoneMessageVisible] = useState(false);
 
   const { data: merchant } = useQuery({
     queryKey: ["merchant", merchantId, "address-sheet"],
@@ -111,16 +116,33 @@ export function CheckoutAddressSelectSheet({
   });
 
   const handleSelect = useCallback(
-    async (addr: Address) => {
+    async (addr: Address, isOutOfZone: boolean, isDeliverable: boolean) => {
       if (busyId != null) return;
+      if (isOutOfZone) {
+        setOutOfZoneMessageVisible(true);
+        return;
+      }
+      // A row is selectable only after the canonical store quote explicitly
+      // confirms serviceability. Unknown/loading/error states never select.
+      if (!isDeliverable || !merchantId) return;
       setBusyId(addr.id);
       try {
+        const latestQuote = await getStoreDeliveryQuote({
+          storeId: merchantId,
+          addressId: addr.id,
+          serviceType: "FOOD",
+          skipCache: true,
+        });
+        if (!latestQuote.serviceable) {
+          setOutOfZoneMessageVisible(true);
+          return;
+        }
         await onSelectAddress(addr);
       } finally {
         setBusyId(null);
       }
     },
-    [busyId, onSelectAddress]
+    [busyId, merchantId, onSelectAddress]
   );
 
   const storeLat = merchant?.latitude ?? null;
@@ -156,8 +178,12 @@ export function CheckoutAddressSelectSheet({
             <Pressable
               style={styles.actionRow}
               onPress={() => {
-                onClose();
-                router.push({ pathname: "/location", params: { afterSaveReturn: "checkout" } });
+                void openCheckoutAddAddress({
+                  router,
+                  closeAddressSheet: onClose,
+                  hideCheckoutDrawer: true,
+                  hideCartGate: true,
+                });
               }}
               android_ripple={{ color: "rgba(45, 181, 160, 0.12)" }}
             >
@@ -194,12 +220,14 @@ export function CheckoutAddressSelectSheet({
             >
               <View style={[styles.actionPanel, styles.actionPanelInScroll]}>
                 {addresses.map((addr, index) => {
-                  const isSelected = selectedAddressId === addr.id;
                   const busy = busyId === addr.id;
                   const dist = formatAddressToStoreDistance(storeLat, storeLng, addr);
                   const title = addr.contactName?.trim() || addr.label || "Saved address";
                   const quote = serviceability[index]?.data;
                   const isOutOfZone = isAddressOutOfZone(quote, storeLat, storeLng, addr);
+                  const isDeliverable = quote?.serviceable === true;
+                  const isChecking = serviceability[index]?.isPending === true;
+                  const isSelected = selectedAddressId === addr.id && isDeliverable;
                   const showLabel =
                     addr.label?.trim() &&
                     addr.label.trim().toLowerCase() !== title.toLowerCase();
@@ -209,11 +237,15 @@ export function CheckoutAddressSelectSheet({
                       style={[
                         styles.actionRow,
                         isSelected && styles.actionRowSelected,
+                        isOutOfZone && styles.actionRowUnavailable,
                         index === addresses.length - 1 && styles.actionRowLast,
                       ]}
-                      onPress={() => void handleSelect(addr)}
-                      disabled={busyId != null}
-                      android_ripple={{ color: "rgba(45, 181, 160, 0.1)" }}
+                      onPress={() => void handleSelect(addr, isOutOfZone, isDeliverable)}
+                      disabled={busyId != null || (!isOutOfZone && !isDeliverable)}
+                      accessibilityState={{ disabled: !isDeliverable }}
+                      android_ripple={
+                        isOutOfZone ? undefined : { color: "rgba(45, 181, 160, 0.1)" }
+                      }
                     >
                       <View style={styles.actionLeft}>
                         {busy ? (
@@ -222,7 +254,7 @@ export function CheckoutAddressSelectSheet({
                           <Ionicons
                             name={checkoutAddressRowIcon(addr.label, addr.contactName)}
                             size={22}
-                            color={CX.mint}
+                            color={isOutOfZone ? "#9CA3AF" : CX.mint}
                           />
                         )}
                         <View style={styles.actionTextCol}>
@@ -241,19 +273,25 @@ export function CheckoutAddressSelectSheet({
                               {addr.label}
                             </CheckoutText>
                           ) : null}
-                          <CheckoutText style={styles.actionSub}>{addr.fullAddress}</CheckoutText>
+                          <DeliveryAddressText
+                            variant="checkout"
+                            address={addr.fullAddress}
+                            style={styles.actionSub}
+                          />
                           {dist !== "—" ? (
                             <CheckoutText style={styles.actionDist}>{dist}</CheckoutText>
                           ) : null}
                         </View>
                       </View>
-                      {isSelected ? (
+                      {isOutOfZone ? null : isChecking ? (
+                        <ActivityIndicator size="small" color="#9CA3AF" />
+                      ) : isSelected ? (
                         <View style={styles.selectedPill}>
                           <CheckoutText style={styles.selectedPillText}>SELECTED</CheckoutText>
                         </View>
-                      ) : (
+                      ) : isDeliverable ? (
                         <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-                      )}
+                      ) : null}
                     </Pressable>
                   );
                 })}
@@ -262,6 +300,10 @@ export function CheckoutAddressSelectSheet({
           )}
         </View>
       </View>
+      <OutOfDeliveryZoneSheet
+        visible={outOfZoneMessageVisible}
+        onClose={() => setOutOfZoneMessageVisible(false)}
+      />
     </Modal>
   );
 }
@@ -315,6 +357,7 @@ const styles = StyleSheet.create({
   },
   actionRowLast: { borderBottomWidth: 0 },
   actionRowSelected: { backgroundColor: "#F0FDFA" },
+  actionRowUnavailable: { backgroundColor: "#FAFAFA" },
   actionLeft: {
     flexDirection: "row",
     alignItems: "flex-start",

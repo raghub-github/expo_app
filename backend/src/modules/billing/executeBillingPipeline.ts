@@ -623,6 +623,12 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     addon_total: round2(ctx.addonSubtotal),
     discount_total: round2(state.discountTotal),
     delivery_fee: round2(rem.delivery),
+    // Gross = delivery after charges but BEFORE discounts (remAfterCharges), i.e.
+    // the standard rate-engine fare. Net = rem.delivery (after customer subsidies).
+    // Rider payout is derived from gross so free delivery / coupons / membership
+    // never reduce rider earnings; the difference is a platform-absorbed subsidy.
+    delivery_fee_gross: round2(remAfterCharges.delivery),
+    delivery_subsidy: round2(Math.max(0, remAfterCharges.delivery - rem.delivery)),
     platform_fee: round2(rem.platform),
     packaging_fee: round2(rem.packaging),
     surge_fee: round2(rem.surge),

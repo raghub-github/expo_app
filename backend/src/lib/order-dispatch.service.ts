@@ -388,6 +388,18 @@ export async function executeDispatchWave(sessionId: number): Promise<{
   const eligible = await listEligibleRidersForDispatchOrder(target);
   const toNotify = await filterNewlyEligibleRiders(sessionId, eligible);
   const notified = await notifyEligibleRidersDispatchOffer(target, toNotify);
+  console.info(
+    "[dispatch] wave_dispatched",
+    JSON.stringify({
+      orderId: target.orderId,
+      serviceType: target.serviceType,
+      waveNumber,
+      configuredRadiusMeters: target.effectiveRadiusMeters,
+      eligibleWithinRadius: eligible.length,
+      newlyNotified: notified,
+      alreadyNotifiedEarlierWaves: eligible.length - toNotify.length,
+    })
+  );
   await recordRiderNotifications(
     sessionId,
     waveNumber,
@@ -464,6 +476,25 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       updated_at = NOW()
     WHERE id = ${sessionId}
   `;
+
+  // Wave expansion audit — all values sourced live from Super Admin config.
+  const [prevRadius, nextRadius] = await Promise.all([
+    fetchEffectiveDispatchRadiusMeters(serviceType, currentWave).catch(() => null),
+    fetchEffectiveDispatchRadiusMeters(serviceType, nextWave).catch(() => null),
+  ]);
+  console.info(
+    "[dispatch] wave_expanded",
+    JSON.stringify({
+      orderCoreId,
+      serviceType,
+      fromWave: currentWave,
+      toWave: nextWave,
+      fromRadiusMeters: prevRadius,
+      toRadiusMeters: nextRadius,
+      waitSecondsUntilNextWave: waveSettings.waveIntervalSeconds,
+      maxWaves: waveSettings.maxWaves,
+    })
+  );
 
   await executeDispatchWave(sessionId);
   return true;

@@ -6,20 +6,16 @@
  *
  * Endpoints:
  *   POST /v1/internal/notifications/report-dead-tokens
- *     Body: { tokens: string[] }
- *     Purges the given Expo tokens from both expo_push_tokens and
- *     merchant_store_push_tokens. Called by notification-worker whenever
- *     Expo returns DeviceNotRegistered / InvalidCredentials.
- *
+ *   POST /v1/internal/notifications/delivery-status
  *   POST /v1/internal/notifications/smoke-test
- *     Body: { userId?: string; templateCode?: string; deviceToken?: string }
- *     Sends one test notification and returns the full log row so operators
- *     can verify the pipeline end-to-end without going through the UI.
+ *   GET  /v1/internal/notifications/health
  */
 import type { FastifyPluginAsync } from "fastify";
 import { getEnv } from "../../config/env.js";
 import { getSql } from "../../db/client.js";
 import { send } from "./notificationService.js";
+import { updateLogStatus, syncCampaignCountsFromLogs } from "./db.js";
+import type { NotificationStatus } from "./types.js";
 
 function checkSecret(headers: Record<string, string | string[] | undefined>): boolean {
   const env = getEnv();
@@ -29,6 +25,14 @@ function checkSecret(headers: Record<string, string | string[] | undefined>): bo
   return typeof h === "string" && h === s;
 }
 
+const ALLOWED_STATUSES = new Set<NotificationStatus>([
+  "sent",
+  "delivered",
+  "failed",
+  "clicked",
+  "expired",
+]);
+
 export const notificationInternalRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { tokens: string[] } }>(
     "/notifications/report-dead-tokens",
@@ -37,11 +41,9 @@ export const notificationInternalRoutes: FastifyPluginAsync = async (app) => {
       const tokens = (req.body?.tokens ?? []).filter((t): t is string => typeof t === "string" && t.length > 0);
       if (tokens.length === 0) return reply.send({ deleted: 0 });
       const sql = getSql();
-      // Delete from both token tables so a re-register from the mobile app
-      // starts clean.
       const a = (await sql`
         DELETE FROM public.expo_push_tokens
-        WHERE token = ANY(${tokens}::text[])
+        WHERE expo_push_token = ANY(${tokens}::text[])
         RETURNING 1
       `) as unknown as Array<unknown>;
       const b = (await sql`
@@ -49,13 +51,71 @@ export const notificationInternalRoutes: FastifyPluginAsync = async (app) => {
         WHERE token = ANY(${tokens}::text[])
         RETURNING 1
       `) as unknown as Array<unknown>;
+      const c = (await sql`
+        DELETE FROM public.native_device_push_tokens
+        WHERE native_token = ANY(${tokens}::text[])
+        RETURNING 1
+      `) as unknown as Array<unknown>;
       req.log.info(
-        { deleted_expo: a.length, deleted_merchant: b.length, reported: tokens.length },
+        {
+          deleted_expo: a.length,
+          deleted_merchant: b.length,
+          deleted_native: c.length,
+          reported: tokens.length,
+        },
         "notification_dead_tokens_purged",
       );
-      return reply.send({ deleted: a.length + b.length, deleted_expo: a.length, deleted_merchant: b.length });
+      return reply.send({
+        deleted: a.length + b.length + c.length,
+        deleted_expo: a.length,
+        deleted_merchant: b.length,
+        deleted_native: c.length,
+      });
     },
   );
+
+  app.post<{
+    Body: {
+      updates?: Array<{
+        notificationId: string;
+        status: NotificationStatus;
+        errorCode?: string;
+        errorMessage?: string;
+      }>;
+    };
+  }>("/notifications/delivery-status", async (req, reply) => {
+    if (!checkSecret(req.headers)) return reply.code(401).send({ error: "unauthorized" });
+    const updates = (req.body?.updates ?? []).filter(
+      (u) =>
+        u &&
+        typeof u.notificationId === "string" &&
+        /^[0-9a-f-]{36}$/i.test(u.notificationId) &&
+        ALLOWED_STATUSES.has(u.status),
+    );
+    if (updates.length === 0) return reply.send({ updated: 0 });
+
+    const campaignIds = new Set<number>();
+    const sql = getSql();
+    let updated = 0;
+    for (const u of updates) {
+      await updateLogStatus(u.notificationId, u.status, {
+        errorCode: u.errorCode,
+        errorMessage: u.errorMessage,
+      });
+      updated++;
+      const rows = (await sql`
+        SELECT campaign_id FROM public.notification_dispatch_logs
+        WHERE notification_id = ${u.notificationId}::uuid
+        LIMIT 1
+      `) as unknown as Array<{ campaign_id: number | null }>;
+      const cid = rows[0]?.campaign_id;
+      if (cid) campaignIds.add(cid);
+    }
+    for (const cid of campaignIds) {
+      await syncCampaignCountsFromLogs(cid);
+    }
+    return reply.send({ updated, campaigns: campaignIds.size });
+  });
 
   app.post<{
     Body: {

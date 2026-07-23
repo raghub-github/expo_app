@@ -1,9 +1,10 @@
-import { getSql } from "../db/client.js";
+import { getSql, withSqlRetry } from "../db/client.js";
 import {
   buildCustomisationDetail,
   customizationLabelsForCustomer,
   findCartLineForOrderItem,
 } from "./order-item-customisation.js";
+import { readOrderItemSpecialInstructions } from "./order-item-special-instructions.js";
 
 export type CustomerOrderDetailItem = {
   name: string;
@@ -14,6 +15,7 @@ export type CustomerOrderDetailItem = {
   vegNonVeg?: string | null;
   variantName?: string | null;
   customization?: string | null;
+  specialInstructions?: string | null;
 };
 
 type CoreItemRow = {
@@ -27,6 +29,7 @@ type CoreItemRow = {
   vegNonveg?: string | null;
   variantName?: string | null;
   itemSnapshot?: unknown;
+  specialInstructions?: string | null;
 };
 
 function num(v: unknown): number {
@@ -83,18 +86,20 @@ async function loadAddonsByCoreItemIds(
 
   try {
     const sql = getSql();
-    const rows = await sql<
-      Array<{
-        order_item_id: number;
-        addon_name: string | null;
-        quantity: number | null;
-        addon_price: unknown;
-      }>
-    >`
+    const rows = await withSqlRetry(() =>
+      sql<
+        Array<{
+          order_item_id: number;
+          addon_name: string | null;
+          quantity: number | null;
+          addon_price: unknown;
+        }>
+      >`
       SELECT order_item_id, addon_name, quantity, addon_price
       FROM orders_core_item_addons
-      WHERE order_item_id = ANY(${ids})
-    `;
+      WHERE order_item_id = ANY(${ids}::int[])
+    `,
+    );
     for (const row of rows) {
       const id = Number(row.order_item_id);
       if (!Number.isFinite(id)) continue;
@@ -119,13 +124,15 @@ async function loadPendingCartLines(orderIdText: string): Promise<Record<string,
   if (!key) return [];
   try {
     const sql = getSql();
-    const rows = await sql<Array<{ items_snapshot: unknown }>>`
+    const rows = await withSqlRetry(() =>
+      sql<Array<{ items_snapshot: unknown }>>`
       SELECT items_snapshot
       FROM pending_orders
       WHERE finalized_order_id = ${key}
       ORDER BY id DESC
       LIMIT 1
-    `;
+    `,
+    );
     return extractCartLines(rows[0]?.items_snapshot);
   } catch (err) {
     const code = (err as { code?: string })?.code;
@@ -134,27 +141,76 @@ async function loadPendingCartLines(orderIdText: string): Promise<Record<string,
   }
 }
 
+/** Batch-load latest pending cart snapshots for many orders (orders list). */
+export async function loadPendingCartLinesByOrderIds(
+  orderIdTexts: string[],
+): Promise<Map<string, Record<string, unknown>[]>> {
+  const out = new Map<string, Record<string, unknown>[]>();
+  const keys = [...new Set(orderIdTexts.map((k) => k.trim()).filter(Boolean))];
+  if (keys.length === 0) return out;
+
+  try {
+    const sql = getSql();
+    const rows = await withSqlRetry(() =>
+      sql<Array<{ finalized_order_id: string; items_snapshot: unknown }>>`
+      SELECT DISTINCT ON (finalized_order_id)
+        finalized_order_id,
+        items_snapshot
+      FROM pending_orders
+      WHERE finalized_order_id = ANY(${keys}::text[])
+      ORDER BY finalized_order_id, id DESC
+    `,
+    );
+    for (const row of rows) {
+      const key = String(row.finalized_order_id ?? "").trim();
+      if (!key) continue;
+      out.set(key, extractCartLines(row.items_snapshot));
+    }
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === "42P01") return out;
+    throw err;
+  }
+  return out;
+}
+
+export async function loadAddonsByCoreItemIdsForOrders(
+  coreItemIds: number[],
+): Promise<Map<number, Array<{ name: string; quantity: number; price: number }>>> {
+  return loadAddonsByCoreItemIds(coreItemIds);
+}
+
 /** Build customer-facing line items with variant size + add-ons from DB, cart snapshot, and item_snapshot. */
 export async function buildCustomerOrderDetailItems(args: {
   orderIdText: string;
   coreItems: CoreItemRow[];
   itemsJsonFallback?: unknown;
+  /** Skip pending_orders lookup when prefetched for orders list. */
+  pendingCartLines?: Record<string, unknown>[];
+  /** Skip addon query when prefetched for orders list. */
+  addonsByItemId?: Map<number, Array<{ name: string; quantity: number; price: number }>>;
 }): Promise<CustomerOrderDetailItem[]> {
-  const { orderIdText, coreItems, itemsJsonFallback } = args;
+  const { orderIdText, coreItems, itemsJsonFallback, pendingCartLines, addonsByItemId } = args;
   const coreItemIds = coreItems.map((i) => Number(i.id)).filter((id) => Number.isFinite(id) && id > 0);
-  const addonsByItemId = await loadAddonsByCoreItemIds(coreItemIds);
+  const addonsByItemIdResolved =
+    addonsByItemId ?? (await loadAddonsByCoreItemIds(coreItemIds));
   const cartLines = mergeCartLines([
-    await loadPendingCartLines(orderIdText),
+    pendingCartLines ?? (await loadPendingCartLines(orderIdText)),
     itemsJsonFallback,
   ]);
 
   return coreItems.map((row, lineIndex) => {
-    const dbAddons = addonsByItemId.get(Number(row.id)) ?? [];
+    const dbAddons = addonsByItemIdResolved.get(Number(row.id)) ?? [];
     const cartLine = findCartLineForOrderItem(cartLines, {
       lineIndex,
       menuItemId: row.menuItemId != null ? Number(row.menuItemId) : null,
       name: String(row.itemName ?? ""),
       variant: row.variantName ?? null,
+    });
+    const specialInstructions = readOrderItemSpecialInstructions({
+      relational: row.specialInstructions,
+      itemSnapshot: (row.itemSnapshot as Record<string, unknown> | null) ?? null,
+      cartLine,
     });
     const detail = buildCustomisationDetail({
       variantName: row.variantName ?? null,
@@ -163,6 +219,7 @@ export async function buildCustomerOrderDetailItems(args: {
       cartLine,
       storedAddonPrice: num(row.addonPrice),
       addons: dbAddons,
+      specialInstructions,
     });
     const { variantDisplay, addonLines } = customizationLabelsForCustomer(detail);
     const qty = row.quantity ?? 1;
@@ -176,6 +233,7 @@ export async function buildCustomerOrderDetailItems(args: {
       vegNonVeg: null as string | null,
       variantName: variantDisplay,
       customization: addonLines.length > 0 ? addonLines.join(" · ") : null,
+      specialInstructions,
     };
   });
 }

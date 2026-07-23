@@ -5,7 +5,7 @@
  * Order tracking dock: food browse + /orders when user has active deliveries.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Image, Modal, Pressable, Alert, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
@@ -41,8 +41,6 @@ import { useAuthStore } from "@/store/authStore";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
-
-import { tryNavigateToFoodCheckout } from "@/lib/cartCheckoutGate";
 
 /** Shown instead of multi-cart checkout until the feature exists. */
 const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
@@ -195,6 +193,7 @@ export function GlobalFloatingCart() {
    * food route for a few frames while checkout mounts, which caused a flicker.
    */
   const [hideForCheckoutNav, setHideForCheckoutNav] = useState(false);
+  const checkoutNavLockRef = useRef(false);
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
@@ -358,20 +357,27 @@ export function GlobalFloatingCart() {
       return;
     }
     // Left checkout (back to food browse) — allow the floating cart again.
+    checkoutNavLockRef.current = false;
     setHideForCheckoutNav(false);
   }, [pathname]);
 
   const handleCartPress = () => {
-    if (isCartStoreClosed) return;
+    if (isCartStoreClosed || checkoutNavLockRef.current) return;
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
-    void prefetchSubscriptionPlans(queryClient);
 
-    // Wait for eligibility, then open ONLY the correct destination (checkout or
-    // Outside Delivery Range). Do not hide the cart until checkout actually opens.
-    void tryNavigateToFoodCheckout(router, queryClient).then((opened) => {
-      if (opened) setHideForCheckoutNav(true);
-    });
+    // Checkout owns authoritative address/serviceability validation. Navigate
+    // immediately on the first tap instead of waiting on a pre-navigation quote.
+    checkoutNavLockRef.current = true;
+    setHideForCheckoutNav(true);
+    useCartCheckoutGateStore.getState().hide();
+    void prefetchSubscriptionPlans(queryClient);
+    try {
+      router.navigate("/checkout" as never);
+    } catch {
+      checkoutNavLockRef.current = false;
+      setHideForCheckoutNav(false);
+    }
   };
 
   /** Store inner page (merchant menu). */

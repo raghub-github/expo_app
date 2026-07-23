@@ -41,12 +41,15 @@ export function calculatedRouteToSnapshot(
   };
 }
 
-export async function fetchAndStoreRideRoute(args: {
-  pickup: LatLng;
-  drop: LatLng;
-  stops?: LatLng[];
-  force?: boolean;
-}): Promise<RideRouteSnapshot | null> {
+export async function fetchAndStoreRideRoute(
+  args: {
+    pickup: LatLng;
+    drop: LatLng;
+    stops?: LatLng[];
+    force?: boolean;
+  },
+  opts?: { isStale?: () => boolean }
+): Promise<RideRouteSnapshot | null> {
   const stops = args.stops ?? [];
   const routeKey = buildRideRouteKey({
     pickupLat: args.pickup.latitude,
@@ -67,6 +70,10 @@ export async function fetchAndStoreRideRoute(args: {
   }
 
   const route = await resolveCanonicalRideRoute(args.pickup, stops, args.drop);
+  if (opts?.isStale?.()) {
+    logRideRouteDebug("resolve_stale", { routeKey });
+    return null;
+  }
   if (!route) {
     logRideRouteDebug("resolve_failed", {
       pickup: args.pickup,
@@ -77,6 +84,10 @@ export async function fetchAndStoreRideRoute(args: {
   }
 
   const snapshot = calculatedRouteToSnapshot(args.pickup, args.drop, stops, route);
+  if (opts?.isStale?.()) {
+    logRideRouteDebug("store_stale", { routeKey });
+    return null;
+  }
   useRideRouteStore.getState().setRouteSnapshot(routeKey, snapshot);
 
   logRideRouteDebug("resolved", {

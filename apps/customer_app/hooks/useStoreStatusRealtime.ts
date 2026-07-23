@@ -82,7 +82,17 @@ export function useStoreStatusRealtime() {
 
           // OPEN/CLOSED chip everywhere (list, card, detail). setStatus is a
           // no-op when the value is unchanged, so 30s-tick heartbeat writes are cheap.
+          const prevStatus = useStoreStatusStore.getState().getStatus(storeId);
           setStatus(storeId, liveStatus);
+
+          // Genuine open↔closed flip → the backend-formatted `statusMessage`
+          // ("Closed · opens Thu at 11:00") has changed too. Invalidate the list/search
+          // caches so the card refetches the fresh backend message — the single source of
+          // truth — instead of showing a stale label. Skips the 30s heartbeat (no flip).
+          if (prevStatus != null && prevStatus !== liveStatus) {
+            void queryClient.invalidateQueries({ queryKey: ["merchants"] });
+            void queryClient.invalidateQueries({ queryKey: ["search"] });
+          }
 
           // Only touch the query caches for a store the user actually has in
           // view (avoids a persisted-cache read on every platform-wide event).

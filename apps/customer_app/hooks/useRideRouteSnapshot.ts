@@ -4,6 +4,8 @@ import { fetchAndStoreRideRoute } from "@/services/rideRoute.service";
 import { useRideRouteStore } from "@/store/rideRouteStore";
 import type { LatLng } from "@/services/directions.service";
 
+const EMPTY_POLYLINE: LatLng[] = [];
+
 type Args = {
   pickup: LatLng | null;
   drop: LatLng | null;
@@ -22,22 +24,44 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
   const [loading, setLoading] = useState(false);
   const requestRef = useRef(0);
 
+  const pickupLat = pickup?.latitude ?? null;
+  const pickupLng = pickup?.longitude ?? null;
+  const dropLat = drop?.latitude ?? null;
+  const dropLng = drop?.longitude ?? null;
+  const stopsKey = useMemo(
+    () =>
+      stops
+        .map((s) => `${s.latitude.toFixed(6)},${s.longitude.toFixed(6)}`)
+        .join("|"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serialized stop coords
+    [stops.map((s) => `${s.latitude},${s.longitude}`).join("|")]
+  );
+
   const routeKey = useMemo(() => {
-    if (!pickup || !drop) return null;
+    if (pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
+      return null;
+    }
     return buildRideRouteKey({
-      pickupLat: pickup.latitude,
-      pickupLng: pickup.longitude,
-      dropLat: drop.latitude,
-      dropLng: drop.longitude,
-      stops: stops.map((s) => ({ latitude: s.latitude, longitude: s.longitude })),
+      pickupLat,
+      pickupLng,
+      dropLat,
+      dropLng,
+      stops,
     });
-  }, [pickup, drop, stops]);
+  }, [pickupLat, pickupLng, dropLat, dropLng, stopsKey, stops]);
 
   const snapshot =
     routeKey && storeKey === routeKey && storeSnapshot ? storeSnapshot : null;
 
   useEffect(() => {
-    if (!enabled || !pickup || !drop || !routeKey) {
+    if (
+      !enabled ||
+      pickupLat == null ||
+      pickupLng == null ||
+      dropLat == null ||
+      dropLng == null ||
+      !routeKey
+    ) {
       setLoading(false);
       return;
     }
@@ -49,21 +73,33 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
 
     const requestId = ++requestRef.current;
     setLoading(true);
-    void fetchAndStoreRideRoute({ pickup, drop, stops }).finally(() => {
-      if (requestId === requestRef.current) setLoading(false);
-    });
-  }, [enabled, pickup, drop, routeKey, snapshot, stops]);
+    void fetchAndStoreRideRoute(
+      {
+        pickup: { latitude: pickupLat, longitude: pickupLng },
+        drop: { latitude: dropLat, longitude: dropLng },
+        stops,
+      },
+      {
+        isStale: () => requestId !== requestRef.current,
+      }
+    )
+      .catch(() => null)
+      .finally(() => {
+        if (requestId === requestRef.current) setLoading(false);
+      });
+  }, [enabled, pickupLat, pickupLng, dropLat, dropLng, routeKey, snapshot, stopsKey, stops]);
 
   const tripKm = snapshot?.routeDistanceKm ?? null;
   const routeEtaMins = snapshot?.routeEtaMinutes ?? null;
-  const routeCoordinates = snapshot?.routePolyline ?? [];
+  const routeCoordinates = snapshot?.routePolyline ?? EMPTY_POLYLINE;
+  const routeLoading = enabled && routeKey != null && snapshot == null && loading;
 
   return {
     snapshot,
     tripKm,
     routeEtaMins,
     routeCoordinates,
-    loading,
+    loading: routeLoading,
     routeKey,
   };
 }

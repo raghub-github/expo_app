@@ -1,8 +1,18 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { StyleSheet, Platform, Vibration, View, Pressable } from "react-native";
+import {
+  StyleSheet,
+  Platform,
+  Vibration,
+  View,
+  Pressable,
+  type GestureResponderEvent,
+} from "react-native";
 import { perfMark, perfMeasure } from "@/lib/perfTrace";
+import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
+import { useCartChromeStore } from "@/store/cartChromeStore";
+import { useCartStore } from "@/store/cartStore";
 
 /**
  * Cart chrome — forest green outline ADD (white pill) + matching stepper.
@@ -14,11 +24,40 @@ const QTY_FILL = "#E8F5EE";
 
 /** Shared visual height — ADD outline and qty stepper must match exactly. */
 export const MENU_ADD_CONTROL_HEIGHT = 40;
+/** Slightly taller in-cart stepper; touch zones remain at least 48dp. */
+export const MENU_STEPPER_CONTROL_HEIGHT = 48;
+
+function merchantCartTotal(merchantId: string): number {
+  const cart = useCartStore.getState();
+  if (!merchantCartMatchesRoute(cart.merchantId, merchantId)) return 0;
+  return cart.items.reduce((n, item) => n + item.quantity, 0);
+}
+
+/**
+ * Let React commit the optimistic stepper (+ Continue flash) before the Zustand
+ * cart write fans out to every menu-row subscriber. Same-turn `onAdd()` was
+ * blocking paint for 2–3s on the full-mount merchant menu.
+ */
+function afterOptimisticPaint(fn: () => void): void {
+  requestAnimationFrame(() => {
+    setTimeout(fn, 0);
+  });
+}
+
+/** Block Add after last-item − so the remounted Add button cannot eat the same finger. */
+const REMOVAL_ADD_GUARD_MS = 750;
 
 type InstantCartControlProps = {
   itemKey: string;
+  /** Store id — flashes Continue dock on pressIn before cart write. */
+  merchantId?: string;
   quantity: number;
   disabled?: boolean;
+  /**
+   * When false (customisable dishes), skip local optimistic qty — ADD opens a sheet
+   * and does not write cart until confirm. Prevents a stuck stepper on sheet cancel.
+   */
+  allowOptimisticAdd?: boolean;
   onAdd: () => void;
   onIncrement: () => void;
   onDecrement: () => void;
@@ -27,89 +66,241 @@ type InstantCartControlProps = {
 
 /**
  * ADD / ± cart control.
- * Fires on `onPressIn` only (instant) — nested FlashList/ScrollView must not eat the first tap.
- * − | qty | + are three equal flex columns with separate circular hit targets.
+ * Fires on `onPressIn` (instant) with `onPress` as fallback when pressIn is cancelled.
+ * Optimistic qty + Continue flash paint first; cart store write is deferred one frame.
+ * Last-item decrement writes cart immediately and suppresses Add for the same gesture.
  */
 export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantCartControl({
   itemKey,
+  merchantId,
   quantity,
   disabled = false,
+  allowOptimisticAdd = true,
   onAdd,
   onIncrement,
   onDecrement,
   accessibilityLabel,
 }: InstantCartControlProps) {
-  const displayQty = quantity;
+  const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
+  const displayQty = optimisticQty ?? quantity;
+
+  /** Invalidates deferred cart writes from older taps (stops remove→re-add races). */
+  const opSeqRef = useRef(0);
+  /** After qty hits 0, ignore Add until this timestamp (same-finger remount guard). */
+  const ignoreAddUntilRef = useRef(0);
+
+  useEffect(() => {
+    setOptimisticQty(null);
+    opSeqRef.current += 1;
+    ignoreAddUntilRef.current = 0;
+  }, [itemKey]);
+
+  useEffect(() => {
+    if (optimisticQty != null && quantity === optimisticQty) {
+      setOptimisticQty(null);
+    }
+  }, [quantity, optimisticQty]);
 
   /**
-   * Blocks double-fire if pressIn + press both arrive for one gesture.
-   * Keyed by itemKey (not just a timestamp) so a FlashList-recycled row that now
-   * represents a different dish is never blocked by the previous dish's lock.
+   * Never snap optimistic 0 back up to a stale cart qty=1 — that looks like an
+   * automatic re-add. Keep removal optimism until the cart catches up to 0.
    */
-  const lastFiredKeyRef = useRef<string | null>(null);
-  const lastFiredAtRef = useRef(0);
+  useEffect(() => {
+    if (optimisticQty == null) return;
+    const t = setTimeout(() => {
+      setOptimisticQty((prev) => {
+        if (prev == null) return null;
+        if (quantity === prev) return null;
+        if (prev === 0 && quantity > 0) return 0;
+        return null;
+      });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [optimisticQty, quantity]);
 
-  const runOnce = useCallback(
-    (fn: () => void) => {
-      if (disabled) return;
-      const now = Date.now();
-      if (lastFiredKeyRef.current === itemKey && now - lastFiredAtRef.current < 90) return;
-      lastFiredKeyRef.current = itemKey;
-      lastFiredAtRef.current = now;
-      if (Platform.OS === "android") Vibration.vibrate(6);
-      fn();
-    },
-    [disabled, itemKey]
-  );
+  /**
+   * One physical tap = one quantity change.
+   * Android can emit pressIn → pressOut → press; clearing the lock on pressOut
+   * lets onPress fire a second update. Keep the lock for the whole gesture id.
+   */
+  const gestureIdRef = useRef(0);
+  const firedGestureIdRef = useRef(-1);
+  const stepperWidthRef = useRef(0);
 
-  /** Dev-only: earliest possible JS-side timestamp for this tap, before any handler logic runs. */
+  const beginGesture = useCallback(() => {
+    gestureIdRef.current += 1;
+    return gestureIdRef.current;
+  }, []);
+
+  const tryConsumeGesture = useCallback((gestureId: number) => {
+    if (disabled) return false;
+    if (firedGestureIdRef.current === gestureId) return false;
+    firedGestureIdRef.current = gestureId;
+    if (Platform.OS === "android") Vibration.vibrate(6);
+    return true;
+  }, [disabled]);
+
   const markTap = useCallback(() => {
     perfMark(`tap:${itemKey}`);
     perfMark("tap:last");
   }, [itemKey]);
 
+  const scheduleCartWrite = useCallback((seq: number, fn: () => void) => {
+    afterOptimisticPaint(() => {
+      if (opSeqRef.current !== seq) return;
+      fn();
+    });
+  }, []);
+
   const handleAdd = useCallback(() => {
+    if (Date.now() < ignoreAddUntilRef.current) return;
     markTap();
-    runOnce(onAdd);
-  }, [markTap, onAdd, runOnce]);
+    const seq = ++opSeqRef.current;
+    if (allowOptimisticAdd) {
+      setOptimisticQty((prev) => (prev ?? quantity) + 1);
+      if (merchantId) {
+        useCartChromeStore.getState().flashAdd(merchantId, 1, merchantCartTotal(merchantId));
+      }
+      scheduleCartWrite(seq, onAdd);
+    } else {
+      onAdd();
+    }
+  }, [allowOptimisticAdd, markTap, merchantId, onAdd, quantity, scheduleCartWrite]);
 
   const handleInc = useCallback(() => {
+    if (Date.now() < ignoreAddUntilRef.current) return;
     markTap();
-    runOnce(onIncrement);
-  }, [markTap, onIncrement, runOnce]);
+    const seq = ++opSeqRef.current;
+    setOptimisticQty((prev) => (prev ?? quantity) + 1);
+    if (merchantId) {
+      useCartChromeStore.getState().flashAdd(merchantId, 1, merchantCartTotal(merchantId));
+    }
+    scheduleCartWrite(seq, onIncrement);
+  }, [markTap, merchantId, onIncrement, quantity, scheduleCartWrite]);
 
   const handleDec = useCallback(() => {
     markTap();
-    runOnce(onDecrement);
-  }, [markTap, onDecrement, runOnce]);
+    const seq = ++opSeqRef.current;
+    const nextQty = Math.max(0, (optimisticQty ?? quantity) - 1);
+    setOptimisticQty(nextQty);
+    if (merchantId) {
+      useCartChromeStore.getState().flashAdd(merchantId, -1, merchantCartTotal(merchantId));
+    }
 
-  /**
-   * Dev-only: fires once the store update for this tap has propagated back into this
-   * row's `quantity` prop and React has committed the re-render — i.e. "stepper visible."
-   */
+    if (nextQty === 0) {
+      // Same finger remounts Add under the touch — block that ghost press.
+      ignoreAddUntilRef.current = Date.now() + REMOVAL_ADD_GUARD_MS;
+      // Commit removal immediately so a deferred + / Add cannot win the race.
+      onDecrement();
+      // Invalidate any older deferred + writes still in the rAF queue.
+      opSeqRef.current = seq;
+      return;
+    }
+
+    scheduleCartWrite(seq, onDecrement);
+  }, [markTap, merchantId, onDecrement, optimisticQty, quantity, scheduleCartWrite]);
+
+  type GestureAction = "add" | "increment" | "decrement";
+
+  const fireForGesture = useCallback(
+    (gestureId: number, event: GestureResponderEvent, fn: () => void) => {
+      event.stopPropagation();
+      if (!tryConsumeGesture(gestureId)) return;
+      fn();
+    },
+    [tryConsumeGesture]
+  );
+
+  /** Left half → −, right half → + (entire half, not just the glyph). */
+  const resolveStepperAction = useCallback((event: GestureResponderEvent): GestureAction => {
+    const width = stepperWidthRef.current;
+    const x = event.nativeEvent.locationX;
+    if (width > 0 && x >= width / 2) return "increment";
+    return "decrement";
+  }, []);
+
+  const stepperGestureIdRef = useRef(0);
+
+  const fireStepperPressIn = useCallback(
+    (event: GestureResponderEvent) => {
+      const gestureId = beginGesture();
+      stepperGestureIdRef.current = gestureId;
+      const action = resolveStepperAction(event);
+      fireForGesture(gestureId, event, action === "decrement" ? handleDec : handleInc);
+    },
+    [beginGesture, fireForGesture, handleDec, handleInc, resolveStepperAction]
+  );
+
+  const fireStepperPressFallback = useCallback(
+    (event: GestureResponderEvent) => {
+      // Same gesture as pressIn — consume only if pressIn never ran / never fired.
+      const gestureId = stepperGestureIdRef.current || beginGesture();
+      stepperGestureIdRef.current = gestureId;
+      const action = resolveStepperAction(event);
+      fireForGesture(gestureId, event, action === "decrement" ? handleDec : handleInc);
+    },
+    [beginGesture, fireForGesture, handleDec, handleInc, resolveStepperAction]
+  );
+
+  const addGestureIdRef = useRef(0);
+
+  const fireAddPressIn = useCallback(
+    (event: GestureResponderEvent) => {
+      if (Date.now() < ignoreAddUntilRef.current) {
+        event.stopPropagation();
+        return;
+      }
+      const gestureId = beginGesture();
+      addGestureIdRef.current = gestureId;
+      fireForGesture(gestureId, event, handleAdd);
+    },
+    [beginGesture, fireForGesture, handleAdd]
+  );
+
+  const fireAddPressFallback = useCallback(
+    (event: GestureResponderEvent) => {
+      if (Date.now() < ignoreAddUntilRef.current) {
+        event.stopPropagation();
+        return;
+      }
+      const gestureId = addGestureIdRef.current || beginGesture();
+      addGestureIdRef.current = gestureId;
+      fireForGesture(gestureId, event, handleAdd);
+    },
+    [beginGesture, fireForGesture, handleAdd]
+  );
+
+  useEffect(() => {
+    if (optimisticQty != null) {
+      perfMeasure(`tap:${itemKey}`, "stepper:optimistic");
+    }
+  }, [itemKey, optimisticQty]);
+
   useEffect(() => {
     perfMeasure(`tap:${itemKey}`, "row:rendered");
   }, [itemKey, quantity]);
 
   if (displayQty === 0) {
+    const addSuppressed = Date.now() < ignoreAddUntilRef.current;
     return (
       <Pressable
         accessible
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel ?? "Add to cart"}
-        accessibilityState={{ disabled }}
+        accessibilityState={{ disabled: disabled || addSuppressed }}
         disabled={disabled}
         delayPressIn={0}
         unstable_pressDelay={0}
-        onPressIn={handleAdd}
-        hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+        onPressIn={fireAddPressIn}
+        onPress={fireAddPressFallback}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        pressRetentionOffset={{ top: 24, bottom: 24, left: 24, right: 24 }}
         android_ripple={{ color: "rgba(19, 114, 67, 0.14)", borderless: false }}
         style={({ pressed }) => [
           styles.addPressable,
-          pressed && !disabled && styles.addPressablePressed,
+          pressed && !disabled && !addSuppressed && styles.addPressablePressed,
         ]}
       >
-        {/* Paint on View — Pressable style callbacks can fail to show bg on Android. */}
         <View
           style={[styles.addBtn, disabled ? styles.addBtnDisabled : null]}
           pointerEvents="none"
@@ -128,56 +319,31 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   }
 
   return (
-    <View
-      style={[styles.qtyWrap, disabled && styles.qtyWrapDisabled]}
+    <Pressable
+      accessible
+      accessibilityRole="adjustable"
       accessibilityLabel={accessibilityLabel}
+      accessibilityHint="Left half decreases quantity. Right half increases quantity."
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      delayPressIn={0}
+      unstable_pressDelay={0}
+      onLayout={(event) => {
+        stepperWidthRef.current = event.nativeEvent.layout.width;
+      }}
+      onPressIn={fireStepperPressIn}
+      onPress={fireStepperPressFallback}
+      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+      pressRetentionOffset={{ top: 20, bottom: 20, left: 20, right: 20 }}
+      style={[styles.qtyWrap, disabled && styles.qtyWrapDisabled]}
       collapsable={false}
-      pointerEvents="box-none"
     >
-      <Pressable
-        accessible
-        accessibilityRole="button"
-        accessibilityLabel="Decrease quantity"
-        disabled={disabled}
-        delayPressIn={0}
-        unstable_pressDelay={0}
-        onPressIn={handleDec}
-        hitSlop={{ top: 12, bottom: 12, left: 8, right: 4 }}
-        android_ripple={{ color: "rgba(19, 114, 67, 0.14)", borderless: true, radius: 20 }}
-        style={({ pressed }) => [styles.qtyHit, pressed && !disabled && styles.qtyHitPressed]}
-      >
-        <AppText
-          style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}
-          pointerEvents="none"
-        >
-          −
-        </AppText>
-      </Pressable>
-
-      <View style={styles.qtyCenter} pointerEvents="none" collapsable={false}>
+      <View style={styles.qtyVisualRow} pointerEvents="none" collapsable={false}>
+        <AppText style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}>−</AppText>
         <AppText style={[styles.qtyText, disabled && styles.qtyTextDisabled]}>{displayQty}</AppText>
+        <AppText style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}>+</AppText>
       </View>
-
-      <Pressable
-        accessible
-        accessibilityRole="button"
-        accessibilityLabel="Increase quantity"
-        disabled={disabled}
-        delayPressIn={0}
-        unstable_pressDelay={0}
-        onPressIn={handleInc}
-        hitSlop={{ top: 12, bottom: 12, left: 4, right: 8 }}
-        android_ripple={{ color: "rgba(19, 114, 67, 0.14)", borderless: true, radius: 20 }}
-        style={({ pressed }) => [styles.qtyHit, pressed && !disabled && styles.qtyHitPressed]}
-      >
-        <AppText
-          style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}
-          pointerEvents="none"
-        >
-          +
-        </AppText>
-      </Pressable>
-    </View>
+    </Pressable>
   );
 });
 
@@ -196,14 +362,12 @@ export const StoreMenuAddButton = React.memo(function StoreMenuAddButton({
   style?: object;
 }) {
   const handledRef = useRef(false);
-  const fire = useCallback(() => {
+  const fire = useCallback((event: GestureResponderEvent) => {
+    event.stopPropagation();
     if (disabled || handledRef.current) return;
     handledRef.current = true;
     if (Platform.OS === "android") Vibration.vibrate(6);
     onPress();
-    setTimeout(() => {
-      handledRef.current = false;
-    }, 90);
   }, [disabled, onPress]);
 
   return (
@@ -216,7 +380,15 @@ export const StoreMenuAddButton = React.memo(function StoreMenuAddButton({
       delayPressIn={0}
       unstable_pressDelay={0}
       onPressIn={fire}
-      hitSlop={10}
+      onPress={fire}
+      onPressOut={() => {
+        // Release after the gesture fully ends so onPress cannot double-fire.
+        requestAnimationFrame(() => {
+          handledRef.current = false;
+        });
+      }}
+      hitSlop={12}
+      pressRetentionOffset={{ top: 24, bottom: 24, left: 24, right: 24 }}
       android_ripple={{ color: "rgba(19, 114, 67, 0.14)", borderless: false }}
       style={({ pressed }) => [
         styles.addPressable,
@@ -277,10 +449,9 @@ const CONTROL_RADIUS = 8;
 const styles = StyleSheet.create({
   addPressable: {
     width: "100%",
-    minHeight: MENU_ADD_CONTROL_HEIGHT,
+    height: MENU_STEPPER_CONTROL_HEIGHT,
     borderRadius: CONTROL_RADIUS,
-    zIndex: 100,
-    elevation: 6,
+    justifyContent: "center",
   },
   addPressablePressed: {
     opacity: 0.9,
@@ -342,20 +513,17 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   qtyWrap: {
+    position: "relative",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center",
     backgroundColor: QTY_FILL,
     borderWidth: 1.5,
     borderColor: ADD_GREEN,
     borderRadius: CONTROL_RADIUS,
-    height: MENU_ADD_CONTROL_HEIGHT,
+    height: MENU_STEPPER_CONTROL_HEIGHT,
     width: "100%",
-    /** Equal inset so − / + sit clear of the border on both sides. */
-    paddingHorizontal: 12,
-    overflow: "visible",
-    zIndex: 120,
-    elevation: 6,
+    overflow: "hidden",
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -375,16 +543,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     elevation: 0,
   },
-  qtyHit: {
-    flex: 1,
+  /** Always horizontal: −  qty  + */
+  qtyVisualRow: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    minWidth: 28,
-    minHeight: MENU_ADD_CONTROL_HEIGHT,
-    zIndex: 2,
-  },
-  qtyHitPressed: {
-    opacity: 0.65,
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    zIndex: 1,
   },
   qtyGlyph: {
     fontSize: 18,
@@ -393,18 +559,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     includeFontPadding: false,
     lineHeight: 22,
-    /** Optical balance — minus glyph sits slightly left in some fonts. */
     minWidth: 16,
   },
   qtyGlyphDisabled: {
     color: "#9CA3AF",
-  },
-  qtyCenter: {
-    width: 28,
-    flexGrow: 0,
-    flexShrink: 0,
-    alignItems: "center",
-    justifyContent: "center",
   },
   qtyText: {
     textAlign: "center",
@@ -413,6 +571,7 @@ const styles = StyleSheet.create({
     color: ADD_GREEN,
     letterSpacing: 0.2,
     includeFontPadding: false,
+    minWidth: 28,
   },
   qtyTextDisabled: {
     color: "#9CA3AF",

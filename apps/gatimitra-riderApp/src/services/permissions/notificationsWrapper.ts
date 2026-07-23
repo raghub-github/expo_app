@@ -1,35 +1,33 @@
 /**
- * Wrapper for expo-notifications — uses the real permission APIs on all builds
- * including Expo Go (Android notification permission is owned by the host app).
+ * Thin wrapper that delegates notification permission checks/requests to the
+ * shared `@gatimitra/expo-push-kit` controller helpers (single source of truth).
  */
+
+import {
+  readNotificationPermission,
+  requestNotificationPermission,
+  openNotificationSettings,
+} from "@gatimitra/expo-push-kit";
+import Constants from "expo-constants";
+
+function androidPackage(): string | undefined {
+  return (
+    Constants.expoConfig?.android?.package ||
+    (Constants.manifest as { android?: { package?: string } } | null)?.android?.package ||
+    "com.raghubhunia.gatimitrariderapp"
+  );
+}
 
 export async function requestNotificationPermissions() {
   try {
-    const Notifications = await import("expo-notifications");
-    const { requestPermissionsAsync, setNotificationHandler } = Notifications;
-
-    setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
-      }),
-    });
-
-    const result = await requestPermissionsAsync({
-      ios: {
-        allowAlert: true,
-        allowBadge: true,
-        allowSound: true,
-      },
-      android: {},
-    });
-
+    const result = await requestNotificationPermission();
     return {
-      status: result.status as "granted" | "denied" | "undetermined",
-      canAskAgain: result.status !== "denied",
+      status: (result.osStatus === "granted"
+        ? "granted"
+        : result.osStatus === "undetermined"
+          ? "undetermined"
+          : "denied") as "granted" | "denied" | "undetermined",
+      canAskAgain: result.canAskAgain,
     };
   } catch (error) {
     console.warn("requestNotificationPermissions failed:", error);
@@ -42,16 +40,26 @@ export async function requestNotificationPermissions() {
 
 export async function getNotificationPermissions() {
   try {
-    const Notifications = await import("expo-notifications");
-    const { getPermissionsAsync } = Notifications;
-    const result = await getPermissionsAsync();
+    const result = await readNotificationPermission();
     return {
-      status: result.status as "granted" | "denied" | "undetermined",
+      status: (result.osStatus === "granted"
+        ? "granted"
+        : result.osStatus === "undetermined"
+          ? "undetermined"
+          : "denied") as "granted" | "denied" | "undetermined",
+      canAskAgain: result.canAskAgain,
+      osStatus: result.osStatus,
     };
   } catch (error) {
     console.warn("getNotificationPermissions failed:", error);
     return {
       status: "undetermined" as const,
+      canAskAgain: true,
+      osStatus: "undetermined" as const,
     };
   }
+}
+
+export async function openSharedNotificationSettings(): Promise<void> {
+  await openNotificationSettings(androidPackage());
 }

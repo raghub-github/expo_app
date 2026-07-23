@@ -281,11 +281,13 @@ export async function syncCampaignCountsFromLogs(campaignId: number): Promise<vo
       failed_count = COALESCE(stats.failed_count, 0)
     FROM (
       SELECT
+        -- Provider accepted / enqueued (includes later delivered+clicked)
         COUNT(*) FILTER (
-          WHERE status IN ('queued', 'sent', 'delivered', 'clicked')
+          WHERE status IN ('sent', 'delivered', 'clicked')
         )::int AS sent_count,
+        -- Confirmed delivery (OS/inbox) or clicked after delivery
         COUNT(*) FILTER (
-          WHERE status IN ('queued', 'sent', 'delivered', 'clicked')
+          WHERE status IN ('delivered', 'clicked')
         )::int AS delivered_count,
         COUNT(*) FILTER (WHERE status = 'clicked')::int AS clicked_count,
         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count

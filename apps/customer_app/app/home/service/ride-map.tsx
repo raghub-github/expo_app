@@ -23,6 +23,9 @@ import {
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
 const GEOCODE_DEBOUNCE_MS = 350;
+const FAB_SHEET_GAP = 12;
+/** Until onLayout runs, keep FABs above a typical sheet height. */
+const DEFAULT_SHEET_HEIGHT = 300;
 
 function selectButtonLabel(field: RideMapPickerField): string {
   if (field === "pickup") return "Select Pickup";
@@ -58,6 +61,9 @@ export default function RideMapPickerScreen() {
   });
   const [geocoding, setGeocoding] = useState(false);
   const [locating, setLocating] = useState(false);
+  const [sheetHeight, setSheetHeight] = useState(DEFAULT_SHEET_HEIGHT);
+
+  const fabBottom = sheetHeight + FAB_SHEET_GAP;
 
   const initialRegion = {
     latitude: initialLat,
@@ -171,7 +177,7 @@ export default function RideMapPickerScreen() {
 
       {/* Floating controls */}
       <TouchableOpacity
-        style={[styles.fab, styles.fabBack, { bottom: 220 + insets.bottom }]}
+        style={[styles.fab, styles.fabBack, { bottom: fabBottom }]}
         onPress={() => router.back()}
         activeOpacity={0.88}
       >
@@ -179,7 +185,7 @@ export default function RideMapPickerScreen() {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.fab, styles.fabLocate, { bottom: 220 + insets.bottom }]}
+        style={[styles.fab, styles.fabLocate, { bottom: fabBottom }]}
         onPress={handleMyLocation}
         activeOpacity={0.88}
         disabled={locating}
@@ -192,7 +198,13 @@ export default function RideMapPickerScreen() {
       </TouchableOpacity>
 
       {/* Bottom sheet */}
-      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+      <View
+        style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
+        onLayout={(e) => {
+          const h = e.nativeEvent.layout.height;
+          if (h > 0) setSheetHeight(h);
+        }}
+      >
         <View style={styles.sheetHeader}>
           <AppText style={styles.sheetTitle}>Select your location</AppText>
           <TouchableOpacity style={styles.changeBtn} onPress={() => router.back()} activeOpacity={0.85}>
@@ -257,7 +269,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 6,
-    elevation: 5,
+    elevation: 8,
+    zIndex: 30,
   },
   fabBack: {
     left: 16,
@@ -280,6 +293,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 12,
     elevation: 12,
+    zIndex: 20,
   },
   sheetHeader: {
     flexDirection: "row",

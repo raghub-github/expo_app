@@ -6,6 +6,7 @@ import { getDb } from "../../db/client.js";
 import { customers } from "../../db/schema.js";
 import { auth } from "../../plugins/auth.js";
 import { normalizeOrderItems } from "../orders/orderNormalizer.js";
+import { normalizeOrderItemSpecialInstructions } from "../../lib/order-item-special-instructions.js";
 import { computeBillForOrder, listCheckoutBillOffers } from "./billing.service.js";
 import type { BillingResult } from "./types.js";
 
@@ -25,6 +26,10 @@ const itemSchema = z.object({
   variantId: z.union([z.string(), z.number()]).optional().nullable(),
   variantName: z.string().optional().nullable(),
   addons: z.array(addonSchema).optional().default([]),
+  specialInstructions: z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((v) => normalizeOrderItemSpecialInstructions(v ?? null)),
   itemSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
   /** Client hint — ignored for money math; server recomputes eligibility (Offer Engine v2). */
   isDiscountEligible: z.boolean().optional(),
@@ -427,10 +432,6 @@ export async function billingRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer only" });
       }
 
-      if (body.addressId == null) {
-        return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "addressId is required." });
-      }
-
       const [customerRow] = await db
         .select({ id: customers.id })
         .from(customers)
@@ -441,16 +442,39 @@ export async function billingRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer not found" });
       }
 
-      const addressIdNum = typeof body.addressId === "number" ? body.addressId : parseInt(String(body.addressId), 10);
-      if (Number.isNaN(addressIdNum)) {
-        return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
+      const hasAddressId = body.addressId != null && String(body.addressId).trim() !== "";
+      const hasDrop =
+        body.dropLat != null &&
+        body.dropLon != null &&
+        Number.isFinite(body.dropLat) &&
+        Number.isFinite(body.dropLon);
+
+      // Saved address is required for placeable bills. GPS drop is allowed only for
+      // provisional checkout totals before the customer picks a delivery address.
+      if (!hasAddressId && !hasDrop) {
+        return reply.status(400).send({
+          error: "INVALID_ADDRESS_DATA",
+          message: "addressId or dropLat/dropLon is required.",
+        });
+      }
+
+      let addressIdNum: number | undefined;
+      if (hasAddressId) {
+        addressIdNum =
+          typeof body.addressId === "number" ? body.addressId : parseInt(String(body.addressId), 10);
+        if (Number.isNaN(addressIdNum)) {
+          return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
+        }
       }
 
       const result = await computeBillForOrder(db, {
         customerId: Number(customerPk),
         merchantId: body.merchantId,
         items: norm.items,
-        addressId: addressIdNum,
+        ...(addressIdNum != null ? { addressId: addressIdNum } : {}),
+        ...(addressIdNum == null && hasDrop
+          ? { dropLat: body.dropLat, dropLon: body.dropLon }
+          : {}),
         tipAmount: body.tipAmount,
         donationAmount: body.donationAmount,
         couponCode: body.couponCode,

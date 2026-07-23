@@ -284,6 +284,7 @@ export default function ProfileScreen() {
           <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={settingsTileWidth} active={isActive("communications")} />
           <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={settingsTileWidth} active={isActive("address")} />
           <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={settingsTileWidth} active={isActive("preparation-time")} />
+          <GridCard icon="print-outline" label="Thermal printer" onPress={navigate("printer-settings")} tileWidth={settingsTileWidth} active={isActive("printer-settings")} />
           <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={settingsTileWidth} active={isActive("vacation")} />
         </View>
       </View>

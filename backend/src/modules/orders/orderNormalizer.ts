@@ -4,6 +4,12 @@
  * Fail fast: return error if any item is invalid.
  */
 
+import {
+  normalizeOrderItemSpecialInstructions,
+  readOrderItemSpecialInstructions,
+  specialInstructionsIntoSnapshot,
+} from "../../lib/order-item-special-instructions.js";
+
 export type NormalizeOrderItemInput = {
   menuItemId?: string | number | null;
   itemName?: string | null;
@@ -11,6 +17,7 @@ export type NormalizeOrderItemInput = {
   basePrice?: number | null;
   variantId?: string | number | null;
   variantName?: string | null;
+  specialInstructions?: string | null;
   addons?: Array<{
     addonId?: string | number;
     customizationId?: string | number | null;
@@ -46,6 +53,7 @@ export type NormalizedOrderItem = {
   variantName: string | null;
   addons: NormalizedOrderAddon[];
   itemSnapshot: Record<string, unknown> | null;
+  specialInstructions: string | null;
   /**
    * Client hint for cart/coupon min-order base.
    * `false` = Boost/BOGO already applied; server may also mark false for MRP / item-surface.
@@ -151,6 +159,16 @@ export function normalizeOrderItems(items: unknown): NormalizeOrderItemsResult {
       if (norm) addons.push(norm);
     }
 
+    const specialInstructions = readOrderItemSpecialInstructions({
+      relational: normalizeOrderItemSpecialInstructions(
+        (raw as { specialInstructions?: unknown }).specialInstructions,
+      ),
+      itemSnapshot:
+        raw.itemSnapshot != null && typeof raw.itemSnapshot === "object"
+          ? (raw.itemSnapshot as Record<string, unknown>)
+          : null,
+    });
+
     const item: NormalizedOrderItem = {
       menuItemId,
       itemName,
@@ -160,7 +178,13 @@ export function normalizeOrderItems(items: unknown): NormalizeOrderItemsResult {
       variantKey,
       variantName,
       addons,
-      itemSnapshot: raw.itemSnapshot != null && typeof raw.itemSnapshot === "object" ? raw.itemSnapshot as Record<string, unknown> : null,
+      specialInstructions,
+      itemSnapshot: specialInstructionsIntoSnapshot(
+        raw.itemSnapshot != null && typeof raw.itemSnapshot === "object"
+          ? (raw.itemSnapshot as Record<string, unknown>)
+          : null,
+        specialInstructions,
+      ),
     };
     if (raw.isDiscountEligible === false) {
       item.isDiscountEligible = false;

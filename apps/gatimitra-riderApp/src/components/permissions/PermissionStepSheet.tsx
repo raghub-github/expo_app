@@ -1,6 +1,8 @@
 import React from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/src/theme";
+import { LORA_BOLD, LORA_SEMIBOLD } from "@/src/theme/headerFonts";
 import { PremiumAllowButton } from "./PremiumAllowButton";
 import { PermissionBottomSheetShell } from "./PermissionBottomSheetShell";
 import type { PermissionStepKey } from "@/src/services/permissions/smartPermissionHandler";
@@ -73,8 +75,41 @@ function locationCopy(issue: LocationBlockingReason | null | undefined, step: Pe
   };
 }
 
+function batteryOptimizationCopy(step: PermissionStepContent) {
+  return {
+    title: step.title,
+    message: step.description,
+    instructions: [
+      "Tap Allow below",
+      "On Android: choose Allow / Don’t optimize when prompted",
+      "If needed: App info → Battery → Unrestricted (OEM: Auto-start / Background)",
+    ],
+  };
+}
+
+function backgroundRunningCopy(step: PermissionStepContent) {
+  return {
+    title: step.title,
+    message: step.description,
+    instructions: [
+      "Tap Allow below",
+      "Enable Autostart / Background activity if your phone shows it",
+      "Or set App info → Battery → Unrestricted, then return here",
+    ],
+  };
+}
+
+function stepIconName(step: PermissionStepContent): keyof typeof Ionicons.glyphMap {
+  if (step.key === "location" || step.key === "location_services") return "location";
+  if (step.key === "notifications") return "notifications";
+  if (step.key === "battery_optimization") return "battery-charging";
+  if (step.key === "background_running") return "phone-portrait-outline";
+  if (step.key === "display_over_apps") return "layers-outline";
+  return "shield-checkmark-outline";
+}
+
 /**
- * Single bottom sheet for every permission step — replaces the full-screen card UI.
+ * Single bottom sheet for every permission step — Customer-style wave header + Rider copy.
  */
 export function PermissionStepSheet({
   visible,
@@ -89,7 +124,11 @@ export function PermissionStepSheet({
   const isLocationStep = step.key === "location" || step.key === "location_services";
   const copy = isLocationStep
     ? locationCopy(locationIssue ?? (step.key === "location_services" ? "gps_off" : null), step)
-    : { title: step.title, message: step.description, instructions: null };
+    : step.key === "battery_optimization"
+      ? batteryOptimizationCopy(step)
+      : step.key === "background_running"
+        ? backgroundRunningCopy(step)
+        : { title: step.title, message: step.description, instructions: null };
 
   return (
     <PermissionBottomSheetShell visible={visible} maxHeightRatio={0.82}>
@@ -99,7 +138,7 @@ export function PermissionStepSheet({
         </Text>
 
         <View style={styles.iconWrap}>
-          <Text style={styles.icon}>{step.icon}</Text>
+          <Ionicons name={stepIconName(step)} size={32} color={colors.primary[700]} />
         </View>
 
         <Text style={styles.title}>{copy.title}</Text>
@@ -147,56 +186,57 @@ export function PermissionStepSheet({
 const styles = StyleSheet.create({
   content: {
     paddingHorizontal: 24,
-    paddingTop: 4,
+    paddingTop: 8,
     paddingBottom: 8,
   },
   stepLabel: {
-    fontSize: 13,
-    fontWeight: "600",
+    fontFamily: LORA_SEMIBOLD,
+    fontSize: 12,
     color: colors.gray[500],
     textAlign: "center",
-    marginBottom: 12,
+    marginBottom: 14,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
   iconWrap: {
     alignSelf: "center",
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     backgroundColor: colors.primary[50],
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 16,
-  },
-  icon: {
-    fontSize: 36,
+    borderWidth: 1,
+    borderColor: colors.primary[100],
   },
   title: {
+    fontFamily: LORA_BOLD,
     fontSize: 22,
-    fontWeight: "700",
-    color: colors.gray[900],
+    color: "#111827",
     textAlign: "center",
     marginBottom: 10,
   },
   message: {
-    fontSize: 15,
-    color: colors.gray[600],
+    fontFamily: LORA_SEMIBOLD,
+    fontSize: 14,
+    color: "#6B7280",
     textAlign: "center",
-    lineHeight: 22,
+    lineHeight: 21,
     marginBottom: 20,
+    paddingHorizontal: 4,
   },
   instructionsBox: {
     backgroundColor: colors.primary[50],
     borderRadius: 16,
     padding: 16,
-    marginBottom: 24,
+    marginBottom: 22,
     borderWidth: 1,
     borderColor: colors.primary[100],
   },
   instructionsTitle: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontFamily: LORA_BOLD,
+    fontSize: 13,
     color: colors.primary[800],
     marginBottom: 12,
     textTransform: "uppercase",
@@ -212,7 +252,7 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: colors.primary[500],
+    backgroundColor: colors.primary[600],
     alignItems: "center",
     justifyContent: "center",
   },
@@ -241,7 +281,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   skipText: {
-    fontSize: 16,
+    fontSize: 15,
     color: colors.gray[600],
     textDecorationLine: "underline",
   },

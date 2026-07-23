@@ -5,6 +5,7 @@ export type StoreOperationsPanelCache = {
   preparationBufferMinutes: number;
   manualActivationLock: boolean;
   licenseBlockedForOps: boolean;
+  thermalPrinterWidthMm: 58 | 80;
   fetchedAt: number;
 };
 
@@ -15,6 +16,7 @@ export const DEFAULT_STORE_OPERATIONS_PANEL: Omit<StoreOperationsPanelCache, 'fe
   preparationBufferMinutes: 0,
   manualActivationLock: false,
   licenseBlockedForOps: false,
+  thermalPrinterWidthMm: 80,
 };
 
 const CACHE_KEY = (storeId: string) => `mx_store_ops_panel_v1_${storeId.trim()}`;
@@ -66,6 +68,9 @@ export function panelFieldsFromStoreSettings(
   }
   if (typeof data.preparation_buffer_minutes === 'number' && !Number.isNaN(data.preparation_buffer_minutes)) {
     out.preparationBufferMinutes = Math.max(0, Math.min(120, Math.floor(data.preparation_buffer_minutes)));
+  }
+  if (data.thermal_printer_width_mm === 58 || data.thermal_printer_width_mm === 80) {
+    out.thermalPrinterWidthMm = data.thermal_printer_width_mm;
   }
   return out;
 }

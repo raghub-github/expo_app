@@ -3,7 +3,7 @@
  * UI aligned with profile tab (white cards on grey background).
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, Switch, Modal, Pressable } from "react-native";
@@ -11,11 +11,18 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
+import Constants from "expo-constants";
 import { useTranslation } from "react-i18next";
+import {
+  usePushPermissionController,
+  setPreference,
+  loadPreferences,
+} from "@gatimitra/expo-push-kit";
 import { useAuthStore } from "@/store/authStore";
 import { useLanguageStore } from "@/store/languageStore";
 import { ProfileSubpageHeader } from "@/components/profile/ProfileSubpageHeader";
 import { ProfileTheme } from "@/constants/profileTheme";
+import { getConfig } from "@/config/env";
 
 const { green: GREEN, greenDark: GREEN_DARK, text: TEXT, muted: MUTED, border: BORDER, pageBg: PAGE_BG } =
   ProfileTheme;
@@ -65,22 +72,109 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const logout = useAuthStore((s) => s.logout);
   const logoutAllDevices = useAuthStore((s) => s.logoutAllDevices);
+  const session = useAuthStore((s) => s.session);
+  const hydrated = useAuthStore((s) => s.hydrated);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [backendPushEnabled, setBackendPushEnabled] = useState(true);
 
   const { language, hydrate } = useLanguageStore();
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
+  const { apiBaseUrl } = getConfig();
+  const authRef = useRef({ session, hydrated });
+  authRef.current = { session, hydrated };
+
+  const pushOptions = useMemo(
+    () => ({
+      apiBaseUrl,
+      androidPackageName: Constants.expoConfig?.android?.package,
+      androidChannels: [
+        { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
+      ],
+      getAuth: () => {
+        const { session: s, hydrated: h } = authRef.current;
+        if (!h || !s?.accessToken || s.role !== "customer") return null;
+        return { accessToken: s.accessToken, role: "customer" as const };
+      },
+    }),
+    [apiBaseUrl]
+  );
+
+  const { snapshot, controller } = usePushPermissionController(pushOptions);
+  const osNotificationsOn = snapshot.osStatus === "granted";
+
+  const prefsCfg = useMemo(
+    () => ({
+      baseUrl: apiBaseUrl,
+      getAuthHeader: async () => {
+        const token = authRef.current.session?.accessToken;
+        return token ? `Bearer ${token}` : null;
+      },
+    }),
+    [apiBaseUrl]
+  );
+
+  useEffect(() => {
+    if (!session?.accessToken) return;
+    void loadPreferences(prefsCfg)
+      .then((prefs) => {
+        const orderPref = prefs.items?.find(
+          (p) => p.type === "ORDER_UPDATES" || p.type === "ALL" || p.type === "orders"
+        );
+        if (orderPref) setBackendPushEnabled(orderPref.push !== false);
+      })
+      .catch(() => {});
+  }, [session?.accessToken, prefsCfg]);
+
+  const handleNotificationsToggle = useCallback(
+    async (next: boolean) => {
+      if (next) {
+        const result = await controller.requestOrOpenSettings();
+        if (result.granted && session?.accessToken) {
+          setBackendPushEnabled(true);
+          try {
+            await setPreference(prefsCfg, "ORDER_UPDATES", { push: true, in_app: true });
+          } catch {
+            // non-fatal
+          }
+        }
+        return;
+      }
+      setBackendPushEnabled(false);
+      if (session?.accessToken) {
+        try {
+          await setPreference(prefsCfg, "ORDER_UPDATES", { push: false });
+        } catch {
+          // non-fatal
+        }
+      }
+      if (osNotificationsOn) {
+        await controller.openSettings();
+      }
+    },
+    [controller, session?.accessToken, prefsCfg, osNotificationsOn]
+  );
+
   const handleSignOutThisDevice = async () => {
     setLogoutModalVisible(false);
+    try {
+      await controller.unregisterCurrent();
+    } catch {
+      // best-effort
+    }
     await logout();
     router.replace("/");
   };
 
   const handleSignOutAllDevices = async () => {
     setLogoutModalVisible(false);
+    try {
+      await controller.unregisterCurrent();
+    } catch {
+      // best-effort
+    }
     await logoutAllDevices();
     router.replace("/");
   };
@@ -128,8 +222,8 @@ export default function SettingsScreen() {
                 <AppText style={styles.rowValue}>{t("settings.pushNotificationsSub")}</AppText>
               </View>
               <Switch
-                value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
+                value={osNotificationsOn && backendPushEnabled}
+                onValueChange={handleNotificationsToggle}
                 trackColor={{ false: "#E5E7EB", true: GREEN }}
                 thumbColor="#fff"
               />

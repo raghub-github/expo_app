@@ -28,10 +28,14 @@ import {
 } from "@/services/location.service";
 import { profileService } from "@/services/profile.service";
 import { useLocationStore, type LocationSource } from "@/store/locationStore";
+import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffStore";
+import { useCartStore } from "@/store/cartStore";
+import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { getStoreDeliveryQuote } from "@/services/distance.service";
 
 const NEARBY_RADIUS_METERS = 500;
 const BRAND = GatiMitraColors.splashMint;
@@ -750,6 +754,28 @@ export default function LocationAddressScreen() {
     submittingRef.current = true;
     setSubmitting(true);
     try {
+      const checkoutMerchantId = returnToCheckout
+        ? useCartStore.getState().merchantId
+        : null;
+      // Resolve serviceability in parallel with save so checkout can select the
+      // new address immediately after navigation without another blocking quote.
+      const checkoutServiceabilityPromise: Promise<boolean | undefined> =
+        checkoutMerchantId
+          ? getStoreDeliveryQuote({
+              storeId: checkoutMerchantId,
+              drop: {
+                lat: selectedLat,
+                lng: selectedLon,
+                pincode: pincodeVal === "—" ? null : pincodeVal,
+                city: cityVal === "—" ? null : cityVal,
+              },
+              serviceType: "FOOD",
+              skipCache: true,
+            })
+              .then((quote) => quote.serviceable)
+              .catch(() => undefined)
+          : Promise.resolve(undefined);
+
       if (isEditMode && editAddressId != null) {
         await addressService.updateAddress(editAddressId, {
           label: finalLabel,
@@ -765,10 +791,51 @@ export default function LocationAddressScreen() {
           contactMobile: contactMobile.trim() || null,
         });
         await uploadPendingDoorImage(editAddressId);
-        queryClient.invalidateQueries({ queryKey: ["addresses"] });
-        queryClient.invalidateQueries({ queryKey: ["active-location"] });
+        // Update the address cache synchronously before checkout regains focus.
+        queryClient.setQueryData<Address[]>(["addresses"], (current = []) => {
+          const next: Address = {
+            id: editAddressId,
+            label: finalLabel,
+            fullAddress,
+            landmark: landmark.trim() || null,
+            city: cityVal === "—" ? null : cityVal,
+            state: stateVal === "—" ? null : stateVal,
+            pincode: pincodeVal === "—" ? null : pincodeVal,
+            country: "IN",
+            latitude: selectedLat,
+            longitude: selectedLon,
+            contactName: contactName.trim() || null,
+            contactMobile: contactMobile.trim() || null,
+            isDefault: current.find((a) => a.id === editAddressId)?.isDefault ?? true,
+            isLastUsed: current.find((a) => a.id === editAddressId)?.isLastUsed ?? false,
+            deliveryInstructionsList:
+              current.find((a) => a.id === editAddressId)?.deliveryInstructionsList ?? [],
+          };
+          return current.some((a) => a.id === editAddressId)
+            ? current.map((a) => (a.id === editAddressId ? { ...a, ...next } : a))
+            : [next, ...current];
+        });
+        if (returnToCheckout) {
+          useCheckoutAddressHandoffStore.getState().setPending({
+            addressId: editAddressId,
+            merchantId: checkoutMerchantId ?? null,
+            serviceable: await checkoutServiceabilityPromise,
+            ts: Date.now(),
+          });
+        }
+        await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+        await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+        await queryClient.invalidateQueries({ queryKey: ["store-delivery-quote"] });
+        await queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
+        await queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
+        await queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
+        void invalidateFoodHomeLocationQueries(queryClient);
         addressSavedRef.current = true;
-        router.back();
+        if (returnToCheckout) {
+          finishAddressFlow();
+        } else {
+          router.back();
+        }
         return;
       }
 
@@ -810,8 +877,44 @@ export default function LocationAddressScreen() {
         { latitude: selectedLat, longitude: selectedLon },
         { source: "selected" }
       );
-      queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      const optimisticAddress: Address = {
+        id: created.id,
+        label: finalLabel,
+        fullAddress,
+        landmark: landmark.trim() || null,
+        city: cityVal === "—" ? null : cityVal,
+        state: stateVal === "—" ? null : stateVal,
+        pincode: pincodeVal === "—" ? null : pincodeVal,
+        country: "IN",
+        latitude: selectedLat,
+        longitude: selectedLon,
+        contactName: contactName.trim() || null,
+        contactMobile: contactMobile.trim() || null,
+        deliveryInstructionsList: [],
+        isDefault: true,
+        isLastUsed: false,
+      };
+      queryClient.setQueryData<Address[]>(["addresses"], (current = []) => [
+        optimisticAddress,
+        ...current
+          .filter((a) => a.id !== created.id)
+          .map((a) => ({ ...a, isDefault: false })),
+      ]);
+      if (returnToCheckout) {
+        useCheckoutAddressHandoffStore.getState().setPending({
+          addressId: created.id,
+          merchantId: checkoutMerchantId ?? null,
+          serviceable: await checkoutServiceabilityPromise,
+          ts: Date.now(),
+        });
+      }
+      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      await queryClient.invalidateQueries({ queryKey: ["store-delivery-quote"] });
+      await queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
+      await queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
+      await queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
+      void invalidateFoodHomeLocationQueries(queryClient);
       finishAddressFlow();
     } catch (e: unknown) {
       const msg =

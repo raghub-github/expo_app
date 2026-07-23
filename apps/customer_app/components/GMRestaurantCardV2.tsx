@@ -56,15 +56,44 @@ export type GMRestaurantCardV2Props = {
 
 function StoreOpenStatusBadge({
   isOpen,
+  statusMessage,
+  statusChip,
   nextOpenAt,
   nextCloseAt,
 }: {
   isOpen: boolean;
+  statusMessage?: string | null;
+  statusChip?: string | null;
   nextOpenAt?: string | number | null;
   nextCloseAt?: string | number | null;
 }) {
-  const needsTick = toTimestamp(nextOpenAt) != null || toTimestamp(nextCloseAt) != null;
+  // Preferred path: render the backend (shared-engine) label VERBATIM — the exact same
+  // string the merchant dashboard shows. No client-side schedule/date math.
+  const backendMsg = statusMessage?.trim();
+  // Hooks must run unconditionally (Rules of Hooks) — call the tick before any early
+  // return; it's inert (needsTick=false) when we're rendering the backend message.
+  const needsTick =
+    !backendMsg && (toTimestamp(nextOpenAt) != null || toTimestamp(nextCloseAt) != null);
   const now = useScheduleTick(needsTick);
+
+  if (backendMsg) {
+    // Colour follows the realtime open/closed signal (isOpen from the live subscription),
+    // so the badge flips instantly; the message text refreshes when the list refetches.
+    const green = isOpen;
+    return (
+      <View
+        pointerEvents="none"
+        style={[styles.openClosedTag, green ? styles.openClosedTagGreen : styles.openClosedTagRed]}
+      >
+        <AppText
+          style={[styles.openClosedTagText, !green && styles.openClosedTagTextRed]}
+          numberOfLines={2}
+        >
+          {backendMsg}
+        </AppText>
+      </View>
+    );
+  }
   const openStatus = buildStoreOpenStatusLabel({
     isOpen,
     nextOpenAt,
@@ -233,6 +262,8 @@ function GMRestaurantCardV2Inner({
           </TouchableOpacity>
           <StoreOpenStatusBadge
             isOpen={isOpen}
+            statusMessage={merchant.statusMessage}
+            statusChip={merchant.statusChip}
             nextOpenAt={merchant.nextOpenAt}
             nextCloseAt={merchant.nextCloseAt}
           />

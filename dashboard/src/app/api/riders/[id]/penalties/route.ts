@@ -72,6 +72,37 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Rider not found" }, { status: 404 });
     }
 
+    // One active penalty per order — prevents apply N times → revert N times (multi wallet credit).
+    if (orderId != null && Number.isFinite(orderId) && orderId > 0) {
+      const [existingActive] = await db
+        .select({
+          id: riderPenalties.id,
+          amount: riderPenalties.amount,
+          penaltyType: riderPenalties.penaltyType,
+          status: riderPenalties.status,
+        })
+        .from(riderPenalties)
+        .where(
+          and(
+            eq(riderPenalties.riderId, riderId),
+            eq(riderPenalties.orderId, orderId),
+            sql`${riderPenalties.status} IS DISTINCT FROM 'reversed'`
+          )
+        )
+        .limit(1);
+      if (existingActive) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `An active penalty (#${existingActive.id}) already exists for order #${orderId}. Revert that penalty first before adding another.`,
+            code: "DUPLICATE_ACTIVE_PENALTY_FOR_ORDER",
+            data: { existingPenaltyId: existingActive.id },
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     // Ensure rider_wallet row exists (ledger trigger will create if missing, but we need it for balanceAfter)
     let [wallet] = await db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1);
     if (!wallet) {

@@ -14,6 +14,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
 import { shareAddressViaLink } from "@/services/addressShare.service";
 import { useLocationStore } from "@/store/locationStore";
+import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 
 const TEAL = "#14b8a6";
 const MINT_SOFT = "#ccfbf1";
@@ -241,9 +242,7 @@ export default function AddressesScreen() {
                         {addr.contactMobile ? ` • ${addr.contactMobile}` : ""}
                       </AppText>
                     ) : null}
-                    <AppText style={styles.addressLine} numberOfLines={2}>
-                      {addr.fullAddress}
-                    </AppText>
+                    <DeliveryAddressText address={addr.fullAddress} style={styles.addressLine} />
                   </View>
                 </>
               );

@@ -62,8 +62,8 @@ export async function requestBrowserPushPermission(): Promise<NotificationPermis
  * Fetch the FCM token for this browser, then POST it to the backend so
  * NotificationService.sendToUser can reach this session.
  *
- * Backend endpoint: POST /api/notifications/register-browser-token
- * (partnersite proxy → /v1/notifications/preferences … TBD Phase 7)
+ * Backend endpoint: POST /api/notifications/browser-tokens
+ * (partnersite proxy → /v1/notifications/browser-tokens)
  */
 export async function registerBrowserPushToken(_userId: string): Promise<string | null> {
   const messaging = getMessagingSafe();
@@ -82,7 +82,16 @@ export async function registerBrowserPushToken(_userId: string): Promise<string 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ token, platform: "web" }),
+      body: JSON.stringify({
+        token,
+        platform: "web",
+        store_id:
+          typeof window !== "undefined"
+            ? localStorage.getItem("selectedStoreId") ||
+              localStorage.getItem("selectedRestaurantId") ||
+              undefined
+            : undefined,
+      }),
     }).catch(() => undefined);
     return token;
   } catch (e) {

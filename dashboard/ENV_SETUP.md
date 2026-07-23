@@ -106,3 +106,23 @@ DATABASE_URL=postgresql://postgres.uoxkwznciiibubtiiffh:YourActualPassword@aws-1
 ```
 
 **Note**: Replace the example values with your actual keys and password!
+
+## Notifications / Campaigns backend
+
+Add these to `dashboard/.env.local` (same values as `backend/.env`):
+
+```env
+BACKEND_URL=http://127.0.0.1:3000
+BACKEND_SCHEDULE_TICK_SECRET=same-as-backend-min-16-chars
+
+# Optional — browser push in Super Admin dashboard
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+NEXT_PUBLIC_FIREBASE_APP_ID=
+NEXT_PUBLIC_FIREBASE_VAPID_KEY=
+```
+
+Without `BACKEND_URL` + `BACKEND_SCHEDULE_TICK_SECRET`, Super Admin → Notifications APIs return 503.

@@ -120,18 +120,16 @@ export function buildRiderSubscriptionAlertBanner(
     totalDue > 0 ? `Pay ₹${formatInr(totalDue)}` : "Pay Now";
 
   if (dispatchBlocked) {
+    const dayLabel = Math.max(penaltyStreakDays, 1);
     let subtitle: string;
-    if (
-      duesOutstanding > 0 &&
-      subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE
-    ) {
-      subtitle = `Subscription penalty for ${penaltyStreakDays} days. Clear ₹${formatInr(totalDue)} to go online and receive orders again.`;
-    } else if (subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
-      subtitle = `Subscription wallet at −₹${formatInr(subscriptionWalletNegative)}. Clear ₹${formatInr(totalDue)} to receive orders again.`;
+    if (payableNow > 0) {
+      subtitle = `Day ${dayLabel} — duty stopped for unpaid subscription dues of ₹${formatInr(totalDue)}. Clear ₹${formatInr(payableNow)} from wallet to go online.`;
     } else if (duesOutstanding > 0) {
-      subtitle = `₹${formatInr(duesOutstanding)} subscription fee outstanding. Clear ₹${formatInr(totalDue)} to resume orders.`;
+      subtitle = `Day ${dayLabel} — ₹${formatInr(duesOutstanding)} subscription fee could not be deducted (wallet empty). Clear ₹${formatInr(totalDue)} to go online.`;
+    } else if (subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
+      subtitle = `Day ${dayLabel} — subscription wallet at −₹${formatInr(subscriptionWalletNegative)}. Clear ₹${formatInr(totalDue)} to receive orders again.`;
     } else {
-      subtitle = `Clear ₹${formatInr(totalDue)} subscription dues to resume receiving orders.`;
+      subtitle = `Day ${dayLabel} — clear ₹${formatInr(totalDue)} subscription dues to resume receiving orders.`;
     }
 
     return {
@@ -188,13 +186,18 @@ export function buildRiderSubscriptionAlertBanner(
   }
 
   if (duesOutstanding > 0) {
+    const dayLabel = Math.max(penaltyStreakDays, 1);
+    const subtitle =
+      payableNow > 0
+        ? `Day ${dayLabel} — ₹${formatInr(duesOutstanding)} subscription dues pending. Clear ₹${formatInr(payableNow)} from wallet (total due ₹${formatInr(totalDue)}).`
+        : `Day ${dayLabel} — ₹${formatInr(duesOutstanding)} could not be deducted (wallet empty). Total due ₹${formatInr(totalDue)}.`;
     return {
       ...base,
       visible: true,
       variant: "warning",
       reasonCode: "dues_outstanding",
       title: "Subscription Penalty Due",
-      subtitle: `Day ${Math.max(penaltyStreakDays, 1)} — ₹${formatInr(duesOutstanding)} could not be deducted. Total due ₹${formatInr(totalDue)}.`,
+      subtitle,
       totalDue,
       payableNow,
       payButtonLabel,
@@ -384,10 +387,9 @@ async function readRiderWalletRowForSplit(riderId: number) {
   return wallet ?? null;
 }
 
-export async function getRiderSubscriptionDuesSnapshot(
+async function loadRiderSubscriptionDuesSnapshot(
   riderId: number
-): Promise<RiderSubscriptionDuesSnapshot & { alertBanner: RiderSubscriptionAlertBanner }> {
-  await refreshRiderSubscriptionDispatchBlock(riderId);
+): Promise<RiderSubscriptionDuesSnapshot> {
   const [walletBalance, meta, walletRow] = await Promise.all([
     readRiderWalletBalance(riderId),
     readRiderDuesMeta(riderId),
@@ -396,7 +398,7 @@ export async function getRiderSubscriptionDuesSnapshot(
   const split = splitWalletNegativeBalance(walletBalance, walletRow, {
     subscriptionDuesOutstanding: meta.duesOutstanding,
   });
-  const snapshot: RiderSubscriptionDuesSnapshot = {
+  return {
     walletBalance,
     subscriptionWalletNegative: split.subscriptionNegative,
     penaltyWalletNegative: split.penaltyNegative,
@@ -409,6 +411,17 @@ export async function getRiderSubscriptionDuesSnapshot(
     penaltyStreakDays: meta.penaltyStreakDays,
     lastIncomeAt: toIsoTimestamp(meta.lastIncomeAt),
   };
+}
+
+export async function getRiderSubscriptionDuesSnapshot(
+  riderId: number,
+  opts?: { autoSettle?: boolean }
+): Promise<RiderSubscriptionDuesSnapshot & { alertBanner: RiderSubscriptionAlertBanner }> {
+  if (opts?.autoSettle !== false) {
+    await autoSettleSubscriptionDuesFromEarnings(riderId);
+  }
+  await refreshRiderSubscriptionDispatchBlock(riderId);
+  const snapshot = await loadRiderSubscriptionDuesSnapshot(riderId);
   return {
     ...snapshot,
     alertBanner: buildRiderSubscriptionAlertBanner(snapshot),
@@ -416,6 +429,8 @@ export async function getRiderSubscriptionDuesSnapshot(
 }
 
 export async function isRiderSubscriptionDispatchBlocked(riderId: number): Promise<boolean> {
+  await autoSettleSubscriptionDuesFromEarnings(riderId);
+  await refreshRiderSubscriptionDispatchBlock(riderId);
   const meta = await readRiderDuesMeta(riderId);
   return meta.dispatchBlocked;
 }
@@ -673,7 +688,7 @@ export async function payRiderSubscriptionDues(riderId: number): Promise<{
   needEarnings?: boolean;
   error?: string;
 }> {
-  const snapshot = await getRiderSubscriptionDuesSnapshot(riderId);
+  const snapshot = await loadRiderSubscriptionDuesSnapshot(riderId);
   const totalDueBefore = snapshot.totalDue;
   if (totalDueBefore <= 0) {
     await refreshRiderSubscriptionDispatchBlock(riderId);
@@ -726,7 +741,7 @@ export async function payRiderSubscriptionDues(riderId: number): Promise<{
   }
 
   await refreshRiderSubscriptionDispatchBlock(riderId);
-  const after = await getRiderSubscriptionDuesSnapshot(riderId);
+  const after = await loadRiderSubscriptionDuesSnapshot(riderId);
   return {
     ok: true,
     paidAmount: payAmount,
@@ -735,9 +750,9 @@ export async function payRiderSubscriptionDues(riderId: number): Promise<{
   };
 }
 
-/** After delivery earnings credit, auto-settle subscription dues from positive wallet balance. */
+/** After any wallet credit (earnings / tips / incentives), settle subscription dues. */
 export async function autoSettleSubscriptionDuesFromEarnings(riderId: number): Promise<void> {
-  const snapshot = await getRiderSubscriptionDuesSnapshot(riderId);
+  const snapshot = await loadRiderSubscriptionDuesSnapshot(riderId);
   if (snapshot.totalDue <= 0) return;
   if (snapshot.walletBalance <= 0) return;
   await payRiderSubscriptionDues(riderId);

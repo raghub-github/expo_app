@@ -1,7 +1,7 @@
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
@@ -126,7 +126,7 @@ export function HomeLocationHeader({
   const insets = useSafeAreaInsets();
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   // Root spacer usually owns safe-top; if immersive left it off, pad here so we never overlap.
-  const safeTop = insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
+  const safeTop = resolveTopSafeInset(insets.top);
   const topPad =
     (hideStatusBarSpacer ? safeTop : 0) + STATUS_BAR_TO_HEADER_GAP;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;

@@ -4,6 +4,7 @@ import { AppText } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import type { Address } from "@/services/address.service";
 
 const BRAND = GatiMitraColors.splashMint;
@@ -61,9 +62,7 @@ export function AddressConfirmBottomSheet({ visible, address, onConfirm, onCance
                   <View style={styles.labelPill}>
                     <AppText style={styles.labelPillText}>{label.toUpperCase()}</AppText>
                   </View>
-                  <AppText style={styles.addressLine} numberOfLines={3}>
-                    {address.fullAddress}
-                  </AppText>
+                  <DeliveryAddressText address={address.fullAddress} style={styles.addressLine} />
                 </View>
               </View>
               {address.contactMobile ? (

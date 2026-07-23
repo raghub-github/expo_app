@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getDb } from "@/lib/db/client";
+import { getDb, getSql } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
 import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
@@ -270,6 +270,7 @@ export async function GET(
       latestDutyLog,
       logoutSession,
       activeBankAccount,
+      subscriptionDuesRow,
     ] = await Promise.all([
       fetchRiderRecentOrders(db, riderId, orderFilters),
       db
@@ -380,6 +381,23 @@ export async function GET(
         .orderBy(desc(riderPaymentMethods.createdAt))
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      (async () => {
+        try {
+          const sqlClient = getSql();
+          const rows = await sqlClient`
+            SELECT
+              COALESCE(subscription_dues_outstanding, 0)::float8 AS dues_outstanding,
+              COALESCE(subscription_dispatch_blocked, FALSE) AS dispatch_blocked,
+              COALESCE(subscription_penalty_streak_days, 0)::int AS penalty_streak_days
+            FROM riders
+            WHERE id = ${riderId}
+            LIMIT 1
+          `;
+          return (rows?.[0] as Record<string, unknown> | undefined) ?? null;
+        } catch {
+          return null;
+        }
+      })(),
     ]);
 
     let recentPenalties: Array<Record<string, unknown>> = [];
@@ -706,6 +724,35 @@ export async function GET(
             order.displayOrderId?.trim() ||
             formatRiderOrderDisplayId(order),
         })),
+        subscriptionDues: (() => {
+          const walletBal = walletRow ? Number(walletRow.totalBalance ?? 0) : 0;
+          const duesOutstanding = Number(
+            (subscriptionDuesRow as { dues_outstanding?: unknown } | null)?.dues_outstanding ?? 0
+          );
+          const dispatchBlocked = Boolean(
+            (subscriptionDuesRow as { dispatch_blocked?: unknown } | null)?.dispatch_blocked
+          );
+          const penaltyStreakDays = Number(
+            (subscriptionDuesRow as { penalty_streak_days?: unknown } | null)?.penalty_streak_days ?? 0
+          );
+          const totalDue = Math.max(0, duesOutstanding);
+          if (totalDue <= 0 && !dispatchBlocked && penaltyStreakDays <= 0) {
+            return {
+              duesOutstanding: 0,
+              totalDue: 0,
+              dispatchBlocked: false,
+              penaltyStreakDays: 0,
+              walletBalance: Number.isFinite(walletBal) ? walletBal : 0,
+            };
+          }
+          return {
+            duesOutstanding: Number.isFinite(duesOutstanding) ? duesOutstanding : 0,
+            totalDue,
+            dispatchBlocked,
+            penaltyStreakDays: Number.isFinite(penaltyStreakDays) ? penaltyStreakDays : 0,
+            walletBalance: Number.isFinite(walletBal) ? walletBal : 0,
+          };
+        })(),
         recentWithdrawals: recentWithdrawals.map(withdrawal => ({
           id: withdrawal.id,
           amount: withdrawal.amount,
@@ -772,7 +819,9 @@ export async function GET(
           const toNum = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
           const total = toNum(walletRow.totalBalance);
           const globalWalletBlock = total <= -200;
-          const withdrawable = toNum((walletRow as { withdrawable?: unknown }).withdrawable ?? walletRow.totalBalance);
+          // Never show negative withdrawable — cash-out is 0 when wallet is in debt.
+          const rawWithdrawable = toNum((walletRow as { withdrawable?: unknown }).withdrawable ?? walletRow.totalBalance);
+          const withdrawable = Math.max(0, Math.min(rawWithdrawable, total));
           const locked = toNum((walletRow as { locked?: unknown }).locked ?? 0);
           const security = toNum((walletRow as { securityBalance?: unknown }).securityBalance ?? 0);
           const isFrozen = Boolean((walletRow as { isFrozen?: boolean }).isFrozen);

@@ -230,18 +230,23 @@ export function OrderPanel({
     >
       <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
         <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <span className="inline-flex w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800">
+          <div className="mb-3 flex flex-col gap-2">
+            <span
+              className="inline-flex max-w-full w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800 whitespace-nowrap overflow-hidden text-ellipsis"
+              title="GatiMitra - LiveOps"
+            >
               GatiMitra - LiveOps
             </span>
-            <button
-              type="button"
-              onClick={onPrintBill}
-              className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 shrink-0"
-            >
-              <Printer size={13} />
-              Print bill
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={onPrintBill}
+                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+              >
+                <Printer size={13} />
+                Print bill
+              </button>
+            </div>
           </div>
 
           <div className="mb-2 pr-6">

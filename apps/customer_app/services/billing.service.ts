@@ -154,7 +154,11 @@ export type CalculateBillItem = {
 
 export type CalculateBillPayload = {
   merchantId: string;
-  addressId: string;
+  /** Saved delivery address — required for placeable checkout bills. */
+  addressId?: string | null;
+  /** Provisional GPS drop when no saved address is selected yet. */
+  dropLat?: number;
+  dropLon?: number;
   items: CalculateBillItem[];
   tipAmount?: number;
   donationAmount?: number;

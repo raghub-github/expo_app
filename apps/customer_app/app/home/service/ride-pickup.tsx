@@ -6,7 +6,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from "react-native";
+import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, InteractionManager, Keyboard } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -15,6 +15,7 @@ import * as Contacts from "expo-contacts";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
 import { BookingRiderSheet } from "@/features/ride/BookingRiderSheet";
 import { BookingForSomeoneElseSheet, FAR_PICKUP_THRESHOLD_KM } from "@/features/ride/BookingForSomeoneElseSheet";
 import { ContactListSheet } from "@/features/ride/ContactListSheet";
@@ -164,6 +165,19 @@ function resolvePickupAddress(address: { primary?: string; fullAddress?: string 
   return address?.fullAddress ?? address?.primary ?? "";
 }
 
+/** Reject NaN/Infinity, out-of-range, and the null-island (0,0) sentinel before using coordinates. */
+function isValidLatLng(lat: unknown, lng: unknown): lat is number {
+  return (
+    typeof lat === "number" &&
+    typeof lng === "number" &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180 &&
+    !(lat === 0 && lng === 0)
+  );
+}
+
 function isUsingDevicePickup(
   pickupText: string,
   address: { primary?: string; fullAddress?: string } | null
@@ -243,6 +257,25 @@ export default function RidePickupScreen() {
   const stopInputRefs = useRef<Record<string, TextInput | null>>({});
   const userEditedPickupRef = useRef(restoringFromBook);
   const pickupCityGeocodeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Monotonic token for location selections. Each pickup/drop/stop tap bumps it;
+   * an async reverse-resolve only commits if its token is still current. This kills
+   * the "coords from one place, text from another" race when the user taps results
+   * rapidly or a slower network response lands after a newer selection.
+   */
+  const selectSeqRef = useRef(0);
+  const navigatingToBookRef = useRef(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+
+  /** Stop any pending/in-flight suggestion fetch so a stale result can't clobber a fresh selection. */
+  const cancelInFlightSearch = useCallback(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+    searchAbortRef.current?.abort();
+  }, []);
 
   const [pickupText, setPickupText] = useState(() =>
     restoringFromBook && routeParams.pickup?.trim()
@@ -281,20 +314,21 @@ export default function RidePickupScreen() {
   const [pickupCoords, setPickupCoords] = useState<{ latitude: number; longitude: number } | null>(
     () => {
       if (restoringFromBook && routeParams.pickupLat && routeParams.pickupLng) {
-        return {
-          latitude: Number(routeParams.pickupLat),
-          longitude: Number(routeParams.pickupLng),
-        };
+        const lat = Number(routeParams.pickupLat);
+        const lng = Number(routeParams.pickupLng);
+        if (isValidLatLng(lat, lng)) return { latitude: lat, longitude: lng };
       }
-      return hasCoords ? { latitude: coords!.latitude!, longitude: coords!.longitude! } : null;
+      if (hasCoords && isValidLatLng(coords!.latitude, coords!.longitude)) {
+        return { latitude: coords!.latitude!, longitude: coords!.longitude! };
+      }
+      return null;
     }
   );
   const [dropCoords, setDropCoords] = useState<{ latitude: number; longitude: number } | null>(() => {
     if (restoringFromBook && routeParams.dropLat && routeParams.dropLng) {
-      return {
-        latitude: Number(routeParams.dropLat),
-        longitude: Number(routeParams.dropLng),
-      };
+      const lat = Number(routeParams.dropLat);
+      const lng = Number(routeParams.dropLng);
+      if (isValidLatLng(lat, lng)) return { latitude: lat, longitude: lng };
     }
     return null;
   });
@@ -425,8 +459,21 @@ export default function RidePickupScreen() {
 
   const clearPickup = () => {
     userEditedPickupRef.current = true;
+    selectSeqRef.current++; // invalidate any in-flight resolve so it can't refill the field
+    cancelInFlightSearch();
     setPickupText("");
     setPickupCoords(null);
+    setPickupPlaceLabel("");
+    setTimeout(() => pickupInputRef.current?.focus(), 0);
+  };
+
+  const clearDrop = () => {
+    selectSeqRef.current++;
+    cancelInFlightSearch();
+    setDropText("");
+    setDropCoords(null);
+    setDropPlaceLabel("");
+    setTimeout(() => dropInputRef.current?.focus(), 0);
   };
 
   const displayRiderLabel = selectedRiderId === "myself" ? "For me" : guestName ? guestName : "Add a guest";
@@ -461,19 +508,49 @@ export default function RidePickupScreen() {
   );
 
   const navigateToRideBook = useCallback(
-    (dropLabel: string, dropCoord?: { latitude: number; longitude: number }) => {
-      const pickup = pickupText.trim() || resolvePickupAddress(address);
-      if (!pickupCoords?.latitude || !pickupCoords?.longitude) {
-        Alert.alert(
-          "Pickup location required",
-          "Select pickup from search or map so we can save exact coordinates."
-        );
-        return;
-      }
-      if (!dropCoord?.latitude || !dropCoord?.longitude) {
+    async (
+      dropLabel: string,
+      dropCoord?: { latitude: number; longitude: number },
+      dropLabelPrimary?: string
+    ) => {
+      if (navigatingToBookRef.current) return;
+
+      if (!isValidLatLng(dropCoord?.latitude, dropCoord?.longitude)) {
         Alert.alert(
           "Drop location required",
           "Select drop from search or map so we can save exact coordinates."
+        );
+        return;
+      }
+
+      let resolvedPickup: { latitude: number; longitude: number } | null = isValidLatLng(
+        pickupCoords?.latitude,
+        pickupCoords?.longitude
+      )
+        ? pickupCoords
+        : isValidLatLng(coords?.latitude, coords?.longitude)
+          ? { latitude: coords!.latitude!, longitude: coords!.longitude! }
+          : null;
+
+      if (!resolvedPickup) {
+        const pickupAddr = pickupText.trim() || resolvePickupAddress(address);
+        if (pickupAddr) {
+          try {
+            const geocoded = await geocodeAddressToCoord(pickupAddr);
+            if (isValidLatLng(geocoded?.latitude, geocoded?.longitude)) {
+              resolvedPickup = { latitude: geocoded!.latitude, longitude: geocoded!.longitude };
+              setPickupCoords(resolvedPickup);
+            }
+          } catch {
+            // best-effort — alert below if still missing
+          }
+        }
+      }
+
+      if (!resolvedPickup) {
+        Alert.alert(
+          "Pickup location required",
+          "Select pickup from search or map so we can save exact coordinates."
         );
         return;
       }
@@ -487,16 +564,18 @@ export default function RidePickupScreen() {
         return;
       }
 
+      const pickup = pickupText.trim() || resolvePickupAddress(address);
       const params: Record<string, string> = { pickup, drop: dropLabel };
       params.pickupLabel = resolvePlaceDisplayName({
         primary: pickupPlaceLabel.trim() || address?.primary,
         fullAddress: pickup,
       });
       params.dropLabel =
+        dropLabelPrimary?.trim() ||
         dropPlaceLabel.trim() ||
         resolvePlaceDisplayName({ primary: dropLabel, fullAddress: dropLabel });
-      params.pickupLat = String(pickupCoords.latitude);
-      params.pickupLng = String(pickupCoords.longitude);
+      params.pickupLat = String(resolvedPickup.latitude);
+      params.pickupLng = String(resolvedPickup.longitude);
       params.dropLat = String(dropCoord.latitude);
       params.dropLng = String(dropCoord.longitude);
       const filledStops = stops
@@ -521,15 +600,27 @@ export default function RidePickupScreen() {
 
       const isIntercityReturn =
         routeParams.bookingMode === "intercity" && routeParams.returnTo === "ride";
-      if (isIntercityReturn) {
-        router.replace({
-          pathname: "/home/service/ride",
-          params: { ...params, tab: "intercity" },
-        });
-        return;
-      }
 
-      router.push({ pathname: "/home/service/ride-book", params });
+      navigatingToBookRef.current = true;
+      Keyboard.dismiss();
+
+      const go = () => {
+        try {
+          if (isIntercityReturn) {
+            router.replace({
+              pathname: "/home/service/ride",
+              params: { ...params, tab: "intercity" },
+            });
+          } else {
+            router.replace({ pathname: "/home/service/ride-book", params });
+          }
+        } catch {
+          navigatingToBookRef.current = false;
+          Alert.alert("Could not open ride options", "Please try again.");
+        }
+      };
+
+      InteractionManager.runAfterInteractions(go);
     },
     [
       pickupText,
@@ -538,14 +629,14 @@ export default function RidePickupScreen() {
       dropPlaceLabel,
       stops,
       address,
+      coords?.latitude,
+      coords?.longitude,
       selectedRiderId,
       guestName,
       guestPhone,
       farPickupPromptShown,
       farPickupAcknowledged,
       pickupDistanceFromBookerKm,
-      pickupPlaceLabel,
-      dropPlaceLabel,
       routeParams.bookingMode,
       routeParams.returnTo,
       router,
@@ -588,10 +679,11 @@ export default function RidePickupScreen() {
         setDropText(result.fullAddress);
         setDropCoords({ latitude: result.latitude, longitude: result.longitude });
         if (stops.length === 0) {
-          navigateToRideBook(result.fullAddress, {
-            latitude: result.latitude,
-            longitude: result.longitude,
-          });
+          void navigateToRideBook(
+            result.fullAddress,
+            { latitude: result.latitude, longitude: result.longitude },
+            result.primary
+          );
         }
         return;
       }
@@ -734,6 +826,7 @@ export default function RidePickupScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      navigatingToBookRef.current = false;
       return () => {
         didAutoFocusOnVisitRef.current = false;
         lastRestoreKeyRef.current = "";
@@ -743,64 +836,105 @@ export default function RidePickupScreen() {
 
   const handlePickupSelect = useCallback(
     async (loc: EnrichedPlaceResult) => {
-      const resolved = await resolveMapboxEnrichedPlace(loc, "ride-pickup");
+      const seq = ++selectSeqRef.current;
+      cancelInFlightSearch();
       userEditedPickupRef.current = true;
-      setLastRidePickup({
-        latitude: resolved.latitude,
-        longitude: resolved.longitude,
-        primary: resolved.primary,
-        fullAddress: resolved.fullAddress,
-      });
-      addRecentLocation({
-        latitude: resolved.latitude,
-        longitude: resolved.longitude,
-        primary: resolved.primary,
-        fullAddress: resolved.fullAddress,
-        kind: "pickup",
-      });
-      setPickupPlaceLabel(resolved.primary?.trim() || "");
-      setPickupText(resolved.fullAddress);
-      setPickupCoords({ latitude: resolved.latitude, longitude: resolved.longitude });
-      if (isPickupFarFromUser(resolved.latitude, resolved.longitude)) {
-        const km = haversineKm(coords!.latitude!, coords!.longitude!, resolved.latitude, resolved.longitude);
+
+      // Optimistic: the tapped result is the single source of truth. Reflect it in the
+      // field immediately (before the network reverse-resolve) so the UI never shows a
+      // stale/other address, then move focus to drop.
+      const tappedLabel = loc.primary?.trim() || "";
+      const tappedText = loc.fullAddress?.trim() || loc.primary?.trim() || "";
+      setPickupPlaceLabel(tappedLabel);
+      if (tappedText) setPickupText(tappedText);
+      if (isValidLatLng(loc.latitude, loc.longitude)) {
+        setPickupCoords({ latitude: loc.latitude, longitude: loc.longitude });
+      }
+      setActiveField("drop");
+
+      const resolved = await resolveMapboxEnrichedPlace(loc, "ride-pickup");
+      if (seq !== selectSeqRef.current) return; // superseded by a newer selection
+
+      const finalCoords = isValidLatLng(resolved.latitude, resolved.longitude)
+        ? { latitude: resolved.latitude, longitude: resolved.longitude }
+        : isValidLatLng(loc.latitude, loc.longitude)
+          ? { latitude: loc.latitude, longitude: loc.longitude }
+          : null;
+      const finalText = resolved.fullAddress?.trim() || tappedText;
+      const finalLabel = resolved.primary?.trim() || tappedLabel;
+
+      if (finalCoords) {
+        setLastRidePickup({ ...finalCoords, primary: finalLabel, fullAddress: finalText });
+        addRecentLocation({ ...finalCoords, primary: finalLabel, fullAddress: finalText, kind: "pickup" });
+        setPickupCoords(finalCoords);
+      }
+      setPickupPlaceLabel(finalLabel);
+      setPickupText(finalText);
+
+      if (finalCoords && isPickupFarFromUser(finalCoords.latitude, finalCoords.longitude)) {
+        const km = haversineKm(coords!.latitude!, coords!.longitude!, finalCoords.latitude, finalCoords.longitude);
         setPickupDistanceFromBookerKm(km);
         setFarPickupPromptShown(true);
         setFarPickupAcknowledged(false);
         setSomeoneElseSheetVisible(true);
       }
-      setActiveField("drop");
-      setTimeout(() => dropInputRef.current?.focus(), 100);
+      setTimeout(() => {
+        if (seq === selectSeqRef.current) dropInputRef.current?.focus();
+      }, 100);
     },
-    [addRecentLocation, setLastRidePickup, isPickupFarFromUser, coords?.latitude, coords?.longitude]
+    [addRecentLocation, setLastRidePickup, isPickupFarFromUser, coords?.latitude, coords?.longitude, cancelInFlightSearch]
   );
 
   const handleDropSelect = useCallback(
     async (loc: EnrichedPlaceResult) => {
-      const resolved = await resolveMapboxEnrichedPlace(loc, "ride-drop");
-      setLastRideDrop({
-        latitude: resolved.latitude,
-        longitude: resolved.longitude,
-        primary: resolved.primary,
-        fullAddress: resolved.fullAddress,
-      });
-      addRecentLocation({
-        latitude: resolved.latitude,
-        longitude: resolved.longitude,
-        primary: resolved.primary,
-        fullAddress: resolved.fullAddress,
-        kind: "drop",
-      });
-      setDropPlaceLabel(resolved.primary?.trim() || "");
-      setDropText(resolved.fullAddress);
-      setDropCoords({ latitude: resolved.latitude, longitude: resolved.longitude });
-      if (stops.length === 0) {
-        navigateToRideBook(resolved.fullAddress, {
-          latitude: resolved.latitude,
-          longitude: resolved.longitude,
-        });
+      const seq = ++selectSeqRef.current;
+      cancelInFlightSearch();
+
+      try {
+        // Optimistic single-source-of-truth update (see handlePickupSelect).
+        const tappedLabel = loc.primary?.trim() || "";
+        const tappedText = loc.fullAddress?.trim() || loc.primary?.trim() || "";
+        setDropPlaceLabel(tappedLabel);
+        if (tappedText) setDropText(tappedText);
+        if (isValidLatLng(loc.latitude, loc.longitude)) {
+          setDropCoords({ latitude: loc.latitude, longitude: loc.longitude });
+        }
+
+        const resolved = await resolveMapboxEnrichedPlace(loc, "ride-drop");
+        if (seq !== selectSeqRef.current) return; // superseded by a newer selection
+
+        const finalCoords = isValidLatLng(resolved.latitude, resolved.longitude)
+          ? { latitude: resolved.latitude, longitude: resolved.longitude }
+          : isValidLatLng(loc.latitude, loc.longitude)
+            ? { latitude: loc.latitude, longitude: loc.longitude }
+            : null;
+        const finalText = resolved.fullAddress?.trim() || tappedText;
+        const finalLabel = resolved.primary?.trim() || tappedLabel;
+
+        if (finalCoords) {
+          setLastRideDrop({ ...finalCoords, primary: finalLabel, fullAddress: finalText });
+          addRecentLocation({
+            ...finalCoords,
+            primary: finalLabel,
+            fullAddress: finalText,
+            kind: "drop",
+          });
+          setDropCoords(finalCoords);
+        }
+        setDropPlaceLabel(finalLabel);
+        setDropText(finalText);
+
+        if (stops.length === 0 && finalCoords) {
+          await navigateToRideBook(finalText, finalCoords, finalLabel);
+        }
+      } catch {
+        Alert.alert(
+          "Could not set drop location",
+          "Please try again or select the location on the map."
+        );
       }
     },
-    [addRecentLocation, setLastRideDrop, navigateToRideBook, stops.length]
+    [addRecentLocation, setLastRideDrop, navigateToRideBook, stops.length, cancelInFlightSearch]
   );
 
   const handleConfirm = useCallback(() => {
@@ -808,30 +942,57 @@ export default function RidePickupScreen() {
     const drop = dropText.trim();
     if (!pickup || !drop) return;
     if (stops.some((s) => !s.text.trim())) return;
-    navigateToRideBook(drop, dropCoords ?? undefined);
-  }, [pickupText, dropText, dropCoords, stops, navigateToRideBook]);
+    void navigateToRideBook(drop, dropCoords ?? undefined, dropPlaceLabel.trim() || undefined);
+  }, [pickupText, dropText, dropCoords, dropPlaceLabel, stops, navigateToRideBook]);
 
   const handleStopSelect = useCallback(
     async (stopIndex: number, loc: EnrichedPlaceResult) => {
-      const resolved = await resolveMapboxEnrichedPlace(loc, "ride-stop");
-      addRecentLocation({
-        latitude: resolved.latitude,
-        longitude: resolved.longitude,
-        primary: resolved.primary,
-        fullAddress: resolved.fullAddress,
-      });
-      setStops((prev) =>
-        prev.map((s, i) =>
-          i === stopIndex
-            ? { ...s, text: resolved.fullAddress, coords: { latitude: resolved.latitude, longitude: resolved.longitude } }
-            : s
-        )
-      );
+      const seq = ++selectSeqRef.current;
+      cancelInFlightSearch();
+
+      // Optimistic: reflect the tapped stop immediately.
+      const tappedText = loc.fullAddress?.trim() || loc.primary?.trim() || "";
+      if (tappedText || isValidLatLng(loc.latitude, loc.longitude)) {
+        setStops((prev) =>
+          prev.map((s, i) =>
+            i === stopIndex
+              ? {
+                  ...s,
+                  text: tappedText || s.text,
+                  coords: isValidLatLng(loc.latitude, loc.longitude)
+                    ? { latitude: loc.latitude, longitude: loc.longitude }
+                    : s.coords,
+                }
+              : s
+          )
+        );
+      }
       setActiveField("drop");
       setActiveStopQuery("");
-      setTimeout(() => dropInputRef.current?.focus(), 100);
+
+      const resolved = await resolveMapboxEnrichedPlace(loc, "ride-stop");
+      if (seq !== selectSeqRef.current) return; // superseded
+
+      const finalCoords = isValidLatLng(resolved.latitude, resolved.longitude)
+        ? { latitude: resolved.latitude, longitude: resolved.longitude }
+        : isValidLatLng(loc.latitude, loc.longitude)
+          ? { latitude: loc.latitude, longitude: loc.longitude }
+          : null;
+      const finalText = resolved.fullAddress?.trim() || tappedText;
+
+      if (finalCoords) {
+        addRecentLocation({ ...finalCoords, primary: resolved.primary, fullAddress: finalText });
+      }
+      setStops((prev) =>
+        prev.map((s, i) =>
+          i === stopIndex ? { ...s, text: finalText, coords: finalCoords ?? s.coords } : s
+        )
+      );
+      setTimeout(() => {
+        if (seq === selectSeqRef.current) dropInputRef.current?.focus();
+      }, 100);
     },
-    [addRecentLocation]
+    [addRecentLocation, cancelInFlightSearch]
   );
 
   const handleAddStop = () => {
@@ -866,9 +1027,6 @@ export default function RidePickupScreen() {
     setGuestName(null);
     setGuestPhone(null);
   };
-
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchAbortRef = useRef<AbortController | null>(null);
 
   const resolveDropSearchAnchor = useCallback((): { longitude: number; latitude: number } | null => {
     if (pickupCoords) {
@@ -1131,7 +1289,9 @@ export default function RidePickupScreen() {
   const canConfirm = hasStops
     ? pickupFilled && dropFilled && allStopsFilled
     : pickupFilled && dropFilled;
-  const showPickupClear = pickupText.length > 0 && !isUsingDevicePickup(pickupText, address);
+  // Clear (X) only on the focused row when it has text — not on empty or inactive rows.
+  const showPickupClear = activeField === "pickup" && pickupText.trim().length > 0;
+  const showDropClear = activeField === "drop" && dropText.trim().length > 0;
 
   const formatDistance = (loc: EnrichedPlaceResult) => {
     const anchor =
@@ -1327,6 +1487,11 @@ export default function RidePickupScreen() {
                       setActiveField("drop");
                     }}
                   />
+                  {showDropClear ? (
+                    <TouchableOpacity onPress={clearDrop} hitSlop={12} style={styles.clearBtn}>
+                      <Ionicons name="close-circle" size={18} color="#A3A3A3" />
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
               </View>
             </View>
@@ -1549,13 +1714,15 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     fontSize: 15,
-    fontWeight: "400",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#0A0A0A",
     paddingVertical: 12,
     paddingRight: 4,
   },
   inputFilled: {
-    fontWeight: "500",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#171717",
   },
   clearBtn: { padding: 4 },
@@ -1627,19 +1794,20 @@ const styles = StyleSheet.create({
   suggestedDistance: {
     fontSize: 13,
     color: "#737373",
-    fontWeight: "500",
+    fontWeight: "700",
     minWidth: 36,
   },
   suggestedContent: { flex: 1, minWidth: 0 },
   suggestedName: {
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "700",
     color: "#0A0A0A",
     marginBottom: 2,
   },
   suggestedAddress: {
     fontSize: 13,
     color: "#737373",
+    fontWeight: "600",
   },
   heartBtn: { padding: 4 },
   emptyState: {

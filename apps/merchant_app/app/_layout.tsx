@@ -1,7 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import "react-native-gesture-handler";
 import { Stack } from "expo-router";
+import { useFonts } from "expo-font";
+import { Lora_700Bold } from "@expo-google-fonts/lora";
+import { Poppins_700Bold } from "@expo-google-fonts/poppins";
 import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -28,6 +32,9 @@ import { isAppAssetsLoaded, setAppAssets } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
+import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
+
+void SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,12 +46,36 @@ const queryClient = new QueryClient({
 });
 
 export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Lora_700Bold,
+    Poppins_700Bold,
+  });
+  const [assetsReady, setAssetsReady] = useState(false);
+
   useEffect(() => {
-    if (isAppAssetsLoaded()) return;
+    // Always refresh so Super Admin image changes appear after app reopen.
     void fetchMerchantAppAssets()
       .then((res) => setAppAssets(res.assets ?? {}))
-      .catch(() => setAppAssets({}));
+      .catch(() => {
+        if (!isAppAssetsLoaded()) setAppAssets({});
+      })
+      .finally(() => setAssetsReady(true));
   }, []);
+
+  const ready = fontsLoaded && assetsReady;
+
+  useEffect(() => {
+    if (!ready) return;
+    void SplashScreen.hideAsync().catch(() => {});
+  }, [ready]);
+
+  if (!ready) {
+    return (
+      <SafeAreaProvider>
+        <MerchantBootstrapScreen />
+      </SafeAreaProvider>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -77,19 +108,19 @@ export default function RootLayout() {
                               <AcceptanceTimeoutSync />
                               <SessionRevokedGate />
                               <Stack
-                              screenOptions={{
-                                headerShown: false,
-                                contentStyle: { backgroundColor: GatiMitraMerchant.background },
-                                animation: "slide_from_right",
-                              }}
-                            >
-                              <Stack.Screen name="index" />
-                              <Stack.Screen name="(auth)" />
-                              <Stack.Screen name="(tabs)" />
-                              <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
-                              <Stack.Screen name="order-history" options={{ headerShown: false }} />
-                              <Stack.Screen name="notifications" options={{ headerShown: false }} />
-                            </Stack>
+                                screenOptions={{
+                                  headerShown: false,
+                                  contentStyle: { backgroundColor: GatiMitraMerchant.background },
+                                  animation: "slide_from_right",
+                                }}
+                              >
+                                <Stack.Screen name="index" />
+                                <Stack.Screen name="(auth)" />
+                                <Stack.Screen name="(tabs)" />
+                                <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
+                                <Stack.Screen name="order-history" options={{ headerShown: false }} />
+                                <Stack.Screen name="notifications" options={{ headerShown: false }} />
+                              </Stack>
                             </IncomingOrderSheetProvider>
                           </SubscriptionProvider>
                         </NotificationProvider>

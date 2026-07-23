@@ -1,93 +1,34 @@
 import { Alert, Linking, Platform, Share } from "react-native";
 import type { OrderRecord } from "@/hooks/useOrders";
-import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
-
-function billLines(order: OrderRecord, storeName?: string | null, kotOnly = false): string {
-  const id = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId) || "ID unavailable";
-  const header = [storeName?.trim() || "GatiMitra Partner", `Order ${id}`, ""];
-  const items = order.lineItems.map(
-    (it) =>
-      kotOnly
-        ? `${it.qty} x ${it.name}`
-        : `${it.qty} x ${it.name} — ₹${it.price.toLocaleString("en-IN")}`
-  );
-  if (kotOnly) {
-    return [...header, ...items].join("\n");
-  }
-  return [...header, ...items, "", `Total: ₹${order.total.toLocaleString("en-IN")}`].join("\n");
-}
-
-function billHtml(order: OrderRecord, storeName?: string | null, kotOnly = false): string {
-  const id = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId) || "ID unavailable";
-  const rows = order.lineItems
-    .map(
-      (it) =>
-        `<tr><td>${it.qty} x ${escapeHtml(it.name)}</td>${
-          kotOnly ? "" : `<td style="text-align:right">₹${it.price}</td>`
-        }</tr>`
-    )
-    .join("");
-  const total = kotOnly
-    ? ""
-    : `<p style="font-weight:700;margin-top:12px">Total: ₹${order.total.toLocaleString("en-IN")}</p>`;
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Order ${id}</title></head><body style="font-family:sans-serif;padding:16px">
-<h2>${escapeHtml(storeName || "GatiMitra Partner")}</h2>
-<p><strong>Order ${escapeHtml(id)}</strong></p>
-<table style="width:100%;border-collapse:collapse">${rows}</table>
-${total}
-</body></html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+import type { KotPrintContext } from "@/lib/printKot";
+import type { MerchantPrintStoreContext } from "@/lib/printContext";
+import { buildKotPrintContext } from "@/lib/printContext";
 
 export async function printOrderBill(
   order: OrderRecord,
-  storeName?: string | null
+  ctx?: MerchantPrintStoreContext | KotPrintContext | null
 ): Promise<void> {
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    const w = window.open("", "_blank");
-    if (w) {
-      w.document.write(billHtml(order, storeName, false));
-      w.document.close();
-      w.focus();
-      w.print();
-    }
-    return;
-  }
+  const { printBillFromRecord } = await import("@/lib/printBill");
   try {
-    const Print = await import("expo-print");
-    await Print.printAsync({ html: billHtml(order, storeName, false) });
+    await printBillFromRecord(order, ctx);
   } catch {
-    await Share.share({ message: billLines(order, storeName, false), title: "Order bill" });
+    if (Platform.OS !== "web") {
+      const storeName = ctx?.storeName?.trim() || "GatiMitra Partner";
+      const id = order.formattedOrderId || String(order.ordersCoreId);
+      await Share.share({
+        message: `${storeName}\nOrder ${id}\nTotal: ₹${order.total.toLocaleString("en-IN")}`,
+        title: "Order bill",
+      });
+    }
   }
 }
 
 export async function printOrderKot(
   order: OrderRecord,
-  storeName?: string | null
+  ctx?: MerchantPrintStoreContext | KotPrintContext | null
 ): Promise<void> {
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    const w = window.open("", "_blank");
-    if (w) {
-      w.document.write(billHtml(order, storeName, true));
-      w.document.close();
-      w.focus();
-      w.print();
-    }
-    return;
-  }
-  try {
-    const Print = await import("expo-print");
-    await Print.printAsync({ html: billHtml(order, storeName, true) });
-  } catch {
-    await Share.share({ message: billLines(order, storeName, true), title: "KOT" });
-  }
+  const { printKotFromRecord } = await import("@/lib/printKot");
+  await printKotFromRecord(order, buildKotPrintContext(ctx));
 }
 
 /** Speak quantity + item names only (e.g. "2 Chicken Biryani. 1 Plain Chapati"). */

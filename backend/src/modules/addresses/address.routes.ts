@@ -164,9 +164,10 @@ export async function addressRoutes(app: FastifyInstance) {
         body: addressBodySchema.partial(),
         response: {
           200: z.object({ ok: z.boolean() }),
-          400: z.object({ error: z.string() }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
           403: z.object({ error: z.string() }),
           404: z.object({ error: z.string() }),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
     },
@@ -177,9 +178,30 @@ export async function addressRoutes(app: FastifyInstance) {
       const id = parseInt(request.params.id, 10);
       if (Number.isNaN(id)) return reply.status(400).send({ error: "Invalid id" });
       const body = (request.body as object) || {};
-      const updated = await updateAddress(customerPk, id, body);
-      if (!updated) return reply.status(404).send({ error: "Address not found" });
-      return reply.send({ ok: true });
+      try {
+        const updated = await updateAddress(customerPk, id, body);
+        if (!updated) return reply.status(404).send({ error: "Address not found" });
+        return reply.send({ ok: true });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        request.log.warn({ err, message }, "Update address failed");
+        if (message.includes("unique_customer_home_address") || message.includes("unique_customer_work_address")) {
+          return reply.status(400).send({
+            error: "address_label_conflict",
+            message: "You already have a Home or Work address. Edit or remove it first.",
+          });
+        }
+        if (message.includes("does not exist") || message.includes("relation") || message.includes("Failed query")) {
+          return reply.status(503).send({
+            error: "database_migration_required",
+            message: "Address table not set up. Run migration: backend/drizzle/0070_customer_addresses_and_active_location.sql",
+          });
+        }
+        return reply.status(400).send({
+          error: "address_update_failed",
+          message: message || "Could not update address. Try again.",
+        });
+      }
     }
   );
 

@@ -13,7 +13,15 @@ import * as SplashScreen from "expo-splash-screen";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback, useRef, useState } from "react";
-import { View, LogBox, Alert, AppState, Platform, type AppStateStatus } from "react-native";
+import {
+  View,
+  LogBox,
+  Alert,
+  AppState,
+  Platform,
+  StatusBar as NativeStatusBar,
+  type AppStateStatus,
+} from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider, focusManager, useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
@@ -26,13 +34,15 @@ import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
-import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
+import { CustomerPermissionSheetsHost } from "@/components/CustomerPermissionSheetsHost";
+import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
 import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
 import { CartCheckoutGateHost } from "@/components/cart/CartCheckoutGateHost";
 import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
+import { StatusBarRouteChromeGuard } from "@/components/StatusBarRouteChromeGuard";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
@@ -58,7 +68,7 @@ import {
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
-import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
+import { resolveTopSafeInset } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
@@ -74,6 +84,24 @@ import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets"
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 const SPLASH_CHROME_COLOR = "#5eead4";
+
+/**
+ * Perceived-luminance test so status-bar icons ALWAYS contrast with their
+ * background (dark icons on light bars, light icons on dark bars) — the bar is
+ * never invisible / blended into the page regardless of what a screen set.
+ */
+function isLightBarColor(color: string): boolean {
+  const hex = (color || "").replace("#", "").trim();
+  if (hex.length < 6) return true; // default/transparent → treat as light (white)
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if ([r, g, b].some((n) => Number.isNaN(n))) return true;
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150;
+}
+
+// App-wide invariant: the system status bar is never hidden, including startup.
+NativeStatusBar.setHidden(false, "none");
 
 // Restore the API URL override BEFORE any module-level code makes a request.
 // This runs at JS load time, not in a useEffect, so the override is in place
@@ -103,6 +131,7 @@ void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike"));
 void (async () => {
   if (Platform.OS !== "android") return;
   try {
+    NativeStatusBar.setHidden(false, "none");
     const [SystemUI, NavigationBar] = await Promise.all([
       import("expo-system-ui"),
       import("expo-navigation-bar"),
@@ -245,6 +274,12 @@ export default function RootLayout() {
     if (!hydrated || !cartHydrated) return;
     void (async () => {
       await hydrateLocation();
+      // SMS first on Android — never fire GPS / Location Accuracy over the SMS sheet.
+      if (useSmsPermissionStore.getState().allowInFlight) return;
+      const smsOk = await useSmsPermissionStore.getState().promptSmsPermissionIfNeeded();
+      if (!smsOk && useSmsPermissionStore.getState().blocksLocation) {
+        return;
+      }
       // Always request fresh GPS on launch. Persisted selected pins are cleared in hydrate()
       // so a previous city cannot keep driving merchant discovery after travel.
       await promptLocationPermissionIfNeeded({ force: true });
@@ -297,11 +332,12 @@ export default function RootLayout() {
               <LocationWatchSync />
               <LanguageSync />
               <CustomerSystemChrome />
+              <StatusBarRouteChromeGuard />
               <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
               <CheckoutBottomSheetHost />
               <CartCheckoutGateHost />
               <GlobalFloatingCart />
-              <LocationModalWrapper />
+              <CustomerPermissionSheetsHost />
               <PushNotificationBootstrap />
               <PlayInAppUpdateBootstrap />
               <LegalConsentGate />
@@ -405,6 +441,7 @@ function SessionRevokedHandler() {
 function CustomerPermissionsRealtimeSync() {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
+  const promptSmsPermissionIfNeeded = useSmsPermissionStore((s) => s.promptSmsPermissionIfNeeded);
   const lastSyncedRef = useRef<{
     location: boolean;
     sms: boolean;
@@ -413,6 +450,7 @@ function CustomerPermissionsRealtimeSync() {
 
   const syncDevicePermissions = useCallback(async () => {
     if (!hydrated || !session) return;
+    if (useSmsPermissionStore.getState().allowInFlight) return;
     try {
       const [{ status: locStatus }, smsGranted, contactsGranted] = await Promise.all([
         Location.getForegroundPermissionsAsync(),
@@ -425,6 +463,17 @@ function CustomerPermissionsRealtimeSync() {
         sms: smsGranted,
         contacts: contactsGranted,
       };
+
+      if (smsGranted) {
+        useSmsPermissionStore.setState({
+          granted: true,
+          showSheet: false,
+          blocksLocation: false,
+        });
+      } else {
+        // SMS-first: host hides location while this sheet is open.
+        void promptSmsPermissionIfNeeded();
+      }
 
       if (
         lastSyncedRef.current &&
@@ -449,7 +498,7 @@ function CustomerPermissionsRealtimeSync() {
     } catch {
       // Keep silent; we'll retry on next app active tick.
     }
-  }, [hydrated, session]);
+  }, [hydrated, session, promptSmsPermissionIfNeeded]);
 
   useEffect(() => {
     void syncDevicePermissions();
@@ -478,6 +527,9 @@ function LocationPermissionResumeCheck() {
 
   useEffect(() => {
     const syncOnForeground = async () => {
+      if (useSmsPermissionStore.getState().blocksLocation) {
+        return;
+      }
       const { locationSource, coords: before } = useLocationStore.getState();
       await promptLocationPermissionIfNeeded();
       // Explicit session selection stays; otherwise refresh live GPS.
@@ -500,6 +552,7 @@ function LocationPermissionResumeCheck() {
 
     const interval = setInterval(() => {
       if (AppState.currentState !== "active") return;
+      if (useSmsPermissionStore.getState().blocksLocation) return;
       if (useLocationStore.getState().showPermissionModal) {
         void promptLocationPermissionIfNeeded();
       }
@@ -513,26 +566,11 @@ function LocationPermissionResumeCheck() {
 
   useEffect(() => {
     if (!showPermissionModal) return;
+    if (useSmsPermissionStore.getState().blocksLocation) return;
     void promptLocationPermissionIfNeeded();
   }, [showPermissionModal, promptLocationPermissionIfNeeded]);
 
   return null;
-}
-
-function LocationModalWrapper() {
-  const segments = useSegments() as string[];
-  const showPermissionModal = useLocationStore((s) => s.showPermissionModal);
-  const setShowPermissionModal = useLocationStore((s) => s.setShowPermissionModal);
-  const isAuth = segments[0] === "(auth)";
-  const isOnboardingProfilePage =
-    segments[0] === "(onboarding)" && (segments[1] ?? "") !== "permissions";
-  const canShowLocationModal = !isAuth && !isOnboardingProfilePage;
-  return (
-    <LocationPermissionModal
-      visible={showPermissionModal && canShowLocationModal}
-      onDismiss={() => setShowPermissionModal(false)}
-    />
-  );
 }
 
 function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boolean }) {
@@ -540,15 +578,20 @@ function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boo
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
+    // Keep the system StatusBar visible whenever chrome syncs (modals / nav can flip it).
+    NativeStatusBar.setHidden(false, "none");
     if (splashChromeActive) {
       void import("expo-system-ui")
         .then((SystemUI) => SystemUI.setBackgroundColorAsync(SPLASH_CHROME_COLOR))
         .catch(() => {});
       return;
     }
-    if (statusBarBackground === "transparent") return;
+    // Transparent immersive still needs a LIGHT window root so dark status icons stay visible.
+    // Never leave a dark SystemUI root behind translucent status chrome.
+    const rootColor =
+      statusBarBackground === "transparent" ? "#FFFFFF" : statusBarBackground;
     void import("expo-system-ui")
-      .then((SystemUI) => SystemUI.setBackgroundColorAsync(statusBarBackground))
+      .then((SystemUI) => SystemUI.setBackgroundColorAsync(rootColor))
       .catch(() => {});
   }, [statusBarBackground, splashChromeActive]);
 
@@ -571,11 +614,8 @@ function RootStack({
   const statusBarHeight =
     inProfileStack || inLegalStack || inCheckoutStack || inOrdersStack
       ? 0
-      : insets.top > 0
-        ? insets.top
-        : DEFAULT_STATUS_BAR_HEIGHT;
+      : resolveTopSafeInset(insets.top);
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
-  const statusBarStyle = useScreenChromeStore((s) => s.statusBarStyle);
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   const bootstrapActive = useScreenChromeStore((s) => s.bootstrapActive);
   const splashChromeActive = splashActive || bootstrapActive;
@@ -588,26 +628,50 @@ function RootStack({
   // above the nav bar on search and other non-home routes. Screens add insets themselves.
   const resolvedStatusBarBackground = splashChromeActive
     ? SPLASH_CHROME_COLOR
-    : statusBarBackground;
-  const resolvedStatusBarStyle = splashChromeActive ? "light" : statusBarStyle;
+    : immersiveStatusBar && statusBarBackground === "transparent"
+      ? "transparent"
+      : statusBarBackground === "transparent"
+        ? "#FFFFFF"
+        : statusBarBackground;
+  // Derive the icon style from the ACTUAL bar background so icons can never be
+  // invisible (e.g. a screen that leaves "light" icons on a white bar). Splash keeps
+  // its light icons over the mint chrome.
+  const barBgForContrast =
+    resolvedStatusBarBackground === "transparent" ? "#FFFFFF" : resolvedStatusBarBackground;
+  const resolvedStatusBarStyle = splashChromeActive
+    ? "light"
+    : isLightBarColor(barBgForContrast)
+      ? "dark"
+      : "light";
+
+  useEffect(() => {
+    if (!splashChromeActive) return;
+    // Never allow a white status strip over the splash gradient.
+    NativeStatusBar.setHidden(false, "none");
+    if (Platform.OS === "android") {
+      NativeStatusBar.setTranslucent(true);
+      NativeStatusBar.setBackgroundColor(SPLASH_CHROME_COLOR, true);
+      NativeStatusBar.setBarStyle("light-content", true);
+    }
+  }, [splashChromeActive]);
 
   return (
     <>
       <StatusBarSystemUISync splashChromeActive={splashChromeActive} />
       <StatusBar
-        hidden={splashChromeActive}
+        hidden={false}
         style={resolvedStatusBarStyle}
-        backgroundColor={
-          immersiveStatusBar && statusBarBackground === "transparent"
-            ? "transparent"
-            : resolvedStatusBarBackground
-        }
-        translucent={immersiveStatusBar}
+        backgroundColor={resolvedStatusBarBackground}
+        translucent={immersiveStatusBar || resolvedStatusBarBackground === "transparent"}
       />
       <View
         style={{
           height: effectiveStatusBarHeight,
-          backgroundColor: resolvedStatusBarBackground,
+          backgroundColor: splashChromeActive
+            ? SPLASH_CHROME_COLOR
+            : resolvedStatusBarBackground === "transparent"
+              ? "#FFFFFF"
+              : resolvedStatusBarBackground,
           width: "100%",
         }}
       />
@@ -615,8 +679,16 @@ function RootStack({
         <Stack
           screenOptions={{
             headerShown: false,
+            statusBarHidden: false,
+            statusBarStyle: splashChromeActive ? "light" : "dark",
+            statusBarBackgroundColor: splashChromeActive
+              ? SPLASH_CHROME_COLOR
+              : "#FFFFFF",
+            statusBarTranslucent: splashChromeActive,
             contentStyle: {
-              backgroundColor: colors.background.light,
+              backgroundColor: splashChromeActive
+                ? SPLASH_CHROME_COLOR
+                : colors.background.light,
             },
             animation: "slide_from_right",
           }}

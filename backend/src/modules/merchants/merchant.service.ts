@@ -397,6 +397,21 @@ export async function listNearbyStoresByRoadDistance(params: {
 
       const isOpen = live === "OPEN";
       const livePhase = (c.row.live_schedule_phase ?? null) as LiveSchedulePhase | null;
+
+      // Sync-failure monitoring (silent when healthy): the schedule engine says this
+      // store is inside its slot AND it is within operating hours, yet the customer-
+      // facing operational flags still read CLOSED. That is the exact "merchant shows
+      // Open, customer shows Closed" condition — it means the background schedule tick
+      // hasn't flipped merchant_stores fresh. Surface it so it can be alerted/monitored.
+      if (!isOpen && livePhase === "WITHIN_SLOT" && sched?.withinOperatingHours === true) {
+        console.warn(
+          `[store-status-sync] store ${storeInternalId} is WITHIN_SLOT + within hours but customer sees CLOSED ` +
+            `(stale merchant_stores flags — schedule tick lagging): ` +
+            `operational_status=${c.row.operational_status} is_active=${c.row.is_active} ` +
+            `is_accepting_orders=${c.row.is_accepting_orders} is_available=${c.row.is_available}`,
+        );
+      }
+
       const liveLabel = formatStoreStatusLabel({
         phase: livePhase,
         nextOpenAt: c.row.next_open_at ?? null,
@@ -909,6 +924,8 @@ export async function getMenuByStoreId(
             AND COALESCE(m.is_deleted, FALSE) = FALSE
             AND m.is_active = TRUE
             AND m.approval_status = 'APPROVED'
+            -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
+            AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND ${effectiveInStock} = TRUE
             AND m.item_name ILIKE ${"%" + trimmedSearch + "%"}
           ORDER BY m.item_name ASC
@@ -961,6 +978,8 @@ export async function getMenuByStoreId(
             AND COALESCE(m.is_deleted, FALSE) = FALSE
             AND m.is_active = TRUE
             AND m.approval_status = 'APPROVED'
+            -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
+            AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND ${effectiveInStock} = TRUE
           ORDER BY m.item_name ASC
         `,
@@ -1125,6 +1144,7 @@ export async function getMenuDelta(
       m.has_variants,
       m.approval_status,
       COALESCE(m.is_deleted, FALSE) AS is_deleted,
+      COALESCE(m.is_locked_by_plan, FALSE) AS is_locked_by_plan,
       ${effectiveInStock} AS effective_in_stock,
       c.category_name
     FROM merchant_menu_items m
@@ -1139,6 +1159,7 @@ export async function getMenuDelta(
     effective_in_stock?: boolean;
     approval_status?: string | null;
     is_deleted?: boolean;
+    is_locked_by_plan?: boolean;
   })[];
 
   const deletedItemIds: string[] = [];
@@ -1153,6 +1174,8 @@ export async function getMenuDelta(
       row.is_active === true &&
       row.is_deleted !== true &&
       approved &&
+      // Plan-locked items are hidden from customers → tell the SWR client to remove them.
+      row.is_locked_by_plan !== true &&
       row.effective_in_stock !== false;
 
     if (!active) {
@@ -1462,7 +1485,7 @@ async function queryCoPurchasePairsFromStats(
         AND a.store_id = ${storePk}
         AND a.is_active = TRUE
         AND COALESCE(a.is_deleted, FALSE) = FALSE
-        AND a.approval_status = 'APPROVED'
+        AND a.approval_status = 'APPROVED' AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
       LEFT JOIN merchant_menu_categories c_a
         ON c_a.id = a.category_id
         AND c_a.store_id = ${storePk}
@@ -1472,7 +1495,7 @@ async function queryCoPurchasePairsFromStats(
         AND b.store_id = ${storePk}
         AND b.is_active = TRUE
         AND COALESCE(b.is_deleted, FALSE) = FALSE
-        AND b.approval_status = 'APPROVED'
+        AND b.approval_status = 'APPROVED' AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
       LEFT JOIN merchant_menu_categories c_b
         ON c_b.id = b.category_id
         AND c_b.store_id = ${storePk}
@@ -1522,7 +1545,7 @@ async function queryCoPurchasePairsFromStats(
       AND a.store_id = ${storePk}
       AND a.is_active = TRUE
       AND COALESCE(a.is_deleted, FALSE) = FALSE
-      AND a.approval_status = 'APPROVED'
+      AND a.approval_status = 'APPROVED' AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
     LEFT JOIN merchant_menu_categories c_a
       ON c_a.id = a.category_id
       AND c_a.store_id = ${storePk}
@@ -1532,7 +1555,7 @@ async function queryCoPurchasePairsFromStats(
       AND b.store_id = ${storePk}
       AND b.is_active = TRUE
       AND COALESCE(b.is_deleted, FALSE) = FALSE
-      AND b.approval_status = 'APPROVED'
+      AND b.approval_status = 'APPROVED' AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
     LEFT JOIN merchant_menu_categories c_b
       ON c_b.id = b.category_id
       AND c_b.store_id = ${storePk}
@@ -1600,6 +1623,7 @@ async function queryPopularPairFallback(
           AND m.is_active = TRUE
           AND COALESCE(m.is_deleted, FALSE) = FALSE
           AND m.approval_status = 'APPROVED'
+          AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
           AND ${effM} = TRUE
           AND m.id <> ${anchorPk}
       ),
@@ -1662,6 +1686,7 @@ async function queryPopularPairFallback(
         AND m.is_active = TRUE
         AND COALESCE(m.is_deleted, FALSE) = FALSE
         AND m.approval_status = 'APPROVED'
+        AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
         AND ${effM} = TRUE
       ORDER BY score DESC, m.id ASC
       LIMIT ${Math.max(limit * 2, 8)}
@@ -1791,7 +1816,7 @@ export async function getOrderedTogetherRecommendations(
           AND a.store_id = ${storePk}
           AND a.is_active = TRUE
           AND COALESCE(a.is_deleted, FALSE) = FALSE
-          AND a.approval_status = 'APPROVED'
+          AND a.approval_status = 'APPROVED' AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
         LEFT JOIN merchant_menu_categories c_a
           ON c_a.id = a.category_id
           AND c_a.store_id = ${storePk}
@@ -1801,7 +1826,7 @@ export async function getOrderedTogetherRecommendations(
           AND b.store_id = ${storePk}
           AND b.is_active = TRUE
           AND COALESCE(b.is_deleted, FALSE) = FALSE
-          AND b.approval_status = 'APPROVED'
+          AND b.approval_status = 'APPROVED' AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
         LEFT JOIN merchant_menu_categories c_b
           ON c_b.id = b.category_id
           AND c_b.store_id = ${storePk}

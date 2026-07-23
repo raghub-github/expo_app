@@ -7282,31 +7282,43 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
         const settingsRows = await sql`
-          SELECT show_floating_orders, platform_delivery, self_delivery
+          SELECT show_floating_orders, platform_delivery, self_delivery, thermal_printer_width_mm
           FROM merchant_store_settings
           WHERE store_id = ${storeId}
           LIMIT 1
         `;
         const row =
           (settingsRows[0] as
-            | { show_floating_orders?: boolean; platform_delivery?: boolean; self_delivery?: boolean }
+            | {
+                show_floating_orders?: boolean;
+                platform_delivery?: boolean;
+                self_delivery?: boolean;
+                thermal_printer_width_mm?: number | null;
+              }
             | undefined) ?? null;
         const showFloating = row?.show_floating_orders !== false;
         const platformDelivery = row?.platform_delivery !== false;
         const selfDelivery = row?.self_delivery === true;
+        const thermalPrinterWidthMm = row?.thermal_printer_width_mm === 58 ? 58 : 80;
 
         return reply.send({
           store_id: storeId,
           show_floating_orders: showFloating,
           platform_delivery: platformDelivery,
           self_delivery: selfDelivery,
+          thermal_printer_width_mm: thermalPrinterWidthMm,
         });
       });
 
       /** PATCH /merchant-partner/stores/:storeId/settings — update store settings (floating orders + delivery mode). */
       protectedApp.patch<{
         Params: { storeId: string };
-        Body: { show_floating_orders?: boolean; platform_delivery?: boolean; self_delivery?: boolean };
+        Body: {
+          show_floating_orders?: boolean;
+          platform_delivery?: boolean;
+          self_delivery?: boolean;
+          thermal_printer_width_mm?: 58 | 80;
+        };
       }>(
         "/stores/:storeId/settings",
         async (req, reply) => {
@@ -7329,19 +7341,23 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             show_floating_orders?: boolean;
             platform_delivery?: boolean;
             self_delivery?: boolean;
+            thermal_printer_width_mm?: 58 | 80;
           };
           const hasFloating = typeof body.show_floating_orders === "boolean";
           const hasPlatform = typeof body.platform_delivery === "boolean";
           const hasSelf = typeof body.self_delivery === "boolean";
-          if (!hasFloating && !hasPlatform && !hasSelf) {
+          const hasThermal =
+            body.thermal_printer_width_mm === 58 || body.thermal_printer_width_mm === 80;
+          if (!hasFloating && !hasPlatform && !hasSelf && !hasThermal) {
             return reply.code(400).send({
               error: "invalid_body",
-              message: "At least one of show_floating_orders, platform_delivery or self_delivery is required",
+              message:
+                "At least one of show_floating_orders, platform_delivery, self_delivery or thermal_printer_width_mm is required",
             });
           }
 
           const existingRows = await sql`
-            SELECT id, show_floating_orders, platform_delivery, self_delivery
+            SELECT id, show_floating_orders, platform_delivery, self_delivery, thermal_printer_width_mm
             FROM merchant_store_settings
             WHERE store_id = ${storeId}
             LIMIT 1
@@ -7352,6 +7368,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 show_floating_orders: boolean | null;
                 platform_delivery: boolean | null;
                 self_delivery: boolean | null;
+                thermal_printer_width_mm: number | null;
               }
             | undefined;
 
@@ -7359,15 +7376,23 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             existing == null ? true : existing.show_floating_orders !== false;
           const oldPlatform = existing?.platform_delivery !== false;
           const oldSelf = existing?.self_delivery === true;
+          const oldThermal = existing?.thermal_printer_width_mm === 58 ? 58 : 80;
 
           const nextShowFloating = hasFloating ? body.show_floating_orders === true : oldShowFloating;
           const nextPlatform = hasPlatform ? body.platform_delivery === true : oldPlatform;
           const nextSelf = hasSelf ? body.self_delivery === true : oldSelf;
+          const nextThermal = hasThermal ? body.thermal_printer_width_mm! : oldThermal;
 
           if (!existing) {
             await sql`
-              INSERT INTO merchant_store_settings (store_id, show_floating_orders, platform_delivery, self_delivery)
-              VALUES (${storeId}, ${nextShowFloating}, ${nextPlatform}, ${nextSelf})
+              INSERT INTO merchant_store_settings (
+                store_id,
+                show_floating_orders,
+                platform_delivery,
+                self_delivery,
+                thermal_printer_width_mm
+              )
+              VALUES (${storeId}, ${nextShowFloating}, ${nextPlatform}, ${nextSelf}, ${nextThermal})
             `;
           } else {
             await sql`
@@ -7376,6 +7401,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 show_floating_orders = ${nextShowFloating},
                 platform_delivery = ${nextPlatform},
                 self_delivery = ${nextSelf},
+                thermal_printer_width_mm = ${nextThermal},
                 updated_at = NOW()
               WHERE id = ${existing.id}
             `;
@@ -7394,11 +7420,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               show_floating_orders: oldShowFloating,
               platform_delivery: oldPlatform,
               self_delivery: oldSelf,
+              thermal_printer_width_mm: oldThermal,
             },
             {
               show_floating_orders: nextShowFloating,
               platform_delivery: nextPlatform,
               self_delivery: nextSelf,
+              thermal_printer_width_mm: nextThermal,
             },
             { section: "store_settings", route: "PATCH /merchant-partner/stores/:storeId/settings" }
           );
@@ -7409,6 +7437,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             show_floating_orders: nextShowFloating,
             platform_delivery: nextPlatform,
             self_delivery: nextSelf,
+            thermal_printer_width_mm: nextThermal,
           });
         }
       );

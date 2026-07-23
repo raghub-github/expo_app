@@ -24,7 +24,10 @@ import { loadOrderItemAddonLabelsByCoreItemIds } from "../../lib/load-order-item
 import {
   buildCustomerOrderDetailItems,
   buildCustomerOrderDetailItemsFromJson,
+  loadAddonsByCoreItemIdsForOrders,
+  loadPendingCartLinesByOrderIds,
 } from "../../lib/customer-order-detail-items.js";
+import { normalizeOrderItemSpecialInstructions } from "../../lib/order-item-special-instructions.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { getRiderAverageRating } from "../../lib/rider-average-rating.js";
 import { resolveOrderDeliveryDetails } from "../../lib/order-delivery-details.js";
@@ -147,7 +150,7 @@ function isMissingDbRelationError(err: unknown, relation: string): boolean {
   return msg.includes(relation) && /does not exist|42P01/i.test(msg);
 }
 import { notifyMerchantNewRating } from "../../lib/merchant-push-notify.js";
-import { getDb, getSql, withDbSlot } from "../../db/client.js";
+import { getDb, getSql, withDbSlot, withSqlRetry } from "../../db/client.js";
 import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
@@ -203,6 +206,7 @@ const orderDetailItemSchema = z.object({
   vegNonVeg: z.string().optional().nullable(),
   variantName: z.string().optional().nullable(),
   customization: z.string().optional().nullable(),
+  specialInstructions: z.string().optional().nullable(),
 });
 
 const orderDetailResponseSchema = z.object({
@@ -340,6 +344,10 @@ const createOrderItemSchema = z.object({
   variantId: z.string().optional().nullable(),
   variantName: z.string().optional().nullable(),
   addons: z.array(addonItemSchema).optional().default([]),
+  specialInstructions: z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((v) => normalizeOrderItemSpecialInstructions(v ?? null)),
   itemSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
@@ -594,6 +602,66 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
+      const ordersNeedingCoreItems = pageRows.filter(
+        (r) => !(Array.isArray(r.items) && r.items.length > 0) && r.orderId,
+      );
+      const orderIdTextsForItems = ordersNeedingCoreItems
+        .map((r) => r.orderId!.trim())
+        .filter(Boolean);
+      const coreItemsByOrderId = new Map<
+        string,
+        Array<{
+          id: number;
+          menuItemId: number;
+          itemName: string;
+          quantity: number;
+          totalPrice: string;
+          basePrice: string;
+          addonPrice: string | null;
+          vegNonveg: string | null;
+          variantName: string | null;
+          itemSnapshot: unknown;
+        }>
+      >();
+      let addonsByCoreItemId = new Map<
+        number,
+        Array<{ name: string; quantity: number; price: number }>
+      >();
+      let pendingCartByOrderId = new Map<string, Record<string, unknown>[]>();
+      if (orderIdTextsForItems.length > 0) {
+        const allCoreItems = await withSqlRetry(() =>
+          db
+            .select({
+              orderId: ordersCoreItems.orderId,
+              id: ordersCoreItems.id,
+              menuItemId: ordersCoreItems.menuItemId,
+              itemName: ordersCoreItems.itemName,
+              quantity: ordersCoreItems.quantity,
+              totalPrice: ordersCoreItems.totalPrice,
+              basePrice: ordersCoreItems.basePrice,
+              addonPrice: ordersCoreItems.addonPrice,
+              vegNonveg: ordersCoreItems.vegNonveg,
+              variantName: ordersCoreItems.variantName,
+              itemSnapshot: ordersCoreItems.itemSnapshot,
+              specialInstructions: ordersCoreItems.specialInstructions,
+            })
+            .from(ordersCoreItems)
+            .where(inArray(ordersCoreItems.orderId, orderIdTextsForItems)),
+        );
+        for (const item of allCoreItems) {
+          const key = String(item.orderId ?? "").trim();
+          if (!key) continue;
+          const list = coreItemsByOrderId.get(key) ?? [];
+          list.push(item);
+          coreItemsByOrderId.set(key, list);
+        }
+        const allCoreItemIds = allCoreItems.map((i) => Number(i.id));
+        [pendingCartByOrderId, addonsByCoreItemId] = await Promise.all([
+          loadPendingCartLinesByOrderIds(orderIdTextsForItems),
+          loadAddonsByCoreItemIdsForOrders(allCoreItemIds),
+        ]);
+      }
+
       const summaries = await mapWithConcurrency(pageRows, 2, async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
           const foodRow =
@@ -672,26 +740,15 @@ export async function orderRoutes(app: FastifyInstance) {
             itemSnapshot?: Record<string, unknown> | null;
           }> = [];
           if (items.length === 0 && row.orderId) {
-            const coreItems = await db
-              .select({
-                id: ordersCoreItems.id,
-                menuItemId: ordersCoreItems.menuItemId,
-                itemName: ordersCoreItems.itemName,
-                quantity: ordersCoreItems.quantity,
-                totalPrice: ordersCoreItems.totalPrice,
-                basePrice: ordersCoreItems.basePrice,
-                addonPrice: ordersCoreItems.addonPrice,
-                vegNonveg: ordersCoreItems.vegNonveg,
-                variantName: ordersCoreItems.variantName,
-                itemSnapshot: ordersCoreItems.itemSnapshot,
-              })
-              .from(ordersCoreItems)
-              .where(eq(ordersCoreItems.orderId, row.orderId));
+            const orderIdKey = row.orderId.trim();
+            const coreItems = coreItemsByOrderId.get(orderIdKey) ?? [];
             items = (
               await buildCustomerOrderDetailItems({
                 orderIdText: row.orderId,
                 coreItems,
                 itemsJsonFallback: row.items,
+                pendingCartLines: pendingCartByOrderId.get(orderIdKey),
+                addonsByItemId: addonsByCoreItemId,
               })
             ).filter((i) => i.name.trim().length > 0);
             itemVegInputs = coreItems.map((i) => ({
@@ -1157,6 +1214,7 @@ export async function orderRoutes(app: FastifyInstance) {
             vegNonveg: ordersCoreItems.vegNonveg,
             variantName: ordersCoreItems.variantName,
             itemSnapshot: ordersCoreItems.itemSnapshot,
+            specialInstructions: ordersCoreItems.specialInstructions,
           })
           .from(ordersCoreItems)
           .where(eq(ordersCoreItems.orderId, coreRow.orderId));
@@ -1966,6 +2024,7 @@ export async function orderRoutes(app: FastifyInstance) {
               addonPrice: String(addonPerUnit.toFixed(2)),
               totalPrice: String(lineTotal.toFixed(2)),
               itemSnapshot: i.itemSnapshot ?? undefined,
+              specialInstructions: i.specialInstructions ?? undefined,
               isDiscountEligible: pricing.isDiscountEligible,
               effectiveUnitPrice: pricing.effectiveUnitPrice,
               effectiveLineTotal: pricing.effectiveLineTotal,
@@ -3744,6 +3803,7 @@ export async function orderRoutes(app: FastifyInstance) {
           vegNonveg: ordersCoreItems.vegNonveg,
           variantName: ordersCoreItems.variantName,
           itemSnapshot: ordersCoreItems.itemSnapshot,
+          specialInstructions: ordersCoreItems.specialInstructions,
         })
         .from(ordersCoreItems)
         .where(eq(ordersCoreItems.orderId, coreRow.orderId ?? ""));

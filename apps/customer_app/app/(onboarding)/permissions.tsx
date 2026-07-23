@@ -1,19 +1,28 @@
 import { useState, useEffect, useRef } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Animated, Pressable, Linking, Alert, AppState, type AppStateStatus } from "react-native";
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Pressable, Linking, Alert, AppState, type AppStateStatus } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import * as Contacts from "expo-contacts";
+import Constants from "expo-constants";
+import {
+  createPushPermissionController,
+  type PushPermissionController,
+} from "@gatimitra/expo-push-kit";
 import { profileService } from "@/services/profile.service";
 import {
   getContactsPermissionGranted,
   getSmsPermissionGranted,
-  requestSmsPermission,
 } from "@/lib/device-permissions";
+import { runSmsAllowPipeline, isSmsReadPermissionApplicable } from "@/lib/smsPermissionManager";
+import { SmsPermissionBottomSheet } from "@/components/SmsPermissionBottomSheet";
+import { PermissionPromptBottomSheet } from "@/components/permissions/PermissionPromptBottomSheet";
 import { getNetworkErrorMessage } from "@/utils/networkError";
+import { useAuthStore } from "@/store/authStore";
+import { getConfig } from "@/config/env";
+import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 
 function openAppSettings() {
   Linking.openSettings();
@@ -52,20 +61,31 @@ const PERMISSIONS = [
     subtitle: "Required to show nearby services and accurate delivery",
     description: "We use your location to find the fastest delivery and closest services. Please allow to continue.",
   },
+  {
+    id: "notifications" as const,
+    icon: "notifications-outline" as const,
+    title: "Notification Permission",
+    subtitle: "Required for order and delivery updates",
+    description: "Allow notifications so you never miss order status, rider updates, or important offers.",
+  },
 ] as const;
 
 export default function OnboardingPermissionsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const session = useAuthStore((s) => s.session);
   const [modalIndex, setModalIndex] = useState(0);
   const [status, setStatus] = useState<Record<string, PermissionStatus>>({
     sms: "pending",
     contacts: "pending",
     location: "pending",
+    notifications: "pending",
   });
   const [loading, setLoading] = useState<string | null>(null);
   const [allDoneSaved, setAllDoneSaved] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  /** Hide SMS Modal before system dialog — otherwise Android request hangs under RN Modal. */
+  const [smsSheetVisible, setSmsSheetVisible] = useState(true);
 
   const allDone = modalIndex >= PERMISSIONS.length;
   const currentPermission = !allDone ? PERMISSIONS[modalIndex] : null;
@@ -77,6 +97,27 @@ export default function OnboardingPermissionsScreen() {
   const didRunAllDone = useRef(false);
   const statusRef = useRef(status);
   statusRef.current = status;
+  const pushControllerRef = useRef<PushPermissionController | null>(null);
+
+  useEffect(() => {
+    const { apiBaseUrl } = getConfig();
+    pushControllerRef.current = createPushPermissionController({
+      apiBaseUrl,
+      androidPackageName: Constants.expoConfig?.android?.package,
+      androidChannels: [
+        { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
+        { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6" },
+      ],
+      getAuth: () => {
+        if (!session?.accessToken || session.role !== "customer") return null;
+        return { accessToken: session.accessToken, role: "customer" };
+      },
+    });
+    return () => {
+      pushControllerRef.current?.stopLifecycle();
+      pushControllerRef.current = null;
+    };
+  }, [session?.accessToken, session?.role]);
 
   const syncPermissions = async (
     nextFlags: Partial<{ sms: boolean; location: boolean; contacts: boolean }>,
@@ -154,6 +195,7 @@ export default function OnboardingPermissionsScreen() {
   };
 
   const goNext = () => {
+    setSmsSheetVisible(true);
     setModalIndex((i) => (i < PERMISSIONS.length - 1 ? i + 1 : PERMISSIONS.length));
   };
 
@@ -205,7 +247,21 @@ export default function OnboardingPermissionsScreen() {
             const next = { ...latestStatus, sms: "granted" as const };
             setStatus(next);
             updatePermissionsRef(next);
+            useSmsPermissionStore.setState({
+              granted: true,
+              showSheet: false,
+              blocksLocation: false,
+            });
             await syncPermissions({ sms: true });
+            goNext();
+          } else {
+            setSmsSheetVisible(true);
+          }
+        } else if (permissionId === "notifications") {
+          const snap = await pushControllerRef.current?.refresh({ syncIfGranted: true });
+          if (snap?.osStatus === "granted" && snap.lastBackendSyncOk !== false) {
+            const next = { ...latestStatus, notifications: "granted" as const };
+            setStatus(next);
             goNext();
           }
         }
@@ -215,6 +271,24 @@ export default function OnboardingPermissionsScreen() {
     });
     return () => subscription.remove();
   }, [currentPermission?.id, allDone]);
+
+  useEffect(() => {
+    // Expo Go / iOS: READ_SMS not applicable — auto-complete SMS step, never Settings.
+    if (currentPermission?.id !== "sms") return;
+    if (isSmsReadPermissionApplicable()) return;
+    const next = { ...statusRef.current, sms: "granted" as const };
+    setStatus(next);
+    updatePermissionsRef(next);
+    useSmsPermissionStore.setState({
+      granted: true,
+      showSheet: false,
+      blocksLocation: false,
+      allowInFlight: false,
+    });
+    void syncPermissions({ sms: true });
+    goNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when landing on SMS step
+  }, [currentPermission?.id]);
 
   const handleAllow = async (id: string) => {
     setLoading(id);
@@ -259,15 +333,81 @@ export default function OnboardingPermissionsScreen() {
           handleOpenSettings("contacts");
         }
       } else if (id === "sms") {
-        const smsStatus = await requestSmsPermission();
-        next = { ...status, sms: smsStatus };
-        setStatus(next);
-        updatePermissionsRef(next);
-        if (smsStatus === "granted") {
-          await syncPermissions({ sms: true });
-          goNext();
+        setSmsSheetVisible(false);
+        setLoading(null);
+        useSmsPermissionStore.getState().beginSmsAllowRequest();
+        try {
+          // Fresh check first — if already OK / N/A, never open Settings.
+          const alreadyOk = await getSmsPermissionGranted();
+          if (alreadyOk) {
+            next = { ...status, sms: "granted" };
+            setStatus(next);
+            updatePermissionsRef(next);
+            useSmsPermissionStore.setState({
+              granted: true,
+              showSheet: false,
+              blocksLocation: false,
+              allowInFlight: false,
+            });
+            void syncPermissions({ sms: true });
+            goNext();
+            return;
+          }
+
+          const smsResult = await runSmsAllowPipeline({
+            openSettingsOnPermanentDeny: !useSmsPermissionStore.getState().settingsRedirectUsed,
+          });
+          const ok =
+            smsResult.status === "granted" ||
+            smsResult.status === "skipped" ||
+            smsResult.notApplicable;
+          next = { ...status, sms: ok ? "granted" : "denied" };
+          setStatus(next);
+          updatePermissionsRef(next);
+          if (ok) {
+            useSmsPermissionStore.setState({
+              granted: true,
+              showSheet: false,
+              blocksLocation: false,
+              allowInFlight: false,
+            });
+            void syncPermissions({ sms: true });
+            goNext();
+          } else if (smsResult.openedSettings) {
+            useSmsPermissionStore.setState({ settingsRedirectUsed: true });
+            // AppState listener re-checks fresh OS status on return.
+          } else {
+            setSmsSheetVisible(true);
+          }
+        } finally {
+          useSmsPermissionStore.getState().endSmsAllowRequest();
+        }
+      } else if (id === "notifications") {
+        const result = await pushControllerRef.current?.requestOrOpenSettings();
+        if (result?.granted) {
+          // Wait for token sync success before advancing.
+          let snap = result.snapshot;
+          if (snap.syncStatus === "syncing" || snap.lastBackendSyncOk == null) {
+            snap = (await pushControllerRef.current?.syncTokens()) ?? snap;
+          }
+          if (snap.osStatus === "granted") {
+            next = { ...status, notifications: "granted" };
+            setStatus(next);
+            goNext();
+          } else {
+            next = { ...status, notifications: "denied" };
+            setStatus(next);
+          }
         } else {
-          handleOpenSettings("sms");
+          next = { ...status, notifications: "denied" };
+          setStatus(next);
+          if (!result?.openedSettings) {
+            Alert.alert(
+              "Notifications required",
+              "Please enable notifications in Settings, then return to the app.",
+              [{ text: "OK" }]
+            );
+          }
         }
       } else {
         next = { ...status, [id]: "granted" as PermissionStatus };
@@ -283,11 +423,17 @@ export default function OnboardingPermissionsScreen() {
   };
 
   const handleSkip = (id: string) => {
-    if (id === "location") return;
+    if (id === "location" || id === "notifications") return;
     const next = { ...status, [id]: "skipped" as PermissionStatus };
     setStatus(next);
     updatePermissionsRef(next);
     if (id === "sms") {
+      useSmsPermissionStore.setState({
+        showSheet: false,
+        dismissedThisSession: true,
+        granted: false,
+        blocksLocation: false,
+      });
       void syncPermissions({ sms: false });
     } else if (id === "contacts") {
       void syncPermissions({ contacts: false });
@@ -301,56 +447,40 @@ export default function OnboardingPermissionsScreen() {
         <AppText style={styles.subtitle}>We need a few permissions for a smooth and secure experience.</AppText>
       </View>
 
-      {currentPermission && (
-        <Modal
-          key={`permission-${modalIndex}-${currentPermission.id}`}
+      {/* One step at a time — never stack permission sheets. */}
+      {currentPermission?.id === "sms" && smsSheetVisible ? (
+        <SmsPermissionBottomSheet
+          key="step-sms"
           visible
-          transparent
-          animationType="fade"
-          statusBarTranslucent
-        >
-          <Pressable style={styles.overlay} onPress={() => {}}>
-            <Animated.View style={styles.modalCardWrap}>
-              <View style={styles.modalCard}>
-                <View style={styles.cardHeader}>
-                  <View style={styles.cardHeaderSpacer} />
-                  {currentPermission.id !== "location" && (
-                    <TouchableOpacity
-                      style={styles.skipBtn}
-                      onPress={() => handleSkip(currentPermission.id)}
-                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                    >
-                      <AppText style={styles.skipBtnText}>Skip</AppText>
-                    </TouchableOpacity>
-                  )}
-                </View>
-                <View style={styles.iconWrapCenter}>
-                  <Ionicons name={currentPermission.icon} size={40} color={ACCENT} />
-                </View>
-                <AppText style={styles.modalTitle}>{currentPermission.title}</AppText>
-                {currentPermission.subtitle ? (
-                  <AppText style={styles.modalSubtitle}>{currentPermission.subtitle}</AppText>
-                ) : null}
-                <AppText style={styles.modalDesc}>{currentPermission.description}</AppText>
-                <TouchableOpacity
-                  style={[styles.allowBtn, loading === currentPermission.id && styles.allowBtnDisabled]}
-                  onPress={() => handleAllow(currentPermission.id)}
-                  disabled={!!loading}
-                >
-                  {loading === currentPermission.id ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <AppText style={styles.allowBtnText}>Allow</AppText>
-                  )}
-                </TouchableOpacity>
-                <AppText style={styles.settingsHint}>
-                  If blocked, we'll open Settings so you can enable it.
-                </AppText>
-              </View>
-            </Animated.View>
-          </Pressable>
-        </Modal>
-      )}
+          loading={false}
+          onAllow={() => handleAllow("sms")}
+          onSkip={() => handleSkip("sms")}
+        />
+      ) : null}
+
+      {currentPermission &&
+      (currentPermission.id === "contacts" ||
+        currentPermission.id === "location" ||
+        currentPermission.id === "notifications") ? (
+        <PermissionPromptBottomSheet
+          key={`step-${currentPermission.id}`}
+          visible
+          icon={currentPermission.icon}
+          title={currentPermission.title}
+          message={currentPermission.description}
+          loading={loading === currentPermission.id}
+          mandatory={
+            currentPermission.id === "location" || currentPermission.id === "notifications"
+          }
+          onAllow={() => handleAllow(currentPermission.id)}
+          onSkip={
+            currentPermission.id === "contacts"
+              ? () => handleSkip("contacts")
+              : undefined
+          }
+          skipLabel="Skip"
+        />
+      ) : null}
 
       {allDone && (
         <Modal visible transparent animationType="fade" statusBarTranslucent>

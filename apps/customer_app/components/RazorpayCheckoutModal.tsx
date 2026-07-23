@@ -486,6 +486,11 @@ export function RazorpayCheckoutModal({
     return () => sub.remove();
   }, [tier, onCancel]);
 
+  useEffect(() => {
+    if (!visible || tier !== "webview") return;
+    StatusBar.setHidden(false, "none");
+  }, [visible, tier]);
+
   if (!visible || !orderParams) return null;
   if (tier !== "webview") {
     // Tier 1 is being attempted — no UI needed; native SDK renders its own
@@ -506,7 +511,7 @@ export function RazorpayCheckoutModal({
         }
       }}
     >
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+      <StatusBar hidden={false} barStyle="dark-content" backgroundColor="#ffffff" />
       <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
         <View style={styles.header}>
           <Pressable

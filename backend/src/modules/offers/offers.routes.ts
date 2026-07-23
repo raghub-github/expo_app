@@ -20,6 +20,7 @@ import {
   billingPlatformOffers,
 } from "../../db/schema.js";
 import { listStores } from "../merchants/merchant.service.js";
+import { computeLiveStatus } from "../merchants/merchant.types.js";
 import { listActiveCustomerCoupons } from "../billing/billing.repository.js";
 import {
   resolveDropGeoRefsFromPincode,
@@ -477,6 +478,12 @@ async function resolveNearbyStores(
     const internalId = Number((row as { id?: number }).id);
     const storeId = String((row as { store_id?: string }).store_id ?? "").trim();
     if (!Number.isFinite(internalId) || internalId < 1 || !storeId) continue;
+    // Single source of truth: a CLOSED store must never occupy a "Recommended with
+    // Deals" slot. Gate with the SAME operational formula the customer app + merchant
+    // dashboard use (merchant_stores flags, kept fresh by the schedule tick). Closed
+    // stores still appear in "Restaurants Near You" etc. with a "Closed · Opens…" label —
+    // that's a different feed; only the recommendation surface excludes them here.
+    if (computeLiveStatus(row as Parameters<typeof computeLiveStatus>[0]) !== "OPEN") continue;
     const name =
       String((row as { store_display_name?: string | null }).store_display_name ?? "").trim() ||
       String((row as { store_name?: string }).store_name ?? "").trim() ||

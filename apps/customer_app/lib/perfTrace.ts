@@ -30,6 +30,14 @@ export function perfMeasure(fromLabel: string, toLabel: string): number | null {
   return duration;
 }
 
+/** Age of the most recent tap mark, for gated render logging. */
+export function getTapLastAgeMs(): number | null {
+  if (!__DEV__) return null;
+  const start = marks.get("tap:last");
+  if (start == null) return null;
+  return performance.now() - start;
+}
+
 export function perfClear(label: string): void {
   if (!__DEV__) return;
   marks.delete(label);

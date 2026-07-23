@@ -1,7 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, Pressable, StyleSheet, Platform, Vibration } from "react-native";
+import {
+  View,
+  Pressable,
+  StyleSheet,
+  Platform,
+  Vibration,
+  type GestureResponderEvent,
+} from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
@@ -9,7 +16,10 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { StoreFonts } from "@/constants/storeTypography";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
-import { StoreMenuInstantCartControl, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
+import {
+  StoreMenuInstantCartControl,
+  MENU_STEPPER_CONTROL_HEIGHT,
+} from "./StoreMenuCartControls";
 import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
@@ -30,6 +40,8 @@ export type StoreMenuItemRowProps = {
   highlighted?: boolean;
   /** @deprecated Pairing strip replaces inline companion hint. */
   goesWithName?: string | null;
+  /** Opens item details when the row/image is pressed. Cart actions remain independent. */
+  onItemPress?: (item: MenuItem) => void;
   onBookmark?: (item: MenuItem) => void;
   onShare?: (item: MenuItem) => void;
   /** Live merchant offer for this item (Boost % / BOGO). */
@@ -37,6 +49,27 @@ export type StoreMenuItemRowProps = {
 };
 
 const IMAGE_SIZE = 118;
+const ROW_GAP = 12;
+const TAP_MOVE_SLOP = 8;
+const DESCRIPTION_FIRST_LINE_LENGTH = 40;
+const DESCRIPTION_SECOND_LINE_LENGTH = 35;
+/** Left text ends this far before the row’s right edge so image+ADD always fit. */
+const LEFT_RESERVE = IMAGE_SIZE + ROW_GAP;
+
+function formatRowDescription(description?: string | null) {
+  const normalized = description?.replace(/\s+/g, " ").trim() ?? "";
+  if (normalized.length <= DESCRIPTION_FIRST_LINE_LENGTH) return normalized;
+
+  const firstLine = normalized.slice(0, DESCRIPTION_FIRST_LINE_LENGTH).trimEnd();
+  const remaining = normalized.slice(DESCRIPTION_FIRST_LINE_LENGTH).trimStart();
+  const secondLine = remaining
+    .slice(0, DESCRIPTION_SECOND_LINE_LENGTH)
+    .trimEnd();
+  const suffix =
+    remaining.length > DESCRIPTION_SECOND_LINE_LENGTH ? "..." : "";
+
+  return `${firstLine}\n${secondLine}${suffix}`;
+}
 
 export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   item,
@@ -50,6 +83,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   isBookmarked = false,
   highlighted = false,
   goesWithName = null,
+  onItemPress,
   onBookmark,
   onShare,
   itemOffer = null,
@@ -83,17 +117,55 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     onDecrement(item.id, item.menuItemId);
   }, [isStoreClosed, item.id, item.menuItemId, onDecrement]);
 
-  const handleBookmarkPress = useCallback(() => {
-    if (!onBookmark) return;
-    if (Platform.OS === "android") Vibration.vibrate(10);
-    onBookmark(item);
-  }, [item, onBookmark]);
+  const handleBookmarkPress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      if (!onBookmark) return;
+      if (Platform.OS === "android") Vibration.vibrate(10);
+      onBookmark(item);
+    },
+    [item, onBookmark]
+  );
 
-  const handleSharePress = useCallback(() => {
-    if (!onShare) return;
-    if (Platform.OS === "android") Vibration.vibrate(10);
-    onShare(item);
-  }, [item, onShare]);
+  const handleSharePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      if (!onShare) return;
+      if (Platform.OS === "android") Vibration.vibrate(10);
+      onShare(item);
+    },
+    [item, onShare]
+  );
+
+  const openLockRef = useRef(false);
+  const tapGestureRef = useRef({ x: 0, y: 0, moved: false });
+  const handleItemTouchStart = useCallback((event: GestureResponderEvent) => {
+    tapGestureRef.current = {
+      x: event.nativeEvent.pageX,
+      y: event.nativeEvent.pageY,
+      moved: false,
+    };
+  }, []);
+  const handleItemTouchMove = useCallback((event: GestureResponderEvent) => {
+    const gesture = tapGestureRef.current;
+    if (
+      Math.abs(event.nativeEvent.pageX - gesture.x) > TAP_MOVE_SLOP ||
+      Math.abs(event.nativeEvent.pageY - gesture.y) > TAP_MOVE_SLOP
+    ) {
+      gesture.moved = true;
+    }
+  }, []);
+  const handleItemPress = useCallback(() => {
+    if (!onItemPress) return;
+    // A vertical/horizontal drag is scrolling, never an item-open gesture.
+    if (tapGestureRef.current.moved) return;
+    if (openLockRef.current) return;
+    openLockRef.current = true;
+    onItemPress(item);
+    setTimeout(() => {
+      openLockRef.current = false;
+    }, 280);
+  }, [item, onItemPress]);
 
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
@@ -111,11 +183,29 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
   const spicy = isItemSpicy(item);
+  const descriptionText = formatRowDescription(item.description);
 
   return (
     <View style={[styles.wrap, highlighted && styles.wrapHighlighted]}>
+      {/*
+        Absolute right column + reserved left padding.
+        Parent width drives layout — never use windowWidth (FlashList / insets mismatch).
+      */}
       <View style={styles.row}>
-        <View style={styles.leftCol}>
+        <Pressable
+          accessibilityRole={onItemPress ? "button" : undefined}
+          accessibilityLabel={onItemPress ? `View ${item.name} details` : undefined}
+          disabled={!onItemPress}
+          delayPressIn={0}
+          unstable_pressDelay={0}
+          onTouchStart={handleItemTouchStart}
+          onTouchMove={handleItemTouchMove}
+          onPress={handleItemPress}
+          style={({ pressed }) => [
+            styles.leftCol,
+            pressed && onItemPress && styles.itemPressed,
+          ]}
+        >
           <View style={styles.titleRow}>
             <View style={styles.titleIcons}>
               <DietIndicator type={diet} />
@@ -125,7 +215,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
                 </View>
               ) : null}
             </View>
-            <AppText style={styles.name} numberOfLines={2}>
+            <AppText style={styles.name} numberOfLines={2} ellipsizeMode="tail">
               {item.name}
             </AppText>
           </View>
@@ -158,7 +248,9 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               <View style={styles.priceOfferRow}>
                 <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</AppText>
                 <AppText style={styles.discountPrice}>
-                  {showOfferPrice ? `Get for ${formatOfferRupee(payableAmount)}` : formatOfferRupee(payableAmount)}
+                  {showOfferPrice
+                    ? `Get for ${formatOfferRupee(payableAmount)}`
+                    : formatOfferRupee(payableAmount)}
                 </AppText>
               </View>
             ) : (
@@ -166,52 +258,98 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             )}
           </View>
 
-          {item.description ? (
-            <AppText style={styles.desc} numberOfLines={2}>
-              {item.description}
-              {item.description.length > 80 ? (
-                <AppText style={styles.moreLink}> ...more</AppText>
-              ) : null}
+          {descriptionText ? (
+            <AppText style={styles.desc} numberOfLines={2} ellipsizeMode="tail">
+              {descriptionText}
             </AppText>
           ) : null}
 
           {showCouponIneligibleNote ? (
             <AppText style={styles.couponNote}>NOT ELIGIBLE FOR COUPONS</AppText>
           ) : null}
+        </Pressable>
+
+        {/* Bookmark / share — left column under description (reference position). */}
+        <View style={styles.actionIcons} collapsable={false}>
+          <Pressable
+            style={({ pressed }) => [styles.circleBtnHit, pressed && styles.circleBtnPressed]}
+            hitSlop={10}
+            onPress={handleBookmarkPress}
+            disabled={!onBookmark}
+            accessibilityRole="button"
+            accessibilityLabel={isBookmarked ? "Remove bookmark" : "Bookmark dish"}
+          >
+            <View style={styles.circleBtn} pointerEvents="none">
+              <Ionicons
+                name={isBookmarked ? "bookmark" : "bookmark-outline"}
+                size={14}
+                color={isBookmarked ? StoreTheme.accentMint : "#6B7280"}
+              />
+            </View>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.circleBtnHit, pressed && styles.circleBtnPressed]}
+            hitSlop={10}
+            onPress={handleSharePress}
+            disabled={!onShare}
+            accessibilityRole="button"
+            accessibilityLabel="Share dish"
+          >
+            <View style={styles.circleBtn} pointerEvents="none">
+              <Ionicons name="arrow-redo-outline" size={14} color="#6B7280" />
+            </View>
+          </Pressable>
         </View>
 
-        <View style={styles.rightCol} collapsable={false}>
-          <View style={styles.imageWrap} pointerEvents="none">
-            {showRemoteImage ? (
-              <>
-                {!imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
-                <Image
-                  source={{ uri: imageUri! }}
-                  style={styles.image}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  recyclingKey={item.id}
-                  transition={0}
-                  priority={imageWasPrefetched ? "normal" : "low"}
-                  allowDownscaling
-                  onError={() => setImageFailed(true)}
-                />
-              </>
-            ) : (
-              <MenuItemImagePlaceholder />
-            )}
-            {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
-            {isCustomisable ? (
-              <View style={styles.customisableOnImage} pointerEvents="none">
-                <AppText style={styles.customisableOnImageText}>customisable</AppText>
-              </View>
-            ) : null}
-          </View>
+        <View style={styles.rightCol} pointerEvents="box-none" collapsable={false}>
+          <Pressable
+            accessibilityRole={onItemPress ? "button" : undefined}
+            accessibilityLabel={onItemPress ? `View ${item.name} details` : undefined}
+            disabled={!onItemPress}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            onTouchStart={handleItemTouchStart}
+            onTouchMove={handleItemTouchMove}
+            onPress={handleItemPress}
+            style={({ pressed }) => [
+              styles.imagePressable,
+              pressed && onItemPress && styles.itemPressed,
+            ]}
+          >
+            <View style={styles.imageWrap} pointerEvents="none">
+              {showRemoteImage ? (
+                <>
+                  {!imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
+                  <Image
+                    source={{ uri: imageUri! }}
+                    style={styles.image}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    recyclingKey={item.id}
+                    transition={0}
+                    priority={imageWasPrefetched ? "normal" : "low"}
+                    allowDownscaling
+                    onError={() => setImageFailed(true)}
+                  />
+                </>
+              ) : (
+                <MenuItemImagePlaceholder />
+              )}
+              {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
+              {isCustomisable ? (
+                <View style={styles.customisableOnImage} pointerEvents="none">
+                  <AppText style={styles.customisableOnImageText}>customisable</AppText>
+                </View>
+              ) : null}
+            </View>
+          </Pressable>
           <View style={styles.addSlot} collapsable={false}>
             <StoreMenuInstantCartControl
               itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
+              merchantId={merchantId}
               quantity={cartQty}
               disabled={isStoreClosed}
+              allowOptimisticAdd={!isCustomisable}
               onAdd={handleAdd}
               onIncrement={handleIncrementPress}
               onDecrement={handleDecrementPress}
@@ -221,38 +359,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
         </View>
       </View>
 
-      <View style={styles.bottomActionRow} collapsable={false}>
-        <View style={styles.actionIcons} collapsable={false}>
-          <Pressable
-            style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
-            hitSlop={12}
-            onPress={handleBookmarkPress}
-            disabled={!onBookmark}
-            accessibilityRole="button"
-            accessibilityLabel={isBookmarked ? "Remove bookmark" : "Bookmark dish"}
-          >
-            <Ionicons
-              name={isBookmarked ? "bookmark" : "bookmark-outline"}
-              size={16}
-              color={isBookmarked ? StoreTheme.accentMint : StoreTheme.textSecondary}
-            />
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
-            hitSlop={12}
-            onPress={handleSharePress}
-            disabled={!onShare}
-            accessibilityRole="button"
-            accessibilityLabel="Share dish"
-          >
-            <Ionicons
-              name="share-social-outline"
-              size={16}
-              color={StoreTheme.accentMint}
-            />
-          </Pressable>
-        </View>
-      </View>
       {showDivider ? <View style={styles.divider} /> : null}
     </View>
   );
@@ -262,27 +368,36 @@ const styles = StyleSheet.create({
   wrap: {
     backgroundColor: StoreTheme.background,
     paddingHorizontal: 16,
-    paddingTop: 20,
-    paddingBottom: 6,
+    paddingTop: 14,
+    paddingBottom: 4,
     minHeight: MENU_ITEM_ROW_HEIGHT,
-    overflow: "visible",
+    width: "100%",
+    overflow: "hidden",
   },
   wrapHighlighted: {
     backgroundColor: StoreTheme.accentMintSoft,
   },
+  itemPressed: {
+    backgroundColor: "rgba(19, 114, 67, 0.045)",
+  },
   row: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
+    position: "relative",
+    width: "100%",
+    minHeight: IMAGE_SIZE + 8 + MENU_STEPPER_CONTROL_HEIGHT,
   },
   leftCol: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 4,
+    width: "100%",
+    paddingRight: LEFT_RESERVE,
+    borderRadius: 12,
+  },
+  imagePressable: {
+    width: IMAGE_SIZE,
+    borderRadius: 12,
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "flex-start",
+    width: "100%",
     gap: 10,
     marginBottom: 6,
   },
@@ -291,6 +406,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     paddingTop: 3,
+    flexShrink: 0,
   },
   spicyBadge: {
     width: 16,
@@ -304,7 +420,9 @@ const styles = StyleSheet.create({
   },
   name: {
     flex: 1,
+    minWidth: 0,
     fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     fontSize: 17,
     color: StoreTheme.textPrimary,
     lineHeight: 23,
@@ -313,19 +431,17 @@ const styles = StyleSheet.create({
   reorderRow: {
     flexDirection: "row",
     alignItems: "center",
+    flexWrap: "wrap",
     gap: 6,
     marginBottom: 6,
-  },
-  offerBadgeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 6,
+    width: "100%",
   },
   offerBadgeSlot: {
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 6,
     minHeight: 22,
+    maxWidth: "100%",
   },
   bogoBadge: {
     backgroundColor: "#ECFDF5",
@@ -374,12 +490,14 @@ const styles = StyleSheet.create({
   priceBlock: {
     marginBottom: 6,
     marginTop: 2,
+    width: "100%",
   },
   priceOfferRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "baseline",
     gap: 8,
+    width: "100%",
   },
   basePrice: {
     fontFamily: StoreFonts.poppinsBold,
@@ -401,15 +519,12 @@ const styles = StyleSheet.create({
     letterSpacing: -0.15,
   },
   desc: {
+    width: "100%",
     fontFamily: StoreFonts.loraRegular,
     fontSize: 13,
     color: StoreTheme.textSecondary,
     lineHeight: 19,
     marginTop: 4,
-  },
-  moreLink: {
-    fontFamily: StoreFonts.loraRegular,
-    color: StoreTheme.textSecondary,
   },
   couponNote: {
     fontSize: 10,
@@ -418,31 +533,42 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     marginTop: 6,
   },
+  /** Under description — nudged right to sit mid-left like reference. */
   actionIcons: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 10,
-    zIndex: 4,
-    elevation: 4,
-    alignSelf: "center",
+    marginTop: 10,
+    marginLeft: 8,
+    paddingRight: LEFT_RESERVE,
+    alignSelf: "flex-start",
   },
-  circleBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: StoreTheme.border,
-    backgroundColor: "#fff",
+  circleBtnHit: {
+    width: 30,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
   },
+  circleBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#C4C4C4",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
   circleBtnPressed: {
-    borderColor: StoreTheme.accentMint,
-    backgroundColor: StoreTheme.accentMintSoft,
+    opacity: 0.72,
   },
   rightCol: {
+    position: "absolute",
+    top: 0,
+    right: 0,
     width: IMAGE_SIZE,
     alignItems: "stretch",
-    zIndex: 1,
     gap: 8,
   },
   imageWrap: {
@@ -488,25 +614,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 3,
-    flexShrink: 0,
-  },
-  bottomActionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    marginTop: 10,
-    minHeight: 34,
-    gap: 12,
   },
   addSlot: {
     width: IMAGE_SIZE,
-    minHeight: MENU_ADD_CONTROL_HEIGHT,
-    zIndex: 2,
+    minHeight: MENU_STEPPER_CONTROL_HEIGHT,
     alignItems: "stretch",
     justifyContent: "center",
   },
   divider: {
-    marginTop: 16,
+    marginTop: 12,
     borderBottomWidth: 1,
     borderStyle: "dotted",
     borderColor: StoreTheme.borderDotted,

@@ -25,6 +25,7 @@ import {
   isEtaUpdatedFromPromise,
 } from "@/lib/order-eta-display";
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
+import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import { getRouteCoordinates } from "@/services/directions.service";
 import { useOrderStore } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -203,8 +204,10 @@ export default function OrderDetailsScreen() {
       ) {
         return false;
       }
-      return 3_000;
+      return 5_000;
     },
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1_500 * 2 ** attempt, 20_000),
   });
 
   const orderStatus = normalizeCustomerOrderStatus(order?.status);
@@ -1199,7 +1202,7 @@ export default function OrderDetailsScreen() {
                   <Ionicons name="location-outline" size={20} color={GREEN} />
                   <View style={styles.infoTextWrap}>
                     <AppText style={styles.infoTitle}>Delivery address</AppText>
-                    <AppText style={styles.infoSub}>{order.deliveryAddress}</AppText>
+                    <DeliveryAddressText address={order.deliveryAddress} style={styles.infoSub} />
                   </View>
                 </View>
               </>

@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Platform,
   Keyboard,
+  Dimensions,
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
@@ -48,8 +49,13 @@ export function StoreBottomSheetShell({
     }
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const lockedScreenH = Dimensions.get("screen").height;
     const showSub = Keyboard.addListener(showEvt, (e) => {
-      setKeyboardInset(e.endCoordinates.height);
+      const kbH = Math.max(0, e.endCoordinates.height);
+      const windowH = Dimensions.get("window").height;
+      const alreadyResized = lockedScreenH - windowH >= kbH * 0.55;
+      // Avoid double-counting when android resize already shrank the window.
+      setKeyboardInset(alreadyResized ? 0 : kbH);
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setKeyboardInset(0));
     return () => {

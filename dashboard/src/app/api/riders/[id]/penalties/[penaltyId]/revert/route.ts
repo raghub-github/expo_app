@@ -1,14 +1,14 @@
 /**
  * POST /api/riders/[id]/penalties/[penaltyId]/revert – Revert (reverse) a penalty
  * Sets penalty status to 'reversed', credits rider wallet, adds penalty_reversal ledger entry.
- * Tracks who reverted (reversed_by) and reason (resolutionNotes). All actions audited.
+ * Idempotent: each penalty can be reverted at most once (row lock + ledger ref check).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riderPenalties, riderWallet, walletLedger } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { canPerformRiderServiceAction } from "@/lib/permissions/actions";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
@@ -97,17 +97,25 @@ export async function POST(
     const systemUser = systemUserForAccess;
     const db = getDb();
 
-    const [penalty] = await db
+    const [penaltyPreview] = await db
       .select()
       .from(riderPenalties)
       .where(and(eq(riderPenalties.id, penaltyIdNum), eq(riderPenalties.riderId, riderId)))
       .limit(1);
 
-    if (!penalty) {
+    if (!penaltyPreview) {
       return NextResponse.json({ success: false, error: "Penalty not found" }, { status: 404 });
     }
 
-    const rawServiceType = penalty.serviceType != null ? String(penalty.serviceType).toLowerCase().trim() : "";
+    if (penaltyPreview.status === "reversed") {
+      return NextResponse.json(
+        { success: false, error: "Penalty already reversed", code: "ALREADY_REVERSED" },
+        { status: 400 }
+      );
+    }
+
+    const rawServiceType =
+      penaltyPreview.serviceType != null ? String(penaltyPreview.serviceType).toLowerCase().trim() : "";
     const validServiceTypes = ["food", "parcel", "person_ride"] as const;
     const serviceType = validServiceTypes.includes(rawServiceType as (typeof validServiceTypes)[number])
       ? (rawServiceType as "food" | "parcel" | "person_ride")
@@ -117,27 +125,72 @@ export async function POST(
       (await canPerformRiderServiceAction(user.id, email, serviceType, "UPDATE"));
     if (!canRevert) {
       return NextResponse.json(
-        { success: false, error: "Insufficient permissions. Rider action (penalty revert) access required for this service.", code: "FORBIDDEN" },
+        {
+          success: false,
+          error: "Insufficient permissions. Rider action (penalty revert) access required for this service.",
+          code: "FORBIDDEN",
+        },
         { status: 403 }
       );
     }
 
-    if (penalty.status === "reversed") {
-      return NextResponse.json({ success: false, error: "Penalty already reversed" }, { status: 400 });
-    }
-
-    const amount = Number(penalty.amount);
+    const amount = Number(penaltyPreview.amount);
     if (!(amount > 0)) {
       return NextResponse.json({ success: false, error: "Invalid penalty amount" }, { status: 400 });
     }
 
     const ledgerRef = `pen_revert_${penaltyIdNum}`;
-    const penaltyMetadata =
-      typeof penalty.metadata === "object" && penalty.metadata !== null
-        ? (penalty.metadata as Record<string, unknown>)
-        : {};
+    let creditedAmount = 0;
+    let alreadyReversed = false;
 
     await db.transaction(async (tx) => {
+      // Lock the penalty row so concurrent reverts cannot both credit the wallet.
+      const locked = await tx.execute(sql`
+        SELECT id, status, amount, reason, service_type, order_id, metadata
+        FROM rider_penalties
+        WHERE id = ${penaltyIdNum} AND rider_id = ${riderId}
+        FOR UPDATE
+      `);
+      const row = (locked as unknown as Array<Record<string, unknown>>)[0];
+      if (!row) {
+        throw new Error("Penalty not found");
+      }
+      if (String(row.status) === "reversed") {
+        alreadyReversed = true;
+        return;
+      }
+
+      const [existingLedger] = await tx
+        .select({ id: walletLedger.id })
+        .from(walletLedger)
+        .where(
+          and(
+            eq(walletLedger.riderId, riderId),
+            eq(walletLedger.ref, ledgerRef),
+            eq(walletLedger.entryType, "penalty_reversal")
+          )
+        )
+        .limit(1);
+      if (existingLedger) {
+        // Ledger already credited — ensure status is reversed and exit without second credit.
+        await tx
+          .update(riderPenalties)
+          .set({
+            status: "reversed",
+            resolvedAt: new Date(),
+            resolutionNotes,
+            reversedBy: systemUser?.id ?? null,
+          })
+          .where(and(eq(riderPenalties.id, penaltyIdNum), sql`${riderPenalties.status} IS DISTINCT FROM 'reversed'`));
+        alreadyReversed = true;
+        return;
+      }
+
+      const penaltyMetadata =
+        typeof row.metadata === "object" && row.metadata !== null
+          ? (row.metadata as Record<string, unknown>)
+          : {};
+
       const wallet = await ensureRiderWalletRow(tx, riderId);
       const currentBalance = Number(wallet.totalBalance ?? 0);
       const balanceAfter = currentBalance + amount;
@@ -155,6 +208,32 @@ export async function POST(
       const pp = Number(wallet.penaltiesParcel ?? 0);
       const pr = Number(wallet.penaltiesPersonRide ?? 0);
 
+      // Status flip first — only one concurrent txn wins.
+      const updated = await tx
+        .update(riderPenalties)
+        .set({
+          status: "reversed",
+          resolvedAt: new Date(),
+          resolutionNotes,
+          reversedBy: systemUser?.id ?? null,
+          metadata: {
+            ...penaltyMetadata,
+            reverted_at: new Date().toISOString(),
+          },
+        })
+        .where(
+          and(
+            eq(riderPenalties.id, penaltyIdNum),
+            sql`${riderPenalties.status} IS DISTINCT FROM 'reversed'`
+          )
+        )
+        .returning({ id: riderPenalties.id });
+
+      if (!updated[0]) {
+        alreadyReversed = true;
+        return;
+      }
+
       await tx.insert(walletLedger).values({
         riderId,
         entryType: "penalty_reversal",
@@ -167,8 +246,8 @@ export async function POST(
         metadata: {
           penaltyId: penaltyIdNum,
           revertReason: resolutionNotes,
-          originalReason: penalty.reason,
-          ...(penalty.orderId != null ? { orderId: penalty.orderId } : {}),
+          originalReason: String(row.reason ?? ""),
+          ...(row.order_id != null ? { orderId: Number(row.order_id) } : {}),
           ...penaltyMetadata,
         },
         performedByType: "agent",
@@ -203,20 +282,15 @@ export async function POST(
         })
         .where(eq(riderWallet.riderId, riderId));
 
-      await tx
-        .update(riderPenalties)
-        .set({
-          status: "reversed",
-          resolvedAt: new Date(),
-          resolutionNotes,
-          reversedBy: systemUser?.id ?? null,
-          metadata: {
-            ...penaltyMetadata,
-            reverted_at: new Date().toISOString(),
-          },
-        })
-        .where(eq(riderPenalties.id, penaltyIdNum));
+      creditedAmount = amount;
     });
+
+    if (alreadyReversed && creditedAmount <= 0) {
+      return NextResponse.json(
+        { success: false, error: "Penalty already reversed", code: "ALREADY_REVERSED" },
+        { status: 400 }
+      );
+    }
 
     await syncNegativeWalletBlocks(riderId);
 
@@ -233,7 +307,7 @@ export async function POST(
         actionDetails: {
           riderId,
           penaltyId: penaltyIdNum,
-          amount,
+          amount: creditedAmount,
           serviceType,
           resolutionNotes,
           revertReason: resolutionNotes,
@@ -241,7 +315,7 @@ export async function POST(
           revertedBy: agentEmail,
           revertedByName: agentName,
         },
-        previousValues: { status: penalty.status, penaltyReason: penalty.reason },
+        previousValues: { status: penaltyPreview.status, penaltyReason: penaltyPreview.reason },
         newValues: { status: "reversed", resolutionNotes },
         requestPath: request.nextUrl?.pathname,
         requestMethod: "POST",
@@ -255,7 +329,7 @@ export async function POST(
       data: {
         penaltyId: penaltyIdNum,
         status: "reversed",
-        creditedAmount: amount,
+        creditedAmount,
         ledgerDescription: LEDGER_DESCRIPTION,
       },
     });

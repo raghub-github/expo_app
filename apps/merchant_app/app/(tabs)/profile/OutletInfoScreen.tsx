@@ -574,7 +574,8 @@ export default function OutletInfoScreen() {
                   />
                 ) : (
                   <AppAssetImage
-                    assetKey={MX.auth.logo}
+                    assetKey={MX.brand.appIcon}
+                    fallbackAssetKey={MX.auth.logo}
                     style={styles.logoImg}
                     resizeMode="contain"
                   />

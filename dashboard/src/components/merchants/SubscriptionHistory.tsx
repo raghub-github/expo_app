@@ -169,6 +169,22 @@ function refundStatusPill(s: RefundEvent["status"]) {
   return map[s];
 }
 
+// Human labels for the refund lifecycle. While Razorpay is still settling the
+// money the state is PENDING (purchase side: REFUND_PENDING) → show "Refund
+// Processing", NEVER "Refunded". Only the gateway-confirmed state (refund
+// COMPLETED / purchase REFUNDED) shows "Refunded".
+function refundEventLabel(s: RefundEvent["status"]): string {
+  if (s === "PENDING") return "Refund Processing";
+  if (s === "COMPLETED") return "Refunded";
+  if (s === "FAILED") return "Refund Failed";
+  return s;
+}
+function purchaseStatusLabel(s: string): string {
+  if (s === "REFUND_PENDING") return "Refund Processing";
+  if (s === "REFUNDED") return "Refunded";
+  return s.replace("_", " ");
+}
+
 function gatewayIcon(g: string) {
   if (g === "WALLET") return <Wallet size={14} className="text-indigo-600" />;
   if (g === "RAZORPAY") return <CreditCard size={14} className="text-blue-600" />;
@@ -539,7 +555,7 @@ export function SubscriptionHistory({ storeId, pageSize = 25 }: Props) {
                                 r.status
                               )}`}
                             >
-                              {r.status.replace("_", " ")}
+                              {purchaseStatusLabel(r.status)}
                             </span>
                             {daysRemainingChip(r)}
                           </>
@@ -549,7 +565,7 @@ export function SubscriptionHistory({ storeId, pageSize = 25 }: Props) {
                               r.status
                             )}`}
                           >
-                            {r.status}
+                            {refundEventLabel(r.status)}
                           </span>
                         )}
                       </div>

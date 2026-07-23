@@ -49,6 +49,8 @@ export type UserProfile = {
   hearing_accessibility?: HearingAccessibility;
   vision_accessibility?: VisionAccessibility;
   mobility_accessibility?: MobilityAccessibility;
+  legal_consent_pack_version?: string | null;
+  legal_consent_at?: string | null;
 };
 
 export type UpdateProfilePayload = {

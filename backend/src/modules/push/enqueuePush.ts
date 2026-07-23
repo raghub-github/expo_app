@@ -23,22 +23,17 @@
  * Failures are swallowed + logged. Push delivery is best-effort by design;
  * a Redis outage must never roll back an order placement.
  */
-import { enqueue, QUEUE_NAMES, type PushSendJob } from "@gatimitra/queue";
-import { incrCounter } from "@gatimitra/logger";
+import type { PushSendJob } from "@gatimitra/queue";
+import { deliverExpoPush } from "./deliverExpoPush.js";
 
-export async function enqueuePush(payload: PushSendJob): Promise<void> {
-  try {
-    const tokens = Array.isArray(payload.to) ? payload.to : [payload.to];
-    if (tokens.length === 0) return;
-    // jobId stays optional — push isn't idempotent (multiple "order placed"
-    // pushes from retries on the producer side would dedup at the consumer
-    // via Expo's ticket layer, not here).
-    await enqueue(QUEUE_NAMES.PUSH_SEND, payload);
-    incrCounter("push_enqueued_total", "Push notifications enqueued", tokens.length);
-  } catch (err) {
-    // Tolerated: log + move on. The order/status that triggered the push
-    // is already committed to Postgres.
-    incrCounter("push_enqueue_failed_total", "Push enqueue failures (tolerated)");
-    console.warn("[push] enqueue failed (tolerated)", (err as Error).message);
-  }
+/**
+ * Side-effect push helper. Defaults to inline Expo delivery so order events
+ * still reach devices when Redis/worker is down. Set PUSH_USE_QUEUE=1 to
+ * prefer BullMQ (with automatic inline fallback).
+ */
+export async function enqueuePush(payload: PushSendJob): Promise<{ ok: boolean; error?: string }> {
+  const tokens = Array.isArray(payload.to) ? payload.to : [payload.to];
+  if (tokens.length === 0) return { ok: false, error: "no_tokens" };
+  const result = await deliverExpoPush(payload);
+  return result.ok ? { ok: true } : { ok: false, error: result.error ?? "push_failed" };
 }

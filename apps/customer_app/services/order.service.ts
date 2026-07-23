@@ -38,6 +38,7 @@ export type OrderSummary = {
     vegNonVeg?: string | null;
     variantName?: string | null;
     customization?: string | null;
+    specialInstructions?: string | null;
   }[];
   storeRatingSubmitted?: boolean;
   storeRating?: number | null;
@@ -166,6 +167,7 @@ export type CreateOrderItem = {
   basePrice: number;
   variantId?: string | null;
   variantName?: string | null;
+  specialInstructions?: string | null;
   addons?: CreateOrderItemAddon[];
   itemSnapshot?: Record<string, unknown> | null;
 };

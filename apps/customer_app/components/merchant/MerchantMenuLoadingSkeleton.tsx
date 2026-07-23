@@ -1,7 +1,7 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, StyleSheet, Dimensions } from "react-native";
+import { View, StyleSheet, Animated, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useMerchantLoadingMessage } from "@/hooks/useMerchantLoadingMessage";
@@ -14,7 +14,7 @@ export type MerchantMenuLoadingSkeletonProps = {
   startMessageIndex?: number;
   /** Inline block inside scroll (menu_loading row) vs full-screen loader. */
   variant?: "screen" | "inline";
-  /** Modal shutter — pad for status bar / home indicator (store overlay is already inset). */
+  /** Full-bleed loader — skeleton paints behind the status bar and to the bottom edge. */
   edgeToEdge?: boolean;
 };
 
@@ -26,32 +26,56 @@ export function MerchantMenuLoadingSkeleton({
   edgeToEdge = false,
 }: MerchantMenuLoadingSkeletonProps) {
   const insets = useSafeAreaInsets();
-  const screenH = Dimensions.get("screen").height;
+  const { height: windowH } = useWindowDimensions();
   const message = useMerchantLoadingMessage(merchantId, startMessageIndex);
   const isScreen = variant === "screen";
-  const topPad = isScreen && edgeToEdge ? insets.top : 0;
-  /** Keep text above home indicator; white background still paints to the screen edge. */
-  const bottomPad = isScreen ? Math.max(insets.bottom, 12) : 0;
+
+  // Full-bleed: hero shimmer extends UP behind the status bar (no white strip).
+  const heroTopExtend = isScreen && edgeToEdge ? insets.top : 0;
+  /** Keep text above the home indicator; white background still paints to the edge. */
+  const bottomPad = isScreen ? Math.max(insets.bottom, 14) : 16;
+  // Fewer rows so the sentence footer always has room in the column.
+  const rowCount = isScreen ? 5 : 3;
+
+  // Smooth cross-fade when the rotating message changes — keep first paint fully visible.
+  const fade = useRef(new Animated.Value(1)).current;
+  const isFirstMessageRef = useRef(true);
+  useEffect(() => {
+    if (isFirstMessageRef.current) {
+      isFirstMessageRef.current = false;
+      fade.setValue(1);
+      return;
+    }
+    fade.setValue(0);
+    const anim = Animated.timing(fade, {
+      toValue: 1,
+      duration: 320,
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [message, fade]);
 
   return (
     <View
       style={[
         styles.root,
         isScreen ? styles.rootScreen : styles.rootInline,
-        // Modal shutter: paint full device height so no grey strip under the sheet.
-        isScreen && edgeToEdge ? { height: screenH, minHeight: screenH } : null,
+        // Fill the visible window (not screen) so the footer is never clipped below the Modal.
+        isScreen && edgeToEdge ? { height: windowH, minHeight: windowH } : null,
         isScreen && !edgeToEdge ? styles.rootScreenFlex : null,
       ]}
     >
       <View
         style={[
           styles.skeletonContent,
-          isScreen ? styles.skeletonContentScreen : null,
-          isScreen ? { paddingTop: topPad } : null,
+          isScreen ? styles.skeletonContentScreen : styles.skeletonContentInline,
         ]}
       >
-        {isScreen ? <GMSkeleton style={styles.heroBlock} /> : null}
-        {Array.from({ length: isScreen ? 4 : 3 }).map((_, i) => (
+        {isScreen ? (
+          <GMSkeleton style={[styles.heroBlock, { height: 168 + heroTopExtend }]} />
+        ) : null}
+        {Array.from({ length: rowCount }).map((_, i) => (
           <View key={i} style={[styles.row, isScreen && styles.rowPad]}>
             <View style={styles.rowLeft}>
               <GMSkeleton style={styles.lineLg} />
@@ -63,22 +87,22 @@ export function MerchantMenuLoadingSkeleton({
         ))}
       </View>
 
-      {message.trim() ? (
-        <View
-          style={[
-            styles.messageFooter,
-            isScreen
-              ? [styles.messageFooterScreen, { paddingBottom: bottomPad }]
-              : styles.messageFooterInline,
-          ]}
-          pointerEvents="none"
-        >
-          <MerchantLoadingWave />
+      {/* Flex footer (not absolute) — always stays on-screen above the home indicator. */}
+      <View
+        style={[
+          styles.messageFooter,
+          isScreen ? styles.messageFooterScreen : styles.messageFooterInline,
+          { paddingBottom: bottomPad },
+        ]}
+        pointerEvents="none"
+      >
+        <MerchantLoadingWave />
+        <Animated.View style={[styles.messageTextWrap, { opacity: fade }]}>
           <AppText style={styles.messageText} numberOfLines={3}>
-            {message}
+            {message || "Preparing your perfect menu."}
           </AppText>
-        </View>
-      ) : null}
+        </Animated.View>
+      </View>
     </View>
   );
 }
@@ -87,6 +111,7 @@ const styles = StyleSheet.create({
   root: {
     backgroundColor: "#FFFFFF",
     overflow: "hidden",
+    flexDirection: "column",
   },
   rootScreen: {
     width: "100%",
@@ -104,13 +129,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   skeletonContentScreen: {
-    flexGrow: 1,
-    paddingBottom: 120,
+    flex: 1,
+    paddingTop: 0,
     paddingHorizontal: 0,
+    minHeight: 0,
+  },
+  skeletonContentInline: {
+    flexShrink: 1,
   },
   heroBlock: {
     width: "100%",
-    height: 168,
     borderRadius: 0,
   },
   row: {
@@ -149,29 +177,35 @@ const styles = StyleSheet.create({
   messageFooter: {
     alignItems: "center",
     justifyContent: "flex-end",
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
     width: "100%",
     backgroundColor: "#FFFFFF",
+    flexShrink: 0,
+    zIndex: 20,
+    elevation: 12,
   },
   messageFooterScreen: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingTop: 4,
+    paddingTop: 8,
+    minHeight: 96,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#F1F5F9",
   },
   messageFooterInline: {
-    marginTop: 24,
-    paddingBottom: 32,
+    marginTop: 12,
+    paddingBottom: 28,
     paddingHorizontal: 16,
+  },
+  messageTextWrap: {
+    width: "100%",
+    minHeight: 48,
+    justifyContent: "center",
   },
   messageText: {
     textAlign: "center",
     fontSize: 15,
     lineHeight: 22,
     fontWeight: "600",
-    color: StoreTheme.textSecondary,
-    minHeight: 44,
+    color: StoreTheme.textPrimary,
     width: "100%",
   },
 });

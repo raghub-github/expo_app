@@ -99,9 +99,13 @@ export async function sendPush(
   log: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
 ): Promise<{ accepted: number; failed: number; chunks: number; deadTokens: string[] }> {
   const tokens = Array.isArray(payload.to) ? payload.to : [payload.to];
-  const valid = tokens.filter((t) => typeof t === "string" && t.startsWith("ExponentPushToken"));
+  const valid = tokens.filter(
+    (t) =>
+      typeof t === "string" &&
+      (t.startsWith("ExponentPushToken[") || t.startsWith("ExpoPushToken["))
+  );
   if (valid.length === 0) {
-    return { accepted: 0, failed: 0, chunks: 0, deadTokens: [] };
+    return { accepted: 0, failed: tokens.length, chunks: 0, deadTokens: [] };
   }
 
   let accepted = 0;

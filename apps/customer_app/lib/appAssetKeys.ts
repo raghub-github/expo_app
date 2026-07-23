@@ -4,6 +4,9 @@ export const CX = {
     logo: "auth.logo",
     logoWithName: "auth.logo_with_name",
   },
+  brand: {
+    appIcon: "brand.app_icon",
+  },
   home: {
     brandBanner: "home.brand_banner",
     serviceFood: "home.service_food",

@@ -59,7 +59,7 @@ export function StoreInfoCard({
   const showOfferRow = hasOffers || reserveOfferRow;
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, !showOfferRow && styles.cardPadBottom]}>
       <View style={styles.topRow}>
         <View style={styles.nameBlock}>
           <AppText style={styles.name} numberOfLines={2}>
@@ -69,14 +69,16 @@ export function StoreInfoCard({
             <Ionicons name="information-circle-outline" size={18} color={StoreTheme.textSecondary} />
           </TouchableOpacity>
         </View>
-        <MerchantRatingBadge
-          rating={avgRating}
-          totalReviews={totalReviews}
-          showReviewHint
-          size="md"
-          onPillPress={onRatingHintPress}
-          onReviewHintPress={onRatingHintPress}
-        />
+        <View style={styles.ratingWrap}>
+          <MerchantRatingBadge
+            rating={avgRating}
+            totalReviews={totalReviews}
+            showReviewHint
+            size="md"
+            onPillPress={onRatingHintPress}
+            onReviewHintPress={onRatingHintPress}
+          />
+        </View>
       </View>
 
       {locationText ? (
@@ -115,34 +117,31 @@ export function StoreInfoCard({
       ) : null}
 
       {showOfferRow ? (
-        <>
-          <View style={styles.divider} />
-          <TouchableOpacity
-            style={styles.offerRow}
-            onPress={onOffersPress}
-            activeOpacity={0.7}
-            disabled={!onOffersPress}
-          >
-            {/* Same slide-up ticker as list-card MerchantOfferRow (not wipe/write). */}
-            {offerTexts.length > 0 ? (
-              <MerchantOfferRow texts={offerTexts} style={styles.offerTicker} />
-            ) : (
-              <View style={styles.offerTicker} />
-            )}
-            {offerCount > 0 ? (
-              <View style={styles.offerCountWrap}>
-                <AppText style={styles.offerCount}>
-                  {offerCount} {offerCount === 1 ? "offer" : "offers"}
-                </AppText>
-                <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
-              </View>
-            ) : offerTexts.length > 0 || reserveOfferRow ? (
-              <View style={styles.offerCountWrap}>
-                <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
-              </View>
-            ) : null}
-          </TouchableOpacity>
-        </>
+        <TouchableOpacity
+          style={styles.offerRow}
+          onPress={onOffersPress}
+          activeOpacity={0.7}
+          disabled={!onOffersPress}
+        >
+          {/* Same slide-up ticker as list-card MerchantOfferRow (not wipe/write). */}
+          {offerTexts.length > 0 ? (
+            <MerchantOfferRow texts={offerTexts} style={styles.offerTicker} />
+          ) : (
+            <View style={styles.offerTicker} />
+          )}
+          {offerCount > 0 ? (
+            <View style={styles.offerCountWrap}>
+              <AppText style={styles.offerCount}>
+                {offerCount} {offerCount === 1 ? "offer" : "offers"}
+              </AppText>
+              <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
+            </View>
+          ) : offerTexts.length > 0 || reserveOfferRow ? (
+            <View style={styles.offerCountWrap}>
+              <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
+            </View>
+          ) : null}
+        </TouchableOpacity>
       ) : null}
     </View>
   );
@@ -184,9 +183,16 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    marginTop: -20,
+    // Soft tuck under the banner — content must sit fully on white, never in the image.
+    marginTop: -12,
     paddingHorizontal: 16,
-    paddingTop: 18,
+    // paddingTop > |marginTop| so name / rating / info stay below the banner edge.
+    paddingTop: 24,
+    // Offer row owns its bottom hairline — avoid double gap under the card.
+    paddingBottom: 0,
+    zIndex: 2,
+  },
+  cardPadBottom: {
     paddingBottom: 12,
   },
   topRow: {
@@ -211,7 +217,12 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
   infoBtn: {
-    marginTop: 4,
+    marginTop: 5,
+    flexShrink: 0,
+  },
+  ratingWrap: {
+    flexShrink: 0,
+    marginTop: 2,
   },
   metaRow: {
     flexDirection: "row",
@@ -246,16 +257,18 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: StoreTheme.reorderGreen,
   },
-  divider: {
-    height: 1,
-    backgroundColor: StoreTheme.border,
-    marginVertical: 10,
-  },
   offerRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     minHeight: 28,
+    marginTop: 10,
+    paddingVertical: 10,
+    // Lite hairlines only — no elevation / shadow.
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E8E8E8",
+    borderBottomColor: "#E8E8E8",
   },
   offerTicker: {
     flex: 1,

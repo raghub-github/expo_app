@@ -40,6 +40,17 @@ export function resolveRiderDeliveryFeeFromCore(row: {
   const direct = Number(row.riderEarning);
   if (Number.isFinite(direct) && direct > 0) return round2(direct);
 
+  // Prefer the GROSS/standard delivery fare so rider payout is never reduced by a
+  // customer subsidy (free delivery / coupon / membership). Fall back to the net
+  // customer-facing fee only for pre-migration orders without a gross field.
+  const fromGross = parseBillingAmount(row.billingSnapshot, [
+    "delivery_fee_gross",
+    "deliveryFeeGross",
+    "delivery_fee_original",
+    "deliveryFeeOriginal",
+  ]);
+  if (fromGross > 0) return round2(fromGross);
+
   const fromBilling = parseBillingAmount(row.billingSnapshot, [
     "delivery_fee",
     "final_delivery_fee",
@@ -262,9 +273,18 @@ export async function creditRiderOrderEarningOnDelivered(
         Number.isFinite(waitSec) && waitSec > 0 ? Math.max(0, Math.round(waitSec / 60)) : 0;
       const rideGeo =
         payoutService === "ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
-      const customerFare = Number(
-        row.final_fare ?? row.estimated_fare ?? row.fare_amount ?? 0
-      );
+      // Ride: fare comes from the ride fare columns. Food/parcel: the Rider Fare
+      // Engine base is the GROSS/standard delivery fare (pre-subsidy) so free
+      // delivery / coupons / membership never zero the rider payout — never the
+      // net customer-charged fare_amount.
+      const customerFare =
+        payoutService === "ride"
+          ? Number(row.final_fare ?? row.estimated_fare ?? row.fare_amount ?? 0)
+          : resolveRiderDeliveryFeeFromCore({
+              riderEarning: null,
+              fareAmount: row.fare_amount,
+              billingSnapshot: row.billing_snapshot,
+            });
       const geoPayout =
         Number.isFinite(customerFare) && customerFare > 0
           ? await resolveOrderRiderPayoutAmount({

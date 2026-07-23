@@ -1,19 +1,54 @@
 export {
   getFreshExpoPushToken,
+  getFreshNativePushToken,
   setNotificationHandlerDefaults,
   ensureAndroidChannel,
+  ensureAndroidChannels,
+  resolveEasProjectId,
   type AndroidChannelOptions,
+  type DevicePushTokenResult,
 } from "./token";
 
 export {
   subscribeToPushNotificationResponse,
   subscribeToForegroundNotifications,
+  getLastNotificationOpenPayload,
   type PushNotificationOpenPayload,
 } from "./listeners";
 
-export { registerExpoPushTokenOnBackend } from "./register";
+export {
+  registerExpoPushTokenOnBackend,
+  unregisterPushTokenOnBackend,
+  type RegisterPushBody,
+  type UnregisterPushBody,
+} from "./register";
 
 export { navigateFromPushData } from "./navigate";
+
+export {
+  readNotificationPermission,
+  requestNotificationPermission,
+  openNotificationSettings,
+  isExpoGoRuntime,
+  type NotificationPermissionSnapshot,
+} from "./permission";
+
+export {
+  createPushPermissionController,
+  type PushPermissionController,
+} from "./controller";
+
+export { usePushPermissionController } from "./usePushPermission";
+
+export type {
+  PushOsPermissionStatus,
+  NativePushTokenType,
+  PushBackendSyncStatus,
+  PushControllerSnapshot,
+  PushAuthContext,
+  PushDeviceMetadata,
+  PushControllerOptions,
+} from "./types";
 
 // Enterprise notification system (v2) — inbox + preferences.
 export {

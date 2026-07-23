@@ -8,12 +8,14 @@ type StoreSettingsState = {
   show_floating_orders: boolean;
   platform_delivery: boolean;
   self_delivery: boolean;
+  thermal_printer_width_mm: 58 | 80;
 };
 
 const DEFAULT_STATE: StoreSettingsState = {
   show_floating_orders: true,
   platform_delivery: true,
   self_delivery: false,
+  thermal_printer_width_mm: 80,
 };
 
 type StoreSettingsContextValue = {
@@ -57,6 +59,7 @@ export function StoreSettingsProvider({ children }: { children: React.ReactNode 
         show_floating_orders: s.show_floating_orders !== false,
         platform_delivery: platformDelivery,
         self_delivery: selfDelivery,
+        thermal_printer_width_mm: s.thermal_printer_width_mm === 58 ? 58 : 80,
       });
     } catch {
       setSettings(DEFAULT_STATE);
@@ -86,6 +89,7 @@ export function StoreSettingsProvider({ children }: { children: React.ReactNode 
           show_floating_orders: updated.show_floating_orders !== false,
           platform_delivery: updated.platform_delivery,
           self_delivery: updated.self_delivery,
+          thermal_printer_width_mm: updated.thermal_printer_width_mm === 58 ? 58 : 80,
         });
       } catch {
         // On failure, reload from backend to keep state consistent.

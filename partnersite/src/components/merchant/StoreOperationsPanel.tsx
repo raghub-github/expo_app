@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Briefcase, Clock, Save, Timer, Zap } from 'lucide-react';
+import { Briefcase, Clock, Printer, Save, Timer, Zap } from 'lucide-react';
 
 export type StoreOperationsPanelProps = {
   autoAcceptOrders: boolean;
@@ -12,6 +12,8 @@ export type StoreOperationsPanelProps = {
   onPreparationBufferMinutesChange: (value: number) => void;
   manualActivationLock: boolean;
   onManualActivationLockChange: (value: boolean) => void;
+  thermalPrinterWidthMm: 58 | 80;
+  onThermalPrinterWidthMmChange: (value: 58 | 80) => void;
   licenseBlockedForOps: boolean;
   isSaving: boolean;
   onSave: () => void;
@@ -169,6 +171,8 @@ export function StoreOperationsPanel({
   onPreparationBufferMinutesChange,
   manualActivationLock,
   onManualActivationLockChange,
+  thermalPrinterWidthMm,
+  onThermalPrinterWidthMmChange,
   licenseBlockedForOps,
   isSaving,
   onSave,
@@ -260,6 +264,43 @@ export function StoreOperationsPanel({
             onChange={onManualActivationLockChange}
             disabled={licenseBlockedForOps}
           />
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 flex-1 gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#EEF2FF]">
+              <Printer className="h-5 w-5 text-[#4F46E5]" aria-hidden />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-gray-900">Thermal printer width</p>
+              <p className="mt-0.5 text-sm leading-snug text-gray-500">
+                Kitchen order tickets (KOT) adapt to your receipt printer. 80mm is the default for most thermal printers.
+              </p>
+              <fieldset className="mt-3 flex flex-wrap gap-4" disabled={licenseBlockedForOps}>
+                <legend className="sr-only">Thermal printer width</legend>
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-gray-800">
+                  <input
+                    type="radio"
+                    name="thermal-printer-width"
+                    className="h-4 w-4 border-gray-300 text-[#4F46E5] focus:ring-[#4F46E5]"
+                    checked={thermalPrinterWidthMm === 58}
+                    onChange={() => onThermalPrinterWidthMmChange(58)}
+                  />
+                  58mm
+                </label>
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-gray-800">
+                  <input
+                    type="radio"
+                    name="thermal-printer-width"
+                    className="h-4 w-4 border-gray-300 text-[#4F46E5] focus:ring-[#4F46E5]"
+                    checked={thermalPrinterWidthMm === 80}
+                    onChange={() => onThermalPrinterWidthMmChange(80)}
+                  />
+                  80mm (default)
+                </label>
+              </fieldset>
+            </div>
+          </div>
         </div>
       </div>
     </div>

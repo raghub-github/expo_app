@@ -1,4 +1,5 @@
 import type { NormalizedOrderItem } from "../modules/orders/orderNormalizer.js";
+import { readOrderItemSpecialInstructions } from "./order-item-special-instructions.js";
 
 export type FoodOrderLineItem = {
   item_id: number;
@@ -47,10 +48,12 @@ export function buildFoodOrderItemsPayload(items: NormalizedOrderItem[]): FoodOr
       readSnapshotField(snap, "veg_non_veg", "vegNonveg", "food_type", "veg_nonveg") ??
       readSnapshotField(snap, "vegNonVeg");
     const customization =
-      readSnapshotField(snap, "customization", "customizations", "special_instructions") ??
-      null;
+      readSnapshotField(snap, "customization", "customizations") ?? null;
     const instructions =
-      readSnapshotField(snap, "item_instructions", "instructions", "note") ?? null;
+      i.specialInstructions ??
+      readOrderItemSpecialInstructions({ itemSnapshot: snap }) ??
+      readSnapshotField(snap, "item_instructions", "instructions", "note") ??
+      null;
 
     return {
       item_id: i.menuItemId,

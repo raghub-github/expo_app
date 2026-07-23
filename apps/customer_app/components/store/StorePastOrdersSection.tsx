@@ -16,6 +16,7 @@ export type StorePastOrdersSectionProps = {
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
+  onItemPress?: (item: MenuItem) => void;
   isStoreClosed?: boolean;
   itemOfferById?: Map<string, ItemOfferDisplay>;
 };
@@ -48,6 +49,7 @@ export function StorePastOrdersSection({
   onAdd,
   onIncrement,
   onDecrement,
+  onItemPress,
   isStoreClosed,
   itemOfferById,
 }: StorePastOrdersSectionProps) {
@@ -93,6 +95,7 @@ export function StorePastOrdersSection({
               onAdd={onAdd}
               onIncrement={onIncrement}
               onDecrement={onDecrement}
+              onItemPress={onItemPress}
               isStoreClosed={isStoreClosed}
               itemOffer={resolveOffer(po.menuItem)}
             />

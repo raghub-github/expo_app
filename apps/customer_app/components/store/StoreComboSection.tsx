@@ -19,10 +19,16 @@ export type ComboPair = {
 export type StoreComboSectionProps = {
   combos: ComboPair[];
   onAddCombo: (combo: ComboPair) => void;
+  onItemPress?: (item: MenuItem) => void;
   isStoreClosed?: boolean;
 };
 
-export function StoreComboSection({ combos, onAddCombo, isStoreClosed }: StoreComboSectionProps) {
+export function StoreComboSection({
+  combos,
+  onAddCombo,
+  onItemPress,
+  isStoreClosed,
+}: StoreComboSectionProps) {
   const [expanded, setExpanded] = useState(true);
 
   if (combos.length === 0) return null;
@@ -43,12 +49,17 @@ export function StoreComboSection({ combos, onAddCombo, isStoreClosed }: StoreCo
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="always"
+          nestedScrollEnabled
+          delaysContentTouches={false}
+          canCancelContentTouches={false}
         >
           {combos.map((combo) => (
             <ComboCard
               key={combo.id}
               combo={combo}
               onAdd={() => onAddCombo(combo)}
+              onItemPress={onItemPress}
               isStoreClosed={isStoreClosed}
             />
           ))}
@@ -61,10 +72,12 @@ export function StoreComboSection({ combos, onAddCombo, isStoreClosed }: StoreCo
 function ComboCard({
   combo,
   onAdd,
+  onItemPress,
   isStoreClosed,
 }: {
   combo: ComboPair;
   onAdd: () => void;
+  onItemPress?: (item: MenuItem) => void;
   isStoreClosed?: boolean;
 }) {
   const totalPrice = combo.item1.price + combo.item2.price;
@@ -78,11 +91,11 @@ function ComboCard({
   return (
     <View style={styles.card}>
       <View style={styles.imagesRow}>
-        <ComboImage uri={combo.item1.imageUrl} />
+        <ComboImage item={combo.item1} onPress={onItemPress} />
         <View style={styles.plusCircle}>
           <Ionicons name="add" size={14} color={StoreTheme.textSecondary} />
         </View>
-        <ComboImage uri={combo.item2.imageUrl} />
+        <ComboImage item={combo.item2} onPress={onItemPress} />
       </View>
       {combo.customerCount != null && combo.customerCount > 0 ? (
         <View style={styles.badgeRow}>
@@ -110,16 +123,30 @@ function ComboCard({
   );
 }
 
-function ComboImage({ uri }: { uri?: string | null }) {
+function ComboImage({
+  item,
+  onPress,
+}: {
+  item: MenuItem;
+  onPress?: (item: MenuItem) => void;
+}) {
   const [failed, setFailed] = useState(false);
+  const uri = item.imageUrl;
   return (
-    <View style={styles.comboImageWrap}>
+    <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityLabel={`View ${item.name} details`}
+      disabled={!onPress}
+      activeOpacity={0.82}
+      onPress={() => onPress?.(item)}
+      style={styles.comboImageWrap}
+    >
       {uri && !failed ? (
         <Image source={{ uri }} style={styles.comboImage} resizeMode="cover" onError={() => setFailed(true)} />
       ) : (
         <MenuItemImagePlaceholder size="sm" />
       )}
-    </View>
+    </TouchableOpacity>
   );
 }
 

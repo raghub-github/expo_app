@@ -7,6 +7,15 @@ const nextConfig = {
   outputFileTracingRoot: path.join(__dirname, '..'),
   output: 'standalone',
   reactCompiler: true,
+  transpilePackages: [
+    '@gatimitra/kot-print',
+    '@gatimitra/bill-print',
+    '@gatimitra/print-utils',
+    '@gatimitra/financial-rules',
+    '@gatimitra/merchant-payout',
+    '@gatimitra/contracts',
+    '@gatimitra/store-status',
+  ],
   experimental: {
     proxyClientMaxBodySize: '32mb',
   },

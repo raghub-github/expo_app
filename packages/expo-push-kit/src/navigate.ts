@@ -20,7 +20,8 @@ export function navigateFromPushData(router: RouterLike, data: Record<string, un
       return;
     }
 
-    const deepLink = asString(data.deepLink).trim();
+    const deepLink =
+      asString(data.deepLink).trim() || asString(data.deep_link).trim();
     if (deepLink) {
       if (deepLink.startsWith("/")) {
         router.push(deepLink);
@@ -37,7 +38,13 @@ export function navigateFromPushData(router: RouterLike, data: Record<string, un
     }
 
     if (data.orderId != null) {
-      router.push(`/order/${String(data.orderId)}`);
+      // Customer app uses /orders/[id]; merchant/rider may remap via onNotificationOpen.
+      const orderPath =
+        asString(data.orderPath).trim() ||
+        (asString(data.appRole) === "merchant" || asString(data.appRole) === "rider"
+          ? `/order/${String(data.orderId)}`
+          : `/orders/${String(data.orderId)}`);
+      router.push(orderPath);
       return;
     }
 

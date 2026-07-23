@@ -138,11 +138,21 @@ export function IncomingRideOrderHost() {
   const orderPool = useMemo(() => {
     void poolEpoch;
     if (!rejectHydrated) return [];
+    // The backend already restricts dispatch to the rider's on-duty services
+    // (duty_logs.service_types via loadOnDutyRiderIds). The client-side selection
+    // is only a UX convenience and must NEVER hard-drop a backend-eligible offer:
+    // an empty selection means "not yet resolved / show all" (see the reconcile
+    // effect in useRiderDutyServiceFilter), never "hide everything". Only apply the
+    // selection filter when the rider has an explicit, non-empty choice — otherwise
+    // a hydration race or a failed eligible-services fetch would silently swallow
+    // every incoming offer. The dispatch-block filter below stays unconditional.
+    const hasExplicitSelection = (dutySelectedServices?.length ?? 0) > 0;
     return orders.filter(
       (o) =>
         !rejectedRef.current.has(o.id) &&
         !expiredRef.current.has(o.id) &&
-        isOrderCategoryInAllowedDutyServices(o.category, dutySelectedServices) &&
+        (!hasExplicitSelection ||
+          isOrderCategoryInAllowedDutyServices(o.category, dutySelectedServices)) &&
         !isOrderCategoryDispatchBlocked(
           o.category,
           blockedServices,

@@ -6,6 +6,7 @@ import {
   merchantItemBreakdownFromDetail,
   type MerchantItemCustomizationLine,
 } from "./order-item-customisation.js";
+import { readOrderItemSpecialInstructions } from "./order-item-special-instructions.js";
 
 export type MerchantOrderLineItem = {
   qty: number;
@@ -14,6 +15,8 @@ export type MerchantOrderLineItem = {
   menu_item_id?: number | null;
   veg_nonveg?: string | null;
   customizations?: string[];
+  special_instructions?: string | null;
+  specialInstructions?: string | null;
   variant_tag?: string | null;
   category_name?: string | null;
   customization_lines?: MerchantItemCustomizationLine[];
@@ -108,6 +111,7 @@ export async function loadMerchantOrderLineItemsByTextIds(
     offer_discount_amount: unknown;
     applied_offer_label: string | null;
     applied_offer_type: string | null;
+    special_instructions: string | null;
   };
 
   let itemRows: CoreItemRow[];
@@ -115,27 +119,36 @@ export async function loadMerchantOrderLineItemsByTextIds(
     itemRows = (await sql`
       SELECT id, order_id, menu_item_id, item_name, variant_name, category_name, quantity,
         base_price, addon_price, total_price, veg_nonveg, item_snapshot,
-        effective_line_total, offer_discount_amount, applied_offer_label, applied_offer_type
+        effective_line_total, offer_discount_amount, applied_offer_label, applied_offer_type,
+        special_instructions
       FROM orders_core_items
-      WHERE order_id = ANY(${unique})
+      WHERE order_id = ANY(${unique}::text[])
       ORDER BY id ASC
     `) as CoreItemRow[];
   } catch (err) {
     const code = (err as { code?: string })?.code;
     if (code !== "42703") throw err;
-    // Pre-0410 schema — columns missing.
+    // Pre-0410 / pre-0433 schema — columns missing.
     itemRows = (await sql`
       SELECT id, order_id, menu_item_id, item_name, variant_name, category_name, quantity,
         base_price, addon_price, total_price, veg_nonveg, item_snapshot
       FROM orders_core_items
-      WHERE order_id = ANY(${unique})
+      WHERE order_id = ANY(${unique}::text[])
       ORDER BY id ASC
     `).map((r) => ({
-      ...(r as Omit<CoreItemRow, "effective_line_total" | "offer_discount_amount" | "applied_offer_label" | "applied_offer_type">),
+      ...(r as Omit<
+        CoreItemRow,
+        | "effective_line_total"
+        | "offer_discount_amount"
+        | "applied_offer_label"
+        | "applied_offer_type"
+        | "special_instructions"
+      >),
       effective_line_total: null,
       offer_discount_amount: null,
       applied_offer_label: null,
       applied_offer_type: null,
+      special_instructions: null,
     })) as CoreItemRow[];
   }
 
@@ -167,7 +180,7 @@ export async function loadMerchantOrderLineItemsByTextIds(
         SELECT order_item_id, gross_value, merchant_offer_discount, net_ctm_value,
           merchant_offer_type, merchant_offer_name
         FROM merchant_ctm_pricing_snapshot
-        WHERE order_item_id = ANY(${itemIds})
+        WHERE order_item_id = ANY(${itemIds}::int[])
       `;
       for (const r of ctmRows) {
         const id = Number(r.order_item_id);
@@ -208,7 +221,7 @@ export async function loadMerchantOrderLineItemsByTextIds(
       >`
         SELECT id, order_item_id, addon_name, quantity, addon_price, menu_addon_id
         FROM orders_core_item_addons
-        WHERE order_item_id = ANY(${itemIds})
+        WHERE order_item_id = ANY(${itemIds}::int[])
       `;
       const addonPkIds = addonRows.map((a) => Number(a.id)).filter((id) => Number.isFinite(id) && id > 0);
       const snapshotByAddonPk = new Map<
@@ -226,7 +239,7 @@ export async function loadMerchantOrderLineItemsByTextIds(
           >`
             SELECT order_item_addon_id, merchant_base_price, customer_visible_price
             FROM order_item_addon_commission_snapshots
-            WHERE order_item_addon_id = ANY(${addonPkIds})
+            WHERE order_item_addon_id = ANY(${addonPkIds}::int[])
           `;
           for (const s of snapRows) {
             snapshotByAddonPk.set(Number(s.order_item_addon_id), s);
@@ -265,7 +278,7 @@ export async function loadMerchantOrderLineItemsByTextIds(
     >`
       SELECT DISTINCT ON (finalized_order_id) finalized_order_id, items_snapshot
       FROM pending_orders
-      WHERE finalized_order_id = ANY(${unique})
+      WHERE finalized_order_id = ANY(${unique}::text[])
       ORDER BY finalized_order_id, id DESC
     `;
   } catch (err) {
@@ -300,12 +313,18 @@ export async function loadMerchantOrderLineItemsByTextIds(
         name: String(row.item_name ?? ""),
         variant: row.variant_name,
       });
+      const specialInstructions = readOrderItemSpecialInstructions({
+        relational: row.special_instructions,
+        itemSnapshot: row.item_snapshot,
+        cartLine,
+      });
       const detail = buildCustomisationDetail({
         variantName: row.variant_name,
         basePrice: num(row.base_price),
         itemSnapshot: row.item_snapshot,
         cartLine,
         storedAddonPrice: num(row.addon_price),
+        specialInstructions,
         addons: dbAddons.map((a) => ({
           name: String(a.addon_name ?? "Add-on").trim(),
           quantity: Math.max(1, Number(a.quantity) || 1),
@@ -377,6 +396,8 @@ export async function loadMerchantOrderLineItemsByTextIds(
           applied_offer_type: hasMerchantOffer ? offerTypeRaw || null : null,
           ctm_from_snapshot: true,
           order_item_id: Number(row.id),
+          special_instructions: specialInstructions,
+          specialInstructions,
         };
       }
       return {
@@ -410,6 +431,8 @@ export async function loadMerchantOrderLineItemsByTextIds(
           ? String(row.applied_offer_type ?? "").trim() || null
           : null,
         order_item_id: Number(row.id),
+        special_instructions: specialInstructions,
+        specialInstructions,
       };
     });
     out.set(oid, lines);

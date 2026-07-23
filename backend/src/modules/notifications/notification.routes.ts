@@ -291,6 +291,12 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             variables: b.variables,
             target: b.target,
             campaignId: campaign.id,
+            overrides: {
+              title: b.overrideTitle ?? null,
+              body: b.overrideBody ?? null,
+              imageUrl: b.overrideImage ?? null,
+              deepLink: b.overrideDeepLink ?? null,
+            },
           });
           await finalizeCampaignSend(campaign.id, "completed");
           return reply.send({ campaignId: campaign.id, status: "completed", ...result });
@@ -316,6 +322,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           createdBy: req.auth?.sub ?? null,
           overrideTitle: b.overrideTitle ?? null,
           overrideBody: b.overrideBody ?? null,
+          overrideImage: b.overrideImage ?? null,
+          overrideDeepLink: b.overrideDeepLink ?? null,
         });
         return reply.send(scheduled);
       }
@@ -365,10 +373,10 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           LEFT JOIN LATERAL (
             SELECT
               COUNT(*) FILTER (
-                WHERE l.status IN ('queued', 'sent', 'delivered', 'clicked')
+                WHERE l.status IN ('sent', 'delivered', 'clicked')
               )::int AS sent_count,
               COUNT(*) FILTER (
-                WHERE l.status IN ('queued', 'sent', 'delivered', 'clicked')
+                WHERE l.status IN ('delivered', 'clicked')
               )::int AS delivered_count,
               COUNT(*) FILTER (WHERE l.status = 'clicked')::int AS clicked_count,
               COUNT(*) FILTER (WHERE l.status = 'failed')::int AS failed_count
@@ -394,12 +402,21 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const [tokenStats] = (await sql`
         SELECT
           (SELECT COUNT(*)::int FROM public.expo_push_tokens) AS expo_tokens,
-          (SELECT COUNT(*)::int FROM public.merchant_store_push_tokens) AS merchant_store_tokens
-      `) as unknown as Array<{ expo_tokens: number; merchant_store_tokens: number }>;
+          (SELECT COUNT(*)::int FROM public.merchant_store_push_tokens) AS merchant_store_tokens,
+          (SELECT COUNT(*)::int FROM public.native_device_push_tokens WHERE token_type = 'fcm') AS native_fcm_tokens
+      `) as unknown as Array<{
+        expo_tokens: number;
+        merchant_store_tokens: number;
+        native_fcm_tokens: number;
+      }>;
       return reply.send({
         ...campaign,
         recipient_estimate: recipients.length,
-        token_stats: tokenStats ?? { expo_tokens: 0, merchant_store_tokens: 0 },
+        token_stats: tokenStats ?? {
+          expo_tokens: 0,
+          merchant_store_tokens: 0,
+          native_fcm_tokens: 0,
+        },
       });
     });
 
@@ -450,7 +467,17 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         if (!Array.isArray(b.tokens) || !b.topic) {
           return reply.code(400).send({ error: "tokens_and_topic_required" });
         }
-        return reply.send(await subscribeToTopic(b.tokens, b.topic));
+        const { isExpoPushTokenString } = await import("@gatimitra/contracts");
+        const tokens = b.tokens.filter(
+          (t: unknown): t is string => typeof t === "string" && t.length > 0 && !isExpoPushTokenString(t)
+        );
+        if (tokens.length === 0) {
+          return reply.code(400).send({
+            error: "no_valid_fcm_tokens",
+            message: "Expo push tokens cannot be subscribed to FCM topics.",
+          });
+        }
+        return reply.send(await subscribeToTopic(tokens, b.topic));
       },
     );
     admin.post<{ Body: { tokens: string[]; topic: string } }>(
@@ -460,7 +487,17 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         if (!Array.isArray(b.tokens) || !b.topic) {
           return reply.code(400).send({ error: "tokens_and_topic_required" });
         }
-        return reply.send(await unsubscribeFromTopic(b.tokens, b.topic));
+        const { isExpoPushTokenString } = await import("@gatimitra/contracts");
+        const tokens = b.tokens.filter(
+          (t: unknown): t is string => typeof t === "string" && t.length > 0 && !isExpoPushTokenString(t)
+        );
+        if (tokens.length === 0) {
+          return reply.code(400).send({
+            error: "no_valid_fcm_tokens",
+            message: "Expo push tokens cannot be unsubscribed from FCM topics.",
+          });
+        }
+        return reply.send(await unsubscribeFromTopic(tokens, b.topic));
       },
     );
 
@@ -469,11 +506,11 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const sql = getSql();
       const today = (await sql`
         SELECT
-          COUNT(*)                                          AS total,
-          SUM(CASE WHEN status='sent'      THEN 1 ELSE 0 END) AS sent,
-          SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END) AS delivered,
-          SUM(CASE WHEN status='clicked'   THEN 1 ELSE 0 END) AS clicked,
-          SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed
+          COUNT(*) AS total,
+          SUM(CASE WHEN status IN ('sent','delivered','clicked') THEN 1 ELSE 0 END) AS sent,
+          SUM(CASE WHEN status IN ('delivered','clicked') THEN 1 ELSE 0 END) AS delivered,
+          SUM(CASE WHEN status='clicked' THEN 1 ELSE 0 END) AS clicked,
+          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
         FROM public.notification_dispatch_logs
         WHERE queued_at >= date_trunc('day', now())
       `) as unknown as Array<{ total: string; sent: string; delivered: string; clicked: string; failed: string }>;
@@ -514,6 +551,75 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       };
     });
 
+    // --- browser / web FCM token registration (partnersite + dashboard) ---
+    admin.post<{
+      Body: {
+        token?: string;
+        platform?: string;
+        user_id?: string;
+        role?: string;
+        store_id?: number;
+        source?: string;
+      };
+    }>("/browser-tokens", async (req, reply) => {
+      const b = req.body ?? {};
+      const token = String(b.token ?? "").trim();
+      const userId = String(b.user_id ?? req.auth?.sub ?? "").trim();
+      if (!token || token.length < 8) {
+        return reply.code(400).send({ error: "token_required" });
+      }
+      if (!userId) {
+        return reply.code(400).send({ error: "user_id_required" });
+      }
+      const { isExpoPushTokenString } = await import("@gatimitra/contracts");
+      if (isExpoPushTokenString(token)) {
+        return reply.code(400).send({
+          error: "expo_token_not_allowed",
+          message: "Browser endpoint accepts native FCM web tokens only.",
+        });
+      }
+      const roleRaw = String(b.role ?? req.auth?.role ?? "merchant").toLowerCase();
+      const role =
+        roleRaw === "customer" || roleRaw === "rider" || roleRaw === "admin" || roleRaw === "merchant"
+          ? roleRaw
+          : "merchant";
+      const sourceRaw = String(b.source ?? "browser").toLowerCase();
+      const source = ["app", "partnersite", "dashboard", "browser"].includes(sourceRaw)
+        ? sourceRaw
+        : "browser";
+      const storeId =
+        typeof b.store_id === "number" && Number.isFinite(b.store_id) && b.store_id > 0
+          ? b.store_id
+          : null;
+      const sql = getSql();
+      try {
+        await sql`
+          INSERT INTO public.native_device_push_tokens (
+            user_id, role, platform, token_type, native_token, store_id,
+            subscribed_topics, source, created_at, updated_at, last_seen_at
+          ) VALUES (
+            ${userId}, ${role}, ${"web"}, ${"fcm"}, ${token}, ${storeId},
+            ${JSON.stringify([])}::jsonb, ${source}, NOW(), NOW(), NOW()
+          )
+          ON CONFLICT (native_token) DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            role = EXCLUDED.role,
+            platform = EXCLUDED.platform,
+            store_id = COALESCE(EXCLUDED.store_id, public.native_device_push_tokens.store_id),
+            source = EXCLUDED.source,
+            updated_at = NOW(),
+            last_seen_at = NOW()
+        `;
+      } catch (e) {
+        req.log.error({ err: e }, "browser_token_register_failed");
+        return reply.code(500).send({
+          error: "native_token_table_unavailable",
+          message: "Apply migration 0436_native_device_push_tokens.sql then retry.",
+        });
+      }
+      return reply.send({ ok: true });
+    });
+
     // --- devices: list registered push tokens for a user_id ---
     // Powers the "Devices" super-admin page. Returns tokens across roles
     // (customer / merchant / rider) so support can confirm which apps a user
@@ -524,15 +630,28 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         const uid = (req.query?.user_id ?? "").trim();
         if (!uid) return reply.code(400).send({ error: "user_id_required" });
         const sql = getSql();
-        const rows = await sql`
-          SELECT id, user_id, role, device_type, expo_push_token,
-                 created_at, updated_at
+        const expo = await sql`
+          SELECT id, user_id, role, device_type AS platform, expo_push_token AS token,
+                 'expo'::text AS token_kind, created_at, updated_at AS last_seen_at
           FROM public.expo_push_tokens
           WHERE user_id = ${uid}
           ORDER BY updated_at DESC NULLS LAST, created_at DESC
           LIMIT 50
         `;
-        return { items: rows };
+        let native: unknown[] = [];
+        try {
+          native = await sql`
+            SELECT id, user_id, role, platform, native_token AS token,
+                   token_type AS token_kind, source, created_at, last_seen_at
+            FROM public.native_device_push_tokens
+            WHERE user_id = ${uid}
+            ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
+            LIMIT 50
+          `;
+        } catch {
+          native = [];
+        }
+        return { items: [...(expo as unknown[]), ...native] };
       },
     );
 

@@ -2,7 +2,7 @@ import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { getEnv } from "../config/env.js";
 import { isTransientDbError } from "../lib/db/is-transient-db-error.js";
-import { withDbSlot } from "../lib/db/db-slot.js";
+import { withDbSlot, resolvePoolMax } from "../lib/db/db-slot.js";
 
 export { withDbSlot } from "../lib/db/db-slot.js";
 
@@ -30,9 +30,9 @@ function isSupabaseTransactionPooler(url: string): boolean {
 function createPool(): ReturnType<typeof postgres> {
   const env = getEnv();
   const connectTimeoutSec = env.DATABASE_CONNECT_TIMEOUT_SEC ?? 30;
-  const poolMax =
-    env.DATABASE_POOL_MAX ??
-    (env.NODE_ENV === "production" ? 25 : 8);
+  // Shared with dbSlotLimit() so the semaphore never admits more than there are
+  // connections (over-admission causes database_slot_timeout while Postgres is fine).
+  const poolMax = resolvePoolMax();
 
   const pooler = isSupabaseTransactionPooler(env.DATABASE_URL);
   // Close idle sockets before Supabase PgBouncer kills them (often ~60s),
@@ -66,8 +66,12 @@ function createPool(): ReturnType<typeof postgres> {
     },
     // Required for PgBouncer transaction mode (Supabase :6543).
     prepare: false,
-    // Avoid an extra round-trip of type introspection on every new connection.
-    fetch_types: false,
+    // MUST stay true: with fetch_types:false, postgres.js cannot resolve array
+    // element-type OIDs and serializes JS arrays as a bare "1,2,3" string, so EVERY
+    // `= ANY(${array})` query throws `malformed array literal` (22P02). Verified against
+    // the Supabase :6543 pooler — type introspection is one plain SELECT per new
+    // connection (not per query) and is fully compatible with transaction pooling.
+    fetch_types: true,
     onnotice: () => undefined,
   });
 }

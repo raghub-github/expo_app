@@ -16,6 +16,17 @@ export const APP_STATIC_ASSET_SEEDS: AppStaticAssetSeed[] = [
   { id: "customer.auth.logo", app: "customer", section: "Auth", label: "Logo", description: "OTP & onboarding screens", sortOrder: 10 },
   { id: "customer.auth.logo_with_name", app: "customer", section: "Auth", label: "Logo with name", description: "Login screen", sortOrder: 20 },
 
+  // ── Customer: Branding ──
+  {
+    id: "customer.brand.app_icon",
+    app: "customer",
+    section: "Branding",
+    label: "App icon",
+    description:
+      "In-app bootstrap / brand mark. Updates on next app open. Phone home-screen icon still needs a store rebuild.",
+    sortOrder: 10,
+  },
+
   // ── Customer: Home ──
   { id: "customer.home.brand_banner", app: "customer", section: "Home", label: "Brand banner", description: "Home brand strip (gm.png)", sortOrder: 10 },
   { id: "customer.home.service_food", app: "customer", section: "Home", label: "Food service card", description: "Home services grid — Order Food", sortOrder: 20 },
@@ -94,6 +105,15 @@ export const APP_STATIC_ASSET_SEEDS: AppStaticAssetSeed[] = [
   })),
 
   // ── Rider ──
+  {
+    id: "rider.brand.app_icon",
+    app: "rider",
+    section: "Branding",
+    label: "App icon",
+    description:
+      "In-app brand mark / splash icon. Updates on next app open. Phone home-screen icon still needs a store rebuild.",
+    sortOrder: 10,
+  },
   { id: "rider.auth.hero", app: "rider", section: "Auth", label: "Login hero", description: "Rider login & support empty state", sortOrder: 10 },
   { id: "rider.auth.logo", app: "rider", section: "Auth", label: "Brand logo", description: "Rider login & logo component", sortOrder: 20 },
   { id: "rider.auth.only_logo", app: "rider", section: "Auth", label: "Logo mark only", description: "Compact logo variant", sortOrder: 30 },
@@ -108,6 +128,15 @@ export const APP_STATIC_ASSET_SEEDS: AppStaticAssetSeed[] = [
   { id: "rider.map.bike", app: "rider", section: "Map", label: "Map marker — bike", description: "Rider map assets", sortOrder: 10 },
 
   // ── Merchant ──
+  {
+    id: "merchant.brand.app_icon",
+    app: "merchant",
+    section: "Branding",
+    label: "App icon",
+    description:
+      "In-app brand mark (login / header). Updates on next app open. Phone home-screen icon still needs a store rebuild.",
+    sortOrder: 10,
+  },
   { id: "merchant.auth.header", app: "merchant", section: "Auth", label: "Portal header", description: "Partner home header image", sortOrder: 10 },
   { id: "merchant.auth.welcome", app: "merchant", section: "Auth", label: "Welcome screen", description: "Merchant welcome onboarding", sortOrder: 20 },
   { id: "merchant.auth.logo", app: "merchant", section: "Auth", label: "Brand logo", description: "Login, header, outlet info", sortOrder: 30 },

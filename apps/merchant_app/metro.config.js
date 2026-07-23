@@ -31,7 +31,7 @@ config.resolver.nodeModulesPaths = [
 ];
 config.resolver.disableHierarchicalLookup = true;
 
-const gatimitraWorkspacePackages = ["contracts", "expo-push-kit", "merchant-payout"];
+const gatimitraWorkspacePackages = ["contracts", "expo-push-kit", "kot-print", "merchant-payout"];
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),
   ...Object.fromEntries(

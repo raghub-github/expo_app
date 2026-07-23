@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import {
   useRiderSubscriptionStatus,
+  useRiderSubscriptionPayDues,
   type RiderSubscriptionAlertBanner,
 } from "@/src/hooks/useRiderSubscription";
 import { useRiderSubscriptionDuesPayment } from "@/src/hooks/useRiderSubscriptionDuesPayment";
@@ -29,8 +30,9 @@ function resolveBannerCopy(banner: RiderSubscriptionAlertBanner) {
 
 export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation();
-  const { data: status } = useRiderSubscriptionStatus();
+  const { data: status, refetch } = useRiderSubscriptionStatus();
   const { data: riderProfile } = useRiderProfile();
+  const payDues = useRiderSubscriptionPayDues();
   const duesPayment = useRiderSubscriptionDuesPayment();
   const [paying, setPaying] = useState(false);
   const [checkout, setCheckout] = useState<RazorpayOrderParams | null>(null);
@@ -38,9 +40,9 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
   const banner = status?.dues?.alertBanner;
   if (!banner?.visible) return null;
 
-  const isRestricted = banner.variant === "restricted";
   const copy = resolveBannerCopy(banner);
   const totalDue = banner.totalDue;
+  const canPayFromWallet = banner.canPayFromWallet === true;
 
   const handleVerifyPayment = useCallback(
     async (razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string) => {
@@ -52,6 +54,7 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
           razorpaySignature,
         });
         setCheckout(null);
+        await refetch();
         if (result.totalDueAfter > 0) {
           Alert.alert(
             t("subscription.duesPartialTitle", "Partial payment"),
@@ -83,13 +86,45 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
         setPaying(false);
       }
     },
-    [duesPayment.verifyPayment, t]
+    [duesPayment.verifyPayment, refetch, t]
   );
 
   const handlePay = useCallback(async () => {
-    if (paying || duesPayment.createOrder.isPending) return;
+    if (paying || duesPayment.createOrder.isPending || payDues.isPending) return;
     setPaying(true);
     try {
+      // Prefer wallet settlement when balance covers (or partially covers) dues.
+      if (canPayFromWallet) {
+        const result = await payDues.mutateAsync();
+        await refetch();
+        if (result.paidAmount > 0 && result.totalDueAfter <= 0) {
+          Alert.alert(
+            t("subscription.duesPaidTitle", "Payment successful"),
+            t(
+              "subscription.duesPaidFromWallet",
+              "{{amount}} cleared from wallet.",
+              { amount: formatRupee(result.paidAmount) }
+            )
+          );
+          return;
+        }
+        if (result.paidAmount > 0 && result.totalDueAfter > 0) {
+          Alert.alert(
+            t("subscription.duesPartialTitle", "Partial payment"),
+            t(
+              "subscription.duesPartialBody",
+              "{{paid}} paid from wallet. Outstanding: {{remaining}}.",
+              {
+                paid: formatRupee(result.paidAmount),
+                remaining: formatRupee(result.totalDueAfter),
+              }
+            )
+          );
+          // Continue to Razorpay for remaining if still due
+        }
+        if (result.totalDueAfter <= 0) return;
+      }
+
       const order = await duesPayment.createOrder.mutateAsync();
       if (!order.success || !order.orderId || !order.keyId) {
         throw new Error(t("subscription.payFailed", "Payment failed"));
@@ -129,14 +164,23 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
     } finally {
       setPaying(false);
     }
-  }, [duesPayment.createOrder, handleVerifyPayment, paying, t, totalDue]);
+  }, [
+    canPayFromWallet,
+    duesPayment.createOrder,
+    handleVerifyPayment,
+    payDues,
+    paying,
+    refetch,
+    t,
+    totalDue,
+  ]);
 
   return (
     <>
       <View
         style={[
           styles.wrap,
-          isRestricted ? styles.wrapRestricted : styles.wrapWarning,
+          styles.wrapWarning,
           embedded && styles.wrapEmbedded,
         ]}
       >
@@ -154,9 +198,9 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
             disabled={paying}
           >
             {paying ? (
-              <ActivityIndicator size="small" color={isRestricted ? "#DC2626" : "#111827"} />
+              <ActivityIndicator size="small" color="#111827" />
             ) : (
-              <Text style={[styles.payBtnTxt, isRestricted && styles.payBtnTxtRestricted]}>
+              <Text style={styles.payBtnTxt}>
                 {copy.payLabel}
               </Text>
             )}
@@ -210,9 +254,6 @@ const styles = StyleSheet.create({
   wrapWarning: {
     backgroundColor: "#D4A017",
   },
-  wrapRestricted: {
-    backgroundColor: "#DC2626",
-  },
   icon: {
     width: 32,
     height: 32,
@@ -250,8 +291,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     color: "#111827",
-  },
-  payBtnTxtRestricted: {
-    color: "#DC2626",
   },
 });

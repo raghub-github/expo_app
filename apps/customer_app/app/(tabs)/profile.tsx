@@ -8,7 +8,7 @@ import { AppText } from "@/components/AppText";
 import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
 import { Image } from "expo-image";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -19,6 +19,8 @@ import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
 import { useProfile } from "@/hooks/useProfile";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
 import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMembershipSheet";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -50,8 +52,21 @@ export default function ProfileScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const insets = useAppSafeAreaInsets();
+  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
+  // Root spacer owns safe-top when present; only pad when immersive left it off.
+  const profileTopPad = (hideStatusBarSpacer ? insets.top : 0) + STATUS_BAR_TO_HEADER_GAP + 6;
   const { data: profile } = useProfile();
   const { data: subscriptionStatus } = useCurrentSubscription(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      useScreenChromeStore.setState({
+        statusBarBackground: PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
+    }, [])
+  );
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
   const initials = useMemo(() => getInitials(displayName), [displayName]);
@@ -162,7 +177,7 @@ export default function ProfileScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Profile card — GatiMitra-style with subscription strip */}
-        <View style={[styles.profileCard, { marginTop: Math.max(insets.top - 4, 6) }]}>
+        <View style={[styles.profileCard, { marginTop: profileTopPad }]}>
           <View style={styles.profileCardBody}>
             <View style={styles.identityRow}>
               <View style={styles.avatar}>

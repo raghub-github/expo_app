@@ -7,6 +7,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView, Image } from "react-native";
+import { startAndroidSmsOtpListener } from "@/lib/androidSmsOtpRetriever";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,6 +16,7 @@ import { authService } from "@/services/auth.service";
 import { profileService } from "@/services/profile.service";
 import { LegalFooter } from "@/components/LegalLinks";
 import { writeCachedProfile } from "@/lib/profileCache";
+import { syncConsentFromProfile } from "@/lib/legal-consent";
 import { useAuthStore } from "@/store/authStore";
 import { getDeviceIdAsync } from "@/utils/deviceId";
 import { OTP_LENGTH } from "@/constants";
@@ -97,6 +99,7 @@ export default function OtpScreen() {
       try {
         const profile = await profileService.getProfile();
         await writeCachedProfile(profile);
+        await syncConsentFromProfile(profile);
         if (profile?.profile_completed === true) {
           router.replace("/(tabs)/");
           return;
@@ -119,82 +122,30 @@ export default function OtpScreen() {
     }
   }, [otp, phoneE164, router, setSession]);
 
-  /**
-   * Android SMS Retriever auto-fill (zero-tap OTP, like WhatsApp / Zomato / Uber).
-   *
-   * Uses Google's SMS Retriever API — no SMS_READ permission required. The API
-   * matches an incoming SMS against the app's signing hash and, when found,
-   * delivers only that one SMS to the app. Requirements:
-   *
-   *   1. The SMS body must end with an 11-character app hash generated from the
-   *      app's signing certificate + package name. See MSG91 template.
-   *   2. react-native-otp-verify wraps the Android API. On iOS this file is a
-   *      no-op — iOS auto-fill works via textContentType="oneTimeCode" already
-   *      set on the hidden input below (OS-managed keyboard suggestion).
-   *
-   * If the native module fails to load (Expo Go, missing native binding), we
-   * silently no-op and users can still type the OTP manually. The listener is
-   * lazy-imported inside the effect so a broken module doesn't crash app start.
-   */
+  /** Android SMS auto-fill via native module (dev build only). Expo Go skips safely. */
   useEffect(() => {
     if (Platform.OS !== "android") return;
     let unmounted = false;
-    let stop: (() => void) | null = null;
+    let listener: { stop: () => void } | null = null;
 
-    type OtpVerifyModule = {
-      getOtp: () => Promise<string>;
-      removeListener: () => void;
-      getHash?: () => Promise<string[]>;
-    };
-
-    (async () => {
-      let RNOtpVerify: OtpVerifyModule | null = null;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const mod = require("react-native-otp-verify");
-        RNOtpVerify = (mod?.default ?? mod) as OtpVerifyModule;
-      } catch {
-        console.log("[otp] SMS Retriever native module unavailable — manual entry only");
+    void startAndroidSmsOtpListener({
+      onCode: (code) => {
+        if (unmounted) return;
+        setOtp(code);
+        setError("");
+        void handleVerify(code);
+      },
+    }).then((active) => {
+      if (unmounted) {
+        active?.stop();
         return;
       }
-      if (!RNOtpVerify || typeof RNOtpVerify.getOtp !== "function") return;
-      const otpMod: OtpVerifyModule = RNOtpVerify;
-
-      try {
-        // Log the app hash once per session so the ops team can copy it into the
-        // MSG91 template (SMS must end with this exact 11-char string for auto-
-        // fill to work). Only fires in dev/preview builds — production users
-        // don't see it. Never a security risk (hash is derived from the public
-        // signing cert; nothing secret about it).
-        if (__DEV__ && typeof otpMod.getHash === "function") {
-          otpMod.getHash().then((h: string[]) => console.log("[otp] app SMS hash:", h)).catch(() => undefined);
-        }
-
-        const message = await otpMod.getOtp();
-        if (unmounted) return;
-        // getOtp() resolves once with the full SMS body when it arrives.
-        // Extract the 6-digit block from anywhere in the message.
-        const match = /\b(\d{6})\b/.exec(String(message ?? ""));
-        if (match?.[1]) {
-          const code = match[1];
-          setOtp(code);
-          setError("");
-          // Auto-submit — the whole point of "as like other apps".
-          void handleVerify(code);
-        }
-      } catch (e) {
-        // getOtp rejects on TIMEOUT (5 min) or cancel — expected, no-op.
-        if (__DEV__) console.log("[otp] SMS Retriever ended:", (e as Error)?.message);
-      }
-
-      stop = () => {
-        try { otpMod.removeListener(); } catch {}
-      };
-    })();
+      listener = active;
+    });
 
     return () => {
       unmounted = true;
-      if (stop) stop();
+      listener?.stop();
     };
   }, [handleVerify]);
 

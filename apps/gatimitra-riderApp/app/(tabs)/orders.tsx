@@ -38,6 +38,7 @@ import {
   type HomeBannerSlide,
 } from "@/src/components/home/HomeAlertBannerCarousel";
 import { SubscriptionDuesBanner } from "@/src/components/subscription/SubscriptionDuesBanner";
+import { SubscriptionDutyBlockedSheet } from "@/src/components/subscription/SubscriptionDutyBlockedSheet";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { MapRightControls } from "@/src/components/home/MapRightControls";
 import { SearchingOrdersPill } from "@/src/components/home/SearchingOrdersPill";
@@ -50,7 +51,7 @@ export default function OrdersScreen() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
-  const { setDuty, isPending: dutyPending } = useDutyToggle();
+  const { setDuty, isPending: dutyPending, dutyGoOnBlocked } = useDutyToggle();
   const tracker = useMemo(() => createForegroundLocationTracker(), []);
   const [state, setState] = useState<LocationTrackerState>(tracker.getState());
   const [checkingLocation, setCheckingLocation] = useState(false);
@@ -67,6 +68,7 @@ export default function OrdersScreen() {
   const penaltyPayment = useRiderPenaltyPayment();
   const [penaltyCheckout, setPenaltyCheckout] = useState<RazorpayOrderParams | null>(null);
   const [penaltyPaying, setPenaltyPaying] = useState(false);
+  const [dutyBlockedSheetVisible, setDutyBlockedSheetVisible] = useState(false);
   const restrictions = earnings?.accountRestrictions;
   const walletBalance = earnings?.totalBalance ?? 0;
   const blockedServices = useMemo(
@@ -182,9 +184,8 @@ export default function OrdersScreen() {
   ]);
   const subscriptionBannerVisible =
     subscriptionStatus?.dues?.alertBanner?.visible ?? false;
-  const subscriptionTotalDue = subscriptionStatus?.dues?.totalDue ?? 0;
   const subscriptionDispatchBlocked = subscriptionStatus?.dues?.dispatchBlocked ?? false;
-  const showPenaltyBanner = penaltyDue > 0 && subscriptionTotalDue <= 0;
+  const showPenaltyBanner = penaltyDue > 0;
   const primaryPaymentHold = ridePaymentHolds[0] ?? null;
 
   const homeBannerSlides = useMemo((): HomeBannerSlide[] => {
@@ -205,7 +206,8 @@ export default function OrdersScreen() {
       });
     }
 
-    if (!showServiceRestrictedBanner && subscriptionBannerVisible) {
+    // Always show subscription dues/pay slide when dues exist — do not hide behind Account Restricted.
+    if (subscriptionBannerVisible) {
       slides.push({
         id: "subscription",
         type: "subscription",
@@ -229,7 +231,7 @@ export default function OrdersScreen() {
       });
     }
 
-    if (!showServiceRestrictedBanner && primaryPaymentHold) {
+    if (primaryPaymentHold) {
       slides.push({
         id: "ride_payment_hold",
         type: "ride_payment_hold",
@@ -268,11 +270,11 @@ export default function OrdersScreen() {
   );
 
   useEffect(() => {
-    if (!subscriptionDispatchBlocked) return;
+    if (!subscriptionDispatchBlocked && !dutyGoOnBlocked) return;
     if (!isOnDuty) return;
     void useDutyStore.getState().setDutyStatus(false);
     void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
-  }, [subscriptionDispatchBlocked, isOnDuty, queryClient]);
+  }, [subscriptionDispatchBlocked, dutyGoOnBlocked, isOnDuty, queryClient]);
 
   const locationCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -441,13 +443,28 @@ export default function OrdersScreen() {
           <View style={styles.offDutyHost}>
             <OffDutyBanner
               visible
-              dutyLocked={subscriptionDispatchBlocked}
-              onTurnOn={() => void setDuty(true)}
+              dutyLocked={dutyGoOnBlocked || subscriptionDispatchBlocked}
+              onTurnOn={() => {
+                if (dutyGoOnBlocked || subscriptionDispatchBlocked) {
+                  setDutyBlockedSheetVisible(true);
+                  return;
+                }
+                void setDuty(true).then((result) => {
+                  if (result?.blockedFromGoingOn) {
+                    setDutyBlockedSheetVisible(true);
+                  }
+                });
+              }}
               loading={dutyPending}
             />
           </View>
         ) : null}
       </View>
+
+      <SubscriptionDutyBlockedSheet
+        visible={dutyBlockedSheetVisible}
+        onClose={() => setDutyBlockedSheetVisible(false)}
+      />
 
       <RazorpayCheckoutModal
         visible={penaltyCheckout != null}

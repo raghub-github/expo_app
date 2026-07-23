@@ -487,6 +487,7 @@ export default function MealsUnderPriceScreen() {
         addonSizeUnit?: string | null;
       }>;
       imageUrl?: string | null;
+      specialInstructions?: string | null;
     }) => {
       if (!customizationStore) return;
       addItem(
@@ -504,6 +505,7 @@ export default function MealsUnderPriceScreen() {
           variantSizeUnit: params.variantSizeUnit,
           addons: params.addons,
           imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
+          specialInstructions: params.specialInstructions ?? null,
         },
         params.quantity
       );

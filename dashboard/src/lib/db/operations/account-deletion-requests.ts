@@ -1,6 +1,6 @@
 /**
  * Account deletion request queue — Customers dashboard ops.
- * Reads/writes public.account_deletion_requests and closes customers on complete.
+ * Completing a request signs the user out and removes the customer row when possible.
  */
 
 import { sql } from "drizzle-orm";
@@ -100,8 +100,8 @@ export async function listAccountDeletionRequests(input?: {
 }
 
 /**
- * Admin completes deletion: deactivate customer, invalidate JWTs (app logout),
- * mark request completed. Identity data is retained per policy.
+ * Admin completes deletion: invalidate sessions, remove customer row, drop queue entry.
+ * Orders are detached (customer_id cleared) so the customer row can be deleted.
  */
 export async function completeAccountDeletionRequest(input: {
   requestId: number;
@@ -125,54 +125,76 @@ export async function completeAccountDeletionRequest(input: {
     if (!req) return { ok: false, error: "Request not found" };
 
     const status = String(req.status ?? "");
+    const customerId = String(req.customer_id ?? "").trim();
+    if (!customerId) return { ok: false, error: "Request has no customer id" };
+
     if (status === "completed") {
-      return { ok: true, customerId: String(req.customer_id) };
+      await db.execute(sql`DELETE FROM account_deletion_requests WHERE id = ${requestId}`);
+      return { ok: true, customerId };
     }
     if (status !== "pending_review" && status !== "approved") {
       return { ok: false, error: `Cannot delete request in status "${status}"` };
     }
 
-    const customerId = String(req.customer_id);
-    const reason =
-      (req.reason_text != null ? String(req.reason_text) : null) ||
-      (req.reason_code != null ? String(req.reason_code) : "account_deletion");
-    const now = new Date();
-    const reviewedBy = input.reviewedBy.slice(0, 200);
-    const notes = (input.reviewNotes ?? "").toString().slice(0, 2000) || null;
-
-    await db.execute(sql`
-      UPDATE customers
-      SET
-        account_status = 'DEACTIVATED',
-        status_reason = 'account_deletion_completed',
-        deleted_at = COALESCE(deleted_at, ${now}),
-        deletion_reason = ${reason},
-        sessions_invalid_before = ${now},
-        updated_at = ${now}
-      WHERE customer_id = ${customerId}
+    const custRows = await db.execute(sql`
+      SELECT id FROM customers WHERE customer_id = ${customerId} LIMIT 1
     `);
+    const customerPk = asNum((custRows as unknown as Record<string, unknown>[])[0]?.id);
 
-    // Also invalidate user_profiles sessions if the GM id matches.
-    try {
+    if (customerPk != null) {
+      // Sign out everywhere before removing the row.
       await db.execute(sql`
-        UPDATE user_profiles
-        SET sessions_invalid_before = ${now}, updated_at = ${now}
-        WHERE user_id = ${customerId}
+        UPDATE customers
+        SET sessions_invalid_before = NOW(), updated_at = NOW()
+        WHERE id = ${customerPk}
       `);
-    } catch {
-      /* optional table / column */
+
+      try {
+        await db.execute(sql`
+          UPDATE user_profiles
+          SET sessions_invalid_before = NOW(), updated_at = NOW()
+          WHERE user_id = ${customerId}
+        `);
+      } catch {
+        /* optional */
+      }
+
+      // Detach order history so customer row can be deleted (orders are retained).
+      try {
+        await db.execute(sql`
+          UPDATE orders_core SET customer_id = NULL WHERE customer_id = ${customerPk}
+        `);
+      } catch (e) {
+        console.warn("[account-deletion] orders_core detach failed", e);
+      }
+
+      try {
+        await db.execute(sql`
+          UPDATE pending_orders SET customer_id = NULL WHERE customer_id = ${customerPk}
+        `);
+      } catch {
+        /* optional table / column */
+      }
+
+      try {
+        await db.execute(sql`
+          UPDATE customers SET referrer_customer_id = NULL WHERE referrer_customer_id = ${customerPk}
+        `);
+      } catch {
+        /* optional */
+      }
+
+      try {
+        await db.execute(sql`DELETE FROM user_profiles WHERE user_id = ${customerId}`);
+      } catch {
+        /* optional */
+      }
+
+      await db.execute(sql`DELETE FROM customers WHERE id = ${customerPk}`);
     }
 
-    await db.execute(sql`
-      UPDATE account_deletion_requests
-      SET
-        status = 'completed',
-        reviewed_at = ${now},
-        reviewed_by = ${reviewedBy},
-        review_notes = ${notes},
-        updated_at = ${now}
-      WHERE id = ${requestId}
-    `);
+    // Remove from the ops queue entirely (not just mark completed).
+    await db.execute(sql`DELETE FROM account_deletion_requests WHERE id = ${requestId}`);
 
     return { ok: true, customerId };
   } catch (e) {

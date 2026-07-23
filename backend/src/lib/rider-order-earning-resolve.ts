@@ -36,6 +36,18 @@ export function resolveRiderDeliveryFeeFromBilling(row: {
   fareAmount: string | null;
   billingSnapshot?: unknown;
 }): number {
+  // Rider Fare Engine base = the GROSS/standard delivery fare (pre-subsidy), so
+  // rider payout is independent of the customer delivery fee. Free delivery /
+  // coupons / membership only affect the customer-facing net `delivery_fee`.
+  // Fall back to net for pre-migration orders that have no gross field.
+  const fromGross = parseBillingAmount(row.billingSnapshot, [
+    "delivery_fee_gross",
+    "deliveryFeeGross",
+    "delivery_fee_original",
+    "deliveryFeeOriginal",
+  ]);
+  if (fromGross > 0) return round0(fromGross);
+
   const fromBilling = parseBillingAmount(row.billingSnapshot, [
     "delivery_fee",
     "final_delivery_fee",

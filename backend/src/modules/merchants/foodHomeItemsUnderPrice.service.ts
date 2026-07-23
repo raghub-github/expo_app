@@ -158,6 +158,8 @@ export async function listFoodItemsUnderPrice(params: {
     INNER JOIN merchant_stores ms ON ms.id = mmi.store_id AND ms.deleted_at IS NULL
     WHERE mmi.store_id = ANY(${storeIds}::bigint[])
       AND mmi.is_deleted = false
+      -- Entitlement gate: plan-locked items are hidden from customer discovery surfaces.
+      AND COALESCE(mmi.is_locked_by_plan, false) = false
       AND COALESCE(mmi.in_stock, true) = true
       AND mmi.selling_price IS NOT NULL
       AND mmi.selling_price > 0
@@ -251,6 +253,8 @@ export async function listFoodItemsUnderPriceGrouped(params: {
     INNER JOIN merchant_stores ms ON ms.id = mmi.store_id AND ms.deleted_at IS NULL
     WHERE mmi.store_id = ANY(${storeIds}::bigint[])
       AND mmi.is_deleted = false
+      -- Entitlement gate: plan-locked items are hidden from customer discovery surfaces.
+      AND COALESCE(mmi.is_locked_by_plan, false) = false
       AND COALESCE(mmi.in_stock, true) = true
       AND mmi.selling_price IS NOT NULL
       AND mmi.selling_price > 0

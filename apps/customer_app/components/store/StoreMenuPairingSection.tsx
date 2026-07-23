@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, StyleSheet } from "react-native";
+import { Pressable, View, ScrollView, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -23,6 +23,7 @@ export type StoreMenuPairingSectionProps = {
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
+  onItemPress?: (item: MenuItem) => void;
   isStoreClosed?: boolean;
   showDivider?: boolean;
 };
@@ -33,6 +34,7 @@ function PairingCard({
   onAdd,
   onIncrement,
   onDecrement,
+  onItemPress,
   isStoreClosed,
 }: {
   item: MenuItem;
@@ -40,6 +42,7 @@ function PairingCard({
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
+  onItemPress?: (item: MenuItem) => void;
   isStoreClosed: boolean;
 }) {
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
@@ -55,7 +58,12 @@ function PairingCard({
   const isCustomisable = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
 
   return (
-    <View style={styles.card}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`View ${item.name} details`}
+      onPress={() => onItemPress?.(item)}
+      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+    >
       <View style={styles.imageStack}>
         <View style={styles.imageWrap}>
           {showImage ? (
@@ -77,8 +85,12 @@ function PairingCard({
         <View style={styles.addSlot}>
           <StoreMenuInstantCartControl
             itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
+            merchantId={merchantId}
             quantity={cartQty}
             disabled={isStoreClosed}
+            allowOptimisticAdd={
+              !(item.hasVariants || item.hasAddons || item.hasCustomizations)
+            }
             onAdd={() => onAdd(item)}
             onIncrement={() => onIncrement(item.id, item.menuItemId)}
             onDecrement={() => onDecrement(item.id, item.menuItemId)}
@@ -90,7 +102,7 @@ function PairingCard({
         {item.name}
       </AppText>
       <AppText style={styles.price}>₹{Math.round(price)}</AppText>
-    </View>
+    </Pressable>
   );
 }
 
@@ -100,6 +112,7 @@ export const StoreMenuPairingSection = React.memo(function StoreMenuPairingSecti
   onAdd,
   onIncrement,
   onDecrement,
+  onItemPress,
   isStoreClosed = false,
   showDivider = true,
 }: StoreMenuPairingSectionProps) {
@@ -113,6 +126,9 @@ export const StoreMenuPairingSection = React.memo(function StoreMenuPairingSecti
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="always"
+        nestedScrollEnabled
+        delaysContentTouches={false}
+        canCancelContentTouches={false}
       >
         {companions.map((item) => (
           <PairingCard
@@ -122,6 +138,7 @@ export const StoreMenuPairingSection = React.memo(function StoreMenuPairingSecti
             onAdd={onAdd}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
+            onItemPress={onItemPress}
             isStoreClosed={isStoreClosed}
           />
         ))}
@@ -152,6 +169,9 @@ const styles = StyleSheet.create({
   },
   card: {
     width: CARD_W,
+  },
+  cardPressed: {
+    opacity: 0.82,
   },
   imageStack: {
     width: CARD_W,

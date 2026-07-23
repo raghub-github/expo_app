@@ -11,14 +11,27 @@ export function normalizePickupScanValue(raw: string): string {
     .toUpperCase();
 }
 
+/** New secure tokens are case-sensitive base64url — do not uppercase when comparing. */
+export function looksLikeSecurePickupToken(token: unknown): token is string {
+  return typeof token === "string" && /^[A-Za-z0-9_-]{20,64}$/.test(token.trim());
+}
+
 export function barcodeMatchesPickupToken(
   scannedRaw: string,
   opts: {
     pickupVerificationToken: string | null | undefined;
+    /** order_pickup_tokens.token — preferred QR payload. */
+    securePickupToken?: string | null | undefined;
     formattedOrderId: string | null | undefined;
     orderIdText: string | null | undefined;
   }
 ): boolean {
+  const scannedExact = String(scannedRaw ?? "").trim();
+  if (!scannedExact) return false;
+
+  const secure = String(opts.securePickupToken ?? "").trim();
+  if (secure && scannedExact === secure) return true;
+
   const scanned = normalizePickupScanValue(scannedRaw);
   if (!scanned) return false;
 

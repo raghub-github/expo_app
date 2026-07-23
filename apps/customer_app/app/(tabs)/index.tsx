@@ -4,9 +4,10 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { View, StyleSheet, ScrollView, RefreshControl } from "react-native";
+import { View, StyleSheet, ScrollView, RefreshControl, StatusBar as NativeStatusBar, Platform } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect, useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { useLocationStore } from "@/store/locationStore";
@@ -121,10 +122,16 @@ export default function HomeScreen() {
     locationHydrated
   );
 
-  // Restore root status-bar spacer — merchant/food immersive can leave it off and
-  // the header then overlaps the system status bar (layout jump).
+  // Restore solid, visible status-bar chrome — immersive / modals can leave it off
+  // or paint a dark window root that hides dark status icons.
   useFocusEffect(
     useCallback(() => {
+      NativeStatusBar.setHidden(false, "none");
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(false);
+        NativeStatusBar.setBackgroundColor("#FFFFFF", true);
+        NativeStatusBar.setBarStyle("dark-content", true);
+      }
       useScreenChromeStore.setState({
         statusBarBackground: "#FFFFFF",
         statusBarStyle: "dark",
@@ -135,6 +142,7 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
+      <StatusBar style="dark" backgroundColor="#FFFFFF" translucent={false} hidden={false} />
       <HomeLocationHeader
         locationPrimary={locationPrimary}
         locationSecondary={locationSecondary}

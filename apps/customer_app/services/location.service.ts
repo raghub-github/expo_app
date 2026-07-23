@@ -51,7 +51,29 @@ export type ReverseGeocodeResult = {
   state?: string | null;
   /** Pincode / postal code (from Mapbox postcode context). */
   pincode?: string | null;
+  /** Straight-line metres from the queried GPS point to the resolved feature (data-quality signal). */
+  distanceM?: number | null;
+  /**
+   * True when the nearest mapped feature is far/coarse for the queried point — the
+   * street/PIN is a best-effort approximation of sparsely-mapped data, NOT masked as exact.
+   */
+  approximate?: boolean;
+  /** Which provider resolved this (mapbox-v6 / mapbox-searchbox / mapbox-v5). For logging + future fallback. */
+  provider?: string;
 };
+
+/** Metres beyond which the nearest mapped feature is treated as an approximation of the real point. */
+const REVERSE_APPROX_THRESHOLD_M = 45;
+
+function metresBetween(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
 
 function isPincodeOnly(value?: string | null): boolean {
   return !!value && /^\d{6}$/.test(value.trim());
@@ -120,75 +142,134 @@ export function resolvePlaceDisplayName(input: {
   return input.fullAddress?.trim() || input.primary?.trim() || "Selected location";
 }
 
+type V6Context = Record<string, { name?: string } | undefined> | undefined;
+
+function v6Name(ctx: V6Context, key: string): string | null {
+  const v = ctx?.[key];
+  return v && typeof v === "object" && typeof v.name === "string" && v.name.trim() ? v.name : null;
+}
+
 /**
- * Reverse geocode lng,lat using Mapbox Search Box API (fallback: Geocoding v5).
+ * Reverse-geocode with Mapbox Geocoding v6, address-first.
+ *
+ * WHY: Search Box `/reverse` snaps to the nearest street/POI centroid and
+ * frequently returns a road with NO postcode (e.g. it resolves a Bandra pin to
+ * "Mumbai Coastal Road" with no PIN). Geocoding v6 `types=address` returns the
+ * EXACT street address carrying the point's real PIN — matching Google Maps.
+ * That is the root cause of "correct district but wrong street/locality/PIN".
  */
-export async function reverseGeocode(
+async function mapboxV6Reverse(
   longitude: number,
   latitude: number
-): Promise<ReverseGeocodeResult> {
-  ensureMapboxSearchReady();
-  try {
-    const box = await mapboxSearchReverse(longitude, latitude);
-    if (box) {
-      const primary = resolvePlaceDisplayName({
-        primary: box.primary,
-        secondary: box.secondary,
-        fullAddress: box.fullAddress,
-        city: box.city,
-        state: box.state,
-      });
-      return {
-        primary,
-        secondary: box.secondary.slice(0, 80),
-        fullAddress: box.fullAddress,
-        city: box.city ?? null,
-        state: box.state ?? null,
-        pincode: box.pincode ?? null,
-      };
-    }
-  } catch {
-    // fall through to legacy geocoding
-  }
-
+): Promise<ReverseGeocodeResult | null> {
   const { mapboxAccessToken } = getConfig();
-  if (!mapboxAccessToken) {
+  if (!mapboxAccessToken) return null;
+  // Fetch several nearest candidates (NOT just features[0]) so we can choose the
+  // closest one that actually carries a postcode, and measure how far it sits from
+  // the GPS point (surfaces sparsely-mapped areas instead of masking them).
+  const typeTiers: Array<{ types: string; limit: number }> = [
+    { types: "address", limit: 5 },
+    { types: "street,neighborhood,locality,place,postcode", limit: 3 },
+  ];
+  for (const tier of typeTiers) {
+    const url =
+      `https://api.mapbox.com/search/geocode/v6/reverse` +
+      `?longitude=${encodeURIComponent(longitude)}&latitude=${encodeURIComponent(latitude)}` +
+      `&access_token=${encodeURIComponent(mapboxAccessToken)}` +
+      `&country=in&language=en&worldview=in&limit=${tier.limit}&types=${encodeURIComponent(tier.types)}`;
+    let res: Response;
+    try {
+      res = await fetch(url);
+    } catch {
+      continue;
+    }
+    if (!res.ok) continue;
+    const data = (await res.json()) as {
+      features?: Array<{
+        geometry?: { coordinates?: [number, number] };
+        properties?: { name?: string; full_address?: string; feature_type?: string; context?: V6Context };
+      }>;
+    };
+    const features = data.features ?? [];
+    if (!features.length) continue;
+
+    // Candidates arrive proximity-sorted. Prefer the nearest one carrying a postcode,
+    // so we never surface a closer point that has no PIN over a slightly-farther real address.
+    const scored = features.map((f) => {
+      const coords = f.geometry?.coordinates;
+      const dist =
+        coords && typeof coords[1] === "number" && typeof coords[0] === "number"
+          ? metresBetween(latitude, longitude, coords[1], coords[0])
+          : Number.POSITIVE_INFINITY;
+      return { f, dist, hasPin: !!v6Name(f.properties?.context, "postcode") };
+    });
+    const chosen =
+      scored.filter((s) => s.hasPin).sort((a, b) => a.dist - b.dist)[0] ?? scored[0];
+    const props = chosen.f.properties;
+    if (!props) continue;
+    const ctx = props.context;
+    const city = v6Name(ctx, "place") ?? v6Name(ctx, "locality") ?? v6Name(ctx, "district");
+    const state = v6Name(ctx, "region");
+    const pincode = v6Name(ctx, "postcode");
+    const area = v6Name(ctx, "neighborhood") ?? v6Name(ctx, "locality") ?? v6Name(ctx, "street");
+    const fullAddress = props.full_address?.trim() || props.name?.trim() || "";
+    if (!fullAddress) continue;
+    const primary = resolvePlaceDisplayName({ primary: props.name, secondary: area, fullAddress, city, state });
+    const secondary = [area, city].filter(Boolean).join(", ") || fullAddress;
+    const distanceM = Number.isFinite(chosen.dist) ? chosen.dist : null;
     return {
-      primary: "Current location",
-      secondary: "Enable location or add MAPBOX token",
-      fullAddress: "Location not available",
-      city: null,
-      state: null,
-      pincode: null,
+      primary,
+      secondary: secondary.slice(0, 80),
+      fullAddress,
+      city: city ?? null,
+      state: state ?? null,
+      pincode: pincode ?? null,
+      distanceM,
+      approximate: distanceM != null && distanceM > REVERSE_APPROX_THRESHOLD_M,
     };
   }
+  return null;
+}
 
+/** Search Box /reverse, normalized to ReverseGeocodeResult (POI-centric; no reliable distance). */
+async function mapboxSearchBoxReverse(
+  longitude: number,
+  latitude: number
+): Promise<ReverseGeocodeResult | null> {
+  const box = await mapboxSearchReverse(longitude, latitude);
+  if (!box) return null;
+  const primary = resolvePlaceDisplayName({
+    primary: box.primary,
+    secondary: box.secondary,
+    fullAddress: box.fullAddress,
+    city: box.city,
+    state: box.state,
+  });
+  return {
+    primary,
+    secondary: box.secondary.slice(0, 80),
+    fullAddress: box.fullAddress,
+    city: box.city ?? null,
+    state: box.state ?? null,
+    pincode: box.pincode ?? null,
+  };
+}
+
+/** Legacy Geocoding v5 reverse, normalized to ReverseGeocodeResult. */
+async function mapboxV5Reverse(
+  longitude: number,
+  latitude: number
+): Promise<ReverseGeocodeResult | null> {
+  const { mapboxAccessToken } = getConfig();
+  if (!mapboxAccessToken) return null;
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood,poi&language=en&worldview=in`;
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Mapbox geocode failed: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`Mapbox geocode failed: ${res.status}`);
   const data = (await res.json()) as {
-    features?: Array<{
-      place_name?: string;
-      text?: string;
-      context?: Array<{ id: string; text: string }>;
-    }>;
+    features?: Array<{ place_name?: string; text?: string; context?: Array<{ id: string; text: string }> }>;
   };
-
   const feature = data.features?.[0];
-  if (!feature) {
-    return {
-      primary: "Current location",
-      secondary: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
-      fullAddress: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
-      city: null,
-      state: null,
-      pincode: null,
-    };
-  }
-
+  if (!feature) return null;
   const placeName = feature.place_name ?? "";
   const context = feature.context ?? [];
   const locality = context.find((c) => c.id.startsWith("locality"))?.text;
@@ -198,17 +279,13 @@ export async function reverseGeocode(
   const postcode = context.find((c) => c.id.startsWith("postcode"))?.text;
   const fallbackPincode = placeName.match(/\b\d{6}\b/)?.[0] ?? null;
   const rawPrimary = feature.text ?? neighborhood ?? locality ?? place ?? "Current location";
-  const secondary = [neighborhood, locality, place].filter(Boolean).join(", ") || placeName.split(",").slice(1, 3).join(", ").trim() || "—";
+  const secondary =
+    [neighborhood, locality, place].filter(Boolean).join(", ") ||
+    placeName.split(",").slice(1, 3).join(", ").trim() ||
+    "—";
   const city = place ?? locality ?? null;
   const state = region ?? null;
-  const primary = resolvePlaceDisplayName({
-    primary: rawPrimary,
-    secondary,
-    fullAddress: placeName,
-    city,
-    state,
-  });
-
+  const primary = resolvePlaceDisplayName({ primary: rawPrimary, secondary, fullAddress: placeName, city, state });
   return {
     primary,
     secondary: secondary.slice(0, 80),
@@ -216,6 +293,61 @@ export async function reverseGeocode(
     city,
     state,
     pincode: postcode ?? fallbackPincode,
+  };
+}
+
+type ReverseProvider = {
+  name: string;
+  reverse: (longitude: number, latitude: number) => Promise<ReverseGeocodeResult | null>;
+};
+
+/**
+ * Ordered reverse-geocode providers. Each is tried until one returns a usable address.
+ * To add Google later: implement `googleReverse(lng, lat)` and insert `{ name: "google", ... }`
+ * here (e.g. first, or after v6) — no other code in the pipeline changes.
+ */
+const REVERSE_PROVIDERS: ReverseProvider[] = [
+  { name: "mapbox-v6", reverse: mapboxV6Reverse },
+  { name: "mapbox-searchbox", reverse: mapboxSearchBoxReverse },
+  { name: "mapbox-v5", reverse: mapboxV5Reverse },
+];
+
+/**
+ * Reverse geocode lng,lat through the provider chain (v6 address-first → Search Box → v5).
+ * Tags the winning provider and a data-quality distance/approximate signal so callers can
+ * surface — never mask — sparsely-mapped areas.
+ */
+export async function reverseGeocode(
+  longitude: number,
+  latitude: number
+): Promise<ReverseGeocodeResult> {
+  ensureMapboxSearchReady();
+
+  for (const provider of REVERSE_PROVIDERS) {
+    try {
+      const result = await provider.reverse(longitude, latitude);
+      if (result && result.fullAddress) {
+        return { ...result, provider: provider.name };
+      }
+    } catch {
+      // try next provider
+    }
+  }
+
+  const { mapboxAccessToken } = getConfig();
+  return {
+    primary: "Current location",
+    secondary: mapboxAccessToken
+      ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+      : "Enable location or add MAPBOX token",
+    fullAddress: mapboxAccessToken
+      ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+      : "Location not available",
+    city: null,
+    state: null,
+    pincode: null,
+    provider: "none",
+    approximate: true,
   };
 }
 

@@ -5,7 +5,7 @@
  */
 
 import { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from "react";
-import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Modal, Pressable, RefreshControl, useWindowDimensions } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Modal, Pressable, RefreshControl, useWindowDimensions, StatusBar as NativeStatusBar } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { LinearGradient } from "expo-linear-gradient";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
@@ -94,7 +94,7 @@ import {
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import { GMHeader } from "@/components/GMHeader";
-import { HEADER_TOP_PADDING_NONE, STATUS_BAR_TO_HEADER_GAP, DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
+import { HEADER_TOP_PADDING_NONE, STATUS_BAR_TO_HEADER_GAP, resolveTopSafeInset } from "@/constants/layout";
 import { GMSearchBar } from "@/components/GMSearchBar";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
@@ -542,8 +542,17 @@ export default function FoodMerchantsScreen() {
   );
 
   const lovedByCustomers = useMemo(
-    () => pickLovedByCustomersMerchants(filteredAndSortedMerchants),
-    [filteredAndSortedMerchants]
+    () =>
+      // A CLOSED store must never occupy a "Recommended with Deals" / "Loved by
+      // Customers" recommendation slot. Gate with the realtime-aware live status
+      // (statusMap from the store-status subscription, API status as fallback) so a
+      // store that closes mid-session drops out instantly — no refetch, no stale slot.
+      // Closed stores still appear in "Restaurants Near You" (the full list) with their
+      // "Closed · Opens…" label.
+      pickLovedByCustomersMerchants(filteredAndSortedMerchants).filter(
+        (m) => resolveMerchantLiveStatus(m, statusMap) === "OPEN"
+      ),
+    [filteredAndSortedMerchants, statusMap]
   );
 
   const openRestaurantCountLabel = useMemo(
@@ -928,7 +937,7 @@ export default function FoodMerchantsScreen() {
     },
     [setStatusBarBackground]
   );
-  const statusBarTopInset = insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
+  const statusBarTopInset = resolveTopSafeInset(insets.top);
 
   useLayoutEffect(() => {
     if (!isGridFirstLayout || isNonServiceableScreen) return;
@@ -955,6 +964,7 @@ export default function FoodMerchantsScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!isGridFirstLayout) return;
+      NativeStatusBar.setHidden(false, "none");
       if (isNonServiceableScreen) {
         setImmersiveStatusBarChrome(false);
         setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
@@ -1212,9 +1222,9 @@ export default function FoodMerchantsScreen() {
   return (
     <View style={styles.container}>
       {isGridFirstLayout ? (
-        <StatusBar style="dark" translucent backgroundColor="transparent" />
+        <StatusBar style="dark" translucent backgroundColor="transparent" hidden={false} />
       ) : (
-        <StatusBar style="dark" />
+        <StatusBar style="dark" hidden={false} />
       )}
 
       {!isGridFirstLayout ? (

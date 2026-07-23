@@ -44,7 +44,7 @@ export function LocationSearchResultRow({ item, query = "", distanceLabel, onPre
       <View style={styles.content}>
         <AppText style={styles.primary} numberOfLines={1}>
           {segments.map((seg, i) => (
-            <AppText key={i} style={seg.match ? styles.match : undefined}>
+            <AppText key={i} style={seg.match ? styles.match : styles.primarySegment}>
               {seg.text}
             </AppText>
           ))}
@@ -78,7 +78,7 @@ const styles = StyleSheet.create({
   distance: {
     marginTop: 4,
     fontSize: 11,
-    fontWeight: "600",
+    fontWeight: "700",
     color: "#9CA3AF",
     textAlign: "center",
   },
@@ -91,11 +91,17 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#111827",
   },
+  primarySegment: {
+    fontWeight: "700",
+    color: "#111827",
+  },
   match: {
+    fontWeight: "800",
     color: "#111827",
   },
   secondary: {
     fontSize: 13,
+    fontWeight: "600",
     color: "#6B7280",
     marginTop: 3,
     lineHeight: 18,

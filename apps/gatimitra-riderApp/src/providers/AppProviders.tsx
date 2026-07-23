@@ -14,6 +14,7 @@ import { useLanguageStore } from "../stores/languageStore";
 import { colors } from "../theme";
 import { SessionRevokedGate } from "@/src/components/SessionRevokedGate";
 import { AppAssetsPrefetch } from "@/src/components/AppAssetsPrefetch";
+import { RiderLocationLifecycle } from "@/src/components/RiderLocationLifecycle";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const i18n = useMemo(() => initI18n(), []);
@@ -78,6 +79,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       <I18nextProvider i18n={i18n}>
         <QueryClientProvider client={queryClient}>
           <AppAssetsPrefetch />
+          <RiderLocationLifecycle />
           <SessionRevokedGate />
           {children}
         </QueryClientProvider>

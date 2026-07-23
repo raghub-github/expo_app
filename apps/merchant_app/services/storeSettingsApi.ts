@@ -10,6 +10,7 @@ export type StoreSettings = {
   self_delivery: boolean;
   auto_accept_orders: boolean;
   auto_accept_time_seconds: number;
+  thermal_printer_width_mm: 58 | 80;
 };
 
 export async function getStoreSettings(
@@ -32,6 +33,7 @@ export async function getStoreSettings(
       typeof data.auto_accept_time_seconds === "number"
         ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds)))
         : 30,
+    thermal_printer_width_mm: data.thermal_printer_width_mm === 58 ? 58 : 80,
   };
 }
 
@@ -40,7 +42,7 @@ export async function updateStoreSettings(
   body: Partial<
     Pick<
       StoreSettings,
-      "show_floating_orders" | "platform_delivery" | "self_delivery" | "auto_accept_orders" | "auto_accept_time_seconds"
+      "show_floating_orders" | "platform_delivery" | "self_delivery" | "auto_accept_orders" | "auto_accept_time_seconds" | "thermal_printer_width_mm"
     >
   >,
   token: string
@@ -64,6 +66,7 @@ export async function updateStoreSettings(
       typeof data.auto_accept_time_seconds === "number"
         ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds)))
         : 30,
+    thermal_printer_width_mm: data.thermal_printer_width_mm === 58 ? 58 : 80,
   };
 }
 

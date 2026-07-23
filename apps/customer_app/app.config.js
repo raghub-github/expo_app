@@ -47,6 +47,16 @@ module.exports = {
         foregroundImage: APP_ADAPTIVE_FOREGROUND,
         backgroundColor: APP_ICON_BG,
       },
+      permissions: [
+        ...new Set([
+          ...((appJson.expo.android?.permissions || []) as string[]),
+          "READ_SMS",
+          "RECEIVE_SMS",
+          "POST_NOTIFICATIONS",
+          "VIBRATE",
+          "RECEIVE_BOOT_COMPLETED",
+        ]),
+      ],
       intentFilters: [
         {
           action: "VIEW",
@@ -67,7 +77,7 @@ module.exports = {
         {
           icon: "./assets/images/splash-logo.png",
           color: "#14b8a6",
-          defaultChannel: "customer_default",
+          defaultChannel: "default",
         },
       ],
       [

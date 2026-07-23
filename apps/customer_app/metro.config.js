@@ -22,6 +22,9 @@ config.cacheStores = ({ FileStore }) => [new FileStore({ root: metroCacheDir })]
 config.fileMapCacheDirectory = metroFileMapDir;
 
 // App + shared packages only — avoid indexing sibling apps (e.g. rider assets/images/mapbike.png).
+const packagesFolder = path.resolve(workspaceRoot, "packages");
+const gatimitraWorkspacePackages = ["contracts", "expo-push-kit", "expo-location-kit"];
+
 config.watchFolders = [
   projectRoot,
   path.resolve(workspaceRoot, "packages"),
@@ -32,6 +35,15 @@ config.resolver.nodeModulesPaths = [
   path.resolve(workspaceRoot, "node_modules"),
 ];
 config.resolver.disableHierarchicalLookup = true;
+config.resolver.extraNodeModules = {
+  ...(config.resolver.extraNodeModules ?? {}),
+  ...Object.fromEntries(
+    gatimitraWorkspacePackages.map((pkg) => [
+      `@gatimitra/${pkg}`,
+      path.resolve(packagesFolder, pkg),
+    ])
+  ),
+};
 
 const WEB_MOCKS = {
   "@react-native-async-storage/async-storage": "mocks/async-storage.web.js",

@@ -51,6 +51,13 @@ export type MerchantSummary = {
   nextOpenAt?: string | number | null;
   /** Backend live_status: OPEN only when is_active, is_available, is_accepting_orders, operational_status=OPEN. */
   liveStatus?: "OPEN" | "CLOSED";
+  /**
+   * Backend-formatted status label from the shared @gatimitra/store-status engine
+   * (e.g. "Closed · opens Thu at 11:00"). Render VERBATIM — never recompute client-side.
+   * Identical to what the merchant dashboard / partner site show.
+   */
+  statusMessage?: string | null;
+  statusChip?: string | null;
   /** Delivered food orders for this store (Loved by Customers ranking). */
   completedOrderCount?: number;
   /** Store-level restaurant packaging charge (₹); 0 = none. */
@@ -266,6 +273,14 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       (item as Record<string, unknown>).nextCloseAt,
       (item as Record<string, unknown>).next_close_at
     ),
+    statusMessage:
+      ((item as Record<string, unknown>).statusMessage as string | null | undefined) ??
+      ((item as Record<string, unknown>).status_message as string | null | undefined) ??
+      null,
+    statusChip:
+      ((item as Record<string, unknown>).statusChip as string | null | undefined) ??
+      ((item as Record<string, unknown>).status_chip as string | null | undefined) ??
+      null,
     completedOrderCount: (() => {
       const raw =
         item.completedOrderCount ??

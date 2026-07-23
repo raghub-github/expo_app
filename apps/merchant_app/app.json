@@ -6,10 +6,10 @@
     "orientation": "portrait",
     "scheme": "gatimitra-merchant",
     "userInterfaceStyle": "automatic",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/mxappicon.png",
     "splash": {
-      "image": "./assets/onlylogo.png",
-      "backgroundColor": "#16A34A"
+      "image": "./assets/mxappicon.png",
+      "backgroundColor": "#002B22"
     },
     "androidStatusBar": {
       "translucent": false,
@@ -25,8 +25,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#FFFFFF"
+        "foregroundImage": "./assets/mxappicon.png",
+        "backgroundColor": "#002B22"
       },
       "package": "com.gatimitra.partner",
       "permissions": [
