@@ -33,7 +33,7 @@ module.exports = ({ config }) => ({
       [
         "expo-notifications",
         {
-          icon: "./assets/onlylogo.png",
+          icon: "./assets/onlylogoss.png",
           color: "#3EB489",
           sounds: [],
           defaultChannel: "merchant_default",
@@ -60,6 +60,6 @@ module.exports = ({ config }) => ({
           undefined,
       },
     },
-    owner: "raghubhunia",
+    owner: "raghubhunia53s-team",
   },
 });
