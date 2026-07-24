@@ -594,6 +594,23 @@ export async function authRoutes(app: FastifyInstance) {
         };
       }
 
+      // Rider app: riders self-register on first login, so there is no existence
+      // gate. Deliver via Supabase — exactly like a registered merchant — because
+      // the backend MSG91 OTP channels return HTTP 200 "success" but do NOT
+      // deliver on this account. The app calls supabase.signInWithOtp next and
+      // verifies through Supabase (/supabase/exchange-rider auto-creates the
+      // rider). The review number never reaches here (handled by the bypass
+      // above and keeps the backend fixed-OTP path).
+      if (appType === "rider") {
+        req.log?.info?.({ phoneTail }, "[OTP] rider — delivering via Supabase");
+        return {
+          requestId: "",
+          expiresInSec,
+          smsSent: false,
+          useSupabase: true,
+        };
+      }
+
       // Merchant app: do NOT spend an SMS on a number that has no partner
       // account. Verify was already rejecting these AFTER the OTP was sent —
       // check existence up front instead and tell the user to register. The
