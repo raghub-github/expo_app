@@ -252,6 +252,7 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
           }
         : null,
       grand_total: o.grand_total,
+      total_ctm: o.total_ctm ?? null,
       food_items_total_value: o.food_items_total_value ?? null,
       items: o.items,
       billingSnapshot: o.billing_snapshot ?? null,
@@ -279,6 +280,7 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
           }
         : null,
       grand_total: o.grand_total,
+      total_ctm: o.total_ctm ?? null,
       food_items_total_value: o.food_items_total_value ?? null,
       items: o.items,
       billingSnapshot: o.billing_snapshot ?? null,

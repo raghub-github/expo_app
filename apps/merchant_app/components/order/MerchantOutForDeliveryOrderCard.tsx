@@ -6,6 +6,8 @@ import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottom
 import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
 import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
+import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
+import { printOrderKot } from "@/lib/orderCardActions";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
@@ -67,6 +69,7 @@ export function MerchantOutForDeliveryOrderCard({
   const [customerOpen, setCustomerOpen] = useState(false);
   const [fetchedRider, setFetchedRider] = useState<FoodOrderRiderLogEntry | null>(null);
   const { speaking, speak } = useOrderSpeech();
+  const printContext = useMerchantPrintContext();
 
   const placedAt = formatOrderDateTime(order.createdAt);
   const displayOrder = useMemo(
@@ -112,6 +115,7 @@ export function MerchantOutForDeliveryOrderCard({
         onCustomerPress={() => setCustomerOpen(true)}
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
+        onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         outerBanner={
           preparedLateMins != null && preparedLateMins > 0 ? (
@@ -124,10 +128,12 @@ export function MerchantOutForDeliveryOrderCard({
       <MerchantOrderActionsSheet
         visible={menuOpen}
         order={order}
+        printContext={printContext}
         storeName={storeName}
         onClose={() => setMenuOpen(false)}
         onOpenTimeline={() => setTimelineOpen(true)}
         onOpenCustomer={() => setCustomerOpen(true)}
+        onViewDetails={onViewDetail}
       />
 
       <OrderCustomerBottomSheet

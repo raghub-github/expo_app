@@ -1,17 +1,21 @@
 /**
- * Terminal order card — delivered / rejected / RTO history layout (light GatiMitra theme).
+ * Terminal / past-order card — light history layout (white bg).
+ * Matches Partner Site order-history card: badges, ID+copy, store, customer, item+total.
+ * No speaker / 3-dot toolbar. Navigation via onPress only (logic unchanged).
  */
 
-import { View, Text } from "react-native";
+import { useMemo, useState } from "react";
+import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraMerchant } from "@/constants/theme";
+import * as Clipboard from "expo-clipboard";
+import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 import type { OrderRecord, OrderStage } from "@/hooks/useOrders";
 import {
   formatOrderDateTime,
+  formatOrderIdDisplay,
   splitRejectionMessage,
 } from "@/components/order/orderFormatters";
-import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLayout";
-import { merchantOrderCardLayoutStyles as styles } from "@/components/order/merchantOrderCardLayoutStyles";
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { formatTerminalOrderFooter } from "@/lib/terminalOrderFooter";
 
 type Props = {
@@ -21,33 +25,6 @@ type Props = {
   vegOnly?: boolean;
   onPress: () => void;
 };
-
-function StatusBadge({
-  label,
-  backgroundColor,
-  color,
-  borderColor,
-}: {
-  label: string;
-  backgroundColor: string;
-  color: string;
-  borderColor: string;
-}) {
-  return (
-    <View style={[badgeStyles.badge, { backgroundColor, borderColor }]}>
-      <Text style={[badgeStyles.text, { color }]}>{label}</Text>
-    </View>
-  );
-}
-
-function VegOnlyBadge() {
-  return (
-    <View style={badgeStyles.vegBadge}>
-      <View style={badgeStyles.vegDot} />
-      <Text style={badgeStyles.vegText}>VEG ONLY</Text>
-    </View>
-  );
-}
 
 function statusMeta(status: OrderStage) {
   if (status === "rejected") {
@@ -72,29 +49,12 @@ function statusMeta(status: OrderStage) {
   }
   return {
     label: "DELIVERED",
-    badgeBg: GatiMitraMerchant.statusCompletedBg,
-    badgeText: GatiMitraMerchant.statusCompleted,
-    badgeBorder: "#BBF7D0",
+    badgeBg: "#22C55E",
+    badgeText: "#052E16",
+    badgeBorder: "#16A34A",
     prefixColor: GatiMitraMerchant.statusCompleted,
     kind: "delivered" as const,
   };
-}
-
-function TerminalOrderFooter({
-  text,
-  tone,
-}: {
-  text: string;
-  tone: "success" | "neutral";
-}) {
-  const color =
-    tone === "success" ? GatiMitraMerchant.statusCompleted : GatiMitraMerchant.textSecondary;
-  return (
-    <View style={styles.terminalFooterStatus}>
-      <Ionicons name="time-outline" size={15} color={color} />
-      <Text style={[styles.terminalFooterText, { color }]}>{text}</Text>
-    </View>
-  );
 }
 
 export function TerminalOrderCard({
@@ -104,12 +64,21 @@ export function TerminalOrderCard({
   vegOnly = false,
   onPress,
 }: Props) {
+  const [copied, setCopied] = useState(false);
   const meta = statusMeta(order.status);
   const isTerminalRejected = order.status === "rejected" || order.status === "rto";
   const dateIso =
     isTerminalRejected && order.cancelledAt ? order.cancelledAt : order.createdAt;
   const placedAt = formatOrderDateTime(dateIso);
   const footerMeta = formatTerminalOrderFooter(order);
+
+  const idDisplay = useMemo(
+    () => formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId).replace(/^#?/i, ""),
+    [order.formattedOrderId, order.ordersCoreId]
+  );
+
+  const firstItem = order.lineItems[0] ?? null;
+  const moreCount = Math.max(0, order.lineItems.length - 1);
 
   const rejection =
     meta.kind === "delivered"
@@ -121,71 +90,172 @@ export function TerminalOrderCard({
           order.cancelledByType
         );
 
-  const statusBadge = (
-    <>
-      <StatusBadge
-        label={meta.label}
-        backgroundColor={meta.badgeBg}
-        color={meta.badgeText}
-        borderColor={meta.badgeBorder}
-      />
-      {vegOnly ? <VegOnlyBadge /> : null}
-    </>
-  );
+  const onCopyId = async () => {
+    if (!idDisplay) return;
+    await Clipboard.setStringAsync(idDisplay);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
-  const footer = (
-    <>
+  const storeLine = [storeName?.trim()].filter(Boolean).join(" · ");
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel="Open order details"
+    >
+      {/* Status badges + chevron */}
+      <View style={styles.topRow}>
+        <View style={styles.badgeRow}>
+          <View
+            style={[
+              styles.badge,
+              { backgroundColor: meta.badgeBg, borderColor: meta.badgeBorder },
+            ]}
+          >
+            <Text style={[styles.badgeText, { color: meta.badgeText }]}>{meta.label}</Text>
+          </View>
+          {vegOnly ? (
+            <View style={styles.vegBadge}>
+              <Ionicons name="leaf" size={11} color="#166534" />
+              <Text style={styles.vegText}>VEG ONLY</Text>
+            </View>
+          ) : null}
+        </View>
+        <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+      </View>
+
+      {/* ID + copy | datetime */}
+      <View style={styles.idRow}>
+        <View style={styles.idLeft}>
+          <Text style={styles.idText} numberOfLines={1}>
+            ID: {idDisplay || "—"}
+          </Text>
+          <Pressable
+            onPress={(e) => {
+              e.stopPropagation?.();
+              void onCopyId();
+            }}
+            hitSlop={10}
+            style={styles.copyBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Copy order ID"
+          >
+            <Ionicons
+              name={copied ? "checkmark" : "copy-outline"}
+              size={15}
+              color={copied ? "#16A34A" : "#6B7280"}
+            />
+          </Pressable>
+        </View>
+        <Text style={styles.placedAt} numberOfLines={1}>
+          {placedAt}
+        </Text>
+      </View>
+
+      {storeLine ? (
+        <Text style={styles.storeName} numberOfLines={1}>
+          {storeLine}
+        </Text>
+      ) : null}
+
+      <View style={styles.dashLine} />
+
+      <Text style={styles.orderedBy} numberOfLines={1}>
+        Ordered by {order.customerName || "Guest"}
+      </Text>
+
+      <View style={styles.solidLine} />
+
+      {/* First item + total */}
+      <View style={styles.itemRow}>
+        <View style={styles.itemLeft}>
+          {firstItem ? (
+            <>
+              <Text style={styles.itemName} numberOfLines={2}>
+                {firstItem.qty} x {firstItem.name}
+              </Text>
+              {moreCount > 0 ? (
+                <Text style={styles.moreItems}>
+                  +{moreCount} more {moreCount === 1 ? "item" : "items"}
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <Text style={styles.itemName}>—</Text>
+          )}
+        </View>
+        <Text style={styles.total}>{formatMerchantRs(order.total)}</Text>
+      </View>
+
+      {/* Optional footer (delay / rejection) */}
       {footerMeta ? (
-        <TerminalOrderFooter text={footerMeta.text} tone={footerMeta.tone} />
-      ) : meta.kind === "delivered" ? (
-        <TerminalOrderFooter text="Order completed successfully" tone="success" />
+        <View style={styles.footerRow}>
+          <Ionicons
+            name="time-outline"
+            size={14}
+            color={footerMeta.tone === "success" ? "#166534" : "#CA8A04"}
+          />
+          <Text
+            style={[
+              styles.footerText,
+              footerMeta.tone === "success" ? styles.footerSuccess : styles.footerWarn,
+            ]}
+            numberOfLines={2}
+          >
+            {footerMeta.text}
+          </Text>
+        </View>
       ) : rejection ? (
-        <Text style={styles.terminalReasonText} numberOfLines={4}>
-          <Text style={[styles.terminalReasonPrefix, { color: meta.prefixColor }]}>
+        <Text style={styles.rejectionText} numberOfLines={3}>
+          <Text style={{ color: meta.prefixColor, fontWeight: "700" }}>
             {rejection.detail && !rejection.prefix.endsWith(":")
               ? `${rejection.prefix} - ${rejection.detail}`
               : rejection.prefix}
             {rejection.detail && rejection.prefix.endsWith(":") ? " " : ""}
           </Text>
-          {rejection.detail && rejection.prefix.endsWith(":") ? (
-            <Text>{rejection.detail}</Text>
-          ) : null}
+          {rejection.detail && rejection.prefix.endsWith(":") ? rejection.detail : null}
         </Text>
       ) : null}
-    </>
-  );
-
-  return (
-    <MerchantOrderCardLayout
-      order={order}
-      storeName={storeName}
-      placedAt={placedAt}
-      onViewDetail={onPress}
-      showToolbar
-      showRider={false}
-      showInstructions={false}
-      detailsDefaultOpen={false}
-      statusBadge={statusBadge}
-      footer={footer}
-    />
+    </Pressable>
   );
 }
 
-const badgeStyles = {
+const styles = StyleSheet.create({
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  pressed: { opacity: 0.92 },
+  topRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  badgeRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, flex: 1 },
   badge: {
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 4,
     borderRadius: 6,
     borderWidth: 1,
   },
-  text: {
+  badgeText: {
     fontSize: 11,
-    fontWeight: "800" as const,
-    letterSpacing: 0.6,
+    fontWeight: "800",
+    letterSpacing: 0.5,
   },
   vegBadge: {
-    flexDirection: "row" as const,
-    alignItems: "center" as const,
+    flexDirection: "row",
+    alignItems: "center",
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -194,16 +264,93 @@ const badgeStyles = {
     borderWidth: 1,
     borderColor: "#BBF7D0",
   },
-  vegDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#16A34A",
-  },
   vegText: {
     fontSize: 10,
-    fontWeight: "800" as const,
-    letterSpacing: 0.4,
+    fontWeight: "800",
+    letterSpacing: 0.3,
     color: "#166534",
   },
-};
+  idRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 4,
+  },
+  idLeft: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1, minWidth: 0 },
+  idText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#111827",
+    flexShrink: 1,
+  },
+  copyBtn: { padding: 2 },
+  placedAt: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#6B7280",
+    flexShrink: 0,
+  },
+  storeName: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#4B5563",
+    marginBottom: 10,
+  },
+  dashLine: {
+    borderStyle: "dashed",
+    borderBottomWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: "#D1D5DB",
+    marginBottom: 10,
+  },
+  orderedBy: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#6B7280",
+    marginBottom: 10,
+  },
+  solidLine: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E5E7EB",
+    marginBottom: 10,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  itemLeft: { flex: 1, minWidth: 0 },
+  itemName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  moreItems: {
+    marginTop: 3,
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#9CA3AF",
+  },
+  total: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  footerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
+  },
+  footerText: { flex: 1, fontSize: 12, fontWeight: "600" },
+  footerSuccess: { color: "#166534" },
+  footerWarn: { color: "#CA8A04" },
+  rejectionText: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#4B5563",
+    lineHeight: 17,
+  },
+});

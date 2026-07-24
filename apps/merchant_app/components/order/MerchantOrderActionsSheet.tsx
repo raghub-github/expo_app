@@ -20,6 +20,7 @@ import {
 } from "@/lib/orderCardActions";
 import { LiveOrderSupportSheet } from "@/components/order/LiveOrderSupportSheet";
 import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
+import type { MerchantPrintStoreContext } from "@/lib/printContext";
 
 export type MerchantOrderMenuAction =
   | "support"
@@ -27,9 +28,8 @@ export type MerchantOrderMenuAction =
   | "call"
   | "customer"
   | "print_kot"
-  | "print_order";
-
-import type { MerchantPrintStoreContext } from "@/lib/printContext";
+  | "print_order"
+  | "view_details";
 
 type Props = {
   visible: boolean;
@@ -37,20 +37,37 @@ type Props = {
   printContext?: MerchantPrintStoreContext | null;
   /** @deprecated use printContext */
   storeName?: string | null;
+  /**
+   * `compact` — Order timeline / Print KOT / Print order (completed 24h reference).
+   * `full` — live-order menu with support, call, etc.
+   */
+  variant?: "full" | "compact";
   onClose: () => void;
   onOpenTimeline: () => void;
   onOpenCustomer: () => void;
+  onViewDetails?: () => void;
 };
 
-const MENU: {
+const FULL_MENU: {
   id: MerchantOrderMenuAction;
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
 }[] = [
+  { id: "view_details", label: "View order details", icon: "document-text-outline" },
   { id: "support", label: "Live order support", icon: "chatbubble-ellipses-outline" },
   { id: "timeline", label: "Order timeline", icon: "time-outline" },
   { id: "call", label: "Call customer", icon: "call-outline" },
   { id: "customer", label: "Know your customer", icon: "person-outline" },
+  { id: "print_kot", label: "Print KOT", icon: "print-outline" },
+  { id: "print_order", label: "Print order", icon: "print-outline" },
+];
+
+const COMPACT_MENU: {
+  id: MerchantOrderMenuAction;
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}[] = [
+  { id: "timeline", label: "Order timeline", icon: "time-outline" },
   { id: "print_kot", label: "Print KOT", icon: "print-outline" },
   { id: "print_order", label: "Print order", icon: "print-outline" },
 ];
@@ -60,9 +77,11 @@ export function MerchantOrderActionsSheet({
   order,
   printContext,
   storeName,
+  variant = "full",
   onClose,
   onOpenTimeline,
   onOpenCustomer,
+  onViewDetails,
 }: Props) {
   const insets = useSafeAreaInsets();
   const [liveSupportOpen, setLiveSupportOpen] = useState(false);
@@ -73,6 +92,8 @@ export function MerchantOrderActionsSheet({
       ? { ...defaultPrintContext, storeName: storeName.trim() }
       : defaultPrintContext);
 
+  const menu = variant === "compact" ? COMPACT_MENU : FULL_MENU;
+
   useEffect(() => {
     if (!visible) setLiveSupportOpen(false);
   }, [visible]);
@@ -81,6 +102,10 @@ export function MerchantOrderActionsSheet({
 
   const handleAction = async (id: MerchantOrderMenuAction) => {
     switch (id) {
+      case "view_details":
+        onClose();
+        onViewDetails?.();
+        break;
       case "support":
         setLiveSupportOpen(true);
         return;
@@ -112,51 +137,57 @@ export function MerchantOrderActionsSheet({
 
   return (
     <>
-    <Modal visible={visible && !liveSupportOpen} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable
-          style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-          onPress={(e) => e.stopPropagation()}
-        >
-          <Pressable onPress={onClose} style={styles.closeFloating} hitSlop={12}>
-            <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
+      <Modal
+        visible={visible && !liveSupportOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={onClose}
+      >
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable
+            style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Pressable onPress={onClose} style={styles.closeFloating} hitSlop={12}>
+              <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+
+            <View style={styles.orderIdWrap}>
+              <Text style={styles.orderPrefix}>Order </Text>
+              <MerchantOrderIdRow
+                formattedOrderId={order.formattedOrderId}
+                fallbackOrderId={order.ordersCoreId}
+              />
+            </View>
+
+            <ScrollView style={styles.list} bounces={false}>
+              {menu.map((item) => (
+                <Pressable
+                  key={item.id}
+                  onPress={() => void handleAction(item.id)}
+                  style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                >
+                  <Ionicons name={item.icon} size={22} color="#444444" />
+                  <Text style={styles.rowLabel}>{item.label}</Text>
+                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                </Pressable>
+              ))}
+            </ScrollView>
           </Pressable>
-
-          <View style={styles.orderIdWrap}>
-            <MerchantOrderIdRow
-              formattedOrderId={order.formattedOrderId}
-              fallbackOrderId={order.ordersCoreId}
-            />
-          </View>
-
-          <ScrollView style={styles.list} bounces={false}>
-            {MENU.map((item) => (
-              <Pressable
-                key={item.id}
-                onPress={() => void handleAction(item.id)}
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-              >
-                <Ionicons name={item.icon} size={22} color="#444444" />
-                <Text style={styles.rowLabel}>{item.label}</Text>
-                <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-              </Pressable>
-            ))}
-          </ScrollView>
         </Pressable>
-      </Pressable>
-    </Modal>
+      </Modal>
 
-    {order ? (
-      <LiveOrderSupportSheet
-        visible={liveSupportOpen}
-        order={order}
-        onClose={() => setLiveSupportOpen(false)}
-        onFinished={() => {
-          setLiveSupportOpen(false);
-          onClose();
-        }}
-      />
-    ) : null}
+      {order ? (
+        <LiveOrderSupportSheet
+          visible={liveSupportOpen}
+          order={order}
+          onClose={() => setLiveSupportOpen(false)}
+          onFinished={() => {
+            setLiveSupportOpen(false);
+            onClose();
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -199,8 +230,16 @@ const styles = StyleSheet.create({
     borderColor: GatiMitraMerchant.border,
   },
   orderIdWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
     marginBottom: 8,
     paddingHorizontal: 4,
+  },
+  orderPrefix: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
   },
   list: { flexGrow: 0 },
   row: {

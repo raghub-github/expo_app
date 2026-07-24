@@ -32,6 +32,8 @@ export type PartnerParent = {
   owner_email?: string;
   brand_name?: string;
   registered_phone: string;
+  /** Parent brand logo (merchant_parents.store_logo) — shared across child stores. */
+  store_logo?: string | null;
 };
 
 export type ChildStore = {
@@ -41,6 +43,8 @@ export type ChildStore = {
   full_address: string;
   approval_status: string;
   banner_url?: string | null;
+  /** Same as parent store_logo — preferred for header logo. */
+  parent_logo_url?: string | null;
   current_step: number;
   total_steps: number;
   payment_status: string;
@@ -211,14 +215,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setPartnerState(p);
         setSupabaseUserIdState(sbId);
-        await refreshMerchantSessionIfNeeded();
-        if (cancelled) return;
-        const refreshed = await readMerchantAccessToken();
-        if (refreshed) setTokenState(refreshed);
+        // Unblock auth gate immediately — network refresh must not stall splash/login.
+        setIsLoading(false);
 
-        const { apiBaseUrl } = getConfig();
-        (async () => {
+        void (async () => {
           try {
+            await refreshMerchantSessionIfNeeded();
+            if (cancelled) return;
+            const refreshed = await readMerchantAccessToken();
+            if (refreshed) setTokenState(refreshed);
+
+            const { apiBaseUrl } = getConfig();
             const activeToken = refreshed ?? t;
             const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
               headers: { Authorization: `Bearer ${activeToken}` },
@@ -231,11 +238,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               activeDevices: data.activeDevices ?? 0,
             };
             await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(partnerData));
-            setPartnerState(partnerData);
+            if (!cancelled) setPartnerState(partnerData);
           } catch {
-            // keep stored partner
+            // keep stored partner / token
           }
         })();
+        return;
       }
       if (!cancelled) setIsLoading(false);
     })();

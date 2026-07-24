@@ -32,12 +32,11 @@ export function OrderCardItemRow({
 
   return (
     <Pressable
-      onPress={expandable ? onRowPress : undefined}
-      disabled={!expandable}
+      onPress={onRowPress}
       style={({ pressed }) => [
         styles.row,
         expandable && styles.rowExpandable,
-        expandable && pressed && styles.pressed,
+        pressed && styles.pressed,
       ]}
     >
       <ItemVegMark vegNonveg={item.vegNonveg ?? orderVeg} name={item.name} size={14} />
@@ -61,10 +60,11 @@ export function OrderCardItemRow({
           </View>
         ) : null}
         <View style={styles.titleRow}>
-          <Text style={styles.itemLabel} onPress={onItemNamePress} suppressHighlighting={false}>
-            {item.qty} x{" "}
-            <Text style={styles.itemName}>{item.name}</Text>
-          </Text>
+          <Pressable onPress={onItemNamePress} hitSlop={4} style={styles.itemNamePress}>
+            <Text style={styles.itemLabel}>
+              {item.qty} x <Text style={styles.itemName}>{item.name}</Text>
+            </Text>
+          </Pressable>
           {hasCust ? (
             <View style={styles.custPill}>
               <Text style={styles.custPillText}>Customization added</Text>
@@ -120,6 +120,10 @@ const styles = StyleSheet.create({
     borderBottomColor: "#CCCCCC",
     borderStyle: "dashed",
     paddingBottom: 2,
+  },
+  itemNamePress: {
+    flexShrink: 1,
+    minWidth: 0,
   },
   itemName: {
     fontWeight: "700",

@@ -33,7 +33,7 @@ module.exports = ({ config }) => ({
       [
         "expo-notifications",
         {
-          icon: "./assets/onlylogoss.png",
+          icon: "./assets/mxappicon.png",
           color: "#3EB489",
           sounds: [],
           defaultChannel: "merchant_default",

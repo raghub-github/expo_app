@@ -1,5 +1,14 @@
 /**
- * Partner login — lite mobile-number entry (BHIM-style) + OTP verify.
+ * Partner login — lite mobile-number entry (BHIM-style) + shared OTP verify sheet.
+ *
+ * Auth behavior (send/verify/resend, device-session retry, single-use OTP guards)
+ * is preserved from main. UI is the CRMPD redesign; OTP sheet uses
+ * `@gatimitra/otp-verify-ui` for consistency with other apps.
+ *
+ * NOTE: We deliberately do NOT auto-read SMS to fill the OTP. Reading SMS needs
+ * READ_SMS / RECEIVE_SMS, which Google Play Protect blocks as "sensitive data"
+ * and Google Play restricts to default SMS handlers. The user types the OTP
+ * manually (same as the customer app).
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -13,20 +22,16 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   Linking,
-  Modal,
-  Dimensions,
   Platform,
   ScrollView,
   BackHandler,
-  InteractionManager,
-  useWindowDimensions,
   type KeyboardEvent,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
-import Svg, { Path } from "react-native-svg";
+import { OtpVerifySheetModal } from "@gatimitra/otp-verify-ui";
 import { useAuth, type PartnerData } from "@/context/AuthContext";
 import {
   merchantAuthService,
@@ -35,35 +40,12 @@ import {
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
 import { GatiMitraMerchant, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
+import { merchantOtpVerifyTheme } from "@/lib/otpVerifyTheme";
 
 const OTP_LEN = 6;
 const legalUrls = getPartnerLegalUrls();
 const LORA_BOLD = "Lora_700Bold";
 const POPPINS_BOLD = "Poppins_700Bold";
-/** CIBIL-style asymmetric top cut: high left plateau → soft step-down on the right. */
-const OTP_WAVE_H = 56;
-const OTP_WAVE_LOW_Y = 34;
-
-function OtpSheetWaveCut({ width }: { width: number }) {
-  const w = Math.max(320, width);
-  const low = OTP_WAVE_LOW_Y;
-  const path = [
-    `M 0 ${OTP_WAVE_H}`,
-    `L 0 10`,
-    `Q 0 0 12 0`,
-    `L ${w * 0.52} 0`,
-    `C ${w * 0.62} 0 ${w * 0.64} ${low} ${w * 0.74} ${low}`,
-    `L ${w} ${low}`,
-    `L ${w} ${OTP_WAVE_H}`,
-    "Z",
-  ].join(" ");
-
-  return (
-    <Svg width={w} height={OTP_WAVE_H} style={styles.otpWave} pointerEvents="none">
-      <Path d={path} fill="#FFFFFF" />
-    </Svg>
-  );
-}
 
 /** Narrow exchange API partner payload to PartnerData after minimal structural checks. */
 function partnerDataFromExchange(partner: { parent: unknown; childStores: unknown[] }): PartnerData {
@@ -80,19 +62,12 @@ function partnerDataFromExchange(partner: { parent: unknown; childStores: unknow
   return partner as PartnerData;
 }
 
-// NOTE: We deliberately do NOT auto-read SMS to fill the OTP. Reading SMS needs
-// READ_SMS / RECEIVE_SMS, which Google Play Protect blocks as "sensitive data"
-// (the app then won't install) and Google Play restricts to default SMS
-// handlers — an OTP-autofill use case no longer qualifies. The user types the
-// OTP manually (same as the customer app). If autofill is ever wanted back, use
-// the permission-free SMS Retriever API, not READ_SMS.
-
 type LastExchange = null | "otp";
 
 export default function LoginScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
   const { setTokenAndPartner } = useAuth();
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
@@ -103,16 +78,19 @@ export default function LoginScreen() {
   const [lastExchange, setLastExchange] = useState<LastExchange>(null);
   const [resendSeconds, setResendSeconds] = useState(0);
   const [resending, setResending] = useState(false);
-  const otpInputRef = useRef<TextInput>(null);
   const phoneInputRef = useRef<TextInput>(null);
   const sheetScrollRef = useRef<ScrollView>(null);
   const [phoneFieldFocused, setPhoneFieldFocused] = useState(false);
-  const [otpFieldFocused, setOtpFieldFocused] = useState(false);
   const [phoneKeyboardVisible, setPhoneKeyboardVisible] = useState(false);
-  const [otpKeyboardVisible, setOtpKeyboardVisible] = useState(false);
-  const [otpKeyboardLift, setOtpKeyboardLift] = useState(0);
-  const lastKeyboardLiftRef = useRef(0);
-  const autoVerifiedOtpRef = useRef("");
+  /**
+   * Hard re-entry guards for OTP verify. `loading` is React state, so it only
+   * blocks a second call one render later — auto-submit and a manual "Verify"
+   * tap can still both fire. A backend OTP requestId is SINGLE USE, so the
+   * second call hits an already-consumed code and comes back 400
+   * invalid_request_id. Refs update synchronously, so they close that window.
+   */
+  const verifyInFlightRef = useRef(false);
+  const verifySucceededRef = useRef(false);
 
   const scrollPhoneFormIntoView = useCallback(() => {
     const end = () => sheetScrollRef.current?.scrollToEnd({ animated: true });
@@ -121,23 +99,11 @@ export default function LoginScreen() {
     setTimeout(end, 280);
   }, []);
 
-  const focusOtpFromSheetTap = useCallback(() => {
-    if (step !== "otp" || loading || deviceSessionMode) return;
-    const input = otpInputRef.current;
-    if (!input) return;
-    input.focus();
-    if (Platform.OS === "android") {
-      setTimeout(() => input.focus(), 50);
-    }
-    scrollPhoneFormIntoView();
-  }, [step, loading, deviceSessionMode, scrollPhoneFormIntoView]);
-
   useEffect(() => {
     if (step !== "otp" || resendSeconds <= 0) return;
     const id = setInterval(() => setResendSeconds((s) => (s > 0 ? s - 1 : 0)), 1000);
     return () => clearInterval(id);
   }, [step, resendSeconds]);
-
 
   useEffect(() => {
     if (step !== "phone") {
@@ -146,17 +112,11 @@ export default function LoginScreen() {
     }
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
+    const subShow = Keyboard.addListener(showEvt, (_event: KeyboardEvent) => {
       setPhoneKeyboardVisible(true);
-      const windowHeight = Dimensions.get("window").height;
-      lastKeyboardLiftRef.current = Math.max(
-        0,
-        windowHeight - Math.round(event.endCoordinates.screenY)
-      );
     });
     const subHide = Keyboard.addListener(hideEvt, () => {
       setPhoneKeyboardVisible(false);
-      lastKeyboardLiftRef.current = 0;
     });
     return () => {
       subShow.remove();
@@ -168,72 +128,6 @@ export default function LoginScreen() {
     if (step !== "phone" || !phoneKeyboardVisible) return;
     scrollPhoneFormIntoView();
   }, [step, phoneKeyboardVisible, scrollPhoneFormIntoView]);
-
-  useEffect(() => {
-    if (step !== "otp") {
-      setOtpKeyboardVisible(false);
-      setOtpKeyboardLift(0);
-      return;
-    }
-    setOtpKeyboardLift(lastKeyboardLiftRef.current);
-    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
-      setOtpKeyboardVisible(true);
-      const windowHeight = Dimensions.get("window").height;
-      const keyboardTop = Math.round(event.endCoordinates.screenY);
-      const lift = Math.max(0, windowHeight - keyboardTop);
-      lastKeyboardLiftRef.current = lift;
-      setOtpKeyboardLift(lift);
-    });
-    const subHide = Keyboard.addListener(hideEvt, () => {
-      setOtpKeyboardVisible(false);
-      lastKeyboardLiftRef.current = 0;
-      setOtpKeyboardLift(0);
-    });
-    return () => {
-      subShow.remove();
-      subHide.remove();
-    };
-  }, [step]);
-
-  useEffect(() => {
-    if (step !== "otp" || !otpKeyboardVisible) return;
-    scrollPhoneFormIntoView();
-  }, [step, otpKeyboardVisible, scrollPhoneFormIntoView]);
-
-  useEffect(() => {
-    if (step !== "otp") return;
-    let cancelled = false;
-    const focusOtp = () => {
-      if (cancelled) return;
-      otpInputRef.current?.focus();
-    };
-    focusOtp();
-    const raf = requestAnimationFrame(focusOtp);
-    const t0 = setTimeout(focusOtp, 50);
-    const t1 = setTimeout(focusOtp, 200);
-    const t2 = setTimeout(focusOtp, 500);
-    const task = InteractionManager.runAfterInteractions(focusOtp);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-      clearTimeout(t0);
-      clearTimeout(t1);
-      clearTimeout(t2);
-      void task;
-    };
-  }, [step]);
-
-  useEffect(() => {
-    if (step !== "otp") return;
-    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const sub = Keyboard.addListener(hideEvt, () => {
-      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
-      setTimeout(() => otpInputRef.current?.focus(), 40);
-    });
-    return () => sub.remove();
-  }, [step, otp.length, loading, deviceSessionMode]);
 
   const phoneE164 =
     phone.replace(/\D/g, "").length >= 10
@@ -260,6 +154,9 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
+      verifySucceededRef.current = false;
+      verifyInFlightRef.current = false;
+      setOtp("");
       setResendSeconds(60);
       setStep("otp");
     } catch (e: unknown) {
@@ -276,15 +173,15 @@ export default function LoginScreen() {
     setResending(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
+      verifySucceededRef.current = false;
+      verifyInFlightRef.current = false;
+      setOtp("");
       setResendSeconds(60);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
       setError(msg);
     } finally {
       setResending(false);
-      if (step === "otp") {
-        setTimeout(() => otpInputRef.current?.focus(), 60);
-      }
     }
   };
 
@@ -299,11 +196,14 @@ export default function LoginScreen() {
     return msg || "Invalid OTP. Please try again.";
   }
 
-  const handleVerifyOtp = async () => {
-    if (!otp || otp.length !== OTP_LEN) {
+  const handleVerifyOtp = async (codeArg?: string) => {
+    const code = (codeArg ?? otp).replace(/\D/g, "").slice(0, OTP_LEN);
+    if (!code || code.length !== OTP_LEN) {
       setError("Enter the 6-digit code from SMS");
       return;
     }
+    if (verifyInFlightRef.current || verifySucceededRef.current) return;
+    verifyInFlightRef.current = true;
     clearErrors();
     setLoading(true);
     setLastExchange("otp");
@@ -311,9 +211,10 @@ export default function LoginScreen() {
       const deviceId = await getOrCreateMerchantDeviceId();
       const session = await merchantAuthService.verifyOtp({
         phoneE164,
-        otp,
+        otp: code,
         deviceId,
       });
+      verifySucceededRef.current = true;
       const partner = partnerDataFromExchange(session.partner);
       await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
       setDeviceSessionMode(false);
@@ -331,27 +232,20 @@ export default function LoginScreen() {
         setError(msg);
       }
     } finally {
+      verifyInFlightRef.current = false;
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (step !== "otp" || otp.length !== OTP_LEN || loading || deviceSessionMode) {
-      if (otp.length !== OTP_LEN) autoVerifiedOtpRef.current = "";
-      return;
-    }
-    if (autoVerifiedOtpRef.current === otp) return;
-    autoVerifiedOtpRef.current = otp;
-    void handleVerifyOtp();
-  }, [step, otp, loading, deviceSessionMode]);
-
-  const handleCancelOtp = () => {
+  const handleCancelOtp = useCallback(() => {
     setStep("phone");
     setOtp("");
-    clearErrors();
+    setError("");
+    setDeviceSessionMode(false);
     setLastExchange(null);
-  };
+  }, []);
 
+  /** Android back: return to phone step when on OTP sheet. */
   useEffect(() => {
     if (step !== "otp") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -359,7 +253,23 @@ export default function LoginScreen() {
       return true;
     });
     return () => sub.remove();
-  }, [step]);
+  }, [step, handleCancelOtp]);
+
+  /** Block backward navigation (e.g. iOS swipe-back) until OTP is complete. */
+  useEffect(() => {
+    if (step !== "otp") return;
+    const unsub = navigation.addListener("beforeRemove", (e) => {
+      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
+      const act = e.data.action;
+      const actionType =
+        typeof act === "object" && act !== null && "type" in act
+          ? String((act as { type: string }).type)
+          : "";
+      if (actionType !== "GO_BACK" && actionType !== "POP") return;
+      e.preventDefault();
+    });
+    return unsub;
+  }, [navigation, step, otp.length, loading, deviceSessionMode]);
 
   const handleRetryDeviceSession = async () => {
     if (!lastExchange) return;
@@ -394,12 +304,14 @@ export default function LoginScreen() {
   const topPad = Math.max(insets.top, SAFE_AREA_TOP_MIN) + 8;
   const bottomPad = Math.max(insets.bottom, 16);
   const phoneReady = phone.replace(/\D/g, "").length === 10;
-  const otpReady = otp.length === OTP_LEN;
   const resendMins = Math.floor(resendSeconds / 60);
   const resendSecs = resendSeconds % 60;
   const phoneDigits = phone.replace(/\D/g, "").slice(-10);
   const otpSentMask =
     phoneDigits.length === 10 ? `${phoneDigits.slice(0, 5)}****` : maskedPhone;
+
+  const otpSheetError =
+    step === "otp" && !deviceSessionMode && error.trim() ? error : null;
 
   return (
     <View style={styles.root}>
@@ -549,164 +461,77 @@ export default function LoginScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <Modal
+      <OtpVerifySheetModal
         visible={step === "otp"}
-        transparent
-        animationType="slide"
-        onRequestClose={handleCancelOtp}
-        statusBarTranslucent
-      >
-        <View style={styles.otpModalRoot}>
-          <Pressable style={styles.otpDim} onPress={handleCancelOtp} accessibilityLabel="Dismiss" />
-          <View style={[styles.otpSheetWrap, { marginBottom: otpKeyboardLift }]}>
-            <View style={styles.otpSheetOuter} pointerEvents="box-none">
-              <OtpSheetWaveCut width={windowWidth} />
+        title="Verify OTP"
+        subtitle={`The One Time Password is sent to ${otpSentMask}. Please enter the One Time Password.`}
+        otpLength={6}
+        value={otp}
+        onChange={(next) => {
+          clearErrors();
+          setOtp(next);
+        }}
+        onVerify={(code) => {
+          void handleVerifyOtp(code);
+        }}
+        onCancel={handleCancelOtp}
+        loading={loading}
+        error={otpSheetError}
+        autoSubmitOnComplete
+        dismissOnBackdropPress
+        dockToKeyboard
+        verifyDisabled={deviceSessionMode}
+        theme={merchantOtpVerifyTheme}
+        resendSlot={
+          <View>
+            <View style={styles.otpResendRow}>
+              <Text style={styles.otpTimerText}>
+                {resendSeconds > 0
+                  ? `Resend OTP in ${resendMins}:${resendSecs.toString().padStart(2, "0")} sec`
+                  : resending
+                    ? "Sending code…"
+                    : "You can resend OTP now"}
+              </Text>
               <Pressable
-                style={[styles.otpSheet, { paddingBottom: Math.max(insets.bottom, 12) }]}
-                onPress={focusOtpFromSheetTap}
-                accessibilityRole="none"
+                onPress={handleResendOtp}
+                disabled={resendSeconds > 0 || loading || resending}
+                hitSlop={8}
               >
-                <Text style={styles.otpSheetTitle}>Verify OTP</Text>
-                <Text style={styles.otpSheetSub}>
-                  The One Time Password is sent to {otpSentMask}. Please enter the One Time
-                  Password.
-                </Text>
-
-                <Pressable
-                  style={styles.otpBoxesRow}
-                  onPress={() => otpInputRef.current?.focus()}
-                  accessibilityLabel="One-time code, six digits"
+                <Text
+                  style={[
+                    styles.otpResendLink,
+                    (resendSeconds > 0 || loading || resending) && styles.otpResendLinkMuted,
+                  ]}
                 >
-                  {Array.from({ length: OTP_LEN }).map((_, index) => {
-                    const digit = otp[index] ?? "";
-                    const active = otpFieldFocused && index === Math.min(otp.length, OTP_LEN - 1);
-                    return (
-                      <View key={index} style={styles.otpBox}>
-                        <Text style={styles.otpDigit}>{digit || (active ? "" : "-")}</Text>
-                        <View style={[styles.otpUnderline, active && styles.otpUnderlineActive]} />
-                        {active && !digit ? <View style={styles.otpCaret} /> : null}
-                      </View>
-                    );
-                  })}
-                  <TextInput
-                    ref={otpInputRef}
-                    style={styles.otpHiddenInput}
-                    value={otp}
-                    onChangeText={(t) => {
-                      clearErrors();
-                      setOtp(t.replace(/\D/g, "").slice(0, OTP_LEN));
-                    }}
-                    onFocus={() => {
-                      setOtpFieldFocused(true);
-                      scrollPhoneFormIntoView();
-                    }}
-                    onBlur={() => {
-                      setOtpFieldFocused(false);
-                      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
-                      requestAnimationFrame(() => otpInputRef.current?.focus());
-                    }}
-                    keyboardType="number-pad"
-                    maxLength={OTP_LEN}
-                    editable={!loading && !deviceSessionMode}
-                    textContentType="oneTimeCode"
-                    autoComplete="sms-otp"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    importantForAutofill="yes"
-                    showSoftInputOnFocus
-                    blurOnSubmit={false}
-                    caretHidden
-                    selectionColor={GatiMitraMerchant.primary}
-                  />
-                </Pressable>
-
-                <View style={styles.otpResendRow}>
-                  <Text style={styles.otpTimerText}>
-                    {resendSeconds > 0
-                      ? `Resend OTP in ${resendMins}:${resendSecs.toString().padStart(2, "0")} sec`
-                      : resending
-                        ? "Sending code…"
-                        : "You can resend OTP now"}
-                  </Text>
-                  <Pressable
-                    onPress={handleResendOtp}
-                    disabled={resendSeconds > 0 || loading || resending}
-                    hitSlop={8}
-                  >
-                    <Text
-                      style={[
-                        styles.otpResendLink,
-                        (resendSeconds > 0 || loading || resending) && styles.otpResendLinkMuted,
-                      ]}
-                    >
-                      Resend OTP
-                    </Text>
-                  </Pressable>
-                </View>
-
-                {deviceSessionMode && lastExchange ? (
-                  <View style={styles.warnBanner}>
-                    <View style={styles.warnIconWrap}>
-                      <Ionicons name="cloud-offline-outline" size={22} color="#B45309" />
-                    </View>
-                    <View style={styles.warnBody}>
-                      <Text style={styles.warnTitle}>Could not start session</Text>
-                      <Text style={styles.warnText}>
-                        {error ||
-                          "Our servers could not register this device. This is usually temporary — try again without a new OTP."}
-                      </Text>
-                      <Pressable
-                        style={[styles.retryBtn, loading && styles.btnDisabled]}
-                        onPress={handleRetryDeviceSession}
-                        disabled={loading}
-                      >
-                        <Ionicons name="refresh" size={18} color="#92400E" />
-                        <Text style={styles.retryBtnText}>{loading ? "Trying…" : "Try again"}</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ) : error ? (
-                  <View style={styles.errorBanner}>
-                    <Ionicons name="alert-circle-outline" size={20} color={GatiMitraMerchant.error} />
-                    <Text style={styles.errorText}>{error}</Text>
-                  </View>
-                ) : null}
-
-                <View style={styles.otpActionsRow}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.otpCancelBtn,
-                      pressed && styles.pressed,
-                      loading && styles.btnDisabled,
-                    ]}
-                    onPress={handleCancelOtp}
-                    disabled={loading}
-                  >
-                    <Text style={styles.otpCancelText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.otpVerifyBtn,
-                      otpReady && !loading && !deviceSessionMode
-                        ? styles.otpVerifyBtnReady
-                        : styles.otpVerifyBtnIdle,
-                      (loading || deviceSessionMode) && styles.btnDisabled,
-                    ]}
-                    onPress={handleVerifyOtp}
-                    disabled={loading || deviceSessionMode || !otpReady}
-                  >
-                    {loading ? (
-                      <ActivityIndicator color="#fff" size="small" />
-                    ) : (
-                      <Text style={styles.otpVerifyText}>Verify OTP</Text>
-                    )}
-                  </Pressable>
-                </View>
+                  Resend OTP
+                </Text>
               </Pressable>
             </View>
+            {deviceSessionMode && lastExchange ? (
+              <View style={styles.warnBanner}>
+                <View style={styles.warnIconWrap}>
+                  <Ionicons name="cloud-offline-outline" size={22} color="#B45309" />
+                </View>
+                <View style={styles.warnBody}>
+                  <Text style={styles.warnTitle}>Could not start session</Text>
+                  <Text style={styles.warnText}>
+                    {error ||
+                      "Our servers could not register this device. This is usually temporary — try again without a new OTP."}
+                  </Text>
+                  <Pressable
+                    style={[styles.retryBtn, loading && styles.btnDisabled]}
+                    onPress={handleRetryDeviceSession}
+                    disabled={loading}
+                  >
+                    <Ionicons name="refresh" size={18} color="#92400E" />
+                    <Text style={styles.retryBtnText}>{loading ? "Trying…" : "Try again"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
           </View>
-        </View>
-      </Modal>
+        }
+      />
     </View>
   );
 }
@@ -862,90 +687,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#CBD5E1",
   },
-  otpModalRoot: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  otpDim: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
-  },
-  otpSheetWrap: {
-    width: "100%",
-  },
-  otpSheetOuter: {
-    width: "100%",
-  },
-  otpWave: {
-    alignSelf: "stretch",
-  },
-  otpSheet: {
-    backgroundColor: "#FFFFFF",
-    marginTop: -(OTP_WAVE_H - OTP_WAVE_LOW_Y),
-    paddingHorizontal: 20,
-    paddingTop: 10,
-  },
-  otpSheetTitle: {
-    fontFamily: LORA_BOLD,
-    fontSize: 18,
-    color: GatiMitraMerchant.textPrimary,
-    marginTop: -(OTP_WAVE_LOW_Y - 14),
-    marginBottom: 8,
-  },
-  otpSheetSub: {
-    fontFamily: LORA_BOLD,
-    fontSize: 12,
-    lineHeight: 17,
-    color: GatiMitraMerchant.textSecondary,
-    marginBottom: 14,
-  },
-  otpBoxesRow: {
-    position: "relative",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 10,
-  },
-  otpBox: {
-    flex: 1,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "flex-end",
-    paddingBottom: 6,
-  },
-  otpDigit: {
-    fontFamily: POPPINS_BOLD,
-    fontSize: 22,
-    color: GatiMitraMerchant.textPrimary,
-    minHeight: 26,
-    textAlign: "center",
-  },
-  otpUnderline: {
-    width: "100%",
-    height: 1.5,
-    borderRadius: 1,
-    backgroundColor: "#94A3B8",
-  },
-  otpUnderlineActive: {
-    backgroundColor: GatiMitraMerchant.primary,
-  },
-  otpCaret: {
-    position: "absolute",
-    bottom: 10,
-    width: 2,
-    height: 20,
-    backgroundColor: GatiMitraMerchant.textPrimary,
-  },
-  otpHiddenInput: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0.02,
-    color: "transparent",
-  },
   otpResendRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
   },
   otpTimerText: {
     fontFamily: POPPINS_BOLD,
@@ -963,44 +708,6 @@ const styles = StyleSheet.create({
   otpResendLinkMuted: {
     color: GatiMitraMerchant.textTertiary,
     textDecorationLine: "none",
-  },
-  otpActionsRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginTop: 2,
-  },
-  otpCancelBtn: {
-    flex: 1,
-    height: 46,
-    borderRadius: 23,
-    borderWidth: 1.5,
-    borderColor: "#0F172A",
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  otpCancelText: {
-    fontFamily: LORA_BOLD,
-    fontSize: 15,
-    color: "#0F172A",
-  },
-  otpVerifyBtn: {
-    flex: 1,
-    height: 46,
-    borderRadius: 23,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  otpVerifyBtnIdle: {
-    backgroundColor: "#94A3B8",
-  },
-  otpVerifyBtnReady: {
-    backgroundColor: GatiMitraMerchant.primary,
-  },
-  otpVerifyText: {
-    fontFamily: LORA_BOLD,
-    fontSize: 15,
-    color: "#FFFFFF",
   },
   errorBanner: {
     flexDirection: "row",

@@ -49,14 +49,31 @@ export function MerchantOrderIdRow({ formattedOrderId, fallbackOrderId }: Props)
 }
 
 type ToolbarProps = {
+  onPrint?: () => void;
   onSpeak: () => void;
   onMenu: () => void;
   speakingActive?: boolean;
 };
 
-export function MerchantOrderCardToolbar({ onSpeak, onMenu, speakingActive }: ToolbarProps) {
+/** Printer · Speak · ⋮ — live + last-24h completed cards. */
+export function MerchantOrderCardToolbar({
+  onPrint,
+  onSpeak,
+  onMenu,
+  speakingActive,
+}: ToolbarProps) {
   return (
     <View style={styles.toolbar}>
+      {onPrint ? (
+        <Pressable
+          onPress={onPrint}
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Print kitchen order ticket"
+        >
+          <Ionicons name="print-outline" size={18} color="#444444" />
+        </Pressable>
+      ) : null}
       <Pressable
         onPress={onSpeak}
         style={({ pressed }) => [
@@ -64,6 +81,8 @@ export function MerchantOrderCardToolbar({ onSpeak, onMenu, speakingActive }: To
           speakingActive && styles.iconBtnSpeaking,
           pressed && styles.pressed,
         ]}
+        accessibilityRole="button"
+        accessibilityLabel="Read item names aloud"
       >
         <Ionicons
           name={speakingActive ? "volume-high" : "volume-high-outline"}
@@ -71,7 +90,12 @@ export function MerchantOrderCardToolbar({ onSpeak, onMenu, speakingActive }: To
           color={speakingActive ? "#047857" : "#444444"}
         />
       </Pressable>
-      <Pressable onPress={onMenu} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
+      <Pressable
+        onPress={onMenu}
+        style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+        accessibilityRole="button"
+        accessibilityLabel="Order options"
+      >
         <Ionicons name="ellipsis-vertical" size={18} color="#444444" />
       </Pressable>
     </View>

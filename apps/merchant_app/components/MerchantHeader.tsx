@@ -21,8 +21,9 @@ import { useActiveTab } from "@/context/ActiveTabContext";
 import { useAuth } from "@/context/AuthContext";
 import { useNotifications } from "@/context/NotificationContext";
 import { AppAssetImage } from "@/components/AppAssetImage";
+import { AuthProxyImage } from "@/components/AuthProxyImage";
 import { MX } from "@/lib/appAssetKeys";
-import { getOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
+import { getOperatingHours, resolveImageUrl, type OperatingHours, type DaySlots } from "@/services/outletApi";
 import {
   getNextOpenDayStartIso,
   getNextOpenIsoAfterIstCalendarDay,
@@ -129,6 +130,53 @@ function isMenuStandaloneHeaderRoute(pathname: string | undefined): boolean {
   );
 }
 
+/** Parent brand logo in the header (falls back to bundled GatiMitra mark). */
+function StoreHeaderLogo({
+  logoUrl,
+  token,
+}: {
+  logoUrl: string | null | undefined;
+  token: string | null;
+}) {
+  const resolved = resolveImageUrl(logoUrl);
+  if (resolved && token) {
+    return (
+      <View style={styles.logo}>
+        <AuthProxyImage
+          uri={resolved}
+          token={token}
+          style={styles.logoImage}
+          resizeMode="cover"
+          accessibilityLabel="Store logo"
+        />
+      </View>
+    );
+  }
+  if (resolved) {
+    return (
+      <View style={styles.logo}>
+        <Image
+          source={{ uri: resolved }}
+          style={styles.logoImage}
+          resizeMode="cover"
+          accessibilityLabel="Store logo"
+        />
+      </View>
+    );
+  }
+  return (
+    <View style={styles.logo}>
+      <AppAssetImage
+        assetKey={MX.brand.appIcon}
+        fallbackAssetKey={MX.auth.logo}
+        style={styles.logoImage}
+        resizeMode="cover"
+        accessibilityLabel="GatiMitra"
+      />
+    </View>
+  );
+}
+
 function MainHeader({
   compact,
   pickerVisible,
@@ -152,7 +200,7 @@ function MainHeader({
     (manualCloseUntil != null &&
       manualCloseUntil !== "" &&
       new Date(manualCloseUntil).getTime() > Date.now());
-  const { partner } = useAuth();
+  const { partner, token } = useAuth();
   const router = useRouter();
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
@@ -193,12 +241,13 @@ function MainHeader({
               <Ionicons name="chevron-back" size={26} color={GatiMitraMerchant.textPrimary} />
             </Pressable>
           ) : (
-            <AppAssetImage
-              assetKey={MX.brand.appIcon}
-              fallbackAssetKey={MX.auth.logo}
-              style={styles.logo}
-              resizeMode="contain"
-              accessibilityLabel="GatiMitra"
+            <StoreHeaderLogo
+              logoUrl={
+                selectedStore?.parent_logo_url ??
+                partner?.parent?.store_logo ??
+                null
+              }
+              token={token}
             />
           )}
           <Pressable
@@ -1550,13 +1599,12 @@ export function MerchantCustomHeader() {
 }
 
 export function MerchantHeaderLogo() {
+  const { partner, token } = useAuth();
+  const { selectedStore } = useSelectedStore();
   return (
-    <AppAssetImage
-      assetKey={MX.brand.appIcon}
-      fallbackAssetKey={MX.auth.logo}
-      style={styles.logo}
-      resizeMode="contain"
-      accessibilityLabel="GatiMitra"
+    <StoreHeaderLogo
+      logoUrl={selectedStore?.parent_logo_url ?? partner?.parent?.store_logo ?? null}
+      token={token}
     />
   );
 }
@@ -1648,6 +1696,15 @@ const styles = StyleSheet.create({
   logo: {
     width: LOGO_SIZE,
     height: LOGO_SIZE,
+    aspectRatio: 1,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+  },
+  logoImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 10,
   },
   headerBackBtn: {
     width: LOGO_SIZE,

@@ -19,6 +19,7 @@ import {
   LayoutChangeEvent,
   FlatList,
   PanResponder,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -36,7 +37,9 @@ import {
 } from "@/hooks/useOrders";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
+import { RecentCompletedOrderCard } from "@/components/order/RecentCompletedOrderCard";
 import { LiveOrderCard, canMerchantMarkDelivered } from "@/components/order/LiveOrderCard";
+import { isOrderWithinLast24Hours } from "@/lib/orderRecency";
 import { OrdersFilterSheet } from "@/components/order/OrdersFilterSheet";
 import {
   EMPTY_ORDERS_FILTERS,
@@ -377,8 +380,12 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const tabSwipePanHandlers = useMemo(() => {
     if (isHistory) return {};
     return PanResponder.create({
+      // Never steal the initial touch — let cards/buttons receive presses.
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponderCapture: () => false,
       onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 16 && Math.abs(g.dx) > Math.abs(g.dy),
+        Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
       onPanResponderRelease: (_, g) => {
         if (g.dx >= SWIPE_THRESHOLD) {
           shiftTabBySwipe("right");
@@ -537,7 +544,15 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
   const handleViewDetail = useCallback(
     (order: OrderRecord) => {
-      router.push(`/order/${order.id}` as any);
+      const id = String(order.id ?? "").trim();
+      if (!id || id.startsWith("core-")) {
+        Alert.alert(
+          "Order details unavailable",
+          "This order cannot be opened in the app yet."
+        );
+        return;
+      }
+      router.push({ pathname: "/order/[id]", params: { id } });
     },
     [router]
   );
@@ -564,6 +579,16 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
   const renderOrder = ({ item }: { item: OrderRecord }) => {
     if (isHistory || filterKey === "completed") {
+      if (isOrderWithinLast24Hours(item)) {
+        return (
+          <RecentCompletedOrderCard
+            order={item}
+            rejectedReason={item.rejectedReason}
+            storeName={selectedStore?.store_name}
+            onPress={() => handleViewDetail(item)}
+          />
+        );
+      }
       return (
         <TerminalOrderCard
           order={item}

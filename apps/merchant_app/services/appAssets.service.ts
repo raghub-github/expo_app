@@ -16,10 +16,13 @@ export type AppAssetsResponse = {
   items: AppAssetItem[];
 };
 
-export async function fetchMerchantAppAssets(): Promise<AppAssetsResponse> {
+export async function fetchMerchantAppAssets(
+  signal?: AbortSignal
+): Promise<AppAssetsResponse> {
   const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
   const res = await fetch(`${base}/v1/app-assets/merchant`, {
     headers: { "X-Silent-Error": "1" },
+    signal,
   });
   if (!res.ok) {
     throw new Error(`app-assets/merchant HTTP ${res.status}`);

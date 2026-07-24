@@ -32,6 +32,8 @@ export default function OrderAlertPushHandler() {
   settingsRef.current = acceptanceSettings;
 
   useEffect(() => {
+    // Expo Go: never touch expo-notifications (SDK 53+ logs a red ERROR on import).
+    if (Constants.appOwnership === "expo") return;
     const sub = subscribeToForegroundNotifications(({ data }) => {
       if (!isNewOrderPush(data) || !storeId) return;
       void playNewOrderChime(storeId, settingsRef.current);

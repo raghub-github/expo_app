@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import "react-native-gesture-handler";
+import { LogBox } from "react-native";
 import { Stack } from "expo-router";
 import { useFonts } from "expo-font";
-import { Lora_700Bold } from "@expo-google-fonts/lora";
+import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
 import { Poppins_700Bold } from "@expo-google-fonts/poppins";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
@@ -32,9 +33,16 @@ import { isAppAssetsLoaded, setAppAssets } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
-import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// Expo Go (SDK 53+) cannot do remote push — suppress the package's console.error
+// if anything still touches expo-notifications during local development.
+LogBox.ignoreLogs([
+  "expo-notifications",
+  "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
+  "[expo-av]",
+]);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,36 +53,51 @@ const queryClient = new QueryClient({
   },
 });
 
+const ASSETS_FETCH_TIMEOUT_MS = 2500;
+/** Don't hold splash forever if font download/cache stalls (common with --offline). */
+const FONTS_READY_FALLBACK_MS = 1500;
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
+    Lora_400Regular,
     Lora_700Bold,
     Poppins_700Bold,
   });
-  const [assetsReady, setAssetsReady] = useState(false);
+  const [fontsTimedOut, setFontsTimedOut] = useState(false);
 
   useEffect(() => {
-    // Always refresh so Super Admin image changes appear after app reopen.
-    void fetchMerchantAppAssets()
+    const t = setTimeout(() => setFontsTimedOut(true), FONTS_READY_FALLBACK_MS);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    // CMS assets must never block first paint / auth redirect. Soft-fail fast.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ASSETS_FETCH_TIMEOUT_MS);
+    void fetchMerchantAppAssets(controller.signal)
       .then((res) => setAppAssets(res.assets ?? {}))
       .catch(() => {
         if (!isAppAssetsLoaded()) setAppAssets({});
       })
-      .finally(() => setAssetsReady(true));
+      .finally(() => clearTimeout(timeout));
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, []);
 
-  const ready = fontsLoaded && assetsReady;
+  // Proceed as soon as fonts load — or after a short fallback so login isn't blocked.
+  const ready = fontsLoaded || fontsTimedOut;
 
   useEffect(() => {
     if (!ready) return;
     void SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
+  // Keep native Expo splash (mxappicon) until fonts are ready so the React
+  // bootstrap can render title/subtitle in Lora immediately after.
   if (!ready) {
-    return (
-      <SafeAreaProvider>
-        <MerchantBootstrapScreen />
-      </SafeAreaProvider>
-    );
+    return null;
   }
 
   return (

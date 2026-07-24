@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
+import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
+import { printOrderKot } from "@/lib/orderCardActions";
 import { MarkAsReadyCountdownButton } from "@/components/order/MarkAsReadyCountdownButton";
 import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLayout";
 import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
@@ -69,6 +71,7 @@ export function MerchantPreparingOrderCard({
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
   const { speaking, speak } = useOrderSpeech();
+  const printContext = useMerchantPrintContext();
 
   const prepOrder = useMemo(() => orderToPrepCountdown(order), [order]);
   const extraTimeLabel = formatExtraPrepTimeAddedLabel(
@@ -157,6 +160,7 @@ export function MerchantPreparingOrderCard({
         onCustomerPress={() => setCustomerOpen(true)}
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
+        onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         outerBanner={
           performanceOverdue ? (
@@ -179,10 +183,12 @@ export function MerchantPreparingOrderCard({
       <MerchantOrderActionsSheet
         visible={menuOpen}
         order={order}
+        printContext={printContext}
         storeName={storeName}
         onClose={() => setMenuOpen(false)}
         onOpenTimeline={() => setTimelineOpen(true)}
         onOpenCustomer={() => setCustomerOpen(true)}
+        onViewDetails={onViewDetail}
       />
 
       <OrderCustomerBottomSheet

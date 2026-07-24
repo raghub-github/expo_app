@@ -140,9 +140,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         if (__DEV__) {
           console.log(`[orders] fetching food-orders store=${storeId}`);
         }
-        const [list] = await Promise.all([
-          fetchFoodOrders(storeId, token, { limit: 200 }),
-        ]);
+        const list = await fetchFoodOrders(storeId, token, { limit: 80 });
         if (__DEV__) {
           console.log(`[orders] food-orders ok count=${list.length}`);
         }
@@ -163,7 +161,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             }
           }
         }
-
       } catch (e) {
         // Keep the last good board visible — a transient API blip must not wipe
         // CREATED orders (and close the incoming sheet) to an empty New/Active list.

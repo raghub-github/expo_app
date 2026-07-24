@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { View, StyleSheet } from "react-native";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
+import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
+import { printOrderKot } from "@/lib/orderCardActions";
 import { ReadyHandoverTimeline } from "@/components/order/ReadyHandoverTimeline";
 import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLayout";
 import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
@@ -40,6 +42,7 @@ export function MerchantReadyOrderCard({
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
   const { speaking, speak } = useOrderSpeech();
+  const printContext = useMerchantPrintContext();
 
   const placedAt = formatOrderDateTime(order.createdAt);
 
@@ -79,6 +82,7 @@ export function MerchantReadyOrderCard({
         onCustomerPress={() => setCustomerOpen(true)}
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
+        onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         outerBanner={
           preparedLateMins != null && preparedLateMins > 0 ? (
@@ -108,10 +112,12 @@ export function MerchantReadyOrderCard({
       <MerchantOrderActionsSheet
         visible={menuOpen}
         order={order}
+        printContext={printContext}
         storeName={storeName}
         onClose={() => setMenuOpen(false)}
         onOpenTimeline={() => setTimelineOpen(true)}
         onOpenCustomer={() => setCustomerOpen(true)}
+        onViewDetails={onViewDetail}
       />
 
       <OrderCustomerBottomSheet
