@@ -47,6 +47,7 @@ services:
       - dashboard
       - partnersite
       - cxsite
+      - rider-web
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
       interval: 30s
@@ -254,6 +255,29 @@ services:
       PORT: "3000"
     expose:
       - "3000"
+    networks: [app]
+
+  rider-web:
+    # Rider-facing marketing/onboarding + policy site (rider.gatimitra.com).
+    # Standalone Next.js app (own package-lock, NOT a workspace) — build
+    # context is the rider-web/ dir itself. Only NEXT_PUBLIC_SUPABASE_* are
+    # baked at build; all server secrets (DB, R2, email, service-role key)
+    # come from the runtime env_file below.
+    image: ghcr.io/raghub-github/gm-rider-web:${IMAGE_TAG:-latest}
+    build:
+      context: ../../rider-web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    restart: unless-stopped
+    env_file:
+      - ../../rider-web/.env.local
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+    expose:
+      - "3001"
     networks: [app]
 
 networks:

@@ -1,0 +1,229 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+/* Premium Dark Theme Setup */
+:root {
+  color-scheme: dark;
+}
+
+
+html {
+  background: #0a0a0f;
+  color-scheme: dark;
+  overflow-x: hidden;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+
+  body {
+    @apply bg-gradient-to-br from-slate-950 via-slate-900 to-black text-white transition-colors duration-300;
+    overflow-x: hidden;
+  }
+
+  h1 {
+    @apply text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight;
+  }
+
+  h2 {
+    @apply text-3xl md:text-4xl font-extrabold tracking-tight;
+  }
+
+  h3 {
+    @apply text-xl md:text-2xl font-bold;
+  }
+}
+
+@layer components {
+  /* Premium Buttons */
+  .btn-primary {
+    @apply px-6 py-3 md:px-8 md:py-4 rounded-2xl font-bold text-white bg-gradient-to-r from-red-600 via-orange-500 to-red-600 shadow-2xl hover:shadow-red-500/50 hover:scale-105 active:scale-95 transition-all duration-300 flex items-center justify-center gap-2 border border-red-500/20 backdrop-blur-sm;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 md:px-8 md:py-4 rounded-2xl font-bold border-2 border-orange-400/50 hover:border-orange-400 text-white shadow-lg hover:shadow-orange-500/30 hover:scale-105 active:scale-95 transition-all duration-300 bg-gradient-to-r from-orange-500/10 to-red-500/10 backdrop-blur-md;
+  }
+
+  .btn-outline {
+    @apply px-6 py-3 rounded-2xl font-bold border-2 border-slate-400/30 hover:border-orange-400 transition-colors duration-300 hover:bg-slate-800/50;
+  }
+
+  /* Premium Card Styles */
+  .card-glass {
+    @apply backdrop-blur-xl bg-white/5 dark:bg-slate-900/40 border border-white/10 dark:border-slate-700/30 rounded-2xl p-6 md:p-8 shadow-xl hover:shadow-2xl transition-all duration-300;
+  }
+
+  .card-premium {
+    @apply backdrop-blur-2xl bg-gradient-to-br from-slate-900/50 to-slate-950/50 border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl hover:shadow-red-500/20 transition-all duration-300;
+  }
+
+  /* Premium Text Gradient */
+  .text-gradient {
+    @apply bg-gradient-to-r from-red-500 via-orange-400 to-yellow-400 bg-clip-text text-transparent font-bold;
+  }
+
+  .text-gradient-alt {
+    @apply bg-gradient-to-br from-red-400 to-orange-500 bg-clip-text text-transparent font-bold;
+  }
+
+  /* Form Elements */
+  .input-floating {
+    @apply w-full px-4 py-3 rounded-xl border-2 border-slate-700/50 dark:border-slate-600/50 bg-slate-900/50 dark:bg-slate-800/50 backdrop-blur-sm text-white placeholder-slate-400 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/30 transition-all duration-300 shadow-lg;
+  }
+
+  .input-floating::placeholder {
+    @apply text-slate-500;
+  }
+
+  .input-floating:focus {
+    @apply border-red-500 bg-slate-900/70 shadow-xl shadow-red-500/20;
+  }
+
+  /* Modal Backdrop */
+  .modal-backdrop {
+    @apply fixed inset-0 bg-black/60 backdrop-blur-lg z-40 flex items-center justify-center;
+  }
+
+  /* Premium Badge */
+  .badge-premium {
+    @apply inline-block px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider bg-gradient-to-r from-red-500/20 to-orange-500/20 border border-red-500/30 text-red-300;
+  }
+
+  /* Glowing Effect */
+  .glow {
+    @apply shadow-lg shadow-red-500/30;
+  }
+
+  .glow-hover:hover {
+    @apply shadow-2xl shadow-red-500/50;
+  }
+
+  /* Gradient Border */
+  .border-gradient {
+    @apply border-2 border-transparent bg-clip-padding;
+    background-image: linear-gradient(white, white), linear-gradient(to right, #ff4d4d, #ff8a4d, #ffd24d);
+    background-origin: border-box;
+    background-clip: padding-box, border-box;
+  }
+
+  /* Premium Sections */
+  .section-premium {
+    @apply relative py-16 md:py-32 overflow-hidden;
+  }
+
+  .section-premium::before {
+    @apply absolute inset-0 bg-gradient-to-b from-slate-900/0 via-slate-900/0 to-slate-950/50 pointer-events-none;
+    content: '';
+  }
+}
+
+/* Smooth scroll for anchor links */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar - Premium */
+::-webkit-scrollbar {
+  width: 12px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-950;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gradient-to-b from-red-600 to-orange-500 rounded-full hover:from-red-500 hover:to-orange-400 shadow-lg;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply shadow-xl shadow-red-500/30;
+}
+
+/* Animation Keyframes */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-20px);
+  }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(255, 77, 77, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(255, 77, 77, 0.6);
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 3s ease-in-out infinite;
+}
+
+.animate-slide-in {
+  animation: slide-in 0.5s ease-out;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.6s ease-out;
+}
+
+/* Gradient Mesh Background */
+.gradient-mesh {
+  background: 
+    radial-gradient(at 20% 50%, rgba(255, 77, 77, 0.1) 0px, transparent 50%),
+    radial-gradient(at 80% 80%, rgba(255, 138, 77, 0.1) 0px, transparent 50%),
+    radial-gradient(at 40% 80%, rgba(30, 41, 59, 0.4) 0px, transparent 50%);
+}
+
+/* Premium Effects */
+.backdrop-blur-xl-custom {
+  backdrop-filter: blur(16px) brightness(0.9);
+}
+
+/* Text selection color */
+::selection {
+  @apply bg-red-500/50 text-white;
+}
+
+/* Link hover effects */
+a {
+  @apply transition-all duration-300;
+}
+
+a:hover {
+  @apply text-orange-400;
+}
+

@@ -1,0 +1,10 @@
+<svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Top arc (orange) -->
+  <path d="M20,60 A40,40 0 0,1 100,60" stroke="#F9B233" stroke-width="12" fill="none"/>
+  <!-- Bottom arc (green) -->
+  <path d="M100,60 A40,40 0 0,1 20,60" stroke="#5FE6B9" stroke-width="12" fill="none"/>
+  <!-- Center circle (green) -->
+  <circle cx="60" cy="60" r="16" fill="#5FE6B9"/>
+  <!-- Diagonal tick/arrow (green) -->
+  <path d="M60 60 L90 45" stroke="#5FE6B9" stroke-width="8" stroke-linecap="round"/>
+</svg>

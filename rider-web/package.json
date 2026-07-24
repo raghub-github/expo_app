@@ -1,0 +1,39 @@
+{
+  "name": "gatimitra",
+  "version": "1.0.0",
+  "description": "GatiMitra - Fast, Safe & Reliable Delivery Platform",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "create-reviews-table": "node scripts/create-table.js",
+    "create-registrations-table": "node scripts/create-registrations-table.js",
+    "test-db-connection": "node scripts/test-db-connection.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.972.0",
+    "@aws-sdk/s3-request-presigner": "^3.972.0",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@fortawesome/fontawesome-free": "^7.1.0",
+    "@mui/icons-material": "^7.3.7",
+    "@mui/material": "^7.3.7",
+    "@supabase/supabase-js": "^2.87.1",
+    "aos": "^2.3.4",
+    "drizzle-orm": "^0.45.1",
+    "framer-motion": "^10.16.0",
+    "lucide-react": "^0.263.1",
+    "next": "^14.0.0",
+    "nodemailer": "^7.0.11",
+    "postgres": "^3.4.7",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^5.5.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.31",
+    "tailwindcss": "^3.3.0"
+  }
+}
