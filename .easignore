@@ -78,3 +78,13 @@ Thumbs.db
 
 # Large archive outputs from rider app
 apps/gatimitra-riderApp/archive-output/
+
+# ============================================================
+# Re-includes (MUST come after the ignore rules above to override them)
+# ============================================================
+# Shared workspace packages (@gatimitra/*) resolve to packages/<pkg>/dist and are
+# committed. The blanket "**/dist/" above strips them from the EAS upload, which
+# breaks the Metro bundle ("@gatimitra/merchant-payout ... dist/index.js does not
+# exist"). Re-include the package build outputs (directory first, then contents).
+!packages/*/dist/
+!packages/*/dist/**
