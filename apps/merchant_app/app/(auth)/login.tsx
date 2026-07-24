@@ -1,5 +1,5 @@
 /**
- * Partner login — phone OTP, device-session retry; Google sign-in coming soon.
+ * Partner login — lite mobile-number entry (BHIM-style) + OTP verify.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -12,30 +12,58 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
+  Linking,
+  Modal,
+  Dimensions,
   Platform,
   ScrollView,
-  Image,
-  useWindowDimensions,
   BackHandler,
   InteractionManager,
+  useWindowDimensions,
+  type KeyboardEvent,
 } from "react-native";
-import { useRouter, useNavigation } from "expo-router";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
+import Svg, { Path } from "react-native-svg";
 import { useAuth, type PartnerData } from "@/context/AuthContext";
 import {
   merchantAuthService,
   isMerchantAuthError,
 } from "@/services/auth.service";
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
-import { GatiMitraMerchant, H_PADDING, SAFE_AREA_TOP_MIN } from "@/constants/theme";
-import LoginHeroBubbles from "./LoginHeroBubbles";
-import { AppAssetImage } from "@/components/AppAssetImage";
-import { MX } from "@/lib/appAssetKeys";
+import { GatiMitraMerchant, SAFE_AREA_TOP_MIN } from "@/constants/theme";
+import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 
 const OTP_LEN = 6;
+const legalUrls = getPartnerLegalUrls();
+const LORA_BOLD = "Lora_700Bold";
+const POPPINS_BOLD = "Poppins_700Bold";
+/** CIBIL-style asymmetric top cut: high left plateau → soft step-down on the right. */
+const OTP_WAVE_H = 56;
+const OTP_WAVE_LOW_Y = 34;
+
+function OtpSheetWaveCut({ width }: { width: number }) {
+  const w = Math.max(320, width);
+  const low = OTP_WAVE_LOW_Y;
+  const path = [
+    `M 0 ${OTP_WAVE_H}`,
+    `L 0 10`,
+    `Q 0 0 12 0`,
+    `L ${w * 0.52} 0`,
+    `C ${w * 0.62} 0 ${w * 0.64} ${low} ${w * 0.74} ${low}`,
+    `L ${w} ${low}`,
+    `L ${w} ${OTP_WAVE_H}`,
+    "Z",
+  ].join(" ");
+
+  return (
+    <Svg width={w} height={OTP_WAVE_H} style={styles.otpWave} pointerEvents="none">
+      <Path d={path} fill="#FFFFFF" />
+    </Svg>
+  );
+}
 
 /** Narrow exchange API partner payload to PartnerData after minimal structural checks. */
 function partnerDataFromExchange(partner: { parent: unknown; childStores: unknown[] }): PartnerData {
@@ -57,20 +85,14 @@ function partnerDataFromExchange(partner: { parent: unknown; childStores: unknow
 // (the app then won't install) and Google Play restricts to default SMS
 // handlers — an OTP-autofill use case no longer qualifies. The user types the
 // OTP manually (same as the customer app). If autofill is ever wanted back, use
-// the permission-free SMS Retriever API, not READ_SMS. (The old @maniac-tech
-// expo-read-sms path was removed: it required READ_SMS and was only ever present
-// transitively via expo-floating-bubble, so it also broke once that was dropped.)
+// the permission-free SMS Retriever API, not READ_SMS.
 
 type LastExchange = null | "otp";
 
-/** Max share of window height for the white sign-in sheet (rest stays gradient). */
-const SHEET_HEIGHT_RATIO = 0.62;
-
 export default function LoginScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const { setTokenAndPartner } = useAuth();
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
@@ -88,18 +110,9 @@ export default function LoginScreen() {
   const [otpFieldFocused, setOtpFieldFocused] = useState(false);
   const [phoneKeyboardVisible, setPhoneKeyboardVisible] = useState(false);
   const [otpKeyboardVisible, setOtpKeyboardVisible] = useState(false);
-  const otpAutoSubmittedRef = useRef<string | null>(null);
-  const verifyOtpRef = useRef<(() => Promise<void>) | null>(null);
-  /**
-   * Hard re-entry guards for OTP verify. `loading` is React state, so it only
-   * blocks a second call one render later — the auto-submit effect and a manual
-   * "Verify" tap can still both fire. A backend OTP requestId is SINGLE USE, so
-   * the second call hits an already-consumed code and comes back 400
-   * invalid_request_id, whose error then overwrites a login that actually
-   * succeeded. Refs update synchronously, so they close that window.
-   */
-  const verifyInFlightRef = useRef(false);
-  const verifySucceededRef = useRef(false);
+  const [otpKeyboardLift, setOtpKeyboardLift] = useState(0);
+  const lastKeyboardLiftRef = useRef(0);
+  const autoVerifiedOtpRef = useRef("");
 
   const scrollPhoneFormIntoView = useCallback(() => {
     const end = () => sheetScrollRef.current?.scrollToEnd({ animated: true });
@@ -125,7 +138,70 @@ export default function LoginScreen() {
     return () => clearInterval(id);
   }, [step, resendSeconds]);
 
-  /** OTP step: open keyboard immediately and keep refocusing until all digits are entered. */
+
+  useEffect(() => {
+    if (step !== "phone") {
+      setPhoneKeyboardVisible(false);
+      return;
+    }
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
+      setPhoneKeyboardVisible(true);
+      const windowHeight = Dimensions.get("window").height;
+      lastKeyboardLiftRef.current = Math.max(
+        0,
+        windowHeight - Math.round(event.endCoordinates.screenY)
+      );
+    });
+    const subHide = Keyboard.addListener(hideEvt, () => {
+      setPhoneKeyboardVisible(false);
+      lastKeyboardLiftRef.current = 0;
+    });
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== "phone" || !phoneKeyboardVisible) return;
+    scrollPhoneFormIntoView();
+  }, [step, phoneKeyboardVisible, scrollPhoneFormIntoView]);
+
+  useEffect(() => {
+    if (step !== "otp") {
+      setOtpKeyboardVisible(false);
+      setOtpKeyboardLift(0);
+      return;
+    }
+    setOtpKeyboardLift(lastKeyboardLiftRef.current);
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
+      setOtpKeyboardVisible(true);
+      const windowHeight = Dimensions.get("window").height;
+      const keyboardTop = Math.round(event.endCoordinates.screenY);
+      const lift = Math.max(0, windowHeight - keyboardTop);
+      lastKeyboardLiftRef.current = lift;
+      setOtpKeyboardLift(lift);
+    });
+    const subHide = Keyboard.addListener(hideEvt, () => {
+      setOtpKeyboardVisible(false);
+      lastKeyboardLiftRef.current = 0;
+      setOtpKeyboardLift(0);
+    });
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== "otp" || !otpKeyboardVisible) return;
+    scrollPhoneFormIntoView();
+  }, [step, otpKeyboardVisible, scrollPhoneFormIntoView]);
+
   useEffect(() => {
     if (step !== "otp") return;
     let cancelled = false;
@@ -149,7 +225,6 @@ export default function LoginScreen() {
     };
   }, [step]);
 
-  /** If the keyboard is dismissed while OTP is incomplete, open it again (blur / outside tap). */
   useEffect(() => {
     if (step !== "otp") return;
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
@@ -159,93 +234,6 @@ export default function LoginScreen() {
     });
     return () => sub.remove();
   }, [step, otp.length, loading, deviceSessionMode]);
-
-  /** Android back: return to phone step when OTP is incomplete (intentional exit). */
-  useEffect(() => {
-    if (step !== "otp") return;
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (otp.length >= OTP_LEN) return false;
-      setStep("phone");
-      setOtp("");
-      setError("");
-      setDeviceSessionMode(false);
-      setLastExchange(null);
-      return true;
-    });
-    return () => sub.remove();
-  }, [step, otp.length]);
-
-  /** Block backward navigation (e.g. iOS swipe-back) until OTP is complete; forward links (e.g. signup) still work. */
-  useEffect(() => {
-    if (step !== "otp") return;
-    const unsub = navigation.addListener("beforeRemove", (e) => {
-      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
-      const act = e.data.action;
-      const actionType = typeof act === "object" && act !== null && "type" in act ? String((act as { type: string }).type) : "";
-      if (actionType !== "GO_BACK" && actionType !== "POP") return;
-      e.preventDefault();
-      requestAnimationFrame(() => otpInputRef.current?.focus());
-    });
-    return unsub;
-  }, [navigation, step, otp.length, loading, deviceSessionMode]);
-
-  useEffect(() => {
-    if (step !== "phone") {
-      setPhoneKeyboardVisible(false);
-      return;
-    }
-    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const subShow = Keyboard.addListener(showEvt, () => setPhoneKeyboardVisible(true));
-    const subHide = Keyboard.addListener(hideEvt, () => setPhoneKeyboardVisible(false));
-    return () => {
-      subShow.remove();
-      subHide.remove();
-    };
-  }, [step]);
-
-  useEffect(() => {
-    if (step !== "otp") {
-      setOtpKeyboardVisible(false);
-      return;
-    }
-    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const subShow = Keyboard.addListener(showEvt, () => setOtpKeyboardVisible(true));
-    const subHide = Keyboard.addListener(hideEvt, () => setOtpKeyboardVisible(false));
-    return () => {
-      subShow.remove();
-      subHide.remove();
-    };
-  }, [step]);
-
-  useEffect(() => {
-    if (step !== "phone" || !phoneKeyboardVisible) return;
-    scrollPhoneFormIntoView();
-  }, [step, phoneKeyboardVisible, scrollPhoneFormIntoView]);
-
-  useEffect(() => {
-    if (step !== "otp") {
-      otpAutoSubmittedRef.current = null;
-      return;
-    }
-    if (otp.length < OTP_LEN) otpAutoSubmittedRef.current = null;
-  }, [step, otp]);
-
-  useEffect(() => {
-    if (step !== "otp" || !otpKeyboardVisible) return;
-    scrollPhoneFormIntoView();
-  }, [step, otpKeyboardVisible, scrollPhoneFormIntoView]);
-
-  useEffect(() => {
-    if (step !== "otp" || otp.length !== OTP_LEN || loading || deviceSessionMode) return;
-    if (otpAutoSubmittedRef.current === otp) return;
-    otpAutoSubmittedRef.current = otp;
-    const t = setTimeout(() => {
-      void verifyOtpRef.current?.();
-    }, 150);
-    return () => clearTimeout(t);
-  }, [step, otp, loading, deviceSessionMode]);
 
   const phoneE164 =
     phone.replace(/\D/g, "").length >= 10
@@ -272,10 +260,6 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
-      // New OTP session → re-arm the single-use verify guards.
-      verifySucceededRef.current = false;
-      verifyInFlightRef.current = false;
-      otpAutoSubmittedRef.current = null;
       setResendSeconds(60);
       setStep("otp");
     } catch (e: unknown) {
@@ -292,11 +276,6 @@ export default function LoginScreen() {
     setResending(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
-      // A fresh OTP means a fresh requestId, so re-arm the verify guards and
-      // clear the auto-submit memo (otherwise the new code is never submitted).
-      verifySucceededRef.current = false;
-      verifyInFlightRef.current = false;
-      otpAutoSubmittedRef.current = null;
       setResendSeconds(60);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
@@ -312,8 +291,6 @@ export default function LoginScreen() {
   function normalizeOtpErrorMessage(raw: string): string {
     const msg = String(raw || "").trim();
     const lower = msg.toLowerCase();
-    // Supabase often returns: "Token has expired or is invalid"
-    // For UX we prefer being specific: treat ambiguous "expired or invalid" as invalid.
     if (lower.includes("expired or is invalid")) return "Invalid OTP. Please try again.";
     if (lower.includes("invalid otp") || (lower.includes("invalid") && lower.includes("token"))) {
       return "Invalid OTP. Please try again.";
@@ -327,9 +304,6 @@ export default function LoginScreen() {
       setError("Enter the 6-digit code from SMS");
       return;
     }
-    // Never send the same single-use OTP requestId twice (see refs above).
-    if (verifyInFlightRef.current || verifySucceededRef.current) return;
-    verifyInFlightRef.current = true;
     clearErrors();
     setLoading(true);
     setLastExchange("otp");
@@ -340,10 +314,6 @@ export default function LoginScreen() {
         otp,
         deviceId,
       });
-      // The OTP is consumed server-side the moment verify returns 200, so mark
-      // success before any follow-up work. That way a stray re-submit can never
-      // replay the dead requestId and surface a false "invalid code" error.
-      verifySucceededRef.current = true;
       const partner = partnerDataFromExchange(session.partner);
       await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
       setDeviceSessionMode(false);
@@ -361,12 +331,35 @@ export default function LoginScreen() {
         setError(msg);
       }
     } finally {
-      verifyInFlightRef.current = false;
       setLoading(false);
     }
   };
 
-  verifyOtpRef.current = handleVerifyOtp;
+  useEffect(() => {
+    if (step !== "otp" || otp.length !== OTP_LEN || loading || deviceSessionMode) {
+      if (otp.length !== OTP_LEN) autoVerifiedOtpRef.current = "";
+      return;
+    }
+    if (autoVerifiedOtpRef.current === otp) return;
+    autoVerifiedOtpRef.current = otp;
+    void handleVerifyOtp();
+  }, [step, otp, loading, deviceSessionMode]);
+
+  const handleCancelOtp = () => {
+    setStep("phone");
+    setOtp("");
+    clearErrors();
+    setLastExchange(null);
+  };
+
+  useEffect(() => {
+    if (step !== "otp") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleCancelOtp();
+      return true;
+    });
+    return () => sub.remove();
+  }, [step]);
 
   const handleRetryDeviceSession = async () => {
     if (!lastExchange) return;
@@ -399,279 +392,205 @@ export default function LoginScreen() {
   };
 
   const topPad = Math.max(insets.top, SAFE_AREA_TOP_MIN) + 8;
-  const sheetMaxHeight = Math.round(windowHeight * SHEET_HEIGHT_RATIO);
-  const sheetPadBottom = Math.max(insets.bottom, 16);
-  const sheetScrollMaxHeight = Math.max(240, sheetMaxHeight - 10 - sheetPadBottom);
-  /** Pull sheet flush with physical bottom; safe area padding lives inside ScrollView only. */
-  const sheetBottomDock = -insets.bottom;
-
-  /** Same layout as phone+IME: sheet grows and spacer collapses so OTP/CTA stay above keyboard (Android pan + iOS KAV). */
-  const sheetImeOpen =
-    (step === "phone" && phoneKeyboardVisible) || (step === "otp" && otpKeyboardVisible);
-  const sheetPadApplied = 0;
-  const scrollBottomInset =
-    sheetImeOpen && step === "otp" ? 4 : sheetImeOpen ? 12 : sheetPadBottom + 8;
+  const bottomPad = Math.max(insets.bottom, 16);
+  const phoneReady = phone.replace(/\D/g, "").length === 10;
+  const otpReady = otp.length === OTP_LEN;
+  const resendMins = Math.floor(resendSeconds / 60);
+  const resendSecs = resendSeconds % 60;
+  const phoneDigits = phone.replace(/\D/g, "").slice(-10);
+  const otpSentMask =
+    phoneDigits.length === 10 ? `${phoneDigits.slice(0, 5)}****` : maskedPhone;
 
   return (
     <View style={styles.root}>
-      <StatusBar style="light" />
-      <LinearGradient
-        colors={[GatiMitraMerchant.navy, "#1e4d8c", "#1a6b7a", GatiMitraMerchant.primaryDark]}
-        locations={[0, 0.35, 0.72, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <LoginHeroBubbles />
-
+      <StatusBar style="dark" />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? topPad + 6 : 0}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
       >
-        <View style={styles.mainColumn}>
-          <View style={styles.topSection}>
-            <View style={[styles.headerRow, { paddingTop: topPad }]}>
-              <View style={styles.headerSide}>
-                {step === "phone" && !phoneKeyboardVisible ? (
-                  <Pressable
-                    onPress={() => router.replace("/(auth)/welcome")}
-                    style={({ pressed }) => [styles.iconCircle, pressed && styles.pressed]}
-                    hitSlop={12}
-                    accessibilityLabel="Go back"
-                  >
-                    <Ionicons name="arrow-back" size={22} color="#fff" />
-                  </Pressable>
-                ) : (
-                  <View style={styles.headerSidePlaceholder} />
-                )}
-              </View>
-              <View style={styles.headerCenterSlot}>
-                {step === "otp" ? (
-                  <Text style={styles.headerTitle} numberOfLines={1}>
-                    Verify number
-                  </Text>
-                ) : null}
-              </View>
-              <View style={styles.headerSide} />
-            </View>
-          </View>
+        <ScrollView
+          ref={sheetScrollRef}
+          style={styles.flex}
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: topPad, paddingBottom: bottomPad + 12 },
+          ]}
+          keyboardShouldPersistTaps="always"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          <Pressable
+            onPress={() => router.replace("/(auth)/welcome")}
+            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+            hitSlop={12}
+            accessibilityLabel="Go back"
+          >
+            <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+          </Pressable>
 
-          <View
-            style={sheetImeOpen ? styles.sheetSpacerCollapsed : styles.sheetSpacer}
-          />
+          <Text style={styles.title}>Enter Your Mobile Number</Text>
+          <Text style={styles.subtitle}>
+            Please enter the mobile number registered with your GatiMitra partner account to
+            continue.
+          </Text>
 
-          <View
-            style={[
-              styles.sheet,
-              sheetImeOpen && styles.sheetKeyboardOpen,
-              sheetImeOpen && styles.sheetFillAboveKeyboard,
-              !sheetImeOpen && { maxHeight: sheetMaxHeight },
-              {
-                paddingBottom: sheetPadApplied,
-                marginBottom: sheetImeOpen ? 0 : sheetBottomDock,
-              },
+          <Pressable
+            onPress={() => phoneInputRef.current?.focus()}
+            accessibilityLabel="Mobile number, country code India plus nine one"
+            style={({ pressed }) => [
+              styles.phoneShell,
+              phoneFieldFocused && styles.phoneShellFocused,
+              pressed && styles.pressed,
             ]}
           >
-            <ScrollView
-              ref={sheetScrollRef}
-              style={[
-                styles.sheetScroll,
-                sheetImeOpen ? styles.sheetScrollFill : { maxHeight: sheetScrollMaxHeight },
-              ]}
-              contentContainerStyle={[
-                styles.sheetScrollContent,
-                /* OTP + keyboard: avoid flexGrow so footer sits just above IME (no empty stretch). */
-                sheetImeOpen && step === "phone" && styles.sheetScrollContentKb,
-                { paddingBottom: scrollBottomInset },
-              ]}
-              keyboardShouldPersistTaps="always"
-              keyboardDismissMode={step === "otp" ? "none" : "on-drag"}
-              showsVerticalScrollIndicator={false}
-            >
-              {(() => {
-                const inner = (
-                  <>
-              <View
-                style={
-                  step === "phone" && phoneKeyboardVisible
-                    ? styles.sheetWelcomeCompact
-                    : styles.sheetWelcome
-                }
-                accessibilityRole="header"
-              >
-                {step === "phone" ? (
-                  phoneKeyboardVisible ? (
-                    <>
-                      <View style={styles.sheetLogoRingCompact} accessibilityLabel="GatiMitra">
-                        <AppAssetImage
-                          assetKey={MX.auth.logo}
-                          style={styles.sheetLogoImgCompact}
-                          resizeMode="contain"
-                        />
-                      </View>
-                      <Text style={styles.sheetWelcomeCompactTitle}>Welcome back</Text>
-                      <Text style={styles.sheetWelcomeCompactHint} numberOfLines={2}>
-                        Enter your mobile number — we will text you a code.
-                      </Text>
-                    </>
-                  ) : (
-                  <>
-                    <View style={styles.sheetLogoRing} accessibilityLabel="GatiMitra">
-                      <AppAssetImage
-                        assetKey={MX.auth.logo}
-                        style={styles.sheetLogoImg}
-                        resizeMode="contain"
-                      />
-                    </View>
-                    <View style={styles.sheetWelcomeAccent} />
-                    <Text style={styles.sheetWelcomeTitle}>Welcome back</Text>
-                    <Text style={styles.sheetWelcomeSubtitle}>
-                      Sign in with your registered mobile number to manage orders, menu, and payouts.
-                    </Text>
-                  </>
-                  )
-                ) : (
-                  <>
-                    <View style={styles.sheetWelcomeAccent} />
-                    <Text style={styles.sheetWelcomeTitle}>Almost there</Text>
-                    <Text style={styles.sheetWelcomeSubtitle}>
-                      Enter the code we sent to {maskedPhone}
-                    </Text>
-                  </>
-                )}
+            <View style={styles.ccBlock} importantForAccessibility="no">
+              <Text style={styles.flagEmoji}>🇮🇳</Text>
+              <Text style={styles.ccText}>+91</Text>
+              <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+            </View>
+            <View style={styles.ccDivider} />
+            <TextInput
+              ref={phoneInputRef}
+              style={styles.phoneInput}
+              placeholder="Mobile Number"
+              placeholderTextColor={GatiMitraMerchant.textTertiary}
+              value={phone}
+              onChangeText={(t) => {
+                clearErrors();
+                setPhone(t.replace(/\D/g, "").slice(0, 10));
+              }}
+              onFocus={() => {
+                setPhoneFieldFocused(true);
+                scrollPhoneFormIntoView();
+              }}
+              onBlur={() => setPhoneFieldFocused(false)}
+              keyboardType="phone-pad"
+              maxLength={10}
+              editable={!loading && step === "phone"}
+              selectionColor={GatiMitraMerchant.primary}
+              autoFocus={step === "phone"}
+            />
+          </Pressable>
+
+          {step === "phone" && deviceSessionMode && lastExchange ? (
+            <View style={styles.warnBanner}>
+              <View style={styles.warnIconWrap}>
+                <Ionicons name="cloud-offline-outline" size={22} color="#B45309" />
               </View>
-
-              <View style={styles.sheetFormArea}>
-            {step === "phone" ? (
-              <>
-                <View style={styles.sheetMethodBlock}>
-                  <Text style={styles.sheetLabel}>Sign in with</Text>
-                  <View style={styles.segmentRow}>
-                    <View style={[styles.segmentCell, styles.segmentCellActive]}>
-                      <Ionicons name="phone-portrait-outline" size={18} color="#fff" />
-                      <Text style={[styles.segmentText, styles.segmentTextActive]}>Phone</Text>
-                    </View>
-                    <View style={[styles.segmentCell, styles.segmentCellDisabled]} pointerEvents="none">
-                      <Ionicons name="logo-google" size={18} color={GatiMitraMerchant.textTertiary} />
-                      <Text style={styles.segmentTextMuted}>Google</Text>
-                      <View style={styles.comingSoonBadge}>
-                        <Text style={styles.comingSoonBadgeText}>Coming soon</Text>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.sheetInputCluster}>
-                  <Text style={styles.fieldLabel}>Mobile number</Text>
-                  <Pressable
-                    onPress={() => phoneInputRef.current?.focus()}
-                    accessibilityLabel="Mobile number, country code India plus nine one"
-                    style={({ pressed }) => [
-                      styles.phoneFieldShell,
-                      styles.phoneFieldUnifiedLook,
-                      phoneFieldFocused && styles.phoneFieldUnifiedFocus,
-                      pressed && styles.phoneFieldShellPressed,
-                    ]}
-                  >
-                    <View style={styles.phoneEmptyIconWrap} importantForAccessibility="no">
-                      <Ionicons name="call-outline" size={20} color={GatiMitraMerchant.primary} />
-                    </View>
-                    <View style={styles.phoneFieldInner}>
-                      <Text style={styles.phonePrefix}>+91</Text>
-                      <View style={styles.phonePrefixRule} />
-                      <TextInput
-                        ref={phoneInputRef}
-                        style={styles.phoneInputUnified}
-                        placeholder={phone.length === 0 ? "Enter 10-digit number" : ""}
-                        placeholderTextColor={GatiMitraMerchant.textTertiary}
-                        value={phone}
-                        onChangeText={(t) => {
-                          clearErrors();
-                          setPhone(t.replace(/\D/g, "").slice(0, 10));
-                        }}
-                        onFocus={() => {
-                          setPhoneFieldFocused(true);
-                          scrollPhoneFormIntoView();
-                        }}
-                        onBlur={() => setPhoneFieldFocused(false)}
-                        keyboardType="phone-pad"
-                        maxLength={10}
-                        editable={!loading}
-                        selectionColor={GatiMitraMerchant.primary}
-                      />
-                    </View>
-                  </Pressable>
-
-                  {deviceSessionMode && lastExchange ? (
-                    <View style={[styles.warnBanner, { marginBottom: 12 }]}>
-                      <View style={styles.warnIconWrap}>
-                        <Ionicons name="cloud-offline-outline" size={22} color="#B45309" />
-                      </View>
-                      <View style={styles.warnBody}>
-                        <Text style={styles.warnTitle}>Could not start session</Text>
-                        <Text style={styles.warnText}>{error}</Text>
-                        <Pressable
-                          style={[styles.retryBtn, loading && styles.primaryBtnDisabled]}
-                          onPress={handleRetryDeviceSession}
-                          disabled={loading}
-                        >
-                          <Ionicons name="refresh" size={18} color="#92400E" />
-                          <Text style={styles.retryBtnText}>{loading ? "Trying…" : "Try again"}</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : error ? (
-                    <View style={[styles.errorBanner, { marginBottom: 12 }]}>
-                      <Ionicons name="alert-circle-outline" size={20} color={GatiMitraMerchant.error} />
-                      <Text style={styles.errorText}>{error}</Text>
-                    </View>
-                  ) : null}
-
-                  <Pressable
-                    style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
-                    onPress={handleRequestOtp}
-                    disabled={loading}
-                  >
-                    <LinearGradient
-                      colors={GatiMitraMerchant.primaryGradient}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={StyleSheet.absoluteFill}
-                    />
-                    {loading ? (
-                      <ActivityIndicator color="#fff" size="small" />
-                    ) : (
-                      <>
-                        <Text style={styles.primaryBtnText}>Send OTP</Text>
-                        <Ionicons name="arrow-forward" size={20} color="#fff" style={styles.btnIcon} />
-                      </>
-                    )}
-                  </Pressable>
-                </View>
-              </>
-            ) : (
-              <View style={[styles.sheetInputCluster, styles.sheetInputClusterOtp]}>
-                <Text style={styles.sheetLabel}>Verification</Text>
-                <Text style={styles.fieldLabel}>Enter 6-digit code</Text>
+              <View style={styles.warnBody}>
+                <Text style={styles.warnTitle}>Could not start session</Text>
+                <Text style={styles.warnText}>{error}</Text>
                 <Pressable
+                  style={[styles.retryBtn, loading && styles.btnDisabled]}
+                  onPress={handleRetryDeviceSession}
+                  disabled={loading}
+                >
+                  <Ionicons name="refresh" size={18} color="#92400E" />
+                  <Text style={styles.retryBtnText}>{loading ? "Trying…" : "Try again"}</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : step === "phone" && error ? (
+            <View style={styles.errorBanner}>
+              <Ionicons name="alert-circle-outline" size={20} color={GatiMitraMerchant.error} />
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
+
+          <Pressable
+            style={[
+              styles.proceedBtn,
+              phoneReady && !loading ? styles.proceedBtnReady : styles.proceedBtnIdle,
+              loading && styles.btnDisabled,
+            ]}
+            onPress={handleRequestOtp}
+            disabled={loading || !phoneReady || step !== "phone"}
+          >
+            {loading && step === "phone" ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.proceedBtnText}>Proceed</Text>
+            )}
+          </Pressable>
+
+          <View style={styles.registerBlock}>
+            <Text style={styles.registerMuted}>New partner? </Text>
+            <Pressable onPress={() => router.push("/(auth)/signup-webview")} hitSlop={8}>
+              <Text style={styles.registerLink}>Create account</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.legalBlock}>
+            <Text style={styles.legalPrefix}>By logging in, you agree to our</Text>
+            <View style={styles.legalLinksRow}>
+              <Pressable
+                onPress={() => Linking.openURL(legalUrls.terms).catch(() => {})}
+                hitSlop={6}
+              >
+                <Text style={styles.legalLink}>Terms & Conditions</Text>
+              </Pressable>
+              <Text style={styles.legalSeparator}>•</Text>
+              <Pressable
+                onPress={() => Linking.openURL(legalUrls.privacyPolicy).catch(() => {})}
+                hitSlop={6}
+              >
+                <Text style={styles.legalLink}>Privacy Policy</Text>
+              </Pressable>
+              <Text style={styles.legalSeparator}>•</Text>
+              <Pressable
+                onPress={() => Linking.openURL(legalUrls.codeOfConduct).catch(() => {})}
+                hitSlop={6}
+              >
+                <Text style={styles.legalLink}>Code of Conduct</Text>
+              </Pressable>
+            </View>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <Modal
+        visible={step === "otp"}
+        transparent
+        animationType="slide"
+        onRequestClose={handleCancelOtp}
+        statusBarTranslucent
+      >
+        <View style={styles.otpModalRoot}>
+          <Pressable style={styles.otpDim} onPress={handleCancelOtp} accessibilityLabel="Dismiss" />
+          <View style={[styles.otpSheetWrap, { marginBottom: otpKeyboardLift }]}>
+            <View style={styles.otpSheetOuter} pointerEvents="box-none">
+              <OtpSheetWaveCut width={windowWidth} />
+              <Pressable
+                style={[styles.otpSheet, { paddingBottom: Math.max(insets.bottom, 12) }]}
+                onPress={focusOtpFromSheetTap}
+                accessibilityRole="none"
+              >
+                <Text style={styles.otpSheetTitle}>Verify OTP</Text>
+                <Text style={styles.otpSheetSub}>
+                  The One Time Password is sent to {otpSentMask}. Please enter the One Time
+                  Password.
+                </Text>
+
+                <Pressable
+                  style={styles.otpBoxesRow}
                   onPress={() => otpInputRef.current?.focus()}
                   accessibilityLabel="One-time code, six digits"
-                  style={({ pressed }) => [
-                    styles.phoneFieldShell,
-                    styles.phoneFieldUnifiedLook,
-                    otpFieldFocused && styles.phoneFieldUnifiedFocus,
-                    pressed && styles.phoneFieldShellPressed,
-                  ]}
                 >
-                  <View style={styles.phoneEmptyIconWrap} importantForAccessibility="no">
-                    <Ionicons name="keypad-outline" size={20} color={GatiMitraMerchant.primary} />
-                  </View>
+                  {Array.from({ length: OTP_LEN }).map((_, index) => {
+                    const digit = otp[index] ?? "";
+                    const active = otpFieldFocused && index === Math.min(otp.length, OTP_LEN - 1);
+                    return (
+                      <View key={index} style={styles.otpBox}>
+                        <Text style={styles.otpDigit}>{digit || (active ? "" : "-")}</Text>
+                        <View style={[styles.otpUnderline, active && styles.otpUnderlineActive]} />
+                        {active && !digit ? <View style={styles.otpCaret} /> : null}
+                      </View>
+                    );
+                  })}
                   <TextInput
                     ref={otpInputRef}
-                    style={styles.otpInputPlain}
-                    placeholder={otp.length === 0 ? "• • • • • •" : ""}
-                    placeholderTextColor={GatiMitraMerchant.textTertiary}
+                    style={styles.otpHiddenInput}
                     value={otp}
                     onChangeText={(t) => {
                       clearErrors();
@@ -696,14 +615,34 @@ export default function LoginScreen() {
                     importantForAutofill="yes"
                     showSoftInputOnFocus
                     blurOnSubmit={false}
+                    caretHidden
                     selectionColor={GatiMitraMerchant.primary}
                   />
                 </Pressable>
-                <Text style={[styles.helper, otpKeyboardVisible && styles.helperOtpKb]}>
-                  {Platform.OS === "ios"
-                    ? "Use the code suggestion above the keyboard when available."
-                    : "Allow SMS permission to auto-fill, or type the code manually."}
-                </Text>
+
+                <View style={styles.otpResendRow}>
+                  <Text style={styles.otpTimerText}>
+                    {resendSeconds > 0
+                      ? `Resend OTP in ${resendMins}:${resendSecs.toString().padStart(2, "0")} sec`
+                      : resending
+                        ? "Sending code…"
+                        : "You can resend OTP now"}
+                  </Text>
+                  <Pressable
+                    onPress={handleResendOtp}
+                    disabled={resendSeconds > 0 || loading || resending}
+                    hitSlop={8}
+                  >
+                    <Text
+                      style={[
+                        styles.otpResendLink,
+                        (resendSeconds > 0 || loading || resending) && styles.otpResendLinkMuted,
+                      ]}
+                    >
+                      Resend OTP
+                    </Text>
+                  </Pressable>
+                </View>
 
                 {deviceSessionMode && lastExchange ? (
                   <View style={styles.warnBanner}>
@@ -717,7 +656,7 @@ export default function LoginScreen() {
                           "Our servers could not register this device. This is usually temporary — try again without a new OTP."}
                       </Text>
                       <Pressable
-                        style={[styles.retryBtn, loading && styles.primaryBtnDisabled]}
+                        style={[styles.retryBtn, loading && styles.btnDisabled]}
                         onPress={handleRetryDeviceSession}
                         disabled={loading}
                       >
@@ -733,604 +672,398 @@ export default function LoginScreen() {
                   </View>
                 ) : null}
 
-                <Pressable
-                  style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
-                  onPress={handleVerifyOtp}
-                  disabled={loading || deviceSessionMode}
-                >
-                  <LinearGradient
-                    colors={GatiMitraMerchant.primaryGradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={StyleSheet.absoluteFill}
-                  />
-                  {loading ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.primaryBtnText}>Verify & sign in</Text>
-                  )}
-                </Pressable>
-
-                <View style={[styles.otpFooter, otpKeyboardVisible && styles.otpFooterKb]}>
+                <View style={styles.otpActionsRow}>
                   <Pressable
-                    onPress={handleResendOtp}
-                    disabled={resendSeconds > 0 || loading || resending}
-                    hitSlop={8}
-                  >
-                    <Text
-                      style={[
-                        styles.linkText,
-                        (resendSeconds > 0 || loading || resending) && styles.linkMuted,
-                      ]}
-                    >
-                      {resending
-                        ? "Sending code…"
-                        : resendSeconds > 0
-                          ? `Resend in 0:${resendSeconds.toString().padStart(2, "0")}`
-                          : "Resend code"}
-                    </Text>
-                  </Pressable>
-                  <Text style={styles.dotSep}>·</Text>
-                  <Pressable
-                    onPress={() => {
-                      setStep("phone");
-                      setOtp("");
-                      clearErrors();
-                      setLastExchange(null);
-                    }}
+                    style={({ pressed }) => [
+                      styles.otpCancelBtn,
+                      pressed && styles.pressed,
+                      loading && styles.btnDisabled,
+                    ]}
+                    onPress={handleCancelOtp}
                     disabled={loading}
                   >
-                    <Text style={styles.linkText}>Wrong number?</Text>
+                    <Text style={styles.otpCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.otpVerifyBtn,
+                      otpReady && !loading && !deviceSessionMode
+                        ? styles.otpVerifyBtnReady
+                        : styles.otpVerifyBtnIdle,
+                      (loading || deviceSessionMode) && styles.btnDisabled,
+                    ]}
+                    onPress={handleVerifyOtp}
+                    disabled={loading || deviceSessionMode || !otpReady}
+                  >
+                    {loading ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Text style={styles.otpVerifyText}>Verify OTP</Text>
+                    )}
                   </Pressable>
                 </View>
-              </View>
-            )}
-              </View>
-
-              <View
-                style={[
-                  styles.registerBlock,
-                  step === "otp" && otpKeyboardVisible && styles.registerBlockOtpKb,
-                ]}
-              >
-                <Text style={styles.registerMuted}>New partner? </Text>
-                <Pressable onPress={() => router.push("/(auth)/signup-webview")} hitSlop={8}>
-                  <Text style={styles.registerLink}>Create account</Text>
-                </Pressable>
-              </View>
-                  </>
-                );
-                return step === "otp" ? (
-                  <Pressable
-                    style={otpKeyboardVisible ? styles.otpSheetPressableKb : styles.otpSheetPressable}
-                    onPress={focusOtpFromSheetTap}
-                    accessibilityRole="none"
-                  >
-                    {inner}
-                  </Pressable>
-                ) : (
-                  inner
-                );
-              })()}
-            </ScrollView>
+              </Pressable>
+            </View>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
 
-const SHEET_RADIUS = 28;
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: GatiMitraMerchant.navy,
+    backgroundColor: "#FFFFFF",
   },
   flex: {
     flex: 1,
   },
-  mainColumn: {
-    flex: 1,
-  },
-  topSection: {
-    flexShrink: 0,
-  },
-  /** Fills space above sheet so the card sits on the bottom with a shorter fixed max height. */
-  sheetSpacer: {
-    flex: 1,
-    minHeight: 0,
-  },
-  /** Phone + keyboard: pull sheet up under header so IME doesn’t cover the field. */
-  sheetSpacerCollapsed: {
-    height: 0,
-    minHeight: 0,
-    flexGrow: 0,
-    flexShrink: 0,
-  },
-  sheetScroll: {},
-  sheetScrollFill: {
-    flex: 1,
-    minHeight: 0,
-  },
-  sheetScrollContent: {
-    flexDirection: "column",
-  },
-  sheetScrollContentKb: {
+  content: {
     flexGrow: 1,
+    paddingHorizontal: 22,
   },
-  /** Form body — no flex grow (avoids empty space between primary CTA and footer). */
-  sheetFormArea: {
-    width: "100%",
-  },
-  sheetMethodBlock: {
-    width: "100%",
-    flexShrink: 0,
-    paddingBottom: 0,
-  },
-  /** Phone step: stack from top (avoid huge gap under segment). OTP: optional centering. */
-  sheetInputCluster: {
-    width: "100%",
-    paddingTop: 4,
-    paddingBottom: 4,
-  },
-  sheetInputClusterOtp: {
-    width: "100%",
-    paddingTop: 8,
-    paddingBottom: 4,
-  },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: H_PADDING,
-    marginBottom: 4,
-  },
-  headerSide: {
-    width: 44,
-    alignItems: "center",
+  backBtn: {
+    width: 40,
+    height: 40,
+    alignItems: "flex-start",
     justifyContent: "center",
-  },
-  headerSidePlaceholder: {
-    width: 44,
-    height: 44,
-  },
-  headerCenterSlot: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 44,
-  },
-  iconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    alignItems: "center",
-    justifyContent: "center",
+    marginBottom: 18,
   },
   pressed: {
-    opacity: 0.85,
+    opacity: 0.72,
   },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: "#fff",
-    letterSpacing: 0.2,
-  },
-  sheetWelcome: {
-    width: "100%",
-    alignItems: "center",
-    paddingBottom: 12,
-  },
-  sheetWelcomeCompact: {
-    width: "100%",
-    alignItems: "center",
-    paddingTop: 2,
-    paddingBottom: 10,
-    marginBottom: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraMerchant.divider,
-  },
-  sheetWelcomeCompactTitle: {
-    fontSize: 20,
-    fontWeight: "800",
+  title: {
+    fontFamily: LORA_BOLD,
+    fontSize: 28,
     color: GatiMitraMerchant.textPrimary,
-    textAlign: "center",
-    letterSpacing: -0.2,
+    letterSpacing: -0.4,
+    lineHeight: 34,
+    marginBottom: 10,
   },
-  sheetWelcomeCompactHint: {
-    fontSize: 13,
-    lineHeight: 18,
+  subtitle: {
+    fontFamily: LORA_BOLD,
+    fontSize: 14,
     color: GatiMitraMerchant.textSecondary,
-    textAlign: "center",
-    marginTop: 4,
-    paddingHorizontal: 12,
+    lineHeight: 21,
+    marginBottom: 28,
   },
-  sheetLogoRing: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  sheetLogoImg: {
-    width: 34,
-    height: 34,
-  },
-  sheetLogoRingCompact: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  sheetLogoImgCompact: {
-    width: 28,
-    height: 28,
-  },
-  sheetWelcomeAccent: {
-    width: 36,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: GatiMitraMerchant.primary,
-    marginBottom: 8,
-    opacity: 0.9,
-  },
-  sheetWelcomeTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
-    marginBottom: 6,
-    textAlign: "center",
-    letterSpacing: -0.3,
-  },
-  sheetWelcomeSubtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: GatiMitraMerchant.textSecondary,
-    textAlign: "center",
-    maxWidth: 340,
-    paddingHorizontal: 4,
-  },
-  sheet: {
-    flexShrink: 0,
-    alignSelf: "stretch",
-    overflow: "hidden",
-    backgroundColor: GatiMitraMerchant.background,
-    borderTopLeftRadius: SHEET_RADIUS,
-    borderTopRightRadius: SHEET_RADIUS,
-    marginTop: 0,
-    paddingHorizontal: H_PADDING,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderLeftWidth: 0,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderColor: "rgba(255,255,255,0.45)",
-    ...Platform.select({
-      web: { boxShadow: "0 -4px 12px rgba(15, 23, 42, 0.08)" },
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
-      },
-      android: { elevation: 12 },
-      default: {},
-    }),
-  },
-  sheetKeyboardOpen: {
-    paddingTop: 6,
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
-  },
-  /** Fills space between header and KeyboardAvoidingView padding (removes blue gap above IME). */
-  sheetFillAboveKeyboard: {
-    flex: 1,
-    minHeight: 0,
-    alignSelf: "stretch",
-  },
-  sheetLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textTertiary,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginBottom: 8,
-  },
-  segmentRow: {
-    flexDirection: "row",
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    borderRadius: 14,
-    padding: 4,
-    marginBottom: 14,
-    gap: 4,
-  },
-  segmentCell: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 6,
-    borderRadius: 11,
-    minHeight: 44,
-  },
-  segmentCellActive: {
-    backgroundColor: GatiMitraMerchant.navy,
-    ...GatiMitraMerchant.shadowSm,
-  },
-  segmentCellDisabled: {
-    backgroundColor: GatiMitraMerchant.surfaceWarm,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  segmentText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
-  },
-  segmentTextActive: {
-    color: "#fff",
-  },
-  segmentTextMuted: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textTertiary,
-    flexShrink: 1,
-  },
-  comingSoonBadge: {
-    marginLeft: 4,
-    paddingVertical: 2,
-    paddingHorizontal: 6,
-    borderRadius: 6,
-    backgroundColor: GatiMitraMerchant.statusPendingBg,
-  },
-  comingSoonBadgeText: {
-    fontSize: 9,
-    fontWeight: "700",
-    color: GatiMitraMerchant.statusPending,
-    letterSpacing: 0.15,
-  },
-  fieldLabel: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
-    marginBottom: 8,
-  },
-  phoneFieldShell: {
+  phoneShell: {
     flexDirection: "row",
     alignItems: "center",
     minHeight: 56,
     borderRadius: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-  },
-  /** Same look empty / typing / after digits — only border tightens slightly on focus. */
-  phoneFieldUnifiedLook: {
-    backgroundColor: "#FFFFFF",
     borderWidth: 1.5,
-    borderStyle: "solid",
-    borderColor: GatiMitraMerchant.border,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 12,
+    marginBottom: 20,
   },
-  phoneFieldUnifiedFocus: {
+  phoneShellFocused: {
     borderColor: GatiMitraMerchant.primary,
-    borderWidth: 2,
   },
-  phoneFieldShellPressed: {
-    opacity: 0.98,
-  },
-  phoneEmptyIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: "rgba(94, 217, 168, 0.14)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 8,
-  },
-  phoneFieldInner: {
-    flex: 1,
+  ccBlock: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 46,
+    gap: 6,
+    paddingRight: 10,
   },
-  phonePrefix: {
-    fontSize: 17,
-    fontWeight: "800",
+  flagEmoji: {
+    fontSize: 18,
+    lineHeight: 22,
+  },
+  ccText: {
+    fontFamily: POPPINS_BOLD,
+    fontSize: 16,
     color: GatiMitraMerchant.textPrimary,
+  },
+  ccDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    backgroundColor: "#CBD5E1",
+    marginVertical: 12,
+    marginRight: 12,
+  },
+  phoneInput: {
+    flex: 1,
+    fontFamily: POPPINS_BOLD,
+    fontSize: 16,
+    color: GatiMitraMerchant.textPrimary,
+    paddingVertical: Platform.OS === "ios" ? 14 : 10,
+    includeFontPadding: false,
+  },
+  proceedBtn: {
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  proceedBtnIdle: {
+    backgroundColor: "#94A3B8",
+  },
+  proceedBtnReady: {
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  proceedBtnText: {
+    fontFamily: LORA_BOLD,
+    fontSize: 16,
+    color: "#FFFFFF",
     letterSpacing: 0.2,
   },
-  phonePrefixRule: {
-    width: 1,
-    height: 24,
-    backgroundColor: GatiMitraMerchant.border,
-    marginLeft: 10,
-    marginRight: 6,
+  btnDisabled: {
+    opacity: 0.7,
   },
-  phoneInputUnified: {
-    flex: 1,
-    minHeight: 46,
-    paddingHorizontal: 8,
-    paddingVertical: Platform.OS === "ios" ? 10 : 8,
-    fontSize: 18,
-    fontWeight: "600",
-    letterSpacing: 0.6,
-    color: GatiMitraMerchant.textPrimary,
-    backgroundColor: "transparent",
-  },
-  helper: {
-    fontSize: 12,
-    color: GatiMitraMerchant.textTertiary,
-    marginTop: 8,
-    marginBottom: 12,
-    lineHeight: 17,
-  },
-  helperOtpKb: {
-    marginTop: 6,
-    marginBottom: 6,
-  },
-  primaryBtn: {
-    height: 56,
-    borderRadius: 14,
-    overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-  },
-  primaryBtnDisabled: {
-    opacity: 0.65,
-  },
-  primaryBtnText: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#fff",
-  },
-  btnIcon: {
-    marginLeft: 4,
-  },
-  /** OTP step: tap empty sheet focuses input; flexGrow fills sheet when keyboard closed. */
-  otpSheetPressable: {
-    flexGrow: 1,
-    width: "100%",
-  },
-  otpSheetPressableKb: {
-    flexGrow: 0,
-    width: "100%",
-  },
-  /** Same shell as phone row; single visible numeric field for the 6-digit code. */
-  otpInputPlain: {
-    flex: 1,
-    minHeight: 46,
-    paddingHorizontal: 8,
-    paddingVertical: Platform.OS === "ios" ? 10 : 8,
-    fontSize: 20,
-    fontWeight: "700",
-    letterSpacing: 10,
-    color: GatiMitraMerchant.textPrimary,
-    backgroundColor: "transparent",
-  },
-  otpFooter: {
+  registerBlock: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 18,
-    gap: 10,
+    marginTop: 28,
   },
-  otpFooterKb: {
-    marginTop: 10,
+  registerMuted: {
+    fontFamily: LORA_BOLD,
+    fontSize: 14,
+    color: GatiMitraMerchant.textSecondary,
   },
-  linkText: {
-    fontSize: 15,
-    fontWeight: "600",
+  registerLink: {
+    fontFamily: LORA_BOLD,
+    fontSize: 14,
     color: GatiMitraMerchant.primary,
   },
-  linkMuted: {
-    color: GatiMitraMerchant.textTertiary,
+  legalBlock: {
+    alignItems: "center",
+    marginTop: 22,
+    paddingHorizontal: 4,
   },
-  dotSep: {
+  legalPrefix: {
+    fontFamily: LORA_BOLD,
+    fontSize: 12,
+    lineHeight: 18,
     color: GatiMitraMerchant.textTertiary,
+    textAlign: "center",
+  },
+  legalLinksRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+    columnGap: 7,
+    rowGap: 4,
+    marginTop: 4,
+  },
+  legalLink: {
+    fontFamily: LORA_BOLD,
+    fontSize: 12,
+    lineHeight: 18,
+    color: GatiMitraMerchant.primaryDark,
+    textDecorationLine: "underline",
+  },
+  legalSeparator: {
+    fontSize: 11,
+    color: "#CBD5E1",
+  },
+  otpModalRoot: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  otpDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+  },
+  otpSheetWrap: {
+    width: "100%",
+  },
+  otpSheetOuter: {
+    width: "100%",
+  },
+  otpWave: {
+    alignSelf: "stretch",
+  },
+  otpSheet: {
+    backgroundColor: "#FFFFFF",
+    marginTop: -(OTP_WAVE_H - OTP_WAVE_LOW_Y),
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  otpSheetTitle: {
+    fontFamily: LORA_BOLD,
+    fontSize: 18,
+    color: GatiMitraMerchant.textPrimary,
+    marginTop: -(OTP_WAVE_LOW_Y - 14),
+    marginBottom: 8,
+  },
+  otpSheetSub: {
+    fontFamily: LORA_BOLD,
+    fontSize: 12,
+    lineHeight: 17,
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 14,
+  },
+  otpBoxesRow: {
+    position: "relative",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 10,
+  },
+  otpBox: {
+    flex: 1,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    paddingBottom: 6,
+  },
+  otpDigit: {
+    fontFamily: POPPINS_BOLD,
+    fontSize: 22,
+    color: GatiMitraMerchant.textPrimary,
+    minHeight: 26,
+    textAlign: "center",
+  },
+  otpUnderline: {
+    width: "100%",
+    height: 1.5,
+    borderRadius: 1,
+    backgroundColor: "#94A3B8",
+  },
+  otpUnderlineActive: {
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  otpCaret: {
+    position: "absolute",
+    bottom: 10,
+    width: 2,
+    height: 20,
+    backgroundColor: GatiMitraMerchant.textPrimary,
+  },
+  otpHiddenInput: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.02,
+    color: "transparent",
+  },
+  otpResendRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  otpTimerText: {
+    fontFamily: POPPINS_BOLD,
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+    flex: 1,
+    paddingRight: 8,
+  },
+  otpResendLink: {
+    fontFamily: LORA_BOLD,
+    fontSize: 13,
+    color: GatiMitraMerchant.primaryDark,
+    textDecorationLine: "underline",
+  },
+  otpResendLinkMuted: {
+    color: GatiMitraMerchant.textTertiary,
+    textDecorationLine: "none",
+  },
+  otpActionsRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 2,
+  },
+  otpCancelBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1.5,
+    borderColor: "#0F172A",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  otpCancelText: {
+    fontFamily: LORA_BOLD,
     fontSize: 15,
+    color: "#0F172A",
+  },
+  otpVerifyBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  otpVerifyBtnIdle: {
+    backgroundColor: "#94A3B8",
+  },
+  otpVerifyBtnReady: {
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  otpVerifyText: {
+    fontFamily: LORA_BOLD,
+    fontSize: 15,
+    color: "#FFFFFF",
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  errorText: {
+    flex: 1,
+    fontFamily: LORA_BOLD,
+    fontSize: 13,
+    color: GatiMitraMerchant.error,
+    lineHeight: 18,
   },
   warnBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 12,
-    padding: 14,
-    borderRadius: 14,
+    gap: 10,
     backgroundColor: "#FFFBEB",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
     borderWidth: 1,
     borderColor: "#FDE68A",
-    marginBottom: 16,
   },
   warnIconWrap: {
     marginTop: 2,
   },
   warnBody: {
     flex: 1,
+    minWidth: 0,
   },
   warnTitle: {
-    fontSize: 15,
-    fontWeight: "800",
+    fontFamily: LORA_BOLD,
+    fontSize: 14,
     color: "#92400E",
     marginBottom: 4,
   },
   warnText: {
+    fontFamily: LORA_BOLD,
     fontSize: 13,
-    lineHeight: 19,
-    color: "#A16207",
-    marginBottom: 12,
+    color: "#B45309",
+    lineHeight: 18,
   },
   retryBtn: {
-    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    marginTop: 10,
+    alignSelf: "flex-start",
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: "#FEF3C7",
-    borderWidth: 1,
-    borderColor: "#FCD34D",
   },
   retryBtnText: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontFamily: LORA_BOLD,
+    fontSize: 13,
     color: "#92400E",
-  },
-  errorBanner: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: "#FEF2F2",
-    borderWidth: 1,
-    borderColor: "#FECACA",
-    marginBottom: 16,
-  },
-  errorText: {
-    flex: 1,
-    fontSize: 14,
-    lineHeight: 20,
-    color: "#B91C1C",
-    fontWeight: "500",
-  },
-  registerBlock: {
-    flexShrink: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingTop: 12,
-    paddingBottom: 4,
-    marginTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraMerchant.divider,
-  },
-  registerBlockOtpKb: {
-    paddingTop: 6,
-    paddingBottom: 2,
-    marginTop: 2,
-  },
-  registerMuted: {
-    fontSize: 14,
-    color: GatiMitraMerchant.textSecondary,
-  },
-  registerLink: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: GatiMitraMerchant.primary,
   },
 });
