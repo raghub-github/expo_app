@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createReviewModeService,
   createPartnerReviewLoginService,
+  createRiderReviewLoginService,
   createReviewBypasses,
   matchReviewBypass,
   __test,
@@ -10,20 +11,22 @@ import {
 import type { Env } from "../../config/env.js";
 
 /**
- * Two INDEPENDENT store-review bypasses:
+ * THREE INDEPENDENT store-review bypasses, one per app, each with its OWN number:
  *
- *   Partner (merchant + rider) → REVIEW_LOGIN_BYPASS_ENABLED / REVIEW_LOGIN_PHONE / REVIEW_LOGIN_FIXED_OTP
- *   Customer app               → GOOGLE_REVIEW_MODE / GOOGLE_REVIEW_PHONE / GOOGLE_REVIEW_OTP
+ *   Merchant app → REVIEW_LOGIN_BYPASS_ENABLED / REVIEW_LOGIN_PHONE / REVIEW_LOGIN_FIXED_OTP
+ *   Rider app    → RIDER_REVIEW_LOGIN_BYPASS_ENABLED / RIDER_REVIEW_LOGIN_PHONE / RIDER_REVIEW_LOGIN_FIXED_OTP
+ *   Customer app → GOOGLE_REVIEW_MODE / GOOGLE_REVIEW_PHONE / GOOGLE_REVIEW_OTP
  *
  * They share no config and never fall back to each other. The route picks the
  * bypass by phone number (the OTP request body has no appType), so the critical
- * property is that each fixed OTP is seeded ONLY for its own phone. The partner
- * bypass serves BOTH the merchant and rider apps (same phone, same OTP, same
- * backend OTP endpoints); verify's appType selects the pipeline.
+ * property is that each fixed OTP is seeded ONLY for its own phone; verify's
+ * appType then selects the app pipeline.
  */
 
 const MERCHANT_PHONE = "7367878981";
 const MERCHANT_OTP = "123456";
+const RIDER_PHONE = "9113194305";
+const RIDER_OTP = "123456";
 const CUSTOMER_PHONE = "9999999999";
 const CUSTOMER_OTP = "654321";
 
@@ -33,12 +36,24 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     REVIEW_LOGIN_BYPASS_ENABLED: false,
     REVIEW_LOGIN_PHONE: undefined,
     REVIEW_LOGIN_FIXED_OTP: undefined,
+    RIDER_REVIEW_LOGIN_BYPASS_ENABLED: false,
+    RIDER_REVIEW_LOGIN_PHONE: undefined,
+    RIDER_REVIEW_LOGIN_FIXED_OTP: undefined,
     GOOGLE_REVIEW_MODE: false,
     GOOGLE_REVIEW_PHONE: undefined,
     GOOGLE_REVIEW_OTP: undefined,
     ...overrides,
   } as unknown as Env;
 }
+
+/** Rider bypass fully enabled (its own number). */
+const riderOn = (o: Partial<Env> = {}) =>
+  makeEnv({
+    RIDER_REVIEW_LOGIN_BYPASS_ENABLED: true,
+    RIDER_REVIEW_LOGIN_PHONE: RIDER_PHONE,
+    RIDER_REVIEW_LOGIN_FIXED_OTP: RIDER_OTP,
+    ...o,
+  } as Partial<Env>);
 
 /** Merchant bypass fully enabled. */
 const merchantOn = (o: Partial<Env> = {}) =>
@@ -239,83 +254,103 @@ describe("internals", () => {
   });
 });
 
-describe("Partner bypass serves BOTH merchant and rider (Rider app coverage)", () => {
-  const PARTNER_PHONE = MERCHANT_PHONE; // same review number for merchant + rider
-  const partnerOn = () =>
-    makeEnv({
-      REVIEW_LOGIN_BYPASS_ENABLED: true,
-      REVIEW_LOGIN_PHONE: PARTNER_PHONE,
-      REVIEW_LOGIN_FIXED_OTP: MERCHANT_OTP,
-    } as Partial<Env>);
-
+describe("Rider app review login bypass (RIDER_REVIEW_LOGIN_*, its own number 9113194305)", () => {
   it("disabled by default → rider review phone uses the normal SMS flow", () => {
-    const all = createReviewBypasses(makeEnv());
-    assert.equal(matchReviewBypass(all, PARTNER_PHONE), null);
+    assert.equal(createRiderReviewLoginService(makeEnv()).isReviewLogin(RIDER_PHONE), false);
   });
 
-  it("enabled → the SAME phone is matched regardless of which app (merchant or rider) sends it", () => {
-    // The OTP request has no appType; the phone is the only discriminator, and it
-    // resolves to the one partner bypass for both apps.
-    const all = createReviewBypasses(partnerOn());
-    const bypass = matchReviewBypass(all, PARTNER_PHONE);
-    assert.ok(bypass, "review phone must resolve to a bypass");
-    assert.equal(bypass!.app, "partner");
-    assert.equal(bypass!.getReviewOtp(), MERCHANT_OTP);
+  it("flag off but phone/OTP set → still off (the flag is the kill switch)", () => {
+    const svc = createRiderReviewLoginService(
+      makeEnv({
+        RIDER_REVIEW_LOGIN_BYPASS_ENABLED: false,
+        RIDER_REVIEW_LOGIN_PHONE: RIDER_PHONE,
+        RIDER_REVIEW_LOGIN_FIXED_OTP: RIDER_OTP,
+      } as Partial<Env>),
+    );
+    assert.equal(svc.isReviewLogin(RIDER_PHONE), false);
   });
 
-  it("SECURITY: the fixed OTP never applies to any other rider number", () => {
-    const svc = createPartnerReviewLoginService(partnerOn());
-    for (const other of ["+919876543210", "9876543210", "7367878980", "+917367878982"]) {
+  it("enabled + configured rider phone → bypass active, fixed OTP seeded", () => {
+    const svc = createRiderReviewLoginService(riderOn());
+    assert.equal(svc.isReviewLogin(RIDER_PHONE), true);
+    assert.equal(svc.isReviewLogin(`+91${RIDER_PHONE}`), true, "E.164 form must match");
+    assert.equal(svc.getReviewOtp(), RIDER_OTP);
+    assert.equal(svc.app, "rider");
+  });
+
+  it("SECURITY: the fixed OTP never applies to any other number", () => {
+    const svc = createRiderReviewLoginService(riderOn());
+    for (const other of ["+919876543210", "9876543210", "9113194304", "+919113194306", MERCHANT_PHONE]) {
       assert.equal(svc.isReviewLogin(other), false, `${other} must use the normal SMS flow`);
     }
   });
 
-  it("verify-stage log records the CONCRETE app (merchant vs rider), not just the surface", () => {
-    const svc = createPartnerReviewLoginService(partnerOn());
-    const forApp = (appType: string) => {
-      const seen: Record<string, unknown>[] = [];
-      const log = { info: (o: Record<string, unknown>) => seen.push(o) };
-      svc.logReviewLogin(log as never, {
-        phone: `+91${PARTNER_PHONE}`,
-        ip: "1.2.3.4",
-        stage: "verify",
-        ok: true,
-        appType,
-      });
-      return seen[0]!;
-    };
-
-    const rider = forApp("rider");
-    assert.equal(rider.surface, "partner");
-    assert.equal(rider.appType, "rider");
-    assert.equal(rider.phoneTail, "8981");
-    assert.equal(JSON.stringify(rider).includes(MERCHANT_OTP), false, "OTP must never be logged");
-
-    const merchant = forApp("merchant");
-    assert.equal(merchant.appType, "merchant");
-  });
-
-  it("request-stage log (no appType) falls back to the bypass surface", () => {
-    const svc = createPartnerReviewLoginService(partnerOn());
-    const seen: Record<string, unknown>[] = [];
-    const log = { info: (o: Record<string, unknown>) => seen.push(o) };
-    svc.logReviewLogin(log as never, {
-      phone: PARTNER_PHONE,
-      ip: null,
-      stage: "request",
-      ok: true,
-    });
-    assert.equal(seen[0]!.appType, "partner");
-    assert.equal(seen[0]!.surface, "partner");
-  });
-
-  it("a rider on the review phone does NOT trip the customer bypass and vice-versa", () => {
-    const all = createReviewBypasses(
-      partnerOn(),
+  it("half-configured rider bypass stays OFF (fail closed)", () => {
+    assert.equal(
+      createRiderReviewLoginService(
+        makeEnv({ RIDER_REVIEW_LOGIN_BYPASS_ENABLED: true, RIDER_REVIEW_LOGIN_FIXED_OTP: RIDER_OTP } as Partial<Env>),
+      ).isReviewLogin(RIDER_PHONE),
+      false,
     );
-    // customer bypass is off here → customer review phone falls through to SMS
+    assert.equal(
+      createRiderReviewLoginService(
+        makeEnv({ RIDER_REVIEW_LOGIN_BYPASS_ENABLED: true, RIDER_REVIEW_LOGIN_PHONE: RIDER_PHONE } as Partial<Env>),
+      ).isReviewLogin(RIDER_PHONE),
+      false,
+    );
+  });
+
+  it("verify-stage log records appType=rider; OTP + full phone never logged", () => {
+    const svc = createRiderReviewLoginService(riderOn());
+    const seen: Record<string, unknown>[] = [];
+    svc.logReviewLogin({ info: (o: Record<string, unknown>) => seen.push(o) } as never, {
+      phone: `+91${RIDER_PHONE}`,
+      ip: "1.2.3.4",
+      stage: "verify",
+      ok: true,
+      appType: "rider",
+    });
+    const rec = seen[0]!;
+    assert.equal(rec.surface, "rider");
+    assert.equal(rec.appType, "rider");
+    assert.equal(rec.phoneTail, "4305");
+    const s = JSON.stringify(rec);
+    assert.equal(s.includes(RIDER_OTP), false, "OTP must never be logged");
+    assert.equal(s.includes(RIDER_PHONE), false, "full phone must never be logged");
+  });
+});
+
+describe("Three bypasses are fully isolated (merchant / rider / customer)", () => {
+  const allOn = () =>
+    riderOn({
+      REVIEW_LOGIN_BYPASS_ENABLED: true,
+      REVIEW_LOGIN_PHONE: MERCHANT_PHONE,
+      REVIEW_LOGIN_FIXED_OTP: MERCHANT_OTP,
+      GOOGLE_REVIEW_MODE: true,
+      GOOGLE_REVIEW_PHONE: CUSTOMER_PHONE,
+      GOOGLE_REVIEW_OTP: CUSTOMER_OTP,
+    } as Partial<Env>);
+
+  it("each review number resolves to its OWN bypass only", () => {
+    const all = createReviewBypasses(allOn());
+    assert.equal(matchReviewBypass(all, MERCHANT_PHONE)?.app, "partner");
+    assert.equal(matchReviewBypass(all, RIDER_PHONE)?.app, "rider");
+    assert.equal(matchReviewBypass(all, `+91${RIDER_PHONE}`)?.app, "rider");
+    assert.equal(matchReviewBypass(all, CUSTOMER_PHONE)?.app, "customer");
+    assert.equal(matchReviewBypass(all, "+919876543210"), null, "normal user → real SMS");
+  });
+
+  it("enabling ONLY the rider bypass leaves merchant + customer numbers on SMS", () => {
+    const all = createReviewBypasses(riderOn());
+    assert.equal(matchReviewBypass(all, RIDER_PHONE)?.app, "rider");
+    assert.equal(matchReviewBypass(all, MERCHANT_PHONE), null);
     assert.equal(matchReviewBypass(all, CUSTOMER_PHONE), null);
-    // partner review phone resolves to the partner bypass only
-    assert.equal(matchReviewBypass(all, PARTNER_PHONE)!.app, "partner");
+  });
+
+  it("the three fixed OTPs stay separate", () => {
+    const env = allOn();
+    assert.equal(createPartnerReviewLoginService(env).getReviewOtp(), MERCHANT_OTP);
+    assert.equal(createRiderReviewLoginService(env).getReviewOtp(), RIDER_OTP);
+    assert.equal(createReviewModeService(env).getReviewOtp(), CUSTOMER_OTP);
   });
 });

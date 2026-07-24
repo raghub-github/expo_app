@@ -7,19 +7,20 @@
  * OTP request and OTP verify — and nothing else in the existing OTP / JWT /
  * session / middleware logic changes. There is no separate authentication path.
  *
- * There are TWO INDEPENDENT bypasses. They never share config and never fall
- * back to each other, so enabling or rotating one cannot affect the other:
+ * There are THREE INDEPENDENT bypasses. They never share config and never fall
+ * back to each other, so enabling or rotating one cannot affect the others:
  *
- *   Customer app       → GOOGLE_REVIEW_MODE / GOOGLE_REVIEW_PHONE / GOOGLE_REVIEW_OTP
- *   Merchant + Rider   → REVIEW_LOGIN_BYPASS_ENABLED / REVIEW_LOGIN_PHONE /
- *   ("partner" apps)     REVIEW_LOGIN_FIXED_OTP
+ *   Customer app   → GOOGLE_REVIEW_MODE / GOOGLE_REVIEW_PHONE / GOOGLE_REVIEW_OTP
+ *   Merchant app   → REVIEW_LOGIN_BYPASS_ENABLED / REVIEW_LOGIN_PHONE / REVIEW_LOGIN_FIXED_OTP
+ *   Rider app      → RIDER_REVIEW_LOGIN_BYPASS_ENABLED / RIDER_REVIEW_LOGIN_PHONE /
+ *                    RIDER_REVIEW_LOGIN_FIXED_OTP
  *
- * The merchant and rider apps sign in through the SAME backend OTP endpoints
- * (POST /otp/request → /otp/verify) with the same review phone, so ONE "partner"
- * bypass covers both. The OTP request carries no appType (adding one would need a
- * frontend change), but the fixed OTP is identical for either app, and verify
- * DOES carry appType, so each app's own pipeline (merchant session vs rider
- * profile/onboarding/KYC) runs unchanged. The bypass only overrides the OTP gate.
+ * All three apps sign in through the SAME backend OTP endpoints
+ * (POST /otp/request → /otp/verify). The OTP request carries no appType (adding
+ * one would need a frontend change), so the phone number is the discriminator —
+ * each bypass owns a DISTINCT review number. verify DOES carry appType, so each
+ * app's own pipeline (merchant session vs rider profile/onboarding/KYC vs
+ * customer) runs unchanged. The bypass only ever overrides the OTP gate.
  *
  * A bypass activates only when ALL of the following hold:
  *   - its enable flag is true
@@ -37,10 +38,10 @@ import type { FastifyBaseLogger } from "fastify";
 import type { Env } from "../../config/env.js";
 
 /**
- * Which surface a bypass belongs to — used for logging and isolation only.
- * "partner" is the shared merchant+rider bypass (REVIEW_LOGIN_*).
+ * Which app a bypass belongs to — used for logging and isolation only.
+ * ("partner" is the merchant bypass name, kept for backward compatibility.)
  */
-export type ReviewApp = "customer" | "partner";
+export type ReviewApp = "customer" | "partner" | "rider";
 
 /** Strip every non-digit. E.164 "+919999999999" -> "919999999999". */
 function digitsOnly(phone: string | undefined | null): string {
@@ -158,10 +159,9 @@ export function createReviewModeService(env: Env): ReviewModeService {
 }
 
 /**
- * Partner (merchant + rider) app bypass — REVIEW_LOGIN_* (independent of the
- * customer one). Both apps share the same review phone and OTP and the same
- * backend OTP endpoints, so one bypass serves both; verify's appType decides
- * which pipeline runs.
+ * Merchant app bypass — REVIEW_LOGIN_* (independent of customer + rider).
+ * (Historically called "partner"; the function name is kept so callers/tests
+ * don't churn.)
  */
 export function createPartnerReviewLoginService(env: Env): ReviewModeService {
   return createBypass({
@@ -175,12 +175,32 @@ export function createPartnerReviewLoginService(env: Env): ReviewModeService {
 }
 
 /**
+ * Rider app bypass — RIDER_REVIEW_LOGIN_* (its OWN review number, independent of
+ * merchant + customer). Rider signs in through the same backend OTP endpoints;
+ * verify's appType routes to the rider profile / onboarding / KYC pipeline.
+ */
+export function createRiderReviewLoginService(env: Env): ReviewModeService {
+  return createBypass({
+    app: "rider",
+    enabled: env.RIDER_REVIEW_LOGIN_BYPASS_ENABLED === true,
+    phone: env.RIDER_REVIEW_LOGIN_PHONE,
+    otp: env.RIDER_REVIEW_LOGIN_FIXED_OTP,
+    otpEnvName: "RIDER_REVIEW_LOGIN_FIXED_OTP",
+    nodeEnv: env.NODE_ENV,
+  });
+}
+
+/**
  * Every configured bypass, in a stable order. The OTP request endpoint has no
  * appType (adding one would require a frontend change), so the phone number is
  * the discriminator — each bypass owns a distinct number.
  */
 export function createReviewBypasses(env: Env): ReviewModeService[] {
-  return [createReviewModeService(env), createPartnerReviewLoginService(env)];
+  return [
+    createReviewModeService(env),
+    createPartnerReviewLoginService(env),
+    createRiderReviewLoginService(env),
+  ];
 }
 
 /** The bypass that claims this phone, or null when the normal SMS flow applies. */

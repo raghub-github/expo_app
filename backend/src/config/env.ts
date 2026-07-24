@@ -369,6 +369,23 @@ const EnvSchema = z.object({
   ),
 
   /**
+   * RIDER APP review login OTP bypass. Same mechanics as the merchant one above,
+   * for a DIFFERENT review phone (rider reviewers use their own number). Fully
+   * independent flag/phone/OTP — enabling or rotating it cannot affect merchant
+   * or customer. The rider app signs in through the same backend OTP endpoints,
+   * so verify's appType routes to the rider profile / onboarding / KYC pipeline.
+   */
+  RIDER_REVIEW_LOGIN_BYPASS_ENABLED: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  RIDER_REVIEW_LOGIN_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),
+  RIDER_REVIEW_LOGIN_FIXED_OTP: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{4,8}$/).optional()
+  ),
+
+  /**
    * CUSTOMER APP review login OTP bypass. Same mechanics as the merchant one
    * above, for a different app and a different review phone. Independent flag.
    */
