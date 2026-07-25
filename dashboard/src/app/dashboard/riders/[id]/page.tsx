@@ -166,7 +166,15 @@ interface OnboardingPaymentEntry {
   provider: string;
   refId: string;
   paymentId: string | null;
+  razorpayPaymentId?: string | null;
   status: string;
+  refund?: {
+    status: string | null;
+    refundId: string | null;
+    amountPaise: number | null;
+    partial: boolean;
+    at: string | null;
+  } | null;
   createdAt: string;
 }
 
@@ -616,11 +624,18 @@ export default function RiderDetailsPage() {
                 <span className="font-semibold text-gray-900 w-20">₹{Number(p.amount).toFixed(2)}</span>
                 <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                   p.status === "completed" ? "bg-emerald-100 text-emerald-800" :
-                  p.status === "failed" ? "bg-red-100 text-red-800" : 
+                  p.status === "failed" ? "bg-red-100 text-red-800" :
+                  p.status === "refunded" ? "bg-indigo-100 text-indigo-800" :
                   "bg-amber-100 text-amber-800"
                 }`}>
                   {p.status}
                 </span>
+                {p.refund && p.refund.amountPaise != null ? (
+                  <span className="text-indigo-700 font-medium">
+                    ↩ ₹{(p.refund.amountPaise / 100).toFixed(2)}
+                    {p.refund.partial ? " (partial)" : ""}
+                  </span>
+                ) : null}
                 <span className="text-gray-600">{p.provider || "—"}</span>
                 <span className="font-mono text-gray-500 text-[10px]">{p.refId || "—"}</span>
                 <span className="text-gray-500 ml-auto">{new Date(p.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>

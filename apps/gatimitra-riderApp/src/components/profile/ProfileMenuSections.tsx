@@ -85,6 +85,15 @@ export function ProfileMenuSections({
             subtitle: t("profile.myOrders.menuSub", "Food, ride & parcel history"),
             onPress: () => router.push("/my-rides"),
           },
+          {
+            key: "payment-details",
+            icon: "receipt-outline",
+            iconColor: "#0369A1",
+            iconBg: "#E0F2FE",
+            title: t("profile.paymentDetails.menu", "Onboarding Payment"),
+            subtitle: t("profile.paymentDetails.menuSub", "Fee, receipt & refund status"),
+            onPress: () => router.push("/payment-details"),
+          },
         ]}
       />
 

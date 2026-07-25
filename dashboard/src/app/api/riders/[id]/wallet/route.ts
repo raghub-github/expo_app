@@ -50,6 +50,7 @@ export async function GET(
             refId: onboardingPayments.refId,
             paymentId: onboardingPayments.paymentId,
             status: onboardingPayments.status,
+            metadata: onboardingPayments.metadata,
             createdAt: onboardingPayments.createdAt,
           })
           .from(onboardingPayments)
@@ -136,17 +137,34 @@ export async function GET(
           mobile: rider.mobile,
         },
         wallet,
-        onboardingPayments: onboardingRows.map((r) => ({
-          id: r.id,
-          riderId: r.riderId,
-          amount: String(r.amount),
-          provider: r.provider,
-          refId: r.refId,
-          paymentId: r.paymentId ?? null,
-          status: r.status,
-          createdAt:
-            r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
-        })),
+        onboardingPayments: onboardingRows.map((r) => {
+          const meta = (r.metadata ?? {}) as Record<string, unknown>;
+          const asStr = (v: unknown): string | null =>
+            typeof v === "string" && v.length > 0 ? v : null;
+          const asNum = (v: unknown): number | null =>
+            typeof v === "number" && Number.isFinite(v) ? v : null;
+          const hasRefund = r.status === "refunded" || meta.refundId != null;
+          return {
+            id: r.id,
+            riderId: r.riderId,
+            amount: String(r.amount),
+            provider: r.provider,
+            refId: r.refId,
+            paymentId: r.paymentId ?? null,
+            status: r.status,
+            refund: hasRefund
+              ? {
+                  status: asStr(meta.refundStatus),
+                  refundId: asStr(meta.refundId),
+                  amountPaise: asNum(meta.refundedAmountPaise),
+                  partial: meta.refundPartial === true,
+                  at: asStr(meta.refundUpdatedAt),
+                }
+              : null,
+            createdAt:
+              r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+          };
+        }),
       },
     });
   } catch (error) {

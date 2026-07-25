@@ -159,15 +159,30 @@ export interface RiderPaymentMethod {
   createdAt: string;
 }
 
+export interface RiderOnboardingPaymentRefund {
+  status: string | null;
+  refundId: string | null;
+  amountPaise: number | null;
+  partial: boolean;
+  at: string | null;
+}
+
 export interface RiderOnboardingPaymentEntry {
   id: number;
   riderId: number;
   amount: string;
+  amountPaise?: number;
+  subtotalPaise?: number | null;
+  gstAmountPaise?: number | null;
+  gstPercentApplied?: number | null;
   provider: string;
   refId: string;
   paymentId: string | null;
+  razorpayPaymentId?: string | null;
   status: string;
+  refund?: RiderOnboardingPaymentRefund | null;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface RiderDetailsResponse {

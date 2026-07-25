@@ -17,10 +17,15 @@ import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import RazorpayCheckout from "react-native-razorpay";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
-import { useCreatePaymentOrder, useVerifyPayment } from "@/src/hooks/usePayment";
+import {
+  useCreatePaymentOrder,
+  useVerifyPayment,
+  useRecordPaymentAttempt,
+} from "@/src/hooks/usePayment";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import {
@@ -114,6 +119,7 @@ export default function PaymentScreen() {
   const { data, hydrate } = useOnboardingStore();
   const createOrder = useCreatePaymentOrder();
   const verifyPayment = useVerifyPayment();
+  const recordPaymentAttempt = useRecordPaymentAttempt();
   const feeConfigQuery = useOnboardingFeeConfig();
   const feeConfig = feeConfigQuery.data;
   const { data: riderStatus } = useRiderStatus(data.riderId);
@@ -269,6 +275,66 @@ export default function PaymentScreen() {
     await handleVerifyPayment(razorpayOrderId, `pay_${Date.now()}`, "simulated_signature");
   };
 
+  // `react-native-razorpay` is a native module — present in dev-client / EAS
+  // builds, absent in Expo Go. Guard so the screen degrades to the dev
+  // simulator instead of crashing when the native module isn't linked.
+  const nativeCheckoutAvailable =
+    !!RazorpayCheckout && typeof RazorpayCheckout.open === "function";
+
+  const openNativeCheckout = useCallback(
+    async (order: {
+      orderId: string;
+      amount: number;
+      currency: string;
+      key: string;
+    }) => {
+      const options = {
+        key: order.key,
+        order_id: order.orderId,
+        amount: order.amount, // paise
+        currency: order.currency || "INR",
+        name: "GatiMitra",
+        description: "Rider onboarding fee",
+        theme: { color: ACCENT },
+        prefill: {
+          name: data.fullName?.trim() || undefined,
+          contact: session?.phoneE164?.replace(/\D/g, "").slice(-10) || undefined,
+        },
+      };
+
+      try {
+        // Resolves on success with the three verification tokens; rejects with
+        // { code, description } on user cancel or gateway failure.
+        const result = await RazorpayCheckout.open(options);
+        await handleVerifyPayment(
+          result.razorpay_order_id || order.orderId,
+          result.razorpay_payment_id,
+          result.razorpay_signature
+        );
+      } catch (rzpErr: unknown) {
+        const desc =
+          rzpErr && typeof rzpErr === "object" && "description" in rzpErr
+            ? String((rzpErr as { description?: unknown }).description ?? "")
+            : "";
+        const code =
+          rzpErr && typeof rzpErr === "object" && "code" in rzpErr
+            ? String((rzpErr as { code?: unknown }).code ?? "")
+            : "";
+        // Record the abandoned/failed attempt so the lifecycle is auditable
+        // server-side (best-effort — never block the UI on it).
+        void recordPaymentAttempt.mutateAsync({
+          riderId: data.riderId!,
+          razorpayOrderId: order.orderId,
+          status: "failed",
+          reason: desc || code || "cancelled",
+        }).catch(() => undefined);
+        setError(desc || "Payment was cancelled. You can try again.");
+        setLoading(false);
+      }
+    },
+    [data.fullName, data.riderId, session?.phoneE164, handleVerifyPayment, recordPaymentAttempt]
+  );
+
   const handleInitiatePayment = async () => {
     if (!documentsReadyForPayment) {
       setError("Please complete KYC and vehicle steps before payment.");
@@ -290,17 +356,37 @@ export default function PaymentScreen() {
       const order = await createOrder.mutateAsync({ riderId: data.riderId });
       setOrderId(order.orderId);
 
+      const keyId = order.key?.trim();
+      const backendUnconfigured = !keyId || keyId.startsWith("dummy");
+
+      // Real native checkout when the backend returned a live key AND the
+      // native module is linked. Otherwise fall back: dev → simulator, prod →
+      // surfaced error (should not happen once Razorpay keys are set on VPS).
+      if (!backendUnconfigured && nativeCheckoutAvailable) {
+        await openNativeCheckout({
+          orderId: order.orderId,
+          amount: order.amount,
+          currency: order.currency,
+          key: keyId!,
+        });
+        return;
+      }
+
       if (__DEV__) {
         Alert.alert(
-          "Payment Required",
-          `Please pay ₹${formatRupeeFromPaise(order.amount)} for onboarding fee.\n\nOrder ID: ${order.orderId}\n\nIn production, this will open Razorpay checkout.`,
+          "Payment (dev)",
+          `₹${formatRupeeFromPaise(order.amount)} onboarding fee.\nOrder: ${order.orderId}\n\n${
+            nativeCheckoutAvailable
+              ? "Backend has no live Razorpay key — set RAZORPAY_KEY_ID/SECRET to use real checkout."
+              : "Native Razorpay module not linked (Expo Go). Use a dev-client build for real checkout."
+          }`,
           [
             { text: "Cancel", style: "cancel", onPress: () => setLoading(false) },
             { text: "Simulate Payment", onPress: () => handleSimulatePayment(order.orderId) },
           ]
         );
       } else {
-        setError("Razorpay SDK not configured. Please contact support.");
+        setError("Payment is temporarily unavailable. Please try again shortly.");
         setLoading(false);
       }
     } catch (e) {

@@ -366,6 +366,8 @@ function RootLayoutNav() {
 
             <Stack.Screen name="view-vehicle" />
 
+            <Stack.Screen name="payment-details" />
+
             <Stack.Screen name="notification-settings" />
 
             <Stack.Screen name="notifications" />

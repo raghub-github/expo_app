@@ -3243,6 +3243,12 @@ export const onboardingPayments = pgTable(
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    // Amount breakdown (kept in sync with backend schema.ts). Present in the DB
+    // via the backend migration; needed here so the dashboard can show the
+    // fee/GST split on the rider detail page.
+    subtotalPaise: integer("subtotal_paise"),
+    gstPercentApplied: numeric("gst_percent_applied", { precision: 6, scale: 2 }),
+    gstAmountPaise: integer("gst_amount_paise"),
     provider: text("provider").notNull(), // "razorpay", "stripe", etc.
     refId: text("ref_id").notNull().unique(),
     paymentId: text("payment_id"),

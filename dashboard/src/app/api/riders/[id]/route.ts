@@ -150,8 +150,33 @@ export async function GET(
       .orderBy(desc(withdrawalRequests.createdAt))
       .limit(15);
 
-    // Onboarding payments (registration fees) – for wallet details and full details page
-    let onboardingPaymentsList: { id: number; riderId: number; amount: string; provider: string; refId: string; paymentId: string | null; status: string; createdAt: string }[] = [];
+    // Onboarding payments (registration fees) – for wallet details and full details page.
+    // Includes the amount breakdown + any refund info (reflected from the Razorpay
+    // webhook) so the dashboard can show paid/refunded status and refunded amount.
+    type DashboardOnboardingPayment = {
+      id: number;
+      riderId: number;
+      amount: string;
+      amountPaise: number;
+      subtotalPaise: number | null;
+      gstAmountPaise: number | null;
+      gstPercentApplied: number | null;
+      provider: string;
+      refId: string;
+      paymentId: string | null;
+      razorpayPaymentId: string | null;
+      status: string;
+      refund: {
+        status: string | null;
+        refundId: string | null;
+        amountPaise: number | null;
+        partial: boolean;
+        at: string | null;
+      } | null;
+      createdAt: string;
+      updatedAt: string;
+    };
+    let onboardingPaymentsList: DashboardOnboardingPayment[] = [];
     try {
       const onboardingRows = await db
         .select()
@@ -159,16 +184,41 @@ export async function GET(
         .where(eq(onboardingPayments.riderId, riderId))
         .orderBy(desc(onboardingPayments.createdAt))
         .limit(50);
-      onboardingPaymentsList = onboardingRows.map((r) => ({
-        id: r.id,
-        riderId: r.riderId,
-        amount: String(r.amount),
-        provider: r.provider,
-        refId: r.refId,
-        paymentId: r.paymentId ?? null,
-        status: r.status,
-        createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
-      }));
+      const toIso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v ?? ""));
+      onboardingPaymentsList = onboardingRows.map((r) => {
+        const meta = (r.metadata ?? {}) as Record<string, unknown>;
+        const asStr = (v: unknown): string | null =>
+          typeof v === "string" && v.length > 0 ? v : null;
+        const asNum = (v: unknown): number | null =>
+          typeof v === "number" && Number.isFinite(v) ? v : null;
+        const hasRefund = r.status === "refunded" || meta.refundId != null;
+        return {
+          id: r.id,
+          riderId: r.riderId,
+          amount: String(r.amount),
+          amountPaise: Math.round(Number(r.amount) * 100),
+          subtotalPaise: r.subtotalPaise ?? null,
+          gstAmountPaise: r.gstAmountPaise ?? null,
+          gstPercentApplied: r.gstPercentApplied != null ? Number(r.gstPercentApplied) : null,
+          provider: r.provider,
+          refId: r.refId,
+          paymentId: r.paymentId ?? null,
+          razorpayPaymentId:
+            asStr(meta.razorpayPaymentId) ?? (r.status === "completed" ? r.paymentId ?? null : null),
+          status: r.status,
+          refund: hasRefund
+            ? {
+                status: asStr(meta.refundStatus),
+                refundId: asStr(meta.refundId),
+                amountPaise: asNum(meta.refundedAmountPaise),
+                partial: meta.refundPartial === true,
+                at: asStr(meta.refundUpdatedAt),
+              }
+            : null,
+          createdAt: toIso(r.createdAt),
+          updatedAt: toIso(r.updatedAt),
+        };
+      });
     } catch {
       // Table may not exist in some envs
     }

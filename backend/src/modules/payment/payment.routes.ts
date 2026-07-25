@@ -317,6 +317,58 @@ export async function paymentRoutes(app: FastifyInstance) {
             gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
           });
 
+          // Onboarding-fee refund reflection: match by razorpay payment id
+          // against onboarding_payments.payment_id (set at verify). Keeps the
+          // rider onboarding payment status in sync whether the refund was
+          // triggered by our admin action or directly in the Razorpay dashboard.
+          try {
+            const obRows = await db
+              .select()
+              .from(onboardingPayments)
+              .where(eq(onboardingPayments.paymentId, razorpayPaymentId))
+              .limit(1);
+            const ob = obRows[0];
+            if (ob) {
+              const meta = (ob.metadata ?? {}) as Record<string, unknown>;
+              const totalPaise = Math.round(Number(ob.amount) * 100);
+              const refundedPaise = Number(refundEntity?.amount ?? 0);
+              const isPartial = refundedPaise > 0 && refundedPaise < totalPaise;
+              // onboarding_payments.status has no "partially_refunded" — mark
+              // "refunded" and record the partial flag/amount in metadata.
+              const nextStatus =
+                event === "refund.processed" ? "refunded" : ob.status;
+              await db
+                .update(onboardingPayments)
+                .set({
+                  status: nextStatus,
+                  updatedAt: new Date(),
+                  metadata: {
+                    ...meta,
+                    refundId,
+                    refundStatus,
+                    refundedAmountPaise: refundedPaise || meta.refundedAmountPaise,
+                    refundPartial: isPartial,
+                    refundEvent: event,
+                    refundUpdatedAt: new Date().toISOString(),
+                  },
+                })
+                .where(eq(onboardingPayments.id, ob.id));
+              await logPaymentEvent(db, {
+                eventType:
+                  event === "refund.processed"
+                    ? "ONBOARDING_REFUND_PROCESSED"
+                    : event === "refund.failed"
+                      ? "ONBOARDING_REFUND_FAILED"
+                      : "ONBOARDING_REFUND_CREATED",
+                source: "webhook",
+                razorpayPaymentId,
+                payload: { refundId, refundStatus, riderId: ob.riderId, refundedPaise, ts: Date.now() },
+              });
+            }
+          } catch (err) {
+            req.log.warn({ err }, "onboarding refund webhook reflection failed");
+          }
+
           // Also try the merchant-subscription refund handler — idempotent and
           // scoped (matches by payment_gateway_id in subscription_payments). If
           // this refund was for a customer order, this is a no-op (matched=false).
@@ -666,6 +718,13 @@ export async function paymentRoutes(app: FastifyInstance) {
         },
       });
 
+      await logPaymentEvent(db, {
+        eventType: "ONBOARDING_PAYMENT_INITIATED",
+        source: "client",
+        razorpayOrderId: order.id,
+        payload: { riderId, refId, totalPaise, subtotalPaise, gstAmountPaise },
+      });
+
       return {
         orderId: order.id,
         amount: order.amount,
@@ -800,10 +859,77 @@ export async function paymentRoutes(app: FastifyInstance) {
         await tryActivateRiderIfEligible(riderIdInt);
       }
 
+      await logPaymentEvent(db, {
+        eventType:
+          paymentStatus === "captured"
+            ? "ONBOARDING_PAYMENT_SUCCESS"
+            : "ONBOARDING_PAYMENT_FAILED",
+        source: "client",
+        razorpayOrderId,
+        razorpayPaymentId,
+        payload: { riderId, paymentMethod, paymentStatus, dbPaymentId: String(payment.id) },
+      });
+
       return {
         success: paymentStatus === "captured",
         paymentId: String(payment.id),
       };
+    },
+  );
+
+  // Record a failed / abandoned onboarding payment attempt (client-reported on
+  // Razorpay cancel or gateway error). Keeps the lifecycle auditable: marks the
+  // still-pending row FAILED and appends a payment_events entry. Never touches a
+  // completed/refunded row. Best-effort — the client fires this and forgets.
+  app.post(
+    "/onboarding/attempt",
+    {
+      schema: {
+        body: z.object({
+          riderId: z.string(),
+          razorpayOrderId: z.string(),
+          status: z.literal("failed"),
+          reason: z.string().max(300).optional(),
+        }),
+        response: {
+          200: z.object({ ok: z.boolean() }),
+        },
+      },
+    },
+    async (req) => {
+      const { riderId, razorpayOrderId, reason } = req.body as {
+        riderId: string;
+        razorpayOrderId: string;
+        status: "failed";
+        reason?: string;
+      };
+      const db = getDb();
+      const riderIdInt = parseInt(riderId);
+      if (isNaN(riderIdInt)) return { ok: false };
+
+      await db
+        .update(onboardingPayments)
+        .set({ status: "failed", updatedAt: new Date() })
+        .where(
+          and(
+            eq(onboardingPayments.riderId, riderIdInt),
+            eq(onboardingPayments.status, "pending"),
+            or(
+              eq(onboardingPayments.paymentId, razorpayOrderId),
+              sql`${onboardingPayments.metadata}->>'razorpayOrderId' = ${razorpayOrderId}`,
+            ),
+          ),
+        );
+
+      await logPaymentEvent(db, {
+        eventType: "ONBOARDING_PAYMENT_ATTEMPT_FAILED",
+        source: "client",
+        razorpayOrderId,
+        failureMessage: reason ?? "cancelled",
+        payload: { riderId, reason: reason ?? "cancelled", ts: Date.now() },
+      });
+
+      return { ok: true };
     },
   );
 
@@ -850,6 +976,98 @@ export async function paymentRoutes(app: FastifyInstance) {
         hasPayment: true,
         status: payment.status,
         amount: parseFloat(payment.amount) * 100, // Convert rupees to paise
+      };
+    },
+  );
+
+  // Full onboarding payment details for the rider profile "Payment details"
+  // page. Returns the latest onboarding payment with breakdown + refund info.
+  app.get(
+    "/onboarding/:riderId/details",
+    {
+      schema: {
+        params: z.object({ riderId: z.string() }),
+        response: {
+          200: z.object({
+            hasPayment: z.boolean(),
+            status: z.string().optional(),
+            provider: z.string().optional(),
+            refId: z.string().optional(),
+            amountPaise: z.number().optional(),
+            subtotalPaise: z.number().nullable().optional(),
+            gstAmountPaise: z.number().nullable().optional(),
+            gstPercentApplied: z.number().nullable().optional(),
+            razorpayOrderId: z.string().nullable().optional(),
+            razorpayPaymentId: z.string().nullable().optional(),
+            paidAt: z.string().nullable().optional(),
+            refund: z
+              .object({
+                status: z.string().nullable(),
+                refundId: z.string().nullable(),
+                amountPaise: z.number().nullable(),
+                partial: z.boolean(),
+                at: z.string().nullable(),
+              })
+              .nullable()
+              .optional(),
+            createdAt: z.string().optional(),
+            updatedAt: z.string().optional(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { riderId } = req.params as { riderId: string };
+      const db = getDb();
+      const riderIdInt = parseInt(riderId);
+      if (isNaN(riderIdInt)) {
+        throw new Error("Invalid rider ID");
+      }
+
+      const rows = await db
+        .select()
+        .from(onboardingPayments)
+        .where(eq(onboardingPayments.riderId, riderIdInt))
+        .orderBy(desc(onboardingPayments.createdAt))
+        .limit(1);
+
+      if (rows.length === 0) {
+        return { hasPayment: false };
+      }
+
+      const p = rows[0]!;
+      const meta = (p.metadata ?? {}) as Record<string, unknown>;
+      const asStr = (v: unknown): string | null =>
+        typeof v === "string" && v.length > 0 ? v : null;
+      const asNum = (v: unknown): number | null =>
+        typeof v === "number" && Number.isFinite(v) ? v : null;
+
+      const hasRefund = p.status === "refunded" || meta.refundId != null;
+
+      return {
+        hasPayment: true,
+        status: p.status,
+        provider: p.provider,
+        refId: p.refId,
+        amountPaise: Math.round(Number(p.amount) * 100),
+        subtotalPaise: p.subtotalPaise ?? null,
+        gstAmountPaise: p.gstAmountPaise ?? null,
+        gstPercentApplied: p.gstPercentApplied != null ? Number(p.gstPercentApplied) : null,
+        razorpayOrderId: asStr(meta.razorpayOrderId),
+        razorpayPaymentId:
+          asStr(meta.razorpayPaymentId) ?? (p.status === "completed" ? p.paymentId : null),
+        paidAt: asStr(meta.verifiedAt),
+        refund: hasRefund
+          ? {
+              status: asStr(meta.refundStatus),
+              refundId: asStr(meta.refundId),
+              amountPaise: asNum(meta.refundedAmountPaise),
+              partial: meta.refundPartial === true,
+              at: asStr(meta.refundUpdatedAt),
+            }
+          : null,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
       };
     },
   );
