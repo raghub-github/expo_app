@@ -39,6 +39,7 @@ export default function PrivacyPage() {
                 <li><b>Onboarding &amp; KYC data:</b> driving license, vehicle registration, insurance, PAN/Aadhaar or other government IDs, and background-verification results, as permitted by law.</li>
                 <li><b>Banking &amp; payment data:</b> bank account or UPI details for payouts, and records of charges, penalties, and wallet transactions.</li>
                 <li><b>Location data:</b> precise and background location while you are on Active Duty, to assign trips, enable navigation, and ensure safety.</li>
+                <li><b>Photos, documents &amp; media:</b> images and files you capture with the camera or upload from your device (KYC and vehicle documents, profile photo, proof of pickup/delivery, and support attachments).</li>
                 <li><b>Device &amp; usage data:</b> device identifiers, IP address, app version, log data, and pages/features used.</li>
                 <li><b>Communications:</b> support tickets, call/chat records, and feedback.</li>
               </ul>
@@ -68,6 +69,54 @@ export default function PrivacyPage() {
                 while you are on Active Duty, even when the app is not open, so we can match you to nearby Service
                 Requests, provide navigation, and support safety. You can control location permissions through
                 your device settings; disabling location will limit your ability to receive and complete trips.
+              </p>
+            </li>
+            <li>
+              <strong className="block mb-2 text-lg">App permissions we request</strong>
+              <p className="ml-4 mb-2">
+                The GatiMitra Rider App requests the device permissions below. Each is used only for the purpose
+                stated, and we ask for a permission only when the related feature needs it. You can grant or
+                revoke any of these from your device settings — declining some will limit the related feature.
+              </p>
+              <ul className="ml-4 list-disc pl-5 space-y-2">
+                <li>
+                  <b>Location — precise &amp; background:</b> to share your live location while you are on Active
+                  Duty and to run a foreground location service, so we can assign nearby trips, provide
+                  navigation, show your location to the customer during a delivery, and support safety. Precise
+                  and background location may be collected even when the app is minimised or the screen is off,
+                  but <b>only while you are on duty or on an active trip</b> — never otherwise.
+                </li>
+                <li>
+                  <b>Camera:</b> to let you capture images in-app — for example KYC/onboarding documents, your
+                  profile photo, and proof-of-pickup or proof-of-delivery photos.
+                </li>
+                <li>
+                  <b>Photos, media &amp; files (storage):</b> to let you select and upload existing documents or
+                  images from your device (KYC documents, vehicle papers, delivery proof, support attachments).
+                </li>
+                <li>
+                  <b>Notifications:</b> to alert you about new order/trip requests, order and payout updates,
+                  penalties, and important account or safety messages.
+                </li>
+                <li>
+                  <b>Display over other apps (draw over other apps):</b> to show incoming order/trip alerts as a
+                  pop-up on top of other screens, so you don&apos;t miss a request while using another app.
+                </li>
+                <li>
+                  <b>Ignore battery optimisation:</b> to ask your device to exempt the Rider App from aggressive
+                  battery/doze restrictions, so location updates and order notifications keep working reliably
+                  while you are on duty. This is optional and can be turned off in device settings.
+                </li>
+                <li>
+                  <b>Foreground service:</b> to keep the location and order-listening service running with a
+                  persistent notification while you are on duty, as required for reliable background operation.
+                </li>
+              </ul>
+              <p className="ml-4 mt-2">
+                You can revoke any permission at any time from your device&apos;s app settings. Revoking a
+                permission does not delete data already collected — see &quot;Data retention&quot; below and our{' '}
+                <Link href="/account-deletion" className="text-orange-600 hover:underline font-medium">Account Deletion</Link>{' '}
+                process.
               </p>
             </li>
             <li>
