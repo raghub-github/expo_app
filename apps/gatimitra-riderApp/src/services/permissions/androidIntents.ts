@@ -12,7 +12,7 @@ function getAndroidPackageName(): string {
   return (
     Constants.expoConfig?.android?.package ||
     Constants.manifest?.android?.package ||
-    "com.raghubhunia.gatimitrariderapp"
+    "com.gatimitra.rider"
   );
 }
 

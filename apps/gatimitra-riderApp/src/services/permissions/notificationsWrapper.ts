@@ -14,7 +14,7 @@ function androidPackage(): string | undefined {
   return (
     Constants.expoConfig?.android?.package ||
     (Constants.manifest as { android?: { package?: string } } | null)?.android?.package ||
-    "com.raghubhunia.gatimitrariderapp"
+    "com.gatimitra.rider"
   );
 }
 

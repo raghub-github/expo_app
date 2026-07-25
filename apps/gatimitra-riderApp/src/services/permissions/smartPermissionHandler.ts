@@ -167,14 +167,26 @@ export class SmartPermissionHandler {
       return true;
     }
 
+    // First launch / still re-askable: show the OS runtime dialog and wait for
+    // the user's choice.
     if (check.canAskAgain) {
       await this.requestPermission("notifications");
       check = await this.checkNotificationPermission();
       if (check.status === "granted") {
         return true;
       }
+      // The user dismissed/denied but the OS can still prompt again later — do
+      // NOT bounce them into system Settings now. On some OEMs (e.g. MIUI) that
+      // jump throws the "app wasn't found in the list of installed apps" toast,
+      // and it's confusing to leave the app right after the dialog. Stay on the
+      // step; the next Allow tap escalates once it's truly blocked.
+      if (check.canAskAgain) {
+        return false;
+      }
     }
 
+    // Notifications are blocked (cannot ask again) → open the app's notification
+    // settings so the user can enable them manually.
     await openSharedNotificationSettings();
     return false;
   }

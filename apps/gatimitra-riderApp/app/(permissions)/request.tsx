@@ -264,6 +264,15 @@ export default function PermissionRequestScreen() {
         return;
       }
 
+      // Only auto-advance steps we can read RELIABLY from the OS. Notifications
+      // (and location, handled above) have trustworthy OS APIs. Battery,
+      // background-running and display-over-apps rely on OEM-specific signals
+      // that are unreliable — especially on MIUI, where expo-battery can report
+      // "unrestricted" incorrectly and make battery + background (which share
+      // that signal) both auto-skip. Never silently skip those: always show the
+      // step and require an explicit Allow tap.
+      if (step.key !== "notifications") return;
+
       const check = await smartPermissionHandler.checkPermission(step.key);
       if (cancelled || check.status !== "granted") return;
       setPermissionStepGranted(step.key, true);

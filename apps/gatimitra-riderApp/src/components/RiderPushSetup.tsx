@@ -73,7 +73,7 @@ export function RiderPushSetup() {
     () => ({
       apiBaseUrl,
       androidPackageName:
-        Constants.expoConfig?.android?.package || "com.raghubhunia.gatimitrariderapp",
+        Constants.expoConfig?.android?.package || "com.gatimitra.rider",
       androidChannels: [
         { channelId: "default", name: "Orders & alerts", lightColor: "#0d9488" },
       ],
