@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   createRiderPenaltyPaymentOrder,
   verifyRiderPenaltyPayment,
+  recordRiderWalletPaymentAttempt,
+  getRiderWalletPaymentHistory,
 } from "../../lib/rider-penalty-payment.service.js";
 
 function parseRiderIdFromAuth(sub: string): number | null {
@@ -62,7 +64,41 @@ export function registerRiderPenaltyPaymentRoutes(app: FastifyInstance) {
       success: true,
       creditedAmount: result.creditedAmount,
       totalBalance: result.totalBalance,
+      reactivatedServices: result.reactivatedServices ?? [],
       idempotent: result.idempotent,
     });
+  });
+
+  // Record a cancelled / failed attempt (Razorpay sheet dismissed or gateway error).
+  app.post("/penalty/attempt", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const body = z
+      .object({
+        razorpayOrderId: z.string().min(1),
+        status: z.enum(["failed", "cancelled"]),
+        reason: z.string().max(300).optional(),
+      })
+      .parse(req.body ?? {});
+
+    await recordRiderWalletPaymentAttempt({
+      riderId,
+      razorpayOrderId: body.razorpayOrderId,
+      status: body.status,
+      reason: body.reason,
+    });
+    return reply.send({ success: true });
+  });
+
+  // Rider's own wallet-payment history.
+  app.get("/penalty/history", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const payments = await getRiderWalletPaymentHistory(riderId);
+    return reply.send({ success: true, payments });
   });
 }

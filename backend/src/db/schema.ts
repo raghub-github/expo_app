@@ -268,6 +268,11 @@ export const walletEntryTypeEnum = pgEnum("wallet_entry_type", [
   "bonus",
   "referral_bonus",
   "subscription_fee",
+  // Present in the DB enum (migration 0318) but previously omitted from this
+  // definition — riders' manual credits / withdrawal reverts / cancellation payouts.
+  "manual_add",
+  "failed_withdrawal_revert",
+  "cancellation_payout",
 ]);
 
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
@@ -3232,6 +3237,77 @@ export const riderNegativeWalletBlocks = pgTable(
   (table) => ({
     riderIdIdx: index("rider_negative_wallet_blocks_rider_id_idx").on(table.riderId),
     riderServiceIdx: uniqueIndex("rider_negative_wallet_blocks_rider_service_idx").on(table.riderId, table.serviceType),
+  })
+);
+
+/**
+ * rider_wallet_payments (migration 0443): immutable audit of every rider wallet
+ * payment attempt — negative-wallet recovery today — in ANY status. Never deleted.
+ * `status` is plain text so future gateway statuses need no schema change.
+ */
+export const riderWalletPayments = pgTable(
+  "rider_wallet_payments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    purpose: text("purpose").notNull().default("negative_wallet_recovery"),
+    amountPaise: integer("amount_paise").notNull(),
+    walletBefore: numeric("wallet_before", { precision: 10, scale: 2 }),
+    walletAfter: numeric("wallet_after", { precision: 10, scale: 2 }),
+    razorpayOrderId: text("razorpay_order_id"),
+    razorpayPaymentId: text("razorpay_payment_id"),
+    razorpaySignature: text("razorpay_signature"),
+    gateway: text("gateway").notNull().default("razorpay"),
+    method: text("method"),
+    status: text("status").notNull().default("initiated"),
+    remarks: text("remarks"),
+    refundId: text("refund_id"),
+    refundAmountPaise: integer("refund_amount_paise"),
+    refundStatus: text("refund_status"),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdBy: text("created_by"),
+    updatedBy: text("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    rzpPaymentIdUidx: uniqueIndex("rider_wallet_payments_rzp_payment_id_uidx").on(table.razorpayPaymentId),
+    riderCreatedIdx: index("rider_wallet_payments_rider_created_idx").on(table.riderId, table.createdAt),
+    statusIdx: index("rider_wallet_payments_status_idx").on(table.status),
+    orderIdIdx: index("rider_wallet_payments_order_id_idx").on(table.razorpayOrderId),
+  })
+);
+
+/**
+ * rider_service_block_history (migration 0443): immutable log of every service
+ * block/unblock transition with its reason, so the exact lifecycle (why blocked,
+ * why unblocked, by whom, wallet before/after) is fully auditable. Never deleted.
+ */
+export const riderServiceBlockHistory = pgTable(
+  "rider_service_block_history",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(),
+    action: text("action").notNull(), // blocked | unblocked
+    previousStatus: text("previous_status"),
+    newStatus: text("new_status"),
+    reason: text("reason").notNull(),
+    paymentRef: text("payment_ref"),
+    walletBefore: numeric("wallet_before", { precision: 10, scale: 2 }),
+    walletAfter: numeric("wallet_after", { precision: 10, scale: 2 }),
+    performedBy: text("performed_by").notNull().default("system"),
+    remarks: text("remarks"),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderCreatedIdx: index("rider_service_block_history_rider_created_idx").on(table.riderId, table.createdAt),
+    actionIdx: index("rider_service_block_history_action_idx").on(table.serviceType, table.action),
   })
 );
 

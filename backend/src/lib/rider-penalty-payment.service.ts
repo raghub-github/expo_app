@@ -1,10 +1,17 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { ulid } from "ulid";
-import { getDb, getSql } from "../db/client.js";
-import { riderWallet } from "../db/schema.js";
-import { getRiderAccountRestrictions } from "./rider-account-restrictions.js";
+import { getDb } from "../db/client.js";
+import {
+  riderNegativeWalletBlocks,
+  riderServiceBlockHistory,
+  riderWallet,
+  riderWalletPayments,
+  walletLedger,
+} from "../db/schema.js";
 import { applyFifoAllocation } from "./rider-negative-wallet-blocks.js";
+import { syncRiderDutyWithRestrictions } from "./rider-account-restrictions.js";
 import { getEnv } from "../config/env.js";
+import { logPaymentEvent } from "../modules/orders/order.placement.service.js";
 import {
   createRazorpayOrder,
   verifyRazorpayPaymentDetails,
@@ -13,13 +20,6 @@ import {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-async function resolvePenaltyDueRupees(riderId: number): Promise<number> {
-  const restrictions = await getRiderAccountRestrictions(riderId);
-  const walletBalance = await readWalletBalance(riderId);
-  if (walletBalance >= 0) return 0;
-  return round2(Math.max(0, restrictions.penaltyDue));
 }
 
 async function readWalletBalance(riderId: number): Promise<number> {
@@ -53,129 +53,180 @@ async function ensureWalletRow(riderId: number): Promise<void> {
   });
 }
 
-async function hasPenaltyPaymentLedger(riderId: number, razorpayPaymentId: string): Promise<boolean> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT id
-    FROM wallet_ledger
-    WHERE rider_id = ${riderId}
-      AND entry_type::text = 'manual_add'
-      AND ref_type = 'penalty_payment'
-      AND ref = ${razorpayPaymentId}
-    LIMIT 1
-  `;
-  return rows.length > 0;
+/**
+ * Payable = the entire current negative balance (→ wallet becomes exactly ₹0).
+ * Returns 0 when the wallet is not negative.
+ */
+async function getPayableNegativeRupees(riderId: number): Promise<number> {
+  const balance = await readWalletBalance(riderId);
+  if (balance >= 0) return 0;
+  return round2(-balance);
 }
 
-async function creditWalletForPenaltyPayment(args: {
-  riderId: number;
-  amount: number;
-  razorpayPaymentId: string;
-  razorpayOrderId: string;
-}): Promise<{ totalBalance: number; idempotent: boolean }> {
-  const amount = round2(args.amount);
-  if (amount <= 0) throw new Error("invalid_amount");
-
-  if (await hasPenaltyPaymentLedger(args.riderId, args.razorpayPaymentId)) {
-    return { totalBalance: await readWalletBalance(args.riderId), idempotent: true };
-  }
-
-  await ensureWalletRow(args.riderId);
-  const balanceBefore = await readWalletBalance(args.riderId);
-  const balanceAfter = round2(balanceBefore + amount);
-  const sql = getSql();
-
-  try {
-    await sql`
-      INSERT INTO wallet_ledger (
-        rider_id,
-        entry_type,
-        amount,
-        balance,
-        service_type,
-        ref,
-        ref_type,
-        description,
-        metadata,
-        performed_by_type
-      ) VALUES (
-        ${args.riderId},
-        'manual_add',
-        ${amount.toFixed(2)},
-        ${balanceAfter.toFixed(2)},
-        NULL,
-        ${args.razorpayPaymentId},
-        'penalty_payment',
-        ${"Penalty payment via Razorpay"},
-        ${JSON.stringify({
-          razorpayOrderId: args.razorpayOrderId,
-          razorpayPaymentId: args.razorpayPaymentId,
-          source: "rider_app",
-        })}::jsonb,
-        'rider'
-      )
-    `;
-  } catch (err: unknown) {
-    if ((err as { code?: string })?.code !== "42703") throw err;
-    await sql`
-      INSERT INTO wallet_ledger (
-        rider_id,
-        entry_type,
-        amount,
-        balance,
-        ref,
-        ref_type,
-        description,
-        metadata
-      ) VALUES (
-        ${args.riderId},
-        'manual_add',
-        ${amount.toFixed(2)},
-        ${balanceAfter.toFixed(2)},
-        ${args.razorpayPaymentId},
-        'penalty_payment',
-        ${"Penalty payment via Razorpay"},
-        ${JSON.stringify({
-          razorpayOrderId: args.razorpayOrderId,
-          razorpayPaymentId: args.razorpayPaymentId,
-          source: "rider_app",
-        })}::jsonb
-      )
-    `;
-  }
-
+/** Latest snapshot of the rider's active negative-wallet (penalty) service blocks. */
+async function readNegativeWalletBlocks(
+  riderId: number
+): Promise<Array<{ serviceType: string; reason: string }>> {
   const db = getDb();
-  await db
-    .update(riderWallet)
-    .set({
-      totalBalance: balanceAfter.toFixed(2),
-      lastUpdatedAt: new Date(),
+  const rows = await db
+    .select({
+      serviceType: riderNegativeWalletBlocks.serviceType,
+      reason: riderNegativeWalletBlocks.reason,
     })
-    .where(eq(riderWallet.riderId, args.riderId));
-
-  await applyFifoAllocation(args.riderId, amount);
-
-  return { totalBalance: await readWalletBalance(args.riderId), idempotent: false };
+    .from(riderNegativeWalletBlocks)
+    .where(eq(riderNegativeWalletBlocks.riderId, riderId));
+  return rows.map((r) => ({ serviceType: String(r.serviceType), reason: String(r.reason) }));
 }
 
+/**
+ * Was this Razorpay payment already settled? Checks BOTH the payments audit row
+ * and the legacy wallet_ledger idempotency marker so old + new records dedupe.
+ */
+async function findSettledPayment(
+  riderId: number,
+  razorpayPaymentId: string
+): Promise<boolean> {
+  const db = getDb();
+  const [paid] = await db
+    .select({ id: riderWalletPayments.id })
+    .from(riderWalletPayments)
+    .where(
+      and(
+        eq(riderWalletPayments.razorpayPaymentId, razorpayPaymentId),
+        eq(riderWalletPayments.status, "success")
+      )
+    )
+    .limit(1);
+  if (paid) return true;
+
+  const [ledger] = await db
+    .select({ id: walletLedger.id })
+    .from(walletLedger)
+    .where(and(eq(walletLedger.riderId, riderId), eq(walletLedger.ref, razorpayPaymentId)))
+    .limit(1);
+  return Boolean(ledger);
+}
+
+/** Record unblock transitions to rider_service_block_history (penalty blocks only). */
+async function recordUnblockHistory(args: {
+  riderId: number;
+  blocksBefore: Array<{ serviceType: string; reason: string }>;
+  walletBefore: number;
+  walletAfter: number;
+  paymentRef: string;
+}): Promise<string[]> {
+  const db = getDb();
+  const after = await readNegativeWalletBlocks(args.riderId);
+  const afterKeys = new Set(after.map((b) => b.serviceType));
+  const removed = args.blocksBefore.filter((b) => !afterKeys.has(b.serviceType));
+  if (removed.length === 0) return [];
+
+  await db.insert(riderServiceBlockHistory).values(
+    removed.map((b) => ({
+      riderId: args.riderId,
+      serviceType: b.serviceType,
+      action: "unblocked" as const,
+      previousStatus: "blocked",
+      newStatus: "active",
+      reason: b.reason, // negative_wallet | global_emergency
+      paymentRef: args.paymentRef,
+      walletBefore: args.walletBefore.toFixed(2),
+      walletAfter: args.walletAfter.toFixed(2),
+      performedBy: "system",
+      remarks: "Auto-unblocked after negative-wallet recovery payment.",
+      metadata: { source: "negative_wallet_recovery" },
+    }))
+  );
+
+  return removed.map((b) => b.serviceType);
+}
+
+/** Best-effort push after a successful recovery. Never blocks the money flow. */
+async function notifyRiderWalletRecovered(
+  riderId: number,
+  reactivatedServices: string[]
+): Promise<void> {
+  try {
+    const db = getDb();
+    const { expoPushTokens } = await import("../db/schema.js");
+    const { send } = await import("../modules/notifications/notificationService.js");
+    const userId = `usr_${riderId}`;
+    const rows = await db
+      .select({ token: expoPushTokens.expoPushToken })
+      .from(expoPushTokens)
+      .where(and(eq(expoPushTokens.userId, userId), eq(expoPushTokens.role, "rider")));
+    const tokens = rows.map((r) => r.token).filter((t): t is string => Boolean(t));
+    if (tokens.length === 0) return;
+
+    const body =
+      reactivatedServices.length > 0
+        ? `Wallet cleared. Reactivated: ${reactivatedServices
+            .map((s) => (s === "person_ride" ? "Ride" : s.charAt(0).toUpperCase() + s.slice(1)))
+            .join(", ")}.`
+        : "Your wallet has been cleared successfully.";
+
+    await send({
+      templateCode: "RIDER_WALLET_RECOVERED",
+      variables: { riderId: String(riderId), services: reactivatedServices.join(", ") },
+      target: { device_tokens: tokens },
+      overrides: { title: "Wallet cleared", body },
+      metadata: { gmType: "WALLET_RECOVERED", riderId: String(riderId) },
+    });
+  } catch {
+    // notification failures must never affect the wallet outcome
+  }
+}
+
+/**
+ * Create a Razorpay order for the full negative balance and record an
+ * `initiated` audit row. Rider cannot edit the amount — it is the abs(balance).
+ */
 export async function createRiderPenaltyPaymentOrder(riderId: number) {
-  const penaltyDue = await resolvePenaltyDueRupees(riderId);
-  if (penaltyDue <= 0) {
-    return { ok: false as const, status: 400, error: "no_penalty_due" };
+  const payable = await getPayableNegativeRupees(riderId);
+  if (payable <= 0) {
+    return { ok: false as const, status: 400, error: "no_due" };
   }
 
-  const amountPaise = Math.max(100, Math.round(penaltyDue * 100));
+  const walletBefore = await readWalletBalance(riderId);
+  const amountPaise = Math.max(100, Math.round(payable * 100));
   const env = getEnv();
   const dummyModeActive =
     env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET;
+
+  const db = getDb();
+  const recordInitiated = async (orderId: string, dummyMode: boolean) => {
+    try {
+      await db.insert(riderWalletPayments).values({
+        riderId,
+        purpose: "negative_wallet_recovery",
+        amountPaise,
+        walletBefore: walletBefore.toFixed(2),
+        razorpayOrderId: orderId,
+        gateway: dummyMode ? "dummy" : "razorpay",
+        status: "initiated",
+        createdBy: "rider",
+        metadata: { walletBefore, payableRupees: payable, dummyMode },
+      });
+      await logPaymentEvent(db, {
+        eventType: "NEG_WALLET_PAYMENT_INITIATED",
+        source: "client",
+        razorpayOrderId: orderId,
+        payload: { riderId, amountPaise, walletBefore, dummyMode },
+      });
+    } catch {
+      // audit insert must not block order creation
+    }
+  };
 
   if (dummyModeActive) {
     if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
       return { ok: false as const, status: 503, error: "payment_gateway_not_configured" };
     }
+    const orderId = `dummy_${ulid()}`;
+    await recordInitiated(orderId, true);
     return {
       ok: true as const,
-      orderId: `dummy_${ulid()}`,
+      orderId,
       keyId: "dummy_key",
       amount: amountPaise,
       amountRupees: round2(amountPaise / 100),
@@ -187,13 +238,15 @@ export async function createRiderPenaltyPaymentOrder(riderId: number) {
   const order = await createRazorpayOrder({
     amount: amountPaise,
     currency: "INR",
-    receipt: `rider_penalty_${riderId}_${Date.now()}`,
+    receipt: `rider_negwallet_${riderId}_${Date.now()}`,
     notes: {
-      type: "rider_penalty_payment",
+      type: "rider_negative_wallet_recovery",
       rider_id: String(riderId),
       amount_rupees: String(round2(amountPaise / 100)),
     },
   });
+
+  await recordInitiated(order.id, false);
 
   return {
     ok: true as const,
@@ -206,6 +259,45 @@ export async function createRiderPenaltyPaymentOrder(riderId: number) {
   };
 }
 
+/**
+ * Record a failed / cancelled attempt (Razorpay sheet dismissed or gateway error).
+ * Marks the initiated audit row and appends a lifecycle event. Best-effort.
+ */
+export async function recordRiderWalletPaymentAttempt(args: {
+  riderId: number;
+  razorpayOrderId: string;
+  status: "failed" | "cancelled";
+  reason?: string;
+}) {
+  const db = getDb();
+  try {
+    await db
+      .update(riderWalletPayments)
+      .set({ status: args.status, remarks: args.reason ?? args.status, updatedAt: new Date(), updatedBy: "rider" })
+      .where(
+        and(
+          eq(riderWalletPayments.riderId, args.riderId),
+          eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId)
+        )
+      );
+    await logPaymentEvent(db, {
+      eventType: "NEG_WALLET_PAYMENT_ATTEMPT_FAILED",
+      source: "client",
+      razorpayOrderId: args.razorpayOrderId,
+      failureMessage: args.reason ?? args.status,
+      payload: { riderId: args.riderId, status: args.status, reason: args.reason ?? null },
+    });
+  } catch {
+    // best-effort
+  }
+  return { ok: true as const };
+}
+
+/**
+ * Verify a negative-wallet recovery payment and atomically clear the wallet to
+ * exactly ₹0, then remove ONLY penalty-origin service blocks (fraud/manual blocks
+ * remain). Idempotent on the Razorpay payment id.
+ */
 export async function verifyRiderPenaltyPayment(args: {
   riderId: number;
   razorpayOrderId: string;
@@ -213,11 +305,13 @@ export async function verifyRiderPenaltyPayment(args: {
   razorpaySignature: string;
 }) {
   const env = getEnv();
+  const db = getDb();
   const allowSimulated =
     (env.PAYMENT_DUMMY_MODE || env.NODE_ENV === "development") &&
     args.razorpaySignature === "simulated_signature";
 
-  if (await hasPenaltyPaymentLedger(args.riderId, args.razorpayPaymentId)) {
+  // Idempotency: already settled → no-op success.
+  if (await findSettledPayment(args.riderId, args.razorpayPaymentId)) {
     return {
       ok: true as const,
       success: true,
@@ -227,13 +321,54 @@ export async function verifyRiderPenaltyPayment(args: {
     };
   }
 
-  const penaltyDue = await resolvePenaltyDueRupees(args.riderId);
-  if (penaltyDue <= 0 && !allowSimulated) {
-    return { ok: false as const, status: 400, error: "no_penalty_due" };
-  }
+  // Resolve the amount that was charged for this order (from the audit row),
+  // falling back to the live payable if the row is missing.
+  const [orderRow] = await db
+    .select()
+    .from(riderWalletPayments)
+    .where(
+      and(
+        eq(riderWalletPayments.riderId, args.riderId),
+        eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId)
+      )
+    )
+    .orderBy(desc(riderWalletPayments.createdAt))
+    .limit(1);
 
-  const expectedPaise = Math.max(100, Math.round(penaltyDue * 100));
+  const livePayablePaise = Math.max(100, Math.round((await getPayableNegativeRupees(args.riderId)) * 100));
+  const expectedPaise = orderRow?.amountPaise ?? livePayablePaise;
 
+  const markVerificationFailed = async (error: string) => {
+    try {
+      await db
+        .update(riderWalletPayments)
+        .set({
+          status: "verification_failed",
+          razorpayPaymentId: args.razorpayPaymentId,
+          razorpaySignature: args.razorpaySignature,
+          remarks: error,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(riderWalletPayments.riderId, args.riderId),
+            eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId)
+          )
+        );
+      await logPaymentEvent(db, {
+        eventType: "NEG_WALLET_PAYMENT_VERIFICATION_FAILED",
+        source: "client",
+        razorpayOrderId: args.razorpayOrderId,
+        razorpayPaymentId: args.razorpayPaymentId,
+        failureMessage: error,
+        payload: { riderId: args.riderId },
+      });
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  // Signature + amount verification (never trust the client).
   if (!allowSimulated) {
     const verified = await verifyRazorpayPaymentDetails(
       args.razorpayOrderId,
@@ -242,24 +377,162 @@ export async function verifyRiderPenaltyPayment(args: {
       expectedPaise
     );
     if (!verified.ok) {
+      await markVerificationFailed(verified.code);
       return { ok: false as const, status: 400, error: verified.code };
     }
-  } else if (!verifyRazorpaySignature(args.razorpayOrderId, args.razorpayPaymentId, args.razorpaySignature)) {
+  } else if (
+    !verifyRazorpaySignature(args.razorpayOrderId, args.razorpayPaymentId, args.razorpaySignature)
+  ) {
+    await markVerificationFailed("invalid_signature");
     return { ok: false as const, status: 400, error: "invalid_signature" };
   }
 
-  const credited = await creditWalletForPenaltyPayment({
-    riderId: args.riderId,
-    amount: round2(expectedPaise / 100),
-    razorpayPaymentId: args.razorpayPaymentId,
-    razorpayOrderId: args.razorpayOrderId,
-  });
+  await ensureWalletRow(args.riderId);
+
+  // Snapshot penalty blocks BEFORE the credit so we can diff for history.
+  const blocksBefore = await readNegativeWalletBlocks(args.riderId);
+
+  // Atomic money update: credit (capped so balance never exceeds 0), ledger,
+  // audit row → success. Any failure rolls the whole thing back.
+  let result: { balanceBefore: number; balanceAfter: number; creditApplied: number };
+  try {
+    result = await db.transaction(async (tx) => {
+      const [w] = await tx
+        .select({ totalBalance: riderWallet.totalBalance })
+        .from(riderWallet)
+        .where(eq(riderWallet.riderId, args.riderId))
+        .limit(1);
+      const balanceBefore = round2(Number(w?.totalBalance ?? 0));
+
+      const amountPaid = round2(expectedPaise / 100);
+      // Never let the wallet go positive — cap the credit to the outstanding.
+      const balanceAfter = round2(Math.min(0, balanceBefore + amountPaid));
+      const creditApplied = round2(balanceAfter - balanceBefore);
+
+      await tx.insert(walletLedger).values({
+        riderId: args.riderId,
+        entryType: "manual_add",
+        amount: creditApplied.toFixed(2),
+        balance: balanceAfter.toFixed(2),
+        ref: args.razorpayPaymentId,
+        refType: "negative_wallet_recovery",
+        description: "Negative wallet settlement via Razorpay",
+        metadata: {
+          razorpayOrderId: args.razorpayOrderId,
+          razorpayPaymentId: args.razorpayPaymentId,
+          source: "rider_app",
+        },
+      });
+
+      await tx
+        .update(riderWallet)
+        .set({ totalBalance: balanceAfter.toFixed(2), lastUpdatedAt: new Date() })
+        .where(eq(riderWallet.riderId, args.riderId));
+
+      await tx
+        .update(riderWalletPayments)
+        .set({
+          status: "success",
+          walletAfter: balanceAfter.toFixed(2),
+          razorpayPaymentId: args.razorpayPaymentId,
+          razorpaySignature: args.razorpaySignature,
+          method: allowSimulated ? "simulated" : "razorpay",
+          remarks: "Negative wallet settlement",
+          updatedAt: new Date(),
+          updatedBy: "rider",
+        })
+        .where(
+          and(
+            eq(riderWalletPayments.riderId, args.riderId),
+            eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId)
+          )
+        );
+
+      return { balanceBefore, balanceAfter, creditApplied };
+    });
+  } catch (err) {
+    await markVerificationFailed((err as Error)?.message ?? "wallet_update_failed");
+    return { ok: false as const, status: 500, error: "wallet_update_failed" };
+  }
+
+  // Post-commit (money is safe now): recompute penalty blocks + duty, record
+  // block history, notify. Idempotent — a retry/re-verify converges. Never throws.
+  let reactivated: string[] = [];
+  try {
+    await applyFifoAllocation(args.riderId, Math.abs(result.creditApplied));
+    reactivated = await recordUnblockHistory({
+      riderId: args.riderId,
+      blocksBefore,
+      walletBefore: result.balanceBefore,
+      walletAfter: result.balanceAfter,
+      paymentRef: args.razorpayPaymentId,
+    });
+    await syncRiderDutyWithRestrictions(args.riderId);
+    await logPaymentEvent(db, {
+      eventType: "NEG_WALLET_PAYMENT_SUCCESS",
+      source: "client",
+      razorpayOrderId: args.razorpayOrderId,
+      razorpayPaymentId: args.razorpayPaymentId,
+      payload: {
+        riderId: args.riderId,
+        walletBefore: result.balanceBefore,
+        walletAfter: result.balanceAfter,
+        creditApplied: result.creditApplied,
+        reactivatedServices: reactivated,
+      },
+    });
+  } catch (err) {
+    // Wallet is already correct; block-sync is idempotent and will reconcile.
+    try {
+      await logPaymentEvent(db, {
+        eventType: "NEG_WALLET_POST_COMMIT_WARN",
+        source: "client",
+        razorpayOrderId: args.razorpayOrderId,
+        razorpayPaymentId: args.razorpayPaymentId,
+        failureMessage: (err as Error)?.message ?? "post_commit_failed",
+        payload: { riderId: args.riderId },
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  await notifyRiderWalletRecovered(args.riderId, reactivated);
 
   return {
     ok: true as const,
     success: true,
-    creditedAmount: round2(expectedPaise / 100),
-    totalBalance: credited.totalBalance,
-    idempotent: credited.idempotent,
+    creditedAmount: round2(Math.abs(result.creditApplied)),
+    totalBalance: result.balanceAfter,
+    reactivatedServices: reactivated,
+    idempotent: false,
   };
+}
+
+/** Rider's own negative-wallet payment history (latest first). */
+export async function getRiderWalletPaymentHistory(riderId: number, limit = 30) {
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(riderWalletPayments)
+    .where(eq(riderWalletPayments.riderId, riderId))
+    .orderBy(desc(riderWalletPayments.createdAt))
+    .limit(limit);
+  return rows.map((r) => ({
+    id: r.id,
+    purpose: r.purpose,
+    amountPaise: r.amountPaise,
+    walletBefore: r.walletBefore != null ? Number(r.walletBefore) : null,
+    walletAfter: r.walletAfter != null ? Number(r.walletAfter) : null,
+    status: r.status,
+    gateway: r.gateway,
+    method: r.method ?? null,
+    razorpayOrderId: r.razorpayOrderId ?? null,
+    razorpayPaymentId: r.razorpayPaymentId ?? null,
+    refundStatus: r.refundStatus ?? null,
+    refundAmountPaise: r.refundAmountPaise ?? null,
+    remarks: r.remarks ?? null,
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+    updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
+  }));
 }

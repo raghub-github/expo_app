@@ -42,7 +42,11 @@ import { SubscriptionDutyBlockedSheet } from "@/src/components/subscription/Subs
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { MapRightControls } from "@/src/components/home/MapRightControls";
 import { SearchingOrdersPill } from "@/src/components/home/SearchingOrdersPill";
-import { RazorpayCheckoutModal, type RazorpayOrderParams } from "@/src/components/payment/RazorpayCheckoutModal";
+import {
+  openRazorpayCheckout,
+  isNativeRazorpayAvailable,
+  extractRazorpayError,
+} from "@/src/lib/razorpay-native";
 import { useRiderPenaltyPayment } from "@/src/hooks/useRiderPenaltyPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import { extractApiErrorMessage } from "@/src/services/http";
@@ -66,11 +70,13 @@ export default function OrdersScreen() {
   const { data: subscriptionStatus } = useRiderSubscriptionStatus();
   const { data: riderProfile } = useRiderProfile();
   const penaltyPayment = useRiderPenaltyPayment();
-  const [penaltyCheckout, setPenaltyCheckout] = useState<RazorpayOrderParams | null>(null);
   const [penaltyPaying, setPenaltyPaying] = useState(false);
   const [dutyBlockedSheetVisible, setDutyBlockedSheetVisible] = useState(false);
   const restrictions = earnings?.accountRestrictions;
   const walletBalance = earnings?.totalBalance ?? 0;
+  // Negative-wallet recovery: the ONLY payable amount is the exact current
+  // negative balance (read-only). Shown only when the wallet is below zero.
+  const negativeWalletDue = walletBalance < 0 ? Math.round(-walletBalance * 100) / 100 : 0;
   const blockedServices = useMemo(
     () =>
       mergeRiderBlockedServices(
@@ -110,7 +116,6 @@ export default function OrdersScreen() {
           razorpayPaymentId,
           razorpaySignature,
         });
-        setPenaltyCheckout(null);
         refreshRestrictionQueries();
         Alert.alert(
           t("home.penaltyPaidTitle", "Payment successful"),
@@ -147,7 +152,7 @@ export default function OrdersScreen() {
           t(
             "home.penaltyPayDummyMessage",
             "Dummy payment mode — simulate Razorpay success for ₹{{amount}}?",
-            { amount: order.amountRupees ?? penaltyDue }
+            { amount: order.amountRupees ?? negativeWalletDue }
           ),
           [
             { text: t("common.cancel", "Cancel"), style: "cancel", onPress: () => setPenaltyPaying(false) },
@@ -162,11 +167,45 @@ export default function OrdersScreen() {
         return;
       }
 
-      setPenaltyCheckout({
-        orderId: order.orderId,
-        keyId: order.keyId,
-        amount: order.amount,
-      });
+      if (!isNativeRazorpayAvailable()) {
+        Alert.alert(
+          t("home.penaltyPayFailedTitle", "Payment failed"),
+          t("home.penaltyPayNativeMissing", "Please update the app to complete this payment.")
+        );
+        setPenaltyPaying(false);
+        return;
+      }
+
+      try {
+        const result = await openRazorpayCheckout({
+          order: {
+            orderId: order.orderId,
+            amount: order.amount,
+            currency: order.currency,
+            keyId: order.keyId,
+          },
+          prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
+          name: "GatiMitra",
+          description: "Negative wallet settlement",
+          themeColor: "#D4A017",
+        });
+        await handleVerifyPenaltyPayment(
+          result.razorpayOrderId,
+          result.razorpayPaymentId,
+          result.razorpaySignature
+        );
+      } catch (rzpErr) {
+        const { code, description } = extractRazorpayError(rzpErr);
+        // User cancelled or gateway failed — record the attempt for audit.
+        void penaltyPayment.recordAttempt
+          .mutateAsync({
+            razorpayOrderId: order.orderId,
+            status: "cancelled",
+            reason: description || code || "cancelled",
+          })
+          .catch(() => undefined);
+        setPenaltyPaying(false);
+      }
     } catch (err) {
       Alert.alert(
         t("home.penaltyPayFailedTitle", "Payment failed"),
@@ -177,15 +216,18 @@ export default function OrdersScreen() {
     }
   }, [
     handleVerifyPenaltyPayment,
-    penaltyDue,
+    negativeWalletDue,
     penaltyPaying,
     penaltyPayment.createOrder,
+    penaltyPayment.recordAttempt,
+    riderProfile?.name,
+    riderProfile?.mobile,
     t,
   ]);
   const subscriptionBannerVisible =
     subscriptionStatus?.dues?.alertBanner?.visible ?? false;
   const subscriptionDispatchBlocked = subscriptionStatus?.dues?.dispatchBlocked ?? false;
-  const showPenaltyBanner = penaltyDue > 0;
+  const showPenaltyBanner = negativeWalletDue > 0;
   const primaryPaymentHold = ridePaymentHolds[0] ?? null;
 
   const homeBannerSlides = useMemo((): HomeBannerSlide[] => {
@@ -223,7 +265,7 @@ export default function OrdersScreen() {
         durationMs: homeBannerDuration("penalty"),
         element: (
           <PenaltyBanner
-            amount={penaltyDue}
+            amount={negativeWalletDue}
             paying={penaltyPaying}
             onPay={() => void handlePayPenalty()}
           />
@@ -247,7 +289,7 @@ export default function OrdersScreen() {
     allServicesBlacklisted,
     restrictions?.globalWalletBlock,
     showPenaltyBanner,
-    penaltyDue,
+    negativeWalletDue,
     penaltyPaying,
     handlePayPenalty,
     primaryPaymentHold,
@@ -464,24 +506,6 @@ export default function OrdersScreen() {
       <SubscriptionDutyBlockedSheet
         visible={dutyBlockedSheetVisible}
         onClose={() => setDutyBlockedSheetVisible(false)}
-      />
-
-      <RazorpayCheckoutModal
-        visible={penaltyCheckout != null}
-        orderParams={penaltyCheckout}
-        prefill={{
-          contact: riderProfile?.mobile ?? null,
-          name: riderProfile?.name ?? null,
-        }}
-        themeColor="#EAB308"
-        onSuccess={(result) => {
-          void handleVerifyPenaltyPayment(
-            result.razorpayOrderId,
-            result.razorpayPaymentId,
-            result.razorpaySignature
-          );
-        }}
-        onCancel={() => setPenaltyCheckout(null)}
       />
     </View>
   );

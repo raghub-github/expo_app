@@ -17,7 +17,10 @@ import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import RazorpayCheckout from "react-native-razorpay";
+import {
+  openRazorpayCheckout,
+  isNativeRazorpayAvailable,
+} from "@/src/lib/razorpay-native";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
@@ -278,8 +281,7 @@ export default function PaymentScreen() {
   // `react-native-razorpay` is a native module — present in dev-client / EAS
   // builds, absent in Expo Go. Guard so the screen degrades to the dev
   // simulator instead of crashing when the native module isn't linked.
-  const nativeCheckoutAvailable =
-    !!RazorpayCheckout && typeof RazorpayCheckout.open === "function";
+  const nativeCheckoutAvailable = isNativeRazorpayAvailable();
 
   const openNativeCheckout = useCallback(
     async (order: {
@@ -288,28 +290,25 @@ export default function PaymentScreen() {
       currency: string;
       key: string;
     }) => {
-      const options = {
-        key: order.key,
-        order_id: order.orderId,
-        amount: order.amount, // paise
-        currency: order.currency || "INR",
-        name: "GatiMitra",
-        description: "Rider onboarding fee",
-        theme: { color: ACCENT },
-        prefill: {
-          name: data.fullName?.trim() || undefined,
-          contact: session?.phoneE164?.replace(/\D/g, "").slice(-10) || undefined,
-        },
-      };
-
       try {
         // Resolves on success with the three verification tokens; rejects with
         // { code, description } on user cancel or gateway failure.
-        const result = await RazorpayCheckout.open(options);
+        const result = await openRazorpayCheckout({
+          order: {
+            orderId: order.orderId,
+            amount: order.amount,
+            currency: order.currency,
+            keyId: order.key,
+          },
+          prefill: { name: data.fullName?.trim(), contact: session?.phoneE164 },
+          name: "GatiMitra",
+          description: "Rider onboarding fee",
+          themeColor: ACCENT,
+        });
         await handleVerifyPayment(
-          result.razorpay_order_id || order.orderId,
-          result.razorpay_payment_id,
-          result.razorpay_signature
+          result.razorpayOrderId,
+          result.razorpayPaymentId,
+          result.razorpaySignature
         );
       } catch (rzpErr: unknown) {
         const desc =
