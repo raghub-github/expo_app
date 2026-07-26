@@ -10,9 +10,9 @@ import {
 import { useRiderSubscriptionDuesPayment } from "@/src/hooks/useRiderSubscriptionDuesPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import {
-  RazorpayCheckoutModal,
-  type RazorpayOrderParams,
-} from "@/src/components/payment/RazorpayCheckoutModal";
+  openRazorpayCheckout,
+  isNativeRazorpayAvailable,
+} from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { BannerPagerIndicators } from "@/src/components/home/HomeAlertBannerCarousel";
 
@@ -35,7 +35,6 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
   const payDues = useRiderSubscriptionPayDues();
   const duesPayment = useRiderSubscriptionDuesPayment();
   const [paying, setPaying] = useState(false);
-  const [checkout, setCheckout] = useState<RazorpayOrderParams | null>(null);
 
   const banner = status?.dues?.alertBanner;
   if (!banner?.visible) return null;
@@ -53,7 +52,6 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
           razorpayPaymentId,
           razorpaySignature,
         });
-        setCheckout(null);
         await refetch();
         if (result.totalDueAfter > 0) {
           Alert.alert(
@@ -151,11 +149,36 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
         return;
       }
 
-      setCheckout({
-        orderId: order.orderId,
-        keyId: order.keyId,
-        amount: order.amount,
-      });
+      if (!isNativeRazorpayAvailable()) {
+        Alert.alert(
+          t("common.error", "Error"),
+          t("subscription.nativeMissing", "Please update the app to complete this payment.")
+        );
+        setPaying(false);
+        return;
+      }
+
+      try {
+        const result = await openRazorpayCheckout({
+          order: {
+            orderId: order.orderId,
+            amount: order.amount,
+            keyId: order.keyId,
+          },
+          prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
+          name: "GatiMitra",
+          description: "Subscription dues",
+          themeColor: "#D4A017",
+        });
+        await handleVerifyPayment(
+          result.razorpayOrderId,
+          result.razorpayPaymentId,
+          result.razorpaySignature
+        );
+      } catch {
+        // User cancelled or gateway failed — just re-enable the button.
+        setPaying(false);
+      }
     } catch (e) {
       Alert.alert(
         t("common.error", "Error"),
@@ -171,6 +194,8 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
     payDues,
     paying,
     refetch,
+    riderProfile?.name,
+    riderProfile?.mobile,
     t,
     totalDue,
   ]);
@@ -208,24 +233,6 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
           <BannerPagerIndicators />
         </View>
       </View>
-
-      <RazorpayCheckoutModal
-        visible={checkout != null}
-        orderParams={checkout}
-        prefill={{
-          contact: riderProfile?.mobile ?? null,
-          name: riderProfile?.name ?? null,
-        }}
-        themeColor="#D4A017"
-        onSuccess={(result) => {
-          void handleVerifyPayment(
-            result.razorpayOrderId,
-            result.razorpayPaymentId,
-            result.razorpaySignature
-          );
-        }}
-        onCancel={() => setCheckout(null)}
-      />
     </>
   );
 }

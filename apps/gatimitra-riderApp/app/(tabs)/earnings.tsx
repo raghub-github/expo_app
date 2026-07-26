@@ -17,6 +17,7 @@ import {
 } from "@/src/components/earnings/EarningsAddAccountFooter";
 import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { EarningsWithdrawalModal } from "@/src/components/earnings/EarningsWithdrawalModal";
+import { NegativeWalletPayCard } from "@/src/components/earnings/NegativeWalletPayCard";
 import { colors } from "@/src/theme";
 
 export default function EarningsScreen() {
@@ -73,6 +74,9 @@ export default function EarningsScreen() {
             </Text>
             <Text style={styles.balanceHint}>{t("earnings.availableForWithdrawal")}</Text>
           </View>
+
+          {/* Shown only when the wallet is negative — read-only "Pay ₹X" (native). */}
+          <NegativeWalletPayCard />
 
           <View style={styles.statsRow}>
             <StatCard

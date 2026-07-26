@@ -23,9 +23,9 @@ import {
 import { useRiderSubscriptionDuesPayment } from "@/src/hooks/useRiderSubscriptionDuesPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import {
-  RazorpayCheckoutModal,
-  type RazorpayOrderParams,
-} from "@/src/components/payment/RazorpayCheckoutModal";
+  openRazorpayCheckout,
+  isNativeRazorpayAvailable,
+} from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
 
@@ -79,7 +79,6 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
   const payDues = useRiderSubscriptionPayDues();
   const duesPayment = useRiderSubscriptionDuesPayment();
   const [paying, setPaying] = useState(false);
-  const [checkout, setCheckout] = useState<RazorpayOrderParams | null>(null);
 
   const banner = status?.dues?.alertBanner;
   const totalDue = banner?.totalDue ?? status?.dues?.totalDue ?? 0;
@@ -97,7 +96,6 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
           razorpayPaymentId,
           razorpaySignature,
         });
-        setCheckout(null);
         await refetch();
         onClose();
         Alert.alert(
@@ -163,11 +161,35 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
         return;
       }
 
-      setCheckout({
-        orderId: order.orderId,
-        keyId: order.keyId,
-        amount: order.amount,
-      });
+      if (!isNativeRazorpayAvailable()) {
+        Alert.alert(
+          t("common.error", "Error"),
+          t("subscription.nativeMissing", "Please update the app to complete this payment.")
+        );
+        setPaying(false);
+        return;
+      }
+
+      try {
+        const result = await openRazorpayCheckout({
+          order: {
+            orderId: order.orderId,
+            amount: order.amount,
+            keyId: order.keyId,
+          },
+          prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
+          name: "GatiMitra",
+          description: "Subscription dues",
+          themeColor: "#D4A017",
+        });
+        await handleVerifyPayment(
+          result.razorpayOrderId,
+          result.razorpayPaymentId,
+          result.razorpaySignature
+        );
+      } catch {
+        setPaying(false);
+      }
     } catch (e) {
       Alert.alert(
         t("common.error", "Error"),
@@ -184,6 +206,8 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
     payDues,
     paying,
     refetch,
+    riderProfile?.name,
+    riderProfile?.mobile,
     t,
     totalDue,
   ]);
@@ -284,24 +308,6 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
           </Pressable>
         </View>
       </BlockingBottomSheetShell>
-
-      <RazorpayCheckoutModal
-        visible={checkout != null}
-        orderParams={checkout}
-        prefill={{
-          contact: riderProfile?.mobile ?? null,
-          name: riderProfile?.name ?? null,
-        }}
-        themeColor={TEAL}
-        onSuccess={(result) => {
-          void handleVerifyPayment(
-            result.razorpayOrderId,
-            result.razorpayPaymentId,
-            result.razorpaySignature
-          );
-        }}
-        onCancel={() => setCheckout(null)}
-      />
     </>
   );
 }
