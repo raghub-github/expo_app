@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable } from "react-native";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
 import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";

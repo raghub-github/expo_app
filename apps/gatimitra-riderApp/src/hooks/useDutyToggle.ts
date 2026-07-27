@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Alert } from "react-native";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { riderApi } from "@/src/services/api/riderApi";
 import {
@@ -23,6 +24,7 @@ import {
   isRiderFullyDispatchBlocked,
   mergeRiderBlockedServices,
 } from "@/src/lib/rider-blocked-services";
+import { useRef, useState } from "react";
 
 async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusResponse | null> {
   const token = useSessionStore.getState().session?.accessToken;
@@ -37,6 +39,13 @@ async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusRe
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
 function isDutyBlockedByServerError(error: unknown): boolean {
   if (!(error instanceof HttpError)) return false;
   if (error.status !== 403) return false;
@@ -49,17 +58,19 @@ function isDutyBlockedByServerError(error: unknown): boolean {
 export type SetDutyResult = {
   ok: boolean;
   blockedFromGoingOn?: boolean;
+  reason?: "vehicle" | "services" | "network" | "blocked" | "busy";
 };
 
 export function useDutyToggle() {
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
-  const toggleDuty = useDutyStore((s) => s.toggleDuty);
   const queryClient = useQueryClient();
   const openVehicleSheet = useVehicleGateStore((s) => s.openSheet);
   const openVerificationModal = useVehicleGateStore((s) => s.openVerificationModal);
   const { data: subscriptionStatus } = useRiderSubscriptionStatus();
   const { data: dutyStatus } = useDutyStatus();
   const { data: earnings } = useEarningsSummary();
+  const [localBusy, setLocalBusy] = useState(false);
+  const inFlightRef = useRef(false);
 
   const restrictions = earnings?.accountRestrictions;
   const blockedServices = mergeRiderBlockedServices(
@@ -103,78 +114,102 @@ export function useDutyToggle() {
 
   const setDuty = async (next: boolean): Promise<SetDutyResult> => {
     if (next === isOnDuty) return { ok: true };
+    if (inFlightRef.current || updateDutyMutation.isPending) {
+      return { ok: false, reason: "busy" };
+    }
 
-    if (next) {
-      if (dutyGoOnBlocked) {
-        void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
-        void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
-        void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
-        return { ok: false, blockedFromGoingOn: true };
-      }
-
-      const vehicleStatus =
-        (await loadRiderVehicleStatusForDutyGate()) ??
-        queryClient.getQueryData<RiderVehicleStatusResponse>(riderVehicleQueryKey) ??
-        null;
-
-      if (vehicleStatus) {
-        queryClient.setQueryData(riderVehicleQueryKey, vehicleStatus);
-      }
-
-      if (!vehicleStatus?.isComplete) {
-        openVehicleSheet();
-        return { ok: false };
-      }
-
-      if (!vehicleStatus.vehicle?.verified) {
-        openVerificationModal();
-        return { ok: false };
-      }
-
-      const serviceTypes = resolveDutyServiceTypesForToggle(queryClient);
-      if (!serviceTypes?.length) {
-        return { ok: false };
-      }
-
-      // Do NOT optimistic-flip until server accepts — prevents fake ON-DUTY.
-      try {
-        const data = await updateDutyMutation.mutateAsync({
-          status: next,
-          serviceTypes,
-        });
-        await useDutyStore.getState().setDutyStatus(data.isOnDuty);
-        if (!data.isOnDuty) {
-          return { ok: false, blockedFromGoingOn: true };
-        }
-        return { ok: true };
-      } catch (error) {
-        if (isVehicleDetailsRequiredError(error)) {
-          openVehicleSheet();
-          return { ok: false };
-        }
-        if (isVehicleNotVerifiedError(error)) {
-          openVerificationModal();
-          return { ok: false };
-        }
-        if (isDutyBlockedByServerError(error)) {
+    inFlightRef.current = true;
+    setLocalBusy(true);
+    try {
+      if (next) {
+        if (dutyGoOnBlocked) {
           void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
           void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
           void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
-          return { ok: false, blockedFromGoingOn: true };
+          return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
         }
-        return { ok: false };
-      }
-    }
 
-    try {
-      const data = await updateDutyMutation.mutateAsync({
-        status: next,
-        serviceTypes: undefined,
-      });
-      await useDutyStore.getState().setDutyStatus(data.isOnDuty);
-      return { ok: true };
-    } catch {
-      return { ok: false };
+        // Prefer cache so the first tap is instant; refresh in parallel with a short timeout.
+        const cached =
+          queryClient.getQueryData<RiderVehicleStatusResponse>(riderVehicleQueryKey) ?? null;
+        const fetched = await withTimeout(loadRiderVehicleStatusForDutyGate(), 2500);
+        const vehicleStatus = fetched ?? cached;
+
+        if (vehicleStatus) {
+          queryClient.setQueryData(riderVehicleQueryKey, vehicleStatus);
+        }
+
+        if (!vehicleStatus?.isComplete) {
+          openVehicleSheet();
+          return { ok: false, reason: "vehicle" };
+        }
+
+        if (!vehicleStatus.vehicle?.verified) {
+          openVerificationModal();
+          return { ok: false, reason: "vehicle" };
+        }
+
+        let serviceTypes = resolveDutyServiceTypesForToggle(queryClient);
+        // Cache may not be warm on first tap — fall back so Go-ON still hits the API.
+        if (!serviceTypes?.length) {
+          const stored = vehicleStatus.vehicle?.serviceTypes;
+          if (Array.isArray(stored) && stored.length > 0) {
+            serviceTypes = stored.map(String);
+          } else {
+            serviceTypes = ["food", "parcel", "person_ride"];
+          }
+        }
+
+        try {
+          const data = await updateDutyMutation.mutateAsync({
+            status: next,
+            serviceTypes,
+          });
+          await useDutyStore.getState().setDutyStatus(data.isOnDuty);
+          if (!data.isOnDuty) {
+            return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
+          }
+          return { ok: true };
+        } catch (error) {
+          if (isVehicleDetailsRequiredError(error)) {
+            openVehicleSheet();
+            return { ok: false, reason: "vehicle" };
+          }
+          if (isVehicleNotVerifiedError(error)) {
+            openVerificationModal();
+            return { ok: false, reason: "vehicle" };
+          }
+          if (isDutyBlockedByServerError(error)) {
+            void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
+            void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
+            void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
+            return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
+          }
+          Alert.alert(
+            "Could not go ON duty",
+            error instanceof Error ? error.message : "Check your connection and try again."
+          );
+          return { ok: false, reason: "network" };
+        }
+      }
+
+      try {
+        const data = await updateDutyMutation.mutateAsync({
+          status: next,
+          serviceTypes: undefined,
+        });
+        await useDutyStore.getState().setDutyStatus(data.isOnDuty);
+        return { ok: true };
+      } catch (error) {
+        Alert.alert(
+          "Could not go OFF duty",
+          error instanceof Error ? error.message : "Check your connection and try again."
+        );
+        return { ok: false, reason: "network" };
+      }
+    } finally {
+      inFlightRef.current = false;
+      setLocalBusy(false);
     }
   };
 
@@ -186,7 +221,7 @@ export function useDutyToggle() {
     isOnDuty,
     toggle,
     setDuty,
-    isPending: updateDutyMutation.isPending,
+    isPending: updateDutyMutation.isPending || localBusy,
     dutyGoOnBlocked,
   };
 }

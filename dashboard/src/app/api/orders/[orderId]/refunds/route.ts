@@ -17,6 +17,7 @@ import {
 } from "@/lib/db/operations/order-refund-guard";
 import { recordOrderCancellation } from "@/lib/db/operations/orders-core";
 import { getSql } from "@/lib/db/client";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 import {
   executeOrderCancellationFinancials,
   executePartialRefundFinancials,
@@ -516,6 +517,18 @@ export async function POST(
             : null,
         actorSystemUserId: cancelledById,
       });
+      await stampOrderRoutedTo({
+        orderId,
+        systemUserId: cancelledById,
+        actorEmail: user.email ?? null,
+        actorName: systemUser?.fullName ?? null,
+        actorRole: cancelledBy,
+        action: "cancel",
+        actionLabel: "Cancelled order",
+        actionRefTable: "order_cancellation_reasons",
+        actionRefId: cancellation.cancellationReasonId ?? null,
+        metadata: { refundType: "cancel_without_refund" },
+      });
       return NextResponse.json({
         success: true,
         data: {
@@ -727,6 +740,19 @@ export async function POST(
         actorSystemUserId: refundInitiatedById,
       });
 
+      await stampOrderRoutedTo({
+        orderId,
+        systemUserId: refundInitiatedById,
+        actorEmail: user.email ?? null,
+        actorName: systemUser?.fullName ?? null,
+        actorRole: refundInitiatedBy,
+        action: "cancel",
+        actionLabel: "Cancelled order with refund",
+        actionRefTable: "order_refunds",
+        actionRefId: record?.id ?? null,
+        metadata: { refundType: "refund_with_cancellation" },
+      });
+
       return NextResponse.json({
         success: true,
         data: { ...record, riderPenalty, merchantWalletDebit, executor },
@@ -754,6 +780,18 @@ export async function POST(
       refundAmount: effectiveRefundAmount,
       refundReason: refundReasonResolved,
       actor: actorForExecutor,
+    });
+
+    await stampOrderRoutedTo({
+      orderId,
+      systemUserId: refundInitiatedById,
+      actorEmail: user.email ?? null,
+      actorName: systemUser?.fullName ?? null,
+      actorRole: refundInitiatedBy,
+      action: "refund",
+      actionRefTable: "order_refunds",
+      actionRefId: record?.id ?? null,
+      metadata: { refundType, refundAmount: effectiveRefundAmount },
     });
 
     return NextResponse.json({

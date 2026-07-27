@@ -1,13 +1,5 @@
-import {
-  Modal,
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  Image,
-  Platform,
-  useWindowDimensions,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Modal, View, StyleSheet, Pressable, Image, Platform, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant } from "@/constants/theme";

@@ -36,6 +36,7 @@ export function useMenuItemBookmarks(storeId?: string | null) {
     bookmarkedItems,
     bookmarkMenuItemIdSet,
     isLoading: query.isLoading,
+    isError: query.isError,
     isAuthenticated,
     refetch: query.refetch,
   };

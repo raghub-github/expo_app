@@ -46,6 +46,7 @@ import { usePermission } from "@/hooks/usePermission";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
+import { HEADER_IDENTITY_CACHE_KEY } from "@/lib/dashboard-auth-client-state";
 import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
 import {
   isTicketsAppDetailPath,
@@ -65,7 +66,6 @@ import {
   normalizePersonRideSearchType,
 } from "@/lib/orders/person-ride-search";
 
-const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
 const ORDER_HUB_MINT = "#4EE5C1";
 
 // Order type switcher — replaces the orders right sidebar (Food / Parcel / Person Ride)
@@ -333,6 +333,11 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/system": "System",
   "/dashboard/analytics": "Analytics",
   "/dashboard/super-admin": "Super Admin",
+  "/dashboard/super-admin/verification": "Verification",
+  "/dashboard/super-admin/verification/policies": "Policy Center",
+  "/dashboard/super-admin/verification/analytics": "Verification analytics",
+  "/dashboard/super-admin/verification/rider-queue": "Rider agent queue",
+  "/dashboard/super-admin/verification/merchant-queue": "Merchant agent queue",
   "/dashboard/super-admin/store-onboarding-fee": "Onboarding fee & Mx Agreement",
   "/dashboard/super-admin/ticket-settings": "Ticket Management",
   "/dashboard/super-admin/order-acceptance": "Order acceptance settings",
@@ -344,8 +349,11 @@ const ROUTE_TITLES: Record<string, string> = {
 };
 
 const SUPER_ADMIN_HUB_PATH = "/dashboard/super-admin";
+const VERIFICATION_HUB_PATH = "/dashboard/super-admin/verification";
 const GEO_LIST_PATH = "/dashboard/super-admin/geo";
 const GEO_DETAIL_ROUTE_RE = /^\/dashboard\/super-admin\/geo\/[^/]+\/[^/]+$/;
+const VERIFICATION_INNER_ROUTE_RE =
+  /^\/dashboard\/super-admin\/verification\/(policies|analytics|rider-queue|merchant-queue)(\/.*)?$/;
 
 /** One-step back within Super Admin nested routes (not always the hub). */
 function resolveSuperAdminBackHref(cleanPath: string): string {
@@ -354,6 +362,10 @@ function resolveSuperAdminBackHref(cleanPath: string): string {
   }
   if (GEO_DETAIL_ROUTE_RE.test(cleanPath)) {
     return GEO_LIST_PATH;
+  }
+  // Policy Center / Analytics / queues → Verification hub (not Super Admin root)
+  if (VERIFICATION_INNER_ROUTE_RE.test(cleanPath)) {
+    return VERIFICATION_HUB_PATH;
   }
   return SUPER_ADMIN_HUB_PATH;
 }
@@ -407,16 +419,25 @@ function HeaderComponent() {
   const userMenuRef = useRef<HTMLDivElement>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
   const { user: authUser, authReady, systemUser } = useAuth();
-  const [cachedIdentity, setCachedIdentity] = useState<{ fullName: string | null; email: string | null; avatarUrl: string | null }>({
+  const [cachedIdentity, setCachedIdentity] = useState<{
+    fullName: string | null;
+    email: string | null;
+    avatarUrl: string | null;
+    systemUserId: string | null;
+  }>({
     fullName: null,
     email: null,
     avatarUrl: null,
+    systemUserId: null,
   });
   const isLoading = !authReady && !authUser && !systemUser && !cachedIdentity.email;
   const logoutMutation = useLogout();
   const leftSidebarMobile = useLeftSidebarMobile();
   const rightSidebar = useRightSidebar();
   const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
+  const isGeoRiderAvailabilityPage =
+    cleanPathname === "/dashboard/area-managers/availability" ||
+    cleanPathname.startsWith("/dashboard/area-managers/availability/");
   const isSuperAdminSubRoute = useMemo(
     () =>
       cleanPathname.startsWith(`${SUPER_ADMIN_HUB_PATH}/`) &&
@@ -561,14 +582,26 @@ function HeaderComponent() {
 
   useEffect(() => {
     const storageSnapshot = loadBootstrapFromStorage<{
-      systemUser?: { fullName?: string; email?: string } | null;
+      systemUser?: { fullName?: string; email?: string; systemUserId?: string } | null;
       session?: { user?: { email?: string } | null } | null;
     }>(24 * 60 * 60 * 1000);
 
-    let headerIdentitySnapshot: { fullName?: string | null; email?: string | null; avatarUrl?: string | null } | null = null;
+    let headerIdentitySnapshot: {
+      fullName?: string | null;
+      email?: string | null;
+      avatarUrl?: string | null;
+      systemUserId?: string | null;
+    } | null = null;
     try {
       const raw = window.localStorage.getItem(HEADER_IDENTITY_CACHE_KEY);
-      headerIdentitySnapshot = raw ? (JSON.parse(raw) as { fullName?: string | null; email?: string | null; avatarUrl?: string | null }) : null;
+      headerIdentitySnapshot = raw
+        ? (JSON.parse(raw) as {
+            fullName?: string | null;
+            email?: string | null;
+            avatarUrl?: string | null;
+            systemUserId?: string | null;
+          })
+        : null;
     } catch {
       headerIdentitySnapshot = null;
     }
@@ -584,17 +617,22 @@ function HeaderComponent() {
         storageSnapshot?.data?.session?.user?.email ??
         prev.email,
       avatarUrl: headerIdentitySnapshot?.avatarUrl ?? prev.avatarUrl,
+      systemUserId:
+        headerIdentitySnapshot?.systemUserId ??
+        storageSnapshot?.data?.systemUser?.systemUserId ??
+        prev.systemUserId,
     }));
   }, []);
 
   useEffect(() => {
-    if (!systemUser?.email && !systemUser?.fullName) return;
+    if (!systemUser?.email && !systemUser?.fullName && !systemUser?.systemUserId) return;
     setCachedIdentity((prev) => ({
       fullName: systemUser?.fullName ?? prev.fullName,
       email: systemUser?.email ?? prev.email,
       avatarUrl: prev.avatarUrl,
+      systemUserId: systemUser?.systemUserId ?? prev.systemUserId,
     }));
-  }, [systemUser?.email, systemUser?.fullName]);
+  }, [systemUser?.email, systemUser?.fullName, systemUser?.systemUserId]);
 
   // Extract user info from system user first, then auth session/cache fallback
   const userEmail = systemUser?.email ?? authUser?.email ?? cachedIdentity.email ?? null;
@@ -657,7 +695,7 @@ function HeaderComponent() {
   }, [authUser, avatarCandidateUrl, userEmail, userMetadata]);
 
   useEffect(() => {
-    if (!userName && !userEmail && !avatarUrl) return;
+    if (!userName && !userEmail && !avatarUrl && !systemUser?.systemUserId) return;
     try {
       window.localStorage.setItem(
         HEADER_IDENTITY_CACHE_KEY,
@@ -665,12 +703,20 @@ function HeaderComponent() {
           fullName: userName ?? null,
           email: userEmail ?? null,
           avatarUrl: avatarUrl ?? cachedIdentity.avatarUrl ?? null,
+          systemUserId: systemUser?.systemUserId ?? cachedIdentity.systemUserId ?? null,
         })
       );
     } catch {
       // ignore
     }
-  }, [userName, userEmail, avatarUrl, cachedIdentity.avatarUrl]);
+  }, [
+    userName,
+    userEmail,
+    avatarUrl,
+    cachedIdentity.avatarUrl,
+    cachedIdentity.systemUserId,
+    systemUser?.systemUserId,
+  ]);
 
   const displayName = userName ?? "User";
   const displayEmail = typeof userEmail === "string" ? userEmail : "";
@@ -851,7 +897,7 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
-        ) : (
+        ) : isGeoRiderAvailabilityPage ? null : (
           <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg flex-shrink">{pageName}</h2>
         )}
         {/* Queue (new tab) + helpdesk gear — ticket list & related; status lives on Queue pages */}
@@ -964,6 +1010,7 @@ function HeaderComponent() {
         </div>
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&
         effectivePathname !== "/dashboard/area-managers" &&
+        !isGeoRiderAvailabilityPage &&
         !effectivePathname.startsWith("/dashboard/merchants/verifications") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />

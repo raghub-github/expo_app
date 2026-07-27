@@ -102,6 +102,8 @@ const RiderBankPaymentMethodSchema = z.object({
   accountNumberMasked: z.string(),
   verificationStatus: z.enum(["pending", "verified", "rejected"]),
   createdAt: z.string(),
+  crossCheckStatus: z.enum(["ok", "mismatch"]).optional(),
+  crossCheckMessages: z.array(z.string()).optional(),
 });
 
 export type RiderBankPaymentMethod = z.infer<typeof RiderBankPaymentMethodSchema>;
@@ -756,7 +758,7 @@ export const riderApi = {
       label: z.string(),
       reasonCode: z.string(),
       sortOrder: z.coerce.number(),
-      serviceType: z.string().nullable(),
+      serviceType: z.string().nullable().optional(),
     });
     return client.request<{ ok: true; reasons: z.infer<typeof CancellationReasonSchema>[] }>(
       `/v1/rider/cancellation-reasons${qs ? `?${qs}` : ""}`,
@@ -1051,7 +1053,11 @@ export const riderApi = {
     );
   },
 
-  async logout(payload: { reasonCode: string; reasonText?: string }) {
+  async logout(payload: {
+    reasonCode: string;
+    reasonText?: string;
+    logoutAllDevices?: boolean;
+  }) {
     const client = createApiClient();
     return client.request<z.infer<typeof LogoutResponseSchema>>("/v1/rider/logout", {
       method: "POST",

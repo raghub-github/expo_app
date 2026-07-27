@@ -3,15 +3,8 @@
  */
 
 import { useMemo, useState, useCallback } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Switch,
-  Image,
-  ActivityIndicator,
-  Pressable,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Switch, Image, ActivityIndicator, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItemRow, MenuItemDetail } from "@/services/menuApi";
 import {

@@ -44,7 +44,6 @@ import {
 } from "@/lib/foodHomeScrollGuard";
 import { prefetchGridFirstHeroMedia, prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
-import { addressService } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
 import { resolveDeliveryLocationLabel } from "@/lib/resolveDeliveryLocationLabel";
@@ -57,6 +56,7 @@ import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { useStoreBookmarks } from "@/hooks/useStoreBookmarks";
+import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   CategoryRailSkeleton,
@@ -226,16 +226,8 @@ export default function FoodMerchantsScreen() {
     if (locationSource === "selected" && coords) return coords;
     return debouncedCoords;
   }, [locationSource, coords, debouncedCoords]);
-  const { data: addresses = [] } = useQuery({
-    queryKey: ["addresses"],
-    queryFn: () => addressService.getAddresses(),
-    staleTime: 60 * 1000,
-  });
-  const { data: activeLocation } = useQuery({
-    queryKey: ["active-location"],
-    queryFn: () => addressService.getActiveLocation(),
-    staleTime: 0,
-  });
+  const { data: addresses = [] } = useAddresses();
+  const { data: activeLocation } = useActiveLocation();
   /**
    * Canonical delivery anchor for merchant listing:
    * selected pin (snapped to nearby saved) → live GPS.
@@ -994,10 +986,22 @@ export default function FoodMerchantsScreen() {
     store.setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
   }, [isNonServiceableScreen]);
 
-  const gridFirstSkyHeight = useMemo(
+  const gridFirstSkyHeightDefault = useMemo(
     () => gridFirstSkySectionHeight(statusBarTopInset),
     [statusBarTopInset]
   );
+  const [gridFirstSkyHeight, setGridFirstSkyHeight] = useState(gridFirstSkyHeightDefault);
+
+  useEffect(() => {
+    setGridFirstSkyHeight((prev) =>
+      Math.abs(prev - gridFirstSkyHeightDefault) < 1 ? prev : gridFirstSkyHeightDefault
+    );
+  }, [gridFirstSkyHeightDefault]);
+
+  const onGridFirstHeroHeightChange = useCallback((h: number) => {
+    if (!(h > 0)) return;
+    setGridFirstSkyHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
+  }, []);
 
   const [gridFirstGoldStripH, setGridFirstGoldStripH] = useState(() =>
     showGridFirstSubscriptionRow ? GRID_FIRST_GOLD_STRIP_H : 0
@@ -1281,6 +1285,7 @@ export default function FoodMerchantsScreen() {
                   embeddedInSky
                   immersive
                   topInset={statusBarTopInset}
+                  onHeroHeightChange={onGridFirstHeroHeightChange}
                 />
                 <View
                   style={[

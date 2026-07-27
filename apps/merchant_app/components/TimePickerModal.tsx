@@ -1,13 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  TextInput,
-  StyleSheet,
-  KeyboardAvoidingView,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Modal, Pressable, TextInput, StyleSheet, KeyboardAvoidingView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
 

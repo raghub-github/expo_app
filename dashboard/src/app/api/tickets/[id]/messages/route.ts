@@ -10,7 +10,7 @@ import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { sendEmail, type OutboundEmailAttachment } from "@/lib/email/send";
 import { loadTicketAttachmentBuffer } from "@/lib/tickets/ticket-attachment-buffer";
 
@@ -64,7 +64,7 @@ export async function POST(
 
     if (userError) {
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
         return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
       }
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });

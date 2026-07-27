@@ -2,7 +2,7 @@ import { Platform, View } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP } from "@/constants/theme";
+import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP, FONT_LORA } from "@/constants/theme";
 import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar";
@@ -50,7 +50,7 @@ export default function TabsLayout() {
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
         tabBarLabelStyle: {
           fontSize: LABEL_FONT_SIZE,
-          fontWeight: "500",
+          fontFamily: FONT_LORA,
         },
         tabBarStyle: {
           height: tabBarTotalHeight,

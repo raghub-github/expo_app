@@ -1,151 +1,157 @@
 /**
- * Mapbox integration for GatiMitra Rider App (Native platforms only)
- * This file is only loaded on iOS/Android, not on web
+ * Mapbox integration for GatiMitra Rider (iOS/Android).
+ *
+ * Development builds and production use the same native `@rnmapbox/maps` path.
+ * Expo Go has no native Mapbox — maps show an explicit fallback panel instead.
+ * Do not gate on `__DEV__`.
  */
 
 import Constants from "expo-constants";
+import { Platform } from "react-native";
+import {
+  shouldUseNativeMapbox,
+  resolveMapRuntimeKind,
+  type MapRuntimeKind,
+  type MapRuntimeReason,
+} from "@gatimitra/map-tracking-engine";
 import { getRiderAppConfig } from "../../config/env";
 import { resolveMapboxPublicToken } from "../../lib/mapbox-env";
 
 let initialized = false;
 let isAvailable = false;
+let lastReason: MapRuntimeReason = "native_module_missing";
+
+export function getMapRuntimeDiagnostics(): {
+  kind: MapRuntimeKind;
+  reason: MapRuntimeReason;
+  available: boolean;
+  tokenPresent: boolean;
+  isExpoGo: boolean;
+} {
+  const tokenPresent = !!resolveMapboxPublicToken();
+  const { kind, reason } = resolveMapRuntimeKind({
+    appOwnership: Constants.appOwnership,
+    platformOs: Platform.OS,
+    tokenPresent,
+    nativeModulePresent: isAvailable,
+  });
+  return {
+    kind,
+    reason: initialized ? lastReason : reason,
+    available: isAvailable,
+    tokenPresent,
+    isExpoGo: Constants.appOwnership === "expo",
+  };
+}
 
 export function initializeMapbox() {
   if (initialized) return isAvailable;
 
-  // Expo Go has no native Mapbox; never require @rnmapbox/maps to avoid throwing
-  if (Constants.appOwnership === "expo") {
+  if (
+    !shouldUseNativeMapbox({
+      appOwnership: Constants.appOwnership,
+      platformOs: Platform.OS,
+    })
+  ) {
     initialized = true;
     isAvailable = false;
+    lastReason = Constants.appOwnership === "expo" ? "expo_go" : "web";
+    console.log("[Mapbox] Skipping native init (Expo Go / web). Use a development build for navigation testing.");
     return false;
   }
 
   const cfg = getRiderAppConfig();
-  const token = cfg.mapboxToken;
+  const token = cfg.mapboxToken ?? resolveMapboxPublicToken();
 
-  // Debug: Log token status
   console.log("[Mapbox] Initialization check:", {
     hasToken: !!token,
     tokenLength: token?.length || 0,
     tokenPrefix: token?.substring(0, 15) || "N/A",
-    envVar: resolveMapboxPublicToken() ? "SET" : "NOT SET",
+    appOwnership: Constants.appOwnership,
+    __DEV__,
   });
 
   if (!token) {
-    console.error("[Mapbox] ❌ Token not configured!");
-    console.error("[Mapbox] Please set EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN in apps/gatimitra-riderApp/.env file");
-    console.error("[Mapbox] Example: EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN=pk.eyJ1Ijo...");
+    console.error(
+      "[Mapbox] Token not configured. Set EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN or EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN."
+    );
     initialized = true;
+    isAvailable = false;
+    lastReason = "missing_token";
     return false;
   }
 
-  // Validate token format (should start with pk. for public tokens)
   if (!token.startsWith("pk.")) {
-    console.warn("[Mapbox] ⚠️ Token format appears invalid. Public tokens should start with 'pk.'");
+    console.warn("[Mapbox] Token format appears invalid. Public tokens should start with 'pk.'");
   }
 
   try {
-    // Try to require the Mapbox module - handle different export patterns
     let MapboxModule;
-    let Mapbox;
-    
     try {
-      // The require might throw immediately if native code is not available
       MapboxModule = require("@rnmapbox/maps");
-    } catch (requireError: any) {
-      // The error might be thrown during require() if native code is missing
-      const errorMsg = requireError?.message || "";
-      const errorString = String(requireError);
-      const errorStack = requireError?.stack || "";
-      
-      // Check if this is the "native code not available" error (Expo Go)
-      const isNativeCodeError = 
-        errorMsg.includes("native code not available") || 
-        errorString.includes("native code not available") ||
-        errorStack.includes("native code not available") ||
-        errorMsg.includes("RNMBXModule") ||
-        errorString.includes("RNMBXModule") ||
-        errorStack.includes("RNMBXModule");
-      
-      if (isNativeCodeError) {
-        // This is expected in Expo Go - don't throw, just return false silently
-        // The error message is already logged by the module itself
-        initialized = true;
-        isAvailable = false;
-        return false;
+    } catch (requireError: unknown) {
+      const errorMsg = String((requireError as Error)?.message ?? requireError);
+      const isNativeCodeError =
+        errorMsg.includes("native code not available") ||
+        errorMsg.includes("RNMBXModule");
+      initialized = true;
+      isAvailable = false;
+      lastReason = "native_module_missing";
+      if (!isNativeCodeError) {
+        console.error("[Mapbox] require(@rnmapbox/maps) failed:", errorMsg);
       }
-      
-      // For other errors, re-throw
-      throw requireError;
+      return false;
     }
-    
-    // If we got here, the module loaded - now check its structure
+
     if (!MapboxModule) {
       initialized = true;
       isAvailable = false;
+      lastReason = "native_module_missing";
       return false;
     }
-    
-    // Try different ways to access the module
-    if (MapboxModule.default && typeof MapboxModule.default.setAccessToken === "function") {
-      Mapbox = MapboxModule.default;
-    } else if (typeof MapboxModule.setAccessToken === "function") {
-      // Module exports setAccessToken directly
-      Mapbox = MapboxModule;
-    } else if (MapboxModule.Mapbox && typeof MapboxModule.Mapbox.setAccessToken === "function") {
-      // Nested export
-      Mapbox = MapboxModule.Mapbox;
-    } else {
-      // Log what we got for debugging
-      console.error("[Mapbox] Module structure:", {
-        hasDefault: !!MapboxModule.default,
-        hasSetAccessToken: typeof MapboxModule.setAccessToken,
-        hasMapbox: !!MapboxModule.Mapbox,
-        keys: Object.keys(MapboxModule).slice(0, 10),
-      });
-      initialized = true;
-      isAvailable = false;
-      return false;
-    }
+
+    let Mapbox =
+      MapboxModule.default && typeof MapboxModule.default.setAccessToken === "function"
+        ? MapboxModule.default
+        : typeof MapboxModule.setAccessToken === "function"
+          ? MapboxModule
+          : MapboxModule.Mapbox && typeof MapboxModule.Mapbox.setAccessToken === "function"
+            ? MapboxModule.Mapbox
+            : null;
 
     if (!Mapbox || typeof Mapbox.setAccessToken !== "function") {
-      console.error("[Mapbox] Mapbox module is invalid. setAccessToken not found.");
-      console.error("[Mapbox] Module structure:", Object.keys(MapboxModule || {}));
-      throw new Error("Invalid Mapbox module - setAccessToken function not found");
+      console.error("[Mapbox] Invalid module — setAccessToken not found");
+      initialized = true;
+      isAvailable = false;
+      lastReason = "native_module_missing";
+      return false;
     }
 
-    // Set the access token
     Mapbox.setAccessToken(token);
     initialized = true;
     isAvailable = true;
-    console.log("[Mapbox] ✅ Successfully initialized with token (length:", token.length, ")");
+    lastReason = "ok";
+    console.log("[Mapbox] Native Mapbox ready (same path as production). tokenLength=", token.length);
     return true;
-  } catch (error: any) {
-    const errorMsg = error?.message || String(error);
-    console.error("[Mapbox] ❌ Initialization failed:", errorMsg);
-    
-    // Don't spam warnings if we already logged the error
-    if (!errorMsg.includes("development build")) {
-      console.warn("[Mapbox] Native code not available. Using fallback UI.");
-      console.warn("[Mapbox] Build a development build for full map support.");
-    }
-    
+  } catch (error: unknown) {
+    console.error("[Mapbox] Initialization failed:", (error as Error)?.message ?? error);
     initialized = true;
     isAvailable = false;
+    lastReason = "native_module_missing";
     return false;
   }
 }
 
 export function isMapboxAvailable(): boolean {
-  if (!initialized) {
-    initializeMapbox();
-  }
+  if (!initialized) initializeMapbox();
   return isAvailable;
 }
 
 export function getMapboxModule(): ReturnType<typeof require> | null {
   try {
-    if (Constants.appOwnership === "expo") return null;
+    if (!shouldUseNativeMapbox({ appOwnership: Constants.appOwnership, platformOs: Platform.OS })) {
+      return null;
+    }
     if (!isMapboxAvailable()) return null;
     const mapboxModule = require("@rnmapbox/maps");
     let mapbox = mapboxModule;
@@ -153,8 +159,7 @@ export function getMapboxModule(): ReturnType<typeof require> | null {
     else if (mapboxModule?.Mapbox) mapbox = mapboxModule.Mapbox;
     if (!mapbox?.MapView) return null;
     return mapbox;
-  } catch (_e) {
+  } catch {
     return null;
   }
 }
-

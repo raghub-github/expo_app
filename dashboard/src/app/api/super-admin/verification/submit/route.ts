@@ -27,10 +27,15 @@ const base = {
 };
 
 const schema = z.discriminatedUnion("docKind", [
-  z.object({ ...base, docKind: z.literal("pan"), pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/i), name: z.string().min(2).max(100) }),
+  z.object({
+    ...base,
+    docKind: z.literal("pan"),
+    pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/i),
+    name: z.string().max(100).optional(),
+  }),
   z.object({ ...base, docKind: z.literal("gstin"), gstin: z.string().min(15).max(15), businessName: z.string().max(120).optional() }),
   z.object({ ...base, docKind: z.literal("bank_account"), bankAccount: z.string().regex(/^\d{6,20}$/), ifsc: z.string().regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/), name: z.string().max(100).optional() }),
-  z.object({ ...base, docKind: z.literal("driving_licence"), dlNumber: z.string().min(6).max(24), dob: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }),
+  z.object({ ...base, docKind: z.literal("driving_licence"), dlNumber: z.string().min(6).max(24), dob: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }),
   z.object({ ...base, docKind: z.literal("vehicle_rc"), vehicleNumber: z.string().min(4).max(16) }),
   z.object({ ...base, docKind: z.literal("ifsc"), ifsc: z.string().regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/) }),
 ]);
@@ -40,15 +45,31 @@ function toBackendCall(d: z.infer<typeof schema>): { path: string; payload: Reco
   const subject = { subject_type: d.subjectType, subject_id: d.subjectId };
   switch (d.docKind) {
     case "pan":
-      return { path: "/v1/verification/submit/pan", payload: { ...subject, pan: d.pan.toUpperCase(), name: d.name.trim() } };
+      return {
+        path: "/v1/verification/submit/pan",
+        payload: {
+          ...subject,
+          pan: d.pan.toUpperCase(),
+          ...(d.name?.trim() ? { name: d.name.trim() } : {}),
+          defer_projection: true,
+        },
+      };
     case "gstin":
-      return { path: "/v1/verification/submit/gstin", payload: { ...subject, gstin: d.gstin.toUpperCase(), business_name: d.businessName?.trim() || undefined } };
+      return { path: "/v1/verification/submit/gstin", payload: { ...subject, gstin: d.gstin.toUpperCase(), business_name: d.businessName?.trim() || undefined, defer_projection: true } };
     case "bank_account":
-      return { path: "/v1/verification/submit/bank", payload: { ...subject, bank_account: d.bankAccount, ifsc: d.ifsc.toUpperCase(), name: d.name?.trim() || undefined } };
+      return { path: "/v1/verification/submit/bank", payload: { ...subject, bank_account: d.bankAccount, ifsc: d.ifsc.toUpperCase(), name: d.name?.trim() || undefined, defer_projection: true } };
     case "driving_licence":
-      return { path: "/v1/verification/submit/driving-licence", payload: { ...subject, dl_number: d.dlNumber.toUpperCase(), dob: d.dob } };
+      return {
+        path: "/v1/verification/submit/driving-licence",
+        payload: {
+          ...subject,
+          dl_number: d.dlNumber.toUpperCase(),
+          ...(d.dob ? { dob: d.dob } : {}),
+          defer_projection: true,
+        },
+      };
     case "vehicle_rc":
-      return { path: "/v1/verification/submit/vehicle-rc", payload: { ...subject, vehicle_number: d.vehicleNumber.toUpperCase() } };
+      return { path: "/v1/verification/submit/vehicle-rc", payload: { ...subject, vehicle_number: d.vehicleNumber.toUpperCase(), defer_projection: true } };
     case "ifsc":
       return { path: "/v1/verification/submit/ifsc", payload: { ...subject, ifsc: d.ifsc.toUpperCase() } };
   }

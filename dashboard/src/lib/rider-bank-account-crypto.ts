@@ -1,9 +1,25 @@
-import { createDecipheriv, createHash } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
 function encryptionKey(): Buffer {
   const secret = process.env.SUPABASE_JWT_SECRET;
   if (!secret) return createHash("sha256").update("rider-bank:").digest();
   return createHash("sha256").update(`rider-bank:${secret}`).digest();
+}
+
+export function encryptRiderAccountNumber(accountNumber: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(accountNumber, "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return [
+    "v1",
+    iv.toString("base64url"),
+    tag.toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(":");
 }
 
 export function decryptRiderAccountNumber(payload: string): string | null {

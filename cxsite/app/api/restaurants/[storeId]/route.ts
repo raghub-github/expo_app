@@ -176,7 +176,44 @@ function buildSyntheticOperatingHoursFromDaily(
   return dayLabels.map((day) => ({ day, open: true, slots: [...slots] }))
 }
 
-/** Fallback when merchant_stores.gallery_images / banner_url columns are empty — read R2 media registry. */
+/** Weekday label in India business timezone (matches store schedule engine). */
+function getTodayWeekdayLabelIST(): string {
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    timeZone: 'Asia/Kolkata',
+  }).format(new Date())
+}
+
+/**
+ * When live operating_hours exist, overwrite legacy opening_time/closing_time
+ * with today's slot so clients that still prefer those columns never show
+ * registration-era stale values.
+ */
+function applyTodaySlotToLegacyTimes(
+  payload: Record<string, unknown>,
+  operatingHours: { day: string; open: boolean; slots: string[] }[]
+): void {
+  const today = getTodayWeekdayLabelIST()
+  const todayOh = operatingHours.find((d) => d.day === today)
+  if (!todayOh) return
+  if (!todayOh.open) {
+    payload.opening_time = null
+    payload.closing_time = null
+    return
+  }
+  const first = todayOh.slots[0]
+  if (!first) return
+  if (first === '24 hours' || /^24\s*hours$/i.test(first)) {
+    payload.opening_time = '12:00 AM'
+    payload.closing_time = '11:59 PM'
+    return
+  }
+  const parts = first.split(/\s*[–-]\s*/)
+  if (parts.length >= 2) {
+    payload.opening_time = parts[0]!.trim()
+    payload.closing_time = parts[1]!.trim()
+  }
+}
 async function enrichMediaFromRegistry(
   storeClient: ReturnType<typeof getSupabaseServiceRole> | typeof supabase,
   storeIdNum: number,
@@ -272,10 +309,10 @@ export async function GET(
       mapStoreToRestaurant(data)
     )
     if (hoursRow) {
-      ;(payload as Record<string, unknown>).operating_hours = buildOperatingHoursSlots(
-        hoursRow as Record<string, unknown>
-      )
+      const operatingHours = buildOperatingHoursSlots(hoursRow as Record<string, unknown>)
+      ;(payload as Record<string, unknown>).operating_hours = operatingHours
       ;(payload as Record<string, unknown>).operating_hours_raw = hoursRow
+      applyTodaySlotToLegacyTimes(payload as Record<string, unknown>, operatingHours)
     } else {
       const synthetic = buildSyntheticOperatingHoursFromDaily(data.opening_time, data.closing_time)
       ;(payload as Record<string, unknown>).operating_hours = synthetic

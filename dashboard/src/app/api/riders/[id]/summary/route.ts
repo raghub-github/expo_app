@@ -670,6 +670,14 @@ export async function GET(
 
     const onboardingVehicle = await resolveOnboardingVehicleDisplayLabel(onboardingVehicleCode);
 
+    const { checkOnboardingPaymentCompleted, isRiderEligibleForApprovalQueue } = await import(
+      "@/lib/db/operations/riders"
+    );
+    const [paymentCompleted, approvalQueueEligible] = await Promise.all([
+      checkOnboardingPaymentCompleted(riderId),
+      isRiderEligibleForApprovalQueue(riderId),
+    ]);
+
     const payload = {
       success: true,
       data: {
@@ -853,6 +861,8 @@ export async function GET(
         })() : null,
         orderMetrics,
         onboardingFees,
+        paymentCompleted,
+        approvalQueueEligible,
         logoutSession: logoutSession ?? DEFAULT_LOGOUT_SESSION,
       },
     } as const;

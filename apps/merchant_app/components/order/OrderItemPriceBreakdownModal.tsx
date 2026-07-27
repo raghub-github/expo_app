@@ -1,9 +1,5 @@
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView } from "react-native";
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import {

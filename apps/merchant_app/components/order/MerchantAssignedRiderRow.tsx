@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord } from "@/hooks/useOrders";
 import { callRider } from "@/lib/orderCardActions";

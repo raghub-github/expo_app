@@ -103,6 +103,7 @@ export default function CampaignsPage() {
   const [cancelBusy, setCancelBusy] = useState(false);
   const [resendBusyId, setResendBusyId] = useState<number | null>(null);
   const [resendError, setResendError] = useState<string | null>(null);
+  const [resendWarning, setResendWarning] = useState<string | null>(null);
 
   const runCancelConfirmed = async () => {
     if (!cancelTarget) return;
@@ -136,6 +137,7 @@ export default function CampaignsPage() {
   const runResend = async (campaign: Campaign) => {
     setResendBusyId(campaign.id);
     setResendError(null);
+    setResendWarning(null);
     try {
       const res = await fetch(`/api/super-admin/notifications/campaigns/${campaign.id}/resend`, {
         method: "POST",
@@ -155,8 +157,11 @@ export default function CampaignsPage() {
       }
       const queued = typeof j.queued === "number" ? j.queued : Number(j.queued);
       if (!Number.isFinite(queued) || queued <= 0) {
-        setResendError(
-          "No recipients with a registered push token for this target. Open the merchant app on a device (logged in) and try again.",
+        // Soft outcome — not an API failure (Expo Go / no registered devices).
+        setResendWarning(
+          typeof j.warning === "string"
+            ? j.warning
+            : "Push token unavailable. Skipping notification — no registered devices for this target (common in Expo Go). Campaign recorded.",
         );
       }
       mutate();
@@ -220,6 +225,12 @@ export default function CampaignsPage() {
           <div className="mt-4 flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>{resendError}</div>
+          </div>
+        ) : null}
+        {resendWarning ? (
+          <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>{resendWarning}</div>
           </div>
         ) : null}
 
@@ -638,7 +649,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [templateCode, setTemplateCode] = useState("");
-  const [targetMode, setTargetMode] = useState<TargetMode>("all_merchants");
+  const [targetMode, setTargetMode] = useState<TargetMode | null>(null);
   const [targetRole, setTargetRole] = useState("customer");
   const [targetUserId, setTargetUserId] = useState("");
   const [resolvedUserId, setResolvedUserId] = useState<string | null>(null);
@@ -677,6 +688,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [success, setSuccess] = useState<string | null>(null);
 
   const target = useMemo(() => {
+    if (!targetMode) return null;
     switch (targetMode) {
       case "role":           return { role: targetRole };
       case "user_id":
@@ -707,6 +719,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   }, [templateVars, varValues]);
 
   const targetValid = useMemo(() => {
+    if (!targetMode) return false;
     switch (targetMode) {
       case "user_id":
         return (
@@ -855,11 +868,14 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           scheduledAt: status === "scheduled" ? new Date(scheduledAt).toISOString() : undefined,
         }),
       });
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error ?? `HTTP ${res.status}`);
+        throw new Error(
+          (typeof j.message === "string" && j.message) ||
+            (typeof j.error === "string" && j.error) ||
+            `HTTP ${res.status}`,
+        );
       }
-      await res.json().catch(() => ({}));
       onSaved();
       if (status === "running" || status === "scheduled") {
         onClose();
@@ -937,7 +953,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           </Section>
 
           {/* Template */}
-          <Section title="Template" desc="Pick a template. Its variables show up as inputs below.">
+          <Section title="Template" desc="Choose any notification template from the full list.">
             <Field label="Template" required>
               <select
                 className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"

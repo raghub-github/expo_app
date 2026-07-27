@@ -1,5 +1,9 @@
 ﻿import type { Sql } from "postgres";
 import {
+  merchantBillPartsFromItems,
+  type BillLineItem,
+} from "@gatimitra/bill-print";
+import {
   annotateMerchantItemsWithItemOffers,
   merchantFundedDiscountFromBilling,
 } from "../../lib/merchant-billing-discount.js";
@@ -7,7 +11,6 @@ import { emitEvent } from "../notifications/eventBus.js";
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
-  merchantOrderTotalFromBilling,
   scaleMerchantOrderItemBreakdown,
   type ItemCommissionSnapshot,
 } from "../../lib/merchant-visible-pricing.js";
@@ -102,6 +105,8 @@ export type MerchantFoodOrderDto = {
   orders_core_id: number;
   core_only: boolean;
   formatted_order_id: string | null;
+  /** Tax invoice number from orders_core (GST compliance). */
+  tax_invoice_number?: string | null;
   order_status: string;
   customer_name: string | null;
   customer_phone: string | null;
@@ -390,32 +395,97 @@ function mapDeliveryType(
   return "GATIMITRA_RIDER";
 }
 
-function parseMerchantBillingBreakdown(
-  core: {
-    item_total: unknown;
-    addon_total?: unknown;
-    grand_total: unknown;
-    billing_snapshot?: unknown;
-  },
-  foodTotal: number
+function merchantFoodItemToBillLine(it: MerchantFoodOrderItem): BillLineItem {
+  return {
+    name: it.name,
+    quantity: Math.max(1, it.qty || 1),
+    price: it.price,
+    total: it.price,
+    variantTag: it.variant_tag ?? null,
+    customizationLines: it.customization_lines?.map((l) => ({
+      kind: l.kind,
+      name: l.name,
+      amount: l.amount,
+      quantity: null,
+    })),
+    customizations: it.customizations,
+    customizationsTotal: it.customizations_total ?? null,
+    baseAmount: it.base_amount ?? null,
+    capturedBaseAmount: it.captured_base_amount ?? null,
+    capturedAddonAmount: it.captured_addon_amount ?? null,
+    hasCustomizations: it.has_customizations ?? null,
+    catalogLineTotal: it.catalog_line_total ?? null,
+    netLineTotal: it.net_line_total ?? null,
+    offerDiscount: it.offer_discount ?? null,
+    offerLabel: it.offer_label ?? null,
+    isItemPromo: it.is_item_promo ?? null,
+    appliedOfferType: it.applied_offer_type ?? null,
+    ctmFromSnapshot: it.ctm_from_snapshot === true,
+  };
+}
+
+/** Cart precision already allocated on CTM lines — remainder applied once on the bill. */
+function precisionDiscountOnLines(items: MerchantFoodOrderItem[]): number {
+  return items.reduce((s, it) => {
+    const t = String(it.applied_offer_type ?? "")
+      .toUpperCase()
+      .replace(/[-\s]+/g, "_");
+    if (t === "PRECISION" || t === "CART_PERCENTAGE" || t === "CART_FLAT") {
+      return s + (num(it.offer_discount) || 0);
+    }
+    if (
+      it.is_item_promo !== true &&
+      (num(it.offer_discount) || 0) > 0.005 &&
+      !/BOOST|BOGO|BUY_/.test(t)
+    ) {
+      return s + (num(it.offer_discount) || 0);
+    }
+    return s;
+  }, 0);
+}
+
+/**
+ * Partner Site food-orders GET parity — items + packaging − precision (taxes: 0).
+ * Uses @gatimitra/bill-print merchantBillPartsFromItems (same as PartnerIncomingOrderModal).
+ */
+function assembleMerchantOrderPricing(
+  items: MerchantFoodOrderItem[],
+  opts: {
+    packaging: number;
+    merchantDiscount: number;
+    precisionFromCore: number;
+    allCtmFrozen: boolean;
+  }
 ): MerchantOrderPricing {
-  const snap =
-    core.billing_snapshot && typeof core.billing_snapshot === "object"
-      ? (core.billing_snapshot as Record<string, unknown>)
-      : null;
+  const { packaging, merchantDiscount, precisionFromCore, allCtmFrozen } = opts;
+  const billItems = items.map(merchantFoodItemToBillLine);
+  const merchantSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
+  const ctmNetSum = round2(
+    items.reduce((s, it) => s + num(it.net_line_total ?? it.price), 0)
+  );
+  const precisionOnLines = allCtmFrozen ? precisionDiscountOnLines(items) : 0;
+  const missingPrecision = allCtmFrozen
+    ? Math.max(0, precisionFromCore - precisionOnLines)
+    : 0;
+  const resolvedDisc = allCtmFrozen ? precisionFromCore : merchantDiscount;
+  const resolvedTotal = allCtmFrozen
+    ? round2(Math.max(0, ctmNetSum - missingPrecision + packaging))
+    : 0;
 
-  const itemTotal = num(snap?.item_total ?? core.item_total);
-  const addonTotal = num(snap?.addon_total ?? core.addon_total);
-  const subtotal = itemTotal + addonTotal;
-  const packaging = num(snap?.packaging_fee ?? 0);
-  const taxes = num(snap?.tax_total ?? 0);
-  const discount = merchantFundedDiscountFromBilling(snap);
-  const total =
-    foodTotal > 0
-      ? foodTotal
-      : Math.max(0, subtotal + packaging + taxes - discount);
+  const bill = merchantBillPartsFromItems(billItems, {
+    subtotal: merchantSubtotal,
+    packaging,
+    discount: resolvedDisc,
+    total: resolvedTotal,
+  });
 
-  return { subtotal, packaging, taxes, discount, total };
+  return {
+    subtotal: bill.itemsSubtotal,
+    packaging: bill.packaging,
+    taxes: 0,
+    discount: resolvedDisc,
+    total: bill.total,
+  };
 }
 
 type CoreRow = {
@@ -446,6 +516,7 @@ type CoreRow = {
   cancelled_at: string | null;
   is_bulk_order: boolean | null;
   merchant_instructions_list: unknown;
+  tax_invoice_number?: string | null;
   checkout_metadata: unknown;
 };
 
@@ -600,7 +671,8 @@ async function loadCoreRows(
           oc.distance_km,
           oc.cancelled_at,
           oc.is_bulk_order,
-          oc.merchant_instructions_list
+          oc.merchant_instructions_list,
+          oc.tax_invoice_number
         FROM orders_food of
         LEFT JOIN orders_core oc
           ON oc.id = of.order_id
@@ -644,7 +716,8 @@ async function loadCoreRows(
           oc.distance_km,
           oc.cancelled_at,
           oc.is_bulk_order,
-          oc.merchant_instructions_list
+          oc.merchant_instructions_list,
+          oc.tax_invoice_number
         FROM orders_food of
         LEFT JOIN orders_core oc
           ON oc.id = of.order_id
@@ -690,7 +763,8 @@ async function loadCoreRows(
         oc.distance_km,
         oc.cancelled_at,
         oc.is_bulk_order,
-        oc.merchant_instructions_list
+        oc.merchant_instructions_list,
+        oc.tax_invoice_number
       FROM orders_core oc
       LEFT JOIN customers cust ON cust.id = oc.customer_id
       WHERE oc.merchant_store_id = ${storeId}
@@ -726,7 +800,8 @@ async function loadCoreRows(
         oc.distance_km,
         oc.cancelled_at,
         oc.is_bulk_order,
-        oc.merchant_instructions_list
+        oc.merchant_instructions_list,
+        oc.tax_invoice_number
       FROM orders_core oc
       LEFT JOIN customers cust ON cust.id = oc.customer_id
       WHERE oc.merchant_store_id = ${storeId}
@@ -1086,7 +1161,6 @@ async function buildOrderDto(
     });
     void merchantSubtotal;
   }
-  const merchantSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
 
   const billingSnap =
     core.billing_snapshot && typeof core.billing_snapshot === "object"
@@ -1099,58 +1173,15 @@ async function buildOrderDto(
 
   const packaging = num(billingSnap?.packaging_fee ?? 0);
   const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
-  const itemsSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
-  const ctmNetSum = round2(
-    items.reduce((s, it) => s + num(it.net_line_total ?? it.price), 0)
-  );
-  // Cart/precision only â€” BOOST (and other item offers) already live in net_line_total.
   const precisionFromCore = Math.max(0, num(core.merchant_precision_discount));
-  const computedTotal = allCtmFrozen
-    ? round2(Math.max(0, ctmNetSum + packaging - precisionFromCore))
-    : merchantOrderTotalFromBilling(
-        itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
-        billingSnap,
-        packaging
-      );
-  const foodFrozen = num(food?.food_items_total_value);
-  /** Live recompute from items (Partner Site board parity when CTM snapshots present). */
-  const hasItemLines = items.length > 0 && (itemsSubtotal > 0.005 || merchantSubtotal > 0.005);
-  const computedOrFrozen =
-    hasItemLines
-      ? computedTotal
-      : foodFrozen > 0 && toIsoOrNull(food?.accepted_at)
-        ? round2(foodFrozen)
-        : computedTotal;
-
-  /**
-   * Payout / Partner Site SSOT for merchant-visible order total:
-   * 1) order_settlement_breakdown.merchant_gross (wallet credit engine)
-   * 2) orders_core.total_ctm (frozen at accept)
-   * 3) orders_food.food_items_total_value when accepted
-   * 4) live item recompute
-   */
-  const fromSettlement = opts.settlementGrossByCoreId.get(core.id) ?? 0;
   const fromCoreCtm = num(core.total_ctm);
-  const fromAcceptedFood =
-    foodFrozen > 0 && toIsoOrNull(food?.accepted_at) ? round2(foodFrozen) : 0;
-  const merchantTotal =
-    fromSettlement > 0
-      ? round2(fromSettlement)
-      : fromCoreCtm > 0
-        ? round2(fromCoreCtm)
-        : fromAcceptedFood > 0
-          ? fromAcceptedFood
-          : computedOrFrozen;
-
-  const pricing: MerchantOrderPricing = {
-    subtotal: itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
+  const pricing = assembleMerchantOrderPricing(items, {
     packaging,
-    taxes: 0,
-    // Frozen path: surface cart precision as the bill discount line (BOOST already in nets).
-    discount: allCtmFrozen ? precisionFromCore : merchantDiscount,
-    total: merchantTotal,
-  };
-
+    merchantDiscount,
+    precisionFromCore,
+    allCtmFrozen,
+  });
+  const merchantTotal = pricing.total;
   const riderReachedPickupAt = toIsoOrNull(food?.rider_reached_pickup_at);
   const riderDisplayInput = {
     order_status: pipeline,
@@ -1174,6 +1205,10 @@ async function buildOrderDto(
     orders_core_id: core.id,
     core_only: coreOnly,
     formatted_order_id: resolveFormattedOrderId(core, food),
+    tax_invoice_number:
+      typeof core.tax_invoice_number === "string"
+        ? core.tax_invoice_number.trim() || null
+        : null,
     order_status: pipeline,
     customer_name: resolveCustomerName(core, food, cust),
     customer_phone:
@@ -1562,17 +1597,10 @@ export async function loadMerchantFoodOrders(
     { token: string | null; kot_number: string | null }
   >();
   if (coreIds.length > 0) {
-    try {
-      const tokRows = await sql`
-        SELECT order_id, token, kot_number
-        FROM order_pickup_tokens
-        WHERE order_id IN ${sql(coreIds)}
-      `;
-      for (const t of tokRows as unknown as Array<{
-        order_id: number;
-        token: string | null;
-        kot_number: string | null;
-      }>) {
+    const ingestTokenRows = (
+      rows: Array<{ order_id: number; token: string | null; kot_number?: string | null }>
+    ) => {
+      for (const t of rows) {
         const cid = Number(t.order_id);
         if (!Number.isFinite(cid)) continue;
         pickupTokenByCoreId.set(cid, {
@@ -1580,8 +1608,106 @@ export async function loadMerchantFoodOrders(
           kot_number: t.kot_number != null ? String(t.kot_number) : null,
         });
       }
+    };
+
+    try {
+      const tokRows = await sql`
+        SELECT order_id, token, kot_number
+        FROM order_pickup_tokens
+        WHERE order_id IN ${sql(coreIds)}
+      `;
+      ingestTokenRows(
+        tokRows as unknown as Array<{
+          order_id: number;
+          token: string | null;
+          kot_number: string | null;
+        }>
+      );
     } catch {
-      /* optional â€” migration 0438/0439 */
+      try {
+        const tokRows = await sql`
+          SELECT order_id, token
+          FROM order_pickup_tokens
+          WHERE order_id IN ${sql(coreIds)}
+        `;
+        ingestTokenRows(
+          tokRows as unknown as Array<{ order_id: number; token: string | null }>
+        );
+      } catch {
+        /* optional — migration 0438 */
+      }
+    }
+
+    // Ensure every board order has a mintable KOT token (immutable once created).
+    const missingCoreIds = coreIds.filter((id) => !pickupTokenByCoreId.has(id));
+    if (missingCoreIds.length > 0) {
+      try {
+        await sql`
+          INSERT INTO order_pickup_tokens (
+            order_id, merchant_id, store_id, token, status, generated_at, expires_at, kot_number, kot_version
+          )
+          SELECT
+            oc.id,
+            oc.merchant_parent_id,
+            oc.merchant_store_id,
+            gm_generate_pickup_token(),
+            'ACTIVE',
+            now(),
+            NULL,
+            gm_allocate_kot_number(oc.merchant_store_id),
+            1
+          FROM orders_core oc
+          WHERE oc.id IN ${sql(missingCoreIds)}
+          ON CONFLICT (order_id) DO NOTHING
+        `;
+        const backfill = await sql`
+          SELECT order_id, token, kot_number
+          FROM order_pickup_tokens
+          WHERE order_id IN ${sql(missingCoreIds)}
+        `;
+        ingestTokenRows(
+          backfill as unknown as Array<{
+            order_id: number;
+            token: string | null;
+            kot_number: string | null;
+          }>
+        );
+      } catch (ensureErr) {
+        console.warn("[loadMerchantFoodOrders] ensure pickup tokens failed:", ensureErr);
+      }
+    }
+
+    // Allocate kot_number for rows that still lack one (pre-0439 / partial backfill).
+    const missingKot = [...pickupTokenByCoreId.entries()].filter(
+      ([, v]) => v.token && !v.kot_number
+    );
+    if (missingKot.length > 0) {
+      try {
+        for (const [cid] of missingKot) {
+          await sql`
+            UPDATE order_pickup_tokens t
+            SET kot_number = gm_allocate_kot_number(t.store_id),
+                updated_at = now()
+            WHERE t.order_id = ${cid}
+              AND t.kot_number IS NULL
+              AND t.store_id IS NOT NULL
+          `;
+        }
+        const refreshed = await sql`
+          SELECT order_id, token, kot_number
+          FROM order_pickup_tokens
+          WHERE order_id IN ${sql(missingKot.map(([cid]) => cid))}
+        `;
+        ingestTokenRows(
+          refreshed as unknown as Array<{
+            order_id: number;
+            token: string | null;
+            kot_number: string | null;
+          }>
+        );
+      } catch {
+        /* kot allocate optional */
+      }
     }
   }
 

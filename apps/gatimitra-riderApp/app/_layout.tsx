@@ -1,108 +1,80 @@
 // IMPORTANT: Setup must run FIRST - installs error suppression before any other imports
+import "@/src/utils/setup";
 
-import '@/src/utils/setup';
+import FontAwesome from "@expo/vector-icons/FontAwesome";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
+import { useFonts } from "expo-font";
+import { Lora_400Regular, Lora_600SemiBold, Lora_700Bold } from "@expo-google-fonts/lora";
+import {
+  Poppins_600SemiBold,
+  Poppins_700Bold,
+} from "@expo-google-fonts/poppins";
+import { Stack } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
+import { useEffect, useState } from "react";
+import { View, Text, Platform } from "react-native";
+import { StatusBar } from "expo-status-bar";
+import "react-native-reanimated";
 
+import { useColorScheme } from "@/components/useColorScheme";
+import { AppProviders } from "@/src/providers/AppProviders";
+import { usePermissionStore } from "@/src/stores/permissionStore";
+import { useSessionStore } from "@/src/stores/sessionStore";
+import { useLanguageStore } from "@/src/stores/languageStore";
+import { colors } from "@/src/theme";
+import { RiderFonts } from "@/src/theme/fonts";
+import { RiderPushSetup } from "@/src/components/RiderPushSetup";
+import { RiderDispatchRealtime } from "@/src/components/RiderDispatchRealtime";
+import { RiderDispatchKeepAlive } from "@/src/components/RiderDispatchKeepAlive";
+import { RiderDutyLocationPing } from "@/src/components/RiderDutyLocationPing";
+import { isRiderWsEnabled } from "@/src/config/env";
+import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrderHost";
+import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderResumeBootstrap";
+import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
+import { RiderToastHost } from "@/src/components/RiderToastHost";
+import { initializeMapbox } from "@/src/services/maps/mapbox";
+import { fetchRiderAppAssets } from "@/src/services/appAssets.service";
+import { useAppAssetsStore } from "@/src/stores/appAssetsStore";
+import { hydrateRiderSubscriptionCache } from "@/src/lib/rider-subscription-cache";
 
+/** Local icon glyphs — short wait so lang/bell/tabs never paint as empty squares. */
+const ICON_FONT_TIMEOUT_MS = 1_200;
 
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-
-import { useFonts } from 'expo-font';
-import { Lora_600SemiBold, Lora_700Bold } from '@expo-google-fonts/lora';
-
-import { Stack } from 'expo-router';
-
-import * as SplashScreen from 'expo-splash-screen';
-
-import { useEffect, useState } from 'react';
-
-import { View, ActivityIndicator, Text, Image, StyleSheet } from 'react-native';
-
-import { StatusBar } from 'expo-status-bar';
-
-import { Asset } from 'expo-asset';
-
-import 'react-native-reanimated';
-
-
-
-import { useColorScheme } from '@/components/useColorScheme';
-
-import { AppProviders } from '@/src/providers/AppProviders';
-
-import { usePermissionStore } from '@/src/stores/permissionStore';
-
-import { useSessionStore } from '@/src/stores/sessionStore';
-
-import { colors } from '@/src/theme';
-
-import { Platform } from 'react-native';
-
-import { RiderPushSetup } from '@/src/components/RiderPushSetup';
-import { RiderDispatchRealtime } from '@/src/components/RiderDispatchRealtime';
-import { RiderDispatchKeepAlive } from '@/src/components/RiderDispatchKeepAlive';
-import { RiderDutyLocationPing } from '@/src/components/RiderDutyLocationPing';
-import { isRiderWsEnabled } from '@/src/config/env';
-import { IncomingRideOrderHost } from '@/src/components/orders/IncomingRideOrderHost';
-import { RiderPostDeliveryTipHost } from '@/src/components/orders/RiderPostDeliveryTipHost';
-import { RiderToastHost } from '@/src/components/RiderToastHost';
-
-import { initializeMapbox } from '@/src/services/maps/mapbox';
-import { fetchRiderAppAssets } from '@/src/services/appAssets.service';
-import { useAppAssetsStore } from '@/src/stores/appAssetsStore';
-
-
-
-if (Platform.OS !== 'web') {
-
+if (Platform.OS !== "web") {
   try {
-
     initializeMapbox();
-
-    console.log('[RootLayout] Mapbox initialized early');
-
   } catch (error) {
-
-    console.warn('[RootLayout] Failed to initialize Mapbox early:', error);
-
+    console.warn("[RootLayout] Failed to initialize Mapbox early:", error);
   }
-
 }
 
-
-
-export {
-
-  ErrorBoundary,
-
-} from 'expo-router';
-
-
+export { ErrorBoundary } from "expo-router";
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Expo Go / some Android builds cannot activate keep-awake — non-fatal
 });
 
-
-
 export default function RootLayout() {
-
+  const [iconFontsTimedOut, setIconFontsTimedOut] = useState(false);
   const [loaded, error] = useFonts({
-
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
-
+    SpaceMono: require("../assets/fonts/SpaceMono-Regular.ttf"),
+    Lora_400Regular,
     Lora_600SemiBold,
-
     Lora_700Bold,
-
+    Poppins_600SemiBold,
+    Poppins_700Bold,
     ...FontAwesome.font,
-
+    ...Ionicons.font,
+    ...MaterialIcons.font,
   });
 
+  const chromeFontsReady = loaded || iconFontsTimedOut;
 
-
-  const [assetsLoaded, setAssetsLoaded] = useState(false);
+  useEffect(() => {
+    void hydrateRiderSubscriptionCache();
+  }, []);
 
   useEffect(() => {
     if (useAppAssetsStore.getState().loaded) return;
@@ -112,288 +84,94 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-
-    async function loadAssets() {
-
-      try {
-
-        await Asset.loadAsync([require('../assets/images/rideraap.png')]);
-
-        setAssetsLoaded(true);
-
-        console.log('[RootLayout] Critical assets loaded');
-
-      } catch (loadError) {
-
-        console.warn('[RootLayout] Asset loading error (non-critical):', loadError);
-
-        setAssetsLoaded(true);
-
-      }
-
-    }
-
-    loadAssets();
-
-  }, []);
-
-
+    if (loaded || iconFontsTimedOut) return;
+    const t = setTimeout(() => setIconFontsTimedOut(true), ICON_FONT_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [loaded, iconFontsTimedOut]);
 
   useEffect(() => {
-
-    if (error) {
-
-      console.warn('[RootLayout] Font loading error:', error);
-
-    }
-
+    if (error) console.warn("[RootLayout] Font loading error:", error);
   }, [error]);
 
-
-
   useEffect(() => {
+    if (!chromeFontsReady) return;
+    SplashScreen.hideAsync().catch(() => {});
+  }, [chromeFontsReady]);
 
-    if (loaded && assetsLoaded) {
-
-      const timer = setTimeout(() => {
-
-        SplashScreen.hideAsync().catch(() => {});
-
-        console.log('[RootLayout] Splash screen hidden - all assets loaded');
-
-      }, 100);
-
-      return () => clearTimeout(timer);
-
-    }
-
-  }, [loaded, assetsLoaded]);
-
-
-
-  if (!loaded || !assetsLoaded) {
-    return (
-      <View style={bootStyles.root}>
-        <StatusBar style="dark" />
-        <Image
-          source={require('../assets/images/rideraap.png')}
-          style={bootStyles.logo}
-          resizeMode="contain"
-          accessibilityLabel="GatiMitra Rider"
-        />
-        <Text style={bootStyles.title}>GatiMitra Rider</Text>
-        <ActivityIndicator size="small" color={colors.primary[600]} style={bootStyles.spinner} />
-      </View>
-    );
+  // Wait for icon fonts so header/tabs never flash blank white boxes.
+  if (!chromeFontsReady) {
+    return <View style={{ flex: 1, backgroundColor: "#ffffff" }} />;
   }
-
-
 
   try {
-
     return <RootLayoutNav />;
-
   } catch (renderError) {
-
-    console.warn('[RootLayout] Error rendering RootLayoutNav:', renderError);
-
+    console.warn("[RootLayout] Error rendering RootLayoutNav:", renderError);
     return (
-
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
-
-        <Text style={{ color: '#000000', fontSize: 16 }}>Render Error</Text>
-
-        <Text style={{ color: '#666666', marginTop: 8 }}>{String(renderError)}</Text>
-
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#FFFFFF" }}>
+        <Text style={{ color: "#000000", fontSize: 16, fontFamily: RiderFonts.loraBold }}>
+          Render Error
+        </Text>
+        <Text style={{ color: "#666666", marginTop: 8 }}>{String(renderError)}</Text>
       </View>
-
     );
-
   }
-
 }
 
-
-
 function RootLayoutNav() {
-
   const colorScheme = useColorScheme();
-
-  const permissionHydrated = usePermissionStore((s) => s.hydrated);
-
   const hydratePermissions = usePermissionStore((s) => s.hydrate);
-
   const hydrateSession = useSessionStore((s) => s.hydrate);
-
-  const [isInitializing, setIsInitializing] = useState(true);
-
-
+  const hydrateLanguage = useLanguageStore((s) => s.hydrate);
 
   useEffect(() => {
-
-    console.log('[RootLayoutNav] Starting hydration...');
-
     void hydratePermissions();
-
     void hydrateSession();
+    void hydrateLanguage().catch(() => undefined);
+  }, [hydratePermissions, hydrateSession, hydrateLanguage]);
 
-  }, [hydratePermissions, hydrateSession]);
-
-
-
-  useEffect(() => {
-
-    if (permissionHydrated) {
-
-      console.log('[RootLayoutNav] Already hydrated, setting isInitializing to false');
-
-      setIsInitializing(false);
-
-      return;
-
-    }
-
-
-
-    let mounted = true;
-
-    const timeoutId = setTimeout(() => {
-
-      console.warn('[RootLayoutNav] Initialization timeout - proceeding anyway');
-
-      if (mounted) setIsInitializing(false);
-
-    }, 500);
-
-
-
-    const checkInterval = setInterval(() => {
-
-      if (permissionHydrated && mounted) {
-
-        console.log('[RootLayoutNav] Hydration detected, setting isInitializing to false');
-
-        setIsInitializing(false);
-
-        clearInterval(checkInterval);
-
-        clearTimeout(timeoutId);
-
-      }
-
-    }, 50);
-
-
-
-    return () => {
-
-      mounted = false;
-
-      clearTimeout(timeoutId);
-
-      clearInterval(checkInterval);
-
-    };
-
-  }, [permissionHydrated]);
-
-
-
-  if (!permissionHydrated || isInitializing) {
-
-    console.log('[RootLayoutNav] Showing loading screen', { permissionHydrated, isInitializing });
-
-    return (
-
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
-
-        <ActivityIndicator size="large" color={colors.primary[500]} />
-
-        <Text style={{ marginTop: 16, color: '#000000' }}>Initializing...</Text>
-
-      </View>
-
-    );
-
-  }
-
-
-
-  console.log('[RootLayoutNav] Rendering app providers and navigation');
-
-
-
+  // Render navigation immediately — stores hydrate in background (no "Initializing..." blank).
   try {
-
     return (
-
       <AppProviders>
-
         <StatusBar style="dark" />
-
-        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-
+        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
           <RiderPushSetup />
           <RiderDutyLocationPing />
+          <ActiveOrderResumeBootstrap />
           <RiderDispatchKeepAlive />
           {isRiderWsEnabled() ? <RiderDispatchRealtime /> : null}
 
           <Stack
-
             screenOptions={{
-
               headerShown: false,
-
-              contentStyle: { backgroundColor: '#ffffff' },
-
+              contentStyle: { backgroundColor: "#ffffff" },
             }}
-
           >
-
             <Stack.Screen name="index" />
-
             <Stack.Screen name="(permissions)" />
-
             <Stack.Screen name="(auth)" />
-
             <Stack.Screen name="(onboarding)" />
-
             <Stack.Screen name="(tabs)" />
-
             <Stack.Screen name="view-profile" />
-
             <Stack.Screen name="view-documents" />
-
             <Stack.Screen name="view-vehicle" />
 
             <Stack.Screen name="payment-details" />
 
             <Stack.Screen name="notification-settings" />
-
             <Stack.Screen name="notifications" />
-
             <Stack.Screen name="raise-ticket" />
-
             <Stack.Screen name="raise-ticket-flow" />
-
             <Stack.Screen name="raise-ticket-chat" />
-
             <Stack.Screen name="my-tickets" />
-
             <Stack.Screen name="my-rides" />
-
             <Stack.Screen name="order-history/[id]" />
-
             <Stack.Screen name="ticket-chat/[id]" />
-
             <Stack.Screen name="team-leader" />
-
             <Stack.Screen name="your-subscription" />
-
             <Stack.Screen name="active-ride/[id]" />
-
             <Stack.Screen name="active-food/[id]" />
-
             <Stack.Screen
               name="food-delivery-success"
               options={{
@@ -402,7 +180,6 @@ function RootLayoutNav() {
                 contentStyle: { flex: 1, backgroundColor: "#ffffff" },
               }}
             />
-
             <Stack.Screen
               name="ride-payment-waiting"
               options={{
@@ -411,7 +188,6 @@ function RootLayoutNav() {
                 contentStyle: { flex: 1, backgroundColor: "#ffffff" },
               }}
             />
-
             <Stack.Screen
               name="ride-delivery-success"
               options={{
@@ -420,62 +196,39 @@ function RootLayoutNav() {
                 contentStyle: { flex: 1, backgroundColor: "#ffffff" },
               }}
             />
-
-            <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
-
+            <Stack.Screen name="modal" options={{ presentation: "modal" }} />
           </Stack>
 
           <IncomingRideOrderHost />
           <RiderPostDeliveryTipHost />
           <RiderToastHost />
-
         </ThemeProvider>
-
       </AppProviders>
-
     );
-
   } catch (navError) {
-
-    console.warn('[RootLayoutNav] Error rendering navigation:', navError);
-
+    console.warn("[RootLayoutNav] Error rendering navigation:", navError);
     return (
-
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background.light }}>
-
-        <Text style={{ color: colors.error[500], fontSize: 16 }}>Navigation Error</Text>
-
-        <Text style={{ color: colors.text.primary.light, marginTop: 8 }}>Please restart the app</Text>
-
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: colors.background.light,
+        }}
+      >
+        <Text style={{ color: colors.error[500], fontSize: 16, fontFamily: RiderFonts.loraBold }}>
+          Navigation Error
+        </Text>
+        <Text
+          style={{
+            color: colors.text.primary.light,
+            marginTop: 8,
+            fontFamily: RiderFonts.loraRegular,
+          }}
+        >
+          Please restart the app
+        </Text>
       </View>
-
     );
-
   }
-
 }
-
-const bootStyles = StyleSheet.create({
-  root: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 32,
-  },
-  logo: {
-    width: 220,
-    height: 220,
-  },
-  title: {
-    marginTop: 16,
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#14532D',
-    letterSpacing: 0.2,
-  },
-  spinner: {
-    marginTop: 24,
-  },
-});
-

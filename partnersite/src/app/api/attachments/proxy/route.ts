@@ -633,7 +633,12 @@ export async function GET(request: NextRequest) {
     // (PDF, CSV, other) still 404 — those hit dedicated viewers that need to
     // surface the missing-file error.
     const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg)(\?|$)/i;
-    if (IMAGE_EXT.test(key)) {
+    const looksLikeStoreImage =
+      IMAGE_EXT.test(key) ||
+      /\/onboarding\/assets\/(banner|gallery)\//i.test(key) ||
+      /\/store-media(-gallery)?\//i.test(key) ||
+      /\/assets\/(banners|gallery)\//i.test(key);
+    if (looksLikeStoreImage) {
       const placeholder = MISSING_IMAGE_SVG();
       return new NextResponse(placeholder, {
         status: 200,

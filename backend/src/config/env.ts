@@ -314,6 +314,12 @@ const EnvSchema = z.object({
   CASHFREE_SANDBOX_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
   CASHFREE_PROD_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(8).optional()),
   CASHFREE_PROD_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+  /**
+   * RSA public key from Cashfree dashboard (2FA → Public Key). Used to build
+   * `x-cf-signature` so verification works without a static egress IP.
+   * Accept PEM or raw base64 (whitespace/newlines stripped at use site).
+   */
+  CASHFREE_PUBLIC_AUTH_KEY: z.preprocess(emptyToUndefined, z.string().min(32).optional()),
 
   /** Secret for POST /v1/push/send-notification (dashboard / internal). */
   PUSH_NOTIFICATION_ADMIN_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),

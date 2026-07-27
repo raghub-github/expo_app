@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -18,6 +17,7 @@ import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
   PAYOUT_STORE_OFFER_DISCOUNT_LINES,
   PAYOUT_STORE_OFFERS_SECTION_LABEL,
+  PAYOUT_CANCELLATION_COMPENSATION_LABEL,
   buildSettlementDetailSections,
   buildOrderPayoutBreakdown,
   entriesInPayoutPeriod,
@@ -51,6 +51,16 @@ const EMPTY_SETTLEMENT: SettlementSummary = {
   mechanismFee: 0,
   customerCompensation: 0,
   cancellationCompensation: 0,
+  otherCredits: 0,
+  withdrawalReversalCredits: 0,
+  manualCredits: 0,
+  adjustmentCredits: 0,
+  gstCredits: 0,
+  penaltyReversalCredits: 0,
+  penalties: 0,
+  refundAdjustments: 0,
+  manualDebitAdjustments: 0,
+  chargebacks: 0,
   estimatedPayout: 0,
   orderCount: 0,
   deliveredOrderCount: 0,
@@ -73,6 +83,16 @@ function toSettlementSummary(raw: PayoutSettlementSummary): SettlementSummary {
     mechanismFee: raw.mechanismFee,
     customerCompensation: raw.customerCompensation,
     cancellationCompensation: raw.cancellationCompensation,
+    otherCredits: raw.otherCredits ?? 0,
+    withdrawalReversalCredits: raw.withdrawalReversalCredits ?? 0,
+    manualCredits: raw.manualCredits ?? 0,
+    adjustmentCredits: raw.adjustmentCredits ?? 0,
+    gstCredits: raw.gstCredits ?? 0,
+    penaltyReversalCredits: raw.penaltyReversalCredits ?? 0,
+    penalties: raw.penalties ?? 0,
+    refundAdjustments: raw.refundAdjustments ?? 0,
+    manualDebitAdjustments: raw.manualDebitAdjustments ?? 0,
+    chargebacks: raw.chargebacks ?? 0,
     estimatedPayout: raw.estimatedPayout,
     orderCount: raw.orderCount,
     deliveredOrderCount: raw.deliveredOrderCount,
@@ -129,7 +149,7 @@ function SettlementRow({
             color={GatiMitraMerchant.textTertiary}
           />
         ) : (
-          <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textTertiary} />
+          <View style={s.settleChevronSpacer} />
         )}
         <Text style={[s.settleLabel, bold && s.settleLabelBold]}>{label}</Text>
       </View>
@@ -149,12 +169,14 @@ function SettlementSubRow({
   label,
   amount,
   negative,
+  green,
   last,
   count,
 }: {
   label: string;
   amount: number;
   negative?: boolean;
+  green?: boolean;
   last?: boolean;
   count?: boolean;
 }) {
@@ -165,7 +187,15 @@ function SettlementSubRow({
         <View style={s.settleSubGuide} />
         <Text style={s.settleSubLabel}>{label}</Text>
       </View>
-      <Text style={[s.settleSubAmt, negative && amount > 0 && s.settleAmtNeg]}>{display}</Text>
+      <Text
+        style={[
+          s.settleSubAmt,
+          negative && amount > 0 && s.settleAmtNeg,
+          green && amount > 0 && s.settleAmtGreen,
+        ]}
+      >
+        {display}
+      </Text>
     </View>
   );
 }
@@ -174,6 +204,7 @@ type SettlementBreakdownItem = {
   label: string;
   amount: number;
   negative?: boolean;
+  green?: boolean;
   count?: boolean;
 };
 
@@ -219,6 +250,7 @@ function ExpandableSettlementSection({
               label={item.label}
               amount={item.amount}
               negative={item.negative}
+              green={item.green ?? green}
               count={item.count}
               last={index === items.length - 1}
             />
@@ -350,6 +382,7 @@ export default function PayoutDetailScreen() {
     status: string;
     isCurrentCycle?: string;
     pgTransactionId: string;
+    cycleId?: string;
   }>();
 
   const { selectedStore } = useSelectedStore();
@@ -373,6 +406,9 @@ export default function PayoutDetailScreen() {
   const netPayout = Number(params.netPayout ?? 0);
   const status = (params.status ?? "PAID") as PayoutStatus;
   const isCurrentCycle = params.isCurrentCycle === "1" || params.id === "current-cycle";
+  const cycleIdNum = Number(params.cycleId);
+  const cycleId =
+    Number.isInteger(cycleIdNum) && cycleIdNum > 0 ? cycleIdNum : null;
 
   useEffect(() => {
     if (!storeId || !token) {
@@ -381,9 +417,11 @@ export default function PayoutDetailScreen() {
       return;
     }
     if (!periodStart || !periodEnd) {
-      setLoading(false);
-      setLoadError("Payout period dates are missing. Go back and open this payout again.");
-      return;
+      if (!cycleId) {
+        setLoading(false);
+        setLoadError("Payout period dates are missing. Go back and open this payout again.");
+        return;
+      }
     }
 
     let cancelled = false;
@@ -392,13 +430,15 @@ export default function PayoutDetailScreen() {
       setLoading(true);
       setLoadError(null);
       try {
+        const from = periodStart ?? new Date(0);
+        const to = periodEnd ?? new Date();
         const [l, settlementRaw] = await Promise.all([
           fetchLedger(storeId, token, {
             limit: 200,
-            from: periodStart.toISOString(),
-            to: periodEnd.toISOString(),
+            from: from.toISOString(),
+            to: to.toISOString(),
           }),
-          fetchPayoutSettlement(storeId, token, periodStart, periodEnd),
+          fetchPayoutSettlement(storeId, token, from, to, { cycleId }),
         ]);
         if (!cancelled) {
           setLedger(l.entries);
@@ -424,7 +464,7 @@ export default function PayoutDetailScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [storeId, token, periodStartIso, periodEndIso]);
+  }, [storeId, token, periodStartIso, periodEndIso, cycleId]);
 
   const periodEntries = useMemo(
     () => entriesInPayoutPeriod(ledger, periodStart, periodEnd, payoutDate),
@@ -584,14 +624,22 @@ export default function PayoutDetailScreen() {
                 negative
                 items={settlementSections.deductionItems}
               />
-              {settlementSections.creditItems.map((item) => (
-                <SettlementRow
-                  key={item.label}
-                  label={item.label}
-                  amount={item.amount}
-                  green={item.green}
+              {settlement.cancellationCompensation > 0 ? (
+                <ExpandableSettlementSection
+                  label={PAYOUT_CANCELLATION_COMPENSATION_LABEL}
+                  amount={settlement.cancellationCompensation}
+                  green
+                  items={settlementSections.cancellationCreditItems}
                 />
-              ))}
+              ) : null}
+              {(settlement.otherCredits ?? 0) > 0 ? (
+                <ExpandableSettlementSection
+                  label="Other merchant credits"
+                  amount={settlement.otherCredits}
+                  green
+                  items={settlementSections.otherCreditItems}
+                />
+              ) : null}
               <View style={s.settleDivider} />
               <SettlementRow
                 label={settlementSections.estPayoutLabel}
@@ -756,6 +804,7 @@ const s = StyleSheet.create({
   },
   settleRowBold: { borderBottomWidth: 0, paddingTop: 14 },
   settleRowLeft: { flexDirection: "row", alignItems: "center", gap: 6, flex: 1, marginRight: 8 },
+  settleChevronSpacer: { width: 14, height: 14 },
   settleLabel: { fontSize: 13, color: GatiMitraMerchant.textSecondary, flex: 1 },
   settleLabelBold: { fontSize: 13, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
   settleAmt: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary },

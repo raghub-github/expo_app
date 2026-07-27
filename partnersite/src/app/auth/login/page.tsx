@@ -8,6 +8,7 @@ import { signInWithGoogle, requestPhoneOTP, verifyPhoneOTP } from '@/lib/auth/su
 import { clearSupabaseClientSession } from '@/lib/auth/clear-auth-storage';
 import { getOrCreateDeviceId } from '@/lib/auth/device-id-client';
 import { ENABLE_PHONE_OTP_LOGIN } from '@/lib/auth/phone-otp-config';
+import { clearPartnerStoreSelection } from '@/lib/partner-selected-store';
 import { LoginPageShell } from './components/LoginPageShell';
 import { LoginFormHeader } from './components/LoginFormHeader';
 import { LoginToggle, type LoginTab } from './components/LoginToggle';
@@ -56,6 +57,8 @@ function LoginPageContent() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Never reuse another account's store selection across logins
+    clearPartnerStoreSelection();
     if (redirectTo) {
       sessionStorage.setItem('auth_redirect', redirectTo);
     } else {
@@ -137,6 +140,9 @@ function LoginPageContent() {
             sessionStorage.removeItem('auth_redirect');
           }
           if (next === '/auth' || next === '/auth/') next = '/partners/all-stores';
+          if (typeof next === 'string' && next.startsWith('/partners/') && !next.startsWith('/partners/all-stores')) {
+            next = '/partners/all-stores';
+          }
           window.location.href = next.startsWith('/') ? next : '/partners/all-stores';
           return;
         }
@@ -153,6 +159,10 @@ function LoginPageContent() {
       sessionStorage.removeItem('auth_redirect');
     }
     if (next === '/auth' || next === '/auth/') next = '/partners/all-stores';
+    // Never deep-link into dashboard until all-stores / gate validates ownership
+    if (typeof next === 'string' && next.startsWith('/partners/') && !next.startsWith('/partners/all-stores')) {
+      next = '/partners/all-stores';
+    }
     window.location.href = next.startsWith('/') ? next : '/partners/all-stores';
   };
 

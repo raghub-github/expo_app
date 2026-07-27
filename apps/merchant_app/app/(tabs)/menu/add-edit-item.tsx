@@ -4,20 +4,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  ActivityIndicator,
-  Alert,
-  Image,
-  Modal,
-  Switch,
-  Dimensions,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, ScrollView, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Alert, Image, Modal, Switch, Dimensions } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -44,6 +32,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { normalizeMenuItemImageUri } from "@/lib/normalizeMenuItemImage";
 import {
   uploadItemImage,
+  uploadReviewRequestImage,
   fetchStoreProfile,
   fetchCategoryNameSuggestions,
   fetchCategoryUiConfig,
@@ -918,11 +907,43 @@ export default function AddEditItemScreen() {
         }
       } else {
         const created = await createMutation.mutateAsync(payload);
-        const newId = created.id;
         try {
           await ensureStoreCuisinesLinkedForItemNames(storeId, token, cuisineType);
         } catch {
           /* non-fatal */
+        }
+        if (created.pending_review && created.review_request_id) {
+          if (pendingImage && token && storeId) {
+            try {
+              await uploadReviewRequestImage(storeId, created.review_request_id, token, {
+                uri: pendingImage.uri,
+                type: pendingImage.type ?? "image/jpeg",
+                name: pendingImage.name ?? "image.jpg",
+              });
+            } catch (uploadErr) {
+              Alert.alert(
+                "Submitted without image",
+                uploadErr instanceof Error
+                  ? `${uploadErr.message}. Your item was submitted for review; you can update the image later if needed.`
+                  : "Your item was submitted for review, but the image could not be attached."
+              );
+              router.back();
+              return;
+            }
+          }
+          Alert.alert(
+            "Submitted for Review",
+            "Your new item is under review and will appear on the menu once approved.",
+            [{ text: "OK", onPress: () => router.back() }]
+          );
+          return;
+        }
+        const newId = created.id;
+        if (newId == null) {
+          Alert.alert("Submitted", "Item submitted for review.", [
+            { text: "OK", onPress: () => router.back() },
+          ]);
+          return;
         }
         if (pendingImage && token && storeId) {
           let rolledBack = false;

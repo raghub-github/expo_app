@@ -1,5 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Redirect, Tabs, router, useSegments } from 'expo-router';
 import { View, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -59,24 +59,23 @@ export default function TabLayout() {
     void prefetchLedger(queryClient);
   }, [session, canAccessTabs, queryClient]);
 
-  if (!hydrated || (session && !onboardingGateReady)) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background.light }}>
-        <ActivityIndicator size="large" color={TAB_BRAND} />
-      </View>
-    );
+  if (!hydrated) {
+    // Session still reading storage — show tabs shell only if we already have a token in memory.
+    if (!session) {
+      return (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background.light }}>
+          <ActivityIndicator size="large" color={TAB_BRAND} />
+        </View>
+      );
+    }
   }
   
-  if (!session) {
+  if (hydrated && !session) {
     return <Redirect href="/(auth)/login" />;
   }
 
-  if (!canAccessTabs && onboardingHref) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background.light }}>
-        <ActivityIndicator size="large" color={TAB_BRAND} />
-      </View>
-    );
+  if (session && !canAccessTabs && onboardingHref && onboardingGateReady) {
+    return <Redirect href={onboardingHref} />;
   }
 
   return (
@@ -84,10 +83,12 @@ export default function TabLayout() {
       <StatusBar style="dark" backgroundColor="#ffffff" />
       <RiderHomeLocationPrompt />
       {!onOrdersHome ? <GlobalTopBar /> : null}
-      <Tabs
+        <Tabs
         tabBar={(props) => <RiderTabBar {...props} />}
         screenOptions={{
           headerShown: false,
+          lazy: false,
+          freezeOnBlur: false,
         }}>
         <Tabs.Screen name="orders" options={{ title: t('tabs.orders', 'Orders') }} />
         <Tabs.Screen name="ledger" options={{ title: t('tabs.ledger', 'Ledger') }} />
@@ -95,7 +96,7 @@ export default function TabLayout() {
         <Tabs.Screen name="earnings" options={{ title: t('tabs.earnings', 'Earnings') }} />
         <Tabs.Screen
           name="profile"
-          options={{ title: t('tabs.profile', 'Profile'), lazy: false }}
+          options={{ title: t('tabs.profile', 'Profile') }}
         />
         <Tabs.Screen name="index" options={{ href: null }} />
       </Tabs>

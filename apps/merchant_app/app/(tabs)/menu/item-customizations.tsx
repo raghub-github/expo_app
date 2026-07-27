@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, TextInput, Alert, ActivityIndicator } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, ScrollView, TouchableOpacity, TextInput, Alert, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";

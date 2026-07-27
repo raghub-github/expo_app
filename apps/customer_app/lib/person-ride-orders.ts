@@ -37,7 +37,10 @@ export function isActivePersonRideOrder(order: OrderSummary): boolean {
 export function isBookARideHomeScreen(pathname: string | null | undefined): boolean {
   if (!pathname) return false;
   const normalized = pathname.split("?")[0]!.replace(/\/$/, "") || "/";
-  return normalized === "/home/service/ride";
+  // Exact or group-prefixed paths (e.g. /(app)/home/service/ride)
+  if (normalized === "/home/service/ride") return true;
+  if (/(^|\/)home\/service\/ride$/.test(normalized)) return true;
+  return false;
 }
 
 /** Ride still matching a captain — show ride-searching, not live map. */

@@ -290,11 +290,13 @@ function AcceptRideSwipeButton({
         const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
         const threshold = Math.max(22, max * 0.15);
         if (gesture.dx >= threshold) {
+          // Fire accept immediately — animate handle in parallel (target <300ms feel).
+          confirmSwipe();
           RNAnimated.timing(dragX, {
             toValue: max,
-            duration: 140,
+            duration: 60,
             useNativeDriver: true,
-          }).start(confirmSwipe);
+          }).start();
         } else {
           resetDrag();
         }
@@ -885,6 +887,7 @@ const styles = StyleSheet.create({
   orderId: {
     fontSize: 20,
     fontWeight: "800",
+    fontFamily: "Lora_700Bold",
     color: colors.gray[900],
     letterSpacing: -0.3,
   },
@@ -912,11 +915,13 @@ const styles = StyleSheet.create({
   earningsSubLabel: {
     fontSize: 13,
     fontWeight: "600",
+    fontFamily: "Poppins_600SemiBold",
     color: colors.gray[500],
   },
   earningsSubValue: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "700",
+    fontFamily: "Poppins_700Bold",
     color: colors.gray[800],
   },
   tipLineLabel: {
@@ -959,11 +964,13 @@ const styles = StyleSheet.create({
   earningsLabel: {
     fontSize: 12,
     fontWeight: "700",
+    fontFamily: "Poppins_600SemiBold",
     color: colors.gray[600],
   },
   earningsValue: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: "800",
+    fontFamily: "Poppins_700Bold",
     color: colors.gray[900],
   },
   distanceGrid: {

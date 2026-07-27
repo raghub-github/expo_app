@@ -20,26 +20,68 @@ module.exports = ({ config }) => ({
     ...appJson.expo,
     ...config?.expo,
     scheme: config?.expo?.scheme || appJson.expo.scheme || "gatimitra-merchant",
+    // Always use Partner Control wordmark — never onlylogo / stale adaptive crops.
+    icon: "./assets/images/splash-logo.png",
+    splash: {
+      ...(appJson.expo.splash || {}),
+      image: "./assets/images/splash-logo.png",
+      resizeMode: "contain",
+      backgroundColor: "#FFFFFF",
+    },
+    ios: {
+      ...appJson.expo.ios,
+      ...config?.expo?.ios,
+      icon: "./assets/images/splash-logo.png",
+      infoPlist: {
+        ...(appJson.expo.ios?.infoPlist || {}),
+        ...(config?.expo?.ios?.infoPlist || {}),
+        LSApplicationQueriesSchemes: [
+          ...new Set([
+            ...((appJson.expo.ios?.infoPlist?.LSApplicationQueriesSchemes ||
+              []) as string[]),
+            ...((config?.expo?.ios?.infoPlist?.LSApplicationQueriesSchemes ||
+              []) as string[]),
+            "upi",
+            "phonepe",
+            "tez",
+            "paytm",
+            "paytmmp",
+            "gpay",
+          ]),
+        ],
+      },
+    },
     android: {
       ...appJson.expo.android,
       ...config?.expo?.android,
       package: "com.gatimitra.partner",
+      icon: "./assets/images/splash-logo.png",
+      adaptiveIcon: {
+        foregroundImage: "./assets/images/splash-logo.png",
+        backgroundColor: "#000000",
+      },
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       softwareKeyboardLayoutMode: "pan",
     },
     plugins: [
       ...(appJson.expo.plugins || []),
       "expo-dev-client",
+      "./plugins/withMerchantOrderWake",
+      "./plugins/withAndroidUpiQueries",
       [
         "expo-notifications",
         {
-          icon: "./assets/mxappicon.png",
+          // White "GM" monogram — status bar / shade small icon (Zomato-Z style).
+          icon: "./assets/notification-icon.png",
           color: "#3EB489",
           sounds: [],
           defaultChannel: "merchant_default",
           enableBackgroundRemoteNotifications: true,
         },
       ],
+      // react-native-razorpay autolinks into the native binary.
+      // Native checkout requires a Dev Client / EAS build — Expo Go has no Razorpay native module
+      // and there is intentionally no WebView/browser fallback.
     ],
     extra: {
       ...(appJson.expo.extra || {}),

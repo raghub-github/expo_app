@@ -11,6 +11,7 @@ import {
   getPrimaryRolesBySystemUserIds,
 } from "@/lib/db/operations/users";
 import type { OrderRiderReconRecord } from "@/lib/db/operations/order-recons";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 
 function resolveReconActorRole(
   recon: OrderRiderReconRecord,
@@ -224,6 +225,18 @@ export async function POST(
             ? await getPrimaryRolesByEmails([created.actorEmail])
             : new Map<string, string>()
         );
+
+      await stampOrderRoutedTo({
+        orderId,
+        systemUserId: actorSystemUserId,
+        actorEmail: user.email ?? null,
+        actorName: systemUser?.full_name ?? null,
+        actorRole,
+        action: "rider_recon",
+        actionRefTable: "order_rider_recons",
+        actionRefId: created?.id ?? null,
+        metadata: { reasonPreset, providerName },
+      });
 
       return NextResponse.json({
         success: true,

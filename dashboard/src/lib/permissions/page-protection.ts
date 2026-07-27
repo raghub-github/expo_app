@@ -2,13 +2,21 @@
  * Page Protection Utilities
  *
  * Server-side utilities to protect dashboard pages based on dashboard access.
- * Uses getUser() (with retry) for reliable session on refresh; getSession() can be stale.
- * On invalid/expired refresh token, clears session (signOut) so the user can log in again.
+ * Uses getUser() (with cookie-session fallback when Auth is unreachable).
+ * Irrecoverable refresh failures clear the session; parallel refresh races do not.
+ *
+ * IMPORTANT: Only send users to /login when Supabase auth itself fails.
+ * Authorization / permissions lookup failures must NOT wipe the session UX
+ * (that was logging super-admins out when opening Payments under DB load).
  */
 
 import { redirect } from "next/navigation";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { resolveSupabaseUser } from "@/lib/auth/resolve-supabase-user";
+import {
+  isNetworkOrTransientError,
+  isRefreshTokenAlreadyUsed,
+  isTimeoutOrAbortError,
+} from "@/lib/auth/session-errors";
 import {
   isSuperAdmin,
   getDashboardTypeFromPath,
@@ -18,29 +26,17 @@ import {
 } from "./engine";
 import type { AccessPointGroup, ActionType, DashboardType } from "../db/schema";
 
-const maxGetUserAttempts = 2;
-
 async function getAuthenticatedUser() {
-  const supabase = await createServerSupabaseClient();
-  let user: { id: string; email?: string } | null = null;
-  let lastError: unknown = null;
+  const { user, error } = await resolveSupabaseUser({ maxAttempts: 2 });
+  return { user, error };
+}
 
-  for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-    const { data, error } = await supabase.auth.getUser();
-    user = data?.user ?? null;
-    lastError = error ?? null;
-    if (!lastError && user?.email) return { user, error: null };
-    if (lastError && isInvalidRefreshToken(lastError)) break;
-    if (attempt < maxGetUserAttempts) {
-      await new Promise((r) => setTimeout(r, 300));
-    }
-  }
-
-  if (lastError && isInvalidRefreshToken(lastError)) {
-    await supabase.auth.signOut();
-  }
-
-  return { user, error: lastError };
+function isTransientPageAuthFailure(error: unknown): boolean {
+  return (
+    isTimeoutOrAbortError(error) ||
+    isNetworkOrTransientError(error) ||
+    isRefreshTokenAlreadyUsed(error)
+  );
 }
 
 /**
@@ -52,10 +48,21 @@ export async function requireSuperAdminAccess(
   const { user, error } = await getAuthenticatedUser();
 
   if (error || !user?.email) {
-    redirect("/login");
+    if (error && isTransientPageAuthFailure(error)) {
+      redirect(redirectTo);
+    }
+    if (!user?.email) {
+      redirect("/login");
+    }
+    redirect(redirectTo);
   }
 
-  const userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
+  let userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
+  if (!userIsSuperAdmin) {
+    // One retry — permissions cache/DB can blip under Payments page load pressure.
+    await new Promise((r) => setTimeout(r, 250));
+    userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
+  }
   if (!userIsSuperAdmin) {
     redirect(redirectTo);
   }
@@ -69,12 +76,16 @@ export async function getDefaultOrdersDashboardHref(): Promise<string | null> {
   const { user, error } = await getAuthenticatedUser();
 
   if (error || !user?.email) {
+    if (error && isTransientPageAuthFailure(error)) {
+      return "/dashboard";
+    }
     redirect("/login");
   }
 
   const userPerms = await getUserPermissions(user.id, user.email);
   if (!userPerms) {
-    redirect("/login");
+    // Permissions lookup failed (e.g. DB blip) — do not treat as logout.
+    return "/dashboard";
   }
 
   if (userPerms.isSuperAdmin) {
@@ -105,12 +116,23 @@ export async function requireDashboardAccess(
   const { user, error } = await getAuthenticatedUser();
 
   if (error || !user?.email) {
-    redirect("/login");
+    if (error && isTransientPageAuthFailure(error)) {
+      redirect(redirectTo);
+    }
+    if (!user?.email) {
+      redirect("/login");
+    }
+    redirect(redirectTo);
   }
 
   const userPerms = await getUserPermissions(user.id, user.email);
   if (!userPerms) {
-    redirect("/login");
+    // Authenticated but permissions unavailable (DB timeout / pool pressure).
+    // NEVER send to /login — that was the Payments auto-logout bug.
+    console.warn(
+      `[requireDashboardAccess] permissions unavailable for ${user.email}; soft-fail to ${redirectTo}`
+    );
+    redirect(redirectTo);
   }
   if (userPerms.isSuperAdmin) {
     return;
@@ -136,7 +158,7 @@ export async function requireDashboardAccessByPath(
   redirectTo: string = "/dashboard"
 ): Promise<void> {
   const dashboardType = getDashboardTypeFromPath(pagePath);
-  
+
   if (!dashboardType) {
     // Unknown page - deny access
     redirect(redirectTo);

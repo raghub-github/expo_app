@@ -30,9 +30,10 @@ import {
 } from "@/src/hooks/useOnboarding";
 import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import { onboardingStepToRoute, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
+import { onboardingStepToRoute, shouldForwardFromOnboardingScreen, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
+import { extractApiErrorMessage } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument } from "@/src/hooks/useDocuments";
@@ -48,12 +49,21 @@ import { useOnboardingDocumentTypes } from "@/src/hooks/useOnboardingDocumentTyp
 import {
   buildCategoryHint,
   categoryHasActiveVehicles,
+  expandVehicleDisplayNames,
   findVehicleCategory,
   findVehicleType,
+  formatVehicleGroupPreviewTitle,
   formatVehicleRowTitle,
+  normalizeSelectedVehicleModelLabel,
   vehiclesForCategory,
   type OnboardingVehicleType,
 } from "@/src/lib/onboarding-vehicle-types";
+import {
+  isValidCashfreeDlNumber,
+  isValidCashfreeRcNumber,
+  normalizeCashfreeDocNumber,
+} from "@/src/lib/cashfree-doc-formats";
+import { VehicleModelPickerSheet } from "@/src/components/onboarding/VehicleModelPickerSheet";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   docRequiresBackPhoto,
@@ -103,7 +113,7 @@ const COPY = {
   rentalInfo:
     "You will upload your rental agreement or EV ownership proof on the next screen.",
   cycleInfo:
-    "No rental or EV proof is required. You can continue to payment.",
+    "No rental or EV proof is required. You can continue to bank verification.",
   dlLabel: "Driving License Number",
   dlPlaceholder: "Enter DL number",
   dlPhotoLabel: "DL Photo",
@@ -198,6 +208,7 @@ function VehicleOptionCard({
   inactive,
   title,
   hint,
+  selectedModelName,
   icon,
   onPress,
 }: {
@@ -205,6 +216,8 @@ function VehicleOptionCard({
   inactive?: boolean;
   title: string;
   hint: string;
+  /** Shown under the row when a multi-model sheet pick was confirmed. */
+  selectedModelName?: string | null;
   icon: keyof typeof Ionicons.glyphMap;
   onPress: () => void;
 }) {
@@ -249,6 +262,11 @@ function VehicleOptionCard({
           <Text style={[styles.vehicleHint, inactive && styles.vehicleHintInactive]}>
             {inactive ? "Inactive — not available right now" : hint}
           </Text>
+          {selectedModelName ? (
+            <Text style={styles.vehicleSelectedModel} numberOfLines={2}>
+              Selected: {selectedModelName}
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.vehicleRightCol}>
@@ -267,12 +285,63 @@ function VehicleOptionCard({
   );
 }
 
+function hasStartedVehicleDocFlow(
+  data: {
+    vehicleOnboardingSubmittedFor?: string;
+    skippedOnboardingDocs?: string[];
+    documentUploads?: Record<
+      string,
+      {
+        localUri?: string;
+        signedUrl?: string;
+        backLocalUri?: string;
+        backSignedUrl?: string;
+        textValue?: string;
+      }
+    >;
+  },
+  docs: VehicleOnboardingDocStep[]
+): boolean {
+  if (data.vehicleOnboardingSubmittedFor) return true;
+  for (const doc of docs) {
+    if (isDocSkipped(data, doc.code)) return true;
+    const state = getDocUploadState(data, doc.code);
+    if (
+      state.textValue?.trim() ||
+      state.localUri ||
+      state.signedUrl ||
+      state.backLocalUri ||
+      state.backSignedUrl
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Step 3 wizard resume:
+ * 1) category — until Continue
+ * 2) vehicle — until Continue
+ * 3) docs — only after vehicle Continue (or returning mid-doc upload)
+ */
 function resolveInitialWizardStep(
   data: {
     vehicleCategoryCode?: string;
     vehicleChoice?: string;
     hasOwnVehicle?: boolean;
     skippedOnboardingDocs?: string[];
+    vehicleOnboardingSubmittedFor?: string;
+    documentUploads?: Record<
+      string,
+      {
+        localUri?: string;
+        signedUrl?: string;
+        backLocalUri?: string;
+        backSignedUrl?: string;
+        textValue?: string;
+      }
+    >;
   },
   vehicleType: OnboardingVehicleType | undefined,
   docs: VehicleOnboardingDocStep[]
@@ -281,6 +350,8 @@ function resolveInitialWizardStep(
   if (!data.vehicleChoice) return "vehicle";
   if (vehicleType?.onboardingFlow === "payment") return "vehicle";
   if (!docs.length) return "vehicle";
+  // Radio-select alone must NOT jump into DL/RC — only after Continue (docs started).
+  if (!hasStartedVehicleDocFlow(data, docs)) return "vehicle";
   return resolveVehicleWizardDocStep(data, docs) ?? docs[0]!.code;
 }
 
@@ -327,28 +398,35 @@ export default function DlRcScreen() {
   );
 
   useEffect(() => {
-    const next = riderStatus?.nextOnboardingStep;
+    const next = riderStatus?.nextOnboardingStep as ServerOnboardingStep | undefined;
+    // Don't auto-skip payment from mid-wizard; only leave when server is clearly past vehicle docs
+    // to a non-vehicle destination we aren't editing (rare). Prefer Continue tap for payment.
     if (!next) return;
-    // Stay on vehicle doc wizard until rider taps Continue on the last step — never auto-skip ahead.
-    if (
-      next === "dl_rc" ||
-      next === "rental_ev" ||
-      next === "payment" ||
-      next === "pan_selfie" ||
-      next === "aadhaar_name"
-    ) {
+    if (next === "aadhaar_name" || next === "pan_selfie") {
+      // Gone backwards relative to vehicle step — send to the incomplete earlier step.
+      router.replace(onboardingStepToRoute(next));
       return;
     }
-    router.replace(onboardingStepToRoute(next as ServerOnboardingStep));
+    if (shouldForwardFromOnboardingScreen("dl_rc", next) && next === "rental_ev") {
+      router.replace(onboardingStepToRoute(next));
+    }
   }, [riderStatus?.nextOnboardingStep]);
 
-  const [categoryChoice, setCategoryChoice] = useState<string>(
-    () => data.vehicleCategoryCode ?? ""
-  );
-  const [vehicleChoice, setVehicleChoice] = useState<string>(() => data.vehicleChoice ?? "");
+  const [categoryChoice, setCategoryChoice] = useState<string>("");
+  const [vehicleChoice, setVehicleChoice] = useState<string>("");
+  const [vehicleModelLabel, setVehicleModelLabel] = useState<string>("");
+  /** Bottom sheet only for multi-model vehicle rows (not category step). */
+  const [modelPickerType, setModelPickerType] = useState<OnboardingVehicleType | null>(null);
   const [wizardStep, setWizardStep] = useState<WizardStep>("category");
   const [docDraftText, setDocDraftText] = useState("");
   const [docDraftUri, setDocDraftUri] = useState<string | null>(null);
+  /** True while rider is changing DL/RC — blocks store/server from overwriting the input. */
+  const [isEditingDocNumber, setIsEditingDocNumber] = useState(false);
+  const isEditingDocNumberRef = useRef(false);
+  const setDocNumberEditing = (editing: boolean) => {
+    isEditingDocNumberRef.current = editing;
+    setIsEditingDocNumber(editing);
+  };
   const [docDraftBackUri, setDocDraftBackUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -400,43 +478,165 @@ export default function DlRcScreen() {
     if (!sortedVehicleTypes.length || !sortedCategories.length) return;
     if (data.vehicleCategoryCode) setCategoryChoice(data.vehicleCategoryCode);
     if (data.vehicleChoice) setVehicleChoice(data.vehicleChoice);
+    if (data.vehicleModelLabel) setVehicleModelLabel(data.vehicleModelLabel);
     if (vehicleWizardBootstrappedRef.current) return;
-    if (!data.vehicleCategoryCode && !data.vehicleChoice) return;
+
+    // Fresh Step 3 entry (post-selfie): stay on category until user Continues.
+    if (!data.vehicleCategoryCode) {
+      vehicleWizardBootstrappedRef.current = true;
+      setWizardStep("category");
+      setCategoryChoice("");
+      setVehicleChoice("");
+      setVehicleModelLabel("");
+      return;
+    }
 
     vehicleWizardBootstrappedRef.current = true;
     const vehicle = findVehicleType(sortedVehicleTypes, data.vehicleChoice);
     const docs = resolveVehicleOnboardingDocs(vehicle, documentCatalog);
     const next = resolveInitialWizardStep(data, vehicle, docs);
-    if (next !== "category") setWizardStep(next);
+    setWizardStep(next);
   }, [
     sortedVehicleTypes,
     sortedCategories,
     documentCatalog,
     data.vehicleCategoryCode,
     data.vehicleChoice,
+    data.vehicleModelLabel,
+    data.vehicleOnboardingSubmittedFor,
+    data.documentUploads,
+    data.skippedOnboardingDocs,
   ]);
 
   useEffect(() => {
     if (wizardStep === "category" || wizardStep === "vehicle" || !currentDocDef) return;
+    // Never clobber the field while the rider is actively editing the number.
+    if (isEditingDocNumberRef.current && (wizardStep === "dl" || wizardStep === "rc")) {
+      return;
+    }
     const state = getDocUploadState(data, wizardStep);
     setDocDraftText(state.textValue);
-    setDocDraftUri(state.localUri ?? state.signedUrl);
-    setDocDraftBackUri(state.backLocalUri ?? state.backSignedUrl ?? null);
-  }, [wizardStep, currentDocDef, data]);
+    // Prefer server/signed URL over stale local camera cache after fallback upload.
+    setDocDraftUri(state.signedUrl ?? state.localUri);
+    setDocDraftBackUri(state.backSignedUrl ?? state.backLocalUri ?? null);
+  }, [wizardStep, currentDocDef, data.dlNumber, data.rcNumber, data.dlPhotoSignedUrl, data.rcPhotoSignedUrl, data.dlBackPhotoSignedUrl, data.documentUploads]);
+
+  // Rehydrate DL/RC from server — always prefer last Cashfree/manual verified number
+  // so an unverified edit that was never submitted does not stick after reopen.
+  const dlHydratedRef = useRef(false);
+  const rcHydratedRef = useRef(false);
+  useEffect(() => {
+    if (!riderStatus) return;
+
+    const dobRaw = String(riderStatus.dob || data.dob || "").trim();
+    const dobMatch = dobRaw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dobMatch?.[1] && !String(data.dob || "").startsWith(dobMatch[1])) {
+      void setData({ dob: dobMatch[1] });
+    }
+
+    const localDl = getDocUploadState(data, "dl");
+    const serverDl = String(riderStatus.dlNumber || "")
+      .replace(/[^A-Z0-9]/gi, "")
+      .toUpperCase();
+    const serverDlFront = riderStatus.dlFrontUrl || null;
+    const serverDlBack = riderStatus.dlBackUrl || null;
+    const localDlNorm = String(localDl.textValue || "")
+      .replace(/[^A-Z0-9]/gi, "")
+      .toUpperCase();
+
+    if (
+      !isEditingDocNumberRef.current &&
+      !dlHydratedRef.current &&
+      (serverDl || serverDlFront) &&
+      (localDlNorm !== serverDl || Boolean(serverDlFront))
+    ) {
+      dlHydratedRef.current = true;
+      void setData(
+        docUploadToStorePatch(data, "dl", {
+          textValue: serverDl || undefined,
+          signedUrl: serverDlFront ?? localDl.signedUrl,
+          backSignedUrl: serverDlBack ?? localDl.backSignedUrl,
+          localUri: serverDlFront ? null : localDl.localUri,
+          backLocalUri: serverDlBack ? null : localDl.backLocalUri,
+        }),
+      );
+    } else if (serverDl || serverDlFront) {
+      dlHydratedRef.current = true;
+    }
+
+    const localRc = getDocUploadState(data, "rc");
+    const serverRc = String(riderStatus.rcNumber || "")
+      .replace(/[^A-Z0-9]/gi, "")
+      .toUpperCase();
+    const serverRcFront = riderStatus.rcFrontUrl || null;
+    const localRcNorm = String(localRc.textValue || "")
+      .replace(/[^A-Z0-9]/gi, "")
+      .toUpperCase();
+
+    // Always overwrite local draft with last verified server RC when they differ —
+    // but never while the rider is mid-edit in the field.
+    if (
+      !isEditingDocNumberRef.current &&
+      !rcHydratedRef.current &&
+      (serverRc || serverRcFront)
+    ) {
+      rcHydratedRef.current = true;
+      if (localRcNorm !== serverRc || (serverRcFront && !localRc.signedUrl)) {
+        void setData(
+          docUploadToStorePatch(data, "rc", {
+            textValue: serverRc || undefined,
+            signedUrl: serverRcFront ?? localRc.signedUrl,
+            localUri: serverRcFront ? null : localRc.localUri,
+          }),
+        );
+      }
+    } else if (serverRc || serverRcFront) {
+      rcHydratedRef.current = true;
+    }
+  }, [
+    riderStatus?.dob,
+    riderStatus?.dlNumber,
+    riderStatus?.dlFrontUrl,
+    riderStatus?.dlBackUrl,
+    riderStatus?.rcNumber,
+    riderStatus?.rcFrontUrl,
+    data.dob,
+    data.dlNumber,
+    data.dlPhotoSignedUrl,
+    data.dlPhotoUri,
+    data.rcNumber,
+    data.rcPhotoSignedUrl,
+    data.rcPhotoUri,
+    setData,
+  ]);
 
   const needsBackPhoto = currentDocDef ? docRequiresBackPhoto(currentDocDef) : false;
   const docTextMinLength = Math.max(currentDocDef?.minTextLength ?? 1, 1);
-  const docTextValid =
+  /** Length floor from catalog — used for duplicate checks only. */
+  const docTextLengthOk =
     !currentDocDef?.requiresTextField || docDraftText.trim().length >= docTextMinLength;
+  /** Cashfree-aligned format: verify button stays off until DL/RC pattern matches. */
+  const docFormatValid =
+    wizardStep === "dl"
+      ? isValidCashfreeDlNumber(docDraftText)
+      : wizardStep === "rc"
+        ? isValidCashfreeRcNumber(docDraftText)
+        : docTextLengthOk;
+  const docTextValid =
+    !currentDocDef?.requiresTextField
+      ? true
+      : wizardStep === "dl" || wizardStep === "rc"
+        ? docFormatValid
+        : docTextLengthOk;
   const dlCheckQuery = useDlRegistrationCheck(
     wizardStep === "dl" ? docDraftText : "",
     data.riderId,
-    docTextMinLength
+    wizardStep === "dl" ? 15 : docTextMinLength
   );
   const rcCheckQuery = useRcRegistrationCheck(
     wizardStep === "rc" ? docDraftText : "",
     data.riderId,
-    docTextMinLength
+    wizardStep === "rc" ? 7 : docTextMinLength
   );
   const docDuplicateCheckQuery = wizardStep === "dl" ? dlCheckQuery : wizardStep === "rc" ? rcCheckQuery : null;
   const docAlreadyRegistered = docDuplicateCheckQuery?.data?.registered === true;
@@ -460,37 +660,264 @@ export default function DlRcScreen() {
     : "manual";
   const docElectronic = docEvKind != null && (docEvMode === "auto" || docEvMode === "hybrid");
   const [docEv, setDocEv] = useState<EvState>({ phase: "idle" });
+  const [dlVerifyDob, setDlVerifyDob] = useState(() => {
+    const raw = String(data.dob || "").trim();
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m?.[1] ?? "";
+  });
   useEffect(() => {
+    const raw = String(data.dob || "").trim();
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m?.[1]) setDlVerifyDob(m[1]);
+  }, [data.dob]);
+
+  // Last successfully verified numbers + details this session (also seeded from server).
+  // Editing shows Verify again; typing the same verified number back restores details
+  // without another Verify click (even without closing the app).
+  const lastVerifiedDlRef = useRef<string>("");
+  const lastVerifiedRcRef = useRef<string>("");
+  const lastVerifiedDlDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const lastVerifiedRcDetailsRef = useRef<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    const serverDl = String(riderStatus?.dlNumber || "")
+      .replace(/[^A-Z0-9]/gi, "")
+      .toUpperCase();
+    if (serverDl && riderStatus?.dlVerified) {
+      lastVerifiedDlRef.current = serverDl;
+      if (
+        riderStatus.dlVerifiedData &&
+        typeof riderStatus.dlVerifiedData === "object" &&
+        Object.keys(riderStatus.dlVerifiedData).length > 0
+      ) {
+        lastVerifiedDlDetailsRef.current = riderStatus.dlVerifiedData;
+      }
+    }
+    const serverRc = String(riderStatus?.rcNumber || "")
+      .replace(/[^A-Z0-9]/gi, "")
+      .toUpperCase();
+    if (serverRc && riderStatus?.rcVerified) {
+      lastVerifiedRcRef.current = serverRc;
+      if (
+        riderStatus.rcVerifiedData &&
+        typeof riderStatus.rcVerifiedData === "object" &&
+        Object.keys(riderStatus.rcVerifiedData).length > 0
+      ) {
+        lastVerifiedRcDetailsRef.current = riderStatus.rcVerifiedData;
+      }
+    }
+  }, [
+    riderStatus?.dlNumber,
+    riderStatus?.dlVerified,
+    riderStatus?.dlVerifiedData,
+    riderStatus?.rcNumber,
+    riderStatus?.rcVerified,
+    riderStatus?.rcVerifiedData,
+  ]);
+
+  // Reset EV only when switching docs — not when hydrating the same number from server.
+  useEffect(() => {
+    setDocNumberEditing(false);
     setDocEv({ phase: "idle" });
-  }, [docDraftText, wizardStep]);
+  }, [wizardStep]);
+
+  // Restore verified UI when input matches last verified number.
+  // While editing a *different* number, stay idle so Verify Instantly shows.
+  // Never clear the editing flag here — that was locking the TextInput again.
+  useEffect(() => {
+    if (wizardStep !== "dl" && wizardStep !== "rc") return;
+    if (docEv.phase !== "idle" && docEv.phase !== "verified") return;
+
+    const draftNorm = normalizeCashfreeDocNumber(docDraftText);
+
+    if (wizardStep === "dl") {
+      const verifiedNorm =
+        lastVerifiedDlRef.current ||
+        String(riderStatus?.dlNumber || "")
+          .replace(/[^A-Z0-9]/gi, "")
+          .toUpperCase();
+      const dlDetails =
+        lastVerifiedDlDetailsRef.current ||
+        (riderStatus?.dlVerifiedData && typeof riderStatus.dlVerifiedData === "object"
+          ? riderStatus.dlVerifiedData
+          : null);
+      if (
+        draftNorm &&
+        verifiedNorm &&
+        draftNorm === verifiedNorm &&
+        dlDetails &&
+        Object.keys(dlDetails).length > 0
+      ) {
+        if (docEv.phase !== "verified") {
+          setDocEv({ phase: "verified", details: dlDetails });
+        }
+        return;
+      }
+      if (docEv.phase === "verified" && draftNorm !== verifiedNorm) {
+        setDocEv({ phase: "idle" });
+        return;
+      }
+      if (docEv.phase !== "idle") return;
+      const hasManual =
+        Boolean(docDraftUri) &&
+        (Boolean(docDraftBackUri) || !needsBackPhoto) &&
+        isValidCashfreeDlNumber(docDraftText) &&
+        (!verifiedNorm || draftNorm === verifiedNorm);
+      if (hasManual || (Boolean(riderStatus?.dlFrontUrl) && draftNorm === verifiedNorm)) {
+        setDocEv({ phase: "manual" });
+      }
+      return;
+    }
+
+    const verifiedNorm =
+      lastVerifiedRcRef.current ||
+      String(riderStatus?.rcNumber || "")
+        .replace(/[^A-Z0-9]/gi, "")
+        .toUpperCase();
+    const rcDetails =
+      lastVerifiedRcDetailsRef.current ||
+      (riderStatus?.rcVerifiedData && typeof riderStatus.rcVerifiedData === "object"
+        ? riderStatus.rcVerifiedData
+        : null);
+    if (
+      draftNorm &&
+      verifiedNorm &&
+      draftNorm === verifiedNorm &&
+      rcDetails &&
+      Object.keys(rcDetails).length > 0
+    ) {
+      if (docEv.phase !== "verified") {
+        setDocEv({ phase: "verified", details: rcDetails });
+      }
+      return;
+    }
+    if (docEv.phase === "verified" && draftNorm !== verifiedNorm) {
+      setDocEv({ phase: "idle" });
+      return;
+    }
+    if (docEv.phase !== "idle") return;
+    const hasManualRc =
+      Boolean(docDraftUri) &&
+      isValidCashfreeRcNumber(docDraftText) &&
+      (!verifiedNorm || draftNorm === verifiedNorm);
+    if (hasManualRc || (Boolean(riderStatus?.rcFrontUrl) && draftNorm === verifiedNorm)) {
+      setDocEv({ phase: "manual" });
+    }
+  }, [
+    wizardStep,
+    docEv.phase,
+    docDraftText,
+    docDraftUri,
+    docDraftBackUri,
+    needsBackPhoto,
+    riderStatus?.dlVerified,
+    riderStatus?.dlVerifiedData,
+    riderStatus?.dlNumber,
+    riderStatus?.dlFrontUrl,
+    riderStatus?.rcVerified,
+    riderStatus?.rcVerifiedData,
+    riderStatus?.rcNumber,
+    riderStatus?.rcFrontUrl,
+  ]);
 
   const runDocElectronicVerify = async () => {
     if (!data.riderId || !docEvKind) return;
+    if (docEvKind === "driving_licence" && !isValidCashfreeDlNumber(docDraftText)) return;
+    if (docEvKind === "vehicle_rc" && !isValidCashfreeRcNumber(docDraftText)) return;
     setDocEv({ phase: "verifying" });
     try {
+      const normalized = normalizeCashfreeDocNumber(docDraftText);
+      // Cashfree Try DL: License Number + DOB (YYYY-MM-DD) — same as Secure ID modal.
+      const dob =
+        docEvKind === "driving_licence"
+          ? (dlVerifyDob.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? null)
+          : null;
+      if (docEvKind === "driving_licence" && !dob) {
+        setDocEv({
+          phase: "failed",
+          error:
+            "Date of birth is required (as printed on your driving licence). Enter DOB and try again.",
+        });
+        return;
+      }
       const res = await verifyDocument.mutateAsync(
         docEvKind === "driving_licence"
-          ? { riderId: data.riderId, docKind: "driving_licence", dlNumber: docDraftText.trim().toUpperCase() }
-          : { riderId: data.riderId, docKind: "vehicle_rc", vehicleNumber: docDraftText.trim().toUpperCase() },
+          ? {
+              riderId: data.riderId,
+              docKind: "driving_licence",
+              dlNumber: normalized,
+              dob: dob!,
+            }
+          : { riderId: data.riderId, docKind: "vehicle_rc", vehicleNumber: normalized },
       );
       if (res.outcome === "verified") {
-        setDocEv({ phase: "verified", details: res.verifiedData ?? {} });
+        // Persist only after successful verify — unverified edits must not stick on reopen.
+        setDocNumberEditing(false);
+        const details = res.verifiedData ?? {};
+        if (docEvKind === "driving_licence") {
+          lastVerifiedDlRef.current = normalized;
+          lastVerifiedDlDetailsRef.current =
+            Object.keys(details).length > 0 ? details : lastVerifiedDlDetailsRef.current;
+          await setData(docUploadToStorePatch(data, "dl", { textValue: normalized }));
+        } else {
+          lastVerifiedRcRef.current = normalized;
+          lastVerifiedRcDetailsRef.current =
+            Object.keys(details).length > 0 ? details : lastVerifiedRcDetailsRef.current;
+          await setData(docUploadToStorePatch(data, "rc", { textValue: normalized }));
+        }
+        if (data.riderId) {
+          void queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
+        }
+        setDocEv({ phase: "verified", details });
+      } else if (res.outcome === "mismatch") {
+        setDocEv({
+          phase: "mismatch",
+          error:
+            (res.mismatchMessages && res.mismatchMessages.length
+              ? res.mismatchMessages.join(". ")
+              : null) ||
+            res.error ||
+            "Details do not match Aadhaar",
+          reasons: res.mismatchReasons,
+        });
       } else if (res.outcome === "manual") {
         setDocEv({ phase: "manual" });
       } else {
-        setDocEv({ phase: "failed", error: res.error || "Document could not be verified." });
+        const exact =
+          (typeof res.error === "string" && res.error.trim()) ||
+          (typeof res.providerMessage === "string" && res.providerMessage.trim()) ||
+          (typeof res.providerStatus === "string" && res.providerStatus.trim()
+            ? `Cashfree status: ${res.providerStatus}`
+            : "") ||
+          (typeof res.reason === "string" && res.reason.trim()) ||
+          "Document could not be verified.";
+        setDocEv({
+          phase: "failed",
+          error: exact,
+          providerReference: res.providerReference ?? null,
+          verificationId: res.verificationId ?? null,
+        });
       }
     } catch (e) {
-      setDocEv({ phase: "failed", error: e instanceof Error ? e.message : "Verification failed." });
+      let message = extractApiErrorMessage(e, "Verification failed.");
+      if (/dob_required/i.test(message)) {
+        message =
+          "Date of birth is required. Enter DOB as on your driving licence (DD/MM/YYYY).";
+      } else if (/invalid_dl/i.test(message)) {
+        message = "Invalid DL format. Use a valid Indian DL number.";
+      } else if (/invalid_vehicle_number/i.test(message)) {
+        message = "Invalid RC format. Use a valid vehicle registration number.";
+      }
+      setDocEv({ phase: "failed", error: message });
     }
   };
 
-  /** Photos needed right now? Electronic modes hide them until hybrid fallback. */
+  /** Photos needed? Show after fail / manual / Aadhaar mismatch (even in auto mode). */
   const docPhotoRequiredNow =
-    !docElectronic || docEv.phase === "failed" || docEv.phase === "manual";
-  const showDocPhotoBox =
-    (docPhotoRequiredNow && !(docElectronic && docEv.phase === "failed" && docEvMode === "auto")) ||
-    Boolean(docDraftUri);
+    !docElectronic ||
+    docEv.phase === "failed" ||
+    docEv.phase === "manual" ||
+    docEv.phase === "mismatch";
+  const showDocPhotoBox = docPhotoRequiredNow || Boolean(docDraftUri);
 
   const canContinueDoc =
     docTextValid &&
@@ -500,8 +927,9 @@ export default function DlRcScreen() {
     !submitting &&
     (docElectronic
       ? docEv.phase === "verified" ||
-        ((docEv.phase === "failed" || docEv.phase === "manual") &&
-          docEvMode === "hybrid" &&
+        ((docEv.phase === "failed" ||
+          docEv.phase === "manual" ||
+          docEv.phase === "mismatch") &&
           docPhotoValid)
       : docPhotoValid);
   const canContinueCategory =
@@ -510,7 +938,12 @@ export default function DlRcScreen() {
     !uploading &&
     !submitting;
   const canContinueVehicle =
-    Boolean(selectedVehicleType?.isActive) && !uploading && !submitting;
+    Boolean(selectedVehicleType?.isActive) &&
+    !uploading &&
+    !submitting &&
+    (!selectedVehicleType ||
+      expandVehicleDisplayNames(selectedVehicleType).length <= 1 ||
+      Boolean(vehicleModelLabel.trim()));
 
   const headerMeta = useMemo(() => {
     if (wizardStep === "category") {
@@ -657,7 +1090,52 @@ export default function DlRcScreen() {
     if (!categoryHasActiveVehicles(sortedVehicleTypes, categoryChoice)) return;
     await setData({ vehicleCategoryCode: categoryChoice });
     setVehicleChoice("");
+    setVehicleModelLabel("");
     setWizardStep("vehicle");
+  };
+
+  const selectSingleVehicle = (type: OnboardingVehicleType) => {
+    setVehicleChoice(type.code);
+    setVehicleModelLabel("");
+    void setData({ vehicleChoice: type.code, vehicleModelLabel: undefined });
+  };
+
+  const openOrSelectVehicle = (type: OnboardingVehicleType) => {
+    const models = expandVehicleDisplayNames(type);
+    if (models.length > 1) {
+      setModelPickerType(type);
+      return;
+    }
+    selectSingleVehicle(type);
+  };
+
+  const confirmModelFromSheet = (modelLabel: string) => {
+    if (!modelPickerType) return;
+    // Always a single display name from the sheet (never "A / B / C" or comma list).
+    const singleModel = normalizeSelectedVehicleModelLabel(modelLabel);
+    if (!singleModel) return;
+    const code = modelPickerType.code;
+    setVehicleChoice(code);
+    setVehicleModelLabel(singleModel);
+    setModelPickerType(null);
+    void setData({
+      vehicleChoice: code,
+      vehicleModelLabel: singleModel,
+      vehicleCategoryCode: categoryChoice || data.vehicleCategoryCode,
+    });
+    if (data.riderId) {
+      void saveStep
+        .mutateAsync({
+          riderId: data.riderId,
+          step: "dl_rc",
+          data: {
+            vehicleCategoryCode: categoryChoice || data.vehicleCategoryCode,
+            vehicleChoice: code,
+            vehicleModelLabel: singleModel,
+          },
+        })
+        .catch(() => undefined);
+    }
   };
 
   const handleVehicleContinue = async () => {
@@ -683,6 +1161,7 @@ export default function DlRcScreen() {
             hasOwnVehicle: Boolean(selected.documentRequirements?.has_own_vehicle),
             vehicleCategoryCode: categoryChoice,
             vehicleChoice: selected.code,
+            vehicleModelLabel: normalizeSelectedVehicleModelLabel(vehicleModelLabel),
             onboardingFlow: "payment",
             vehicleType: selected.mapsToVehicleType ?? selected.code,
           },
@@ -691,10 +1170,12 @@ export default function DlRcScreen() {
           hasOwnVehicle: Boolean(selected.documentRequirements?.has_own_vehicle),
           vehicleCategoryCode: categoryChoice,
           vehicleChoice: selected.code,
+          vehicleModelLabel: normalizeSelectedVehicleModelLabel(vehicleModelLabel),
           vehicleOnboardingFlow: "payment",
+          vehicleOnboardingSubmittedFor: selected.code,
           currentStep: "dl_rc",
         });
-        router.push("/(onboarding)/payment");
+        router.push("/(onboarding)/bank-account");
       } catch (e) {
         notifyOnboardingToast(e instanceof Error ? e.message : tx("uploadError"));
       } finally {
@@ -725,6 +1206,7 @@ export default function DlRcScreen() {
       hasOwnVehicle: mergedData.hasOwnVehicle,
       vehicleCategoryCode: categoryChoice,
       vehicleChoice: selected.code,
+      vehicleModelLabel: normalizeSelectedVehicleModelLabel(vehicleModelLabel),
       vehicleOnboardingFlow: onboardingFlow,
       vehicleOnboardingSubmittedFor: undefined,
       skippedOnboardingDocs,
@@ -737,6 +1219,7 @@ export default function DlRcScreen() {
           hasOwnVehicle: Boolean(selected.documentRequirements?.has_own_vehicle),
           vehicleCategoryCode: categoryChoice,
           vehicleChoice: selected.code,
+          vehicleModelLabel: normalizeSelectedVehicleModelLabel(vehicleModelLabel),
           onboardingFlow,
         },
       });
@@ -757,6 +1240,7 @@ export default function DlRcScreen() {
       hasOwnVehicle: Boolean(selectedVehicleType?.documentRequirements?.has_own_vehicle),
       vehicleChoice: selectedVehicleType?.code ?? vehicleChoice,
       vehicleCategoryCode: categoryChoice,
+      vehicleModelLabel: normalizeSelectedVehicleModelLabel(vehicleModelLabel),
       onboardingFlow,
       submitVehicleDocs: true,
     };
@@ -814,7 +1298,7 @@ export default function DlRcScreen() {
     if (data.riderId) {
       await queryClient.refetchQueries({ queryKey: ["rider", data.riderId] });
     }
-    router.replace("/(onboarding)/payment");
+    router.replace("/(onboarding)/bank-account");
   };
 
   const handleDocStepSkip = async () => {
@@ -1046,6 +1530,7 @@ export default function DlRcScreen() {
                           onPress={() => {
                             setCategoryChoice(category.code);
                             setVehicleChoice("");
+                            setVehicleModelLabel("");
                           }}
                         />
                       ))}
@@ -1072,18 +1557,34 @@ export default function DlRcScreen() {
                     <ErrorBanner message={tx("catalogEmpty")} />
                   ) : (
                     <View style={styles.vehicleList}>
-                      {vehiclesInCategory.map((type) => (
-                        <VehicleOptionCard
-                          key={type.code}
-                          selected={vehicleChoice === type.code}
-                          title={formatVehicleRowTitle(type)}
-                          hint={type.hint ?? ""}
-                          icon={resolveVehicleIcon(type.icon)}
-                          onPress={() => {
-                            setVehicleChoice(type.code);
-                          }}
-                        />
-                      ))}
+                      {vehiclesInCategory.map((type) => {
+                        const models = expandVehicleDisplayNames(type);
+                        const isGroup = models.length > 1;
+                        const isSelected =
+                          vehicleChoice === type.code &&
+                          (!isGroup || Boolean(vehicleModelLabel));
+                        const title = isGroup
+                          ? formatVehicleGroupPreviewTitle(models)
+                          : formatVehicleRowTitle(type);
+                        const hint = isGroup
+                          ? isSelected
+                            ? type.hint?.trim() || "Tap to change model"
+                            : "Tap to choose one model"
+                          : type.hint ?? "";
+                        return (
+                          <VehicleOptionCard
+                            key={type.code}
+                            selected={isSelected}
+                            title={title}
+                            hint={hint}
+                            selectedModelName={
+                              isGroup && isSelected ? vehicleModelLabel : null
+                            }
+                            icon={resolveVehicleIcon(type.icon)}
+                            onPress={() => openOrSelectVehicle(type)}
+                          />
+                        );
+                      })}
                     </View>
                   )}
 
@@ -1113,7 +1614,39 @@ export default function DlRcScreen() {
                     photoUri={docDraftUri}
                     backPhotoUri={docDraftBackUri}
                     uploading={uploading}
-                    onTextChange={setDocDraftText}
+                    onTextChange={(value) => {
+                      if (wizardStep === "dl" || wizardStep === "rc") {
+                        const next = normalizeCashfreeDocNumber(value).slice(
+                          0,
+                          wizardStep === "dl" ? 16 : 11,
+                        );
+                        setDocNumberEditing(true);
+                        setDocDraftText(next);
+                        const verifiedNorm =
+                          wizardStep === "dl"
+                            ? lastVerifiedDlRef.current
+                            : lastVerifiedRcRef.current;
+                        if (!next || next !== verifiedNorm) {
+                          setDocEv({ phase: "idle" });
+                        }
+                        return;
+                      }
+                      setDocDraftText(value);
+                    }}
+                    onTextFocus={
+                      wizardStep === "dl" || wizardStep === "rc"
+                        ? () => setDocNumberEditing(true)
+                        : undefined
+                    }
+                    onClearText={
+                      wizardStep === "dl" || wizardStep === "rc"
+                        ? () => {
+                            setDocNumberEditing(true);
+                            setDocDraftText("");
+                            setDocEv({ phase: "idle" });
+                          }
+                        : undefined
+                    }
                     onPhotoPress={() => showPhotoOptions("front")}
                     onBackPhotoPress={() => showPhotoOptions("back")}
                     onRemovePhoto={() => setDocDraftUri(null)}
@@ -1132,15 +1665,65 @@ export default function DlRcScreen() {
                     }
                     optional={isOptionalDocStep}
                     skipped={isDocSkipped(data, wizardStep)}
-                    hidePhotos={docElectronic && !showDocPhotoBox && docEv.phase !== "verified" ? true : docElectronic && docEv.phase === "verified" && !docDraftUri}
+                    textFormatValid={
+                      wizardStep === "dl" || wizardStep === "rc" ? docFormatValid : undefined
+                    }
+                    textPlaceholder={
+                      wizardStep === "dl"
+                        ? tx("dlPlaceholder")
+                        : wizardStep === "rc"
+                          ? "Enter RC number"
+                          : null
+                    }
+                    formatErrorMessage={
+                      wizardStep === "dl"
+                        ? "Invalid DL format"
+                        : wizardStep === "rc"
+                          ? "Invalid RC format"
+                          : null
+                    }
+                    hidePhotos={
+                      docElectronic
+                        ? docEv.phase === "verified" ||
+                          (docEv.phase === "idle" && !docDraftUri) ||
+                          (docEv.phase === "verifying" && !docDraftUri)
+                        : false
+                    }
+                    hideChecklist={wizardStep === "dl" || wizardStep === "rc"}
                     afterTextSlot={
                       docElectronic ? (
                         <ElectronicVerifyCard
                           mode={docEvMode === "auto" ? "auto" : "hybrid"}
                           state={docEv}
-                          disabled={!docTextValid || docAlreadyRegistered || checkingDocDuplicate}
+                          disabled={!docFormatValid || docAlreadyRegistered || checkingDocDuplicate}
                           onVerify={() => void runDocElectronicVerify()}
-                          verifyLabel={wizardStep === "dl" ? "Verify DL instantly" : "Verify RC instantly"}
+                          verifyLabel={
+                            wizardStep === "rc"
+                              ? "Verify Instantly"
+                              : wizardStep === "dl"
+                                ? "Verify Instantly"
+                                : "Verify"
+                          }
+                          documentLabel={
+                            wizardStep === "dl"
+                              ? "driving licence"
+                              : "registration certificate"
+                          }
+                          requiresDob={wizardStep === "dl"}
+                          dob={dlVerifyDob}
+                          onDobChange={setDlVerifyDob}
+                          verifiedTitle={
+                            wizardStep === "dl"
+                              ? "Driving License is Valid"
+                              : wizardStep === "rc"
+                                ? "Vehicle RC is Valid"
+                                : undefined
+                          }
+                          verifiedHint={
+                            wizardStep === "rc"
+                              ? "Your RC has been verified successfully. Please verify that the vehicle details shown below are correct before continuing."
+                              : undefined
+                          }
                         />
                       ) : null
                     }
@@ -1174,6 +1757,18 @@ export default function DlRcScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+
+      <VehicleModelPickerSheet
+        visible={modelPickerType != null}
+        options={modelPickerType ? expandVehicleDisplayNames(modelPickerType) : []}
+        selected={
+          modelPickerType && vehicleChoice === modelPickerType.code
+            ? vehicleModelLabel || null
+            : null
+        }
+        onClose={() => setModelPickerType(null)}
+        onSelect={confirmModelFromSheet}
+      />
     </View>
   );
 }
@@ -1292,6 +1887,18 @@ const styles = StyleSheet.create({
   vehicleHintInactive: {
     color: colors.gray[400],
     fontStyle: "italic",
+  },
+  vehicleSelectedModel: {
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: "700",
+    color: ACCENT_DARK,
+    lineHeight: 18,
+    textAlign: "left",
+    width: "100%",
+    ...Platform.select({
+      android: { includeFontPadding: false },
+    }),
   },
   vehicleRadio: {
     width: 20,

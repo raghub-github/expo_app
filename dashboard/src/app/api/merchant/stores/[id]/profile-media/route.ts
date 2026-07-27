@@ -1,8 +1,9 @@
 /**
  * POST /api/merchant/stores/[id]/profile-media
  * Body: FormData with file, type: 'banner' | 'gallery'
- * R2 keys match partnersite mx profile uploads: `{prefix}/{parentPk}/stores/{GMMC}/assets/banners|gallery/{file}`
- * (`getMerchantAssetsPath` + `banners` | `gallery`). Legacy `.../onboarding/assets/banner|gallery/` is no longer written.
+ * Optional: onboarding=1 → write under `.../onboarding/assets/{banner|gallery}/`
+ *   (same as partnersite register-store Step 5).
+ * Default / post-onboarding: `{prefix}/{parentPk}/stores/{GMMC}/assets/banners|gallery/{file}`
  * Order when apply_to_store: upload bytes to R2 first (`uploadWithKey`), then persist the dashboard
  * proxy URL (`/api/attachments/proxy?key=...`) in `merchant_stores`. Response `url` is a time-limited signed URL for clients that need it.
  */
@@ -20,7 +21,7 @@ import {
   maxGalleryImages,
   profileMediaR2KeyFromUrl,
 } from "@/lib/merchant/store-profile-media";
-import { buildStoreProfileMediaR2Key, getR2MerchantObjectPrefix } from "@/lib/merchant/r2-store-asset-paths";
+import { buildStoreOnboardingMediaR2Key, buildStoreProfileMediaR2Key, getR2MerchantObjectPrefix } from "@/lib/merchant/r2-store-asset-paths";
 
 export const runtime = "nodejs";
 
@@ -129,14 +130,19 @@ export async function POST(
     const existingBannerKey = resolveExistingKey(storeRow.banner_url);
     const existingGalleryList = coerceGalleryImageList(storeRow.gallery_images);
     const existingGalleryKey = existingGalleryList.length ? resolveExistingKey(existingGalleryList[0]) : null;
+    const onboardingFlag = String(formData.get("onboarding") ?? "").trim().toLowerCase();
+    const forceOnboarding =
+      onboardingFlag === "1" || onboardingFlag === "true" || onboardingFlag === "yes";
     const preferLegacy =
       type === "banner"
         ? !!(existingBannerKey && existingBannerKey.startsWith(`${root}/onboarding/assets/banner/`))
         : !!(existingGalleryKey && existingGalleryKey.startsWith(`${root}/onboarding/assets/gallery/`));
 
-    const key = preferLegacy
-      ? `${root}/onboarding/assets/${type === "banner" ? "banner" : "gallery"}/${String(fileName || "upload").replace(/^\/+/, "")}`
-      : buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName);
+    // Child-store onboarding + partnersite Step 5 share onboarding/assets/{banner|gallery}.
+    const key =
+      forceOnboarding || preferLegacy
+        ? buildStoreOnboardingMediaR2Key(parentIdForPath, storeCode, type, fileName)
+        : buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName);
     await uploadWithKey(file, key);
     console.log("[profile-media] R2 uploaded", { storeId, type, key });
     const signedUrl = await getSignedUrlFromKey(key, 604800);

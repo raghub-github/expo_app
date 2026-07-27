@@ -86,6 +86,7 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         <Pressable
           onPress={requestToggle}
           disabled={isPending}
+          hitSlop={10}
           style={({ pressed }) => [
             isPending && { opacity: 0.75 },
             dutyGoOnBlocked && !isOnDuty && { opacity: 0.72 },

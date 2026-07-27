@@ -29,8 +29,13 @@ function getSupabase(): SupabaseClient {
 }
 
 export type AssertStoreResult =
-  | { ok: true; storeIdNum: number }
+  | { ok: true; storeIdNum: number; isPlatformStaff?: boolean }
   | { ok: false; error: string; status: number }
+
+/** Active system_users with SUPER_ADMIN / ADMIN / SUPPORT / MANAGER — bypass merchant ownership. */
+export async function isPlatformStaffEmail(userEmail: string | null | undefined): Promise<boolean> {
+  return findSystemUserOverride(userEmail ?? null)
+}
 
 function normalizePhoneForLookup(phone: string): { e164: string; tenDigit: string } {
   const digits = phone.replace(/\D/g, '')
@@ -107,7 +112,18 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
   }
 
   const supabaseServer = await createServerSupabaseClient()
-  const { data: { user }, error: userError } = await supabaseServer.auth.getUser()
+  let { data: { user }, error: userError } = await supabaseServer.auth.getUser()
+  if (userError || !user) {
+    // Cookie session can lag after OTP/set-cookie — refresh once then retry.
+    try {
+      await supabaseServer.auth.getSession()
+    } catch {
+      /* ignore */
+    }
+    const retry = await supabaseServer.auth.getUser()
+    user = retry.data.user
+    userError = retry.error
+  }
   if (userError || !user) {
     return { ok: false, error: 'Not authenticated', status: 401 }
   }
@@ -120,7 +136,7 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
       .select('id')
       .eq('store_id', String(storeIdParam).trim())
       .maybeSingle()
-    if (storeRow?.id) return { ok: true, storeIdNum: Number(storeRow.id) }
+    if (storeRow?.id) return { ok: true, storeIdNum: Number(storeRow.id), isPlatformStaff: true }
     return { ok: false, error: 'Store not found', status: 404 }
   }
 

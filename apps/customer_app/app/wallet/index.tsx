@@ -2,7 +2,7 @@
  * GatiCash — wallet balance and transaction history (Zomato Money reference UI).
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   ScrollView,
@@ -13,14 +13,15 @@ import {
 } from "react-native";
 import { AppText } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { safeRouterBack, PROFILE_TAB_FALLBACK } from "@/lib/safeRouterBack";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { GatiCashWalletHeader } from "@/components/wallet/GatiCashWalletHeader";
 import { GatiCashWalletHeroIcon } from "@/components/wallet/GatiCashWalletHeroIcon";
+import { GatiCashTopupSuccessSheet } from "@/components/wallet/GatiCashTopupSuccessSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   walletService,
@@ -114,7 +115,17 @@ function TransactionRow({ tx }: { tx: WalletTransaction }) {
 export default function WalletScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
+  const params = useLocalSearchParams<{
+    topupAmount?: string | string[];
+    balanceAfter?: string | string[];
+  }>();
   const [filter, setFilter] = useState<WalletTxFilter>("all");
+  const [topupSuccess, setTopupSuccess] = useState<{
+    amount: number;
+    balanceAfter: number | null;
+  } | null>(null);
+  const handledTopupKeyRef = useRef<string | null>(null);
 
   const balanceQ = useQuery({
     queryKey: ["wallet", "balance"],
@@ -125,6 +136,31 @@ export default function WalletScreen() {
     queryKey: ["wallet", "transactions", filter],
     queryFn: () => walletService.getTransactions({ filter, limit: 50 }),
   });
+
+  useEffect(() => {
+    const rawAmount = Array.isArray(params.topupAmount)
+      ? params.topupAmount[0]
+      : params.topupAmount;
+    if (rawAmount == null || rawAmount === "") return;
+    const amount = Number(rawAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+
+    const rawBalance = Array.isArray(params.balanceAfter)
+      ? params.balanceAfter[0]
+      : params.balanceAfter;
+    const balanceAfter =
+      rawBalance != null && rawBalance !== "" && Number.isFinite(Number(rawBalance))
+        ? Number(rawBalance)
+        : null;
+
+    const key = `${amount}:${balanceAfter ?? ""}`;
+    if (handledTopupKeyRef.current === key) return;
+    handledTopupKeyRef.current = key;
+
+    setTopupSuccess({ amount, balanceAfter });
+    void queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    router.setParams({ topupAmount: "", balanceAfter: "" });
+  }, [params.topupAmount, params.balanceAfter, queryClient, router]);
 
   const balance = balanceQ.data?.available_balance ?? balanceQ.data?.balance ?? 0;
   const transactions = txQ.data?.transactions ?? [];
@@ -139,6 +175,11 @@ export default function WalletScreen() {
   const handleAddMoney = useCallback(() => {
     router.push("/wallet/add-money");
   }, [router]);
+
+  const closeTopupSuccess = useCallback(() => {
+    setTopupSuccess(null);
+    void queryClient.invalidateQueries({ queryKey: ["wallet"] });
+  }, [queryClient]);
 
   const lockedNote = useMemo(() => {
     const locked = balanceQ.data?.locked_amount ?? 0;
@@ -232,6 +273,13 @@ export default function WalletScreen() {
           </View>
         </ScrollView>
       </View>
+
+      <GatiCashTopupSuccessSheet
+        visible={topupSuccess != null}
+        amount={topupSuccess?.amount ?? 0}
+        balanceAfter={topupSuccess?.balanceAfter}
+        onClose={closeTopupSuccess}
+      />
     </>
   );
 }

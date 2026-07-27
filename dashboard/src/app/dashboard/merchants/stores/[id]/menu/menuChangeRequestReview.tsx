@@ -123,6 +123,8 @@ export function menuItemChangeFieldLabel(key: string): string {
     allergens: "Allergens",
     customizations: "Customizations",
     variants: "Variants",
+    images: "Images",
+    attributes: "Attributes",
   };
   return labels[key] ?? key.replace(/_/g, " ");
 }
@@ -139,16 +141,25 @@ export function sortMenuItemChangeKeys(keys: string[]): string[] {
 }
 
 function isMenuItemImageFieldKey(key: string): boolean {
-  return key === "item_image_url" || key.endsWith("_image_url") || key === "image_url";
+  return (
+    key === "item_image_url" ||
+    key === "images" ||
+    key.endsWith("_image_url") ||
+    key === "image_url"
+  );
 }
 
 function imageUrlFromChangeValue(key: string, value: unknown): string | null {
+  if (key === "images" && Array.isArray(value) && value.length > 0) {
+    const first = value[0] as Record<string, unknown>;
+    const u = first?.image_url ?? first?.url;
+    if (typeof u === "string" && u.trim()) return u.trim();
+  }
   if (!isMenuItemImageFieldKey(key)) return null;
   if (typeof value !== "string") return null;
   const t = value.trim();
   if (!t) return null;
   if (/^https?:\/\//i.test(t)) return t;
-  // Dashboard APIs often return relative attachment URLs like "/api/attachments/proxy/key..."
   if (t.startsWith("/")) return t;
   return null;
 }

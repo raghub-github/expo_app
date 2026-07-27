@@ -27,9 +27,11 @@ import {
   PersonRideFlowSteps,
   type PersonRideFlowStep,
 } from "@/src/components/orders/PersonRideFlowSteps";
+import { NavSheetWaveShell, NAV_SHEET_WAVE_LOW_Y } from "@/src/components/orders/NavSheetWaveHeader";
+import { LORA_BOLD, POPPINS_BOLD } from "@/src/theme/headerFonts";
 
-export const PERSON_RIDE_NAV_SHEET_HEIGHT = 368;
-export const PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT = 132;
+export const PERSON_RIDE_NAV_SHEET_HEIGHT = 460 + 24;
+export const PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT = 132 + 20;
 
 type Props = {
   order: RiderOrderSummary;
@@ -40,6 +42,10 @@ type Props = {
   locationName: string;
   locationAddress: string;
   locationLandmark?: string;
+  /** Full pickup address (shown with drop on the sheet). */
+  pickupAddress?: string;
+  /** Full drop address (shown with pickup on the sheet). */
+  dropAddress?: string;
   routeMeta: NavigatePickupRouteMeta;
   pickupConfirmed: boolean;
   pickupOtpVerified: boolean;
@@ -81,6 +87,8 @@ export function PersonRideNavigateBottomSheet({
   locationName,
   locationAddress,
   locationLandmark,
+  pickupAddress,
+  dropAddress,
   routeMeta,
   pickupConfirmed,
   pickupOtpVerified,
@@ -116,7 +124,14 @@ export function PersonRideNavigateBottomSheet({
   const distanceLabel = routeMeta.loading
     ? "…"
     : formatNavSheetDistance(routeMeta.metersAway);
-  const fullAddress = [locationAddress, locationLandmark].filter(Boolean).join(", ");
+  const fallbackAddress = [locationAddress, locationLandmark].filter(Boolean).join(", ");
+  const pickupFull =
+    (pickupAddress?.trim() || (phase === "pickup" ? fallbackAddress : "")) || "";
+  const dropFull =
+    (dropAddress?.trim() || (phase === "drop" ? fallbackAddress : "")) || "";
+  /** Pre-pickup: pickup only. Post-pickup / drop leg: drop only. */
+  const activeAddress = phase === "drop" ? dropFull : pickupFull;
+  const activeIsDrop = phase === "drop";
   const showCancel = !orderDelivered && !!onCancel;
 
   const showReachPickup =
@@ -239,93 +254,120 @@ export function PersonRideNavigateBottomSheet({
   );
 
   return (
-    <View style={[styles.sheet, { paddingBottom: Math.max(bottomInset, 12) }]}>
-      <View style={styles.sheetHandleDock}>
-        {onToggleSheetExpanded ? (
-          <NavBottomSheetChevron expanded={sheetExpanded} onPress={onToggleSheetExpanded} />
-        ) : (
-          <View style={styles.chevronDock}>
-            <View style={styles.handle} />
-          </View>
-        )}
-      </View>
+    <View style={styles.sheetStack}>
+      {showCancel ? (
+        <View style={styles.cancelFloat} pointerEvents="box-none">
+          <Pressable
+            onPress={onCancel}
+            disabled={cancelLoading}
+            style={({ pressed }) => [
+              styles.cancelFloatBtn,
+              pressed && styles.cancelFloatBtnPressed,
+            ]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("orders.activeRide.cancelRide", "Cancel ride")}
+          >
+            {cancelLoading ? (
+              <ActivityIndicator size="small" color={colors.error[600]} />
+            ) : (
+              <Text style={styles.cancelFloatBtnText}>
+                {t("orders.activeRide.cancelShort", "Cancel")}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
 
-      {sheetExpanded ? (
-        <View style={styles.sheetBody}>
-        <View style={styles.detailsBody}>
-          <View style={styles.customerHeaderRow}>
-            <View style={styles.customerInfoCol}>
-              <Text style={styles.locationName} numberOfLines={2}>
+      <NavSheetWaveShell
+        style={[styles.sheetOuter, sheetShadow]}
+        bodyStyle={{ paddingBottom: Math.max(bottomInset, 12) }}
+      >
+        <View style={styles.sheetHandleDock}>
+          {onToggleSheetExpanded ? (
+            <NavBottomSheetChevron expanded={sheetExpanded} onPress={onToggleSheetExpanded} />
+          ) : (
+            <View style={styles.chevronDock}>
+              <View style={styles.handle} />
+            </View>
+          )}
+        </View>
+
+        {sheetExpanded ? (
+          <View style={styles.sheetBody}>
+            <View style={styles.detailsBody}>
+              <View style={styles.customerHeaderRow}>
+                <View style={styles.customerInfoCol}>
+                  <Text style={styles.locationName} numberOfLines={2}>
+                    {locationName}
+                  </Text>
+                </View>
+              </View>
+
+              {activeAddress ? (
+                <View style={styles.routeCard}>
+                  <View style={styles.routeRow}>
+                    <View style={styles.routeDotCol}>
+                      <View
+                        style={[
+                          styles.routeDot,
+                          activeIsDrop ? styles.dropDot : styles.pickupDot,
+                        ]}
+                      />
+                    </View>
+                    <View style={styles.routeTextWrap}>
+                      <Text style={styles.routeLabel}>
+                        {activeIsDrop
+                          ? t("orders.activeRide.dropLocationLabel", "DROP")
+                          : t("orders.activeRide.pickupLocationLabel", "PICKUP")}
+                      </Text>
+                      <Text style={styles.routeAddress}>{activeAddress}</Text>
+                    </View>
+                    <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+                  </View>
+                </View>
+              ) : null}
+
+              <View style={styles.tripleActionRow}>
+                <RideNavActionButton
+                  icon="call"
+                  label={t("orders.activeFood.call", "Call")}
+                  onPress={onCallCustomer}
+                  disabled={callDisabled}
+                />
+                <RideNavActionButton
+                  icon="chatbubble-ellipses"
+                  label={t("orders.activeRide.chat", "Chat")}
+                  onPress={onChatCustomer ?? (() => {})}
+                  disabled={chatDisabled || !onChatCustomer}
+                  unreadCount={chatUnreadCount}
+                />
+                <RideNavActionButton
+                  icon="navigate"
+                  label={t("orders.activeFood.goToMap", "Go to Map")}
+                  onPress={onOpenMaps}
+                  variant="filled"
+                />
+              </View>
+
+              <PersonRideFlowSteps activeStep={flowStep} orderDelivered={orderDelivered} />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.sheetBody}>
+            <View style={styles.collapsedHeader}>
+              <Text style={styles.collapsedTitle} numberOfLines={1}>
                 {locationName}
               </Text>
-              <Text style={styles.locationAddress} numberOfLines={2}>
-                {fullAddress}
-              </Text>
-            </View>
-            <View style={styles.metaTopCol}>
-              {showCancel ? (
-                <Pressable
-                  onPress={onCancel}
-                  disabled={cancelLoading}
-                  style={({ pressed }) => [
-                    styles.cancelTopBtn,
-                    pressed && styles.cancelTopBtnPressed,
-                  ]}
-                  hitSlop={6}
-                >
-                  {cancelLoading ? (
-                    <ActivityIndicator size="small" color={colors.error[600]} />
-                  ) : (
-                    <Text style={styles.cancelTopBtnText}>
-                      {t("orders.activeRide.cancelShort", "Cancel")}
-                    </Text>
-                  )}
-                </Pressable>
-              ) : null}
-              <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+              <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
             </View>
           </View>
+        )}
 
-          <View style={styles.tripleActionRow}>
-            <RideNavActionButton
-              icon="call"
-              label={t("orders.activeFood.call", "Call")}
-              onPress={onCallCustomer}
-              disabled={callDisabled}
-            />
-            <RideNavActionButton
-              icon="chatbubble-ellipses"
-              label={t("orders.activeRide.chat", "Chat")}
-              onPress={onChatCustomer ?? (() => {})}
-              disabled={chatDisabled || !onChatCustomer}
-              unreadCount={chatUnreadCount}
-            />
-            <RideNavActionButton
-              icon="navigate"
-              label={t("orders.activeFood.goToMap", "Go to Map")}
-              onPress={onOpenMaps}
-              variant="filled"
-            />
-          </View>
-
-          <PersonRideFlowSteps activeStep={flowStep} orderDelivered={orderDelivered} />
-
-        </View>
-        </View>
-      ) : (
         <View style={styles.sheetBody}>
-        <View style={styles.collapsedHeader}>
-          <Text style={styles.collapsedTitle} numberOfLines={1}>
-            {locationName}
-          </Text>
-          <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
+          <View style={styles.actionsDock}>{actionButtons}</View>
         </View>
-        </View>
-      )}
-
-      <View style={styles.sheetBody}>
-        <View style={styles.actionsDock}>{actionButtons}</View>
-      </View>
+      </NavSheetWaveShell>
     </View>
   );
 }
@@ -391,36 +433,80 @@ const sheetShadow = Platform.select({
 });
 
 const styles = StyleSheet.create({
-  sheet: {
+  sheetStack: {
+    width: "100%",
+    alignSelf: "stretch",
+    position: "relative",
+    overflow: "visible",
+  },
+  cancelFloat: {
+    position: "absolute",
+    top: -32,
+    right: 14,
+    zIndex: 60,
+    ...Platform.select({
+      android: { elevation: 40 },
+      default: {},
+    }),
+  },
+  cancelFloatBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    minHeight: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 6,
+      },
+      android: { elevation: 4 },
+      default: {},
+    }),
+  },
+  cancelFloatBtnPressed: { opacity: 0.85 },
+  cancelFloatBtnText: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    fontWeight: "800",
+    color: colors.error[600],
+    includeFontPadding: false,
+  },
+  sheetOuter: {
     width: "100%",
     alignSelf: "stretch",
     alignItems: "stretch",
-    backgroundColor: "#ffffff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingTop: 0,
     zIndex: 50,
     elevation: 32,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E8EAED",
-    ...sheetShadow,
+  },
+  sheet: {
+    width: "100%",
   },
   sheetHandleDock: {
     width: "100%",
     alignSelf: "stretch",
     alignItems: "center",
+    marginTop: -(NAV_SHEET_WAVE_LOW_Y - 10),
+    paddingBottom: 2,
   },
   sheetBody: {
     width: "100%",
     paddingHorizontal: 12,
-    marginTop: -8,
+    marginTop: 0,
   },
   customerHeaderRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 10,
+    marginBottom: 6,
+    paddingTop: 10,
   },
   customerInfoCol: {
     flex: 1,
@@ -429,8 +515,10 @@ const styles = StyleSheet.create({
   },
   metaTopCol: {
     alignItems: "flex-end",
+    justifyContent: "center",
     gap: 2,
     flexShrink: 0,
+    paddingTop: 2,
   },
   cancelTopBtn: {
     paddingVertical: 2,
@@ -439,14 +527,74 @@ const styles = StyleSheet.create({
   cancelTopBtnPressed: { opacity: 0.75 },
   cancelTopBtnText: {
     fontSize: 13,
+    fontFamily: LORA_BOLD,
     fontWeight: "800",
     color: colors.error[600],
   },
   distanceLabel: {
     fontSize: 15,
+    fontFamily: POPPINS_BOLD,
     fontWeight: "700",
     color: "#202124",
     letterSpacing: -0.2,
+    flexShrink: 0,
+    marginTop: 14,
+    paddingLeft: 8,
+  },
+  routeCard: {
+    marginBottom: 10,
+    gap: 0,
+  },
+  routeRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  routeDotCol: {
+    width: 14,
+    alignItems: "center",
+    paddingTop: 4,
+  },
+  routeDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    flexShrink: 0,
+  },
+  pickupDot: {
+    backgroundColor: colors.success[600],
+  },
+  dropDot: {
+    backgroundColor: colors.error[500],
+  },
+  routeConnector: {
+    width: 2,
+    flex: 1,
+    minHeight: 14,
+    marginTop: 3,
+    marginBottom: 3,
+    backgroundColor: "#D1D5DB",
+    borderRadius: 1,
+  },
+  routeTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    paddingBottom: 2,
+  },
+  routeLabel: {
+    fontSize: 10,
+    fontFamily: POPPINS_BOLD,
+    fontWeight: "700",
+    color: colors.gray[500],
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  routeAddress: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    fontWeight: "400",
+    color: "#5F6368",
+    lineHeight: 18,
   },
   tripleActionRow: {
     flexDirection: "row",
@@ -489,6 +637,7 @@ const styles = StyleSheet.create({
   actionIconBtnText: {
     marginTop: 3,
     fontSize: 12,
+    fontFamily: LORA_BOLD,
     fontWeight: "600",
   },
   actionIconBtnTextOutline: {
@@ -574,12 +723,14 @@ const styles = StyleSheet.create({
   collapsedTitle: {
     flex: 1,
     fontSize: 15,
+    fontFamily: LORA_BOLD,
     fontWeight: "700",
     color: colors.gray[900],
     marginHorizontal: 8,
   },
   collapsedDistance: {
     fontSize: 14,
+    fontFamily: POPPINS_BOLD,
     fontWeight: "700",
     color: "#202124",
     flexShrink: 0,
@@ -668,6 +819,7 @@ const styles = StyleSheet.create({
   },
   locationName: {
     fontSize: 18,
+    fontFamily: LORA_BOLD,
     fontWeight: "700",
     color: "#202124",
     marginBottom: 2,
@@ -676,6 +828,7 @@ const styles = StyleSheet.create({
   },
   locationAddress: {
     fontSize: 13,
+    fontFamily: LORA_BOLD,
     fontWeight: "400",
     color: "#5F6368",
     lineHeight: 18,

@@ -108,6 +108,8 @@ export async function recordRiderOrderAccepted(
     VALUES (${orderIdText}, ${riderId}, 'accepted', ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz)
     ON CONFLICT (order_id) DO UPDATE
     SET rider_id = EXCLUDED.rider_id, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at
+    WHERE order_rider_assignments_current.rider_id IS NULL
+       OR order_rider_assignments_current.rider_id = EXCLUDED.rider_id
   `);
 
   await tx.execute(sql`
@@ -138,6 +140,8 @@ export async function recordRiderOrderAccepted(
       picked_up_at = NULL,
       delivered_at = NULL,
       updated_at = EXCLUDED.updated_at
+    WHERE delivery_assignments.rider_id IS NULL
+       OR delivery_assignments.rider_id = EXCLUDED.rider_id
   `);
 
   if (serviceType === "food" || serviceType === "parcel") {

@@ -7,7 +7,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
@@ -21,7 +21,7 @@ async function requireTicketAccess() {
   } = await supabase.auth.getUser();
   if (userError) {
     if (isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
+      await signOutIfSessionDead(supabase, userError);
       return {
         error: NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 }),
       };

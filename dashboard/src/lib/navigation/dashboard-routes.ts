@@ -410,10 +410,10 @@ export const areaManagerDashboardRoutes: DashboardSubRoute[] = [
     areaManagerType: "RIDER",
   },
   {
-    name: "Rider Availability",
+    name: "Geo Rider Availability",
     href: "/dashboard/area-managers/availability",
     icon: MapPin,
-    description: "Rider availability and coverage",
+    description: "Search riders near a location",
     areaManagerType: "BOTH",
   },
   {
@@ -641,7 +641,7 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/merchants/stores": "Store Dashboard",
     "/dashboard/area-managers/stores": "Stores",
     "/dashboard/area-managers/riders": "Riders",
-    "/dashboard/area-managers/availability": "Rider Availability",
+    "/dashboard/area-managers/availability": "Geo Rider Availability",
     "/dashboard/area-managers/activity-logs": "Activity Logs",
     "/dashboard/super-admin/ticket-settings": "Ticket Management",
     "/dashboard/super-admin/rule-engine": "Financial Rule Engine",

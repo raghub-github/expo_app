@@ -1,6 +1,4 @@
-import { and, eq, isNull, ne } from "drizzle-orm";
-import { getDb } from "../db/client.js";
-import { riderDocuments, riders } from "../db/schema.js";
+import { getSql } from "../db/client.js";
 
 export function normalizeAadhaarDigits(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -16,26 +14,32 @@ export async function isAadhaarAlreadyRegistered(
   const digits = normalizeAadhaarDigits(aadhaarDigits);
   if (!digits) return false;
 
-  const db = getDb();
+  const sql = getSql();
+  const exclude = excludeRiderId ?? null;
 
-  const riderWhere = and(
-    eq(riders.aadhaarNumber, digits),
-    isNull(riders.deletedAt),
-    excludeRiderId != null ? ne(riders.id, excludeRiderId) : undefined
-  );
-  const [fromRider] = await db.select({ id: riders.id }).from(riders).where(riderWhere).limit(1);
-  if (fromRider) return true;
+  const riderRows = await sql`
+    SELECT id
+    FROM riders
+    WHERE deleted_at IS NULL
+      AND regexp_replace(coalesce(aadhaar_number, ''), '\D', '', 'g') = ${digits}
+      AND (${exclude}::int IS NULL OR id <> ${exclude})
+    LIMIT 1
+  `;
+  if (riderRows.length > 0) return true;
 
-  const docWhere = and(
-    eq(riderDocuments.docType, "aadhaar"),
-    eq(riderDocuments.docNumber, digits),
-    excludeRiderId != null ? ne(riderDocuments.riderId, excludeRiderId) : undefined
-  );
-  const [fromDoc] = await db
-    .select({ id: riderDocuments.id })
-    .from(riderDocuments)
-    .where(docWhere)
-    .limit(1);
+  const docRows = await sql`
+    SELECT rd.id
+    FROM rider_documents rd
+    INNER JOIN riders r ON r.id = rd.rider_id
+    WHERE r.deleted_at IS NULL
+      AND rd.doc_type = 'aadhaar'
+      AND (
+        regexp_replace(coalesce(rd.doc_number, ''), '\D', '', 'g') = ${digits}
+        OR regexp_replace(coalesce(rd.metadata->>'aadhaarNumber', ''), '\D', '', 'g') = ${digits}
+      )
+      AND (${exclude}::int IS NULL OR rd.rider_id <> ${exclude})
+    LIMIT 1
+  `;
 
-  return Boolean(fromDoc);
+  return docRows.length > 0;
 }

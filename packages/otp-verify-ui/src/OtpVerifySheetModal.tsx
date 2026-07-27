@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, type ReactNode } from "react";
+import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
   Platform,
   useWindowDimensions,
-  InteractionManager,
+  Keyboard,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { OtpSheetWaveCut, OTP_WAVE_H, OTP_WAVE_LOW_Y } from "./OtpSheetWaveCut";
@@ -59,6 +59,10 @@ export type OtpVerifySheetModalProps = {
   verifyDisabled?: boolean;
 };
 
+/**
+ * System soft-keyboard OTP sheet.
+ * Android Modal: TextInput mounts only after `onShow` so the phone keyboard opens reliably.
+ */
 export function OtpVerifySheetModal({
   visible,
   title,
@@ -85,61 +89,75 @@ export function OtpVerifySheetModal({
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const inputRef = useRef<TextInput>(null);
-  const [focused, setFocused] = React.useState(false);
+  const [focused, setFocused] = useState(false);
+  /** Gate TextInput mount until Modal window is ready (fixes Android keyboard). */
+  const [modalReady, setModalReady] = useState(false);
   const keyboardLift = useOtpKeyboardLift(visible, dockToKeyboard ? 0 : undefined);
   const autoSubmittedRef = useRef("");
   const keyboardUp = keyboardLift > 0;
   const showActions = !hideVerifyButton || !hideCancelButton;
 
-  const otpReady = value.length === otpLength;
   const titleFont = theme.titleFontFamily;
   const bodyFont = theme.bodyFontFamily ?? theme.titleFontFamily;
   const digitFont = theme.digitFontFamily ?? theme.bodyFontFamily;
+  /** Digits only — one char per box. Never render the raw TextInput string in the UI. */
+  const digitsOnly = value.replace(/\D/g, "").slice(0, otpLength);
+  const otpReadySafe = digitsOnly.length === otpLength;
+  const activeIndex = Math.min(digitsOnly.length, otpLength - 1);
 
   const focusInput = useCallback(() => {
-    if (loading) return;
-    inputRef.current?.focus();
-    if (Platform.OS === "android") {
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
-  }, [loading]);
+    if (loading || !modalReady) return;
+    const node = inputRef.current;
+    if (!node) return;
+    node.blur();
+    requestAnimationFrame(() => {
+      node.focus();
+      if (Platform.OS === "android") {
+        const State = (TextInput as unknown as { State?: { focusTextInput?: (n: unknown) => void } })
+          .State;
+        State?.focusTextInput?.(node);
+      }
+    });
+  }, [loading, modalReady]);
 
   useEffect(() => {
     if (!visible) {
       autoSubmittedRef.current = "";
-      return;
+      setModalReady(false);
+      setFocused(false);
+      Keyboard.dismiss();
     }
-    let cancelled = false;
-    const run = () => {
-      if (!cancelled) focusInput();
-    };
-    run();
-    const t1 = setTimeout(run, 80);
-    const t2 = setTimeout(run, 220);
-    const task = InteractionManager.runAfterInteractions(run);
-    return () => {
-      cancelled = true;
-      clearTimeout(t1);
-      clearTimeout(t2);
-      void task;
-    };
-  }, [visible, focusInput]);
+  }, [visible]);
 
   useEffect(() => {
+    if (!modalReady || !visible || loading) return;
+    const t = setTimeout(() => focusInput(), Platform.OS === "android" ? 80 : 40);
+    return () => clearTimeout(t);
+  }, [modalReady, visible, loading, focusInput]);
+
+  useEffect(() => {
+    if (!visible || !autoSubmitOnComplete || !otpReadySafe || loading || verifyDisabled) {
+      if (!otpReadySafe) autoSubmittedRef.current = "";
+      return;
+    }
+    // Don't auto-resubmit while an error is showing (cleared input stays empty).
     if (error?.trim()) {
       autoSubmittedRef.current = "";
-    }
-  }, [error]);
-
-  useEffect(() => {
-    if (!visible || !autoSubmitOnComplete || !otpReady || loading || verifyDisabled) {
-      if (!otpReady) autoSubmittedRef.current = "";
       return;
     }
-    if (autoSubmittedRef.current === value) return;
-    autoSubmittedRef.current = value;
-    onVerify(value);
-  }, [visible, autoSubmitOnComplete, otpReady, loading, verifyDisabled, value, onVerify]);
+    if (autoSubmittedRef.current === digitsOnly) return;
+    autoSubmittedRef.current = digitsOnly;
+    onVerify(digitsOnly);
+  }, [
+    visible,
+    autoSubmitOnComplete,
+    otpReadySafe,
+    loading,
+    verifyDisabled,
+    digitsOnly,
+    onVerify,
+    error,
+  ]);
 
   const sheetBottomPad = dockToKeyboard && keyboardUp ? 10 : Math.max(insets.bottom, 12);
 
@@ -147,9 +165,13 @@ export function OtpVerifySheetModal({
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType="fade"
       onRequestClose={onCancel}
       statusBarTranslucent
+      onShow={() => {
+        // Defer one frame so the Modal root view exists before TextInput mounts.
+        requestAnimationFrame(() => setModalReady(true));
+      }}
     >
       <View style={styles.modalRoot}>
         <Pressable
@@ -175,8 +197,26 @@ export function OtpVerifySheetModal({
               ]}
               onPress={focusInput}
             >
-              <Text style={[styles.title, titleFont ? { fontFamily: titleFont } : null]}>{title}</Text>
-              <Text style={[styles.subtitle, bodyFont ? { fontFamily: bodyFont } : null]}>{subtitle}</Text>
+              <Text
+                style={[
+                  styles.title,
+                  titleFont
+                    ? { fontFamily: titleFont, fontWeight: "normal" }
+                    : styles.titleFallbackWeight,
+                ]}
+              >
+                {title}
+              </Text>
+              <Text
+                style={[
+                  styles.subtitle,
+                  bodyFont
+                    ? { fontFamily: bodyFont, fontWeight: "normal" }
+                    : null,
+                ]}
+              >
+                {subtitle}
+              </Text>
 
               {prependContent ? <View style={styles.prepend}>{prependContent}</View> : null}
 
@@ -186,19 +226,22 @@ export function OtpVerifySheetModal({
                 accessibilityLabel={`One-time code, ${otpLength} digits`}
               >
                 {Array.from({ length: otpLength }).map((_, index) => {
-                  const digit = value[index] ?? "";
-                  const active = focused && index === Math.min(value.length, otpLength - 1);
+                  const digit = digitsOnly.charAt(index);
+                  const active = focused && index === activeIndex;
                   return (
-                    <View key={index} style={styles.box}>
+                    <View key={index} style={styles.box} pointerEvents="none">
                       <Text
                         style={[
                           styles.digit,
                           digit ? styles.digitFilled : styles.digitEmpty,
-                          digitFont ? { fontFamily: digitFont } : null,
+                          digitFont
+                            ? { fontFamily: digitFont, fontWeight: "normal" }
+                            : styles.digitFallbackWeight,
                           { color: theme.textPrimary },
                         ]}
+                        numberOfLines={1}
                       >
-                        {digit || (active ? "" : "-")}
+                        {digit || (active ? "\u200B" : "-")}
                       </Text>
                       <View
                         style={[
@@ -210,37 +253,45 @@ export function OtpVerifySheetModal({
                     </View>
                   );
                 })}
-                <TextInput
-                  ref={inputRef}
-                  style={styles.hiddenInput}
-                  value={value}
-                  onChangeText={(t) => onChange(t.replace(/\D/g, "").slice(0, otpLength))}
-                  onFocus={() => setFocused(true)}
-                  onBlur={() => {
-                    setFocused(false);
-                    if (value.length >= otpLength || loading) return;
-                    requestAnimationFrame(() => inputRef.current?.focus());
-                  }}
-                  keyboardType="number-pad"
-                  maxLength={otpLength}
-                  editable={!loading}
-                  textContentType="oneTimeCode"
-                  autoComplete="sms-otp"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  importantForAutofill="yes"
-                  showSoftInputOnFocus
-                  blurOnSubmit={false}
-                  caretHidden
-                  selectionColor={theme.primary}
-                />
+                {modalReady ? (
+                  <TextInput
+                    key={`otp-input-${visible ? "on" : "off"}`}
+                    ref={inputRef}
+                    style={styles.hiddenInput}
+                    value={digitsOnly}
+                    onChangeText={(t) => onChange(t.replace(/\D/g, "").slice(0, otpLength))}
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    keyboardType="number-pad"
+                    maxLength={otpLength}
+                    editable={!loading}
+                    textContentType="oneTimeCode"
+                    autoComplete="sms-otp"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    importantForAutofill="yes"
+                    showSoftInputOnFocus
+                    autoFocus
+                    blurOnSubmit={false}
+                    caretHidden
+                    contextMenuHidden
+                    selectTextOnFocus={false}
+                    selectionColor="transparent"
+                    underlineColorAndroid="transparent"
+                  />
+                ) : null}
               </Pressable>
-
               {resendSlot ? <View style={styles.resendWrap}>{resendSlot}</View> : null}
 
               {error ? (
                 <View style={styles.errorBanner}>
-                  <Text style={[styles.errorText, bodyFont ? { fontFamily: bodyFont } : null, { color: theme.error }]}>
+                  <Text
+                    style={[
+                      styles.errorText,
+                      bodyFont ? { fontFamily: bodyFont } : null,
+                      { color: theme.error },
+                    ]}
+                  >
                     {error}
                   </Text>
                 </View>
@@ -265,7 +316,7 @@ export function OtpVerifySheetModal({
                       onPress={onCancel}
                       disabled={loading}
                     >
-                      <Text style={[styles.cancelText, titleFont ? { fontFamily: titleFont } : null]}>
+                      <Text style={[styles.cancelText, titleFont ? { fontFamily: titleFont, fontWeight: "normal" } : null]}>
                         {cancelLabel}
                       </Text>
                     </Pressable>
@@ -274,18 +325,18 @@ export function OtpVerifySheetModal({
                     <Pressable
                       style={[
                         styles.verifyBtn,
-                        otpReady && !loading && !verifyDisabled
+                        otpReadySafe && !loading && !verifyDisabled
                           ? { backgroundColor: theme.primary }
                           : styles.verifyBtnIdle,
                         (loading || verifyDisabled) && styles.btnDisabled,
                       ]}
-                      onPress={() => onVerify(value)}
-                      disabled={loading || verifyDisabled || !otpReady}
+                      onPress={() => onVerify(digitsOnly)}
+                      disabled={loading || verifyDisabled || !otpReadySafe}
                     >
                       {loading ? (
                         <ActivityIndicator color="#fff" size="small" />
                       ) : (
-                        <Text style={[styles.verifyText, titleFont ? { fontFamily: titleFont } : null]}>
+                        <Text style={[styles.verifyText, titleFont ? { fontFamily: titleFont, fontWeight: "normal" } : null]}>
                           {verifyLabel}
                         </Text>
                       )}
@@ -327,10 +378,12 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 18,
-    fontWeight: "700",
     color: "#0F172A",
     marginTop: -(OTP_WAVE_LOW_Y - 14),
     marginBottom: 8,
+  },
+  titleFallbackWeight: {
+    fontWeight: "700",
   },
   subtitle: {
     fontSize: 12,
@@ -347,29 +400,33 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
     marginBottom: 10,
+    overflow: "hidden",
   },
   box: {
     flex: 1,
-    height: 40,
+    height: 44,
     alignItems: "center",
     justifyContent: "flex-end",
     paddingBottom: 6,
+    overflow: "hidden",
   },
   digit: {
-    fontSize: 22,
-    minHeight: 26,
+    fontSize: 24,
+    minHeight: 28,
+    width: "100%",
     textAlign: "center",
+    includeFontPadding: false,
   },
   digitFilled: {
-    fontWeight: "900",
-    fontSize: 24,
+    fontSize: 26,
   },
-  digitEmpty: {
-    fontWeight: "600",
+  digitEmpty: {},
+  digitFallbackWeight: {
+    fontWeight: "700",
   },
   underline: {
     width: "100%",
-    height: 1.5,
+    height: 2,
     borderRadius: 1,
     backgroundColor: "#94A3B8",
   },
@@ -377,13 +434,22 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 10,
     width: 2,
-    height: 20,
+    height: 22,
     backgroundColor: "#0F172A",
   },
+  /**
+   * Invisible but focusable — keep opacity tiny so the phone keyboard still opens,
+   * while the typed string never paints over the per-box digits.
+   */
   hiddenInput: {
     ...StyleSheet.absoluteFillObject,
-    opacity: 0.02,
+    zIndex: 2,
+    opacity: Platform.OS === "android" ? 0.02 : 0.01,
     color: "transparent",
+    backgroundColor: "transparent",
+    fontSize: 1,
+    letterSpacing: 0,
+    includeFontPadding: false,
   },
   resendWrap: {
     marginBottom: 14,
@@ -428,7 +494,6 @@ const styles = StyleSheet.create({
   },
   cancelText: {
     fontSize: 15,
-    fontWeight: "700",
     color: "#0F172A",
   },
   verifyBtn: {
@@ -443,7 +508,6 @@ const styles = StyleSheet.create({
   },
   verifyText: {
     fontSize: 15,
-    fontWeight: "700",
     color: "#FFFFFF",
   },
   pressed: {

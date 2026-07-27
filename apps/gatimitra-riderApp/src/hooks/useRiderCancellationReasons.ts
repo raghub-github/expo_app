@@ -3,12 +3,16 @@ import { riderApi } from "@/src/services/api/riderApi";
 import { isUnauthorizedError } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import {
+  filterCancelReasonsForService,
   mapVariantToServiceType,
   RIDER_CANCEL_REASON_FALLBACK,
   type RiderCancelReasonItem,
 } from "@/src/lib/rider-ride-cancel-reasons";
 
-export function useRiderCancellationReasons(variant: "ride" | "food", visible = true) {
+export function useRiderCancellationReasons(
+  variant: "ride" | "food" | "parcel",
+  visible = true
+) {
   const hasSession = useSessionStore((s) => !!s.session?.accessToken);
   const serviceType = mapVariantToServiceType(variant);
 
@@ -17,26 +21,28 @@ export function useRiderCancellationReasons(variant: "ride" | "food", visible = 
     queryFn: async (): Promise<RiderCancelReasonItem[]> => {
       try {
         const res = await riderApi.getCancellationReasons(serviceType);
-        const list = (res.reasons ?? []).filter(
-          (r) => String(r.attribute ?? "").trim().toUpperCase() === "RIDER"
-        );
+        const list = filterCancelReasonsForService(res.reasons ?? [], serviceType);
         if (list.length === 0) return RIDER_CANCEL_REASON_FALLBACK;
         return list.map((r) => ({
           id: r.id,
           reasonCode: r.reasonCode,
           label: r.label,
+          serviceType: r.serviceType ?? null,
+          sortOrder: r.sortOrder,
         }));
       } catch {
+        // Network / schema failures — still show universal offline list.
         return RIDER_CANCEL_REASON_FALLBACK;
       }
     },
     enabled: hasSession && visible,
     staleTime: 10 * 60_000,
+    // placeholderData only — initialData + staleTime blocked the real catalog fetch.
+    placeholderData: RIDER_CANCEL_REASON_FALLBACK,
     retry: (failureCount, error) => {
       if (isUnauthorizedError(error)) return false;
       return failureCount < 1;
     },
-    initialData: RIDER_CANCEL_REASON_FALLBACK,
   });
 }
 

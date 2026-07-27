@@ -5,12 +5,46 @@ import { Store } from 'lucide-react';
 type RegisterFormHeaderProps = {
   step: 1 | 2 | 3;
   subtitle: string;
+  /** Tighter header for the wide profile step */
+  compact?: boolean;
 };
 
-export function RegisterFormHeader({ step, subtitle }: RegisterFormHeaderProps) {
+export function RegisterFormHeader({ step, subtitle, compact = false }: RegisterFormHeaderProps) {
+  if (compact) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-nowrap">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-600 shadow-md shadow-orange-600/20">
+          <Store className="h-[18px] w-[18px] text-white" strokeWidth={1.75} />
+        </div>
+        <div className="min-w-0 flex-1 text-left">
+          <h1 className="text-sm font-bold leading-tight tracking-tight text-slate-900 sm:text-base">
+            Create your{' '}
+            <span className="text-emerald-600">Gati</span>
+            <span className="text-orange-500">Mitra</span>{' '}
+            Partner Account
+          </h1>
+          <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>
+        </div>
+        <div
+          className="flex w-full max-w-[140px] gap-1.5 sm:w-28 sm:shrink-0"
+          aria-label={`Registration step ${step} of 3`}
+        >
+          {[1, 2, 3].map((s) => (
+            <div
+              key={s}
+              className={`h-1 flex-1 rounded-full transition-all duration-300 ${
+                step >= s ? 'bg-orange-600' : 'bg-slate-200'
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="text-center">
-      <div className="relative inline-flex items-center justify-center mb-6">
+      <div className="relative mb-6 inline-flex items-center justify-center">
         <span className="absolute -top-1 -left-4 h-2 w-2 rounded-full bg-orange-200/90" aria-hidden />
         <span className="absolute top-1 -right-5 h-1.5 w-1.5 rounded-full bg-orange-300/80" aria-hidden />
         <span className="absolute -bottom-0.5 right-1 h-2 w-2 rounded-full bg-orange-200/90" aria-hidden />
@@ -20,7 +54,7 @@ export function RegisterFormHeader({ step, subtitle }: RegisterFormHeaderProps) 
         </div>
       </div>
 
-      <h1 className="text-[1.2rem] sm:text-[1.5rem] font-bold text-slate-900 leading-snug tracking-tight whitespace-nowrap">
+      <h1 className="whitespace-nowrap text-[1.2rem] font-bold leading-snug tracking-tight text-slate-900 sm:text-[1.5rem]">
         Create your{' '}
         <span className="text-emerald-600">Gati</span>
         <span className="text-orange-500">Mitra</span>{' '}
@@ -29,7 +63,7 @@ export function RegisterFormHeader({ step, subtitle }: RegisterFormHeaderProps) 
       <p className="mt-2.5 text-sm text-slate-500">{subtitle}</p>
 
       <div
-        className="flex gap-2 mt-6 max-w-[220px] mx-auto"
+        className="mx-auto mt-6 flex max-w-[220px] gap-2"
         aria-label={`Registration step ${step} of 3`}
       >
         {[1, 2, 3].map((s) => (
@@ -42,18 +76,5 @@ export function RegisterFormHeader({ step, subtitle }: RegisterFormHeaderProps) 
         ))}
       </div>
     </div>
-  );
-}
-
-export function RegisterSecurityTrust() {
-  return (
-    <p className="mt-8 flex items-center justify-center gap-2 text-xs sm:text-sm text-slate-500">
-      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor" aria-hidden>
-          <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 14.59l-3.3-3.29 1.41-1.42L11 12.17l4.89-4.88 1.41 1.42L11 15.59z" />
-        </svg>
-      </span>
-      Your information is secure with us
-    </p>
   );
 }

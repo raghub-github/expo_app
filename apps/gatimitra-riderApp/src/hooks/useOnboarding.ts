@@ -27,11 +27,16 @@ export interface SaveOnboardingStepRequest {
   data: {
     aadhaarNumber?: string;
     fullName?: string;
+    dob?: string;
+    fileUrl?: string;
+    verificationMethod?: string;
     dlNumber?: string;
     rcNumber?: string;
     hasOwnVehicle?: boolean;
     vehicleChoice?: string;
     vehicleCategoryCode?: string;
+    /** Single selected model name (never the full "A / B / C" catalog label). */
+    vehicleModelLabel?: string;
     onboardingFlow?: "dl_rc" | "rental_ev" | "payment";
     submitVehicleDocs?: boolean;
     rentalProofSignedUrl?: string;
@@ -204,6 +209,24 @@ export function useRiderStatus(riderId: string | undefined) {
         nextOnboardingStep?: string;
         completedOnboardingSteps?: string[];
         rating?: number | null;
+        panNumber?: string | null;
+        panVerified?: boolean;
+        dob?: string | null;
+        dlNumber?: string | null;
+        dlFrontUrl?: string | null;
+        dlBackUrl?: string | null;
+        dlVerified?: boolean;
+        dlVerifiedData?: Record<string, unknown> | null;
+        rcNumber?: string | null;
+        rcFrontUrl?: string | null;
+        rcVerified?: boolean;
+        rcVerifiedData?: Record<string, unknown> | null;
+        onboardingProgress?: Record<string, string>;
+        lastCompletedStep?: string | null;
+        nextRequiredStep?: string | null;
+        onboardingProgressPct?: number;
+        macroStepIndex?: number;
+        paymentCompleted?: boolean;
       }>(`${API_BASE()}/v1/rider/${riderId}/status`, {
         headers: { authorization: `Bearer ${session.accessToken}` },
       });
@@ -355,23 +378,39 @@ export function useVerificationModes() {
 
 export type VerifyDocumentRequest = {
   riderId: string;
-  docKind: "pan" | "driving_licence" | "vehicle_rc";
+  docKind: "pan" | "driving_licence" | "vehicle_rc" | "aadhaar" | "bank_account";
+  aadhaarNumber?: string;
   pan?: string;
   name?: string;
   dlNumber?: string;
   dob?: string;
   vehicleNumber?: string;
+  bankAccount?: string;
+  ifsc?: string;
+  /** HTTPS DigiLocker return URL (Cashfree requires https). */
+  redirectUrl?: string;
 };
 
 export type VerifyDocumentResponse = {
   success: boolean;
-  outcome?: "verified" | "failed" | "manual";
+  outcome?: "verified" | "failed" | "manual" | "digilocker" | "pending" | "mismatch";
   mode?: string;
   verifiedData?: Record<string, unknown>;
+  url?: string;
+  /** HTTPS return URL registered with Cashfree — use as openAuthSessionAsync redirect. */
+  redirectUrl?: string;
+  verificationId?: string;
+  status?: string;
   error?: string;
+  reason?: string;
+  providerStatus?: string | null;
+  providerMessage?: string | null;
+  providerReference?: string | null;
+  mismatchReasons?: string[];
+  mismatchMessages?: string[];
 };
 
-/** Interactive electronic verification for PAN / DL / RC during onboarding. */
+/** Interactive electronic verification for PAN / DL / RC / Aadhaar during onboarding. */
 export function useVerifyDocument() {
   const session = useSessionStore((s) => s.session);
   return useMutation({
@@ -379,6 +418,20 @@ export function useVerifyDocument() {
       if (!session?.accessToken) throw new Error("Not authenticated");
       return postJson<VerifyDocumentResponse>(
         `${API_BASE()}/v1/onboarding/verify-document`,
+        body,
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+  });
+}
+
+export function usePollAadhaarDigilocker() {
+  const session = useSessionStore((s) => s.session);
+  return useMutation({
+    mutationFn: async (body: { riderId: string }): Promise<VerifyDocumentResponse> => {
+      if (!session?.accessToken) throw new Error("Not authenticated");
+      return postJson<VerifyDocumentResponse>(
+        `${API_BASE()}/v1/onboarding/poll-aadhaar-digilocker`,
         body,
         { headers: { authorization: `Bearer ${session.accessToken}` } }
       );

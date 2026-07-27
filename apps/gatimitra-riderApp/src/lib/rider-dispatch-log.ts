@@ -12,6 +12,7 @@ export function riderDispatchLog(message: string, detail?: unknown): void {
 }
 
 export function riderDispatchWarn(message: string, detail?: unknown): void {
+  if (!__DEV__) return;
   if (detail !== undefined) {
     console.warn(`${PREFIX} ${message}`, detail);
   } else {

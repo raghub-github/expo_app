@@ -27,6 +27,10 @@ import { countDispatchDeclinedForOrder } from "../../lib/rider-dispatch-assignme
 import { computeBillForRide } from "../billing/rideBilling.service.js";
 import type { BillingResult } from "../billing/types.js";
 import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
+import {
+  loadCustomerAssignedRiderProfile,
+  type CustomerAssignedRiderProfile,
+} from "../../lib/customer-assigned-rider-profile.js";
 
 export const DEFAULT_RIDE_SEARCH_TIMEOUT_SEC = 4 * 60;
 
@@ -852,6 +856,7 @@ export async function getRideOrderForCustomer(
   appStatus: string;
   riderId: number | null;
   riderAssigned: boolean;
+  rider: CustomerAssignedRiderProfile | null;
   totalAmount: number;
   searchExpiresAt: string | null;
   cancelled: boolean;
@@ -977,6 +982,13 @@ export async function getRideOrderForCustomer(
 
   const dispatchDeclinedCount = await countDispatchDeclinedForOrder(row.orderId);
 
+  const riderProfile =
+    riderId != null
+      ? await loadCustomerAssignedRiderProfile(Number(riderId), {
+          rideTypeFallback: rideRow?.rideType ?? null,
+        })
+      : null;
+
   return {
     orderId: row.orderId,
     coreOrderId: row.id,
@@ -984,6 +996,7 @@ export async function getRideOrderForCustomer(
     appStatus,
     riderId: riderId != null ? Number(riderId) : null,
     riderAssigned: riderId != null,
+    rider: riderProfile,
     totalAmount: Number(row.grandTotal ?? 0),
     searchExpiresAt: rideRow?.searchExpiresAt?.toISOString?.() ?? null,
     cancelled,

@@ -1,14 +1,6 @@
 import { useMemo } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  Image,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, ActivityIndicator, Pressable, RefreshControl, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import type { Offer } from "@/services/offersApi";

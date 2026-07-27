@@ -15,7 +15,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByAuthId, getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { hasDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
 
@@ -41,7 +41,7 @@ async function baseAuth(): Promise<
 
   if (userError || !user) {
     if (userError && isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
+      await signOutIfSessionDead(supabase, userError);
       return {
         ok: false,
         response: NextResponse.json(

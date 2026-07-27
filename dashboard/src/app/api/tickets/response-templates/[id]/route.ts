@@ -4,7 +4,7 @@ import { getSql } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
@@ -23,7 +23,7 @@ async function requireAuth() {
   } = await supabase.auth.getUser();
   if (userError) {
     if (isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
+      await signOutIfSessionDead(supabase, userError);
       return {
         error: NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },

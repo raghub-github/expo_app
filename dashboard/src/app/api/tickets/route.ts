@@ -9,7 +9,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSql } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { QUEUE_HOME_ACTIVE_STATUS_DB } from "@/lib/tickets/queue-ticket-filters";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 
@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
 
     if (userError) {
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
         return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
       }
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
@@ -1042,7 +1042,7 @@ export async function POST(request: NextRequest) {
 
     if (userError) {
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
         return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
       }
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });

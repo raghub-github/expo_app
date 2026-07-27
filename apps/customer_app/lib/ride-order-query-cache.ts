@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { OrderSummary } from "@/services/order.service";
 import { rememberDismissedRideOrder } from "@/lib/ride-dismissed-orders";
+import { forgetActivePersonRide } from "@/lib/active-person-ride-persist";
 
 function matchesOrderRef(order: OrderSummary, orderRef: string): boolean {
   const id = orderRef.trim();
@@ -25,6 +26,7 @@ export function purgeRideOrderFromClientCaches(
   if (!id) return;
 
   rememberDismissedRideOrder(id);
+  forgetActivePersonRide(id);
 
   queryClient.setQueryData<OrderSummary[]>(["my-orders"], (prev) => {
     if (!prev) return prev;

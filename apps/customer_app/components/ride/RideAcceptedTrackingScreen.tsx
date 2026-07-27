@@ -13,6 +13,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { LiveTrackingStatusChip } from "@/components/orders/LiveTrackingStatusChip";
 import { PartnerChatUnreadBadge } from "@/components/orders/PartnerChatUnreadBadge";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { MapboxWebRideTrackingMap } from "@/components/maps/MapboxWebRideTrackingMap";
@@ -44,9 +45,10 @@ import { shouldShowRideTollNotice } from "@/lib/ride-toll-notice";
 import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { RideCancelReasonSheet } from "@/features/ride/RideCancelReasonSheet";
 import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
+import { RideCancelledAckSheet } from "@/components/ride/RideCancelledAckSheet";
 import type { RideCancelReason } from "@/lib/ride-cancel-reasons";
 import { purgeRideOrderFromClientCaches } from "@/lib/ride-order-query-cache";
-import { RIDE_CUSTOMER_CANCELLED_TOAST } from "@/lib/ride-search-toast-copy";
+import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import { useRiderToPickupLiveRoute } from "@/hooks/useRiderToPickupLiveRoute";
 import { bearingDegrees, type MapLatLng } from "@/lib/map-route-utils";
 import {
@@ -115,6 +117,7 @@ export function RideAcceptedTrackingScreen({
   const [cancelFlowStep, setCancelFlowStep] = useState<"reason" | "confirm" | null>(null);
   const [selectedCancelReason, setSelectedCancelReason] = useState<RideCancelReason | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelledAckVisible, setCancelledAckVisible] = useState(false);
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const lastFitKeyRef = useRef("");
   const tollNoticeSpokenRef = useRef<string | null>(null);
@@ -132,6 +135,34 @@ export function RideAcceptedTrackingScreen({
     retryDelay: queryRetryDelay,
   });
 
+  // If ride status has captain profile but order cache doesn't, seed immediately.
+  useEffect(() => {
+    if (!liveRideStatus?.rider) return;
+    if (order.rider?.name?.trim()) return;
+    seedOrderDetailCache(queryClient, order.orderId, {
+      orderId: order.orderId,
+      status: order.status,
+      rider: liveRideStatus.rider,
+    });
+  }, [liveRideStatus?.rider, order.orderId, order.rider?.name, order.status, queryClient]);
+
+  // Assigned but profile still missing → force order detail refetch once.
+  const captainHydrateAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (order.rider?.name?.trim()) return;
+    if (!liveRideStatus?.riderAssigned && !liveRideStatus?.riderId) return;
+    if (captainHydrateAttemptedRef.current) return;
+    captainHydrateAttemptedRef.current = true;
+    void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
+  }, [
+    liveRideStatus?.riderAssigned,
+    liveRideStatus?.riderId,
+    order.orderId,
+    order.rider?.name,
+    queryClient,
+  ]);
+
+  const captain = order.rider ?? liveRideStatus?.rider ?? null;
   useEffect(() => {
     if (!liveRideStatus || liveRideStatus.cancelled) return;
     const app = (liveRideStatus.appStatus ?? "").trim().toUpperCase();
@@ -222,7 +253,15 @@ export function RideAcceptedTrackingScreen({
     fullCoordinates: fullRouteCoordinates,
     distanceM,
     etaMinutes: routeEtaMinutes,
-  } = useRiderToPickupLiveRoute(riderPos, routeDestination, rideCatalogId);
+    displayRider,
+  } = useRiderToPickupLiveRoute(
+    riderPos,
+    routeDestination,
+    rideCatalogId,
+    tracking?.rider?.headingDegrees ?? null
+  );
+
+  const mapRiderPos = displayRider ?? riderPos;
 
   const displayRouteCoordinates = useMemo(() => {
     if (!routeDestination) return [];
@@ -246,7 +285,18 @@ export function RideAcceptedTrackingScreen({
   );
 
   const footerBottomPad = Math.max(insets.bottom, 12);
-  const mapFitBottomPad = Math.round(SCREEN_H * 0.22);
+  /** Padding within the map viewport (sheet is a sibling — not an overlay). */
+  const mapEdgePadding = useMemo(
+    () => ({
+      top: Math.max(insets.top + 52, 64),
+      right: 56,
+      bottom: 72,
+      left: 40,
+    }),
+    [insets.top]
+  );
+  const lastGeofenceModeRef = useRef<"none" | "pickup" | "drop">("none");
+  const userDisabledFollowRef = useRef(false);
 
   useEffect(() => {
     setMapReady(false);
@@ -261,40 +311,9 @@ export function RideAcceptedTrackingScreen({
 
   useEffect(() => {
     lastFitKeyRef.current = "";
+    lastGeofenceModeRef.current = "none";
+    userDisabledFollowRef.current = false;
   }, [rideInProgress, order.orderId]);
-
-  useEffect(() => {
-    if (rideInProgress || !mapReady || !mapRef.current || !pickupPoint) return;
-    const fitPoints: MapLatLng[] = [...displayRouteCoordinates];
-    if (riderPos) fitPoints.push(riderPos);
-    if (rideInProgress && dropPoint) fitPoints.push(dropPoint);
-    else fitPoints.push(pickupPoint);
-
-    if (fitPoints.length === 1) {
-      mapRef.current.fitToCoordinates([pickupPoint], {
-        edgePadding: { top: 64, right: 40, bottom: mapFitBottomPad, left: 40 },
-        maxZoom: 15,
-      });
-      return;
-    }
-    if (fitPoints.length < 2) return;
-
-    const fitKey = [
-      riderPos?.latitude?.toFixed(4),
-      riderPos?.longitude?.toFixed(4),
-      displayRouteCoordinates.length,
-      displayRouteCoordinates[0]?.latitude?.toFixed(4),
-      displayRouteCoordinates[displayRouteCoordinates.length - 1]?.latitude?.toFixed(4),
-    ].join("|");
-
-    if (fitKey === lastFitKeyRef.current) return;
-    lastFitKeyRef.current = fitKey;
-
-    mapRef.current.fitToCoordinates(fitPoints, {
-      edgePadding: { top: 64, right: 40, bottom: mapFitBottomPad, left: 40 },
-      animated: true,
-    });
-  }, [mapReady, displayRouteCoordinates, riderPos, pickupPoint, dropPoint, rideInProgress, mapFitBottomPad]);
 
   const fallbackDistanceTarget = rideInProgress ? dropPoint : pickupPoint;
   const fallbackDistance = fallbackDistanceTarget
@@ -359,6 +378,95 @@ export function RideAcceptedTrackingScreen({
       dropLat: dropPoint.latitude,
       dropLng: dropPoint.longitude,
     });
+
+  // Geofence camera: when captain enters pickup/drop radius, frame the full circle.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+
+    const mode: "none" | "pickup" | "drop" = highlightPickupZone
+      ? "pickup"
+      : highlightDropZone
+        ? "drop"
+        : "none";
+
+    if (mode === "none") {
+      if (lastGeofenceModeRef.current !== "none") {
+        mapRef.current.clearGeofenceCamera?.();
+        lastGeofenceModeRef.current = "none";
+        lastFitKeyRef.current = "";
+        if (!userDisabledFollowRef.current) {
+          mapRef.current.recenterOnRider?.();
+        }
+      }
+      return;
+    }
+
+    const center = mode === "pickup" ? pickupPoint : dropPoint;
+    if (!center) return;
+
+    const entered = lastGeofenceModeRef.current !== mode;
+    if (!entered && userDisabledFollowRef.current) return;
+    lastGeofenceModeRef.current = mode;
+
+    mapRef.current.fitToGeofence?.(center, FOOD_DELIVERY_GEOFENCE_RADIUS_M, {
+      edgePadding: mapEdgePadding,
+      animated: true,
+      maxZoom: 16.2,
+      force: entered,
+    });
+  }, [
+    mapReady,
+    highlightPickupZone,
+    highlightDropZone,
+    pickupPoint,
+    dropPoint,
+    mapEdgePadding,
+  ]);
+
+  // Normal tracking fit — skipped while geofence framing is active.
+  useEffect(() => {
+    if (rideInProgress || !mapReady || !mapRef.current || !pickupPoint) return;
+    if (highlightPickupZone || highlightDropZone) return;
+
+    const fitPoints: MapLatLng[] = [...displayRouteCoordinates];
+    if (riderPos) fitPoints.push(riderPos);
+    fitPoints.push(pickupPoint);
+
+    if (fitPoints.length === 1) {
+      mapRef.current.fitToCoordinates([pickupPoint], {
+        edgePadding: mapEdgePadding,
+        maxZoom: 15,
+      });
+      return;
+    }
+    if (fitPoints.length < 2) return;
+
+    const fitKey = [
+      riderPos?.latitude?.toFixed(4),
+      riderPos?.longitude?.toFixed(4),
+      displayRouteCoordinates.length,
+      displayRouteCoordinates[0]?.latitude?.toFixed(4),
+      displayRouteCoordinates[displayRouteCoordinates.length - 1]?.latitude?.toFixed(4),
+    ].join("|");
+
+    if (fitKey === lastFitKeyRef.current) return;
+    lastFitKeyRef.current = fitKey;
+
+    mapRef.current.fitToCoordinates(fitPoints, {
+      edgePadding: mapEdgePadding,
+      animated: true,
+    });
+  }, [
+    mapReady,
+    displayRouteCoordinates,
+    riderPos,
+    pickupPoint,
+    rideInProgress,
+    mapEdgePadding,
+    highlightPickupZone,
+    highlightDropZone,
+  ]);
+
   const bannerText = rideInProgress
     ? highlightDropZone
       ? "Almost at your destination"
@@ -441,12 +549,12 @@ export function RideAcceptedTrackingScreen({
     ]
   );
 
-  const riderName = order.rider?.name?.trim() || "Captain";
+  const riderName = captain?.name?.trim() || "Captain";
   const riderFirstName = riderName.split(" ")[0]?.toUpperCase() ?? riderName.toUpperCase();
-  const photoUri = toAbsoluteImageUrl(order.rider?.photoUrl);
-  const vehicleReg = order.rider?.vehicleRegistration?.trim().toUpperCase();
-  const vehicleModel = order.rider?.vehicleModel?.trim().toUpperCase();
-  const riderRating = order.rider?.rating;
+  const photoUri = toAbsoluteImageUrl(captain?.photoUrl);
+  const vehicleReg = captain?.vehicleRegistration?.trim().toUpperCase();
+  const vehicleModel = captain?.vehicleModel?.trim().toUpperCase();
+  const riderRating = captain?.rating;
   const pickupAddress = order.merchantAddress?.trim() || "Pickup location";
   const dropAddress = order.deliveryAddress?.trim() || "Drop location";
 
@@ -488,18 +596,20 @@ export function RideAcceptedTrackingScreen({
     void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
     void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
     setCancelLoading(false);
-    Alert.alert(RIDE_CUSTOMER_CANCELLED_TOAST.title, RIDE_CUSTOMER_CANCELLED_TOAST.message, [
-      { text: "OK", onPress: onBack },
-    ]);
-  }, [cancelLoading, onBack, order.orderId, queryClient, selectedCancelReason]);
+    setCancelledAckVisible(true);
+  }, [cancelLoading, order.orderId, queryClient, selectedCancelReason]);
 
+  const handleCancelledAckDismiss = useCallback(() => {
+    setCancelledAckVisible(false);
+    onBack();
+  }, [onBack]);
   const canCancelRide = !rideInProgress;
 
   const normalizeRiderPhone = useCallback(() => {
-    const phone = order.rider?.phone?.replace(/\D/g, "");
+    const phone = captain?.phone?.replace(/\D/g, "");
     if (!phone) return null;
     return phone.length === 10 ? `+91${phone}` : phone.startsWith("+") ? phone : `+${phone}`;
-  }, [order.rider?.phone]);
+  }, [captain?.phone]);
 
   const handleMessageRider = useCallback(() => {
     router.push({
@@ -511,7 +621,7 @@ export function RideAcceptedTrackingScreen({
         partnerRole: "Mitra-Sathi",
         orderSubtitle: "Live ride trip",
         personRide: "1",
-        ...(order.rider?.phone ? { partnerPhone: order.rider.phone } : {}),
+        ...(captain?.phone ? { partnerPhone: captain.phone } : {}),
         ...(order.rider?.photoUrl ? { partnerPhoto: order.rider.photoUrl } : {}),
       },
     });
@@ -548,7 +658,7 @@ export function RideAcceptedTrackingScreen({
           style={StyleSheet.absoluteFill}
           center={mapCenter}
           routeCoordinates={mapRouteCoordinates}
-          riderPosition={riderPos}
+          riderPosition={mapRiderPos}
           riderHeading={riderHeading}
           pickupPosition={pickupPoint}
           dropPosition={dropPoint}
@@ -559,6 +669,9 @@ export function RideAcceptedTrackingScreen({
           geofenceRadiusM={FOOD_DELIVERY_GEOFENCE_RADIUS_M}
           onMapReady={() => setMapReady(true)}
           onRegionChangeComplete={() => setMapFrameTick((t) => t + 1)}
+          onUserPan={() => {
+            userDisabledFollowRef.current = true;
+          }}
         />
         {!mapReady ? (
           <View style={[StyleSheet.absoluteFillObject, styles.mapLoadingOverlay]}>
@@ -630,6 +743,20 @@ export function RideAcceptedTrackingScreen({
           </View>
         ) : null}
 
+        <LiveTrackingStatusChip
+          hasRiderFix={!!riderPos}
+          style={[
+            styles.liveStatusChip,
+            {
+              top: waitBannerText
+                ? insets.top + 44
+                : rideInProgress
+                  ? insets.top + 44
+                  : insets.top + 56,
+            },
+          ]}
+        />
+
         <TouchableOpacity
           style={[styles.backBtn, { top: waitBannerText ? insets.top + 40 : insets.top + 8 }]}
           onPress={onBack}
@@ -640,6 +767,35 @@ export function RideAcceptedTrackingScreen({
         </TouchableOpacity>
 
         <View style={[styles.mapFabCol, rideInProgress && styles.mapFabColNav, { bottom: rideInProgress ? 14 : 20 }]}>
+          <TouchableOpacity
+            style={styles.mapFab}
+            onPress={() => {
+              userDisabledFollowRef.current = false;
+              if (highlightPickupZone && pickupPoint) {
+                mapRef.current?.fitToGeofence?.(pickupPoint, FOOD_DELIVERY_GEOFENCE_RADIUS_M, {
+                  edgePadding: mapEdgePadding,
+                  animated: true,
+                  maxZoom: 16.2,
+                  force: true,
+                });
+                return;
+              }
+              if (highlightDropZone && dropPoint) {
+                mapRef.current?.fitToGeofence?.(dropPoint, FOOD_DELIVERY_GEOFENCE_RADIUS_M, {
+                  edgePadding: mapEdgePadding,
+                  animated: true,
+                  maxZoom: 16.2,
+                  force: true,
+                });
+                return;
+              }
+              mapRef.current?.clearGeofenceCamera?.();
+              mapRef.current?.recenterOnRider?.();
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="locate-outline" size={20} color={ACCENT_BLUE} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.mapFab} onPress={handleShare} activeOpacity={0.85}>
             <Ionicons name="share-social-outline" size={20} color={ACCENT_BLUE} />
           </TouchableOpacity>
@@ -923,6 +1079,10 @@ export function RideAcceptedTrackingScreen({
         onKeepSearching={closeCancelFlow}
         onClose={closeCancelFlow}
       />
+      <RideCancelledAckSheet
+        visible={cancelledAckVisible}
+        onDismiss={handleCancelledAckDismiss}
+      />
       <RideTripShareSheet
         visible={shareSheetVisible}
         orderId={order.orderId}
@@ -1155,6 +1315,12 @@ const styles = StyleSheet.create({
     right: 12,
     zIndex: 25,
     alignItems: "stretch",
+  },
+  liveStatusChip: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    zIndex: 24,
   },
   waitBannerPill: {
     backgroundColor: "#FEF9C3",

@@ -573,7 +573,7 @@ export const en = {
     aadhaar: {
       stepLabel: "Step 1 · Aadhaar",
       title: "Aadhaar Verification",
-      subtitle: "Enter details exactly as printed on your Aadhaar card",
+      subtitle: "Verify with DigiLocker, or enter details exactly as on your Aadhaar",
       aadhaarLabel: "Aadhaar Number",
       masked: "Masked",
       nameLabel: "Full Name (as per Aadhaar)",
@@ -599,6 +599,17 @@ export const en = {
       alreadyRegistered: "Aadhar Already Registered , Please try with Diff one .",
       invalidName: "Please enter your full name (minimum 3 characters)",
       dobRequired: "Please select your date of birth",
+      verifyDigilocker: "Verify with DigiLocker",
+      retryDigilocker: "Retry DigiLocker verification",
+      verifyRequired: "Please verify your Aadhaar with DigiLocker to continue.",
+      digilockerOpenFailed: "Could not open DigiLocker. Please try again.",
+      digilockerWaiting: "Complete DigiLocker consent in the app, then continue…",
+      digilockerDenied: "DigiLocker consent was denied or expired. Please try again.",
+      digilockerCancelled:
+        "DigiLocker was closed before verification finished. You can retry or upload photos.",
+      aadhaarRequiredForVerify: "Enter your 12-digit Aadhaar number first",
+      photosRequiredForVerify: "Add front and back Aadhaar photos before continuing",
+      nameDobRequiredForVerify: "Enter name and date of birth as on Aadhaar",
       riderNotFound: "Rider ID not found. Please try again.",
       notAuthenticated: "Not authenticated. Please login again.",
       uploadError: "Failed to upload. Please try again.",
@@ -830,6 +841,11 @@ export const en = {
     logoutConfirm: "Are you sure you want to logout?",
     confirmLogout: "Yes, Logout",
     cancelLogout: "Cancel",
+    logoutChoice: {
+      title: "Logout",
+      subtitle: "Choose how you want to sign out of GatiMitra Rider.",
+      allDevices: "Logout from all devices",
+    },
     logoutReason: {
       title: "Why are you logging out?",
       subtitle: "Help us improve your experience",

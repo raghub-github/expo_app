@@ -71,7 +71,8 @@ export async function wsTicketRoutes(app: FastifyInstance) {
           const channels: string[] = [];
           if (Array.isArray(input.orderIds)) {
             for (const id of input.orderIds) {
-              if (/^[A-Z0-9-]{4,32}$/.test(id)) channels.push(`order:${id}`);
+              const normalized = String(id ?? "").trim().toUpperCase();
+              if (/^[A-Z0-9-]{4,32}$/.test(normalized)) channels.push(`order:${normalized}`);
             }
           }
           const riderIdText = input.riderId != null ? String(input.riderId).trim() : "";

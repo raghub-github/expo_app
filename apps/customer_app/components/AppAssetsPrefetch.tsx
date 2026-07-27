@@ -17,19 +17,20 @@ function prefetchRemainingAssetUrls(assets: Record<string, { url: string | null 
     const uri = item.url?.trim();
     if (!uri || prefetched.has(uri)) continue;
     prefetched.add(uri);
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+    // Fire-and-forget — never block UI or starve on-screen Image loads.
+    void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
   }
 }
 
 function warmFromStoreAssets() {
   const seeded = useAppAssetsStore.getState().assets;
   if (Object.keys(seeded).length === 0) return;
+  // Mark ready immediately so home isn't gated; warm cache in background.
+  useAppAssetsStore.getState().setHomeImagesPrefetched(true);
   void Promise.allSettled([
     prefetchCriticalHomeAssetImages(seeded),
     prefetchCriticalRideAssetImages(seeded),
-  ]).then(() => {
-    useAppAssetsStore.getState().setHomeImagesPrefetched(true);
-  });
+  ]);
   prefetchRemainingAssetUrls(seeded);
 }
 
@@ -38,11 +39,12 @@ async function loadAppAssets(): Promise<boolean> {
   const assets = res.assets ?? {};
   if (Object.keys(assets).length === 0) return false;
   useAppAssetsStore.getState().setAssets(assets);
-  await Promise.allSettled([
+  useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+  // Prefetch after paint — don't await (large PNGs via proxy used to starve UI).
+  void Promise.allSettled([
     prefetchCriticalHomeAssetImages(assets),
     prefetchCriticalRideAssetImages(assets),
   ]);
-  useAppAssetsStore.getState().setHomeImagesPrefetched(true);
   prefetchRemainingAssetUrls(assets);
   return true;
 }

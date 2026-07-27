@@ -2,7 +2,32 @@
 
 import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react';
 import { Loader2, ChevronDown } from 'lucide-react';
+import { toast } from 'sonner';
 import { R2Image } from "@/components/R2Image";
+import { refreshAuthIfNeeded } from "@/lib/auth/client-auth-handler";
+import { DigilockerConsentSheet, openDigilockerLoadingPopup } from "@/components/onboarding/DigilockerConsentSheet";
+import {
+  isMaskedAadhaar,
+  maskAadhaarNumber,
+  normalizeAadhaarVerifiedDetails,
+} from "@/lib/mask-aadhaar";
+import { pickGstFetchedBusinessInfo, pickBankFetchedInfo, pickUpiFetchedInfo } from "@/lib/merchant-doc-auto-verification";
+
+/** Cashfree requires https:// — DigiLocker return page notifies the opener via postMessage. */
+function digilockerRedirectUrl(): string {
+  if (typeof window === "undefined") {
+    return "https://partner.gatimitra.com/auth/digilocker-return";
+  }
+  try {
+    const u = new URL("/auth/digilocker-return", window.location.origin);
+    u.protocol = "https:";
+    // Same-tab / mobile fallback: bounce back to this exact docs page after consent.
+    u.searchParams.set("return", window.location.href);
+    return u.toString();
+  } catch {
+    return "https://partner.gatimitra.com/auth/digilocker-return";
+  }
+}
 
 interface DocumentData {
   pan_number: string;
@@ -21,6 +46,9 @@ interface DocumentData {
   gst_number: string;
   gst_image: File | null;
   gst_image_url?: string;
+  gst_legal_business_name?: string;
+  gst_principal_place_of_business?: string;
+  gst_effective_registration_date?: string;
   drug_license_number: string;
   drug_license_image: File | null;
   drug_license_image_url?: string;
@@ -63,6 +91,12 @@ interface DocumentData {
     bank_proof_file_url?: string;
     upi_qr_file?: File | null;
     upi_qr_screenshot_url?: string;
+    bank_is_verified?: boolean;
+    upi_verified?: boolean;
+    upi_verified_details?: Record<string, unknown> | null;
+    bank_verified_at?: string | null;
+    bank_verification_method?: string | null;
+    bank_verified_details?: Record<string, unknown> | null;
   };
   [key: string]: any;
 }
@@ -352,6 +386,14 @@ interface StoreSetupData {
   [key: string]: any;
 }
 
+type DocActiveSection = 'pan' | 'aadhar' | 'licence' | 'gst' | 'bank' | 'other';
+
+function normalizeStep4ActiveSection(raw: string): DocActiveSection | null {
+  const section = raw === 'optional' ? 'licence' : raw;
+  const valid = new Set<DocActiveSection>(['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']);
+  return valid.has(section as DocActiveSection) ? (section as DocActiveSection) : null;
+}
+
 interface CombinedComponentProps {
   initialDocuments?: Partial<DocumentData> | null;
   /** Active dashboard verification step 6 (bank) rejection text when not yet on `bank_proof_rejection_reason`. */
@@ -361,6 +403,8 @@ interface CombinedComponentProps {
   /** Called on every "Save & Continue" to persist current doc data. Returns the built patch so completion can reuse it (avoids duplicate bank/doc uploads). */
   onDocumentSave?: (documents: DocumentData) => void | Promise<Record<string, unknown> | undefined>;
   onStoreSetupComplete?: (storeSetup: StoreSetupData) => void;
+  /** Live sync of Step 5 form state to parent (cuisines, radius, hours, etc.). */
+  onStoreSetupChange?: (storeSetup: StoreSetupData) => void;
   /** Called instantly when store hours toggles/slots change to persist to DB. */
   onStoreHoursSave?: (hours: StoreSetupData['store_hours']) => void | Promise<void>;
   /** Called instantly when Store Features toggles (pure veg, online payment, cash) change to persist to DB. */
@@ -405,6 +449,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   onDocumentComplete,
   onDocumentSave,
   onStoreSetupComplete,
+  onStoreSetupChange,
   onStoreHoursSave,
   onStoreFeaturesSave,
   onBack,
@@ -422,18 +467,28 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       setCurrentStep(initialStep);
     }
   }, [initialStep]);
-  const [activeSection, setActiveSection] = useState<'pan' | 'aadhar' | 'optional' | 'bank' | 'other'>('pan');
+  const [activeSection, setActiveSection] = useState<DocActiveSection>('pan');
+  const docSectionOrder: DocActiveSection[] = showOtherDocs
+    ? ['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']
+    : ['pan', 'aadhar', 'licence', 'gst', 'bank'];
+  // Sidebar may only open sections already reached via Save & Continue (not skip ahead).
+  const [maxReachedSectionIdx, setMaxReachedSectionIdx] = useState(0);
+  useEffect(() => {
+    const idx = docSectionOrder.indexOf(activeSection);
+    if (idx >= 0) {
+      setMaxReachedSectionIdx((prev) => Math.max(prev, idx));
+    }
+  }, [activeSection, showOtherDocs]);
+  const goToSectionFromSidebar = (section: DocActiveSection) => {
+    const idx = docSectionOrder.indexOf(section);
+    if (idx > maxReachedSectionIdx) return;
+    setActiveSection(section);
+  };
   const [showValidationModal, setShowValidationModal] = useState(false);
   const [validationMessage, setValidationMessage] = useState('');
   const [validationType, setValidationType] = useState<'warning' | 'error' | 'info'>('warning');
   const [docFormatErrors, setDocFormatErrors] = useState<Record<string, string>>({});
   const [replaceImageConfirm, setReplaceImageConfirm] = useState<{ onConfirm: () => void } | null>(null);
-  const [showGstSection, setShowGstSection] = useState(() => {
-    if (typeof window !== 'undefined' && initialDocuments) {
-      return !!(initialDocuments.gst_number || initialDocuments.gst_image || initialDocuments.gst_image_url);
-    }
-    return false;
-  });
   const [showOptionalExtraDocuments, setShowOptionalExtraDocuments] = useState(false);
   const [docPreviewPayload, setDocPreviewPayload] = useState<DocPreviewPayload | null>(null);
   const [documentSaving, setDocumentSaving] = useState(false);
@@ -457,7 +512,11 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   };
   const documentFormatValidators = {
     pan: (v: string) => /^[A-Z]{5}[0-9]{4}[A-Z]$/.test((v || '').replace(/\s/g, '')) ? '' : 'Invalid PAN. Format: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F)',
-    aadhar: (v: string) => /^\d{12}$/.test((v || '').replace(/\s/g, '')) ? '' : 'Invalid Aadhaar. Must be exactly 12 digits',
+    aadhar: (v: string) => {
+      const raw = (v || '').trim();
+      if (isMaskedAadhaar(raw)) return '';
+      return /^\d{12}$/.test(raw.replace(/\s/g, '')) ? '' : 'Invalid Aadhaar. Must be exactly 12 digits';
+    },
     fssai: (v: string) => /^\d{14}$/.test((v || '').replace(/\s/g, '')) ? '' : 'Invalid FSSAI. Must be 14 digits',
     gst: (v: string) => {
       const s = (v || '').replace(/\s/g, '').toUpperCase();
@@ -516,6 +575,9 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     fssai_number: '',
     fssai_image: null,
     gst_number: '',
+    gst_legal_business_name: '',
+    gst_principal_place_of_business: '',
+    gst_effective_registration_date: '',
     gst_image: null,
     drug_license_number: '',
     drug_license_image: null,
@@ -553,7 +615,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     },
   });
 
-  // ── Electronic verification (Cashfree via backend policy engine) ─────────
+  // ── Automatic verification (Cashfree via backend policy engine) ─────────
   // Per-document verification modes set in the super-admin Policy Center:
   //   manual  → classic upload flow (agents review by hand)
   //   auto    → number-only; if verification fails the user is BLOCKED (retry later)
@@ -566,9 +628,46 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   const [docModes, setDocModes] = useState<Record<string, string>>({});
   const [panVerify, setPanVerify] = useState<DocVerifyState>({ state: 'idle' });
   const [gstVerify, setGstVerify] = useState<DocVerifyState>({ state: 'idle' });
-  const [aadhaarVerify, setAadhaarVerify] = useState<DocVerifyState & { pending?: boolean }>({ state: 'idle' });
+  const [bankVerify, setBankVerify] = useState<DocVerifyState>({ state: 'idle' });
+  const [upiVerify, setUpiVerify] = useState<DocVerifyState>({ state: 'idle' });
+  const [aadhaarVerify, setAadhaarVerify] = useState<
+    DocVerifyState & { pending?: boolean; digilockerUrl?: string }
+  >({ state: 'idle' });
   const aadhaarPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const digilockerPopupRef = useRef<Window | null>(null);
+  /**
+   * Last successful auto-verify fingerprint + fetched details.
+   * Kept even if the user temporarily edits away — typing the same values back
+   * restores verified UI without calling Cashfree again.
+   */
+  const panVerifiedNumberRef = useRef<string | null>(null);
+  const panVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const gstVerifiedNumberRef = useRef<string | null>(null);
+  const gstVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const bankVerifiedKeyRef = useRef<string | null>(null);
+  const bankVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const upiVerifiedKeyRef = useRef<string | null>(null);
+  const upiVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const aadhaarVerifiedNumberRef = useRef<string | null>(null);
+  const aadhaarVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
   const [storePublicId, setStorePublicId] = useState('');
+  /** Instant DB uniqueness for FSSAI / Drug Licence. */
+  const [licenceDup, setLicenceDup] = useState<{
+    fssai: string;
+    drug: string;
+    checkingFssai: boolean;
+    checkingDrug: boolean;
+    fssaiOk: boolean;
+    drugOk: boolean;
+  }>({
+    fssai: '',
+    drug: '',
+    checkingFssai: false,
+    checkingDrug: false,
+    fssaiOk: false,
+    drugOk: false,
+  });
+  const licenceDupReqRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -580,126 +679,735 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       .catch(() => {});
   }, []);
 
+  // Instant FSSAI / Drug Licence duplicate check against DB
+  useEffect(() => {
+    const fssai = String(documents.fssai_number || '').replace(/\D/g, '');
+    const drug = String(documents.drug_license_number || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '');
+    const bt = (businessType || storeType || '').toUpperCase().replace(/\s+/g, '_');
+    const food = [
+      'RESTAURANT',
+      'CAFE',
+      'BAKERY',
+      'CLOUD_KITCHEN',
+      'FOOD_TRUCK',
+      'ICE_CREAM_PARLOR',
+      'GROCERY',
+    ].includes(bt);
+    const pharma = bt === 'PHARMA';
+    const reqId = ++licenceDupReqRef.current;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+
+    const applyResult = (kind: 'fssai' | 'drug', msg: string, checked: boolean) => {
+      setLicenceDup((prev) => ({
+        ...prev,
+        [kind]: msg,
+        ...(kind === 'fssai'
+          ? { checkingFssai: false, fssaiOk: checked && !msg }
+          : { checkingDrug: false, drugOk: checked && !msg }),
+      }));
+      setDocFormatErrors((prev) => {
+        const key = kind === 'fssai' ? 'fssai_number' : 'drug_license_number';
+        const prevMsg = prev[key] || '';
+        const wasDup =
+          prevMsg.includes('already registered') ||
+          prevMsg.includes('Duplicates are not allowed');
+        if (msg) return { ...prev, [key]: msg };
+        if (wasDup) return { ...prev, [key]: '' };
+        return prev;
+      });
+    };
+
+    const runCheck = (kind: 'fssai' | 'drug', number: string, ready: boolean) => {
+      if (!ready) {
+        applyResult(kind, '', false);
+        return;
+      }
+      setLicenceDup((prev) => ({
+        ...prev,
+        ...(kind === 'fssai'
+          ? { checkingFssai: true, fssaiOk: false }
+          : { checkingDrug: true, drugOk: false }),
+      }));
+      timers.push(
+        setTimeout(async () => {
+          try {
+            const params = new URLSearchParams({ kind, number });
+            const pub = (storePublicId || '').trim();
+            if (pub) params.set('storePublicId', pub);
+            const res = await fetch(
+              `/api/onboarding/check-licence-duplicate?${params.toString()}`,
+              { credentials: 'include' },
+            );
+            const data = await res.json().catch(() => ({}));
+            if (licenceDupReqRef.current !== reqId) return;
+            applyResult(
+              kind,
+              data?.duplicate === true
+                ? String(
+                    data.message ||
+                      (kind === 'fssai'
+                        ? 'This FSSAI number is already registered. Duplicates are not allowed.'
+                        : 'This Drug Licence number is already registered. Duplicates are not allowed.'),
+                  )
+                : '',
+              data?.checked === true || data?.duplicate === false,
+            );
+          } catch {
+            if (licenceDupReqRef.current !== reqId) return;
+            setLicenceDup((prev) => ({
+              ...prev,
+              ...(kind === 'fssai'
+                ? { checkingFssai: false, fssaiOk: false }
+                : { checkingDrug: false, drugOk: false }),
+            }));
+          }
+        }, 450),
+      );
+    };
+
+    runCheck('fssai', fssai, fssai.length === 14 && food);
+    runCheck('drug', drug, drug.length >= 5 && pharma);
+
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [
+    documents.fssai_number,
+    documents.drug_license_number,
+    storePublicId,
+    storeType,
+    businessType,
+  ]);
+
   const panMode = (docModes['pan'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
   const gstMode = (docModes['gstin'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
   const aadhaarMode = (docModes['aadhaar_digilocker'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
+  const bankMode =
+    (docModes['bank_account'] as 'manual' | 'auto' | 'hybrid' | 'disabled') ||
+    (docModes['bank'] as 'manual' | 'auto' | 'hybrid' | 'disabled') ||
+    'manual';
+  const upiMode =
+    (docModes['upi_penny_drop'] as 'manual' | 'auto' | 'hybrid' | 'disabled') ||
+    (docModes['upi'] as 'manual' | 'auto' | 'hybrid' | 'disabled') ||
+    bankMode;
   /** Electronic path active for this doc kind? */
   const isElectronic = (m: string) => m === 'auto' || m === 'hybrid';
   /** Upload area allowed right now for a doc, given its mode + verify state. */
   const uploadAllowedFor = (mode: string, vs: DocVerifyState) => {
-    if (!isElectronic(mode)) return true;                    // manual/disabled → classic upload
-    if (vs.state === 'manual') return true;                  // engine queued it for agents → evidence upload
-    if (mode === 'hybrid' && vs.state === 'failed') return true; // hybrid fallback
-    return false;                                            // auto path, or not attempted/verified yet
+    if (!isElectronic(mode)) return true; // manual/disabled → classic upload
+    if (vs.state === 'manual') return true; // engine queued it for agents → evidence upload
+    if (vs.state === 'failed') return true; // auto OR hybrid: provider failed → show manual upload
+    return false; // not attempted / verifying / verified (no image needed)
   };
 
-  /** Reset verify state when the underlying number changes. */
-  useEffect(() => { setPanVerify({ state: 'idle' }); }, [documents.pan_number, documents.pan_holder_name]);
-  useEffect(() => { setGstVerify({ state: 'idle' }); }, [documents.gst_number]);
+  /** Clear active verify UI when fields change; restore if values match last success. */
+  useEffect(() => {
+    const num = (documents.pan_number || '').trim().toUpperCase();
+    if (panVerifiedNumberRef.current && panVerifiedNumberRef.current === num) {
+      if (panVerify.state === 'verified' && documents.pan_is_verified) return;
+      const details = panVerifiedDetailsRef.current || { pan_status: 'VALID' };
+      const registered = typeof details.registered_name === 'string' ? details.registered_name : '';
+      setPanVerify({ state: 'verified', details });
+      setDocuments((prev) => ({
+        ...prev,
+        ...(registered ? { pan_holder_name: registered } : {}),
+        pan_is_verified: true,
+        pan_verified_details: details,
+        pan_verification_method: prev.pan_verification_method || 'CASHFREE_AUTO',
+        pan_verified_at: prev.pan_verified_at || new Date().toISOString(),
+      }));
+      return;
+    }
+    if (panVerify.state === 'idle' && !documents.pan_is_verified) return;
+    setPanVerify({ state: 'idle' });
+    setDocuments((prev) => ({
+      ...prev,
+      pan_is_verified: false,
+      pan_verified_details: null,
+      pan_verification_method: null,
+      pan_verified_at: null,
+    }));
+  }, [documents.pan_number]);
+  useEffect(() => {
+    const num = (documents.gst_number || '').trim().toUpperCase();
+    if (gstVerifiedNumberRef.current && gstVerifiedNumberRef.current === num) {
+      if (gstVerify.state === 'verified' && documents.gst_is_verified) return;
+      const details = gstVerifiedDetailsRef.current || {};
+      const gstInfo = pickGstFetchedBusinessInfo(details);
+      setGstVerify({ state: 'verified', details });
+      setDocuments((prev) => ({
+        ...prev,
+        gst_is_verified: true,
+        gst_verified_details: details,
+        gst_verification_method: prev.gst_verification_method || 'CASHFREE_AUTO',
+        gst_verified_at: prev.gst_verified_at || new Date().toISOString(),
+        ...(gstInfo.legal_business_name
+          ? { gst_legal_business_name: gstInfo.legal_business_name }
+          : {}),
+        ...(gstInfo.principal_place_of_business
+          ? { gst_principal_place_of_business: gstInfo.principal_place_of_business }
+          : {}),
+        ...(gstInfo.effective_registration_date
+          ? { gst_effective_registration_date: gstInfo.effective_registration_date }
+          : {}),
+      }));
+      return;
+    }
+    if (gstVerify.state === 'idle' && !documents.gst_is_verified) return;
+    setGstVerify({ state: 'idle' });
+    setDocuments((prev) => ({
+      ...prev,
+      gst_is_verified: false,
+      gst_verified_details: null,
+      gst_verification_method: null,
+      gst_verified_at: null,
+      gst_legal_business_name: '',
+      gst_principal_place_of_business: '',
+      gst_effective_registration_date: '',
+    }));
+  }, [documents.gst_number]);
+  useEffect(() => {
+    const acc = String(documents.bank?.account_number || '').replace(/\D/g, '');
+    const ifsc = String(documents.bank?.ifsc_code || '').trim().toUpperCase();
+    const key = acc && ifsc ? `${acc}|${ifsc}` : '';
+    if (bankVerifiedKeyRef.current && bankVerifiedKeyRef.current === key) {
+      if (bankVerify.state === 'verified' && documents.bank?.bank_is_verified) return;
+      const details = bankVerifiedDetailsRef.current || {};
+      const bankInfo = pickBankFetchedInfo(details);
+      setBankVerify({ state: 'verified', details });
+      setDocuments((prev) => ({
+        ...prev,
+        bank: {
+          ...(prev.bank || {}),
+          bank_is_verified: true,
+          bank_verified_details: details,
+          bank_verification_method: prev.bank?.bank_verification_method || 'CASHFREE_AUTO',
+          bank_verified_at: prev.bank?.bank_verified_at || new Date().toISOString(),
+          ...(bankInfo.name_at_bank ? { account_holder_name: bankInfo.name_at_bank } : {}),
+          ...(bankInfo.bank_name ? { bank_name: bankInfo.bank_name } : {}),
+          ...(bankInfo.branch_name ? { branch_name: bankInfo.branch_name } : {}),
+          ...(bankInfo.account_type ? { account_type: bankInfo.account_type } : {}),
+        } as DocumentData['bank'],
+      }));
+      return;
+    }
+    if (bankVerify.state === 'idle' && !documents.bank?.bank_is_verified) return;
+    setBankVerify({ state: 'idle' });
+    setDocuments((prev) => ({
+      ...prev,
+      bank: {
+        ...(prev.bank || {}),
+        bank_is_verified: false,
+        bank_verified_details: null,
+        bank_verification_method: null,
+        bank_verified_at: null,
+      } as DocumentData['bank'],
+    }));
+  }, [documents.bank?.account_number, documents.bank?.ifsc_code]);
+  useEffect(() => {
+    const vpa = String(documents.bank?.upi_id || '').trim().toLowerCase();
+    if (upiVerifiedKeyRef.current && upiVerifiedKeyRef.current === vpa) {
+      if (upiVerify.state === 'verified' && documents.bank?.upi_verified) return;
+      const details = upiVerifiedDetailsRef.current || {};
+      setUpiVerify({ state: 'verified', details });
+      setDocuments((prev) => ({
+        ...prev,
+        bank: {
+          ...(prev.bank || {}),
+          upi_verified: true,
+          upi_verified_details: details,
+        } as DocumentData['bank'],
+      }));
+      return;
+    }
+    if (upiVerify.state === 'idle' && !documents.bank?.upi_verified) return;
+    setUpiVerify({ state: 'idle' });
+    setDocuments((prev) => ({
+      ...prev,
+      bank: {
+        ...(prev.bank || {}),
+        upi_verified: false,
+        upi_verified_details: null,
+      } as DocumentData['bank'],
+    }));
+  }, [documents.bank?.upi_id]);
+  useEffect(() => {
+    const num = (documents.aadhar_number || '').replace(/\D/g, '');
+    const currentMasked = maskAadhaarNumber(documents.aadhar_number);
+    const verifiedMasked = maskAadhaarNumber(aadhaarVerifiedNumberRef.current);
+    const matchesSnap =
+      !!aadhaarVerifiedNumberRef.current &&
+      (aadhaarVerifiedNumberRef.current === num ||
+        (!!currentMasked && !!verifiedMasked && currentMasked === verifiedMasked) ||
+        aadhaarVerifiedNumberRef.current === currentMasked ||
+        aadhaarVerifiedNumberRef.current === documents.aadhar_number);
+    if (matchesSnap) {
+      if (aadhaarVerify.state === 'verified' && documents.aadhaar_is_verified) return;
+      // DigiLocker start stamps the number ref before success — don't fake "verified".
+      if (!aadhaarVerifiedDetailsRef.current && !documents.aadhaar_is_verified) return;
+      const details = aadhaarVerifiedDetailsRef.current || {};
+      setAadhaarVerify({ state: 'verified', details });
+      setDocuments((prev) => ({
+        ...prev,
+        aadhaar_is_verified: true,
+        aadhaar_verified_details: details,
+        aadhaar_verification_method: prev.aadhaar_verification_method || 'CASHFREE_AUTO',
+        aadhaar_verified_at: prev.aadhaar_verified_at || new Date().toISOString(),
+      }));
+      return;
+    }
+    if (aadhaarVerify.state === 'idle' && !documents.aadhaar_is_verified) return;
+    if (aadhaarPollRef.current) {
+      clearInterval(aadhaarPollRef.current);
+      aadhaarPollRef.current = null;
+    }
+    setAadhaarVerify({ state: 'idle' });
+    setDocuments((prev) => ({
+      ...prev,
+      aadhaar_is_verified: false,
+      aadhaar_verified_details: null,
+      aadhaar_verification_method: null,
+      aadhaar_verified_at: null,
+    }));
+  }, [documents.aadhar_number]);
 
-  const verifyDocNow = async (kind: 'pan' | 'gstin' | 'aadhaar') => {
-    const setter = kind === 'pan' ? setPanVerify : kind === 'gstin' ? setGstVerify : setAadhaarVerify;
+  const cancelDigilockerFlow = () => {
+    if (aadhaarPollRef.current) {
+      clearInterval(aadhaarPollRef.current);
+      aadhaarPollRef.current = null;
+    }
+    if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+      try {
+        digilockerPopupRef.current.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    digilockerPopupRef.current = null;
+    setAadhaarVerify({ state: 'idle' });
+  };
+
+  const pollAadhaarStatusOnce = async () => {
+    const id = (storePublicId || '').trim();
+    if (!id) return;
+    try {
+      const res = await fetch(
+        `/api/onboarding/verify-document/status?storeId=${encodeURIComponent(id)}&docKind=aadhaar`,
+        { credentials: 'include' },
+      );
+      const d = await res.json().catch(() => ({}));
+      if (d?.verified) {
+        if (aadhaarPollRef.current) {
+          clearInterval(aadhaarPollRef.current);
+          aadhaarPollRef.current = null;
+        }
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          try {
+            digilockerPopupRef.current.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        digilockerPopupRef.current = null;
+        const details = (d.verifiedData as Record<string, unknown>) || {};
+        const normalized = normalizeAadhaarVerifiedDetails(details);
+        const entered = (documents.aadhar_number || '').replace(/\D/g, '');
+        const masked =
+          normalized.maskedAadhaar ||
+          maskAadhaarNumber(entered) ||
+          maskAadhaarNumber(documents.aadhar_number);
+        aadhaarVerifiedNumberRef.current = masked || entered || null;
+        aadhaarVerifiedDetailsRef.current = details;
+        setAadhaarVerify({ state: 'verified', details });
+        setDocFormatErrors((prev) => ({ ...prev, aadhar_number: '' }));
+        setDocuments((prev) => ({
+          ...prev,
+          aadhar_number: masked || prev.aadhar_number,
+          ...(normalized.name ? { aadhar_holder_name: normalized.name } : {}),
+          aadhaar_is_verified: true,
+          aadhaar_verified_details: details,
+          aadhaar_verification_method: 'CASHFREE_DIGILOCKER',
+          aadhaar_verified_at: new Date().toISOString(),
+        }));
+        toast.success('Aadhaar verified via DigiLocker.');
+      } else if (
+        d?.status === 'rejected' ||
+        d?.status === 'failed' ||
+        d?.status === 'expired' ||
+        d?.status === 'consent_denied'
+      ) {
+        if (aadhaarPollRef.current) {
+          clearInterval(aadhaarPollRef.current);
+          aadhaarPollRef.current = null;
+        }
+        setAadhaarVerify({
+          state: 'failed',
+          error: String(
+            d?.statusReason ||
+              (d?.status === 'expired'
+                ? 'DigiLocker link expired. Please try again.'
+                : d?.status === 'consent_denied'
+                  ? 'DigiLocker consent was denied. Please try again.'
+                  : 'DigiLocker verification failed.'),
+          ),
+        });
+      }
+    } catch {
+      /* keep polling */
+    }
+  };
+
+  const verifyDocNow = async (kind: 'pan' | 'gstin' | 'aadhaar' | 'bank' | 'upi') => {
+    const setter =
+      kind === 'pan'
+        ? setPanVerify
+        : kind === 'gstin'
+          ? setGstVerify
+          : kind === 'bank'
+            ? setBankVerify
+            : kind === 'upi'
+              ? setUpiVerify
+            : setAadhaarVerify;
+    if (kind === 'pan') {
+      const pan = (documents.pan_number || '').trim().toUpperCase();
+      if (!pan || documentFormatValidators.pan(pan)) return;
+    } else if (kind === 'gstin') {
+      const gstin = (documents.gst_number || '').trim().toUpperCase();
+      if (!gstin || documentFormatValidators.gst(gstin)) return;
+    } else if (kind === 'bank') {
+      const acc = String(documents.bank?.account_number || '').replace(/\D/g, '');
+      const ifsc = String(documents.bank?.ifsc_code || '').trim().toUpperCase();
+      if (!acc || documentFormatValidators.accountNumber(acc)) return;
+      if (!ifsc || documentFormatValidators.ifsc(ifsc)) return;
+    } else if (kind === 'upi') {
+      const vpa = String(documents.bank?.upi_id || '').trim().toLowerCase();
+      if (!vpa || !/^[a-z0-9.\-_]{2,256}@[a-z0-9]{2,64}$/i.test(vpa)) return;
+    } else {
+      const aadhaar = (documents.aadhar_number || '').replace(/\D/g, '');
+      if (!aadhaar || documentFormatValidators.aadhar(aadhaar)) return;
+    }
+    const resolvedStoreId =
+      (storePublicId || '').trim() ||
+      (typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('store_id') || ''
+        : '');
+    if (!resolvedStoreId) {
+      toast.error('Store id missing — reload this page and try again.');
+      return;
+    }
+    if (resolvedStoreId !== storePublicId) setStorePublicId(resolvedStoreId);
+
+    // Open DigiLocker loading window on user gesture (Cashfree pattern — cannot iframe DigiLocker).
+    if (kind === 'aadhaar') {
+      digilockerPopupRef.current = openDigilockerLoadingPopup();
+    }
+
     setter({ state: 'verifying' });
     try {
+      await refreshAuthIfNeeded();
       const body: Record<string, unknown> =
         kind === 'pan'
           ? {
-              storeId: storePublicId,
+              storeId: resolvedStoreId,
               docKind: 'pan',
               pan: (documents.pan_number || '').trim().toUpperCase(),
-              // Optional hint — server falls back to store owner name when absent.
               name: (documents.pan_holder_name || '').trim() || undefined,
             }
           : kind === 'gstin'
-            ? { storeId: storePublicId, docKind: 'gstin', gstin: (documents.gst_number || '').trim().toUpperCase() }
-            : { storeId: storePublicId, docKind: 'aadhaar', redirectUrl: typeof window !== 'undefined' ? window.location.href : undefined };
-      const res = await fetch('/api/onboarding/verify-document', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      });
+            ? { storeId: resolvedStoreId, docKind: 'gstin', gstin: (documents.gst_number || '').trim().toUpperCase() }
+            : kind === 'bank'
+              ? {
+                  storeId: resolvedStoreId,
+                  docKind: 'bank',
+                  bankAccount: String(documents.bank?.account_number || '').replace(/\D/g, ''),
+                  ifsc: String(documents.bank?.ifsc_code || '').trim().toUpperCase(),
+                  name: String(documents.bank?.account_holder_name || '').trim() || undefined,
+                }
+            : kind === 'upi'
+              ? {
+                  storeId: resolvedStoreId,
+                  docKind: 'upi',
+                  vpa: String(documents.bank?.upi_id || '').trim().toLowerCase(),
+                  name: String(documents.bank?.account_holder_name || '').trim() || undefined,
+                }
+            : { storeId: resolvedStoreId, docKind: 'aadhaar', redirectUrl: digilockerRedirectUrl() };
+
+      const postVerify = () =>
+        fetch('/api/onboarding/verify-document', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(body),
+        });
+
+      let res = await postVerify();
+      if (res.status === 401) {
+        await refreshAuthIfNeeded();
+        res = await postVerify();
+      }
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        const errMsg = String(data?.error || 'Not authenticated — please log in again.');
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          digilockerPopupRef.current.close();
+          digilockerPopupRef.current = null;
+        }
+        setter({ state: 'failed', error: errMsg });
+        toast.error(errMsg);
+        return;
+      }
       if (data?.outcome === 'verified') {
-        setter({ state: 'verified', details: (data.verifiedData as Record<string, unknown>) || {} });
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          digilockerPopupRef.current.close();
+          digilockerPopupRef.current = null;
+        }
+        const details = (data.verifiedData as Record<string, unknown>) || {};
+        setter({ state: 'verified', details });
         if (kind === 'pan') {
-          const registered = (data.verifiedData as { registered_name?: string } | undefined)?.registered_name;
-          if (registered) {
-            setDocuments((prev) => ({ ...prev, pan_holder_name: registered }));
-          }
+          const registered = (details as { registered_name?: string })?.registered_name;
+          const panNum = (documents.pan_number || '').trim().toUpperCase();
+          panVerifiedNumberRef.current = panNum || null;
+          panVerifiedDetailsRef.current = details;
+          setDocuments((prev) => ({
+            ...prev,
+            ...(registered ? { pan_holder_name: registered } : {}),
+            pan_is_verified: true,
+            pan_verified_at: new Date().toISOString(),
+            pan_verification_method: 'CASHFREE_AUTO',
+            pan_verified_details: details,
+          }));
+          toast.success(
+            data.pendingReview
+              ? 'PAN matched. Our team may still review it — you can continue.'
+              : 'PAN verified successfully.',
+          );
+        } else if (kind === 'gstin') {
+          const gstNum = (documents.gst_number || '').trim().toUpperCase();
+          gstVerifiedNumberRef.current = gstNum || null;
+          gstVerifiedDetailsRef.current = details;
+          const gstInfo = pickGstFetchedBusinessInfo(details);
+          setDocuments((prev) => ({
+            ...prev,
+            gst_is_verified: true,
+            gst_verified_at: new Date().toISOString(),
+            gst_verification_method: 'CASHFREE_AUTO',
+            gst_verified_details: details,
+            ...(gstInfo.legal_business_name
+              ? { gst_legal_business_name: gstInfo.legal_business_name }
+              : {}),
+            ...(gstInfo.principal_place_of_business
+              ? { gst_principal_place_of_business: gstInfo.principal_place_of_business }
+              : {}),
+            ...(gstInfo.effective_registration_date
+              ? { gst_effective_registration_date: gstInfo.effective_registration_date }
+              : {}),
+          }));
+          toast.success('GSTIN verified successfully.');
+        } else if (kind === 'bank') {
+          const acc = String(documents.bank?.account_number || '').replace(/\D/g, '');
+          const ifsc = String(documents.bank?.ifsc_code || '').trim().toUpperCase();
+          bankVerifiedKeyRef.current = acc && ifsc ? `${acc}|${ifsc}` : null;
+          bankVerifiedDetailsRef.current = details;
+          const bankInfo = pickBankFetchedInfo(details);
+          setDocuments((prev) => ({
+            ...prev,
+            bank: {
+              ...(prev.bank || {
+                payout_method: 'bank',
+                account_holder_name: '',
+                account_number: '',
+                ifsc_code: '',
+                bank_name: '',
+              }),
+              bank_is_verified: true,
+              bank_verified_at: new Date().toISOString(),
+              bank_verification_method: 'CASHFREE_AUTO',
+              bank_verified_details: details,
+              ...(bankInfo.name_at_bank
+                ? { account_holder_name: bankInfo.name_at_bank }
+                : {}),
+              ...(bankInfo.bank_name ? { bank_name: bankInfo.bank_name } : {}),
+              ...(bankInfo.branch_name ? { branch_name: bankInfo.branch_name } : {}),
+              ...(bankInfo.account_type ? { account_type: bankInfo.account_type } : {}),
+            },
+          }));
+          toast.success('Bank account verified successfully.');
+        } else if (kind === 'upi') {
+          const vpa = String(documents.bank?.upi_id || '').trim().toLowerCase();
+          upiVerifiedKeyRef.current = vpa || null;
+          upiVerifiedDetailsRef.current = details;
+          const upiInfo = pickUpiFetchedInfo(details);
+          setDocuments((prev) => ({
+            ...prev,
+            bank: {
+              ...(prev.bank || {
+                payout_method: 'bank',
+                account_holder_name: '',
+                account_number: '',
+                ifsc_code: '',
+                bank_name: '',
+              }),
+              upi_id: vpa,
+              upi_verified: true,
+              upi_verified_details: details,
+              ...(upiInfo.name_at_bank
+                ? { account_holder_name: prev.bank?.account_holder_name || upiInfo.name_at_bank }
+                : {}),
+            },
+          }));
+          toast.success('UPI ID verified successfully.');
         }
       } else if (data?.outcome === 'digilocker' && data?.url) {
-        // Aadhaar via DigiLocker consent — open the consent page and poll for
-        // the webhook-delivered result.
-        window.open(String(data.url), '_blank', 'noopener');
-        setAadhaarVerify({ state: 'verifying', pending: true });
+        const digilockerUrl = String(data.url);
+        aadhaarVerifiedNumberRef.current = (documents.aadhar_number || '').replace(/\D/g, '') || null;
+        setAadhaarVerify({
+          state: 'verifying',
+          pending: true,
+          digilockerUrl,
+        });
+        toast.message('Complete DigiLocker OTP in the window beside this panel.');
         startAadhaarPolling();
       } else if (data?.outcome === 'manual') {
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          digilockerPopupRef.current.close();
+          digilockerPopupRef.current = null;
+        }
         setter({ state: 'manual' });
+        toast.message('Queued for manual review — upload the document image to continue.');
+        if (kind === 'pan' && typeof document !== 'undefined') {
+          requestAnimationFrame(() => {
+            document.getElementById('pan-manual-upload')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          });
+        }
       } else {
-        setter({ state: 'failed', error: String(data?.error || 'Verification failed.') });
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          digilockerPopupRef.current.close();
+          digilockerPopupRef.current = null;
+        }
+        const errMsg = String(data?.error || 'Verification failed.');
+        setter({ state: 'failed', error: errMsg });
+        toast.error(errMsg);
+        if (kind === 'pan' && typeof document !== 'undefined') {
+          requestAnimationFrame(() => {
+            document.getElementById('pan-manual-upload')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          });
+        }
       }
     } catch {
-      setter({ state: 'failed', error: 'Could not reach the verification service.' });
+      if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+        digilockerPopupRef.current.close();
+        digilockerPopupRef.current = null;
+      }
+      const errMsg = 'Could not reach the verification service.';
+      setter({ state: 'failed', error: errMsg });
+      toast.error(errMsg);
     }
   };
 
   const startAadhaarPolling = () => {
     if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
     const startedAt = Date.now();
+    void pollAadhaarStatusOnce();
     aadhaarPollRef.current = setInterval(async () => {
-      // Give up after 3 minutes — the merchant can retry.
       if (Date.now() - startedAt > 3 * 60_000) {
         if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
         setAadhaarVerify({ state: 'failed', error: 'DigiLocker verification timed out. Please try again.' });
         return;
       }
-      try {
-        const res = await fetch(
-          `/api/onboarding/verify-document/status?storeId=${encodeURIComponent(storePublicId)}&docKind=aadhaar`,
-          { credentials: 'include' },
-        );
-        const d = await res.json().catch(() => ({}));
-        if (d?.verified) {
-          if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
-          setAadhaarVerify({ state: 'verified', details: (d.verifiedData as Record<string, unknown>) || {} });
-        } else if (d?.status === 'rejected' || d?.status === 'failed') {
-          if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
-          setAadhaarVerify({ state: 'failed', error: String(d?.statusReason || 'DigiLocker verification failed.') });
-        }
-      } catch { /* keep polling */ }
-    }, 5_000);
+      await pollAadhaarStatusOnce();
+    }, 2_500);
   };
 
   useEffect(() => () => {
     if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
   }, []);
 
-  /** Human-readable fetched details from the provider (registered name etc.). */
+  /** Human-readable fetched details from the provider (status etc.; names omitted for auto-verify UI). */
   const verifiedDetailRows = (details?: Record<string, unknown>): Array<[string, string]> => {
     if (!details) return [];
     const pick: Array<[string, string]> = [];
     const label: Record<string, string> = {
-      registered_name: 'Registered name',
       name_match_result: 'Name match',
       name_match_score: 'Name match score',
-      legal_name_of_business: 'Legal business name',
+      legal_name_of_business: 'Legal Name of Business',
       trade_name_of_business: 'Trade name',
+      principal_place_address: 'Principal Place of Business',
       gst_in_status: 'GSTIN status',
-      date_of_registration: 'Registered on',
+      date_of_registration: 'Effective Date of Registration',
       constitution_of_business: 'Business constitution',
       taxpayer_type: 'Taxpayer type',
       pan_status: 'PAN status',
       category: 'Category',
       name_at_bank: 'Name at bank',
       bank_name: 'Bank',
+      branch_name: 'Branch',
+      account_type: 'Account type',
+      account_status: 'Account status',
+      vpa: 'UPI ID',
+      status: 'Status',
+      type: 'Type',
     };
-    for (const [k, v] of Object.entries(details)) {
+    const preferredOrder = [
+      'legal_name_of_business',
+      'principal_place_address',
+      'date_of_registration',
+      'name_at_bank',
+      'vpa',
+      'bank_name',
+      'branch_name',
+      'account_type',
+      'account_status',
+      'gst_in_status',
+      'taxpayer_type',
+      'trade_name_of_business',
+      'constitution_of_business',
+    ];
+    const seen = new Set<string>();
+    for (const k of preferredOrder) {
+      const v = details[k];
       if (v == null || typeof v === 'object') continue;
       const l = label[k];
-      if (l) pick.push([l, String(v)]);
+      if (!l || seen.has(l)) continue;
+      const display =
+        k === 'account_type'
+          ? String(v).toUpperCase() === 'SAVINGS'
+            ? 'Savings'
+            : String(v).toUpperCase() === 'CURRENT'
+              ? 'Current'
+              : String(v)
+          : String(v);
+      pick.push([l, display]);
+      seen.add(l);
     }
-    return pick.slice(0, 6);
+    for (const [k, v] of Object.entries(details)) {
+      if (v == null || typeof v === 'object') continue;
+      // Never surface holder/registered names in auto-verify success UI
+      if (
+        k === 'registered_name' ||
+        k === 'name_provided' ||
+        k === 'name' ||
+        k === 'full_name' ||
+        k === 'aadhaar_name'
+      ) {
+        continue;
+      }
+      const l = label[k];
+      if (!l || seen.has(l)) continue;
+      const display =
+        k === 'account_type'
+          ? String(v).toUpperCase() === 'SAVINGS'
+            ? 'Savings'
+            : String(v).toUpperCase() === 'CURRENT'
+              ? 'Current'
+              : String(v)
+          : String(v);
+      pick.push([l, display]);
+      seen.add(l);
+    }
+    return pick.slice(0, 8);
   };
 
   // Live image previews for key documents (only when file/URL is an image)
@@ -783,7 +1491,6 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
   const optionalRejectionItems = useMemo(() => {
     const d = documents as Record<string, unknown>;
     const pairs: [string, string][] = [
-      ['GST', 'gst_rejection_reason'],
       ['FSSAI', 'fssai_rejection_reason'],
       ['Drug license', 'drug_license_rejection_reason'],
       ['Pharmacist certificate', 'pharmacist_certificate_rejection_reason'],
@@ -801,6 +1508,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     return out;
   }, [documents]);
 
+  const gstRejectionReason = useMemo(() => {
+    const d = documents as Record<string, unknown>;
+    return adminRejectionText(d, 'gst_rejection_reason');
+  }, [documents]);
+
   // Sync from parent when navigating back so saved data is shown (including persisted document URLs)
   // Track the last hydrated initialDocuments to detect when it changes
   const lastHydratedDocumentsRef = useRef<string>('');
@@ -812,6 +1524,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       const documentsHash = JSON.stringify({
         pan_number: initialDocuments.pan_number,
         pan_holder_name: initialDocuments.pan_holder_name,
+        pan_is_verified: (initialDocuments as any).pan_is_verified ?? false,
+        gst_is_verified: (initialDocuments as any).gst_is_verified ?? false,
+        aadhaar_is_verified: (initialDocuments as any).aadhaar_is_verified ?? false,
         aadhar_number: initialDocuments.aadhar_number,
         trade_license_number: (initialDocuments as any).trade_license_number,
         shop_establishment_number: (initialDocuments as any).shop_establishment_number,
@@ -846,6 +1561,31 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           if (typeof initialDocuments.aadhar_holder_name === 'string') next.aadhar_holder_name = initialDocuments.aadhar_holder_name;
           if (typeof initialDocuments.fssai_number === 'string') next.fssai_number = initialDocuments.fssai_number;
           if (typeof initialDocuments.gst_number === 'string') next.gst_number = initialDocuments.gst_number;
+          // Restore persisted auto-verification flags/details (DB source of truth)
+          const initAny = initialDocuments as Record<string, unknown>;
+          if (typeof initAny.gst_legal_business_name === 'string') {
+            next.gst_legal_business_name = initAny.gst_legal_business_name;
+          }
+          if (typeof initAny.gst_principal_place_of_business === 'string') {
+            next.gst_principal_place_of_business = initAny.gst_principal_place_of_business;
+          }
+          if (typeof initAny.gst_effective_registration_date === 'string') {
+            next.gst_effective_registration_date = toInputDate(
+              initAny.gst_effective_registration_date as string,
+            );
+          }
+          if (initAny.pan_is_verified != null) next.pan_is_verified = Boolean(initAny.pan_is_verified);
+          if (initAny.pan_verified_at != null) next.pan_verified_at = initAny.pan_verified_at;
+          if (initAny.pan_verification_method != null) next.pan_verification_method = initAny.pan_verification_method;
+          if (initAny.pan_verified_details != null) next.pan_verified_details = initAny.pan_verified_details;
+          if (initAny.gst_is_verified != null) next.gst_is_verified = Boolean(initAny.gst_is_verified);
+          if (initAny.gst_verified_at != null) next.gst_verified_at = initAny.gst_verified_at;
+          if (initAny.gst_verification_method != null) next.gst_verification_method = initAny.gst_verification_method;
+          if (initAny.gst_verified_details != null) next.gst_verified_details = initAny.gst_verified_details;
+          if (initAny.aadhaar_is_verified != null) next.aadhaar_is_verified = Boolean(initAny.aadhaar_is_verified);
+          if (initAny.aadhaar_verified_at != null) next.aadhaar_verified_at = initAny.aadhaar_verified_at;
+          if (initAny.aadhaar_verification_method != null) next.aadhaar_verification_method = initAny.aadhaar_verification_method;
+          if (initAny.aadhaar_verified_details != null) next.aadhaar_verified_details = initAny.aadhaar_verified_details;
           if (typeof initialDocuments.drug_license_number === 'string') next.drug_license_number = initialDocuments.drug_license_number;
           if (typeof initialDocuments.pharmacist_registration_number === 'string') next.pharmacist_registration_number = initialDocuments.pharmacist_registration_number;
           if (typeof initialDocuments.trade_license_number === 'string') next.trade_license_number = initialDocuments.trade_license_number ?? '';
@@ -901,6 +1641,100 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           }
           return next;
         });
+
+        // Restore verify UI from DB flags so refresh does not ask to re-verify.
+        const init = initialDocuments as Record<string, unknown>;
+        if (init.pan_is_verified && typeof initialDocuments.pan_number === 'string') {
+          const panNum = initialDocuments.pan_number.trim().toUpperCase();
+          panVerifiedNumberRef.current = panNum || null;
+          const details =
+            (init.pan_verified_details && typeof init.pan_verified_details === 'object'
+              ? (init.pan_verified_details as Record<string, unknown>)
+              : null) || { pan_status: 'VALID' };
+          panVerifiedDetailsRef.current = details;
+          setPanVerify({ state: 'verified', details });
+        }
+        if (init.gst_is_verified && typeof initialDocuments.gst_number === 'string') {
+          const gstNum = initialDocuments.gst_number.trim().toUpperCase();
+          gstVerifiedNumberRef.current = gstNum || null;
+          const details =
+            (init.gst_verified_details && typeof init.gst_verified_details === 'object'
+              ? (init.gst_verified_details as Record<string, unknown>)
+              : {}) || {};
+          gstVerifiedDetailsRef.current = details;
+          setGstVerify({ state: 'verified', details });
+        }
+        {
+          const bank = (init.bank && typeof init.bank === 'object' ? init.bank : null) as Record<
+            string,
+            unknown
+          > | null;
+          if (bank) {
+            if (bank.bank_is_verified) {
+              const acc = String(bank.account_number || '').replace(/\D/g, '');
+              const ifsc = String(bank.ifsc_code || '').trim().toUpperCase();
+              bankVerifiedKeyRef.current = acc && ifsc ? `${acc}|${ifsc}` : null;
+              const details =
+                bank.bank_verified_details && typeof bank.bank_verified_details === 'object'
+                  ? (bank.bank_verified_details as Record<string, unknown>)
+                  : {};
+              bankVerifiedDetailsRef.current = details;
+              setBankVerify({ state: 'verified', details });
+            }
+            if (bank.upi_verified) {
+              const vpa = String(bank.upi_id || '').trim().toLowerCase();
+              upiVerifiedKeyRef.current = vpa || null;
+              const details =
+                (bank.upi_verified_details && typeof bank.upi_verified_details === 'object'
+                  ? (bank.upi_verified_details as Record<string, unknown>)
+                  : null) ||
+                (bank.bank_verified_details &&
+                typeof bank.bank_verified_details === 'object' &&
+                !bank.bank_is_verified
+                  ? (bank.bank_verified_details as Record<string, unknown>)
+                  : {});
+              upiVerifiedDetailsRef.current = details;
+              setUpiVerify({ state: 'verified', details });
+            }
+          }
+        }
+        if (init.aadhaar_is_verified) {
+          const aNum = typeof initialDocuments.aadhar_number === 'string' ? initialDocuments.aadhar_number.trim() : '';
+          aadhaarVerifiedNumberRef.current = aNum || null;
+          const details =
+            (init.aadhaar_verified_details && typeof init.aadhaar_verified_details === 'object'
+              ? (init.aadhaar_verified_details as Record<string, unknown>)
+              : {}) || {};
+          aadhaarVerifiedDetailsRef.current = details;
+          setAadhaarVerify({ state: 'verified', details });
+        }
+
+        // After reload: jump to the first incomplete doc subsection (don't stay on a finished PAN).
+        const savedSection = typeof init.step4_active_section === 'string' ? String(init.step4_active_section) : '';
+        const normalizedSection = savedSection ? normalizeStep4ActiveSection(savedSection) : null;
+        if (normalizedSection) {
+          setActiveSection(normalizedSection);
+        } else {
+          const panDone = Boolean(init.pan_is_verified);
+          const bank = (init.bank && typeof init.bank === 'object' ? init.bank : null) as Record<string, unknown> | null;
+          const bankStarted = Boolean(
+            (bank?.account_number && String(bank.account_number).trim()) ||
+              (bank?.upi_id && String(bank.upi_id).trim()) ||
+              (bank?.bank_proof_file_url && String(bank.bank_proof_file_url).trim())
+          );
+          const licenceStarted = Boolean(
+            (typeof init.fssai_number === 'string' && init.fssai_number.trim()) ||
+              (typeof init.drug_license_number === 'string' && init.drug_license_number.trim()) ||
+              (typeof init.trade_license_number === 'string' && init.trade_license_number.trim()) ||
+              (typeof init.shop_establishment_number === 'string' && init.shop_establishment_number.trim()) ||
+              (typeof init.udyam_number === 'string' && init.udyam_number.trim())
+          );
+          const gstStarted = Boolean(typeof init.gst_number === 'string' && init.gst_number.trim());
+          if (bankStarted) setActiveSection('bank');
+          else if (licenceStarted) setActiveSection('licence');
+          else if (gstStarted) setActiveSection('gst');
+          else if (panDone) setActiveSection('aadhar');
+        }
       }
     }
   }, [initialDocuments, currentStep]);
@@ -912,33 +1746,92 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     }
   }, [currentStep]);
 
+  // Hydrate Step 5 once from parent progress. Do NOT re-apply on every parent
+  // echo (hours/features autosave) — that used to wipe cuisine_types with [].
+  const didHydrateStoreSetupRef = useRef(false);
   useEffect(() => {
-    if (initialStoreSetup && typeof initialStoreSetup === 'object') {
-      const logoUrl = typeof initialStoreSetup.logo_preview === 'string' ? initialStoreSetup.logo_preview : (typeof (initialStoreSetup as any).logo_url === 'string' ? (initialStoreSetup as any).logo_url : '');
-      const bannerUrl = typeof initialStoreSetup.banner_preview === 'string' ? initialStoreSetup.banner_preview : (typeof (initialStoreSetup as any).banner_url === 'string' ? (initialStoreSetup as any).banner_url : '');
-      const rawGalleryUrls = Array.isArray((initialStoreSetup as any).gallery_image_urls)
-        ? ((initialStoreSetup as any).gallery_image_urls as unknown[])
-        : null;
-      const fromPreviews = Array.isArray(initialStoreSetup.gallery_previews)
-        ? initialStoreSetup.gallery_previews
-        : [];
-      const galleryList = (
-        rawGalleryUrls && rawGalleryUrls.length > 0
-          ? rawGalleryUrls
-          : fromPreviews
-      ).filter((u): u is string => typeof u === 'string' && u.trim() !== '');
-      const cuisineTypes = Array.isArray(initialStoreSetup.cuisine_types) ? initialStoreSetup.cuisine_types : undefined;
-      const foodCategories = Array.isArray(initialStoreSetup.food_categories) ? initialStoreSetup.food_categories : undefined;
-      setStoreSetup((prev) => ({
+    if (!initialStoreSetup || typeof initialStoreSetup !== 'object') return;
+    if (didHydrateStoreSetupRef.current) return;
+    didHydrateStoreSetupRef.current = true;
+
+    const logoUrl =
+      typeof initialStoreSetup.logo_preview === 'string'
+        ? initialStoreSetup.logo_preview
+        : typeof (initialStoreSetup as any).logo_url === 'string'
+          ? (initialStoreSetup as any).logo_url
+          : '';
+    const bannerUrl =
+      typeof initialStoreSetup.banner_preview === 'string'
+        ? initialStoreSetup.banner_preview
+        : typeof (initialStoreSetup as any).banner_url === 'string'
+          ? (initialStoreSetup as any).banner_url
+          : '';
+    const rawGalleryUrls = Array.isArray((initialStoreSetup as any).gallery_image_urls)
+      ? ((initialStoreSetup as any).gallery_image_urls as unknown[])
+      : null;
+    const fromPreviews = Array.isArray(initialStoreSetup.gallery_previews)
+      ? initialStoreSetup.gallery_previews
+      : [];
+    const galleryList = (
+      rawGalleryUrls && rawGalleryUrls.length > 0 ? rawGalleryUrls : fromPreviews
+    ).filter((u): u is string => typeof u === 'string' && u.trim() !== '');
+    const cuisineTypes = Array.isArray(initialStoreSetup.cuisine_types)
+      ? initialStoreSetup.cuisine_types.filter(
+          (c): c is string => typeof c === 'string' && c.trim() !== '',
+        )
+      : [];
+    const foodCategories = Array.isArray(initialStoreSetup.food_categories)
+      ? initialStoreSetup.food_categories.filter(
+          (c): c is string => typeof c === 'string' && c.trim() !== '',
+        )
+      : [];
+
+    setStoreSetup((prev) => {
+      let nextHours = prev.store_hours;
+      if (initialStoreSetup.store_hours && typeof initialStoreSetup.store_hours === 'object') {
+        const normalized: StoreSetupData['store_hours'] = { ...prev.store_hours };
+        Object.entries(initialStoreSetup.store_hours).forEach(([day, hours]: [string, any]) => {
+          if (hours && typeof hours === 'object') {
+            normalized[day as keyof typeof normalized] = {
+              closed: typeof hours.closed === 'boolean' ? hours.closed : false,
+              slot1_open: hours.slot1_open || '',
+              slot1_close: hours.slot1_close || '',
+              slot2_open: hours.slot2_open || '',
+              slot2_close: hours.slot2_close || '',
+            };
+          }
+        });
+        nextHours = normalized;
+      }
+      return {
         ...prev,
-        cuisine_types: cuisineTypes ?? prev.cuisine_types,
-        food_categories: foodCategories ?? prev.food_categories,
-        avg_preparation_time_minutes: typeof initialStoreSetup.avg_preparation_time_minutes === 'number' ? initialStoreSetup.avg_preparation_time_minutes : prev.avg_preparation_time_minutes,
-        min_order_amount: typeof initialStoreSetup.min_order_amount === 'number' ? initialStoreSetup.min_order_amount : prev.min_order_amount,
-        delivery_radius_km: typeof initialStoreSetup.delivery_radius_km === 'number' && !isNaN(initialStoreSetup.delivery_radius_km) ? initialStoreSetup.delivery_radius_km : prev.delivery_radius_km,
-        is_pure_veg: typeof initialStoreSetup.is_pure_veg === 'boolean' ? initialStoreSetup.is_pure_veg : prev.is_pure_veg,
-        accepts_online_payment: typeof initialStoreSetup.accepts_online_payment === 'boolean' ? initialStoreSetup.accepts_online_payment : prev.accepts_online_payment,
-        accepts_cash: typeof initialStoreSetup.accepts_cash === 'boolean' ? initialStoreSetup.accepts_cash : prev.accepts_cash,
+        cuisine_types: cuisineTypes.length > 0 ? cuisineTypes : prev.cuisine_types,
+        food_categories: foodCategories.length > 0 ? foodCategories : prev.food_categories,
+        avg_preparation_time_minutes:
+          typeof initialStoreSetup.avg_preparation_time_minutes === 'number'
+            ? initialStoreSetup.avg_preparation_time_minutes
+            : prev.avg_preparation_time_minutes,
+        min_order_amount:
+          typeof initialStoreSetup.min_order_amount === 'number'
+            ? initialStoreSetup.min_order_amount
+            : prev.min_order_amount,
+        delivery_radius_km:
+          typeof initialStoreSetup.delivery_radius_km === 'number' &&
+          !isNaN(initialStoreSetup.delivery_radius_km)
+            ? initialStoreSetup.delivery_radius_km
+            : prev.delivery_radius_km,
+        is_pure_veg:
+          typeof initialStoreSetup.is_pure_veg === 'boolean'
+            ? initialStoreSetup.is_pure_veg
+            : prev.is_pure_veg,
+        accepts_online_payment:
+          typeof initialStoreSetup.accepts_online_payment === 'boolean'
+            ? initialStoreSetup.accepts_online_payment
+            : prev.accepts_online_payment,
+        accepts_cash:
+          typeof initialStoreSetup.accepts_cash === 'boolean'
+            ? initialStoreSetup.accepts_cash
+            : prev.accepts_cash,
         logo_preview: logoUrl || prev.logo_preview,
         banner_preview: bannerUrl || prev.banner_preview,
         ...(galleryList.length > 0
@@ -948,26 +1841,21 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               gallery_images: galleryList.map(() => null),
             }
           : {}),
-        store_hours: initialStoreSetup.store_hours && typeof initialStoreSetup.store_hours === 'object'
-          ? (() => {
-              const normalized: StoreSetupData['store_hours'] = { ...prev.store_hours };
-              Object.entries(initialStoreSetup.store_hours).forEach(([day, hours]: [string, any]) => {
-                if (hours && typeof hours === 'object') {
-                  normalized[day as keyof typeof normalized] = {
-                    closed: typeof hours.closed === 'boolean' ? hours.closed : false,
-                    slot1_open: hours.slot1_open || '',
-                    slot1_close: hours.slot1_close || '',
-                    slot2_open: hours.slot2_open || '',
-                    slot2_close: hours.slot2_close || '',
-                  };
-                }
-              });
-              return normalized;
-            })()
-          : prev.store_hours,
-      }));
-    }
+        store_hours: nextHours,
+      };
+    });
   }, [initialStoreSetup]);
+
+  // Keep parent Step 5 snapshot aligned so hours/features autosave includes cuisines.
+  // Skip the initial mount echo so we don't overwrite parent progress with defaults.
+  const skipParentStoreSetupSyncRef = useRef(true);
+  useEffect(() => {
+    if (skipParentStoreSetupSyncRef.current) {
+      skipParentStoreSetupSyncRef.current = false;
+      return;
+    }
+    onStoreSetupChange?.(storeSetup);
+  }, [storeSetup, onStoreSetupChange]);
 
   // Sync presetToggles with actual store_hours data
   useEffect(() => {
@@ -1094,36 +1982,75 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     const t = (s?: string) => String(s || '').trim();
     if (method === 'bank') {
       const missing: string[] = [];
-      if (!t(bank?.account_holder_name)) missing.push('Account holder name');
+      const bankVerified = bankVerify.state === 'verified' || Boolean(bank?.bank_is_verified);
       if (!t(bank?.account_number)) missing.push('Account number');
       if (!t(bank?.ifsc_code)) missing.push('IFSC code');
-      if (!t(bank?.bank_name)) missing.push('Bank name');
-      if (!bank?.bank_proof_type) missing.push('Bank proof type (Passbook / Cancelled cheque / Statement)');
-      if (!hasBankProofFileOrUrl()) missing.push('Bank proof document');
+      if (isElectronic(bankMode)) {
+        if (bankMode === 'auto' && !bankVerified) missing.push('Bank account verification');
+        if (bankVerified && !['SAVINGS', 'CURRENT', 'savings', 'current'].includes(String(bank?.account_type || '').trim())) {
+          missing.push('Account type');
+        }
+        if (!bankVerified) {
+          if (!t(bank?.account_holder_name)) missing.push('Account holder name');
+          if (!t(bank?.bank_name)) missing.push('Bank name');
+          if (!bank?.bank_proof_type) missing.push('Bank proof type (Passbook / Cancelled cheque / Statement)');
+          if (!hasBankProofFileOrUrl()) missing.push('Bank proof document');
+        }
+      } else {
+        if (!t(bank?.account_holder_name)) missing.push('Account holder name');
+        if (!t(bank?.bank_name)) missing.push('Bank name');
+        if (!bank?.bank_proof_type) missing.push('Bank proof type (Passbook / Cancelled cheque / Statement)');
+        if (!hasBankProofFileOrUrl()) missing.push('Bank proof document');
+      }
       return missing;
     }
     const missing: string[] = [];
     if (!t(bank?.upi_id)) missing.push('UPI ID');
-    if (!hasUpiQrFileOrUrl()) missing.push('UPI QR screenshot');
+    const upiVerified = upiVerify.state === 'verified' || Boolean(bank?.upi_verified);
+    if (isElectronic(upiMode)) {
+      if (upiMode === 'auto' && !upiVerified) missing.push('UPI verification');
+      if (!upiVerified && !hasUpiQrFileOrUrl()) missing.push('UPI QR screenshot');
+    } else if (!hasUpiQrFileOrUrl()) {
+      missing.push('UPI QR screenshot');
+    }
     return missing;
   };
 
-  const handleDocumentInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDocumentInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setDocuments(prev => {
       if (name === 'pan_number') return { ...prev, [name]: value.toUpperCase().slice(0, 10) };
+      if (name === 'aadhar_number') {
+        const nextVal = isMaskedAadhaar(value)
+          ? value.trim().toUpperCase()
+          : value.replace(/\D/g, '').slice(0, 12);
+        return { ...prev, [name]: nextVal };
+      }
       if (name === 'gst_number') return { ...prev, [name]: value.toUpperCase().slice(0, 15) };
       if (name === 'trade_license_number' || name === 'shop_establishment_number') return { ...prev, [name]: value.toUpperCase().slice(0, 50) };
       if (name === 'udyam_number') return { ...prev, [name]: value.toUpperCase().replace(/\s/g, '').slice(0, 19) };
       return { ...prev, [name]: value };
     });
     if (name === 'pan_number') setDocFormatErrors(prev => ({ ...prev, pan_number: documentFormatValidators.pan(value.toUpperCase()) }));
-    if (name === 'aadhar_number') setDocFormatErrors(prev => ({ ...prev, aadhar_number: documentFormatValidators.aadhar(value.replace(/\s/g, '')) }));
+    if (name === 'aadhar_number') {
+      const nextVal = isMaskedAadhaar(value)
+        ? value.trim().toUpperCase()
+        : value.replace(/\D/g, '').slice(0, 12);
+      setDocFormatErrors(prev => ({
+        ...prev,
+        aadhar_number: nextVal ? documentFormatValidators.aadhar(nextVal) : '',
+      }));
+    }
     if (name === 'fssai_number') setDocFormatErrors(prev => ({ ...prev, fssai_number: documentFormatValidators.fssai(value) }));
+    if (name === 'drug_license_number') {
+      const s = String(value || '').trim();
+      setDocFormatErrors((prev) => ({
+        ...prev,
+        drug_license_number: s && s.length < 5 ? 'Invalid Drug Licence. Please check the number.' : '',
+      }));
+    }
     if (name === 'gst_number') {
       setDocFormatErrors(prev => ({ ...prev, gst_number: documentFormatValidators.gst(value) }));
-      // AM-like dynamic: if merchant starts entering GST, open GST section automatically.
-      if (String(value || '').trim().length > 0) setShowGstSection(true);
     }
     if (name === 'trade_license_number') setDocFormatErrors(prev => ({ ...prev, trade_license_number: documentFormatValidators.tradeLicense(value) }));
     if (name === 'shop_establishment_number') setDocFormatErrors(prev => ({ ...prev, shop_establishment_number: documentFormatValidators.shopEstablishment(value) }));
@@ -1160,10 +2087,6 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         return;
       }
       setDocuments(prev => ({ ...prev, [fieldName]: file }));
-      // AM-like dynamic: if merchant uploads GST certificate, switch toggle to YES automatically.
-      if (fieldName === 'gst_image') {
-        setShowGstSection(true);
-      }
     }
   };
 
@@ -1182,8 +2105,8 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     if (activeSection === 'pan') {
       // PAN rules depend on the admin policy mode:
       //   manual   → name + number + card image (agent reviews by hand)
-      //   auto     → name + number + MUST be electronically verified; no upload path
-      //   hybrid   → electronically verified, OR (verification attempted+failed AND image uploaded)
+      //   auto     → name + number + MUST be automatically verified; no upload path
+      //   hybrid   → automatically verified, OR (verification attempted+failed AND image uploaded)
       // Electronic modes only need the number — the name is auto-sourced from
       // the store owner and back-filled from the provider's registered name.
       const numberOk = !!documents.pan_number && !documentFormatValidators.pan(documents.pan_number);
@@ -1191,48 +2114,38 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         ? numberOk
         : numberOk && !!documents.pan_holder_name?.trim();
       if (!baseOk) return false;
-      if (panMode === 'auto') return panVerify.state === 'verified';
-      if (panMode === 'hybrid') {
-        if (panVerify.state === 'verified') return true;
+      // auto + hybrid: verified OR (provider failed/manual → image uploaded as fallback)
+      if (panMode === 'auto' || panMode === 'hybrid') {
+        if (panVerify.state === 'verified' || documents.pan_is_verified) return true;
         if (panVerify.state === 'failed' || panVerify.state === 'manual') {
           return hasDocFileOrUrl('pan_image');
         }
-        // Not attempted yet — the merchant must tap "Verify PAN" first, unless
-        // an image is already on file from a previous manual save.
+        // Not attempted yet — must Verify first, unless an image is already on file.
         return hasDocFileOrUrl('pan_image');
       }
       // manual / disabled → classic evidence upload required
       return hasDocFileOrUrl('pan_image');
     } else if (activeSection === 'aadhar') {
-      // Aadhaar: entirely optional; if filled, validate format; images optional
-      const hasAadhar = documents.aadhar_holder_name?.trim() || documents.aadhar_number;
-      if (!hasAadhar) return true; // Skip - section is optional
-      const aadharOk = documents.aadhar_holder_name?.trim() && documents.aadhar_number;
-      const aadharFormatOk = !documents.aadhar_number || !documentFormatValidators.aadhar(documents.aadhar_number.replace(/\s/g, ''));
-      return !!(aadharOk && aadharFormatOk);
-    } else if (activeSection === 'optional') {
+      // Fully optional — hybrid/auto DigiLocker must never block Skip / Continue.
+      const num = (documents.aadhar_number || '').replace(/\s/g, '').trim();
+      if (!num && !documents.aadhar_holder_name?.trim()) return true;
+      // Only block if they typed an invalid number (clear the field to skip).
+      if (num && documentFormatValidators.aadhar(num)) return false;
+      return true;
+    } else if (activeSection === 'licence') {
+      if (licenceDup.fssai || licenceDup.drug || licenceDup.checkingFssai || licenceDup.checkingDrug) {
+        return false;
+      }
       if (isPharmaBusiness()) {
         return !!(documents.drug_license_number && hasDocFileOrUrl('drug_license_image') && documents.drug_license_expiry_date) &&
-               !!(documents.pharmacist_registration_number && hasDocFileOrUrl('pharmacist_certificate') && hasDocFileOrUrl('pharmacy_council_registration') && documents.pharmacist_expiry_date);
+               !!(documents.pharmacist_registration_number && hasDocFileOrUrl('pharmacist_certificate') && hasDocFileOrUrl('pharmacy_council_registration') && documents.pharmacist_expiry_date) &&
+               !docFormatErrors.drug_license_number &&
+               licenceDup.drugOk;
       }
       if (isFoodBusiness()) {
         const fssaiOk = documents.fssai_number && hasDocFileOrUrl('fssai_image') && documents.fssai_expiry_date;
         const fssaiFormatOk = !documents.fssai_number || !documentFormatValidators.fssai(documents.fssai_number);
-        return !!(fssaiOk && fssaiFormatOk);
-      }
-      if (documents.gst_number && documentFormatValidators.gst(documents.gst_number)) return false;
-      // GST mode gating (GST itself is optional; rules apply once a number is entered):
-      //   auto   → must be electronically verified to proceed
-      //   hybrid → verified, or attempted-and-failed with the certificate uploaded
-      if (documents.gst_number?.trim() && isElectronic(gstMode)) {
-        if (gstMode === 'auto' && gstVerify.state !== 'verified') return false;
-        if (
-          gstMode === 'hybrid' &&
-          gstVerify.state !== 'verified' &&
-          !hasDocFileOrUrl('gst_image')
-        ) {
-          return false;
-        }
+        return !!(fssaiOk && fssaiFormatOk && !docFormatErrors.fssai_number && licenceDup.fssaiOk);
       }
       // Optional-but-recommended licences: if any field is started, require the full set.
       const tradeStarted = !!documents.trade_license_number || hasDocFileOrUrl('trade_license_document') || !!documents.trade_license_expiry_date;
@@ -1262,6 +2175,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         if (!udyamOk) return false;
       }
       return true;
+    } else if (activeSection === 'gst') {
+      const gstNum = (documents.gst_number || '').trim();
+      if (!gstNum && !hasDocFileOrUrl('gst_image')) return true;
+      if (gstNum && documentFormatValidators.gst(gstNum)) return false;
+      if (gstNum && isElectronic(gstMode)) {
+        const gstVerified = gstVerify.state === 'verified' || Boolean((documents as { gst_is_verified?: boolean }).gst_is_verified);
+        if (gstMode === 'auto' && !gstVerified) return false;
+        if (gstMode === 'hybrid' && !gstVerified && !hasDocFileOrUrl('gst_image')) return false;
+      }
+      return true;
     } else if (activeSection === 'other') {
       // "Other docs" tab mirrors optional recommended validations too.
       if (documents.trade_license_number && documentFormatValidators.tradeLicense(documents.trade_license_number)) return false;
@@ -1277,42 +2200,56 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         bank_name?: string;
         bank_proof_type?: string;
         upi_id?: string;
+        bank_is_verified?: boolean;
       };
       const method = bank.payout_method || 'bank';
       const t = (s?: string) => String(s || '').trim();
       if (method === 'bank') {
-        const hasBank = !!(
+        const ifscOk = !t(bank.ifsc_code) || !documentFormatValidators.ifsc(bank.ifsc_code || '');
+        const accOk = !t(bank.account_number) || !documentFormatValidators.accountNumber(bank.account_number || '');
+        if (!t(bank.account_number) || !t(bank.ifsc_code) || !ifscOk || !accOk) return false;
+        const bankVerified = bankVerify.state === 'verified' || Boolean(bank.bank_is_verified);
+        if (isElectronic(bankMode)) {
+          if (bankMode === 'auto') return bankVerified;
+          if (bankVerified) return true;
+          // hybrid fallback: manual details + proof
+          return !!(
+            t(bank.account_holder_name) &&
+            t(bank.bank_name) &&
+            bank.bank_proof_type &&
+            hasBankProofFileOrUrl()
+          );
+        }
+        return !!(
           t(bank.account_holder_name) &&
-          t(bank.account_number) &&
-          t(bank.ifsc_code) &&
           t(bank.bank_name) &&
           bank.bank_proof_type &&
           hasBankProofFileOrUrl()
         );
-        const ifscOk = !t(bank.ifsc_code) || !documentFormatValidators.ifsc(bank.ifsc_code || '');
-        const accOk = !t(bank.account_number) || !documentFormatValidators.accountNumber(bank.account_number || '');
-        return !!(hasBank && ifscOk && accOk);
       }
-      return !!(t(bank.upi_id) && hasUpiQrFileOrUrl());
+      const upiOk = !!t(bank.upi_id) && /^[a-z0-9.\-_]{2,256}@[a-z0-9]{2,64}$/i.test(t(bank.upi_id));
+      if (!upiOk) return false;
+      const upiVerified =
+        upiVerify.state === 'verified' || Boolean((bank as { upi_verified?: boolean }).upi_verified);
+      if (isElectronic(upiMode)) {
+        if (upiMode === 'auto') return upiVerified;
+        if (upiVerified) return true;
+        return hasUpiQrFileOrUrl();
+      }
+      return hasUpiQrFileOrUrl();
     } else if (activeSection === 'other') {
       return true;
     }
     return true;
   };
 
-  const showDocumentValidationError = (section: 'pan' | 'aadhar' | 'optional' | 'bank' | 'other') => {
+  const showDocumentValidationError = (section: DocActiveSection) => {
     if (section === 'pan') {
-      if (panMode === 'auto' && panVerify.state !== 'verified') {
-        setValidationMessage(
-          panVerify.state === 'failed'
-            ? 'PAN verification failed. Please re-check the PAN number and name, or try again after some time. Electronic verification is required to continue.'
-            : 'Please verify your PAN electronically (tap "Verify PAN") before proceeding.'
-        );
-      } else if (panMode === 'hybrid' && panVerify.state !== 'verified' && !hasDocFileOrUrl('pan_image')) {
+      if ((panMode === 'auto' || panMode === 'hybrid') && panVerify.state !== 'verified' && !hasDocFileOrUrl('pan_image')) {
         setValidationMessage(
           panVerify.state === 'failed' || panVerify.state === 'manual'
             ? 'Instant verification did not succeed — please upload a clear PAN card image to continue.'
-            : 'Please verify your PAN electronically (tap "Verify PAN"), or upload the PAN card image.'
+            : 'Please verify your PAN automatically (tap "Verify PAN"), or upload the PAN card image.'
         );
       } else {
         setValidationMessage('Please fill all required fields in the PAN section before proceeding.');
@@ -1330,26 +2267,42 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           'Please correct your bank details (check IFSC and account number format) before continuing.'
         );
       }
-    } else if (section === 'optional') {
+    } else if (section === 'licence') {
+      if (licenceDup.fssai || licenceDup.drug) {
+        setValidationMessage(
+          licenceDup.fssai ||
+            licenceDup.drug ||
+            'This licence number is already registered. Enter a different number — duplicates are not allowed.',
+        );
+      } else if (licenceDup.checkingFssai || licenceDup.checkingDrug) {
+        setValidationMessage('Please wait while we check if this licence number is already registered.');
+      } else if (isPharmaBusiness()) {
+        setValidationMessage('Please fill all required pharma documents before proceeding.');
+      } else if (isFoodBusiness()) {
+        setValidationMessage('FSSAI certificate is required for food businesses.');
+      } else {
+        setValidationMessage('');
+        return false;
+      }
+    } else if (section === 'gst') {
       const gstBlocked =
         !!documents.gst_number?.trim() &&
         isElectronic(gstMode) &&
         gstVerify.state !== 'verified' &&
+        !(documents as { gst_is_verified?: boolean }).gst_is_verified &&
         (gstMode === 'auto' || !hasDocFileOrUrl('gst_image'));
       if (gstBlocked) {
         setValidationMessage(
           gstMode === 'auto'
             ? (gstVerify.state === 'failed'
-                ? 'GSTIN verification failed. Re-check the number or try again after some time — electronic verification is required.'
-                : 'Please verify your GSTIN electronically (tap "Verify GSTIN") before proceeding.')
+                ? 'GSTIN verification failed. Re-check the number or try again after some time — automatic verification is required.'
+                : 'Please verify your GSTIN automatically (tap "Verify GSTIN") before proceeding.')
             : (gstVerify.state === 'failed' || gstVerify.state === 'manual'
                 ? 'Instant GSTIN verification did not succeed — please upload the GST certificate to continue.'
-                : 'Please verify your GSTIN electronically (tap "Verify GSTIN"), or upload the GST certificate.')
+                : 'Please verify your GSTIN automatically (tap "Verify GSTIN"), or upload the GST certificate.')
         );
-      } else if (isPharmaBusiness()) {
-        setValidationMessage('Please fill all required pharma documents before proceeding.');
-      } else if (isFoodBusiness()) {
-        setValidationMessage('FSSAI certificate is required for food businesses.');
+      } else if (documents.gst_number && documentFormatValidators.gst(documents.gst_number)) {
+        setValidationMessage('Please enter a valid 15-character GSTIN, or clear the field to skip this section.');
       } else {
         setValidationMessage('');
         return false;
@@ -1375,6 +2328,18 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       return;
     }
 
+    if (
+      activeSection === 'aadhar' &&
+      aadhaarVerify.state === 'verifying'
+    ) {
+      setValidationMessage(
+        'DigiLocker verification is in progress. Complete consent in the DigiLocker tab, or wait for it to finish/fail before continuing.',
+      );
+      setValidationType('error');
+      setShowValidationModal(true);
+      return;
+    }
+
     setDocumentSaving(true);
     if (activeSection === 'bank') setBankRequiredHighlight(false);
     try {
@@ -1384,16 +2349,20 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           ? savedPatch
           : undefined;
 
+      let nextSection: DocActiveSection | null = null;
       if (activeSection === 'pan') {
-        setActiveSection('aadhar');
+        nextSection = 'aadhar';
       } else if (activeSection === 'aadhar') {
-        setActiveSection('optional');
-      } else if (activeSection === 'optional') {
-        setActiveSection('bank');
+        nextSection = 'licence';
+      } else if (activeSection === 'licence') {
+        nextSection = 'gst';
+      } else if (activeSection === 'gst') {
+        nextSection = 'bank';
       } else if (activeSection === 'bank') {
-        if (showOtherDocs) setActiveSection('other');
+        if (showOtherDocs) nextSection = 'other';
         else {
           if (onDocumentComplete) onDocumentComplete(documents, patchArg);
+          return;
         }
       } else if (activeSection === 'other') {
         let shouldProceed = true;
@@ -1417,6 +2386,18 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         if (shouldProceed) {
           setShowValidationModal(false);
           if (onDocumentComplete) onDocumentComplete(documents, patchArg);
+        }
+        return;
+      }
+
+      if (nextSection) {
+        setActiveSection(nextSection);
+        // Persist subsection so reload resumes on the next incomplete section
+        if (onDocumentSave) {
+          void onDocumentSave({
+            ...documents,
+            step4_active_section: nextSection,
+          } as DocumentData & { step4_active_section?: string });
         }
       }
     } catch (e) {
@@ -1446,11 +2427,10 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       }
     }
     
-    const newForm = {
-      ...storeSetup,
+    setStoreSetup((prev) => ({
+      ...prev,
       [name]: processedValue,
-    };
-    setStoreSetup(newForm);
+    }));
   };
 
   const MAX_GALLERY_IMAGES = 5;
@@ -1886,7 +2866,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     if (currentStep === 'store-setup') {
       setCurrentStep('documents');
     } else if (currentStep === 'documents') {
-      const sectionOrder: Array<'pan' | 'aadhar' | 'optional' | 'bank' | 'other'> = showOtherDocs ? ['pan', 'aadhar', 'optional', 'bank', 'other'] : ['pan', 'aadhar', 'optional', 'bank'];
+      const sectionOrder: DocActiveSection[] = showOtherDocs
+        ? ['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']
+        : ['pan', 'aadhar', 'licence', 'gst', 'bank'];
       const currentIndex = sectionOrder.indexOf(activeSection);
       if (currentIndex > 0) {
         setActiveSection(sectionOrder[currentIndex - 1]);
@@ -2115,7 +3097,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           <div>
             <p className="text-sm font-semibold text-indigo-900">PAN Card (Mandatory)</p>
             <p className="text-xs text-indigo-700 mt-0.5">
-              PAN number is verified electronically — no card image needed when it verifies. Format: ABCDE1234F
+              PAN number is verified automatically — no card image needed when it verifies. Format: ABCDE1234F
             </p>
           </div>
         </div>
@@ -2177,14 +3159,14 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           <p className="text-xs text-slate-500 mt-1.5">10 characters, auto uppercase (e.g. ABCDE1234F)</p>
         </div>
 
-        {/* ── Electronic verification (auto / hybrid modes) ── */}
+        {/* ── Automatic verification (auto / hybrid modes) ── */}
         {isElectronic(panMode) && (
           <div className="md:col-span-2">
             {panVerify.state === 'verified' ? (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                 <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
-                  PAN verified electronically
+                  PAN verified automatically
                 </p>
                 {verifiedDetailRows(panVerify.details).length > 0 && (
                   <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
@@ -2204,11 +3186,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   type="button"
                   disabled={
                     panVerify.state === 'verifying' ||
-                    !documents.pan_number ||
-                    !!documentFormatValidators.pan(documents.pan_number)
+                    !(documents.pan_number || '').trim() ||
+                    !!documentFormatValidators.pan((documents.pan_number || '').trim())
                   }
                   onClick={() => verifyDocNow('pan')}
-                  className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {panVerify.state === 'verifying' ? (
                     <><Loader2 className="h-4 w-4 animate-spin" /> Verifying…</>
@@ -2216,21 +3198,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                     'Verify PAN'
                   )}
                 </button>
-                {panVerify.state === 'failed' && panMode === 'auto' && (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                    <p className="font-semibold">PAN verification failed.</p>
-                    <p className="text-xs mt-0.5">
-                      {panVerify.error || 'The details could not be verified.'} Please re-check the
-                      number and name, or try again after some time. Electronic verification is
-                      required to continue.
-                    </p>
-                  </div>
-                )}
-                {panVerify.state === 'failed' && panMode === 'hybrid' && (
+                {panVerify.state === 'failed' && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                     <p className="font-semibold">Instant verification didn't succeed.</p>
                     <p className="text-xs mt-0.5">
-                      {panVerify.error || 'The details could not be verified electronically.'} Upload a
+                      {panVerify.error || 'The details could not be verified automatically.'} Upload a
                       clear PAN card image below — our team will verify it manually.
                     </p>
                   </div>
@@ -2247,10 +3219,10 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         )}
 
         {uploadAllowedFor(panMode, panVerify) && (
-        <div className="md:col-span-2">
-          <label className="block text-xs font-medium text-slate-700 mb-1">
+        <div className="md:col-span-2 space-y-1.5" id="pan-manual-upload">
+          <label className="block text-xs font-medium text-slate-700">
             {isElectronic(panMode) ? (
-              <>PAN Card Image <span className="text-rose-500">*</span> <span className="text-slate-400">(required — electronic verification did not succeed)</span></>
+              <>PAN Card Image <span className="text-rose-500">*</span> <span className="text-slate-400">(required — automatic verification did not succeed)</span></>
             ) : (
               <>PAN Card Image <span className="text-rose-500">*</span></>
             )}
@@ -2266,12 +3238,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             <button
               type="button"
               onClick={() => triggerFileInputWithReplaceCheck('pan_image', fileInputRefs.pan)}
-              className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 p-4 text-center hover:border-indigo-400 hover:bg-indigo-50/50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
+              className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/40 p-6 text-center hover:border-indigo-500 hover:bg-indigo-50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
             >
-              <svg className="w-10 h-10 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-10 h-10 text-indigo-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-            <p className="text-sm font-medium text-slate-600">
+            <p className="text-sm font-semibold text-slate-700">
               {isUploadingField('pan_image') ? (
                 <span className="inline-flex items-center justify-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
@@ -2330,11 +3302,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
           <div>
             <p className="text-sm font-semibold text-indigo-900">Aadhaar Card <span className="text-slate-500 text-xs font-normal">(Optional)</span></p>
-            <p className="text-xs text-indigo-700 mt-0.5">Identity verification. Images are optional—number and name sufficient.</p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+          {isElectronic(aadhaarMode)
+            ? 'Optional — DigiLocker verify, or skip and continue anytime.'
+            : 'Identity verification. Images are optional—number and name sufficient.'}
+        </p>
           </div>
         </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5">
+      <div className={`grid grid-cols-1 ${isElectronic(aadhaarMode) ? '' : 'md:grid-cols-2'} gap-4 sm:gap-5`}>
+        {!isElectronic(aadhaarMode) && (
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             Name as on Aadhaar <span className="text-slate-500 text-xs font-normal">(if providing)</span>
@@ -2349,6 +3326,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             autoComplete="name"
           />
         </div>
+        )}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             Aadhaar Number <span className="text-slate-500 text-xs font-normal">(if providing)</span>
@@ -2363,15 +3341,17 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               name="aadhar_number"
               value={documents.aadhar_number || ''}
               onChange={handleDocumentInputChange}
-              placeholder="1234 5678 9012"
+              placeholder="123456789012"
+              inputMode={isMaskedAadhaar(documents.aadhar_number) ? 'text' : 'numeric'}
+              autoComplete="off"
+              readOnly={aadhaarVerify.state === 'verified' || !!(documents as { aadhaar_is_verified?: boolean }).aadhaar_is_verified}
               className={`w-full px-4 py-3 pr-12 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
                 isAadhaarValid
                   ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
                   : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
-              }`}
-              maxLength={12}
-              pattern="[0-9]{12}"
-              title="12-digit Aadhar number"
+              } ${aadhaarVerify.state === 'verified' || (documents as { aadhaar_is_verified?: boolean }).aadhaar_is_verified ? 'bg-emerald-50/40' : ''}`}
+              maxLength={isMaskedAadhaar(documents.aadhar_number) ? 14 : 12}
+              title="12-digit Aadhaar number"
             />
             {renderValidTick(isAadhaarValid)}
                 </>
@@ -2383,7 +3363,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </div>
       </div>
 
-      {/* ── Aadhaar electronic verification via DigiLocker (auto / hybrid) ── */}
+      {/* ── Aadhaar Automatic verification via DigiLocker (auto / hybrid) ── */}
       {isElectronic(aadhaarMode) && (
         <div>
           {aadhaarVerify.state === 'verified' ? (
@@ -2392,24 +3372,59 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
                 Aadhaar verified via DigiLocker
               </p>
-              <p className="mt-1.5 text-xs text-emerald-700">No card images needed. You can continue.</p>
+              {(() => {
+                const rows = normalizeAadhaarVerifiedDetails(
+                  aadhaarVerify.details ||
+                    (documents as { aadhaar_verified_details?: Record<string, unknown> }).aadhaar_verified_details ||
+                    null,
+                ).rows;
+                if (!rows.length) {
+                  return (
+                    <p className="mt-1.5 text-xs text-emerald-700">No card images needed. You can continue.</p>
+                  );
+                }
+                return (
+                  <>
+                    <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                      {rows.map(([label, value]) => (
+                        <div key={label} className="flex gap-1.5 text-left">
+                          <dt className="text-emerald-700 shrink-0">{label}:</dt>
+                          <dd className="font-medium text-emerald-900 break-words">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <p className="mt-1.5 text-xs text-emerald-700">No card images needed. You can continue.</p>
+                  </>
+                );
+              })()}
             </div>
           ) : aadhaarVerify.state === 'verifying' && aadhaarVerify.pending ? (
-            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-800">
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-800 space-y-2">
               <p className="font-semibold flex items-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin" /> Waiting for DigiLocker confirmation…
               </p>
               <p className="text-xs mt-0.5">
-                Complete the consent in the DigiLocker tab we opened. This page updates automatically.
+                Complete OTP in the DigiLocker window — this panel updates when verified.
               </p>
+              <button
+                type="button"
+                onClick={cancelDigilockerFlow}
+                className="inline-flex w-fit items-center rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-medium text-indigo-800 hover:bg-indigo-50"
+              >
+                Cancel
+              </button>
             </div>
           ) : (
             <div className="flex flex-col gap-2">
               <button
                 type="button"
-                disabled={aadhaarVerify.state === 'verifying'}
+                disabled={
+                  aadhaarVerify.state === 'verifying' ||
+                  !(documents.aadhar_number || '').replace(/\D/g, '').trim() ||
+                  !!documentFormatValidators.aadhar((documents.aadhar_number || '').replace(/\D/g, ''))
+                }
                 onClick={() => verifyDocNow('aadhaar')}
-                className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {aadhaarVerify.state === 'verifying' ? (
                   <><Loader2 className="h-4 w-4 animate-spin" /> Starting DigiLocker…</>
@@ -2418,13 +3433,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 )}
               </button>
               <p className="text-xs text-slate-500">
-                Opens DigiLocker to verify your Aadhaar securely — no number typing or card photos needed.
+                Enter a valid 12-digit Aadhaar number first, then verify with DigiLocker — or skip this optional step.
               </p>
               {aadhaarVerify.state === 'failed' && aadhaarMode === 'auto' && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
                   <span className="font-semibold">Aadhaar verification failed. </span>
                   {aadhaarVerify.error || 'DigiLocker verification did not complete.'} Please try again
-                  after some time — electronic verification is required.
+                  after some time — Automatic verification is required.
                 </div>
               )}
               {aadhaarVerify.state === 'failed' && aadhaarMode === 'hybrid' && (
@@ -2509,6 +3524,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
         </div>
       )}
+      {!isElectronic(aadhaarMode) && (
       <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
@@ -2520,10 +3536,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 
-  const renderOptionalSection = () => (
+  const renderLicenceSection = () => (
     <div className="space-y-3">
       {optionalRejectionItems.length > 0 && (
         <AdminRejectionBanner title="Verification feedback — please fix the items below and save">
@@ -2580,7 +3597,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 </h4>
                 <div className="relative">
                   {(() => {
-                    const isDrugLicValid = !!String(documents.drug_license_number || "").trim();
+                    const isDrugLicValid =
+                      !!String(documents.drug_license_number || "").trim() &&
+                      !docFormatErrors.drug_license_number &&
+                      !licenceDup.drug &&
+                      !licenceDup.checkingDrug &&
+                      licenceDup.drugOk;
                     return (
                       <>
                         <input
@@ -2590,17 +3612,36 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                           onChange={handleDocumentInputChange}
                           placeholder="Enter Drug License Number"
                           className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
-                            isDrugLicValid
+                            docFormatErrors.drug_license_number || licenceDup.drug
+                              ? "border-rose-400 focus:border-rose-500 focus:ring-rose-200"
+                              : isDrugLicValid
                               ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
                               : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
                           }`}
                           required
                         />
-                        {renderValidTick(isDrugLicValid)}
+                        {licenceDup.checkingDrug ? (
+                          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                            <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                          </span>
+                        ) : (
+                          renderValidTick(isDrugLicValid)
+                        )}
                       </>
                     );
                   })()}
                 </div>
+                {(docFormatErrors.drug_license_number || licenceDup.drug) && (
+                  <p className="text-xs text-rose-600 mt-1">
+                    {docFormatErrors.drug_license_number || licenceDup.drug}
+                  </p>
+                )}
+                {licenceDup.checkingDrug && !docFormatErrors.drug_license_number && (
+                  <p className="text-xs text-slate-500 mt-1 inline-flex items-center gap-1">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Checking Drug Licence uniqueness…
+                  </p>
+                )}
                 <p className="text-xs text-gray-500">
                   Retail (Form 20/21) or Wholesale (Form 20B/21B) License
                 </p>
@@ -2801,40 +3842,73 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       )}
 
       {/* FSSAI (for food businesses) */}
-      {isFoodBusiness() && (
+      {isFoodBusiness() && (() => {
+        const fssaiUnlocked =
+          licenceDup.fssaiOk &&
+          !licenceDup.checkingFssai &&
+          !licenceDup.fssai &&
+          !docFormatErrors.fssai_number &&
+          String(documents.fssai_number || '').replace(/\D/g, '').length === 14;
+        return (
         <div className="space-y-2">
           <h4 className="text-sm font-medium text-gray-700 mb-1">
             FSSAI Certificate <span className="text-red-500">*</span>
           </h4>
           <div className="space-y-3">
             <div className="max-w-xl">
-              <input
-                type="text"
-                name="fssai_number"
-                value={documents.fssai_number || ''}
-                onChange={handleDocumentInputChange}
-                placeholder="FSSAI License Number"
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                required
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  name="fssai_number"
+                  value={documents.fssai_number || ''}
+                  onChange={handleDocumentInputChange}
+                  placeholder="FSSAI License Number"
+                  maxLength={14}
+                  inputMode="numeric"
+                  className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl focus:ring-2 bg-white ${
+                    docFormatErrors.fssai_number || licenceDup.fssai
+                      ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-200'
+                      : licenceDup.fssaiOk
+                        ? 'border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200'
+                        : 'border-slate-300 focus:ring-indigo-500 focus:border-indigo-500'
+                  }`}
+                  required
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                  {licenceDup.checkingFssai ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                  ) : licenceDup.fssaiOk && !docFormatErrors.fssai_number && !licenceDup.fssai ? (
+                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-white text-[10px]">
+                      ✓
+                    </span>
+                  ) : null}
+                </span>
+              </div>
               {docFormatErrors.fssai_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.fssai_number}</p>}
+              {licenceDup.checkingFssai && (
+                <p className="text-xs text-indigo-600 mt-1">Checking FSSAI number…</p>
+              )}
+              {!docFormatErrors.fssai_number && !licenceDup.checkingFssai && (
               <p className="text-xs text-gray-500 mt-2">
                 Required for food businesses as per FSSAI regulations (14 digits)
               </p>
+              )}
             </div>
-            <div>
+            <div className={!fssaiUnlocked ? 'opacity-50 pointer-events-none' : undefined}>
               <input
                 type="file"
                 ref={fileInputRefs.fssai}
                 onChange={(e) => handleFileChange(e, 'fssai_image')}
                 accept=".jpg,.jpeg,.png,.pdf"
                 className="hidden"
+                disabled={!fssaiUnlocked}
               />
               {!hasDocFileOrUrl('fssai_image') ? (
                 <button
                   type="button"
+                  disabled={!fssaiUnlocked}
                   onClick={() => triggerFileInputWithReplaceCheck('fssai_image', fileInputRefs.fssai)}
-                  className="w-full rounded-xl border-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-3 text-sm font-medium text-rose-600 hover:border-rose-500 hover:bg-rose-50"
+                  className="w-full rounded-xl border-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-3 text-sm font-medium text-rose-600 hover:border-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isUploadingField('fssai_image') ? (
                     <span className="inline-flex items-center justify-center gap-2">
@@ -2859,7 +3933,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
           
           {/* FSSAI Expiry Date */}
-          <div className="space-y-2">
+          <div className={`space-y-2 ${!fssaiUnlocked ? 'opacity-50 pointer-events-none' : ''}`}>
             <h4 className="text-sm font-medium text-gray-700 mb-1">
               FSSAI Expiry Date <span className="text-red-500">*</span>
             </h4>
@@ -2869,54 +3943,87 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 name="fssai_expiry_date"
                 value={documents.fssai_expiry_date || ''}
                 onChange={handleDocumentInputChange}
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                disabled={!fssaiUnlocked}
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white disabled:bg-slate-50 disabled:cursor-not-allowed"
                 required
               />
               <p className="text-xs text-gray-500 mt-1">
-                FSSAI license expiry date (mandatory)
+                {fssaiUnlocked
+                  ? 'FSSAI license expiry date (mandatory)'
+                  : 'Enter a unique 14-digit FSSAI number first'}
               </p>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
-      {/* GST Certificate (Optional) - Highlighted with distinct color */}
-      <div className="rounded-xl bg-gradient-to-br from-purple-50 via-indigo-50 to-blue-50 border-2 border-purple-200/60 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-100 text-purple-700">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </div>
-            <h4 className="text-sm font-semibold text-purple-900">GST Certificate (Optional)</h4>
+      {/* Other documents (optional) — shown on this page like AM */}
+      <div
+        className={`pt-1 ${
+          isFoodBusiness() &&
+          !(
+            licenceDup.fssaiOk &&
+            !licenceDup.checkingFssai &&
+            !licenceDup.fssai &&
+            !docFormatErrors.fssai_number
+          )
+            ? 'opacity-50 pointer-events-none'
+            : ''
+        }`}
+      >
+        {renderOtherDocumentsSection()}
+      </div>
+
+      <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
           </div>
-          <div className="inline-flex rounded-lg border border-purple-300 bg-white p-0.5 shadow-sm">
-            <button
-              type="button"
-              onClick={() => {
-                setShowGstSection(false);
-                setDocuments((prev) => ({ ...prev, gst_number: '', gst_image: null }));
-                removeFile('gst_image');
-              }}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition ${
-                !showGstSection ? 'bg-purple-600 text-white shadow-sm' : 'text-purple-700 hover:text-purple-900 hover:bg-purple-50'
-              }`}
-            >
-              No
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowGstSection(true)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition ${
-                showGstSection ? 'bg-purple-600 text-white shadow-sm' : 'text-purple-700 hover:text-purple-900 hover:bg-purple-50'
-              }`}
-            >
-              Yes
-            </button>
+          <div>
+            <p className="text-sm font-semibold text-indigo-900">Note</p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+              {isPharmaBusiness()
+                ? 'Pharma documents are mandatory. Store cannot operate without valid Drug License and Pharmacist details.'
+                : isFoodBusiness()
+                ? 'FSSAI is mandatory for food businesses.'
+                : 'Optional documents help with faster verification and service access.'}
+            </p>
           </div>
         </div>
-        {showGstSection && (
+      </div>
+    </div>
+  );
+
+  const renderGstSection = () => (
+    <div className="space-y-3">
+      {gstRejectionReason && (
+        <AdminRejectionBanner title="Verification feedback — please fix the items below and save">
+          <p>
+            <span className="font-semibold">GST: </span>
+            {gstRejectionReason}
+          </p>
+        </AdminRejectionBanner>
+      )}
+
+      <div className="rounded-xl bg-gradient-to-br from-purple-50 via-indigo-50 to-blue-50 border-2 border-purple-200/60 p-4 space-y-3 shadow-sm">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-100 text-purple-700">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-purple-900">GST Certificate (Optional)</h4>
+            <p className="text-xs text-purple-800 mt-0.5">
+              GST registration is optional for many small businesses. If you have a GSTIN, enter it below
+              {isElectronic(gstMode) ? ' — we can verify it instantly with Cashfree when electronic verification is enabled.' : '.'}
+            </p>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-purple-200/50">
           <div>
             <div className="relative">
@@ -2932,8 +4039,8 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                       placeholder="GSTIN (15 characters)"
                       className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
                         isGstValid
-                          ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
-                          : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
+                          ? 'border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200'
+                          : 'border-slate-300 focus:border-indigo-500 focus:ring-indigo-500'
                       }`}
                     />
                     {renderValidTick(isGstValid)}
@@ -2942,17 +4049,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               })()}
             </div>
             {docFormatErrors.gst_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.gst_number}</p>}
-            <p className="text-xs text-gray-500 mt-2">Optional for non-GST businesses</p>
+            <p className="text-xs text-gray-500 mt-2">Leave blank and tap Skip to continue without GST</p>
           </div>
 
-          {/* ── Electronic GSTIN verification (auto / hybrid modes) ── */}
           {isElectronic(gstMode) && !!String(documents.gst_number || '').trim() && (
             <div>
-              {gstVerify.state === 'verified' ? (
+              {gstVerify.state === 'verified' || (documents as { gst_is_verified?: boolean }).gst_is_verified ? (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                   <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
                     <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
-                    GSTIN verified electronically
+                    GSTIN verified automatically
                   </p>
                   {verifiedDetailRows(gstVerify.details).length > 0 && (
                     <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
@@ -2972,11 +4078,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                     type="button"
                     disabled={
                       gstVerify.state === 'verifying' ||
-                      !documents.gst_number ||
-                      !!documentFormatValidators.gst(documents.gst_number)
+                      !(documents.gst_number || '').trim() ||
+                      !!documentFormatValidators.gst((documents.gst_number || '').trim())
                     }
                     onClick={() => verifyDocNow('gstin')}
-                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {gstVerify.state === 'verifying' ? (
                       <><Loader2 className="h-4 w-4 animate-spin" /> Verifying…</>
@@ -2988,12 +4094,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                     <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
                       <span className="font-semibold">GSTIN verification failed. </span>
                       {gstVerify.error || 'The GSTIN could not be verified.'} Re-check the number or
-                      try again after some time — electronic verification is required.
+                      try again after some time — automatic verification is required.
                     </div>
                   )}
                   {gstVerify.state === 'failed' && gstMode === 'hybrid' && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                      <span className="font-semibold">Instant verification didn't succeed. </span>
+                      <span className="font-semibold">Instant verification didn&apos;t succeed. </span>
                       Upload your GST certificate below — our team will verify it manually.
                     </div>
                   )}
@@ -3007,66 +4113,113 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </div>
           )}
 
-          {(!isElectronic(gstMode) || gstVerify.state === 'failed' || gstVerify.state === 'manual' || hasDocFileOrUrl('gst_image')) && gstVerify.state !== 'verified' && (
-          <div className="space-y-2">
-            <input
-              type="file"
-              ref={fileInputRefs.gst}
-              onChange={(e) => handleFileChange(e, 'gst_image')}
-              accept=".jpg,.jpeg,.png,.pdf"
-              className="hidden"
-            />
-            {!hasDocFileOrUrl('gst_image') ? (
-              <button
-                type="button"
-                onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
-                className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-              >
-                {isUploadingField('gst_image') ? (
-                  <span className="inline-flex items-center justify-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
-                  </span>
-                ) : (
-                  'Upload GST certificate'
-                )}
-              </button>
-            ) : (
-              renderUploadedDocumentPanel({
-                viewTitle: 'GST certificate',
-                file: documents.gst_image,
-                url: documents.gst_image_url,
-                imagePreviewUrl: gstPreviewUrl,
-                onChange: () => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst),
-                onRemove: () => removeFile('gst_image'),
-                uploading: isUploadingField('gst_image'),
-              })
-            )}
-          </div>
+          {/* Manual GST business details: only in manual mode, or after auto-verify fails / falls back */}
+          {!!String(documents.gst_number || '').trim() &&
+            !(documents as { gst_is_verified?: boolean }).gst_is_verified &&
+            gstVerify.state !== 'verified' &&
+            (!isElectronic(gstMode) ||
+              gstVerify.state === 'failed' ||
+              gstVerify.state === 'manual') && (
+            <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {isElectronic(gstMode) &&
+                (gstVerify.state === 'failed' || gstVerify.state === 'manual') && (
+                <p className="sm:col-span-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Auto verification didn&apos;t succeed — enter business details manually (and upload certificate if needed).
+                </p>
+              )}
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Legal Name of Business
+                </label>
+                <input
+                  type="text"
+                  name="gst_legal_business_name"
+                  value={documents.gst_legal_business_name || ''}
+                  onChange={handleDocumentInputChange}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Enter legal name of business"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Principal Place of Business
+                </label>
+                <textarea
+                  name="gst_principal_place_of_business"
+                  value={documents.gst_principal_place_of_business || ''}
+                  onChange={handleDocumentInputChange}
+                  rows={2}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Enter principal place of business"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Effective Date of Registration
+                </label>
+                <input
+                  type="date"
+                  name="gst_effective_registration_date"
+                  value={(documents.gst_effective_registration_date || '').slice(0, 10)}
+                  onChange={handleDocumentInputChange}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+          )}
+
+          {(!isElectronic(gstMode) || gstVerify.state === 'failed' || gstVerify.state === 'manual' || hasDocFileOrUrl('gst_image')) &&
+            gstVerify.state !== 'verified' &&
+            !(documents as { gst_is_verified?: boolean }).gst_is_verified && (
+            <div className="space-y-2 md:col-span-2">
+              <input
+                type="file"
+                ref={fileInputRefs.gst}
+                onChange={(e) => handleFileChange(e, 'gst_image')}
+                accept=".jpg,.jpeg,.png,.pdf"
+                className="hidden"
+              />
+              {!hasDocFileOrUrl('gst_image') ? (
+                <button
+                  type="button"
+                  onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
+                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  {isUploadingField('gst_image') ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                    </span>
+                  ) : (
+                    'Upload GST certificate'
+                  )}
+                </button>
+              ) : (
+                renderUploadedDocumentPanel({
+                  viewTitle: 'GST certificate',
+                  file: documents.gst_image,
+                  url: documents.gst_image_url,
+                  imagePreviewUrl: gstPreviewUrl,
+                  onChange: () => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst),
+                  onRemove: () => removeFile('gst_image'),
+                  uploading: isUploadingField('gst_image'),
+                })
+              )}
+            </div>
           )}
         </div>
-        )}
-      </div>
-
-      {/* Other documents (optional) — shown on this page like AM */}
-      <div className="pt-1">
-        {renderOtherDocumentsSection()}
       </div>
 
       <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
             <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
             </svg>
           </div>
           <div>
             <p className="text-sm font-semibold text-indigo-900">Note</p>
             <p className="text-xs text-indigo-700 mt-0.5">
-              {isPharmaBusiness()
-                ? 'Pharma documents are mandatory. Store cannot operate without valid Drug License and Pharmacist details.'
-                : isFoodBusiness()
-                ? 'FSSAI is mandatory for food businesses. GST may be required based on turnover.'
-                : 'Optional documents help with faster verification and service access.'}
+              You can skip this section if you are not GST-registered. If you enter a GSTIN and automatic verification is enabled, you must verify before continuing.
             </p>
           </div>
         </div>
@@ -3112,7 +4265,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     const missProofType = bankRequiredHighlight && !bank.bank_proof_type;
     const missProofFile = bankRequiredHighlight && !!bank.bank_proof_type && !hasBankProofFileOrUrl();
     const missUpi = bankRequiredHighlight && !t(bank.upi_id);
-    const missQr = bankRequiredHighlight && !hasUpiQrFileOrUrl();
+    const upiAlreadyVerified =
+      upiVerify.state === 'verified' || Boolean(bank.upi_verified);
+    const missQr =
+      bankRequiredHighlight &&
+      !upiAlreadyVerified &&
+      !hasUpiQrFileOrUrl() &&
+      (!isElectronic(upiMode) || uploadAllowedFor(upiMode, upiVerify));
     const reqRing = (on: boolean) =>
       on ? 'border-rose-500 ring-1 ring-rose-200' : 'border-slate-300';
     return (
@@ -3132,21 +4291,27 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <p className="text-sm font-semibold text-amber-900">Payout details</p>
                 {docRejection.bank_proof ? <SectionRejectedBadge active={false} /> : null}
               </div>
-              <p className="text-xs text-amber-800 mt-0.5">Choose Bank account or UPI. Upload proof as required.</p>
+              <p className="text-xs text-amber-800 mt-0.5">Choose Bank Account or UPI for payouts. Switch the toggle to verify each separately.</p>
             </div>
           </div>
         </div>
-        <div className="flex rounded-lg border border-slate-200 bg-slate-50/50 p-1">
-          <button type="button" onClick={() => setBank('payout_method', 'bank')} className={`flex-1 rounded-md py-2 text-sm font-medium transition-colors ${isBank ? 'bg-white text-indigo-600 shadow' : 'text-slate-600 hover:text-slate-800'}`}>Bank Account</button>
-          <button type="button" onClick={() => setBank('payout_method', 'upi')} className={`flex-1 rounded-md py-2 text-sm font-medium transition-colors ${!isBank ? 'bg-white text-indigo-600 shadow' : 'text-slate-600 hover:text-slate-800'}`}>UPI</button>
+        <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-700">Use for payout <span className="text-rose-500">*</span></p>
+          <div className="flex rounded-lg border border-slate-200 bg-white p-1">
+            <button type="button" onClick={() => setBank('payout_method', 'bank')} className={`flex-1 rounded-md py-2 text-sm font-medium transition-colors ${isBank ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-800'}`}>Bank Account</button>
+            <button type="button" onClick={() => setBank('payout_method', 'upi')} className={`flex-1 rounded-md py-2 text-sm font-medium transition-colors ${!isBank ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-800'}`}>UPI</button>
+          </div>
         </div>
-        {isBank ? (
-          <>
+
+        {isBank && (
+        <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-800">Bank account</p>
+            {(bankVerify.state === 'verified' || bank.bank_is_verified) && (
+              <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">Verified</span>
+            )}
+          </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Account holder name <span className="text-rose-500">*</span></label>
-                <input type="text" value={bank.account_holder_name} onChange={e => setBank('account_holder_name', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missName)}`} placeholder="As per bank record" />
-              </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Account number <span className="text-rose-500">*</span></label>
                 <input type="text" value={bank.account_number} onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 18); setBank('account_number', v); setDocFormatErrors(prev => ({ ...prev, account_number: documentFormatValidators.accountNumber(v) })); }} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-mono ${reqRing(missAcc)}`} placeholder="e.g. 123456789012" />
@@ -3157,87 +4322,237 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <input type="text" value={bank.ifsc_code} onChange={e => { const v = e.target.value.toUpperCase().slice(0, 11); setBank('ifsc_code', v); setDocFormatErrors(prev => ({ ...prev, ifsc_code: documentFormatValidators.ifsc(v) })); }} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-mono uppercase ${reqRing(missIfsc)}`} placeholder="e.g. SBIN0001234" style={{ textTransform: 'uppercase' }} />
                 {docFormatErrors.ifsc_code && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.ifsc_code}</p>}
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Bank name <span className="text-rose-500">*</span></label>
-                <input type="text" value={bank.bank_name} onChange={e => setBank('bank_name', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missBank)}`} placeholder="e.g. State Bank of India" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Branch name</label>
-                <input type="text" value={bank.branch_name || ''} onChange={e => setBank('branch_name', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="Optional" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Account type</label>
-                <select value={bank.account_type || ''} onChange={e => setBank('account_type', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"><option value="">Select</option><option value="savings">Savings</option><option value="current">Current</option></select>
-              </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Bank proof <span className="text-rose-500">*</span></label>
-              <p className="text-xs text-slate-500 mb-1.5">Upload one: Passbook, Cancelled cheque, or Bank statement</p>
-              <div className={`flex flex-wrap gap-2 mb-2 rounded-lg p-2 -m-0.5 ${missProofType ? 'ring-2 ring-rose-200 border border-rose-300' : ''}`}>
-                {(['passbook', 'cancelled_cheque', 'bank_statement'] as const).map((proofKind) => (
-                  <label key={proofKind} className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="radio" name="bank_proof_type" checked={(bank.bank_proof_type || '') === proofKind} onChange={() => setBank('bank_proof_type', proofKind)} className="rounded-full border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-                    <span className="text-sm text-slate-700 capitalize">{proofKind.replace('_', ' ')}</span>
-                  </label>
-                ))}
-              </div>
-              <input type="file" ref={fileInputRefs.bankProof} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('bank_proof_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
-              {!hasBankProofFileOrUrl() ? (
-                <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className={`w-full rounded-lg border-2 border-dashed py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 ${missProofFile ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300 bg-slate-50/50'}`}>
-                  {isUploadingBankFile('bank_proof_file') ? (
-                    <span className="inline-flex items-center justify-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+
+            {isElectronic(bankMode) && !!String(bank.account_number || '').trim() && !!String(bank.ifsc_code || '').trim() && (
+              <div className="space-y-2">
+                {bankVerify.state === 'verified' || bank.bank_is_verified ? (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
+                      Bank account verified automatically
+                    </p>
+                    {verifiedDetailRows(bankVerify.details || bank.bank_verified_details || undefined).map(([l, v]) => (
+                      <p key={l} className="mt-1 text-xs text-emerald-800">
+                        <span className="font-medium">{l}:</span> {v}
+                      </p>
+                    ))}
+                    <div className="mt-2 max-w-xs">
+                      <label className="block text-xs font-medium text-emerald-900 mb-1">
+                        Account type <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={
+                          ["SAVINGS", "CURRENT"].includes(String(bank.account_type || "").toUpperCase())
+                            ? String(bank.account_type).toUpperCase()
+                            : ""
+                        }
+                        onChange={(e) => setBank("account_type", e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-emerald-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      >
+                        <option value="">Select</option>
+                        <option value="SAVINGS">Savings</option>
+                        <option value="CURRENT">Current</option>
+                      </select>
+                      <p className="mt-1 text-[11px] text-emerald-700">
+                        Cashfree does not return account type — please confirm Savings or Current.
+                      </p>
+                    </div>
+                    <p className="mt-1.5 text-xs text-emerald-700">No bank proof upload needed for bank payout.</p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={
+                      bankVerify.state === 'verifying' ||
+                      !!documentFormatValidators.accountNumber(String(bank.account_number || '')) ||
+                      !!documentFormatValidators.ifsc(String(bank.ifsc_code || ''))
+                    }
+                    onClick={() => verifyDocNow('bank')}
+                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {bankVerify.state === 'verifying' ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Verifying…</>
+                    ) : (
+                      'Verify Bank Account'
+                    )}
+                  </button>
+                )}
+                {bankVerify.state === 'failed' && (
+                  <div className={`rounded-lg border p-3 text-xs ${bankMode === 'auto' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                    <span className="font-semibold">
+                      {bankMode === 'auto' ? 'Bank verification failed. ' : "Instant verification didn't succeed. "}
                     </span>
+                    {bankVerify.error || 'Please check account number / IFSC.'}
+                    {bankMode === 'hybrid' ? ' Enter details manually and upload bank proof.' : ' Retry later — automatic verification is required.'}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!(bankVerify.state === 'verified' || bank.bank_is_verified) &&
+              (!isElectronic(bankMode) || uploadAllowedFor(bankMode, bankVerify)) && (
+              <>
+                {isElectronic(bankMode) && uploadAllowedFor(bankMode, bankVerify) && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    Auto verification didn&apos;t succeed — enter bank details manually and upload proof.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Account holder name <span className="text-rose-500">*</span></label>
+                    <input type="text" value={bank.account_holder_name} onChange={e => setBank('account_holder_name', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missName)}`} placeholder="As per bank record" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Bank name <span className="text-rose-500">*</span></label>
+                    <input type="text" value={bank.bank_name} onChange={e => setBank('bank_name', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missBank)}`} placeholder="e.g. State Bank of India" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Branch name</label>
+                    <input type="text" value={bank.branch_name || ''} onChange={e => setBank('branch_name', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="Optional" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Account type</label>
+                    <select value={bank.account_type || ''} onChange={e => setBank('account_type', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"><option value="">Select</option><option value="SAVINGS">Savings</option><option value="CURRENT">Current</option></select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Bank proof <span className="text-rose-500">*</span></label>
+                  <p className="text-xs text-slate-500 mb-1.5">Upload one: Passbook, Cancelled cheque, or Bank statement</p>
+                  <div className={`flex flex-wrap gap-2 mb-2 rounded-lg p-2 -m-0.5 ${missProofType ? 'ring-2 ring-rose-200 border border-rose-300' : ''}`}>
+                    {(['passbook', 'cancelled_cheque', 'bank_statement'] as const).map((proofKind) => (
+                      <label key={proofKind} className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="bank_proof_type" checked={(bank.bank_proof_type || '') === proofKind} onChange={() => setBank('bank_proof_type', proofKind)} className="rounded-full border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                        <span className="text-sm text-slate-700 capitalize">{proofKind.replace('_', ' ')}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <input type="file" ref={fileInputRefs.bankProof} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('bank_proof_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
+                  {!hasBankProofFileOrUrl() ? (
+                    <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className={`w-full rounded-lg border-2 border-dashed py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 ${missProofFile ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300 bg-slate-50/50'}`}>
+                      {isUploadingBankFile('bank_proof_file') ? (
+                        <span className="inline-flex items-center justify-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                        </span>
+                      ) : (
+                        'Upload passbook / cancelled cheque / statement'
+                      )}
+                    </button>
                   ) : (
-                    'Upload passbook / cancelled cheque / statement'
+                    renderUploadedDocumentPanel({
+                      viewTitle: 'Bank proof',
+                      file: bank.bank_proof_file ?? null,
+                      url: bank.bank_proof_file_url,
+                      imagePreviewUrl: bankProofPreviewUrl,
+                      onChange: () => fileInputRefs.bankProof.current?.click(),
+                      onRemove: () => setBankFile('bank_proof_file', null),
+                      uploading: isUploadingBankFile('bank_proof_file'),
+                    })
                   )}
-                </button>
-              ) : (
-                renderUploadedDocumentPanel({
-                  viewTitle: 'Bank proof',
-                  file: bank.bank_proof_file ?? null,
-                  url: bank.bank_proof_file_url,
-                  imagePreviewUrl: bankProofPreviewUrl,
-                  onChange: () => fileInputRefs.bankProof.current?.click(),
-                  onRemove: () => setBankFile('bank_proof_file', null),
-                  uploading: isUploadingBankFile('bank_proof_file'),
-                })
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="space-y-3">
+                </div>
+              </>
+            )}
+        </div>
+        )}
+
+        {!isBank && (
+        <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-800">UPI</p>
+            {(upiVerify.state === 'verified' || bank.upi_verified) && (
+              <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">Verified</span>
+            )}
+          </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">UPI ID <span className="text-rose-500">*</span></label>
-              <input type="text" value={bank.upi_id || ''} onChange={e => setBank('upi_id', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missUpi)}`} placeholder="e.g. merchant@upi" />
+              <input
+                type="text"
+                value={bank.upi_id || ''}
+                onChange={e => setBank('upi_id', e.target.value.trim().toLowerCase())}
+                className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missUpi)}`}
+                placeholder="e.g. merchant@upi"
+              />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">UPI QR screenshot <span className="text-rose-500">*</span></label>
-              <p className="text-xs text-slate-500 mb-1.5">Upload screenshot where UPI ID is clearly visible on the QR</p>
-              <input type="file" ref={fileInputRefs.upiQr} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('upi_qr_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
-              {!hasUpiQrFileOrUrl() ? (
-                <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className={`w-full rounded-lg border-2 border-dashed py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 ${missQr ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300 bg-slate-50/50'}`}>
-                  {isUploadingBankFile('upi_qr_file') ? (
-                    <span className="inline-flex items-center justify-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+
+            {isElectronic(upiMode) && !!String(bank.upi_id || '').trim() && (
+              <div className="space-y-2">
+                {upiVerify.state === 'verified' || bank.upi_verified ? (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">✓</span>
+                      UPI ID verified automatically
+                    </p>
+                    {verifiedDetailRows(upiVerify.details || bank.upi_verified_details || undefined).map(([l, v]) => (
+                      <p key={l} className="mt-1 text-xs text-emerald-800">
+                        <span className="font-medium">{l}:</span> {v}
+                      </p>
+                    ))}
+                    <p className="mt-1.5 text-xs text-emerald-700">No QR screenshot needed for UPI payout.</p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={
+                      upiVerify.state === 'verifying' ||
+                      !/^[a-z0-9.\-_]{2,256}@[a-z0-9]{2,64}$/i.test(String(bank.upi_id || '').trim())
+                    }
+                    onClick={() => verifyDocNow('upi')}
+                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {upiVerify.state === 'verifying' ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Verifying…</>
+                    ) : (
+                      'Verify UPI ID'
+                    )}
+                  </button>
+                )}
+                {upiVerify.state === 'failed' && (
+                  <div className={`rounded-lg border p-3 text-xs ${upiMode === 'auto' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                    <span className="font-semibold">
+                      {upiMode === 'auto' ? 'UPI verification failed. ' : "Instant verification didn't succeed. "}
                     </span>
-                  ) : (
-                    'Upload QR screenshot (UPI ID visible)'
-                  )}
-                </button>
-              ) : (
-                renderUploadedDocumentPanel({
-                  viewTitle: 'UPI QR screenshot',
-                  file: bank.upi_qr_file ?? null,
-                  url: bank.upi_qr_screenshot_url,
-                  imagePreviewUrl: upiQrPreviewUrl,
-                  onChange: () => fileInputRefs.upiQr.current?.click(),
-                  onRemove: () => setBankFile('upi_qr_file', null),
-                  uploading: isUploadingBankFile('upi_qr_file'),
-                })
-              )}
-            </div>
-          </div>
+                    {upiVerify.error || 'Please check the UPI ID.'}
+                    {upiMode === 'hybrid' ? ' Upload a UPI QR screenshot where the UPI ID is clearly visible.' : ' Retry later — automatic verification is required.'}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!(upiVerify.state === 'verified' || bank.upi_verified) &&
+              (!isElectronic(upiMode) || uploadAllowedFor(upiMode, upiVerify)) && (
+              <div>
+                {isElectronic(upiMode) && uploadAllowedFor(upiMode, upiVerify) && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                    Auto verification didn&apos;t succeed — upload a QR screenshot with UPI ID visible.
+                  </p>
+                )}
+                <label className="block text-xs font-medium text-slate-700 mb-1">UPI QR screenshot <span className="text-rose-500">*</span></label>
+                <p className="text-xs text-slate-500 mb-1.5">Upload screenshot where UPI ID is clearly visible on the QR</p>
+                <input type="file" ref={fileInputRefs.upiQr} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('upi_qr_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
+                {!hasUpiQrFileOrUrl() ? (
+                  <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className={`w-full rounded-lg border-2 border-dashed py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 ${missQr ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300 bg-slate-50/50'}`}>
+                    {isUploadingBankFile('upi_qr_file') ? (
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                      </span>
+                    ) : (
+                      'Upload QR screenshot (UPI ID visible)'
+                    )}
+                  </button>
+                ) : (
+                  renderUploadedDocumentPanel({
+                    viewTitle: 'UPI QR screenshot',
+                    file: bank.upi_qr_file ?? null,
+                    url: bank.upi_qr_screenshot_url,
+                    imagePreviewUrl: upiQrPreviewUrl,
+                    onChange: () => fileInputRefs.upiQr.current?.click(),
+                    onRemove: () => setBankFile('upi_qr_file', null),
+                    uploading: isUploadingBankFile('upi_qr_file'),
+                  })
+                )}
+              </div>
+            )}
+        </div>
         )}
       </div>
     );
@@ -3510,8 +4825,10 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         return renderPanSection();
       case 'aadhar':
         return renderAadharSection();
-      case 'optional':
-        return renderOptionalSection();
+      case 'licence':
+        return renderLicenceSection();
+      case 'gst':
+        return renderGstSection();
       case 'bank':
       default:
         return renderBankSection();
@@ -3520,6 +4837,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderDocumentStep = () => (
     <>
+      <DigilockerConsentSheet
+        open={aadhaarVerify.state === 'verifying'}
+        url={aadhaarVerify.digilockerUrl || null}
+        preparing={aadhaarVerify.state === 'verifying' && !aadhaarVerify.digilockerUrl}
+        popupRef={digilockerPopupRef}
+        onClose={cancelDigilockerFlow}
+        onConsentActivity={() => {
+          void pollAadhaarStatusOnce();
+        }}
+      />
       {renderReplaceImageModal()}
       {renderValidationModal()}
       <div className="w-full min-h-full max-w-full bg-slate-50/50 overflow-x-hidden">
@@ -3538,8 +4865,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setActiveSection('optional')}
-                    className="mt-0.5 text-[11px] text-indigo-700 hover:text-indigo-900 hover:underline text-left"
+                    onClick={() => goToSectionFromSidebar('licence')}
+                    disabled={docSectionOrder.indexOf('licence') > maxReachedSectionIdx}
+                    className="mt-0.5 text-[11px] text-indigo-700 hover:text-indigo-900 hover:underline text-left disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
                   >
                     Optional docs recommended.
                   </button>
@@ -3548,39 +4876,59 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
               <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
-              {(['pan', 'aadhar', 'optional', 'bank'] as const).map((section) => {
+              {(['pan', 'aadhar', 'licence', 'gst', 'bank'] as const).map((section) => {
                 const isActive = activeSection === section;
+                const sIdx = docSectionOrder.indexOf(section);
+                const locked = sIdx > maxReachedSectionIdx;
                 const showRejected =
                   section === 'pan'
                     ? !!docRejection.pan
                     : section === 'aadhar'
                       ? !!docRejection.aadhaar
-                      : section === 'optional'
+                      : section === 'licence'
                         ? optionalRejectionItems.length > 0
-                        : !!docRejection.bank_proof;
+                        : section === 'gst'
+                          ? !!gstRejectionReason
+                          : !!docRejection.bank_proof;
+                const sectionLabel =
+                  section === 'pan'
+                    ? 'PAN'
+                    : section === 'aadhar'
+                      ? 'Aadhaar'
+                      : section === 'licence'
+                        ? isPharmaBusiness()
+                          ? 'Drug Lic.'
+                          : isFoodBusiness()
+                            ? 'FSSAI'
+                            : 'OTHERS'
+                        : section === 'gst'
+                          ? 'GST'
+                          : 'Bank';
                 return (
                 <button
                   key={section}
                   type="button"
-                  onClick={() => setActiveSection(section)}
+                  onClick={() => {
+                    if (locked) return;
+                    goToSectionFromSidebar(section);
+                  }}
+                  disabled={locked}
+                  aria-disabled={locked}
+                  title={
+                    locked
+                      ? 'Use Save & Continue to open the next section'
+                      : undefined
+                  }
                   className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${
-                    isActive ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                    isActive
+                      ? 'bg-indigo-600 text-white'
+                      : locked
+                        ? 'cursor-not-allowed text-slate-400'
+                        : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
                   <span className="flex w-full items-center justify-between gap-2">
-                    <span>
-                  {section === 'pan'
-                    ? 'PAN'
-                    : section === 'aadhar'
-                    ? 'Aadhaar'
-                    : section === 'optional'
-                    ? isPharmaBusiness()
-                      ? 'Drug Lic. / GST'
-                      : isFoodBusiness()
-                      ? 'GST / FSSAI'
-                      : 'GST / OTHERS'
-                    : 'Bank'}
-                    </span>
+                    <span>{sectionLabel}</span>
                     {showRejected ? <SectionRejectedBadge active={isActive} /> : null}
                   </span>
                 </button>
@@ -3608,8 +4956,25 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <button
                   type="button"
                   onClick={handleDocumentSaveAndContinue}
-                  disabled={actionLoading || documentSaving || !validateDocumentSection()}
-                  title={!validateDocumentSection() ? 'Complete this section (including verification) to continue' : undefined}
+                  disabled={
+                    actionLoading ||
+                    documentSaving ||
+                    !validateDocumentSection() ||
+                    (activeSection === 'aadhar' && aadhaarVerify.state === 'verifying')
+                  }
+                  title={
+                    activeSection === 'aadhar' && aadhaarVerify.state === 'verifying'
+                      ? 'Finish DigiLocker verification first — skip is locked while it is running'
+                      : !validateDocumentSection()
+                      ? activeSection === 'aadhar'
+                        ? 'Clear invalid Aadhaar number to skip, or enter a valid 12-digit number'
+                        : activeSection === 'gst'
+                          ? !(documents.gst_number || '').trim()
+                            ? 'Clear invalid GSTIN to skip, or enter a valid 15-character GSTIN'
+                            : 'Verify GSTIN or upload certificate to continue'
+                          : 'Complete this section to continue'
+                      : undefined
+                  }
                   className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                 >
                   {actionLoading || documentSaving ? (
@@ -3621,10 +4986,17 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   )}
                   {actionLoading || documentSaving
                     ? 'Saving...'
+                    : activeSection === 'aadhar' && aadhaarVerify.state === 'verifying'
+                    ? 'Waiting for DigiLocker…'
                     : activeSection === 'aadhar' &&
-                      !documents.aadhar_holder_name?.trim() &&
-                      !documents.aadhar_number?.trim()
-                    ? 'Skip Aadhaar & Continue'
+                      aadhaarVerify.state !== 'verified' &&
+                      !(documents as { aadhaar_is_verified?: boolean }).aadhaar_is_verified
+                    ? 'Skip / Save & Continue'
+                    : activeSection === 'gst' &&
+                      gstVerify.state !== 'verified' &&
+                      !(documents as { gst_is_verified?: boolean }).gst_is_verified &&
+                      !(documents.gst_number || '').trim()
+                    ? 'Skip / Save & Continue'
                     : 'Save & Continue'}
                 </button>
               </div>

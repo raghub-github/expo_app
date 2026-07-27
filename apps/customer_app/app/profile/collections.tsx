@@ -32,10 +32,17 @@ export default function CollectionsScreen() {
   const insets = useSafeAreaInsets();
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
-  const { bookmarkSet, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useStoreBookmarks();
+  const {
+    bookmarkSet,
+    isLoading: bookmarksLoading,
+    isError: bookmarksError,
+    isAuthenticated: storeBookmarksAuthed,
+    refetch: refetchBookmarks,
+  } = useStoreBookmarks();
   const {
     bookmarkedItems: dishItems,
     isLoading: dishBookmarksLoading,
+    isError: dishBookmarksError,
     refetch: refetchDishBookmarks,
   } = useMenuItemBookmarks();
   const [activeTab, setActiveTab] = useState<TabId>("restaurants");
@@ -94,6 +101,8 @@ export default function CollectionsScreen() {
   const {
     data: merchants = [],
     isLoading: merchantsLoading,
+    isError: merchantsError,
+    refetch: refetchMerchants,
   } = useQuery({
     queryKey: [
       "bookmarked-merchants",
@@ -126,9 +135,48 @@ export default function CollectionsScreen() {
 
   const restaurantsLoading =
     bookmarksLoading || (visibleStoreIds.length > 0 && merchantsLoading);
-  const restaurantsEmpty = visibleStoreIds.length === 0;
+  // Distinguish a FAILED fetch from a genuinely empty collection. Previously both
+  // read as "empty", so an API error silently hid the user's saved restaurants.
+  const restaurantsErrored =
+    bookmarksError || (visibleStoreIds.length > 0 && (merchantsError || merchants.length === 0));
+  const restaurantsEmpty = !restaurantsErrored && visibleStoreIds.length === 0;
   const dishesLoading = dishBookmarksLoading;
-  const dishesEmpty = visibleDishItems.length === 0;
+  const dishesErrored = dishBookmarksError;
+  const dishesEmpty = !dishesErrored && visibleDishItems.length === 0;
+
+  const retryRestaurants = useCallback(() => {
+    void refetchBookmarks();
+    void refetchMerchants();
+  }, [refetchBookmarks, refetchMerchants]);
+
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log("[collections] render decision", {
+      tab: activeTab,
+      authed: storeBookmarksAuthed,
+      restaurants: {
+        bookmarkIds: visibleStoreIds.length,
+        merchantsResolved: merchants.length,
+        state: restaurantsLoading
+          ? "loading"
+          : restaurantsErrored
+            ? "error"
+            : restaurantsEmpty
+              ? "empty"
+              : "data",
+      },
+      dishes: {
+        items: visibleDishItems.length,
+        state: dishesLoading
+          ? "loading"
+          : dishesErrored
+            ? "error"
+            : dishesEmpty
+              ? "empty"
+              : "data",
+      },
+    });
+  }
 
   return (
     <View style={styles.screen}>
@@ -162,6 +210,8 @@ export default function CollectionsScreen() {
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={GatiMitraColors.primaryMint} />
           </View>
+        ) : dishesErrored ? (
+          <CollectionsErrorState onRetry={() => void refetchDishBookmarks()} />
         ) : dishesEmpty ? (
           <CollectionsEmptyState
             variant="dishes"
@@ -190,6 +240,8 @@ export default function CollectionsScreen() {
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="large" color={GatiMitraColors.primaryMint} />
         </View>
+      ) : restaurantsErrored ? (
+        <CollectionsErrorState onRetry={retryRestaurants} />
       ) : restaurantsEmpty ? (
         <CollectionsEmptyState
           variant="restaurants"
@@ -210,6 +262,22 @@ export default function CollectionsScreen() {
           ))}
         </ScrollView>
       )}
+    </View>
+  );
+}
+
+/**
+ * Shown when a bookmarks fetch FAILS (as opposed to being genuinely empty). A
+ * transient/API error must offer a retry instead of masquerading as "no items".
+ */
+function CollectionsErrorState({ onRetry }: { onRetry: () => void }) {
+  return (
+    <View style={styles.errorWrap}>
+      <AppText style={styles.errorTitle}>Couldn&apos;t load your collections</AppText>
+      <AppText style={styles.errorSub}>Check your connection and try again.</AppText>
+      <Pressable style={styles.retryBtn} onPress={onRetry} accessibilityRole="button">
+        <AppText style={styles.retryBtnText}>Retry</AppText>
+      </Pressable>
     </View>
   );
 }
@@ -252,5 +320,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
+  },
+  errorWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+    backgroundColor: "#FFFFFF",
+  },
+  errorTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
+    textAlign: "center",
+  },
+  errorSub: {
+    fontSize: 13,
+    color: "#6B7280",
+    textAlign: "center",
+    marginTop: 6,
+  },
+  retryBtn: {
+    marginTop: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: GatiMitraColors.primaryMint,
+  },
+  retryBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 });

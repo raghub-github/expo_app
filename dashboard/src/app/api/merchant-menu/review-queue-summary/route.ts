@@ -51,8 +51,8 @@ export async function GET(request: NextRequest) {
 
     const [crRow] = await sql`
       SELECT COUNT(*)::int AS c
-      FROM merchant_menu_item_change_requests r
-      WHERE r.status = 'PENDING'::merchant_menu_item_change_request_status
+      FROM merchant_menu_item_review_requests r
+      WHERE r.status = 'PENDING'::merchant_menu_item_review_request_status
       ${storeCond}
     `;
 

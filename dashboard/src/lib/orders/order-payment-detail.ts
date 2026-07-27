@@ -272,12 +272,12 @@ function resolveDeliveryFee(
     fromSnap.quoted ??
     asNum(billing?.deliveryFeeQuotedInr ?? billing?.delivery_fee_quoted);
   const fee =
-    (fromBilling != null && fromBilling > 0 ? fromBilling : null) ??
+    (fromBilling != null ? fromBilling : null) ??
     settlementDelivery ??
     asNum(core.total_delivery_fee) ??
     (quoted != null && quoted > 0 ? quoted : null);
   return {
-    fee: fee != null && fee > 0 ? round2(fee) : null,
+    fee: fee != null ? round2(Math.max(0, fee)) : null,
     quoted: quoted != null && quoted > 0 ? round2(quoted) : null,
     waived: false,
   };

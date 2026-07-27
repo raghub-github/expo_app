@@ -38,31 +38,56 @@ function resolveClientPingIntervalMs(args: {
 }
 
 /**
- * Keeps rider_current_locations fresh while on duty so dispatch pool / offers work
- * on every screen (not only the Orders map tab).
+ * Keeps rider_current_locations fresh while on duty (or mid-delivery) so
+ * dispatch pool / offers work on every screen (not only the Orders map tab).
+ * Background GPS continues for active orders even if the rider toggles OFF duty.
  */
 export function useRiderDutyLocationPing(): void {
   const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
-  const { data: activeOrders = [] } = useActiveOrders();
+  const { data: activeOrders = [], isFetched: activeOrdersFetched } = useActiveOrders();
   const hasActiveOrder = activeOrders.length > 0;
-  const tracker = useMemo(() => createForegroundLocationTracker(), []);
+  const shouldTrack = isOnDuty || hasActiveOrder;
+  const tracker = useMemo(
+    () => createForegroundLocationTracker({ profileId: "duty-ping" }),
+    []
+  );
   const lastPingAtRef = useRef(0);
   const recommendedIntervalRef = useRef(PING_INTERVAL_IDLE_MS);
 
   useEffect(() => {
-    if (!isOnDuty) {
+    // Cold start: active orders may still be loading — never stop BG until we know.
+    if (!activeOrdersFetched && !isOnDuty) {
+      void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
+        m.ensureRiderBackgroundLocationRunning()
+      );
+      return;
+    }
+    if (!shouldTrack) {
       void tracker.stop();
+      void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
+        m.stopRiderBackgroundLocation()
+      );
       return;
     }
     void tracker.start();
+    void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
+      m.startRiderBackgroundLocation(hasActiveOrder ? "active_order" : "duty")
+    );
     return () => {
       void tracker.stop();
     };
-  }, [isOnDuty, tracker]);
+  }, [shouldTrack, hasActiveOrder, activeOrdersFetched, isOnDuty, tracker]);
+
+  // Process recreation / cold start: restore BG updates from persisted mode flag.
+  useEffect(() => {
+    void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
+      m.ensureRiderBackgroundLocationRunning()
+    );
+  }, []);
 
   useEffect(() => {
-    if (!isOnDuty || !session) return;
+    if (!shouldTrack || !session) return;
 
     const pingFromState = (state: LocationTrackerState) => {
       if (state.status !== "tracking" || !state.lastFix) return;
@@ -100,7 +125,7 @@ export function useRiderDutyLocationPing(): void {
     };
 
     return tracker.subscribe(pingFromState);
-  }, [hasActiveOrder, isOnDuty, session, tracker]);
+  }, [hasActiveOrder, shouldTrack, session, tracker]);
 
   const sendLocationPing = async (fix: RiderLocationFix) => {
     if (!session) return;
@@ -127,16 +152,23 @@ export function useRiderDutyLocationPing(): void {
   const resolveFixForPing = async (): Promise<RiderLocationFix | null> => {
     const state = tracker.getState();
     if (state.status === "tracking" && state.lastFix) {
-      return state.lastFix;
+      const ageMs = Date.now() - state.lastFix.tsMs;
+      if (ageMs <= 8_000) return state.lastFix;
     }
     try {
       const perm = await Location.requestForegroundPermissionsAsync();
       if (perm.status !== "granted") return null;
-      const loc =
+      let loc =
+        (await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Highest,
+        }).catch(() => null)) ??
         (await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
-        }).catch(() => null)) ??
-        (await Location.getLastKnownPositionAsync({ maxAge: 300_000 }));
+        }).catch(() => null));
+      // Never seed the map/backend from a multi-minute cached OS fix.
+      if (!loc) {
+        loc = await Location.getLastKnownPositionAsync({ maxAge: 8_000 });
+      }
       if (!loc) return null;
       const c = loc.coords;
       return {
@@ -155,7 +187,7 @@ export function useRiderDutyLocationPing(): void {
   };
 
   useEffect(() => {
-    if (!isOnDuty || !session) return;
+    if (!shouldTrack || !session) return;
 
     const refreshLocation = async (reason: string) => {
       riderDispatchLog(`location refresh (${reason})`);
@@ -173,10 +205,13 @@ export function useRiderDutyLocationPing(): void {
     }, staleIntervalMs);
 
     const appStateSub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next !== "active" || !isOnDuty) return;
+      if (next !== "active" || !shouldTrack) return;
       void (async () => {
         await tracker.stop();
         await tracker.start();
+        await import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
+          m.startRiderBackgroundLocation(hasActiveOrder ? "active_order" : "duty")
+        );
         await refreshLocation("app_foreground");
       })();
     });
@@ -185,5 +220,5 @@ export function useRiderDutyLocationPing(): void {
       clearInterval(stalePingId);
       appStateSub.remove();
     };
-  }, [hasActiveOrder, isOnDuty, session, tracker]);
+  }, [hasActiveOrder, shouldTrack, session, tracker]);
 }

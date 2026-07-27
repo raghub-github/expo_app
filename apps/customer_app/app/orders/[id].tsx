@@ -27,6 +27,7 @@ import {
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
 import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import { getRouteCoordinates } from "@/services/directions.service";
+import { useLiveLocationWsConnected } from "@/lib/liveLocationTransport";
 import { useOrderStore } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
@@ -168,6 +169,7 @@ export default function OrderDetailsScreen() {
   const orderId = id ?? "";
   /** Past orders opened from Orders → History use the bill/invoice details UI. */
   const useHistoryOrderDetails = view === "history";
+  const liveLocationWsConnected = useLiveLocationWsConnected();
   const [mapReady, setMapReady] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<OrderDetailLineItem | null>(null);
   const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
@@ -274,8 +276,11 @@ export default function OrderDetailsScreen() {
     queryKey: ["orderTracking", orderId],
     queryFn: () => orderService.getOrderTracking(orderId),
     enabled: !!orderId && !!isInProgress,
-    refetchInterval: isInProgress ? 8_000 : false,
-    staleTime: 4_000,
+    // Always fetch once on enter so ETA/distance are not empty while WS warms up.
+    refetchOnMount: "always",
+    // WebSocket is primary; HTTP poll only while the socket is down.
+    refetchInterval: isInProgress && !liveLocationWsConnected ? 2_000 : false,
+    staleTime: liveLocationWsConnected ? 30_000 : 0,
   });
 
   const deliveryLat = order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
@@ -354,7 +359,6 @@ export default function OrderDetailsScreen() {
     riderReviewText?: string;
     storeReviewTags?: string[];
     riderReviewTags?: string[];
-    riderTipAmount?: number;
   }) => {
     if (!orderId) return;
     const storeRating = payload.storeRating != null && payload.storeRating >= 1 ? payload.storeRating : null;
@@ -371,7 +375,6 @@ export default function OrderDetailsScreen() {
         riderReviewText: payload.riderReviewText ?? null,
         storeReviewTags: payload.storeReviewTags,
         riderReviewTags: payload.riderReviewTags,
-        riderTipAmount: payload.riderTipAmount ?? null,
       });
       await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
@@ -395,14 +398,20 @@ export default function OrderDetailsScreen() {
     return (
       <OrderDeliveryRatingSheet
         visible={ratingSheetVisible && isDelivered && !order.storeRatingSubmitted}
+        orderId={order.orderId}
         storeName={order.merchantPublicName ?? order.merchantName ?? "Restaurant"}
         storeBannerUri={toAbsoluteImageUrl(order.merchantBannerUrl)}
         riderName={order.rider?.name}
-        checkoutTipAmount={order.tipAmount ?? 0}
+        existingTipAmount={order.tipAmount ?? 0}
+        paymentMethodLabel={order.paymentMethod ?? "UPI"}
         submitting={ratingSubmitting}
         onClose={() => {
           setRatingSheetVisible(false);
           setRatingDismissed(true);
+        }}
+        onTipPaid={async () => {
+          await queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
+          await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
         }}
         onSubmit={handleSubmitStoreRating}
       />

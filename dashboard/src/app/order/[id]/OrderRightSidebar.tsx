@@ -2630,6 +2630,7 @@ export default function OrderRightSidebar({
       prefetchedOrderItems={prefetchedOrderItems}
       orderCancelledOnTimeline={orderCancelledOnTimeline}
       orderFullyRefunded={orderFullyRefunded}
+      refundActionsDisabled={refundActionsDisabled}
       refundRemainingRefundable={refundRemainingRefundable}
       onRefundCreated={onRefundCreated}
     />

@@ -7,9 +7,11 @@
  *   GET  /health                       — config sanity check, no secrets
  *   POST /submit/pan                   — trigger PAN verify from admin dashboard
  *   POST /submit/bank                  — trigger BAV sync
+ *   POST /submit/upi                   — trigger UPI VPA verify
  *   POST /submit/ifsc                  — trigger IFSC lookup
  *   POST /submit/driving-licence       — trigger DL verify
  *   POST /submit/vehicle-rc            — trigger RC verify
+ *   POST /project-rider-ev             — project deferred EV payload → rider_vehicles (RC)
  *   POST /submit/passport              — trigger passport verify
  *   POST /submit/gstin                 — trigger GSTIN verify
  *   POST /submit/cin                   — trigger CIN verify
@@ -27,9 +29,9 @@ import { auth } from "../../../plugins/auth.js";
 import { getEnv } from "../../../config/env.js";
 import { getSql } from "../../../db/client.js";
 import {
-  submitPan, submitBankAccount, submitIfsc, submitDrivingLicence,
+  submitPan, submitBankAccount, submitUpiPennyDrop, submitIfsc, submitDrivingLicence,
   submitVehicleRc, submitPassport, submitGstin, submitCin,
-  submitReversePennyDrop, submitDigilocker,
+  submitReversePennyDrop, submitDigilocker, pollDigilockerForSubject,
   type SubmitOutcome,
 } from "../service.js";
 import { loadCashfreeConfig, CashfreeNotConfiguredError } from "../cashfree/config.js";
@@ -84,7 +86,15 @@ function catchSubmit(reply: FastifyReply, e: unknown): FastifyReply {
   if (e instanceof CashfreeNotConfiguredError) {
     return reply.code(503).send({ error: "cashfree_not_configured", reason: e.reason });
   }
-  return reply.code(500).send({ error: "internal_error", message: (e as Error).message });
+  console.error(
+    "[verification.submit] internal_error:",
+    e instanceof Error ? e.message : e,
+    e instanceof Error ? e.stack : "",
+  );
+  return reply.code(500).send({
+    error: "internal_error",
+    message: e instanceof Error ? e.message : "internal_error",
+  });
 }
 
 export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
@@ -117,7 +127,7 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
     });
 
     // ── Submits ──
-    admin.post<{ Body: { subject_type: string; subject_id: number; pan: string; name: string; subject_facts?: Record<string, unknown> } }>(
+    admin.post<{ Body: { subject_type: string; subject_id: number; pan: string; name?: string; subject_facts?: Record<string, unknown> } }>(
       "/submit/pan", async (req, reply) => {
         const b = req.body ?? ({} as never);
         const s = validSubject(b.subject_type, b.subject_id);
@@ -125,13 +135,18 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
         if (!b.pan || !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(b.pan.trim().toUpperCase())) {
           return reply.code(400).send({ error: "invalid_pan" });
         }
-        if (!b.name || b.name.trim().length < 2) return reply.code(400).send({ error: "name_required" });
+        // Name is optional — Cashfree PAN verify works with number alone (name used only for match score).
         try {
           const o = await submitPan({
             subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
-            createdBy: Number(req.auth?.sub) || null,
+            // created_by is integer; JWT `sub` is often a UUID — never NaN.
+            createdBy: (() => {
+              const n = Number(req.auth?.sub);
+              return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+            })(),
             pan: b.pan.trim().toUpperCase(),
-            name: b.name.trim(),
+            name: typeof b.name === "string" ? b.name.trim() : "",
+            deferProjection: !!(b as { defer_projection?: boolean }).defer_projection,
           });
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }
@@ -149,6 +164,26 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
             subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
             createdBy: Number(req.auth?.sub) || null,
             bankAccount: b.bank_account, ifsc: b.ifsc.toUpperCase(), name: b.name, phone: b.phone,
+            deferProjection: !!(b as { defer_projection?: boolean }).defer_projection,
+          });
+          return sendOutcome(reply, o);
+        } catch (e) { return catchSubmit(reply, e); }
+      });
+
+    admin.post<{ Body: { subject_type: string; subject_id: number; vpa: string; name?: string; subject_facts?: Record<string, unknown> } }>(
+      "/submit/upi", async (req, reply) => {
+        const b = req.body ?? ({} as never);
+        const s = validSubject(b.subject_type, b.subject_id);
+        if (!s.ok) return reply.code(400).send({ error: "invalid_subject" });
+        const vpa = String(b.vpa ?? "").trim().toLowerCase();
+        if (!vpa || !/^[a-z0-9.\-_]{2,256}@[a-z0-9]{2,64}$/i.test(vpa)) {
+          return reply.code(400).send({ error: "invalid_vpa" });
+        }
+        try {
+          const o = await submitUpiPennyDrop({
+            subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
+            createdBy: Number(req.auth?.sub) || null,
+            vpa, name: b.name,
           });
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }
@@ -182,6 +217,7 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
             subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
             createdBy: Number(req.auth?.sub) || null,
             dlNumber: b.dl_number.trim().toUpperCase(), dob: b.dob,
+            deferProjection: !!(b as { defer_projection?: boolean }).defer_projection,
           });
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }
@@ -198,6 +234,7 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
             subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
             createdBy: Number(req.auth?.sub) || null,
             vehicleNumber: b.vehicle_number.trim().toUpperCase(),
+            deferProjection: !!(b as { defer_projection?: boolean }).defer_projection,
           });
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }
@@ -233,6 +270,7 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
             subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
             createdBy: Number(req.auth?.sub) || null,
             gstin: b.gstin.trim().toUpperCase(), businessName: b.business_name,
+            deferProjection: !!(b as { defer_projection?: boolean }).defer_projection,
           });
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }
@@ -286,6 +324,113 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }
       });
+
+    /**
+     * Poll Cashfree DigiLocker status (+ fetch Aadhaar doc when AUTHENTICATED).
+     * Used by partnersite / AM status endpoints while the UI shows the spinner.
+     */
+    admin.post<{
+      Body: { subject_type: string; subject_id: number };
+    }>("/poll/digilocker", async (req, reply) => {
+      const b = req.body ?? ({} as never);
+      const s = validSubject(b.subject_type, b.subject_id);
+      if (!s.ok) return reply.code(400).send({ error: "invalid_subject" });
+      try {
+        const result = await pollDigilockerForSubject({
+          subjectType: s.type,
+          subjectId: s.id,
+        });
+        return reply.send({ success: true, ...result });
+      } catch (e) {
+        return catchSubmit(reply, e);
+      }
+    });
+
+    // After dashboard agent Approves Cashfree RC (defer_projection), project
+    // verifiedData into rider_vehicles — same helper as rider-app onboarding.
+    admin.post<{
+      Body: {
+        rider_id: number;
+        doc_kind: "vehicle_rc" | "driving_licence";
+        verified_data: Record<string, unknown>;
+        rc_document_url?: string | null;
+        previous_registration_number?: string | null;
+      };
+    }>("/project-rider-ev", async (req, reply) => {
+      const b = req.body ?? ({} as never);
+      const riderId = Number(b.rider_id);
+      if (!Number.isFinite(riderId) || riderId < 1) {
+        return reply.code(400).send({ error: "invalid_rider_id" });
+      }
+      const verifiedData =
+        b.verified_data && typeof b.verified_data === "object"
+          ? b.verified_data
+          : null;
+      if (!verifiedData) {
+        return reply.code(400).send({ error: "verified_data_required" });
+      }
+      if (b.doc_kind === "vehicle_rc") {
+        try {
+          const newPlate = String(
+            verifiedData.reg_no ||
+              verifiedData.registration_number ||
+              verifiedData.vehicle_number ||
+              "",
+          )
+            .trim()
+            .toUpperCase()
+            .replace(/[^A-Z0-9]/g, "");
+
+          // Wrong RC → new RC from dashboard: purge old photos from R2 + DB
+          // before projecting vehicle profile (same as app Cashfree path).
+          let plateCleared = false;
+          if (newPlate.length >= 4) {
+            try {
+              const { clearRiderRcMediaIfPlateChanged } = await import(
+                "../../../lib/clear-rider-rc-media-on-plate-replace.js"
+              );
+              const cleared = await clearRiderRcMediaIfPlateChanged({
+                riderId,
+                newRegistrationNumber: newPlate,
+                previousRegistrationNumber: b.previous_registration_number ?? null,
+              });
+              plateCleared = cleared.cleared;
+            } catch (clearErr) {
+              req.log?.warn?.(
+                { err: clearErr },
+                "project_rider_ev_rc_media_clear_failed",
+              );
+            }
+          }
+
+          const { upsertRiderVehicleFromRcVerifiedData } = await import(
+            "../../../lib/rider-vehicle-from-rc.js"
+          );
+          const result = await upsertRiderVehicleFromRcVerifiedData({
+            riderId,
+            verifiedData,
+            // Never reuse old plate's photo after a plate replace.
+            rcDocumentUrl: plateCleared ? null : b.rc_document_url ?? null,
+          });
+          if (!result.ok) {
+            return reply.code(422).send({ success: false, error: result.error });
+          }
+          return reply.send({
+            success: true,
+            doc_kind: "vehicle_rc",
+            vehicle_id: result.vehicleId,
+            rc_media_cleared: plateCleared,
+          });
+        } catch (e) {
+          req.log?.error?.({ err: e }, "project_rider_ev_rc_failed");
+          return reply.code(500).send({
+            success: false,
+            error: e instanceof Error ? e.message : "project_failed",
+          });
+        }
+      }
+      return reply.send({ success: true, doc_kind: "driving_licence", projected: "document_only" });
+    });
 
     // ── History ──
     admin.get<{ Params: { verificationId: string } }>(

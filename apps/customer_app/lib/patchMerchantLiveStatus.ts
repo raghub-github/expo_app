@@ -11,6 +11,9 @@ export type StoreLiveStatusSnapshot = {
   liveStatus: LiveStatus;
   nextOpenAt?: string | null;
   nextCloseAt?: string | null;
+  rushActive?: boolean;
+  rushEndsAt?: string | null;
+  rushRemainingMinutes?: number | null;
 };
 
 function patchDetail(
@@ -24,6 +27,10 @@ function patchDetail(
     isOpen: snapshot.liveStatus === "OPEN",
     nextOpenAt: snapshot.nextOpenAt ?? detail.nextOpenAt ?? null,
     nextCloseAt: snapshot.nextCloseAt ?? detail.nextCloseAt ?? null,
+    rushActive: snapshot.rushActive ?? detail.rushActive ?? false,
+    rushEndsAt: snapshot.rushEndsAt ?? detail.rushEndsAt ?? null,
+    rushRemainingMinutes:
+      snapshot.rushRemainingMinutes ?? detail.rushRemainingMinutes ?? null,
   };
 }
 

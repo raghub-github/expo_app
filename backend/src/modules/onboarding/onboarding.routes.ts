@@ -6,6 +6,8 @@ import { riders, riderDocuments, riderOnboardingVehicleTypes, riderOnboardingDoc
 import { eq, and, asc } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
+import { buildRiderDigilockerReturnHtml } from "../../lib/rider-digilocker-return-html.js";
+import type { RiderDigilockerReturnPageKind } from "../../lib/rider-digilocker-return-html.js";
 import {
   isAadhaarAlreadyRegistered,
   normalizeAadhaarDigits,
@@ -16,6 +18,83 @@ import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-reg
 
 export async function onboardingRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
+
+  /**
+   * GET /digilocker-return — public Cashfree DigiLocker browser callback.
+   * Full path: GET /v1/onboarding/digilocker-return
+   * Must use skipAuth (Cashfree has no rider JWT). Returns HTML, never JSON 404.
+   */
+  app.get(
+    "/digilocker-return",
+    {
+      config: { skipAuth: true },
+    },
+    async (req, reply) => {
+      const q = req.query as Record<string, string | string[] | undefined>;
+      const rawVid = q.verification_id ?? q.verificationId;
+      const verificationId = String(Array.isArray(rawVid) ? rawVid[0] : rawVid || "").trim();
+
+      let kind: RiderDigilockerReturnPageKind = "pending";
+      let status: string | null = null;
+
+      try {
+        if (verificationId) {
+          const { lookupDigilockerReturnByVerificationId } = await import(
+            "../verification/service.js"
+          );
+          const hit = await lookupDigilockerReturnByVerificationId(verificationId);
+          if (!hit.known) {
+            kind = "unknown";
+            req.log.warn(
+              { verificationId, path: req.url },
+              "digilocker_return_unknown_verification_id",
+            );
+          } else {
+            status = hit.status ?? null;
+            if (status === "verified") kind = "success";
+            else if (
+              status === "failed" ||
+              status === "rejected" ||
+              status === "expired" ||
+              status === "consent_denied"
+            ) {
+              kind = "failed";
+            } else {
+              kind = "pending";
+            }
+            req.log.info(
+              {
+                verificationId,
+                status,
+                kind,
+                subjectType: hit.subjectType,
+                documentKind: hit.documentKind,
+                path: req.url,
+              },
+              "digilocker_return_callback",
+            );
+          }
+        } else {
+          req.log.info({ path: req.url }, "digilocker_return_callback_no_verification_id");
+        }
+      } catch (err) {
+        req.log.error({ err, verificationId, path: req.url }, "digilocker_return_handler_error");
+        kind = verificationId ? "unknown" : "pending";
+      }
+
+      return reply
+        .code(200)
+        .type("text/html; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .send(
+          buildRiderDigilockerReturnHtml({
+            kind,
+            verificationId: verificationId || null,
+            status,
+          }),
+        );
+    },
+  );
 
   app.get(
     "/vehicle-types",
@@ -487,12 +566,16 @@ export async function onboardingRoutes(app: FastifyInstance) {
           data: z.object({
             aadhaarNumber: z.string().optional(),
             fullName: z.string().optional(),
+            dob: z.string().optional(),
             fileUrl: z.string().optional(),
+            verificationMethod: z.string().optional(),
             dlNumber: z.string().optional(),
             rcNumber: z.string().optional(),
             hasOwnVehicle: z.boolean().optional(),
             vehicleChoice: z.string().optional(),
             vehicleCategoryCode: z.string().optional(),
+            /** Specific model name when catalog label lists multiple models (e.g. "Hyundai i10"). */
+            vehicleModelLabel: z.string().optional(),
             onboardingFlow: z.enum(["dl_rc", "rental_ev", "payment"]).optional(),
             submitVehicleDocs: z.boolean().optional(),
             rentalProofSignedUrl: z.string().optional(),
@@ -593,27 +676,50 @@ export async function onboardingRoutes(app: FastifyInstance) {
       // Upsert rider documents based on step
       // Store document-specific data in metadata JSONB field
       if (step === "aadhaar_name") {
-        const aadhaarMasked = stepData.aadhaarNumber
-          ? `${stepData.aadhaarNumber.toString().slice(0, 4).replace(/\d/g, "X")}-${stepData.aadhaarNumber.toString().slice(4, 8).replace(/\d/g, "X")}-${stepData.aadhaarNumber.toString().slice(-4)}`
+        const aadhaarDigits = stepData.aadhaarNumber
+          ? normalizeAadhaarDigits(String(stepData.aadhaarNumber))
+          : null;
+        const aadhaarMasked = aadhaarDigits
+          ? `${aadhaarDigits.slice(0, 4).replace(/\d/g, "X")}-${aadhaarDigits.slice(4, 8).replace(/\d/g, "X")}-${aadhaarDigits.slice(-4)}`
           : undefined;
+
+        const digilockerVerified =
+          stepData.verificationMethod === "cashfree_digilocker" ||
+          stepData.verificationMethod === "cashfree_aadhaar_masking" ||
+          String(stepData.fileUrl || "").includes("digilocker_verified") ||
+          String(stepData.fileUrl || "").includes("aadhaar_masking_verified");
+
+        let dobIso: string | undefined;
+        if (typeof stepData.dob === "string" && stepData.dob.trim()) {
+          const raw = stepData.dob.trim();
+          const ymd = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+          if (ymd?.[1]) dobIso = ymd[1];
+          else {
+            const dmy = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+            if (dmy) {
+              dobIso = `${dmy[3]}-${dmy[2]!.padStart(2, "0")}-${dmy[1]!.padStart(2, "0")}`;
+            }
+          }
+        }
 
         const riderUpdate: {
           name?: string;
           aadhaarNumber?: string;
+          dob?: string;
           updatedAt: Date;
         } = { updatedAt: new Date() };
 
         if (typeof stepData.fullName === "string" && stepData.fullName.trim()) {
           riderUpdate.name = stepData.fullName.trim();
         }
-        if (stepData.aadhaarNumber) {
-          const digits = stepData.aadhaarNumber.toString().replace(/\D/g, "");
-          if (digits.length === 12) {
-            riderUpdate.aadhaarNumber = digits;
-          }
+        if (aadhaarDigits) {
+          riderUpdate.aadhaarNumber = aadhaarDigits;
+        }
+        if (dobIso) {
+          riderUpdate.dob = dobIso;
         }
 
-        if (riderUpdate.name || riderUpdate.aadhaarNumber) {
+        if (riderUpdate.name || riderUpdate.aadhaarNumber || riderUpdate.dob) {
           await db.update(riders).set(riderUpdate).where(eq(riders.id, riderIdInt));
         }
 
@@ -627,28 +733,75 @@ export async function onboardingRoutes(app: FastifyInstance) {
           ))
           .limit(1);
 
+        const sideVerification = digilockerVerified
+          ? {
+              front: {
+                verified: true,
+                verificationStatus: "approved",
+                verifiedAt: new Date().toISOString(),
+              },
+              back: {
+                verified: true,
+                verificationStatus: "approved",
+                verifiedAt: new Date().toISOString(),
+              },
+            }
+          : undefined;
+
         const metadata = {
           aadhaarMasked: aadhaarMasked,
+          aadhaarNumber: aadhaarDigits || undefined,
           fullName: stepData.fullName as string | undefined,
+          dob: dobIso,
+          digilockerVerified: digilockerVerified || undefined,
+          verificationMethod: stepData.verificationMethod as string | undefined,
+          ...(sideVerification ? { sideVerification } : {}),
+        };
+
+        const docFields = {
+          extractedName: stepData.fullName as string | undefined,
+          extractedDob: dobIso || undefined,
+          docNumber: aadhaarDigits || undefined,
+          metadata,
+          ...(digilockerVerified
+            ? {
+                verified: true,
+                verificationStatus: "auto_verified" as const,
+                verificationMethod: "APP_VERIFIED" as const,
+                verifiedAt: new Date(),
+                rejectedReason: null,
+                requiresManualReview: false,
+                fileUrl: (stepData.fileUrl as string) || "digilocker_verified",
+              }
+            : {}),
         };
 
         if (existing.length > 0) {
           await db
             .update(riderDocuments)
             .set({
-              extractedName: stepData.fullName as string | undefined,
-              metadata: metadata,
+              ...docFields,
+              docNumber: aadhaarDigits || existing[0]!.docNumber,
             })
             .where(eq(riderDocuments.id, existing[0]!.id));
         } else {
-          // For aadhaar, we need a fileUrl - this should come from the upload
-          // For now, use a placeholder or require fileUrl in the request
           await db.insert(riderDocuments).values({
             riderId: riderIdInt,
             docType: "aadhaar",
-            fileUrl: stepData.fileUrl as string || "pending", // Should be provided
+            fileUrl: (stepData.fileUrl as string) || (digilockerVerified ? "digilocker_verified" : "pending"),
+            docNumber: aadhaarDigits || null,
             extractedName: stepData.fullName as string | undefined,
-            metadata: metadata,
+            extractedDob: dobIso || null,
+            metadata,
+            ...(digilockerVerified
+              ? {
+                  verified: true,
+                  verificationStatus: "auto_verified" as const,
+                  verificationMethod: "APP_VERIFIED" as const,
+                  verifiedAt: new Date(),
+                  requiresManualReview: false,
+                }
+              : {}),
           });
         }
       } else if (step === "dl_rc") {
@@ -659,6 +812,17 @@ export async function onboardingRoutes(app: FastifyInstance) {
             typeof stepData.vehicleCategoryCode === "string"
               ? stepData.vehicleCategoryCode
               : undefined,
+          // Store only the single chosen model name — never slash/comma-joined catalog labels.
+          vehicleModelLabel: (() => {
+            if (typeof stepData.vehicleModelLabel !== "string") return undefined;
+            const raw = stepData.vehicleModelLabel.trim();
+            if (!raw) return undefined;
+            if (raw.includes(" / ")) return raw.split(" / ")[0]!.trim() || undefined;
+            if (raw.includes(",")) {
+              return raw.split(",")[0]!.trim().replace(/\.\.+$/, "").trim() || undefined;
+            }
+            return raw;
+          })(),
           onboardingFlow:
             stepData.onboardingFlow === "dl_rc" ||
             stepData.onboardingFlow === "rental_ev" ||
@@ -671,6 +835,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
         if (
           selectionMeta.vehicleChoice ||
+          selectionMeta.vehicleCategoryCode ||
+          selectionMeta.vehicleModelLabel ||
           selectionMeta.onboardingFlow ||
           submitVehicleDocs
         ) {
@@ -730,6 +896,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
         // Upsert DL document
         if (stepData.dlNumber) {
+          const dlNormalized = normalizeDlNumber(String(stepData.dlNumber));
           const existingDl = await db
             .select()
             .from(riderDocuments)
@@ -740,13 +907,14 @@ export async function onboardingRoutes(app: FastifyInstance) {
             .limit(1);
 
           const metadata = {
-            dlNumber: stepData.dlNumber as string,
+            dlNumber: dlNormalized || String(stepData.dlNumber),
           };
 
           if (existingDl.length > 0) {
             await db
               .update(riderDocuments)
               .set({
+                docNumber: dlNormalized || existingDl[0]!.docNumber,
                 metadata: metadata,
               })
               .where(eq(riderDocuments.id, existingDl[0]!.id));
@@ -755,6 +923,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
               riderId: riderIdInt,
               docType: "dl",
               fileUrl: stepData.fileUrl as string || "pending",
+              docNumber: dlNormalized || null,
               metadata: metadata,
             });
           }
@@ -762,6 +931,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
         // Upsert RC document
         if (stepData.rcNumber) {
+          const rcNormalized = normalizeRcNumber(String(stepData.rcNumber));
           const existingRc = await db
             .select()
             .from(riderDocuments)
@@ -771,14 +941,39 @@ export async function onboardingRoutes(app: FastifyInstance) {
             ))
             .limit(1);
 
-          const metadata = {
-            rcNumber: stepData.rcNumber as string,
+          const prevMeta =
+            existingRc[0]?.metadata &&
+            typeof existingRc[0].metadata === "object" &&
+            !Array.isArray(existingRc[0].metadata)
+              ? (existingRc[0].metadata as Record<string, unknown>)
+              : {};
+          const nextRc = rcNormalized || String(stepData.rcNumber);
+          const prevRcNorm = normalizeRcNumber(
+            String(existingRc[0]?.docNumber || prevMeta.rcNumber || ""),
+          );
+          const plateChangedOnSave =
+            Boolean(prevRcNorm) &&
+            Boolean(rcNormalized) &&
+            prevRcNorm !== rcNormalized;
+
+          // Merge — never wipe cashfreeVerifiedData from a prior Verify Instantly.
+          const metadata: Record<string, unknown> = {
+            ...prevMeta,
+            rcNumber: nextRc,
           };
+          if (plateChangedOnSave) {
+            // Continue with a different plate without re-verify must not keep
+            // old Cashfree payload / owner as if it belonged to the new RC.
+            delete metadata.cashfreeVerifiedData;
+            delete metadata.rcOwnerName;
+            delete metadata.cashfreeProvider;
+          }
 
           if (existingRc.length > 0) {
             await db
               .update(riderDocuments)
               .set({
+                docNumber: rcNormalized || existingRc[0]!.docNumber,
                 metadata: metadata,
               })
               .where(eq(riderDocuments.id, existingRc[0]!.id));
@@ -787,6 +982,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
               riderId: riderIdInt,
               docType: "rc",
               fileUrl: stepData.fileUrl as string || "pending",
+              docNumber: rcNormalized || null,
               metadata: metadata,
             });
           }
@@ -888,6 +1084,10 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
         // Upsert PAN (no R2 involved)
         if (panPartial) {
+          const panNormalized =
+            typeof stepData.panNumber === "string"
+              ? normalizePan(stepData.panNumber)
+              : null;
           const existingPan = await db
             .select()
             .from(riderDocuments)
@@ -898,13 +1098,20 @@ export async function onboardingRoutes(app: FastifyInstance) {
             .limit(1);
 
           const metadata = {
+            ...(existingPan[0]?.metadata &&
+            typeof existingPan[0].metadata === "object" &&
+            !Array.isArray(existingPan[0].metadata)
+              ? (existingPan[0].metadata as Record<string, unknown>)
+              : {}),
             panPartial: panPartial,
+            panNumber: panNormalized || undefined,
           };
 
           if (existingPan.length > 0) {
             await db
               .update(riderDocuments)
               .set({
+                docNumber: panNormalized || existingPan[0]!.docNumber,
                 metadata: metadata,
               })
               .where(eq(riderDocuments.id, existingPan[0]!.id));
@@ -913,6 +1120,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
               riderId: riderIdInt,
               docType: "pan",
               fileUrl: stepData.fileUrl as string || "pending",
+              docNumber: panNormalized || null,
               metadata: metadata,
             });
           }
@@ -982,6 +1190,18 @@ export async function onboardingRoutes(app: FastifyInstance) {
             throw dbError;
           }
         }
+
+        try {
+          const { maybeAutoVerifyRiderSelfie } = await import(
+            "../../lib/rider-selfie-auto-verify.js"
+          );
+          await maybeAutoVerifyRiderSelfie(riderIdInt);
+        } catch (selfieErr) {
+          console.warn(
+            "[save-step pan_selfie] selfie auto-verify failed:",
+            (selfieErr as Error).message,
+          );
+        }
       } else if (step === "location") {
         // Update rider location data
         const updateData: {
@@ -1030,13 +1250,35 @@ export async function onboardingRoutes(app: FastifyInstance) {
           const { triggerRiderOnboardingVerifications } = await import(
             "../verification/onboarding-hooks.js"
           );
+          let dob =
+            typeof stepData.dob === "string" ? stepData.dob.slice(0, 10) : undefined;
+          if (
+            (!dob || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) &&
+            step === "dl_rc" &&
+            typeof stepData.dlNumber === "string" &&
+            stepData.dlNumber.trim()
+          ) {
+            const riderDob = String(riderRows[0]?.dob || "").slice(0, 10);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(riderDob)) {
+              dob = riderDob;
+            } else {
+              const { loadRiderAadhaarIdentity } = await import(
+                "../../lib/rider-aadhaar-cross-check.js"
+              );
+              const identity = await loadRiderAadhaarIdentity(riderIdInt);
+              const idDob = String(identity.dob || "").slice(0, 10);
+              if (/^\d{4}-\d{2}-\d{2}$/.test(idDob)) dob = idDob;
+            }
+          }
           await triggerRiderOnboardingVerifications(
             {
               logger: req.log,
               riderId: riderIdInt,
               step: step as
                 | "aadhaar_name" | "dl_rc" | "rental_ev" | "pan_selfie" | "location",
-              hasOwnVehicle: stepData.hasOwnVehicle === true,
+              // DL/RC step implies own-vehicle flow; avoid subject_filter misses.
+              hasOwnVehicle:
+                step === "dl_rc" ? true : stepData.hasOwnVehicle === true,
             },
             {
               aadhaarNumber: stepData.aadhaarNumber as string | undefined,
@@ -1044,9 +1286,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
               panNumber: stepData.panNumber as string | undefined,
               dlNumber: stepData.dlNumber as string | undefined,
               rcNumber: stepData.rcNumber as string | undefined,
-              // DL sync needs DOB; onboarding step doesn't ship it today —
-              // future onboarding will send it via a new stepData.dob field.
-              dob: stepData.dob as string | undefined,
+              dob,
             },
           );
         } catch (e) {
@@ -1261,23 +1501,33 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   /**
    * GET /verification-modes — per-document verification mode for RIDER
-   * onboarding, straight from the super-admin Policy Center. The rider app
-   * uses this to render the hybrid flow:
+   * onboarding, straight from the super-admin Policy Center (incl. kill switches).
    *   manual  → classic photo-upload step
-   *   auto    → number-only; failure blocks (retry later, no upload)
-   *   hybrid  → number-only; failure falls back to photo upload
+   *   auto    → Cashfree first; failure blocks (no upload)
+   *   hybrid  → Cashfree first; failure falls back to photo upload
+   *
+   * Aliases: `aadhaar` mirrors `aadhaar_digilocker` for app convenience.
    */
   app.get("/verification-modes", async () => {
-    const { getSql } = await import("../../db/client.js");
-    const sql = getSql();
     try {
-      const rows = (await sql`
-        SELECT document_kind::text AS document_kind, mode::text AS mode
-          FROM public.verification_policies
-         WHERE subject_type = 'rider' AND effective_to IS NULL
-      `) as unknown as Array<{ document_kind: string; mode: string }>;
+      const { resolveEffectivePolicy } = await import("../verification/policy/engine.js");
+      const kinds = [
+        "pan",
+        "driving_licence",
+        "vehicle_rc",
+        "aadhaar_digilocker",
+        "bank_account",
+      ] as const;
       const modes: Record<string, string> = {};
-      for (const r of rows) modes[r.document_kind] = r.mode;
+      for (const documentKind of kinds) {
+        const policy = await resolveEffectivePolicy({
+          subjectType: "rider",
+          documentKind,
+        });
+        modes[documentKind] = policy.mode;
+      }
+      // App-friendly alias used by Step 1 Aadhaar UI.
+      modes.aadhaar = modes.aadhaar_digilocker ?? "manual";
       return { success: true, modes };
     } catch {
       // Degrade to manual — the app then shows the classic upload flow.
@@ -1287,9 +1537,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   /**
    * POST /verify-document — interactive electronic verification for the rider
-   * app's onboarding steps (PAN / DL / RC). Runs the same policy-gated
-   * Cashfree submit as the automatic save-step hooks; the projection to
-   * rider_documents happens inside the verification service.
+   * app's onboarding steps (PAN / DL / RC / Aadhaar DigiLocker).
    */
   app.post(
     "/verify-document",
@@ -1297,19 +1545,32 @@ export async function onboardingRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           riderId: z.string(),
-          docKind: z.enum(["pan", "driving_licence", "vehicle_rc"]),
+          docKind: z.enum(["pan", "driving_licence", "vehicle_rc", "aadhaar", "bank_account"]),
+          aadhaarNumber: z.string().optional(),
           pan: z.string().optional(),
           name: z.string().optional(),
           dlNumber: z.string().optional(),
           dob: z.string().optional(),
           vehicleNumber: z.string().optional(),
+          bankAccount: z.string().optional(),
+          ifsc: z.string().optional(),
+          redirectUrl: z.string().url().optional(),
         }),
       },
     },
     async (req, reply) => {
       const b = req.body as {
-        riderId: string; docKind: "pan" | "driving_licence" | "vehicle_rc";
-        pan?: string; name?: string; dlNumber?: string; dob?: string; vehicleNumber?: string;
+        riderId: string;
+        docKind: "pan" | "driving_licence" | "vehicle_rc" | "aadhaar" | "bank_account";
+        aadhaarNumber?: string;
+        pan?: string;
+        name?: string;
+        dlNumber?: string;
+        dob?: string;
+        vehicleNumber?: string;
+        bankAccount?: string;
+        ifsc?: string;
+        redirectUrl?: string;
       };
       const riderIdInt = parseInt(b.riderId, 10);
       if (!Number.isFinite(riderIdInt) || riderIdInt < 1) {
@@ -1327,14 +1588,75 @@ export async function onboardingRoutes(app: FastifyInstance) {
       }
       const rider = riderRows[0]!;
 
-      const { submitPan, submitDrivingLicence, submitVehicleRc } = await import(
-        "../verification/service.js"
-      );
-      const subject = { subjectType: "rider" as const, subjectId: riderIdInt };
+      if (b.docKind === "aadhaar") {
+        const digits = normalizeAadhaarDigits(b.aadhaarNumber);
+        if (digits && (await isAadhaarAlreadyRegistered(digits, riderIdInt))) {
+          return reply.code(409).send({
+            success: false,
+            error: "aadhaar_already_registered",
+            message: "Aadhar Already Registered , Please try with Diff one .",
+          });
+        }
+      } else if (b.docKind === "pan") {
+        const pan = normalizePan(b.pan);
+        if (pan && (await isPanAlreadyRegistered(pan, riderIdInt))) {
+          return reply.code(409).send({
+            success: false,
+            error: "pan_already_registered",
+            message: "PAN Already Registered , Please try with Diff one .",
+          });
+        }
+      } else if (b.docKind === "driving_licence") {
+        const dl = normalizeDlNumber(b.dlNumber);
+        if (dl && (await isDlAlreadyRegistered(dl, riderIdInt))) {
+          return reply.code(409).send({
+            success: false,
+            error: "dl_already_registered",
+            message: "Driving License Already Registered , Please try with Diff one .",
+          });
+        }
+      } else if (b.docKind === "vehicle_rc") {
+        const rc = normalizeRcNumber(b.vehicleNumber);
+        if (rc && (await isRcAlreadyRegistered(rc, riderIdInt))) {
+          return reply.code(409).send({
+            success: false,
+            error: "rc_already_registered",
+            message: "RC Already Registered , Please try with Diff one .",
+          });
+        }
+      }
+
+      const {
+        submitPan,
+        submitDrivingLicence,
+        submitVehicleRc,
+        submitBankAccount,
+        submitDigilocker,
+        resolveRiderDigilockerRedirectUrl,
+      } = await import("../verification/service.js");
+      const subject = {
+        subjectType: "rider" as const,
+        subjectId: riderIdInt,
+        // DL/RC policies may historically use has_own_vehicle filter; this step
+        // only runs for own-vehicle bike onboarding, so always pass true.
+        subjectFacts:
+          b.docKind === "driving_licence" || b.docKind === "vehicle_rc"
+            ? { has_own_vehicle: true }
+            : undefined,
+      };
 
       try {
         let outcome;
-        if (b.docKind === "pan") {
+        if (b.docKind === "aadhaar") {
+          // Cashfree DigiLocker (browser consent) — replaces Aadhaar Masking.
+          const redirectUrl = resolveRiderDigilockerRedirectUrl(b.redirectUrl);
+          outcome = await submitDigilocker({
+            ...subject,
+            documents: ["AADHAAR"],
+            redirectUrl,
+            userFlow: "signin",
+          });
+        } else if (b.docKind === "pan") {
           const pan = (b.pan ?? "").trim().toUpperCase();
           if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
             return reply.code(400).send({ success: false, error: "invalid_pan" });
@@ -1345,44 +1667,267 @@ export async function onboardingRoutes(app: FastifyInstance) {
           }
           outcome = await submitPan({ ...subject, pan, name });
         } else if (b.docKind === "driving_licence") {
-          const dlNumber = (b.dlNumber ?? "").trim().toUpperCase();
-          const dob = (b.dob ?? rider.dob ?? "").toString().slice(0, 10);
-          if (dlNumber.length < 6) return reply.code(400).send({ success: false, error: "invalid_dl" });
+          const dlNumber = (b.dlNumber ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+          let dob = (b.dob ?? rider.dob ?? "").toString().slice(0, 10);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
-            return reply.code(400).send({ success: false, error: "dob_required", hint: "YYYY-MM-DD" });
+            // Fallback: DOB captured on verified Aadhaar document during Step 1.
+            const { loadRiderAadhaarIdentity } = await import(
+              "../../lib/rider-aadhaar-cross-check.js"
+            );
+            const identity = await loadRiderAadhaarIdentity(riderIdInt);
+            dob = String(identity.dob || "").slice(0, 10);
+          }
+          if (!/^[A-Z]{2}[0-9]{2}(19|20)[0-9]{2}[0-9]{7,8}$/.test(dlNumber)) {
+            return reply.code(400).send({ success: false, error: "invalid_dl" });
+          }
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
+            return reply.code(400).send({
+              success: false,
+              error: "dob_required",
+              hint: "YYYY-MM-DD",
+              message:
+                "Date of birth from Aadhaar is required to verify driving licence with Cashfree.",
+            });
           }
           outcome = await submitDrivingLicence({ ...subject, dlNumber, dob });
+        } else if (b.docKind === "bank_account") {
+          const bankAccount = String(b.bankAccount ?? "").replace(/\D/g, "");
+          const ifsc = String(b.ifsc ?? "")
+            .trim()
+            .toUpperCase()
+            .replace(/[^A-Z0-9]/g, "");
+          if (!/^\d{9,18}$/.test(bankAccount)) {
+            return reply.code(400).send({ success: false, error: "invalid_bank_account" });
+          }
+          if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+            return reply.code(400).send({ success: false, error: "invalid_ifsc" });
+          }
+          const name = (b.name ?? rider.name ?? "").trim() || undefined;
+          outcome = await submitBankAccount({
+            ...subject,
+            bankAccount,
+            ifsc,
+            name,
+          });
         } else {
-          const vehicleNumber = (b.vehicleNumber ?? "").trim().toUpperCase();
-          if (vehicleNumber.length < 4) return reply.code(400).send({ success: false, error: "invalid_vehicle_number" });
+          const vehicleNumber = (b.vehicleNumber ?? "")
+            .trim()
+            .toUpperCase()
+            .replace(/[^A-Z0-9]/g, "");
+          if (vehicleNumber.length < 7) {
+            return reply.code(400).send({ success: false, error: "invalid_vehicle_number" });
+          }
           outcome = await submitVehicleRc({ ...subject, vehicleNumber });
         }
 
         if (outcome.kind === "auto") {
           const status = outcome.result.status;
-          if (status === "verified") {
+          // DigiLocker create → hand consent URL to the app (openAuthSessionAsync).
+          if (
+            b.docKind === "aadhaar" &&
+            status === "provider_processing"
+          ) {
+            const url = String(
+              (outcome.result.verifiedData as { url?: string } | undefined)?.url ?? ""
+            ).trim();
+            if (url) {
+              return reply.send({
+                success: true,
+                outcome: "digilocker",
+                mode: outcome.policy.mode,
+                url,
+                redirectUrl: resolveRiderDigilockerRedirectUrl(b.redirectUrl),
+                verificationId: outcome.result.verificationId,
+              });
+            }
             return reply.send({
-              success: true, outcome: "verified",
+              success: true,
+              outcome: "manual",
               mode: outcome.policy.mode,
-              verifiedData: outcome.result.verifiedData ?? {},
+              reason: "digilocker_no_url",
+            });
+          }
+          if (status === "verified") {
+            const verifiedData = (outcome.result.verifiedData ?? {}) as Record<
+              string,
+              unknown
+            >;
+
+            // Identity docs only: cross-check PAN / DL against verified Aadhaar.
+            // RC is vehicle ownership — owner may differ from the rider; do not match.
+            // Bank: Cashfree name_match vs Aadhaar — mismatch → hybrid fallback form.
+            if (b.docKind === "pan" || b.docKind === "driving_licence") {
+              const {
+                crossCheckRiderDocument,
+                markRiderDocumentAadhaarMismatch,
+              } = await import("../../lib/rider-aadhaar-cross-check.js");
+              const cross = await crossCheckRiderDocument({
+                riderId: riderIdInt,
+                docKind: b.docKind,
+                verifiedData,
+              });
+              if (!cross.ok) {
+                try {
+                  await markRiderDocumentAadhaarMismatch({
+                    riderId: riderIdInt,
+                    docKind: b.docKind,
+                    cross,
+                    verifiedData,
+                  });
+                } catch (markErr) {
+                  req.log?.error?.(
+                    { err: markErr, docKind: b.docKind },
+                    "rider_cross_check_mark_failed",
+                  );
+                }
+                return reply.send({
+                  success: true,
+                  outcome: "mismatch",
+                  mode: outcome.policy.mode,
+                  error:
+                    cross.messages.join(". ") ||
+                    "Auto Verification Failed – Data Mismatch",
+                  mismatchReasons: cross.reasons,
+                  mismatchMessages: cross.messages,
+                  verifiedData: {
+                    ...verifiedData,
+                    crossCheck: {
+                      ok: false,
+                      reasons: cross.reasons,
+                      messages: cross.messages,
+                      aadhaar: cross.aadhaar,
+                      extracted: cross.extracted,
+                    },
+                  },
+                });
+              }
+            }
+
+            if (b.docKind === "bank_account") {
+              const nameMatch = String(verifiedData.name_match_result ?? "")
+                .trim()
+                .toUpperCase();
+              const scoreRaw = verifiedData.name_match_score;
+              const score =
+                typeof scoreRaw === "number"
+                  ? scoreRaw
+                  : typeof scoreRaw === "string"
+                    ? Number(scoreRaw)
+                    : null;
+              const scorePct =
+                score != null && Number.isFinite(score)
+                  ? score > 1
+                    ? score
+                    : score * 100
+                  : null;
+              const softFail =
+                nameMatch === "NO" ||
+                nameMatch === "FALSE" ||
+                nameMatch === "MISMATCH" ||
+                (scorePct != null && scorePct < 70);
+              const enriched = {
+                ...verifiedData,
+                bank_account: String(b.bankAccount ?? "").replace(/\D/g, ""),
+                ifsc: String(b.ifsc ?? "")
+                  .trim()
+                  .toUpperCase()
+                  .replace(/[^A-Z0-9]/g, ""),
+              };
+              if (softFail) {
+                return reply.send({
+                  success: true,
+                  outcome: "mismatch",
+                  mode: outcome.policy.mode,
+                  error:
+                    "Account holder name at bank does not match your Aadhaar name. You can still save for manual review.",
+                  mismatchMessages: [
+                    "Name at bank does not match Aadhaar",
+                    verifiedData.name_at_bank
+                      ? `Bank name: ${String(verifiedData.name_at_bank)}`
+                      : "",
+                  ].filter(Boolean),
+                  verifiedData: enriched,
+                  providerReference: outcome.result.providerReference ?? null,
+                  verificationId: outcome.result.verificationId,
+                });
+              }
+              return reply.send({
+                success: true,
+                outcome: "verified",
+                mode: outcome.policy.mode,
+                verifiedData: enriched,
+                providerReference: outcome.result.providerReference ?? null,
+                verificationId: outcome.result.verificationId,
+              });
+            }
+
+            return reply.send({
+              success: true,
+              outcome: "verified",
+              mode: outcome.policy.mode,
+              verifiedData,
             });
           }
           if (status === "manual_review" || status === "provider_processing") {
             return reply.send({ success: true, outcome: "manual", mode: outcome.policy.mode });
           }
+          const raw =
+            outcome.result.rawResponse && typeof outcome.result.rawResponse === "object"
+              ? (outcome.result.rawResponse as Record<string, unknown>)
+              : {};
+          const cashfreeStatus = String(raw.status ?? raw.rc_status ?? "").trim();
+          const cashfreeMessage =
+            typeof raw.message === "string"
+              ? raw.message.trim()
+              : typeof raw.error === "string"
+                ? raw.error.trim()
+                : "";
+          const failError =
+            outcome.result.statusReason?.trim() ||
+            cashfreeMessage ||
+            (cashfreeStatus
+              ? `Cashfree status: ${cashfreeStatus}`
+              : null) ||
+            "Document could not be verified.";
           return reply.send({
-            success: true, outcome: "failed",
+            success: true,
+            outcome: "failed",
             mode: outcome.policy.mode,
-            error: outcome.result.statusReason ?? "Document could not be verified.",
+            error: failError,
+            reason: outcome.result.status,
+            providerStatus: cashfreeStatus || null,
+            providerMessage: cashfreeMessage || null,
+            verificationId: outcome.result.verificationId ?? null,
+            providerReference: outcome.result.providerReference ?? null,
+            httpStatus: outcome.result.httpStatus ?? null,
+            cashfreeHint:
+              "Cashfree API records appear under Secure ID → Driving License / Vehicle RC → All tab (not Batch). Batch is only CSV uploads.",
           });
         }
 
         const reason = outcome.reason;
         if (reason.startsWith("provider_error") || reason === "provider_not_configured") {
           req.log?.error?.({ reason, detail: outcome.detail }, "rider_verify_document_provider_failure");
+          const uiMode =
+            outcome.policy.mode === "auto" || outcome.policy.mode === "hybrid"
+              ? outcome.policy.mode
+              : "hybrid";
+          const detail =
+            typeof outcome.detail === "string" && outcome.detail.trim()
+              ? outcome.detail.trim()
+              : null;
           return reply.send({
-            success: true, outcome: "failed", mode: outcome.policy.mode,
-            error: "Electronic verification is temporarily unavailable.",
+            success: true,
+            outcome: "failed",
+            mode: uiMode,
+            reason,
+            error: detail
+              ? `Electronic verification failed: ${detail}`
+              : reason === "provider_not_configured"
+                ? "Electronic verification is not configured for this document."
+                : "Electronic verification is temporarily unavailable. Please try again or upload a photo for manual review.",
+            cashfreeHint:
+              "If Cashfree was reached, check Secure ID → All tab (not Batch). Batch only lists CSV file uploads.",
           });
         }
         // Genuine policy manual — classic upload flow.
@@ -1393,5 +1938,62 @@ export async function onboardingRoutes(app: FastifyInstance) {
       }
     },
   );
-}
 
+  /**
+   * POST /poll-aadhaar-digilocker — after DigiLocker browser consent, poll Cashfree
+   * until verified / failed so the rider app can complete Step 1.
+   */
+  app.post(
+    "/poll-aadhaar-digilocker",
+    {
+      schema: {
+        body: z.object({
+          riderId: z.string(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const b = req.body as { riderId: string };
+      const riderIdInt = parseInt(b.riderId, 10);
+      if (!Number.isFinite(riderIdInt) || riderIdInt < 1) {
+        return reply.code(400).send({ success: false, error: "invalid_rider_id" });
+      }
+      try {
+        const { pollDigilockerForSubject } = await import("../verification/service.js");
+        const result = await pollDigilockerForSubject({
+          subjectType: "rider",
+          subjectId: riderIdInt,
+        });
+        if (result.verified) {
+          return reply.send({
+            success: true,
+            outcome: "verified",
+            verifiedData: result.verifiedData ?? {},
+            status: result.status,
+          });
+        }
+        if (
+          result.status === "failed" ||
+          result.status === "rejected" ||
+          result.status === "expired" ||
+          result.status === "consent_denied"
+        ) {
+          return reply.send({
+            success: true,
+            outcome: "failed",
+            status: result.status,
+            error: result.statusReason ?? "DigiLocker verification did not complete.",
+          });
+        }
+        return reply.send({
+          success: true,
+          outcome: "pending",
+          status: result.status,
+        });
+      } catch (e) {
+        req.log?.error?.({ err: e }, "rider_poll_aadhaar_digilocker_failed");
+        return reply.code(500).send({ success: false, error: "internal_error" });
+      }
+    },
+  );
+}

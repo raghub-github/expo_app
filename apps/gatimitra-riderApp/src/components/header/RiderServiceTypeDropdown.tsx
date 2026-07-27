@@ -213,7 +213,19 @@ export function RiderServiceTypeDropdown({
     setAnchor(null);
   }, []);
 
-  if (!visible) return null;
+  if (!visible) {
+    // Keep header chrome stable while eligibility loads — no missing gap.
+    return (
+      <View style={[styles.trigger, styles.triggerPlaceholder]} pointerEvents="none">
+        <View style={styles.triggerRow}>
+          <Text style={styles.triggerText} numberOfLines={1}>
+            {allServicesLabel}
+          </Text>
+          <Ionicons name="chevron-down" size={14} color={GREEN} />
+        </View>
+      </View>
+    );
+  }
 
   const canOpen = eligibleServices.length > 0 && !isUpdating;
   const showAllRow = eligibleServices.length > 1;
@@ -386,6 +398,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(22, 163, 74, 0.35)",
     backgroundColor: "#FFFFFF",
+  },
+  triggerPlaceholder: {
+    opacity: 0.9,
   },
   triggerRow: {
     flexDirection: "row",

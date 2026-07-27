@@ -9,6 +9,8 @@ export type AndroidChannelOptions = {
   importance?: number;
   vibrationPattern?: number[];
   lightColor?: string;
+  /** Android raw sound name (no extension), e.g. `cx_notification`. */
+  sound?: string;
 };
 
 function resolveProjectId(): string | undefined {
@@ -49,6 +51,7 @@ export async function ensureAndroidChannel(opts: AndroidChannelOptions): Promise
     importance: opts.importance ?? Notifications.AndroidImportance.HIGH,
     vibrationPattern: opts.vibrationPattern ?? [0, 250, 250, 250],
     lightColor: opts.lightColor ?? "#14b8a6",
+    ...(opts.sound ? { sound: opts.sound } : {}),
   });
 }
 

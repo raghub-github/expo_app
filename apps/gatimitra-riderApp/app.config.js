@@ -139,7 +139,7 @@ module.exports = {
       ],
     ],
     experiments: {
-      typedRoutes: true,
+      typedRoutes: false,
       autolinkingModuleResolution: true
     },
     extra: {
@@ -155,9 +155,23 @@ module.exports = {
       },
       mapboxPublicToken:
         process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
         process.env.MAPBOX_PUBLIC_TOKEN ||
         process.env.NEXT_PUBLIC_MAPBOX_TOKEN ||
         "",
+      mapboxAccessToken:
+        process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
+        process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        process.env.MAPBOX_PUBLIC_TOKEN ||
+        "",
+      EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN:
+        process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
+        null,
+      EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN:
+        process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
+        process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        null,
     },
     owner: "raghubhunia"
   }

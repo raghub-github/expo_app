@@ -16,6 +16,7 @@ import type {
   Recipient,
   TargetFilter,
 } from "./types.js";
+import { expandCampaignUserIdCandidates } from "./campaignTarget.js";
 
 const TOKEN_STALENESS_DAYS = 90;
 
@@ -359,6 +360,81 @@ async function userIdsForOrder(
   return out;
 }
 
+/**
+ * Sentinel device token for in-app inbox rows when the user has no push token
+ * (e.g. Expo Go / permission denied). Push dispatch skips this token.
+ */
+export const IN_APP_ONLY_TOKEN = "__in_app_only__";
+
+/**
+ * Resolve explicit user targets for inbox history even when no push token exists.
+ * Used so Expo Go / tokenless devices still get notification_dispatch_logs + inbox.
+ * Broadcast targets (all_*) without tokens return [] — never fabricate a full user census.
+ */
+export async function resolveInboxOnlyRecipients(
+  target: TargetFilter,
+  preferredRole?: NotificationRole | string | null,
+): Promise<Recipient[]> {
+  const roleHint = normaliseRole(
+    preferredRole && preferredRole !== "all" ? preferredRole : "all",
+  );
+
+  const toRecipients = (pairs: Array<{ userId: string; role: NotificationRole }>): Recipient[] => {
+    const seen = new Set<string>();
+    const out: Recipient[] = [];
+    for (const p of pairs) {
+      const id = p.userId.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        userId: id,
+        role: p.role,
+        deviceToken: IN_APP_ONLY_TOKEN,
+        deviceId: null,
+        platform: "android",
+      });
+    }
+    return out;
+  };
+
+  if ("user_id" in target && typeof target.user_id === "string") {
+    const candidates = expandCampaignUserIdCandidates(target.user_id);
+    return toRecipients(
+      candidates.map((userId) => ({
+        userId,
+        role: roleHint === "all" ? "customer" : roleHint,
+      })),
+    );
+  }
+
+  if ("user_ids" in target && Array.isArray(target.user_ids)) {
+    const candidates = [
+      ...new Set(
+        target.user_ids
+          .flatMap((s) => expandCampaignUserIdCandidates(String(s)))
+          .filter(Boolean),
+      ),
+    ];
+    return toRecipients(
+      candidates.map((userId) => ({
+        userId,
+        role: roleHint === "all" ? "customer" : roleHint,
+      })),
+    );
+  }
+
+  if ("order_id" in target && typeof target.order_id === "string") {
+    const pairs = await userIdsForOrder(target.order_id);
+    const filtered =
+      roleHint === "all"
+        ? pairs
+        : pairs.filter((p) => p.role === roleHint);
+    return toRecipients(filtered.map((p) => ({ userId: p.userId, role: p.role })));
+  }
+
+  return [];
+}
+
 async function recipientsForRole(role: NotificationRole): Promise<Recipient[]> {
   if (role === "merchant") {
     return merchantRecipients({ allStores: true });
@@ -398,18 +474,24 @@ export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> 
   }
 
   if ("user_id" in target && typeof target.user_id === "string") {
-    const uid = target.user_id.trim();
-    const expo = await tokensForUserIds([uid]);
-    const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: [uid] });
-    const native = await nativeFcmTokens({ userIds: [uid] });
+    const candidates = expandCampaignUserIdCandidates(target.user_id);
+    const expo = await tokensForUserIds(candidates);
+    const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
+    const native = await nativeFcmTokens({ userIds: candidates });
     return dedupeByToken([...expo, ...merchant, ...native]);
   }
 
   if ("user_ids" in target && Array.isArray(target.user_ids)) {
-    const ids = target.user_ids.map((s) => String(s).trim()).filter(Boolean);
-    const expo = await tokensForUserIds(ids);
-    const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: ids });
-    const native = await nativeFcmTokens({ userIds: ids });
+    const candidates = [
+      ...new Set(
+        target.user_ids
+          .flatMap((s) => expandCampaignUserIdCandidates(String(s)))
+          .filter(Boolean),
+      ),
+    ];
+    const expo = await tokensForUserIds(candidates);
+    const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
+    const native = await nativeFcmTokens({ userIds: candidates });
     return dedupeByToken([...expo, ...merchant, ...native]);
   }
 

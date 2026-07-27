@@ -238,6 +238,28 @@ export async function GET(req: NextRequest) {
       shapeOfferRow(row, idsByOfferPk.get(Number(row.id)) ?? null, itemIdByPk)
     );
 
+    try {
+      const { client: sql } = await import('@/lib/drizzle');
+      const {
+        loadMerchantOfferTrackStats,
+        mergeOfferTrackStatsIntoMetadata,
+      } = await import('@/lib/merchant-offer-track-stats');
+      const stats = await loadMerchantOfferTrackStats(sql as never, resolved.store.id, offerPks);
+      for (const offer of offers as Array<Record<string, unknown>>) {
+        const pk = Number(offer.id);
+        const stat = stats.get(pk);
+        if (!stat) continue;
+        const meta = (offer.offer_metadata as Record<string, unknown>) ?? {};
+        offer.offer_metadata = mergeOfferTrackStatsIntoMetadata(
+          meta,
+          stat,
+          offer.current_uses as number | null | undefined,
+        );
+      }
+    } catch (e) {
+      console.warn('[merchant/offers] track stats enrichment failed', e);
+    }
+
     return NextResponse.json({
       success: true,
       offers,

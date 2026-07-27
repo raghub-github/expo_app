@@ -22,6 +22,7 @@ export type MerchantListItemType =
   | "hero"
   | "info"
   | "closed_banner"
+  | "rush_banner"
   | "filter_bar"
   | "category_bar"
   | "past_orders"
@@ -39,6 +40,7 @@ export type MerchantFlashListItem =
   | { type: "hero"; key: "hero" }
   | { type: "info"; key: "info" }
   | { type: "closed_banner"; key: "closed_banner" }
+  | { type: "rush_banner"; key: "rush_banner" }
   | { type: "filter_bar"; key: "filter_bar" }
   | { type: "category_bar"; key: "category_bar" }
   | {

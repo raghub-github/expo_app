@@ -129,7 +129,7 @@ export type SendResult = {
   failedSync: number;       // hard fail before enqueue
   notificationIds: string[]; // notification_logs.notification_id UUIDs
   /** Why a campaign produced zero deliveries (quiet hours, empty audience, etc.). */
-  skipReason?: "no_recipients" | "quiet_hours" | "template_missing";
+  skipReason?: "no_recipients" | "quiet_hours" | "template_missing" | string;
 };
 
 /** Resolved per-recipient delivery descriptor (one row in notification_logs). */

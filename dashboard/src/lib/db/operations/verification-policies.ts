@@ -43,7 +43,7 @@ export async function listPolicies(): Promise<PolicyRow[]> {
      WHERE effective_to IS NULL
      ORDER BY subject_type, document_kind
   `) as unknown as PolicyRow[];
-  return rows;
+  return (rows ?? []).map((r) => ({ ...r, id: Number(r.id) }));
 }
 
 export async function listSwitches(): Promise<SwitchRow[]> {
@@ -54,7 +54,7 @@ export async function listSwitches(): Promise<SwitchRow[]> {
      WHERE restored_at IS NULL
      ORDER BY provider, document_kind NULLS FIRST
   `) as unknown as SwitchRow[];
-  return rows;
+  return (rows ?? []).map((r) => ({ ...r, id: Number(r.id) }));
 }
 
 type Actor = { actorId: number; ip?: string | null; ua?: string | null };

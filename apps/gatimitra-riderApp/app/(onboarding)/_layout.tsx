@@ -12,6 +12,7 @@ export default function OnboardingLayout() {
       <Stack.Screen name="dl-rc" />
       <Stack.Screen name="rental-ev" />
       <Stack.Screen name="pan-selfie" />
+      <Stack.Screen name="bank-account" />
       <Stack.Screen name="review" />
       <Stack.Screen name="payment" />
       <Stack.Screen name="profile" />

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet } from "react-native";
 import {
   elapsedMs,
   formatHandoverDuration,

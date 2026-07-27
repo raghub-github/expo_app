@@ -87,6 +87,10 @@ export const documentVerificationStatusEnum = pgEnum("document_verification_stat
   "pending",
   "approved",
   "rejected",
+  "auto_verified",
+  "expired",
+  "consent_denied",
+  "timeout",
 ]);
 
 export const documentFileSideEnum = pgEnum("document_file_side", [
@@ -127,6 +131,10 @@ export const riderAddressTypeEnum = pgEnum("rider_address_type", [
 export const verificationMethodEnum = pgEnum("verification_method", [
   "APP_VERIFIED",
   "MANUAL_UPLOAD",
+  "CASHFREE_AUTO",
+  "CASHFREE_ASSISTED",
+  "CASHFREE_MANUAL_FALLBACK",
+  "RAZORPAY_BANK",
 ]);
 
 export const dutyStatusEnum = pgEnum("duty_status", [
@@ -1180,6 +1188,11 @@ const ridersTable = pgTable(
       .default("MOBILE_VERIFIED"),
     kycStatus: kycStatusEnum("kyc_status").notNull().default("PENDING"),
     status: riderStatusEnum("status").notNull().default("INACTIVE"),
+    /** Per-step onboarding progress map (aadhaar/face/pan/vehicle/payment/approval). */
+    onboardingProgress: jsonb("onboarding_progress").notNull().default({}),
+    lastCompletedStep: text("last_completed_step"),
+    nextRequiredStep: text("next_required_step"),
+    onboardingProgressPct: integer("onboarding_progress_pct").notNull().default(0),
     city: text("city"),
     state: text("state"),
     pincode: text("pincode"),
@@ -1254,6 +1267,9 @@ export const riderDocuments = pgTable(
     fraudFlags: jsonb("fraud_flags").default({}),
     duplicateDocumentId: bigint("duplicate_document_id", { mode: "number" }).references((): any => riderDocuments.id, { onDelete: "set null" }),
     requiresManualReview: boolean("requires_manual_review").notNull().default(false),
+    lastVerificationId: text("last_verification_id"),
+    lastProviderReference: text("last_provider_reference"),
+    extractedDataSummary: jsonb("extracted_data_summary").notNull().default({}),
     metadata: jsonb("metadata").default({}),
     createdBy: integer("created_by"),
     updatedBy: integer("updated_by"),
@@ -1446,6 +1462,12 @@ export const riderVehicles = pgTable(
     seatingCapacity: integer("seating_capacity"),
     rcDocumentUrl: text("rc_document_url"),
     insuranceDocumentUrl: text("insurance_document_url"),
+    chassisNumber: text("chassis_number"),
+    engineNumber: text("engine_number"),
+    fitnessExpiry: date("fitness_expiry"),
+    pucExpiry: date("puc_expiry"),
+    rcOwnerName: text("rc_owner_name"),
+    cashfreeRcPayload: jsonb("cashfree_rc_payload").default({}),
     verified: boolean("verified").notNull().default(false),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     verifiedBy: integer("verified_by"), // Admin user ID
@@ -2220,6 +2242,10 @@ export const ordersCore = pgTable(
     deliveryPrimaryContactPhone: text("delivery_primary_contact_phone"),
     /** Email of the last dashboard user who manually updated order status (Dispatch Ready / Dispatched / Delivered). */
     manualStatusUpdatedByEmail: text("manual_status_updated_by_email"),
+    /** Latest CS agent who performed a tracked action (Routed To). */
+    routedToSystemUserId: bigint("routed_to_system_user_id", { mode: "number" }),
+    routedToEmail: text("routed_to_email"),
+    routedToAt: timestamp("routed_to_at", { withTimezone: true }),
   },
   (table) => ({
     riderIdIdx: index("orders_core_rider_id_idx").on(table.riderId),

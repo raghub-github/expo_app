@@ -12,6 +12,8 @@ import { resolveRiderDashboardReturnUrl } from '@/lib/riders/rider-dashboard-nav
 import { CheckCircle, ArrowLeft, User, Car, FileText, CreditCard, Receipt, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, Clock, AlertCircle } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
+import { DocAutoVerificationDetailsView } from '@/components/verification/DocAutoVerificationDetails';
+import { getRiderDocAutoVerificationDisplay } from '@/lib/rider-doc-auto-verification';
 
 interface Rider {
   id: number;
@@ -117,6 +119,12 @@ interface RiderDocument {
   verifiedAt?: string | null;
   verifierName?: string | null;
   rejectedReason?: string | null;
+  extractedName?: string | null;
+  extractedDob?: string | null;
+  extractedDataSummary?: Record<string, unknown> | null;
+  lastVerificationId?: string | null;
+  lastProviderReference?: string | null;
+  metadata?: Record<string, unknown> | null;
   createdAt: string;
   files?: DocumentFile[];
 }
@@ -662,11 +670,32 @@ export default function RiderDetailsPage() {
               const docKey =
                 (doc as RiderDocument & { docKey?: string }).docKey ??
                 `${doc.id}-${doc.docType}`;
+              // App / DigiLocker auto-verify: hide redundant Aadhaar Back card.
+              if (
+                doc.docType === "aadhaar_back" &&
+                (doc.verificationMethod === "APP_VERIFIED" ||
+                  documents.some(
+                    (d) =>
+                      d.docType === "aadhaar_front" &&
+                      d.verificationMethod === "APP_VERIFIED",
+                  ))
+              ) {
+                return null;
+              }
+              const autoVerifyDisplay =
+                doc.docType !== "aadhaar_back"
+                  ? getRiderDocAutoVerificationDisplay(doc)
+                  : null;
+              const title =
+                doc.docType === "aadhaar_front" &&
+                doc.verificationMethod === "APP_VERIFIED"
+                  ? "Aadhaar Card"
+                  : documentLabels[doc.docType] || doc.docType;
               return (
                 <div key={docKey} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 hover:border-gray-300 hover:shadow-sm transition-all">
                   <div className="flex items-start justify-between gap-2 mb-3">
                     <h3 className="font-semibold text-gray-900 text-sm leading-tight">
-                      {documentLabels[doc.docType] || doc.docType}
+                      {title}
                     </h3>
                     <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${
                       verStatus === "approved" ? "bg-emerald-100 text-emerald-800" :
@@ -678,6 +707,12 @@ export default function RiderDetailsPage() {
                   <div className="space-y-1.5 text-xs text-gray-600">
                     <p><span className="font-medium text-gray-700">Method:</span> {doc.verificationMethod || "N/A"}</p>
                     {doc.docNumber && <p><span className="font-medium text-gray-700">Number:</span> {doc.docNumber}</p>}
+                    {doc.extractedName && (
+                      <p><span className="font-medium text-gray-700">Extracted name:</span> {doc.extractedName}</p>
+                    )}
+                    {doc.extractedDob && (
+                      <p><span className="font-medium text-gray-700">Extracted DOB:</span> {String(doc.extractedDob).slice(0, 10)}</p>
+                    )}
                     {doc.expiryDate && (
                       <p><span className="font-medium text-gray-700">Expiry:</span> {new Date(doc.expiryDate).toLocaleDateString()}</p>
                     )}
@@ -687,6 +722,11 @@ export default function RiderDetailsPage() {
                     )}
                     <p className="text-gray-500 pt-1">{new Date(doc.createdAt).toLocaleDateString()}</p>
                   </div>
+                  {autoVerifyDisplay ? (
+                    <div className="mt-3">
+                      <DocAutoVerificationDetailsView display={autoVerifyDisplay} />
+                    </div>
+                  ) : null}
                   <div className="mt-3 flex flex-wrap gap-2">
                     {displayFiles.map((f, i) => (
                       <a

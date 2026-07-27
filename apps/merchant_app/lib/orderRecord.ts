@@ -47,6 +47,7 @@ export type LineItem = {
   offer_label?: string | null;
   is_item_promo?: boolean;
   applied_offer_type?: string | null;
+  ctm_from_snapshot?: boolean;
   special_instructions?: string | null;
   specialInstructions?: string | null;
 };
@@ -56,6 +57,8 @@ export type OrderRecord = {
   ordersCoreId: number;
   orderNumber: string;
   formattedOrderId: string | null;
+  /** Tax invoice number from orders_core (GST compliance). */
+  taxInvoiceNumber?: string | null;
   customerName: string;
   createdAt: string;
   displayTime: string;
@@ -96,6 +99,11 @@ export type OrderRecord = {
   pickupToken?: string | null;
   /** Backend-generated KOT number (store-scoped). */
   kotNumber?: string | null;
+  /** Store this order belongs to (multi-store board). */
+  merchantStoreId?: number | null;
+  merchantStoreName?: string | null;
+  /** Short locality for incoming modal / cards (e.g. Tiruporur). */
+  merchantStoreLocality?: string | null;
   paymentMethod?: string | null;
   rtoOtp?: string;
   rejectedReason?: string | null;
@@ -199,7 +207,14 @@ export function stageTransitionToApi(from: OrderStage, to: OrderStage): string {
   return to.toUpperCase();
 }
 
-export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
+export function mapApiOrder(
+  o: ApiFoodOrder,
+  storeCtx?: {
+    storeId?: number | null;
+    storeName?: string | null;
+    storeLocality?: string | null;
+  } | null
+): OrderRecord {
   const formatted = (o.formatted_order_id ?? "").trim();
   const orderNumber = formatted.length > 0 ? formatted : "";
   const deliveryType = (o.delivery_type ?? "GATIMITRA_RIDER") as DeliveryType;
@@ -213,6 +228,7 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     ordersCoreId: o.orders_core_id,
     orderNumber,
     formattedOrderId: formatted || null,
+    taxInvoiceNumber: o.tax_invoice_number?.trim() || null,
     customerName: customerName || "Guest",
     createdAt: o.created_at,
     displayTime: formatDisplayTime(o.created_at),
@@ -239,6 +255,7 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
       offer_label: it.offer_label ?? null,
       is_item_promo: it.is_item_promo === true,
       applied_offer_type: it.applied_offer_type ?? null,
+      ctm_from_snapshot: it.ctm_from_snapshot === true,
       specialInstructions: it.special_instructions ?? it.specialInstructions ?? null,
     })),
     total: resolveMerchantOrderTotal({
@@ -309,6 +326,12 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     pickupOtp: o.pickup_otp ?? undefined,
     pickupToken: o.pickup_token?.trim() || null,
     kotNumber: o.kot_number?.trim() || null,
+    merchantStoreId:
+      storeCtx?.storeId != null && Number.isFinite(Number(storeCtx.storeId))
+        ? Number(storeCtx.storeId)
+        : null,
+    merchantStoreName: storeCtx?.storeName?.trim() || null,
+    merchantStoreLocality: storeCtx?.storeLocality?.trim() || null,
     paymentMethod: o.payment_method?.trim() || null,
     rtoOtp: o.rto_otp ?? undefined,
     rejectedReason: o.rejected_reason ?? null,

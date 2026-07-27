@@ -8,13 +8,11 @@ import {
 } from "react-native";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
-const SPLASH_STATUS_BAR = "#5eead4";
-
 function assertSplashStatusBar() {
   NativeStatusBar.setHidden(false, "none");
   if (Platform.OS !== "android") return;
   NativeStatusBar.setTranslucent(true);
-  NativeStatusBar.setBackgroundColor(SPLASH_STATUS_BAR, true);
+  NativeStatusBar.setBackgroundColor("transparent", true);
   NativeStatusBar.setBarStyle("light-content", true);
 }
 

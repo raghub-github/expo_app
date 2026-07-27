@@ -3,7 +3,8 @@
  */
 
 import { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Alert } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";

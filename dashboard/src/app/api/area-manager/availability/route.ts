@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { requireAreaManagerApiAuth, requireRiderManager } from "@/lib/area-manager/auth";
+import { requireAreaManagerApiAuth } from "@/lib/area-manager/auth";
 import { countRidersByAvailability } from "@/lib/area-manager/queries";
 import { apiErrorResponse } from "@/lib/api-errors";
 
@@ -19,11 +19,12 @@ export async function GET(request: NextRequest) {
     };
     const authResult = await requireAreaManagerApiAuth(getAuthUser);
     if (authResult.error) return authResult.error;
-    const err = requireRiderManager(authResult.resolved);
-    if (err) return err;
 
     const { resolved } = authResult;
-    const areaManagerId = resolved.isSuperAdmin ? null : resolved.areaManager.id;
+    const areaManagerId =
+      resolved.isSuperAdmin || resolved.managerType !== "RIDER" || resolved.areaManager.id <= 0
+        ? null
+        : resolved.areaManager.id;
     const localityCode = request.nextUrl.searchParams.get("localityCode") ?? undefined;
 
     const counts = await countRidersByAvailability(

@@ -4,7 +4,8 @@
  */
 
 import { useRef, useState } from "react";
-import { View, Text, StyleSheet, Animated, PanResponder, Dimensions, Platform } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Animated, PanResponder, Dimensions, Platform } from "react-native";
 import {
   GatiMitraMerchant,
   CARD_RADIUS,

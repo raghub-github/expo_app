@@ -21,6 +21,7 @@ export function useStoreBookmarks() {
   return {
     bookmarkSet,
     isLoading: query.isLoading,
+    isError: query.isError,
     isAuthenticated,
     refetch: query.refetch,
   };

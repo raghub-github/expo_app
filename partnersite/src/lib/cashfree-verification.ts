@@ -145,9 +145,59 @@ export async function verifyBankAccountSync(args: {
   }
 }
 
+function parseUpiVerifyBody(
+  call: CashfreeCall,
+): BankVerifyResult {
+  const b = call.body;
+  const referenceId = b.reference_id != null ? String(b.reference_id) : null;
+  const statusUp = typeof b.status === "string" ? b.status.toUpperCase() : "";
+  // /upi → account_exists YES/NO; /upi/penny-drop → status VALID/INVALID/SUCCESS
+  const exists =
+    (typeof b.account_exists === "string" && b.account_exists.toUpperCase() === "YES") ||
+    statusUp === "VALID" ||
+    statusUp === "SUCCESS";
+  const invalid =
+    (typeof b.account_exists === "string" && b.account_exists.toUpperCase() === "NO") ||
+    ["INVALID", "FAILED", "EXPIRED"].includes(statusUp);
+  const nameAtBank =
+    (typeof b.name_at_bank === "string" && b.name_at_bank) ||
+    (typeof b.customer_name === "string" && b.customer_name) ||
+    null;
+  const ifscDetails =
+    b.ifsc_details && typeof b.ifsc_details === "object"
+      ? (b.ifsc_details as Record<string, unknown>)
+      : null;
+  const bankName =
+    (typeof ifscDetails?.bank === "string" && ifscDetails.bank) ||
+    (typeof b.bank_name === "string" && b.bank_name) ||
+    null;
+
+  if (call.httpStatus >= 200 && call.httpStatus < 300 && (exists || invalid)) {
+    return {
+      outcome: exists ? "verified" : "invalid",
+      referenceId,
+      nameAtBank,
+      bankName,
+      statusCode: exists ? "VALID" : "INVALID",
+      failureReason: exists ? null : "UPI ID does not exist or is inactive.",
+      raw: b,
+    };
+  }
+  return {
+    outcome: "error",
+    referenceId,
+    nameAtBank: null,
+    bankName: null,
+    statusCode: typeof b.code === "string" ? b.code : String(call.httpStatus),
+    failureReason:
+      (typeof b.message === "string" && b.message) || `Cashfree HTTP ${call.httpStatus}`,
+    raw: b,
+  };
+}
+
 /**
- * UPI VPA verification — POST /upi. Synchronous: tells whether the VPA exists
- * and (when available) the registered customer name.
+ * UPI VPA verification. Uses Cashfree UPI Penny Drop (POST /upi/penny-drop);
+ * falls back to lightweight POST /upi if penny-drop is not enabled.
  */
 export async function verifyUpiSync(args: {
   vpa: string;
@@ -161,43 +211,24 @@ export async function verifyUpiSync(args: {
   if (args.name) payload.name = args.name.trim().slice(0, 100);
 
   try {
-    const call = await cashfreePost("/upi", payload);
-    const b = call.body;
-    const referenceId = b.reference_id != null ? String(b.reference_id) : null;
-    // Cashfree signals VPA validity as account_exists: "YES"/"NO" (some
-    // versions: status: "VALID"). Parse both defensively.
-    const exists =
-      (typeof b.account_exists === "string" && b.account_exists.toUpperCase() === "YES") ||
-      (typeof b.status === "string" && b.status.toUpperCase() === "VALID");
-    const invalid =
-      (typeof b.account_exists === "string" && b.account_exists.toUpperCase() === "NO") ||
-      (typeof b.status === "string" && ["INVALID", "FAILED"].includes(b.status.toUpperCase()));
-    const nameAtBank =
-      (typeof b.name_at_bank === "string" && b.name_at_bank) ||
-      (typeof b.customer_name === "string" && b.customer_name) ||
-      null;
-
-    if (call.httpStatus >= 200 && call.httpStatus < 300 && (exists || invalid)) {
-      return {
-        outcome: exists ? "verified" : "invalid",
-        referenceId,
-        nameAtBank,
-        bankName: null,
-        statusCode: exists ? "VALID" : "INVALID",
-        failureReason: exists ? null : "UPI ID does not exist or is inactive.",
-        raw: b,
-      };
+    let call = await cashfreePost("/upi/penny-drop", {
+      ...payload,
+      user_consent: {
+        obtained: true,
+        type: "EXPLICIT",
+        timestamp: new Date().toISOString(),
+        purpose: "Merchant store payout UPI ID verification",
+      },
+    });
+    const msg = typeof call.body.message === "string" ? call.body.message : "";
+    if (call.httpStatus >= 400 && /not enabled/i.test(msg)) {
+      console.warn(
+        "[cashfree] POST /upi/penny-drop not enabled — falling back to /upi",
+      );
+      call = await cashfreePost("/upi", payload);
     }
-    return {
-      outcome: "error",
-      referenceId,
-      nameAtBank: null,
-      bankName: null,
-      statusCode: typeof b.code === "string" ? b.code : String(call.httpStatus),
-      failureReason:
-        (typeof b.message === "string" && b.message) || `Cashfree HTTP ${call.httpStatus}`,
-      raw: b,
-    };
+
+    return parseUpiVerifyBody(call);
   } catch (e) {
     return {
       outcome: "error",

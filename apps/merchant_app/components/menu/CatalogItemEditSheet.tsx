@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  StyleSheet,
-  TouchableOpacity,
-  Pressable,
-  Image,
-  Animated,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Modal, StyleSheet, TouchableOpacity, Pressable, Image, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, BUTTON_RADIUS, CARD_RADIUS } from "@/constants/theme";
 import { ItemVegMark } from "@/components/order/ItemVegMark";

@@ -22,7 +22,17 @@ import {
   syncOnboardingUrl,
   writeOnboardingResume,
 } from '@/lib/onboarding/resume-session';
+import { clearOnboardingDocumentClientStorage } from '@/lib/onboarding/clear-document-client-storage';
 import { isStoreOnboardingSubmitted } from '@/lib/onboarding/store-onboarding-status';
+import {
+  STORE_DESCRIPTION_MAX,
+  STORE_DESCRIPTION_MIN,
+  clampStoreDescriptionInput,
+  isStoreDescriptionValid,
+  normalizeStoreDescriptionForSave,
+  storeDescriptionLength,
+  storeDescriptionValidationMessage,
+} from '@/lib/store-description';
 import { MERCHANT_AGREEMENT_UNAVAILABLE_MESSAGE } from '@/lib/merchant-agreement-template-constants';
 import {
   menuReferenceEntryStatusesFromRejectionDetail,
@@ -83,35 +93,66 @@ function extensionFromUploadFile(file: File): string {
 }
 
 /**
- * Single canonical stored URL for onboarding docs: `/api/attachments/proxy?key=<object key>`.
- * Never double-wrap when `uploadToR2` already returned a proxy URL or a presigned https URL.
+ * Single canonical stored URL for onboarding docs/media: `/api/attachments/proxy?key=<object key>`.
+ * Always keeps the full `docs/merchants/...` key (never strip `docs/` — that made delete/proxy miss objects).
  */
 function proxyUrlForDocumentUploadResult(uploadResult: string): string {
   const s = String(uploadResult || '').trim();
   if (!s) return s;
-  if (s.startsWith('/api/attachments/proxy')) return s;
-  if (!s.includes('://')) {
-    return `/api/attachments/proxy?key=${encodeURIComponent(s.replace(/^\/+/, ''))}`;
+
+  const toProxy = (key: string) =>
+    `/api/attachments/proxy?key=${encodeURIComponent(key.replace(/^\/+/, ''))}`;
+
+  if (s.includes('/api/attachments/proxy') || s.includes('/v1/attachments/proxy')) {
+    try {
+      const u = new URL(s.startsWith('http') ? s : `http://local.invalid${s.startsWith('/') ? '' : '/'}${s}`);
+      const key = u.searchParams.get('key');
+      if (key?.trim()) return toProxy(key.trim());
+    } catch {
+      /* fall through */
+    }
+    if (s.startsWith('/v1/attachments/proxy')) {
+      return s.replace('/v1/attachments/proxy', '/api/attachments/proxy');
+    }
+    return s.startsWith('/api/attachments/proxy') ? s : toProxy(s);
   }
+
+  if (!s.includes('://')) {
+    return toProxy(s);
+  }
+
   try {
     const u = new URL(s);
+    if (
+      u.pathname.startsWith('/api/attachments/proxy') ||
+      u.pathname.startsWith('/v1/attachments/proxy')
+    ) {
+      const key = u.searchParams.get('key');
+      if (key?.trim()) return toProxy(key.trim());
+    }
     const path = u.pathname.replace(/^\/+/, '');
     if (!path) return s;
     const h = u.hostname.toLowerCase();
     if (h.endsWith('.r2.dev') || h.endsWith('.r2.cloudflarestorage.com')) {
       const pl = path.toLowerCase();
       const docIdx = pl.indexOf('docs/merchants/');
-      if (docIdx >= 0) return `/api/attachments/proxy?key=${encodeURIComponent(path.slice(docIdx))}`;
-      const merMatch = path.match(/(^|\/)(merchants\/[^/]+\/(?:stores|draft)\/.+)/i);
-      if (merMatch?.[2]) return `/api/attachments/proxy?key=${encodeURIComponent(merMatch[2])}`;
+      if (docIdx >= 0) return toProxy(path.slice(docIdx));
+      const merIdx = pl.indexOf('merchants/');
+      if (merIdx >= 0) {
+        const rest = path.slice(merIdx);
+        return toProxy(rest.toLowerCase().startsWith('docs/') ? rest : `docs/${rest}`);
+      }
+      // path-style: {bucket}/docs/merchants/...
       const slash = path.indexOf('/');
       if (slash > 0) {
         const rest = path.slice(slash + 1);
-        if (rest.toLowerCase().startsWith('docs/merchants/') || /^merchants\/[^/]+\//i.test(rest)) {
-          return `/api/attachments/proxy?key=${encodeURIComponent(rest)}`;
+        if (rest.toLowerCase().startsWith('docs/merchants/') || /^merchants\//i.test(rest)) {
+          return toProxy(
+            rest.toLowerCase().startsWith('docs/') ? rest : `docs/${rest}`,
+          );
         }
       }
-      return `/api/attachments/proxy?key=${encodeURIComponent(path)}`;
+      return toProxy(path);
     }
   } catch {
     /* ignore */
@@ -188,6 +229,13 @@ interface DocumentData {
   [key: string]: any;
 }
 
+function normalizeStep4ActiveSection(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  if (raw === 'optional') return 'licence';
+  const valid = new Set(['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']);
+  return valid.has(raw) ? raw : undefined;
+}
+
 interface StoreSetupData {
   logo: File | null;
   logo_preview: string;
@@ -252,7 +300,12 @@ const StoreRegistrationForm = () => {
   const [showHelpModal, setShowHelpModal] = useState(false);
   const mainScrollRef = useRef<HTMLDivElement>(null);
   const [generatedStoreId, setGeneratedStoreId] = useState<string>('');
-  const [parentInfo, setParentInfo] = useState<{ id: number | null; name: string | null; parent_merchant_id: string | null } | null>(null);
+  const [parentInfo, setParentInfo] = useState<{
+    id: number | null;
+    name: string | null;
+    parent_merchant_id: string | null;
+    owner_name: string | null;
+  } | null>(null);
   const [currentStoreId, setCurrentStoreId] = useState<string>(''); // Store ID from database after step 1
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -262,6 +315,8 @@ const StoreRegistrationForm = () => {
   const [locationNotice, setLocationNotice] = useState<string>('');
   const [locationInputMode, setLocationInputMode] = useState<'gps' | 'search'>('gps');
   const [storePhonesInput, setStorePhonesInput] = useState('');
+  /** Once true, Store Name no longer overwrites Display Name */
+  const [displayNameManuallyEdited, setDisplayNameManuallyEdited] = useState(false);
   const [progressHydrated, setProgressHydrated] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false); // Separate loading for file uploads only
@@ -410,6 +465,7 @@ const StoreRegistrationForm = () => {
     const sid = (selectedStorePublicId || currentStoreId || draftStorePublicId || '').trim();
     const q = new URLSearchParams();
     q.set('verification_updates_submitted', '1');
+    q.set('picker', '1');
     if (sid) q.set('highlight_store', sid);
     return `/partners/all-stores?${q.toString()}`;
   }, [selectedStorePublicId, currentStoreId, draftStorePublicId]);
@@ -470,14 +526,22 @@ const StoreRegistrationForm = () => {
     if (saved.step1) {
       const step1 = saved.step1 as Record<string, unknown>;
       const displayName = (step1.store_display_name as string) ?? '';
+      const storeName = typeof step1.store_name === 'string' ? step1.store_name : '';
       setFormData((prev): FormData => {
         const merged = { ...prev, ...step1, legal_business_name: displayName } as FormData;
         const o = merged.owner_full_name;
         return {
           ...merged,
-          owner_full_name: o != null && String(o).trim() !== '' ? String(o).trim() : '',
+          owner_full_name: o != null && String(o).trim() !== '' ? String(o).trim() : prev.owner_full_name,
         };
       });
+      if (
+        displayName.trim() &&
+        storeName.trim() &&
+        displayName.trim() !== storeName.trim()
+      ) {
+        setDisplayNameManuallyEdited(true);
+      }
       if (saved.step1.store_phones && Array.isArray(saved.step1.store_phones)) {
         setStorePhonesInput(saved.step1.store_phones.join(', '));
       }
@@ -526,10 +590,27 @@ const StoreRegistrationForm = () => {
         ...prev,
         pan_number: saved.step4.pan_number ?? prev.pan_number,
         pan_holder_name: saved.step4.pan_holder_name ?? prev.pan_holder_name,
+        pan_is_verified: s4.pan_is_verified ?? prev.pan_is_verified,
+        pan_verified_at: s4.pan_verified_at ?? prev.pan_verified_at,
+        pan_verification_method: s4.pan_verification_method ?? prev.pan_verification_method,
+        pan_verified_details: s4.pan_verified_details ?? prev.pan_verified_details,
         aadhar_number: saved.step4.aadhar_number ?? prev.aadhar_number,
         aadhar_holder_name: saved.step4.aadhar_holder_name ?? prev.aadhar_holder_name,
+        aadhaar_is_verified: s4.aadhaar_is_verified ?? prev.aadhaar_is_verified,
+        aadhaar_verified_at: s4.aadhaar_verified_at ?? prev.aadhaar_verified_at,
+        aadhaar_verification_method: s4.aadhaar_verification_method ?? prev.aadhaar_verification_method,
+        aadhaar_verified_details: s4.aadhaar_verified_details ?? prev.aadhaar_verified_details,
         fssai_number: saved.step4.fssai_number ?? prev.fssai_number,
         gst_number: saved.step4.gst_number ?? prev.gst_number,
+        gst_legal_business_name: s4.gst_legal_business_name ?? (prev as any).gst_legal_business_name,
+        gst_principal_place_of_business:
+          s4.gst_principal_place_of_business ?? (prev as any).gst_principal_place_of_business,
+        gst_effective_registration_date:
+          s4.gst_effective_registration_date ?? (prev as any).gst_effective_registration_date,
+        gst_is_verified: s4.gst_is_verified ?? prev.gst_is_verified,
+        gst_verified_at: s4.gst_verified_at ?? prev.gst_verified_at,
+        gst_verification_method: s4.gst_verification_method ?? prev.gst_verification_method,
+        gst_verified_details: s4.gst_verified_details ?? prev.gst_verified_details,
         drug_license_number: saved.step4.drug_license_number ?? prev.drug_license_number,
         pharmacist_registration_number: saved.step4.pharmacist_registration_number ?? prev.pharmacist_registration_number,
         expiry_date: saved.step4.expiry_date ?? prev.expiry_date,
@@ -545,6 +626,7 @@ const StoreRegistrationForm = () => {
         other_document_number: saved.step4.other_document_number ?? prev.other_document_number,
         other_document_name: saved.step4.other_document_name ?? prev.other_document_name,
         other_document_expiry_date: saved.step4.other_document_expiry_date ?? prev.other_document_expiry_date,
+        step4_active_section: normalizeStep4ActiveSection(s4.step4_active_section) ?? (prev as any).step4_active_section,
         pan_rejection_reason: (s4.pan_rejection_reason as string | null | undefined) ?? (prev as any).pan_rejection_reason ?? null,
         gst_rejection_reason: (s4.gst_rejection_reason as string | null | undefined) ?? (prev as any).gst_rejection_reason ?? null,
         aadhaar_rejection_reason: (s4.aadhaar_rejection_reason as string | null | undefined) ?? (prev as any).aadhaar_rejection_reason ?? null,
@@ -607,7 +689,10 @@ const StoreRegistrationForm = () => {
         : [];
       setStoreSetup((prev) => ({
         ...prev,
-        cuisine_types: Array.isArray(saved.step5.cuisine_types) ? saved.step5.cuisine_types : prev.cuisine_types,
+        cuisine_types:
+          Array.isArray(saved.step5.cuisine_types) && saved.step5.cuisine_types.length > 0
+            ? saved.step5.cuisine_types
+            : prev.cuisine_types,
         food_categories: Array.isArray(saved.step5.food_categories) ? saved.step5.food_categories : prev.food_categories,
         avg_preparation_time_minutes: typeof saved.step5.avg_preparation_time_minutes === 'number'
           ? saved.step5.avg_preparation_time_minutes : prev.avg_preparation_time_minutes,
@@ -656,6 +741,20 @@ const StoreRegistrationForm = () => {
     setIsClient(true);
   }, []);
 
+  // Lock page scroll — only the main content pane may scroll when needed
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtml = html.style.overflow;
+    const prevBody = body.style.overflow;
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = prevHtml;
+      body.style.overflow = prevBody;
+    };
+  }, []);
+
   const parentIdParam = searchParams?.get('parent_id');
   useEffect(() => {
     const fetchParentInfo = async () => {
@@ -667,27 +766,44 @@ const StoreRegistrationForm = () => {
         if (isNumericParentId) {
           const { data: byId } = await supabase
             .from('merchant_parents')
-            .select('id, parent_merchant_id, parent_name')
+            .select('id, parent_merchant_id, parent_name, owner_name')
             .eq('id', Number(parentId))
             .maybeSingle();
           data = byId;
         } else {
           const { data: byCode } = await supabase
             .from('merchant_parents')
-            .select('id, parent_merchant_id, parent_name')
+            .select('id, parent_merchant_id, parent_name, owner_name')
             .eq('parent_merchant_id', parentId)
             .maybeSingle();
           data = byCode;
         }
 
         if (data) {
+          const ownerFromParent =
+            typeof data.owner_name === 'string' && data.owner_name.trim()
+              ? data.owner_name.trim()
+              : null;
           setParentInfo({
             id: data.id,
             name: data.parent_name,
-            parent_merchant_id: data.parent_merchant_id
+            parent_merchant_id: data.parent_merchant_id,
+            owner_name: ownerFromParent,
           });
+          // Prefill store owner from parent when not already set (editable)
+          if (ownerFromParent) {
+            setFormData((prev) => {
+              if (prev.owner_full_name.trim()) return prev;
+              return { ...prev, owner_full_name: ownerFromParent };
+            });
+          }
         } else {
-          setParentInfo({ id: isNumericParentId ? Number(parentId) : null, name: null, parent_merchant_id: parentId });
+          setParentInfo({
+            id: isNumericParentId ? Number(parentId) : null,
+            name: null,
+            parent_merchant_id: parentId,
+            owner_name: null,
+          });
         }
       }
     };
@@ -807,7 +923,13 @@ const StoreRegistrationForm = () => {
       try {
         const parentKey = (parentIdParam || '').trim();
         const sessionResume = parentKey ? readOnboardingResume(parentKey) : null;
-        const storeId = selectedStorePublicId || sessionResume?.storePublicId || '';
+        // new=1 = intentionally starting a fresh child store; ignore stale resume / parent-latest progress
+        if (forceNewOnboarding && !selectedStorePublicId && parentKey) {
+          clearOnboardingResume(parentKey);
+        }
+        const storeId = forceNewOnboarding
+          ? (selectedStorePublicId || '')
+          : (selectedStorePublicId || sessionResume?.storePublicId || '');
 
         const redirectIfOnboardingAlreadyClosed = async (storePublicId: string): Promise<boolean> => {
           if (!storePublicId || urlWantsVerificationFix) return false;
@@ -829,7 +951,7 @@ const StoreRegistrationForm = () => {
               window.location.href = `/partners/dashboard?storeId=${encodeURIComponent(storePublicId)}`;
               return true;
             }
-            window.location.href = `/partners/all-stores?highlight_store=${encodeURIComponent(storePublicId)}`;
+            window.location.href = `/partners/all-stores?picker=1&highlight_store=${encodeURIComponent(storePublicId)}`;
             return true;
           } catch {
             return false;
@@ -843,6 +965,11 @@ const StoreRegistrationForm = () => {
 
         const progressParams = new URLSearchParams();
         if (storeId) progressParams.set('storePublicId', storeId);
+        if (parentKey) progressParams.set('parent_id', parentKey);
+        if (forceNewOnboarding && !storeId) {
+          progressParams.set('forceNew', '1');
+          progressParams.set('resetDraft', '1');
+        }
         const url = `/api/auth/register-store-progress?${progressParams.toString()}`;
         const res = await fetch(url);
         const payload = await res.json();
@@ -855,7 +982,19 @@ const StoreRegistrationForm = () => {
             }
             return;
           }
-          console.error('Failed to load progress:', payload.error);
+          // Session exists but is not linked to a merchant_parents row (wrong login / AM staff / unlinked).
+          if (payload.code === 'MERCHANT_NOT_FOUND' || res.status === 403) {
+            const msg = String(payload.error || 'No merchant account found for this login.');
+            if (typeof window !== 'undefined') {
+              window.location.href =
+                '/auth/login?redirect=' +
+                encodeURIComponent(window.location.pathname + window.location.search) +
+                '&error=' +
+                encodeURIComponent(msg);
+            }
+            return;
+          }
+          console.warn('Failed to load progress:', payload.error);
           if (sessionResume && !urlWantsVerificationFix) {
             setStepStateOnly(sessionResume.step);
             if (sessionResume.storePublicId) {
@@ -878,7 +1017,7 @@ const StoreRegistrationForm = () => {
             return;
           }
           if (approval !== 'REJECTED') {
-            window.location.href = `/partners/all-stores?highlight_store=${encodeURIComponent(storeId)}`;
+            window.location.href = `/partners/all-stores?picker=1&highlight_store=${encodeURIComponent(storeId)}`;
             return;
           }
         }
@@ -899,24 +1038,38 @@ const StoreRegistrationForm = () => {
           }
 
           // IMPORTANT: Restore step FIRST before hydrating form data to prevent race conditions
+          let restoredStepForResume: number | null = null;
           if (Number.isFinite(Number(progress.current_step))) {
-            const restoredStep = Math.min(Math.max(Number(progress.current_step), 1), 9);
-            console.log('Restoring step from DB:', restoredStep, 'current_step:', progress.current_step);
+            let restoredStep = Math.min(Math.max(Number(progress.current_step), 1), 9);
+            // If the restored step is already marked complete, auto-push to the first incomplete step.
+            // Server GET clears step_4_completed when required docs are unfinished, so PAN-only
+            // verification will not leap to Operational details.
             if (!urlWantsVerificationFix) {
+              while (
+                restoredStep < 9 &&
+                Boolean((progress as Record<string, unknown>)[`step_${restoredStep}_completed`])
+              ) {
+                restoredStep += 1;
+              }
               setStepStateOnly(restoredStep);
             }
+            restoredStepForResume = restoredStep;
+            console.log('Restoring step from DB:', restoredStep, 'current_step:', progress.current_step);
             stepRestoredRef.current = true; // Mark restored BEFORE hydration
           } else if (sessionResume && !urlWantsVerificationFix) {
             setStepStateOnly(sessionResume.step);
+            restoredStepForResume = sessionResume.step;
             stepRestoredRef.current = true;
           }
           
           hydrateFormFromProgress(progress);
 
           if (parentKey) {
-            const restoredStep = Number.isFinite(Number(progress.current_step))
-              ? Math.min(Math.max(Number(progress.current_step), 1), 9)
-              : sessionResume?.step ?? 1;
+            const restoredStep =
+              restoredStepForResume ??
+              (Number.isFinite(Number(progress.current_step))
+                ? Math.min(Math.max(Number(progress.current_step), 1), 9)
+                : sessionResume?.step ?? 1);
             writeOnboardingResume({
               parentKey,
               step: restoredStep,
@@ -988,7 +1141,7 @@ const StoreRegistrationForm = () => {
                 return;
               }
               if (approval !== 'REJECTED') {
-                window.location.href = `/partners/all-stores?highlight_store=${encodeURIComponent(existingStore.store_id)}`;
+                window.location.href = `/partners/all-stores?picker=1&highlight_store=${encodeURIComponent(existingStore.store_id)}`;
                 return;
               }
             }
@@ -999,6 +1152,14 @@ const StoreRegistrationForm = () => {
             // Load Step 1 & 2 data (legal_business_name = store_display_name)
             const displayName = existingStore.store_display_name ?? '';
             const ownerFromDb = (existingStore as { owner_full_name?: string | null }).owner_full_name;
+            const loadedStoreName = existingStore.store_name ?? '';
+            if (
+              displayName.trim() &&
+              loadedStoreName.trim() &&
+              displayName.trim() !== String(loadedStoreName).trim()
+            ) {
+              setDisplayNameManuallyEdited(true);
+            }
             setFormData((prev) => ({
               ...prev,
               store_name: existingStore.store_name ?? prev.store_name,
@@ -1069,6 +1230,15 @@ const StoreRegistrationForm = () => {
                 aadhar_holder_name: storeDocuments.aadhaar_holder_name ?? prev.aadhar_holder_name,
                 fssai_number: storeDocuments.fssai_document_number ?? prev.fssai_number,
                 gst_number: storeDocuments.gst_document_number ?? prev.gst_number,
+                gst_legal_business_name:
+                  storeDocuments.gst_legal_business_name ?? (prev as any).gst_legal_business_name,
+                gst_principal_place_of_business:
+                  storeDocuments.gst_principal_place_of_business ??
+                  (prev as any).gst_principal_place_of_business,
+                gst_effective_registration_date:
+                  typeof storeDocuments.gst_effective_registration_date === "string"
+                    ? storeDocuments.gst_effective_registration_date.slice(0, 10)
+                    : (prev as any).gst_effective_registration_date,
                 drug_license_number: storeDocuments.drug_license_document_number ?? prev.drug_license_number,
                 pharmacist_registration_number: storeDocuments.pharmacist_certificate_document_number ?? prev.pharmacist_registration_number,
                 trade_license_number: storeDocuments.trade_license_document_number ?? (prev as any).trade_license_number,
@@ -1811,7 +1981,23 @@ const StoreRegistrationForm = () => {
         [name]: value,
         custom_store_type: value === 'OTHERS' ? prev.custom_store_type : '' // Clear custom type if not OTHERS
       }));
+    } else if (name === 'store_name') {
+      // Auto-fill Display Name from Store Name until user edits Display Name
+      setFormData((prev) => {
+        const next: FormData = { ...prev, store_name: value };
+        if (!displayNameManuallyEdited) {
+          next.store_display_name = value;
+          next.legal_business_name = value;
+        }
+        return next;
+      });
+    } else if (name === 'store_description') {
+      setFormData((prev) => ({
+        ...prev,
+        store_description: clampStoreDescriptionInput(value),
+      }));
     } else if (name === 'store_display_name') {
+      setDisplayNameManuallyEdited(true);
       setFormData(prev => ({
         ...prev,
         store_display_name: value,
@@ -2462,13 +2648,10 @@ const StoreRegistrationForm = () => {
     form.append('filename', filename || file.name);
     const res = await fetch('/api/upload/r2', { method: 'POST', body: form });
     const data = await res.json();
-    if (!res.ok || !data?.url) throw new Error(data?.error || 'R2 upload failed');
-    const raw = String((data.key || data.path || data.url) as string).trim();
-    if (raw.startsWith('/api/attachments/proxy')) return raw;
-    if (raw && !raw.includes('://')) {
-      return `/api/attachments/proxy?key=${encodeURIComponent(raw.replace(/^\/+/, ''))}`;
-    }
-    return raw;
+    // Prefer stable key/path over expiring signed `url` so proxy URLs never go stale.
+    const raw = String((data?.key || data?.path || data?.url || '') as string).trim();
+    if (!res.ok || !raw) throw new Error(data?.error || 'R2 upload failed');
+    return proxyUrlForDocumentUploadResult(raw);
   };
 
   /** Delete existing R2 object when merchant replaces attachment (discard + new file). */
@@ -2540,6 +2723,7 @@ const StoreRegistrationForm = () => {
       s.gallery_image_urls = galleryPersist;
       s.gallery_previews = [...galleryPersist];
     } else {
+      // Omit empty gallery — do not send [] (that used to wipe merchant_stores.gallery_images).
       delete s.gallery_image_urls;
       delete s.gallery_previews;
     }
@@ -2560,7 +2744,18 @@ const StoreRegistrationForm = () => {
         : bP && !bP.startsWith('data:') && !bP.startsWith('blob:')
           ? bP
           : '';
-    if (bannerCand) s.banner_url = proxyUrlForDocumentUploadResult(bannerCand);
+    if (bannerCand) {
+      s.banner_url = proxyUrlForDocumentUploadResult(bannerCand);
+      s.banner_preview = s.banner_url;
+    } else {
+      // Omit empty banner — empty "" was wiping merchant_stores.banner_url on later saves.
+      delete s.banner_url;
+      delete s.banner_preview;
+    }
+    // Never persist File blobs / serialized stubs in progress JSON.
+    delete s.banner;
+    delete s.logo;
+    delete s.gallery_images;
     return s;
   };
 
@@ -2568,16 +2763,22 @@ const StoreRegistrationForm = () => {
     if (stepNumber === 1) {
       // Step 1 only: store name, owner, display name, legal name, type, email, phones, description
       // Do NOT include location/address fields (those are step 2)
+      const ownerForStore =
+        formData.owner_full_name.trim() ||
+        (typeof parentInfo?.owner_name === 'string' ? parentInfo.owner_name.trim() : '') ||
+        '';
+      const displayForStore =
+        formData.store_display_name.trim() || formData.store_name.trim() || '';
       const step1Only = {
         store_name: formData.store_name,
-        owner_full_name: formData.owner_full_name,
-        store_display_name: formData.store_display_name,
-        legal_business_name: formData.legal_business_name,
+        owner_full_name: ownerForStore,
+        store_display_name: displayForStore,
+        legal_business_name: formData.legal_business_name.trim() || displayForStore,
         store_type: formData.store_type,
         custom_store_type: formData.custom_store_type,
         store_email: formData.store_email,
         store_phones: formData.store_phones,
-        store_description: formData.store_description,
+        store_description: normalizeStoreDescriptionForSave(formData.store_description),
       };
       return { step1: sanitizeForProgress(step1Only) };
     }
@@ -2678,6 +2879,7 @@ const StoreRegistrationForm = () => {
                   : undefined,
               formDataPatch: stepPatch,
               storePublicId: currentStoreId || draftStorePublicId || (typeof searchParams?.get === 'function' ? searchParams.get('store_id') ?? undefined : undefined) || undefined,
+              parentId: parentIdParam ? Number(parentIdParam) : undefined,
               registrationStatus: 'IN_PROGRESS',
             }),
           });
@@ -2728,7 +2930,7 @@ const StoreRegistrationForm = () => {
         return { success: true }; // Optimistic return
       }
     },
-    [currentStoreId, draftStorePublicId, draftStoreDbId, getStepPatch, refreshAuthIfNeeded, handleAuthError, searchParams, verificationLock]
+    [currentStoreId, draftStorePublicId, draftStoreDbId, getStepPatch, refreshAuthIfNeeded, handleAuthError, searchParams, verificationLock, parentIdParam]
   );
 
   // Wrapper for steps 5–9 that saves with explicit nextStep (e.g. when going back or to agreement/signature).
@@ -2754,6 +2956,7 @@ const StoreRegistrationForm = () => {
                 : undefined,
             formDataPatch: opts.formDataPatch,
             storePublicId: currentStoreId || draftStorePublicId || undefined,
+            parentId: parentIdParam ? Number(parentIdParam) : undefined,
             registrationStatus: 'IN_PROGRESS',
           }),
         });
@@ -2813,7 +3016,7 @@ const StoreRegistrationForm = () => {
         return { success: false, error: errorMessage };
       }
     },
-    [currentStoreId, draftStorePublicId, draftStoreDbId, verificationLock]
+    [currentStoreId, draftStorePublicId, draftStoreDbId, verificationLock, parentIdParam]
   );
 
   const validateStep = (stepNumber: number): boolean => {
@@ -2822,7 +3025,13 @@ const StoreRegistrationForm = () => {
       if (formData.store_type === 'OTHERS' && !formData.custom_store_type.trim()) {
         return false;
       }
-      return !!(formData.store_name && formData.owner_full_name && formData.store_type && formData.store_email);
+      return !!(
+        formData.store_name &&
+        formData.owner_full_name &&
+        formData.store_type &&
+        formData.store_email &&
+        isStoreDescriptionValid(formData.store_description)
+      );
     }
     if (stepNumber === 2) {
       return !!(
@@ -3037,6 +3246,8 @@ const StoreRegistrationForm = () => {
     } else {
       if (step === 1 && formData.store_type === 'OTHERS' && !formData.custom_store_type.trim()) {
         alert('Please specify your store type in the "Custom Store Type" field.');
+      } else if (step === 1 && !isStoreDescriptionValid(formData.store_description)) {
+        alert(storeDescriptionValidationMessage(formData.store_description) || 'Please enter a valid store description.');
       } else if (step === 3 && menuUploadMode === 'IMAGE' && menuImageFiles.length === 0 && menuUploadedImageUrls.length === 0) {
         alert('Please upload at least one menu image (max 5) before continuing.');
       } else if (step === 3 && menuUploadMode === 'PDF' && !menuPdfFile && !menuUploadedPdfUrl) {
@@ -3225,6 +3436,40 @@ const StoreRegistrationForm = () => {
       const docsPatch = savedPatch ?? (await buildDocumentStep4Patch(docs));
       setDocuments((prev) => applyDocPatchToDocuments(prev, docsPatch));
       await saveStepData(4, true, { step4: docsPatch }, true);
+      // Documents section done — clear any local/session drafts for PAN/Aadhaar/GST/Bank files & PII.
+      clearOnboardingDocumentClientStorage(
+        selectedStorePublicId || currentStoreId || draftStorePublicId || parentIdParam || null,
+      );
+      // Drop in-memory File blobs; URLs remain for later review from R2 / DB.
+      setDocuments((prev) => {
+        const next = { ...prev } as DocumentData & Record<string, unknown>;
+        const fileKeys = [
+          'pan_image',
+          'aadhar_front',
+          'aadhar_back',
+          'fssai_image',
+          'gst_image',
+          'drug_license_image',
+          'pharmacist_certificate',
+          'pharmacy_council_registration',
+          'trade_license_document',
+          'shop_establishment_document',
+          'udyam_document',
+          'other_document_file',
+        ];
+        for (const k of fileKeys) {
+          if (next[k] != null && typeof File !== 'undefined' && next[k] instanceof File) {
+            next[k] = null;
+          }
+        }
+        if (next.bank && typeof next.bank === 'object') {
+          const bank = { ...(next.bank as Record<string, unknown>) };
+          if (bank.bank_proof_file instanceof File) bank.bank_proof_file = null;
+          if (bank.upi_qr_screenshot_file instanceof File) bank.upi_qr_screenshot_file = null;
+          next.bank = bank as DocumentData['bank'];
+        }
+        return next as DocumentData;
+      });
       if (verificationLock?.partnerStep === 4) {
         showVerificationNotice(verificationSaveThanksTitle, verificationSaveThanksMessage, 'success', {
           redirectToAfterOk: buildPostLoginVerificationSubmittedUrl(),
@@ -3241,13 +3486,22 @@ const StoreRegistrationForm = () => {
   };
 
   /** Save store hours instantly to DB when toggles/slots change. Persists so refresh keeps toggles/slots. */
+  const storeSetupRef = useRef(storeSetup);
+  storeSetupRef.current = storeSetup;
+
+  const handleLiveStoreSetupChange = useCallback((next: StoreSetupData) => {
+    setStoreSetup(next);
+    storeSetupRef.current = next;
+  }, []);
+
   const saveStoreHoursProgress = useCallback(
     async (hours: StoreSetupData['store_hours']) => {
-      setStoreSetup(prev => ({ ...prev, store_hours: hours }));
+      const merged = { ...storeSetupRef.current, store_hours: hours };
+      storeSetupRef.current = merged;
+      setStoreSetup(merged);
       try {
-        const merged = { ...storeSetup, store_hours: hours };
-        const currentStep5 = buildStep5ProgressPatch(merged);
-        const step5Patch = { step5: { ...currentStep5, store_hours: hours } };
+        // Partial patch only — never rewrite full step5 (avoids wiping cuisines/media).
+        const step5Patch = { step5: { store_hours: hours } };
         saveStepData(5, false, step5Patch, false).catch(err => {
           console.error('Store hours save failed:', err);
         });
@@ -3255,17 +3509,17 @@ const StoreRegistrationForm = () => {
         console.error('Store hours save failed:', err);
       }
     },
-    [storeSetup, saveStepData]
+    [saveStepData]
   );
 
   /** Save Store Features (pure veg, online payment, cash) instantly to DB when any toggle changes. */
   const saveStoreFeaturesProgress = useCallback(
     (patch: { is_pure_veg?: boolean; accepts_online_payment?: boolean; accepts_cash?: boolean }) => {
-      setStoreSetup(prev => ({ ...prev, ...patch }));
+      const merged = { ...storeSetupRef.current, ...patch };
+      storeSetupRef.current = merged;
+      setStoreSetup(merged);
       try {
-        const merged = { ...storeSetup, ...patch };
-        const currentStep5 = buildStep5ProgressPatch(merged);
-        const step5Patch = { step5: { ...currentStep5, ...patch } };
+        const step5Patch = { step5: { ...patch } };
         saveStepData(5, false, step5Patch, false).catch(err => {
           console.error('Store features save failed:', err);
         });
@@ -3273,7 +3527,7 @@ const StoreRegistrationForm = () => {
         console.error('Store features save failed:', err);
       }
     },
-    [storeSetup, saveStepData]
+    [saveStepData]
   );
 
   const handleStoreSetupComplete = async (setup: StoreSetupData) => {
@@ -3306,14 +3560,26 @@ const StoreRegistrationForm = () => {
         if (typeof File !== 'undefined' && setup.logo instanceof File) {
           if (existingLogoUrl && typeof existingLogoUrl === 'string') await deleteR2ObjectIfExists(existingLogoUrl);
           uploadedLogoUrl = proxyUrlForDocumentUploadResult(
-            String(await uploadToR2(setup.logo, storeMediaPath, `logo_${Date.now()}`))
+            String(
+              await uploadToR2(
+                setup.logo,
+                storeMediaPath,
+                `logo_${Date.now()}${extensionFromUploadFile(setup.logo)}`
+              )
+            )
           );
           (step5Patch as any).logo_url = uploadedLogoUrl;
         }
         if (typeof File !== 'undefined' && setup.banner instanceof File) {
           if (existingBannerUrl && typeof existingBannerUrl === 'string') await deleteR2ObjectIfExists(existingBannerUrl);
           uploadedBannerUrl = proxyUrlForDocumentUploadResult(
-            String(await uploadToR2(setup.banner, storeAssetsBannerPath, `banner_${Date.now()}`))
+            String(
+              await uploadToR2(
+                setup.banner,
+                storeAssetsBannerPath,
+                `banner_${Date.now()}${extensionFromUploadFile(setup.banner)}`
+              )
+            )
           );
           (step5Patch as any).banner_url = uploadedBannerUrl;
         }
@@ -3373,6 +3639,63 @@ const StoreRegistrationForm = () => {
         alert(result.error || 'Failed to save Store Configuration. Please try again.');
         return;
       }
+      const savedStep5 = result.progress?.form_data?.step5;
+      const savedGallery = Array.isArray((savedStep5 as any)?.gallery_image_urls)
+        ? ((savedStep5 as any).gallery_image_urls as unknown[])
+        : [];
+      const expectedGallery = Array.isArray((step5Patch as any).gallery_image_urls)
+        ? ((step5Patch as any).gallery_image_urls as unknown[])
+        : [];
+      const galleryMissingAfterSave =
+        expectedGallery.length > 0 && savedGallery.length === 0;
+      if (!savedStep5 || typeof savedStep5 !== 'object' || galleryMissingAfterSave) {
+        console.error('[step5] Save reported success but form_data.step5 media missing', {
+          progressId: result.progress?.id,
+          formKeys: result.progress?.form_data ? Object.keys(result.progress.form_data) : null,
+          expectedGallery: expectedGallery.length,
+          savedGallery: savedGallery.length,
+          progressStoreId: result.progress?.store_id,
+        });
+        // One retry with explicit store ids — common when progress row lookup misses.
+        const retry = await saveStepData(5, true, { step5: step5Patch }, true);
+        const retryStep5 = retry.progress?.form_data?.step5;
+        const retryGallery = Array.isArray((retryStep5 as any)?.gallery_image_urls)
+          ? ((retryStep5 as any).gallery_image_urls as unknown[])
+          : [];
+        if (
+          !retry.success ||
+          !retryStep5 ||
+          typeof retryStep5 !== 'object' ||
+          (expectedGallery.length > 0 && retryGallery.length === 0)
+        ) {
+          setActionLoading(false);
+          alert(
+            'Store configuration / gallery did not persist to the database. Please try Save & Continue again.',
+          );
+          return;
+        }
+      }
+      // Keep client state aligned with what was persisted (Preview + refresh).
+      setStoreSetup((prev) => ({
+        ...prev,
+        ...step5Patch,
+        banner_preview:
+          (typeof step5Patch.banner_url === 'string' && step5Patch.banner_url) ||
+          (typeof step5Patch.banner_preview === 'string' && step5Patch.banner_preview) ||
+          prev.banner_preview,
+        gallery_previews: Array.isArray(step5Patch.gallery_image_urls)
+          ? (step5Patch.gallery_image_urls as string[])
+          : Array.isArray(step5Patch.gallery_previews)
+            ? (step5Patch.gallery_previews as string[])
+            : prev.gallery_previews,
+        gallery_image_urls: Array.isArray(step5Patch.gallery_image_urls)
+          ? (step5Patch.gallery_image_urls as string[])
+          : prev.gallery_image_urls,
+      }) as StoreSetupData);
+      storeSetupRef.current = {
+        ...storeSetupRef.current,
+        ...(step5Patch as Partial<StoreSetupData>),
+      } as StoreSetupData;
       if (verificationLock?.partnerStep === 5) {
         showVerificationNotice(verificationSaveThanksTitle, verificationSaveThanksMessage, 'success', {
           redirectToAfterOk: buildPostLoginVerificationSubmittedUrl(),
@@ -3400,9 +3723,14 @@ const StoreRegistrationForm = () => {
     if (parentIdParam?.trim()) clearOnboardingResume(parentIdParam.trim());
     setVerificationLock(null);
     setMenuStep3RejectionDetail(null);
+    setDisplayNameManuallyEdited(false);
+    const ownerFromParent =
+      typeof parentInfo?.owner_name === 'string' && parentInfo.owner_name.trim()
+        ? parentInfo.owner_name.trim()
+        : '';
     setFormData({
       store_name: '',
-      owner_full_name: '',
+      owner_full_name: ownerFromParent,
       store_display_name: '',
       store_type: 'RESTAURANT',
       custom_store_type: '',
@@ -3487,10 +3815,18 @@ const StoreRegistrationForm = () => {
     setShowSuccess(false);
     setStorePhonesInput('');
     setStepStateOnly(1);
+    setCurrentStoreId('');
+    // Fresh form URL — do not keep the completed store_id in the query.
+    const parentQ = parentIdParam?.trim()
+      ? `parent_id=${encodeURIComponent(parentIdParam.trim())}&`
+      : '';
+    window.location.href = `/auth/register-store?${parentQ}new=1`;
   };
 
   const handleViewStore = () => {
-    window.location.href = '/partners/all-stores';
+    // Always land on All Stores picker after successful child onboarding.
+    // Never open register-store / dashboard / public store from this button.
+    window.location.href = "/partners/all-stores?picker=1";
   };
 
   const stepLabels = [
@@ -3686,7 +4022,7 @@ const StoreRegistrationForm = () => {
   };
 
   return (
-    <div className="h-screen max-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col overflow-hidden">
+    <div className="h-dvh max-h-dvh bg-white flex flex-col overflow-hidden">
       {/* Fixed Header - never scrolls; fixed so it never shifts on scroll */}
       <header className={`fixed top-0 left-0 right-0 flex-none bg-white border-b border-slate-200 shadow-sm z-30 ${step === 8 || step === 9 ? "" : "px-3 sm:px-6"} py-2 sm:py-2.5`}>
         {step === 8 || step === 9 ? (
@@ -3723,7 +4059,7 @@ const StoreRegistrationForm = () => {
                 ) : null}
                 <button
                   type="button"
-                  onClick={() => { window.location.href = '/partners/all-stores'; }}
+                  onClick={() => { window.location.href = '/partners/all-stores?picker=1'; }}
                   className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-indigo-100"
                 >
                   ← All Stores
@@ -3779,7 +4115,7 @@ const StoreRegistrationForm = () => {
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
-              onClick={() => { window.location.href = '/partners/all-stores'; }}
+              onClick={() => { window.location.href = '/partners/all-stores?picker=1'; }}
               className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-indigo-100"
             >
               ← All Stores
@@ -3819,7 +4155,7 @@ const StoreRegistrationForm = () => {
             <div className="p-4 space-y-3 overflow-y-auto hide-scrollbar">
               <button
                 type="button"
-                onClick={() => { setShowMobileMenu(false); window.location.href = '/partners/all-stores'; }}
+                onClick={() => { setShowMobileMenu(false); window.location.href = '/partners/all-stores?picker=1'; }}
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold hover:bg-indigo-100 hover:border-indigo-300 shadow-sm transition-colors"
               >
                 <span aria-hidden="true">←</span>
@@ -4105,184 +4441,204 @@ const StoreRegistrationForm = () => {
         onOpenChange={setShowHelpModal}
       />
 
-      {/* Scrollable content container - ONLY this div scrolls; compact padding to reduce scroll need */}
+      {/* Scrollable content — step 1 stays plain white, no phantom scroll when it fits */}
       <div
         ref={mainScrollRef}
         className={`flex-1 min-h-0 min-w-0 overflow-x-hidden overscroll-contain hide-scrollbar ${
           step === 8 || step === 9
             ? "overflow-hidden pb-0 pt-0 px-2 sm:px-4 md:px-6 flex flex-col"
-            : step >= 7 && step <= 9
-              ? "pb-24 sm:pb-28 overflow-y-auto pt-0 px-2 sm:px-4 md:px-6"
-              : "pb-24 sm:pb-28 overflow-y-auto p-2 sm:p-3 md:px-5"
+            : step === 1
+              ? "overflow-hidden flex flex-col pb-20 sm:pb-24 pt-4 sm:pt-5 px-4 sm:px-6 md:px-8 bg-white"
+              : step >= 7 && step <= 9
+                ? "pb-24 sm:pb-28 overflow-y-auto pt-0 px-2 sm:px-4 md:px-6"
+                : "pb-24 sm:pb-28 overflow-y-auto p-2 sm:p-3 md:px-5"
         }`}
       >
-        {/* Step 1: Basic Store Information - form module exactly centered with proper gap from header and bottom */}
+        {/* Step 1: Basic Store Information — fill main height, no top clip / bottom dead space */}
         {step === 1 && (
-          <div className="min-h-full flex items-center justify-center py-8 sm:py-12">
-            <div className="w-full max-w-2xl space-y-6 mx-auto">
-              {/* Step 1 form: Basic Store Information */}
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-                <div className="p-4 sm:p-5">
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="p-1.5 bg-indigo-50 rounded-lg">
-                      <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h1m0 0h-1m1 0v4m-5-9h10l1 7H4l1-7z" />
-                      </svg>
-                    </div>
-                    <h2 className="text-base font-bold text-slate-800">Basic Store Information</h2>
-                  </div>
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Store Name *
-                      </label>
-                      <input
-                        type="text"
-                        name="store_name"
-                        value={formData.store_name}
-                        onChange={handleInputChange}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                        placeholder="Enter store name"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Owner Full Name *
-                      </label>
-                      <input
-                        type="text"
-                        name="owner_full_name"
-                        value={formData.owner_full_name}
-                        onChange={handleInputChange}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                        placeholder="Owner legal full name"
-                        required
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Display Name
-                      </label>
-                      <input
-                        type="text"
-                        name="store_display_name"
-                        value={formData.store_display_name}
-                        onChange={handleInputChange}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                        placeholder="Customer facing name"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Legal Business Name
-                      </label>
-                      <input
-                        type="text"
-                        name="legal_business_name"
-                        value={formData.legal_business_name}
-                        readOnly
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-slate-50 text-slate-700 cursor-not-allowed"
-                        placeholder="Same as Display Name (auto-filled)"
-                        title="Filled automatically from Display Name"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Store Type *
-                      </label>
-                      <select
-                        name="store_type"
-                        value={formData.store_type}
-                        onChange={handleInputChange}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                        required
-                      >
-                        <option value="RESTAURANT">Restaurant</option>
-                        <option value="CAFE">Cafe</option>
-                        <option value="BAKERY">Bakery</option>
-                        <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                        <option value="GROCERY">Grocery</option>
-                        <option value="PHARMA">Pharma</option>
-                        <option value="STATIONERY">Stationery</option>
-                        <option value="ELECTRONICS_ECOMMERCE">Electronics and E-commerce</option>
-                        <option value="OTHERS">Others</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Store Email *
-                      </label>
-                      <input
-                        type="email"
-                        name="store_email"
-                        value={formData.store_email}
-                        onChange={handleInputChange}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                        placeholder="store@example.com"
-                        required
-                      />
-                    </div>
-                  </div>
-                  
-                  {/* Custom Store Type Field - Only shown when OTHERS is selected */}
-                  {formData.store_type === 'OTHERS' && (
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Custom Store Type *
-                      </label>
-                      <input
-                        type="text"
-                        name="custom_store_type"
-                        value={formData.custom_store_type}
-                        onChange={handleInputChange}
-                        className="w-full px-3 py-2 text-sm border-2 border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                        placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
-                        required
-                      />
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Please specify what type of store you are registering
-                      </p>
-                    </div>
-                  )}
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Phone Numbers (comma separated)
-                    </label>
-                    <input
-                      type="text"
-                      name="store_phones"
-                      value={storePhonesInput}
-                      onChange={handleInputChange}
-                      placeholder="+911234567890, +919876543210"
-                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                    />
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Example: +911234567890, +919876543210
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Store Description
-                    </label>
-                    <textarea
-                      name="store_description"
-                      value={formData.store_description}
-                      onChange={handleInputChange}
-                      rows={2}
-                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white resize-y min-h-[4.5rem]"
-                      placeholder="Describe your store, specialties, etc."
-                    />
-                  </div>
+          <div className="w-full h-full min-h-0 flex flex-col justify-between gap-5 sm:gap-6">
+            <div className="flex items-center gap-2.5 shrink-0 pt-0.5">
+              <div className="p-2 bg-indigo-50 rounded-lg shrink-0">
+                <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h1m0 0h-1m1 0v4m-5-9h10l1 7H4l1-7z" />
+                </svg>
+              </div>
+              <h2 className="text-lg sm:text-xl font-bold text-slate-800 leading-tight">Basic Store Information</h2>
+            </div>
+            <div className="flex-1 min-h-0 flex flex-col justify-evenly gap-4 sm:gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-4 sm:gap-y-5">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Owner Full Name *
+                  </label>
+                  <input
+                    type="text"
+                    name="owner_full_name"
+                    value={formData.owner_full_name}
+                    onChange={handleInputChange}
+                    className="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                    placeholder="Owner legal full name"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Store Name *
+                  </label>
+                  <input
+                    type="text"
+                    name="store_name"
+                    value={formData.store_name}
+                    onChange={handleInputChange}
+                    className="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                    placeholder="Enter store name"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    name="store_display_name"
+                    value={formData.store_display_name}
+                    onChange={handleInputChange}
+                    className="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                    placeholder="Auto-fills from Store Name (editable)"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Store Type *
+                  </label>
+                  <select
+                    name="store_type"
+                    value={formData.store_type}
+                    onChange={handleInputChange}
+                    className="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                    required
+                  >
+                    <option value="RESTAURANT">Restaurant</option>
+                    <option value="CAFE">Cafe</option>
+                    <option value="BAKERY">Bakery</option>
+                    <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
+                    <option value="GROCERY">Grocery</option>
+                    <option value="PHARMA">Pharma</option>
+                    <option value="STATIONERY">Stationery</option>
+                    <option value="ELECTRONICS_ECOMMERCE">Electronics and E-commerce</option>
+                    <option value="OTHERS">Others</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Store Email *
+                  </label>
+                  <input
+                    type="email"
+                    name="store_email"
+                    value={formData.store_email}
+                    onChange={handleInputChange}
+                    className="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                    placeholder="store@example.com"
+                    required
+                  />
                 </div>
               </div>
-            </div>
+
+              {formData.store_type === 'OTHERS' && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Custom Store Type *
+                  </label>
+                  <input
+                    type="text"
+                    name="custom_store_type"
+                    value={formData.custom_store_type}
+                    onChange={handleInputChange}
+                    className="w-full px-3.5 py-3 text-sm border-2 border-indigo-200 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 transition-all"
+                    placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
+                    required
+                  />
+                  <p className="text-xs text-slate-500 mt-1">
+                    Please specify what type of store you are registering
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-4 sm:gap-y-5">
+                <div className="flex flex-col">
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                    Phone Numbers (comma separated)
+                  </label>
+                  <input
+                    type="text"
+                    name="store_phones"
+                    value={storePhonesInput}
+                    onChange={handleInputChange}
+                    placeholder="+911234567890, +919876543210"
+                    inputMode="tel"
+                    className="auth-num w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                  />
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    Example: +911234567890, +919876543210
+                  </p>
+                </div>
+                <div className="flex flex-col min-h-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                    <label className="block text-xs font-medium text-slate-600 tracking-wide">
+                      Store Description *
+                    </label>
+                    <span
+                      className={`text-[11px] tabular-nums shrink-0 ${
+                        storeDescriptionLength(formData.store_description) < STORE_DESCRIPTION_MIN
+                          ? 'text-amber-600'
+                          : storeDescriptionLength(formData.store_description) >= STORE_DESCRIPTION_MAX
+                            ? 'text-rose-600'
+                            : 'text-slate-500'
+                      }`}
+                    >
+                      {storeDescriptionLength(formData.store_description)} / {STORE_DESCRIPTION_MAX}
+                      <span className="text-slate-400">
+                        {' '}
+                        · {Math.max(0, STORE_DESCRIPTION_MAX - storeDescriptionLength(formData.store_description))} left
+                      </span>
+                    </span>
+                  </div>
+                  <textarea
+                    name="store_description"
+                    value={formData.store_description}
+                    onChange={handleInputChange}
+                    onBlur={() => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        store_description: normalizeStoreDescriptionForSave(prev.store_description),
+                      }));
+                    }}
+                    rows={5}
+                    maxLength={STORE_DESCRIPTION_MAX}
+                    className={`w-full flex-1 min-h-[7.5rem] px-3.5 py-3 text-sm border rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all resize-none ${
+                      formData.store_description.length > 0 &&
+                      !isStoreDescriptionValid(formData.store_description)
+                        ? 'border-amber-300'
+                        : 'border-slate-200/90'
+                    }`}
+                    placeholder="Describe your restaurant, cuisines, specialties, hygiene standards, and what makes your store unique..."
+                    aria-describedby="store-description-hint"
+                  />
+                  <p id="store-description-hint" className="text-xs text-slate-500 mt-1.5">
+                    {STORE_DESCRIPTION_MIN}–{STORE_DESCRIPTION_MAX} characters. New lines, emoji &amp; special characters allowed.
+                    {formData.store_description.length > 0 &&
+                    storeDescriptionLength(normalizeStoreDescriptionForSave(formData.store_description)) <
+                      STORE_DESCRIPTION_MIN ? (
+                      <span className="text-amber-600">
+                        {' '}
+                        Need at least {STORE_DESCRIPTION_MIN} characters.
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -4734,6 +5090,7 @@ const StoreRegistrationForm = () => {
             <CombinedDocumentStoreSetup
               initialStoreSetup={storeSetup}
               onStoreSetupComplete={handleStoreSetupComplete}
+              onStoreSetupChange={handleLiveStoreSetupChange}
               onStoreHoursSave={(hours) => saveStoreHoursProgress(hours)}
               onStoreFeaturesSave={saveStoreFeaturesProgress}
               onBack={async () => {
@@ -4759,10 +5116,30 @@ const StoreRegistrationForm = () => {
                             ...prev,
                             pan_number: saved.step4.pan_number ?? prev.pan_number,
                             pan_holder_name: saved.step4.pan_holder_name ?? prev.pan_holder_name,
+                            pan_is_verified: s4.pan_is_verified ?? prev.pan_is_verified,
+                            pan_verified_at: s4.pan_verified_at ?? prev.pan_verified_at,
+                            pan_verification_method: s4.pan_verification_method ?? prev.pan_verification_method,
+                            pan_verified_details: s4.pan_verified_details ?? prev.pan_verified_details,
                             aadhar_number: saved.step4.aadhar_number ?? prev.aadhar_number,
                             aadhar_holder_name: saved.step4.aadhar_holder_name ?? prev.aadhar_holder_name,
+                            aadhaar_is_verified: s4.aadhaar_is_verified ?? prev.aadhaar_is_verified,
+                            aadhaar_verified_at: s4.aadhaar_verified_at ?? prev.aadhaar_verified_at,
+                            aadhaar_verification_method: s4.aadhaar_verification_method ?? prev.aadhaar_verification_method,
+                            aadhaar_verified_details: s4.aadhaar_verified_details ?? prev.aadhaar_verified_details,
                             fssai_number: saved.step4.fssai_number ?? prev.fssai_number,
                             gst_number: saved.step4.gst_number ?? prev.gst_number,
+                            gst_legal_business_name:
+                              s4.gst_legal_business_name ?? (prev as any).gst_legal_business_name,
+                            gst_principal_place_of_business:
+                              s4.gst_principal_place_of_business ??
+                              (prev as any).gst_principal_place_of_business,
+                            gst_effective_registration_date:
+                              s4.gst_effective_registration_date ??
+                              (prev as any).gst_effective_registration_date,
+                            gst_is_verified: s4.gst_is_verified ?? prev.gst_is_verified,
+                            gst_verified_at: s4.gst_verified_at ?? prev.gst_verified_at,
+                            gst_verification_method: s4.gst_verification_method ?? prev.gst_verification_method,
+                            gst_verified_details: s4.gst_verified_details ?? prev.gst_verified_details,
                             drug_license_number: saved.step4.drug_license_number ?? prev.drug_license_number,
                             pharmacist_registration_number: saved.step4.pharmacist_registration_number ?? prev.pharmacist_registration_number,
                             expiry_date: saved.step4.expiry_date ?? prev.expiry_date,
@@ -4778,6 +5155,7 @@ const StoreRegistrationForm = () => {
                             other_document_number: saved.step4.other_document_number ?? prev.other_document_number,
                             other_document_name: saved.step4.other_document_name ?? prev.other_document_name,
                             other_document_expiry_date: saved.step4.other_document_expiry_date ?? prev.other_document_expiry_date,
+                            step4_active_section: normalizeStep4ActiveSection(s4.step4_active_section) ?? (prev as any).step4_active_section,
                             pan_image_url: (typeof s4.pan_image_url === 'string' ? s4.pan_image_url : null) ?? null,
                             aadhar_front_url: (typeof s4.aadhar_front_url === 'string' ? s4.aadhar_front_url : null) ?? null,
                             aadhar_back_url: (typeof s4.aadhar_back_url === 'string' ? s4.aadhar_back_url : null) ?? null,

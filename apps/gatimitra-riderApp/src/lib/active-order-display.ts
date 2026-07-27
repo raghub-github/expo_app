@@ -143,7 +143,8 @@ export function openActiveOrder(order: RiderOrderSummary): void {
     router.push(`/active-ride/${encodeURIComponent(order.id)}`);
     return;
   }
-  if (order.category === "food") {
+  // Food and parcel share the delivery navigation screen (grocery maps to food category).
+  if (order.category === "food" || order.category === "parcel") {
     router.push(`/active-food/${encodeURIComponent(order.id)}`);
     return;
   }

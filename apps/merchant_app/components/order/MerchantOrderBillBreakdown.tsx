@@ -1,4 +1,5 @@
-import { View, Text } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View } from "react-native";
 import type { OrderRecord } from "@/hooks/useOrders";
 import { getMerchantOrderCardBillLines } from "@/lib/merchantOrderCardBillSummary";
 import { formatMerchantRs } from "@/lib/merchant-line-total";

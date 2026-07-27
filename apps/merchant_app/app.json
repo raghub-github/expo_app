@@ -6,9 +6,9 @@
     "orientation": "portrait",
     "scheme": "gatimitra-merchant",
     "userInterfaceStyle": "automatic",
-    "icon": "./assets/mxappicon.png",
+    "icon": "./assets/images/splash-logo.png",
     "splash": {
-      "image": "./assets/mxappicon.png",
+      "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#FFFFFF"
     },
@@ -20,26 +20,30 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gatimitra.merchant",
+      "icon": "./assets/images/splash-logo.png",
       "infoPlist": {
         "UIViewControllerBasedStatusBarAppearance": true
       }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/mxappicon.png",
-        "backgroundColor": "#002B22"
+        "foregroundImage": "./assets/images/splash-logo.png",
+        "backgroundColor": "#000000"
       },
+      "icon": "./assets/images/splash-logo.png",
       "package": "com.gatimitra.partner",
       "permissions": [
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
         "POST_NOTIFICATIONS",
-        "WAKE_LOCK"
+        "WAKE_LOCK",
+        "USE_FULL_SCREEN_INTENT",
+        "SYSTEM_ALERT_WINDOW",
+        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ],
       "blockedPermissions": [
         "android.permission.READ_SMS",
-        "android.permission.RECEIVE_SMS",
-        "android.permission.SYSTEM_ALERT_WINDOW"
+        "android.permission.RECEIVE_SMS"
       ],
       "useNextNotificationsApi": true
     },

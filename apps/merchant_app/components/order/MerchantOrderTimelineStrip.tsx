@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   buildMerchantVisibleTimeline,

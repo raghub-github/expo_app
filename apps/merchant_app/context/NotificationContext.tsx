@@ -9,6 +9,9 @@ import {
 } from "@/services/storeNotificationsApi";
 import type { StoreNotificationRow } from "@/services/storeNotificationsApi";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
+import { loadInbox, markAllReadRemote, markReadRemote, type InboxItem } from "@gatimitra/expo-push-kit";
+import { getConfig } from "@/config/env";
+import { readMerchantAccessToken } from "@/lib/merchantSessionStorage";
 
 export type NotificationType = "order" | "store" | "system" | "earning";
 
@@ -129,6 +132,46 @@ function mapRowToNotification(r: StoreNotificationRow): MerchantNotification {
   };
 }
 
+function mapCampaignInboxItem(item: InboxItem): MerchantNotification {
+  const code = String(item.template_code ?? "").toUpperCase();
+  const type: NotificationType =
+    code.includes("EARNING") || code.includes("SETTLEMENT") || code.includes("WALLET")
+      ? "earning"
+      : code.includes("ORDER")
+        ? "order"
+        : code.includes("STORE")
+          ? "store"
+          : "system";
+  return {
+    id: `campaign:${item.notification_id}`,
+    type,
+    title: item.title?.trim() || "Notification",
+    body: item.body?.trim() || "",
+    timeAgo: formatTimeAgo(item.queued_at),
+    dateTime: formatDateTime(item.queued_at),
+    read: Boolean(item.clicked_at) || item.status === "clicked" || item.status === "delivered",
+    actionUrl: item.deep_link ?? undefined,
+  };
+}
+
+async function fetchCampaignInbox(): Promise<MerchantNotification[]> {
+  try {
+    const page = await loadInbox(
+      {
+        baseUrl: getConfig().apiBaseUrl,
+        getAuthHeader: async () => {
+          const token = await readMerchantAccessToken();
+          return token ? `Bearer ${token}` : null;
+        },
+      },
+      { limit: 100 }
+    );
+    return (page.items ?? []).map(mapCampaignInboxItem);
+  } catch {
+    return [];
+  }
+}
+
 interface NotificationContextValue {
   notifications: MerchantNotification[];
   unreadCount: number;
@@ -149,25 +192,35 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const storeId = selectedStore?.id ?? null;
 
-  const fetchNotifications = useCallback(async () => {
+  const fetchNotifications = useCallback(async (opts?: { silent?: boolean }) => {
     if (!token || !storeId) {
       setNotifications([]);
       setLoading(false);
       return;
     }
-    setLoading(true);
+    const silent = opts?.silent === true;
+    // Only the first / explicit full fetch shows the page spinner.
+    // Realtime + WaitingForOrderNotifier poll via silent refresh — no spinner loop.
+    if (!silent) setLoading(true);
     try {
-      const { notifications: list } = await getStoreNotifications(storeId, token);
-      setNotifications(list.map(mapRowToNotification));
+      const [{ notifications: list }, campaign] = await Promise.all([
+        getStoreNotifications(storeId, token),
+        fetchCampaignInbox(),
+      ]);
+      const storeRows = list.map(mapRowToNotification);
+      // Campaign / announcement rows first, then live store notifications.
+      const byId = new Map<string, MerchantNotification>();
+      for (const n of [...campaign, ...storeRows]) byId.set(n.id, n);
+      setNotifications([...byId.values()]);
     } catch {
-      setNotifications([]);
+      if (!silent) setNotifications([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [token, storeId]);
 
   useEffect(() => {
-    void fetchNotifications();
+    void fetchNotifications({ silent: false });
   }, [fetchNotifications]);
 
   // When backend auto-clears "New order!" on deliver/cancel, drop the row without waiting for poll.
@@ -186,7 +239,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           filter: `store_id=eq.${storeId}`,
         },
         () => {
-          void fetchNotifications();
+          void fetchNotifications({ silent: true });
         }
       )
       .subscribe();
@@ -204,9 +257,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     if (token && storeId) {
       try {
-        await markAllStoreNotificationsRead(storeId, token);
+        await Promise.all([
+          markAllStoreNotificationsRead(storeId, token),
+          markAllReadRemote({
+            baseUrl: getConfig().apiBaseUrl,
+            getAuthHeader: async () => {
+              const t = await readMerchantAccessToken();
+              return t ? `Bearer ${t}` : null;
+            },
+          }).catch(() => undefined),
+        ]);
       } catch {
-        void fetchNotifications();
+        void fetchNotifications({ silent: true });
       }
     }
   }, [token, storeId, fetchNotifications]);
@@ -216,6 +278,24 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       setNotifications((prev) =>
         prev.map((n) => (n.id === id ? { ...n, read: true } : n))
       );
+      if (id.startsWith("campaign:")) {
+        const nid = id.slice("campaign:".length);
+        try {
+          await markReadRemote(
+            {
+              baseUrl: getConfig().apiBaseUrl,
+              getAuthHeader: async () => {
+                const t = await readMerchantAccessToken();
+                return t ? `Bearer ${t}` : null;
+              },
+            },
+            nid
+          );
+        } catch {
+          // keep local read
+        }
+        return;
+      }
       if (token && storeId) {
         try {
           await markStoreNotificationRead(storeId, id, token);
@@ -229,18 +309,25 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const removeNotification = useCallback(
     async (id: string) => {
-      const prev = notifications.filter((n) => n.id !== id);
-      setNotifications(prev);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      if (id.startsWith("campaign:")) {
+        // Campaign inbox rows are audit logs — local dismiss only.
+        return;
+      }
       if (token && storeId) {
         try {
           await deleteStoreNotification(storeId, id, token);
         } catch {
-          void fetchNotifications();
+          void fetchNotifications({ silent: true });
         }
       }
     },
-    [token, storeId, notifications, fetchNotifications]
+    [token, storeId, fetchNotifications]
   );
+
+  const refreshSilent = useCallback(() => {
+    void fetchNotifications({ silent: true });
+  }, [fetchNotifications]);
 
   const value = useMemo<NotificationContextValue>(
     () => ({
@@ -250,9 +337,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       markAllAsRead,
       markAsRead,
       removeNotification,
-      refresh: fetchNotifications,
+      refresh: refreshSilent,
     }),
-    [notifications, unreadCount, loading, markAllAsRead, markAsRead, removeNotification, fetchNotifications]
+    [
+      notifications,
+      unreadCount,
+      loading,
+      markAllAsRead,
+      markAsRead,
+      removeNotification,
+      refreshSilent,
+    ]
   );
 
   return (

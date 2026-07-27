@@ -56,6 +56,7 @@ import {
   extendRideSearch,
 } from "@/services/rideBooking.service";
 import { orderService } from "@/services/order.service";
+import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import {
   getRideServiceLabel,
   resolveRideCatalogImageKey,
@@ -71,10 +72,24 @@ import {
   resolveRideFareDistanceKm,
 } from "@/lib/ride-fare-distance";
 import { purgeRideOrderFromClientCaches } from "@/lib/ride-order-query-cache";
+import { rememberActivePersonRide } from "@/lib/active-person-ride-persist";
 import { useOrderStore } from "@/store/orderStore";
 
 function clearActiveRideOrder(orderId: string): void {
   useOrderStore.getState().removeActiveOrder(orderId);
+}
+
+function trackActiveRideOrder(orderId: string): void {
+  rememberActivePersonRide(orderId);
+  useOrderStore.getState().addActiveOrder({
+    orderId,
+    status: "ORDER_PLACED",
+    etaMinutes: 0,
+    storeId: null,
+    storeName: null,
+    placedAt: Date.now(),
+    serviceType: "ride",
+  });
 }
 
 const SEARCH_TIMEOUT_APOLOGY = {
@@ -339,7 +354,9 @@ export default function RideSearchingScreen() {
       tripKm: inline.tripKm ?? prev.tripKm,
     }));
     if (params.orderId?.trim()) {
-      setOrderId(params.orderId.trim());
+      const id = params.orderId.trim();
+      setOrderId(id);
+      trackActiveRideOrder(id);
     }
   }, [
     isResumeMode,
@@ -464,7 +481,7 @@ export default function RideSearchingScreen() {
     returnToRideBook();
   }, [openedFromRideHome, router, returnToRideBook]);
 
-  const showMapToast = useCallback((title: string, message?: string, durationMs = 4000) => {
+  const showMapToast = useCallback((title: string, message?: string, durationMs = 5000) => {
     if (mapToastTimerRef.current) clearTimeout(mapToastTimerRef.current);
     setMapToast({ title, message });
     mapToastTimerRef.current = setTimeout(() => {
@@ -572,13 +589,45 @@ export default function RideSearchingScreen() {
   );
 
   const tryOpenLiveRideTracking = useCallback(
-    (assignedOrderId: string) => {
+    async (assignedOrderId: string) => {
       if (navigatedToLiveRef.current || cancelledRef.current) return;
       navigatedToLiveRef.current = true;
+      rememberActivePersonRide(assignedOrderId);
+      useOrderStore.getState().addActiveOrder({
+        orderId: assignedOrderId,
+        status: "ORDER_PLACED",
+        etaMinutes: 0,
+        storeId: null,
+        storeName: null,
+        placedAt: Date.now(),
+        serviceType: "ride",
+      });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       clearRideSearchTimer(assignedOrderId);
+
+      // Hydrate captain profile BEFORE tracking screen paints — do not wait for map/WS/GPS.
+      try {
+        const [detail, rideStatus] = await Promise.all([
+          queryClient.fetchQuery({
+            queryKey: ["order", assignedOrderId],
+            queryFn: () => orderService.getOrder(assignedOrderId),
+          }),
+          getRideOrderStatus(assignedOrderId).catch(() => null),
+        ]);
+        if (rideStatus?.rider && !detail?.rider) {
+          seedOrderDetailCache(queryClient, assignedOrderId, {
+            orderId: assignedOrderId,
+            status: detail?.status ?? "RIDER_ASSIGNED",
+            rider: rideStatus.rider,
+          });
+        }
+      } catch {
+        // Still open tracking; RideAcceptedTrackingScreen will refetch.
+      }
+
       openLiveRideTracking(assignedOrderId);
     },
-    [openLiveRideTracking]
+    [openLiveRideTracking, queryClient]
   );
 
   const handleSearchWindowEnded = useCallback(async () => {
@@ -921,6 +970,9 @@ export default function RideSearchingScreen() {
       .then((result) => {
         if (cancelled) return;
         setOrderId(result.orderId);
+        trackActiveRideOrder(result.orderId);
+        void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+        void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
         if (result.totalAmount != null && Number.isFinite(result.totalAmount) && result.totalAmount > 0) {
           setTripState((prev) => ({ ...prev, fare: Math.round(result.totalAmount) }));
         }
@@ -1177,9 +1229,9 @@ export default function RideSearchingScreen() {
     showMapToast(
       RIDE_CUSTOMER_CANCELLED_TOAST.title,
       RIDE_CUSTOMER_CANCELLED_TOAST.message,
-      2500
+      5000
     );
-    await new Promise((resolve) => setTimeout(resolve, 2200));
+    await new Promise((resolve) => setTimeout(resolve, 4500));
     returnToRideHome();
   }, [cancelLoading, orderId, selectedCancelReason, closeCancelFlow, returnToRideHome, showMapToast, queryClient]);
 

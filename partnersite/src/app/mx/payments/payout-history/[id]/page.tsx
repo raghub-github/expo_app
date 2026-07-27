@@ -53,6 +53,8 @@ function PayoutDetailPageContent() {
   const isCurrentCycle =
     searchParams?.get('isCurrentCycle') === '1' || payoutId === 'current-cycle';
   const pgTransactionId = String(searchParams?.get('pgTransactionId') ?? '').trim();
+  const cycleIdRaw = Number(searchParams?.get('cycleId') ?? '');
+  const cycleId = Number.isInteger(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
 
   if (!storeId) {
     return <PayoutDetailShellLoading />;
@@ -75,6 +77,7 @@ function PayoutDetailPageContent() {
       status={status}
       isCurrentCycle={isCurrentCycle}
       pgTransactionId={pgTransactionId}
+      cycleId={cycleId}
       storeName={storeName}
       storePublicId={storePublicId}
       storeLocation={storeLocation}

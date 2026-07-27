@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { OfferType } from "@/services/offersApi";
 import { countOffersForTrackFilter } from "@/lib/offers/offer-lifecycle";

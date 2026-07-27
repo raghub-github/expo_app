@@ -1,11 +1,5 @@
-import {
-  Modal,
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  ScrollView,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Modal, View, StyleSheet, Pressable, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MerchantBillBreakdownModal } from "@/lib/merchantBillBreakdown";

@@ -1,15 +1,17 @@
+/**
+ * Menu / attachment images with durable disk + memory cache.
+ * Survives force-close: local files under cacheDirectory are reused on next launch.
+ */
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   type ImageProps,
   type ImageStyle,
   StyleSheet,
   View,
   type StyleProp,
 } from "react-native";
-// Legacy sub-path — `cacheDirectory` isn't on the top-level `expo-file-system`
-// export in v19+, and the mxap code was written against the old surface.
+import { Image } from "expo-image";
 import * as FileSystem from "expo-file-system/legacy";
 import { Ionicons } from "@expo/vector-icons";
 import { resolveUrlForDevice } from "@/config/env";
@@ -18,6 +20,7 @@ import { GatiMitraMerchant } from "@/constants/theme";
 
 const URI_CACHE = new Map<string, string>();
 const IN_FLIGHT = new Map<string, Promise<string | null>>();
+const DISK_MISS = new Set<string>();
 
 function resolveRenderableUri(uri: string | null | undefined): string | null {
   if (!uri) return null;
@@ -34,6 +37,11 @@ function cacheFilePath(resolved: string): string | null {
   return `${cacheDir}menu-img-${Math.abs(hash)}.img`;
 }
 
+function isLocalUri(uri: string): boolean {
+  const u = uri.toLowerCase();
+  return u.startsWith("file://") || u.startsWith("content://") || u.startsWith("data:");
+}
+
 /** Instant display when the same URL was already fetched on the catalog card. */
 export function peekAuthImageCachedUri(uri: string | null | undefined): string | null {
   const resolved = resolveRenderableUri(uri);
@@ -41,7 +49,65 @@ export function peekAuthImageCachedUri(uri: string | null | undefined): string |
   return URI_CACHE.get(resolved) ?? null;
 }
 
-/** Warm auth-proxy image cache before opening a sheet or modal. */
+function needsAuthDownload(uri: string): boolean {
+  const u = uri.toLowerCase();
+  if (isLocalUri(u)) return false;
+  return (
+    u.includes("/attachments/proxy?") ||
+    u.includes("/v1/attachments/") ||
+    u.includes("/api/attachments/")
+  );
+}
+
+async function readDiskCache(resolved: string): Promise<string | null> {
+  const mem = URI_CACHE.get(resolved);
+  if (mem) return mem;
+  if (DISK_MISS.has(resolved)) return null;
+
+  const target = cacheFilePath(resolved);
+  if (!target) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(target);
+    if (info.exists) {
+      URI_CACHE.set(resolved, target);
+      return target;
+    }
+  } catch {
+    /* miss */
+  }
+  DISK_MISS.add(resolved);
+  return null;
+}
+
+async function fetchAuthImageLocalUri(uri: string, token?: string | null): Promise<string | null> {
+  if (!uri) return null;
+  if (isLocalUri(uri)) {
+    URI_CACHE.set(uri, uri);
+    return uri;
+  }
+
+  const fromDisk = await readDiskCache(uri);
+  if (fromDisk) return fromDisk;
+
+  const target = cacheFilePath(uri);
+  if (!target) return null;
+
+  try {
+    const result = await FileSystem.downloadAsync(uri, target, {
+      headers: token && needsAuthDownload(uri) ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    if (result.status >= 200 && result.status < 300 && result.uri) {
+      DISK_MISS.delete(uri);
+      URI_CACHE.set(uri, result.uri);
+      return result.uri;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/** Warm auth-proxy / remote image cache before opening a sheet or modal. */
 export function prefetchAuthImage(
   uri: string | null | undefined,
   token?: string | null,
@@ -58,50 +124,23 @@ export function prefetchAuthImage(
   return task;
 }
 
-function needsAuthDownload(uri: string): boolean {
-  const u = uri.toLowerCase();
-  if (u.startsWith("file://") || u.startsWith("content://") || u.startsWith("data:")) return false;
-  return u.includes("/attachments/proxy?") || u.includes("/v1/attachments/") || u.includes("/api/attachments/");
+/** Prefetch many catalog thumbnails (deduped). */
+export function prefetchAuthImages(
+  uris: Array<string | null | undefined>,
+  token?: string | null,
+): void {
+  for (const uri of uris) {
+    if (!uri) continue;
+    void prefetchAuthImage(uri, token);
+  }
 }
 
-async function fetchAuthImageLocalUri(uri: string, token?: string | null): Promise<string | null> {
-  if (!uri) return null;
-  const cached = URI_CACHE.get(uri);
-  if (cached) return cached;
-
-  const target = cacheFilePath(uri);
-  if (target) {
-    try {
-      const info = await FileSystem.getInfoAsync(target);
-      if (info.exists) {
-        URI_CACHE.set(uri, target);
-        return target;
-      }
-    } catch {
-      // continue to download
-    }
-  }
-
-  try {
-    if (!target) return null;
-    const result = await FileSystem.downloadAsync(uri, target, {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    });
-    if (result.status >= 200 && result.status < 300 && result.uri) {
-      URI_CACHE.set(uri, result.uri);
-      return result.uri;
-    }
-  } catch {
-    // fall through
-  }
-  return null;
-}
-
-type Props = Omit<ImageProps, "source"> & {
+type Props = Omit<ImageProps, "source" | "resizeMode"> & {
   uri: string | null | undefined;
   token?: string | null;
   style?: StyleProp<ImageStyle>;
   showPlaceholder?: boolean;
+  resizeMode?: "cover" | "contain" | "stretch" | "center";
 };
 
 export function AuthProxyImage({
@@ -110,40 +149,62 @@ export function AuthProxyImage({
   style,
   showPlaceholder = true,
   onError,
+  resizeMode = "cover",
   ...imageProps
 }: Props) {
   const resolved = resolveRenderableUri(uri);
-  const cachedLocal = resolved ? URI_CACHE.get(resolved) ?? null : null;
-  const [renderUri, setRenderUri] = useState<string | null>(cachedLocal ?? resolved);
-  const [loading, setLoading] = useState(
-    () => Boolean(resolved && needsAuthDownload(resolved) && !cachedLocal)
-  );
+  const memCached = resolved ? URI_CACHE.get(resolved) ?? null : null;
+  const [renderUri, setRenderUri] = useState<string | null>(memCached);
+  const [loading, setLoading] = useState(() => Boolean(resolved && !memCached));
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     const nextResolved = resolveRenderableUri(uri);
-    const nextCached = nextResolved ? URI_CACHE.get(nextResolved) ?? null : null;
-    setRenderUri(nextCached ?? nextResolved);
+    const nextMem = nextResolved ? URI_CACHE.get(nextResolved) ?? null : null;
     setFailed(false);
-    setLoading(Boolean(nextResolved && needsAuthDownload(nextResolved) && !nextCached));
+    if (!nextResolved) {
+      setRenderUri(null);
+      setLoading(false);
+      return;
+    }
+    if (nextMem) {
+      setRenderUri(nextMem);
+      setLoading(false);
+      return;
+    }
+    // Don't paint auth-proxy URLs directly — they need a Bearer download first.
+    if (needsAuthDownload(nextResolved)) {
+      setRenderUri(null);
+      setLoading(true);
+    } else if (isLocalUri(nextResolved)) {
+      setRenderUri(nextResolved);
+      setLoading(false);
+    } else {
+      // Public CDN: show via expo-image while we also hydrate disk cache.
+      setRenderUri(nextResolved);
+      setLoading(false);
+    }
   }, [uri]);
 
   useEffect(() => {
-    if (!resolved || !needsAuthDownload(resolved)) {
+    if (!resolved) return;
+    if (isLocalUri(resolved)) {
+      URI_CACHE.set(resolved, resolved);
+      setRenderUri(resolved);
       setLoading(false);
       return;
     }
-    const alreadyCached = URI_CACHE.get(resolved);
-    if (alreadyCached) {
-      setRenderUri(alreadyCached);
-      setLoading(false);
-      return;
-    }
+
     let cancelled = false;
     void (async () => {
       const local = await prefetchAuthImage(resolved, token);
       if (cancelled) return;
-      if (local) setRenderUri(local);
+      if (local) {
+        setRenderUri(local);
+        setFailed(false);
+      } else if (needsAuthDownload(resolved)) {
+        setFailed(true);
+      }
       setLoading(false);
     })();
     return () => {
@@ -151,27 +212,27 @@ export function AuthProxyImage({
     };
   }, [resolved, token]);
 
-  const handleError = useCallback(
-    (e: Parameters<NonNullable<ImageProps["onError"]>>[0]) => {
-      if (!failed && resolved && needsAuthDownload(resolved)) {
-        setFailed(true);
-        void (async () => {
-          const local = await fetchAuthImageLocalUri(resolved, token);
-          if (local) {
-            setRenderUri(local);
-            setFailed(false);
-            return;
-          }
-          onError?.(e);
-        })();
-        return;
-      }
-      onError?.(e);
-    },
-    [failed, onError, resolved, token]
-  );
+  const handleError = useCallback(() => {
+    if (!failed && resolved && !isLocalUri(resolved)) {
+      setFailed(true);
+      void (async () => {
+        DISK_MISS.delete(resolved);
+        URI_CACHE.delete(resolved);
+        const local = await fetchAuthImageLocalUri(resolved, token);
+        if (local) {
+          setRenderUri(local);
+          setFailed(false);
+          setLoading(false);
+        }
+      })();
+      return;
+    }
+    onError?.({ nativeEvent: { error: "Image load failed" } } as Parameters<
+      NonNullable<ImageProps["onError"]>
+    >[0]);
+  }, [failed, onError, resolved, token]);
 
-  if (!renderUri) {
+  if (!resolved && !renderUri) {
     if (!showPlaceholder) return null;
     return (
       <View style={[styles.placeholder, style, { overflow: "hidden" }]}>
@@ -180,7 +241,7 @@ export function AuthProxyImage({
     );
   }
 
-  if (needsAuthDownload(renderUri) && loading) {
+  if (loading && !renderUri) {
     return (
       <View style={[styles.placeholder, style, { overflow: "hidden" }]}>
         <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
@@ -188,7 +249,7 @@ export function AuthProxyImage({
     );
   }
 
-  if (failed) {
+  if (failed && !renderUri) {
     if (!showPlaceholder) return null;
     return (
       <View style={[styles.placeholder, style, { overflow: "hidden" }]}>
@@ -199,17 +260,29 @@ export function AuthProxyImage({
 
   const flat = StyleSheet.flatten(style) as ImageStyle | undefined;
   const radius = flat?.borderRadius;
+  const contentFit =
+    resizeMode === "contain"
+      ? "contain"
+      : resizeMode === "stretch"
+        ? "fill"
+        : resizeMode === "center"
+          ? "none"
+          : "cover";
 
   return (
     <View style={[style, { overflow: "hidden" }]}>
       <Image
-        {...imageProps}
-        source={{ uri: renderUri }}
+        {...(imageProps as object)}
+        source={{ uri: renderUri ?? resolved! }}
         style={[
           StyleSheet.absoluteFillObject,
           radius != null ? { borderRadius: radius } : null,
         ]}
+        contentFit={contentFit}
+        cachePolicy="memory-disk"
+        recyclingKey={resolved ?? renderUri ?? undefined}
         onError={handleError}
+        transition={0}
       />
     </View>
   );

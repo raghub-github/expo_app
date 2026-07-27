@@ -18,9 +18,17 @@ import { randomUUID } from "node:crypto";
 import { isExpoPushTokenString } from "@gatimitra/contracts";
 import { getSql } from "../../db/client.js";
 import { deliverExpoPush } from "../push/deliverExpoPush.js";
+import {
+  isTerminalPushDeliveryError,
+  purgeInvalidPushTokens,
+} from "../push/purgeInvalidPushTokens.js";
 import { renderTemplate, findMissingVariables } from "./templateRenderer.js";
 import { resolveChannelMasks, allowedChannelsFor } from "./preferences.js";
-import { resolveTarget } from "./targetResolver.js";
+import {
+  IN_APP_ONLY_TOKEN,
+  resolveInboxOnlyRecipients,
+  resolveTarget,
+} from "./targetResolver.js";
 import { sendFcmV1 } from "./fcmProvider.js";
 import {
   loadTemplate,
@@ -37,6 +45,7 @@ import {
   type CreateLogRow,
 } from "./db.js";
 import type {
+  NotificationPriority,
   NotificationTemplate,
   Recipient,
   SendIntent,
@@ -44,6 +53,10 @@ import type {
   TargetFilter,
   TemplateVariables,
 } from "./types.js";
+import {
+  expectedRoleFromTarget,
+  templateRoleMatchesTarget,
+} from "./campaignTarget.js";
 
 const FCM_TOPIC_PREFIX = "topic:";
 
@@ -51,9 +64,64 @@ function isExpoDeviceToken(token: string): boolean {
   return isExpoPushTokenString(token);
 }
 
-function channelIdForRecipient(recipient: Recipient): string {
-  if (recipient.role === "merchant") return "merchant_default";
+function isInAppOnlyToken(token: string | null | undefined): boolean {
+  return !token || token === IN_APP_ONLY_TOKEN;
+}
+
+/** Persist FCM outcome; purge terminal/invalid tokens once (no endless retry). */
+async function finalizeFcmDelivery(
+  notificationId: string,
+  token: string | undefined,
+  res: { ok: boolean; errorCode?: string; errorMessage?: string },
+): Promise<boolean> {
+  await updateLogStatus(notificationId, res.ok ? "delivered" : "failed", {
+    errorCode: res.errorCode,
+    errorMessage: res.errorMessage,
+  });
+  if (
+    !res.ok &&
+    token &&
+    !isInAppOnlyToken(token) &&
+    isTerminalPushDeliveryError(res.errorCode, res.errorMessage)
+  ) {
+    void purgeInvalidPushTokens([token]);
+  }
+  return res.ok;
+}
+
+function isRideCustomerPush(row: {
+  templateCode: string;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  const meta = row.metadata ?? {};
+  if (String(meta.liveService ?? "").toLowerCase() === "ride") return true;
+  const code = String(row.templateCode ?? "").toUpperCase();
+  return code.startsWith("RIDE_");
+}
+
+function channelIdForRecipient(
+  recipient: Recipient,
+  priority?: NotificationPriority | string | null,
+  row?: { templateCode: string; metadata?: Record<string, unknown> | null },
+): string {
+  if (recipient.role === "merchant") {
+    // Critical / high new-order alerts use MAX heads-up channel (auto-wake path).
+    if (priority === "critical" || priority === "high") return "merchant_new_orders";
+    return "merchant_default";
+  }
   if (recipient.role === "rider") return "default";
+  // Ride lifecycle → CX custom chime channel (immutable after first Android create).
+  if (row && isRideCustomerPush(row)) return "customer_ride_cx";
+  return "customer_default";
+}
+
+function soundForRecipient(
+  recipient: Recipient,
+  row?: { templateCode: string; metadata?: Record<string, unknown> | null },
+): string {
+  if (recipient.role === "customer" && row && isRideCustomerPush(row)) {
+    return "cx_notification.mp3";
+  }
   return "default";
 }
 
@@ -77,6 +145,13 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
     notification_id: row.notificationId,
     campaign_id: row.campaignId ?? undefined,
     template_code: row.templateCode,
+    gmType: row.templateCode,
+    // Rendered template copy — powers floating in-app banners without hardcoded strings.
+    title: row.title,
+    body: row.body,
+    gmTitle: row.title,
+    gmMessage: row.body,
+    gmBanner: true,
     ...(deepLink
       ? {
           screen: deepLink,
@@ -96,8 +171,8 @@ async function dispatchExpoRow(row: CreateLogRow): Promise<boolean> {
     data: pushDataForRow(row),
     screen: row.deepLink ?? undefined,
     imageUrl: row.imageUrl ?? undefined,
-    channelId: channelIdForRecipient(row.recipient),
-    sound: "default",
+    channelId: channelIdForRecipient(row.recipient, row.priority, row),
+    sound: soundForRecipient(row.recipient, row),
   });
   if (!result.ok) {
     await updateLogStatus(row.notificationId, "failed", {
@@ -141,11 +216,30 @@ function toMinutes(hhmm: string): number {
 /**
  * Single send — looks up template, resolves recipients, queues delivery.
  *
- * Safe to call from inside an HTTP handler. Failures in any sub-step are
- * logged + counted; we never throw out of this function unless the
- * template is completely missing or the intent is malformed.
+ * Safe to call from inside an HTTP handler or order/payment flow.
+ * Missing tokens, carrier failures, and most DB blips are logged and
+ * returned as soft counts — we never throw into business logic.
  */
 export async function send(intent: SendIntent): Promise<SendResult> {
+  try {
+    return await sendImpl(intent);
+  } catch (e) {
+    console.warn(
+      `[notifications] Push send failed (tolerated) template=${intent.templateCode}:`,
+      (e as Error).message,
+      { target: intent.target },
+    );
+    return {
+      campaignId: intent.campaignId,
+      queued: 0,
+      skipped: 0,
+      failedSync: 1,
+      notificationIds: [],
+    };
+  }
+}
+
+async function sendImpl(intent: SendIntent): Promise<SendResult> {
   const startedAt = Date.now();
 
   // 1. Load template
@@ -158,6 +252,19 @@ export async function send(intent: SendIntent): Promise<SendResult> {
       failedSync: 1,
       notificationIds: [],
       skipReason: "template_missing",
+    };
+  }
+
+  // 1a. Enforce template.role ↔ target audience (campaigns / broadcasts).
+  const expectedRole = expectedRoleFromTarget(intent.target as unknown as Record<string, unknown>);
+  if (!templateRoleMatchesTarget(String(template.role), expectedRole)) {
+    return {
+      campaignId: intent.campaignId,
+      queued: 0,
+      skipped: 0,
+      failedSync: 1,
+      notificationIds: [],
+      skipReason: `role_mismatch:template_${template.role}_target_${expectedRole}`,
     };
   }
 
@@ -192,19 +299,48 @@ export async function send(intent: SendIntent): Promise<SendResult> {
   const rendered = applyOverrides(renderTemplate(template, vars), intent.overrides);
 
   // 3. Resolve recipients
-  const recipients = await resolveTarget(intent.target);
+  let recipients = await resolveTarget(intent.target);
+  // When targeting a single / many users, keep only tokens matching template role
+  // so a merchant id cannot receive a customer-only announcement deep link.
+  const templateRole = String(template.role).toLowerCase();
+  if (
+    (templateRole === "customer" || templateRole === "merchant" || templateRole === "rider") &&
+    ("user_id" in intent.target || "user_ids" in intent.target)
+  ) {
+    recipients = recipients.filter((r) => r.role === templateRole || r.role === "all");
+  }
+
+  // No push tokens: still write in-app inbox rows for explicit user / order targets
+  // (Expo Go / denied permission). Never throw — business APIs must keep working.
+  let inboxOnlyFallback = false;
   if (recipients.length === 0) {
-    if (intent.campaignId) {
-      await syncCampaignCountsFromLogs(intent.campaignId);
+    const inboxOnly = await resolveInboxOnlyRecipients(intent.target, template.role);
+    if (inboxOnly.length > 0) {
+      recipients = inboxOnly;
+      inboxOnlyFallback = true;
+      console.warn(
+        `[notifications] Push token unavailable. Recording in-app only ` +
+          `(template=${template.code}, users=${inboxOnly.length}).`,
+        { target: intent.target, title: rendered.title, body: rendered.body },
+      );
+    } else {
+      console.warn(
+        `[notifications] Push token unavailable. Skipping notification ` +
+          `(template=${template.code}, campaign=${intent.campaignId ?? "n/a"}).`,
+        { target: intent.target, title: rendered.title, body: rendered.body },
+      );
+      if (intent.campaignId) {
+        await syncCampaignCountsFromLogs(intent.campaignId);
+      }
+      return {
+        campaignId: intent.campaignId,
+        queued: 0,
+        skipped: 0,
+        failedSync: 0,
+        notificationIds: [],
+        skipReason: "no_recipients",
+      };
     }
-    return {
-      campaignId: intent.campaignId,
-      queued: 0,
-      skipped: 0,
-      failedSync: 0,
-      notificationIds: [],
-      skipReason: "no_recipients",
-    };
   }
 
   // 3b. Quiet-hours + rate-limit enforcement (skips critical priority).
@@ -284,7 +420,10 @@ export async function send(intent: SendIntent): Promise<SendResult> {
       continue;
     }
     const mask = masks.get(r.userId) ?? { push: true, in_app: true, browser: true, email: false };
-    const allowed = allowedChannelsFor(template.channel, mask);
+    // Tokenless / Expo Go fallback: inbox history only — never attempt push.
+    const allowed = inboxOnlyFallback || r.deviceToken === IN_APP_ONLY_TOKEN
+      ? (["in_app"] as const).filter(() => mask.in_app !== false)
+      : allowedChannelsFor(template.channel, mask);
     if (allowed.length === 0) {
       skipped++;
       continue;
@@ -363,11 +502,7 @@ export async function send(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        await updateLogStatus(row.notificationId, res.ok ? "delivered" : "failed", {
-          errorCode: res.errorCode,
-          errorMessage: res.errorMessage,
-        });
-        if (res.ok) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, undefined, res)) queued++;
         continue;
       }
       if (row.recipient.userId === "__direct__") {
@@ -390,17 +525,24 @@ export async function send(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        await updateLogStatus(row.notificationId, res.ok ? "delivered" : "failed", {
-          errorCode: res.errorCode,
-          errorMessage: res.errorMessage,
-        });
-        if (res.ok) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res)) queued++;
         continue;
       }
 
       // Standard mobile / web path
-      if (row.channel === "push" || row.channel === "browser") {
+      if (row.channel === "push") {
         const token = row.recipient.deviceToken;
+        if (isInAppOnlyToken(token)) {
+          // No device token (Expo Go / denied) — skip push, never fail the API.
+          console.warn(
+            `[notifications] Push token unavailable. Skipping push for nid=${row.notificationId}`,
+          );
+          await updateLogStatus(row.notificationId, "failed", {
+            errorCode: "NO_PUSH_TOKEN",
+            errorMessage: "Push token unavailable. Skipping notification.",
+          });
+          continue;
+        }
         if (isExpoDeviceToken(token)) {
           if (await dispatchExpoRow(row)) queued++;
           continue;
@@ -416,16 +558,38 @@ export async function send(intent: SendIntent): Promise<SendResult> {
           deepLink: row.deepLink ?? null,
           data: {
             template_code: row.templateCode,
+            gmType: row.templateCode,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,
           silent: template.silent,
         });
-        await updateLogStatus(row.notificationId, res.ok ? "delivered" : "failed", {
-          errorCode: res.errorCode,
-          errorMessage: res.errorMessage,
+        if (await finalizeFcmDelivery(row.notificationId, token, res)) queued++;
+        continue;
+      }
+      // Legacy "browser" log rows (if any) — only deliver for true web tokens, never Expo.
+      if (row.channel === "browser") {
+        const token = row.recipient.deviceToken;
+        if (isExpoDeviceToken(token) || row.recipient.platform !== "web") {
+          await updateLogStatus(row.notificationId, "delivered");
+          queued++;
+          continue;
+        }
+        const res = await sendFcmV1({
+          notificationId: row.notificationId,
+          token,
+          title: row.title,
+          body: row.body,
+          imageUrl: row.imageUrl ?? null,
+          deepLink: row.deepLink ?? null,
+          data: {
+            template_code: row.templateCode,
+            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
+          },
+          priority: row.priority as never,
+          silent: template.silent,
         });
-        if (res.ok) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, token, res)) queued++;
         continue;
       }
       if (row.channel === "in_app") {
@@ -571,6 +735,7 @@ export async function resendCampaign(
         deepLink: campaign.override_deep_link,
       },
     });
+    // Missing tokens is a soft complete — never mark the campaign failed for Expo Go / empty audience.
     await finalizeCampaignSend(campaignId, "completed");
     return { ...result, campaignId, status: "completed" };
   } catch (e) {

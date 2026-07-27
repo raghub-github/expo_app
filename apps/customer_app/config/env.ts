@@ -51,8 +51,25 @@ function normalizeDevHost(raw: string): string | null {
   return host && isPlausibleIpv4(host) ? host : null;
 }
 
+function isPrivateLanIpv4(host: string): boolean {
+  if (!isPlausibleIpv4(host)) return false;
+  const [a, b] = host.split(".").map(Number);
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function hostFromApiUrl(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
 /** Metro / Expo dev server LAN IP (e.g. 192.168.x.x from hostUri) — avoids localhost on a physical phone. */
-function inferLanHostFromExpoBundler(): string | null {
+export function inferLanHostFromExpoBundler(): string | null {
   const hostUri =
     Constants.expoConfig?.hostUri ??
     (Constants.expoGoConfig as { hostUri?: string } | undefined)?.hostUri;
@@ -66,6 +83,53 @@ function inferLanHostFromExpoBundler(): string | null {
     if (host && host !== "localhost" && host !== "127.0.0.1") return host;
   }
   return null;
+}
+
+/**
+ * Preferred LAN host for this PC in __DEV__: Metro hostUri first, then
+ * EXPO_PUBLIC_DEV_HOST / API_BASE_URL from env (survives offline Metro).
+ */
+function preferredDevLanHost(): string | null {
+  const fromBundler = inferLanHostFromExpoBundler();
+  if (fromBundler && isPrivateLanIpv4(fromBundler)) return fromBundler;
+  const fromDevHost = normalizeDevHost(process.env.EXPO_PUBLIC_DEV_HOST ?? "");
+  if (fromDevHost && isPrivateLanIpv4(fromDevHost)) return fromDevHost;
+  const fromApi = hostFromApiUrl(process.env.EXPO_PUBLIC_API_BASE_URL ?? "");
+  if (fromApi && isPrivateLanIpv4(fromApi)) return fromApi;
+  return null;
+}
+
+/**
+ * Wi‑Fi IPs change often. In __DEV__, if a configured/overridden URL points at a
+ * *different* private LAN IP than this PC's current host, rewrite so the phone
+ * keeps talking to this machine (not a stale IP). Leaves production / ngrok alone.
+ */
+function healStaleLanApiUrl(url: string): string {
+  if (!__DEV__) return url;
+  const lan = preferredDevLanHost();
+  if (!lan) return url;
+  const host = hostFromApiUrl(url);
+  if (!host || host === lan || !isPrivateLanIpv4(host)) return url;
+  let port = apiDevPort();
+  try {
+    const parsed = new URL(url);
+    if (parsed.port) port = parsed.port;
+  } catch {
+    /* keep apiDevPort() */
+  }
+  const healed = `http://${lan}:${port}`;
+  // eslint-disable-next-line no-console
+  console.log(`[env] healed stale LAN API URL ${url} → ${healed}`);
+  return healed;
+}
+
+/** True when a stored override is a private LAN IP that no longer matches this PC. */
+export function isStaleLanApiOverride(storedUrl: string): boolean {
+  if (!__DEV__) return false;
+  const lan = preferredDevLanHost();
+  if (!lan) return false;
+  const host = hostFromApiUrl(storedUrl.trim().replace(/\/+$/, ""));
+  return Boolean(host && host !== lan && isPrivateLanIpv4(host));
 }
 
 /** Map legacy dev ports (30000/4000) to Fastify default 3000. */
@@ -158,9 +222,10 @@ export function getConfig(): {
   }
 
   // Runtime override (from AsyncStorage, set via the in-app "Configure API URL"
-  // sheet) ALWAYS wins. Lets the user point the installed APK at a new LAN IP
-  // or ngrok URL without a rebuild.
-  const apiBaseUrl = runtimeApiBaseUrlOverride ?? resolveApiBaseUrl(rawUrl);
+  // sheet) wins over env — then heal stale private LAN IPs to Metro's host.
+  const apiBaseUrl = healStaleLanApiUrl(
+    runtimeApiBaseUrlOverride ?? resolveApiBaseUrl(rawUrl)
+  );
 
   const googleMapsApiKey =
     asNonEmptyString(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) ??

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { assertStoreAccess } from "@/lib/auth/assert-store-access";
+import { fetchBackend } from "@/lib/fetch-backend";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -15,12 +16,8 @@ const DOC_KIND_MAP: Record<string, string> = {
 /**
  * GET /api/onboarding/verify-document/status?storeId=GMMC1027&docKind=aadhaar
  *
- * Latest verification status for one document of the merchant's store.
- * Used by the register-store UI to poll for async results (DigiLocker
- * Aadhaar consent completes out-of-band via webhook).
- *
- * verification_requests lives in the same shared Postgres, so we read it
- * directly with the service role instead of proxying the backend.
+ * For DigiLocker Aadhaar: actively polls Cashfree via the backend so completion
+ * does not depend on webhooks reaching localhost.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -35,6 +32,43 @@ export async function GET(req: NextRequest) {
     const access = await assertStoreAccess(storeId);
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    }
+
+    // DigiLocker: ask backend to poll Cashfree + fetch document when AUTHENTICATED.
+    if (docKindParam === "aadhaar") {
+      const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+      if (secret) {
+        const pollRes = await fetchBackend("/v1/verification/poll/digilocker", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+          },
+          body: JSON.stringify({
+            subject_type: "merchant_store",
+            subject_id: access.storeIdNum,
+          }),
+          timeoutMs: 25_000,
+        });
+        if (pollRes) {
+          const poll = (await pollRes.json().catch(() => ({}))) as {
+            verified?: boolean;
+            status?: string;
+            statusReason?: string | null;
+            verifiedData?: Record<string, unknown>;
+          };
+          if (pollRes.ok) {
+            const status = String(poll.status ?? "unknown");
+            return NextResponse.json({
+              success: true,
+              status,
+              verified: !!poll.verified || status === "verified",
+              statusReason: poll.statusReason ?? null,
+              verifiedData: poll.verifiedData ?? null,
+            });
+          }
+        }
+      }
     }
 
     const db = createClient(supabaseUrl, supabaseServiceKey, {
@@ -59,7 +93,6 @@ export async function GET(req: NextRequest) {
 
     const status = String(data.status ?? "unknown");
 
-    // Fetched details live in verification_events.details.verifiedData.
     let verifiedData: Record<string, unknown> | null = null;
     if (status === "verified") {
       const { data: ev } = await db
@@ -70,7 +103,10 @@ export async function GET(req: NextRequest) {
         .limit(5);
       for (const e of ev ?? []) {
         const d = (e.details as { verifiedData?: Record<string, unknown> } | null)?.verifiedData;
-        if (d && typeof d === "object") { verifiedData = d; break; }
+        if (d && typeof d === "object") {
+          verifiedData = d;
+          break;
+        }
       }
     }
 

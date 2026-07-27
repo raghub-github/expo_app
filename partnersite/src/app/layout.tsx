@@ -52,7 +52,7 @@ export default function RootLayout({
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-white`}
-        style={{ background: '#fff', minHeight: '100vh', width: '100vw', overflow: 'auto' }}
+        style={{ background: '#fff', minHeight: '100%', width: '100%', overflowX: 'hidden' }}
       >
         <QueryProvider>
           <MerchantSessionProvider>

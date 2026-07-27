@@ -21,7 +21,7 @@ const MARKER_CSS = `
 .gm-location-marker--store .gm-teardrop-pin__shape{fill:#1a1a1a}
 .gm-teardrop-pin__icon{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;pointer-events:none}
 .gm-location-marker__pin--teardrop{width:28px;height:38px}
-.gm-location-marker__bike{display:block;width:34px;height:34px;object-fit:contain;pointer-events:none;transform-origin:center center;transition:transform 0.35s ease-out}
+.gm-location-marker__bike{display:block;width:34px;height:34px;object-fit:contain;pointer-events:none;transform-origin:center center}
 `;
 
 export function buildMerchantRiderTrackingMapHtml(
@@ -62,7 +62,8 @@ export function buildMerchantRiderTrackingMapHtml(
     var routeCoords = null;
     var routeInflight = false;
     var lastRouteFrom = null;
-    var ROUTE_REFRESH_METERS = 35;
+    var ROUTE_REFRESH_METERS = 45;
+    var OFF_ROUTE_REROUTE_M = 45;
     var CONNECTOR_MIN_METERS = 6;
     var SAME_POINT_METERS = 18;
 
@@ -78,6 +79,9 @@ export function buildMerchantRiderTrackingMapHtml(
     var storeMarker = null;
     var riderMarker = null;
     var storeLabelOpen = false;
+    var riderAnimFrame = null;
+    var headingAnimFrame = null;
+    var currentHeading = null;
 
     var TEARDROP_PIN_SVG = '<svg class="gm-teardrop-pin__shape" viewBox="0 0 32 42" aria-hidden="true"><path d="M16 0C8.82 0 3 5.58 3 12.46c0 8.12 11.11 20.9 12.28 22.22a1.2 1.2 0 0 0 1.44 0C17.89 33.36 29 20.58 29 12.46 29 5.58 23.18 0 16 0z"/></svg>';
     var STORE_BUILDING_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>';
@@ -272,16 +276,96 @@ export function buildMerchantRiderTrackingMapHtml(
     function setRiderHeading(marker, headingDeg) {
       if (headingDeg == null || !isFinite(headingDeg)) return;
       var img = marker.getElement().querySelector('.gm-location-marker__bike');
-      if (img) img.style.transform = 'rotate(' + headingDeg + 'deg)';
+      if (!img) return;
+      if (headingAnimFrame) { cancelAnimationFrame(headingAnimFrame); headingAnimFrame = null; }
+      var from = currentHeading == null ? headingDeg : currentHeading;
+      var to = ((headingDeg % 360) + 360) % 360;
+      var delta = ((to - from + 540) % 360) - 180;
+      if (Math.abs(delta) < 1) {
+        currentHeading = to;
+        img.style.transform = 'rotate(' + to + 'deg)';
+        return;
+      }
+      var t0 = performance.now();
+      var dur = Math.min(500, Math.max(180, Math.abs(delta) * 4));
+      function hStep(now) {
+        var t = Math.min(1, (now - t0) / dur);
+        var eased = 1 - Math.pow(1 - t, 3);
+        var ang = from + delta * eased;
+        currentHeading = ((ang % 360) + 360) % 360;
+        img.style.transform = 'rotate(' + currentHeading + 'deg)';
+        if (t < 1) headingAnimFrame = requestAnimationFrame(hStep);
+        else headingAnimFrame = null;
+      }
+      headingAnimFrame = requestAnimationFrame(hStep);
+    }
+
+    function animateRiderTo(lat, lng, heading) {
+      if (!riderMarker) return;
+      var start = riderMarker.getLngLat();
+      var fromLng = start.lng;
+      var fromLat = start.lat;
+      var jumpM = haversineM([fromLng, fromLat], [lng, lat]);
+      if (jumpM > 180) {
+        if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
+        riderMarker.setLngLat([lng, lat]);
+        setRiderHeading(riderMarker, heading);
+        return;
+      }
+      if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
+      var t0 = performance.now();
+      var dur = Math.min(1100, Math.max(350, jumpM * 18));
+      function step(now) {
+        var t = Math.min(1, (now - t0) / dur);
+        var eased = 1 - Math.pow(1 - t, 3);
+        var latN = fromLat + (lat - fromLat) * eased;
+        var lngN = fromLng + (lng - fromLng) * eased;
+        if (riderMarker) riderMarker.setLngLat([lngN, latN]);
+        if (t < 1) {
+          riderAnimFrame = requestAnimationFrame(step);
+        } else {
+          riderAnimFrame = null;
+          setRiderHeading(riderMarker, heading);
+        }
+      }
+      setRiderHeading(riderMarker, heading);
+      riderAnimFrame = requestAnimationFrame(step);
+    }
+
+    function closestDistToRouteM(route, lngLat) {
+      if (!route || route.length < 2) return Infinity;
+      var best = Infinity;
+      for (var i = 0; i < route.length - 1; i++) {
+        var a = route[i];
+        var b = route[i + 1];
+        var ax = a[0], ay = a[1], bx = b[0], by = b[1];
+        var px = lngLat[0], py = lngLat[1];
+        var dx = bx - ax, dy = by - ay;
+        var lenSq = dx * dx + dy * dy;
+        var t = lenSq < 1e-12 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+        var sx = ax + dx * t, sy = ay + dy * t;
+        var d = haversineM([px, py], [sx, sy]);
+        if (d < best) best = d;
+      }
+      return best;
     }
 
     function fetchDrivingRoute(from, to) {
       if (routeInflight || samePoint(from, to)) return;
+      if (routeCoords && routeCoords.length >= 2) {
+        var offM = closestDistToRouteM(routeCoords, from);
+        if (offM <= OFF_ROUTE_REROUTE_M) {
+          var riderLngLat = mapData.rider ? [mapData.rider.longitude, mapData.rider.latitude] : null;
+          var storeLngLat = mapData.store ? [mapData.store.longitude, mapData.store.latitude] : null;
+          applyConnectorLines(routeCoords, riderLngLat, storeLngLat);
+          return;
+        }
+      }
       var moved = lastRouteFrom ? haversineM(lastRouteFrom, from) : Infinity;
       if (moved < ROUTE_REFRESH_METERS && routeCoords && routeCoords.length >= 2) {
-        var riderLngLat = mapData.rider ? [mapData.rider.longitude, mapData.rider.latitude] : null;
-        var storeLngLat = mapData.store ? [mapData.store.longitude, mapData.store.latitude] : null;
-        applyConnectorLines(routeCoords, riderLngLat, storeLngLat);
+        var riderLngLatKeep = mapData.rider ? [mapData.rider.longitude, mapData.rider.latitude] : null;
+        var storeLngLatKeep = mapData.store ? [mapData.store.longitude, mapData.store.latitude] : null;
+        applyConnectorLines(routeCoords, riderLngLatKeep, storeLngLatKeep);
         return;
       }
       routeInflight = true;
@@ -321,16 +405,21 @@ export function buildMerchantRiderTrackingMapHtml(
         var riderLngLat = [mapData.rider.longitude, mapData.rider.latitude];
         var heading = mapData.rider.heading_degrees;
         if (!riderMarker) {
+          if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           riderMarker = new mapboxgl.Marker({
             element: createRiderMarkerElement(heading),
             anchor: 'center'
           })
             .setLngLat(riderLngLat)
             .addTo(map);
+          if (heading != null && isFinite(heading)) currentHeading = heading;
         } else {
-          riderMarker.setLngLat(riderLngLat);
-          setRiderHeading(riderMarker, heading);
+          animateRiderTo(riderLngLat[1], riderLngLat[0], heading);
         }
+      } else if (riderMarker) {
+        if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
+        try { riderMarker.remove(); } catch (e) {}
+        riderMarker = null;
       }
 
       if (mapData.rider && mapData.store) {

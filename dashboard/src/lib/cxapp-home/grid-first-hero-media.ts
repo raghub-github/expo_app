@@ -7,6 +7,8 @@ export type GridFirstHeroMediaItem = {
   kind: GridFirstHeroMediaKind;
   url: string;
   sortOrder: number;
+  /** width / height when known (from upload probe or client measure). */
+  aspectRatio?: number | null;
 };
 
 export const MAX_GRID_FIRST_HERO_MEDIA = 10;
@@ -14,6 +16,13 @@ export const MAX_GRID_FIRST_HERO_MEDIA = 10;
 function parseKind(value: unknown): GridFirstHeroMediaKind | null {
   if (value === "image" || value === "video") return value;
   return null;
+}
+
+function parseAspectRatio(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0.15 || n > 8) return null;
+  return Number(n.toFixed(4));
 }
 
 export function parseGridFirstHeroMediaItems(value: unknown): GridFirstHeroMediaItem[] {
@@ -32,6 +41,7 @@ export function parseGridFirstHeroMediaItems(value: unknown): GridFirstHeroMedia
       kind,
       url,
       sortOrder: Number.isFinite(sortOrder) ? sortOrder : items.length,
+      aspectRatio: parseAspectRatio(row.aspectRatio ?? row.aspect_ratio),
     });
   }
   return items.sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));

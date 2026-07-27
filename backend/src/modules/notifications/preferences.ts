@@ -113,13 +113,18 @@ export async function resolveChannelMasks(
 
 /**
  * Filter a channel set down to those actually permitted by the user's mask.
+ *
+ * `channel: "all"` expands to push + in_app only. Browser/web is NOT included —
+ * re-sending the same Expo token as "browser" doubled OS notifications and
+ * inflated campaign Sent/Delivered counts. Web partnersite tokens are resolved
+ * separately as FCM native tokens on the push path.
  */
 export function allowedChannelsFor(
   templateChannel: NotificationChannel,
   mask: ChannelMask,
 ): NotificationChannel[] {
   const allOptions: NotificationChannel[] =
-    templateChannel === "all" ? ["push", "in_app", "browser"] : [templateChannel];
+    templateChannel === "all" ? ["push", "in_app"] : [templateChannel];
   return allOptions.filter((ch) => {
     if (ch === "push") return mask.push;
     if (ch === "in_app") return mask.in_app;

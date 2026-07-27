@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet } from "react-native";
 import { GatiMitraMerchant } from "@/constants/theme";
 import type { GrowthQuickMetric } from "@/services/growthApi";
 

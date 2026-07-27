@@ -5,7 +5,12 @@ import {
   checkSessionValidity,
   formatTimeRemaining,
 } from "@/lib/auth/session-manager";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import {
+  isInvalidRefreshToken,
+  isNetworkOrTransientError,
+  isRefreshTokenAlreadyUsed,
+  signOutIfSessionDead,
+} from "@/lib/auth/session-errors";
 import { cookies } from "next/headers";
 
 /**
@@ -20,7 +25,13 @@ export async function GET(request: NextRequest) {
 
     if (userError) {
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
+        if (isRefreshTokenAlreadyUsed(userError)) {
+          return NextResponse.json(
+            { success: false, authenticated: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+            { status: 503, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return NextResponse.json(
           { success: false, authenticated: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401, headers: { "Content-Type": "application/json" } }
@@ -86,9 +97,15 @@ export async function GET(request: NextRequest) {
     if (isInvalidRefreshToken(error)) {
       try {
         const supabase = await createServerSupabaseClient();
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, error);
       } catch {
         // ignore
+      }
+      if (isRefreshTokenAlreadyUsed(error)) {
+        return NextResponse.json(
+          { success: false, authenticated: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503, headers: { "Content-Type": "application/json" } }
+        );
       }
       return NextResponse.json(
         { success: false, authenticated: false, error: "Session invalid", code: "SESSION_INVALID" },

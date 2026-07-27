@@ -6,13 +6,13 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   View,
-  Text,
   ScrollView,
   StyleSheet,
   Pressable,
   Dimensions,
   RefreshControl,
 } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -40,6 +40,7 @@ import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { formatCurrency } from "@/lib/merchantPayoutUtils";
+import { resolveWalletDisplayBalance } from "@gatimitra/merchant-payout";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
@@ -162,9 +163,7 @@ export default function DashboardScreen() {
       ]);
       setTodayEarning(Number(wallet.today_earning) || 0);
       setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
-      setWalletBalance(
-        Number(wallet.withdrawable_balance ?? wallet.available_balance ?? 0) || 0
-      );
+      setWalletBalance(resolveWalletDisplayBalance(wallet));
       setPendingCount(Number(active) || 0);
     } catch {
       setTodayEarning(0);

@@ -1,18 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  Pressable,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-  RefreshControl,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, FlatList, Pressable, TextInput, KeyboardAvoidingView, Platform, RefreshControl, Modal } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { usePathname, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
@@ -37,6 +29,7 @@ type StoreReview = {
 type FilterKey = "all" | "5plus" | "4plus" | "3plus" | "2plus" | "1plus";
 
 export default function ReviewsScreen() {
+  const insets = useSafeAreaInsets();
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -693,8 +686,22 @@ export default function ReviewsScreen() {
         </View>
       )}
 
-      {activeReplyId != null && (
-        <View style={styles.sheetBackdrop}>
+      <Modal
+        visible={activeReplyId != null}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={() => {
+          setActiveReplyId(null);
+          setActiveReplyReview(null);
+          setReplyText("");
+        }}
+      >
+        <KeyboardAvoidingView
+          style={styles.sheetModalRoot}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
           <Pressable
             style={styles.sheetBackdropTouch}
             onPress={() => {
@@ -703,7 +710,12 @@ export default function ReviewsScreen() {
               setReplyText("");
             }}
           />
-          <View style={styles.sheetCard}>
+          <View
+            style={[
+              styles.sheetCard,
+              { paddingBottom: Math.max(insets.bottom, 16) },
+            ]}
+          >
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeaderRow}>
               <View style={styles.sheetHeaderLeft}>
@@ -784,8 +796,8 @@ export default function ReviewsScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
-      )}
+        </KeyboardAvoidingView>
+      </Modal>
 
       {confirmMode && confirmTarget && (
         <View style={styles.modalBackdrop}>
@@ -1430,6 +1442,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: GatiMitraMerchant.textTertiary,
   },
+  sheetModalRoot: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(15,23,42,0.35)",
+  },
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-end",
@@ -1445,8 +1462,11 @@ const styles = StyleSheet.create({
     paddingBottom: 22,
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     borderTopWidth: 1,
     borderColor: GatiMitraMerchant.border,
+    width: "100%",
     ...GatiMitraMerchant.shadowCard,
   },
   sheetHandle: {

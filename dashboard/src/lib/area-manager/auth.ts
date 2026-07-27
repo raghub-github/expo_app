@@ -231,10 +231,12 @@ export function requireMerchantManager(
 
 /**
  * Require rider area manager (rider flow). Returns error response if not RIDER type.
+ * Super admins are allowed (global scope; callers already use isSuperAdmin → null areaManagerId).
  */
 export function requireRiderManager(
   resolved: ResolvedAreaManager
 ): Response | null {
+  if (resolved.isSuperAdmin) return null;
   if (resolved.managerType !== "RIDER") {
     return new Response(
       JSON.stringify({

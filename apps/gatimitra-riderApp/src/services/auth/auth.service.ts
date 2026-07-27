@@ -47,6 +47,7 @@ export type RiderStatusResponse = {
   userId: string;
   onboardingStatus?: "not_started" | "in_progress" | "pending_approval" | "approved" | "rejected";
   approvalStatus?: string;
+  paymentCompleted?: boolean;
 };
 
 /** Set after successful `POST /v1/auth/otp/request`; cleared on new send or successful backend verify. */

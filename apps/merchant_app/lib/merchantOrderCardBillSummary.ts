@@ -20,7 +20,6 @@ export function getMerchantOrderCardBillLines(order: OrderRecord): MerchantOrder
       amount: bill.packaging,
       kind: "charge",
     },
-    { key: "taxes", label: "Taxes", amount: bill.taxes, kind: "tax" },
   ];
 
   if (bill.discount > 0.005) {

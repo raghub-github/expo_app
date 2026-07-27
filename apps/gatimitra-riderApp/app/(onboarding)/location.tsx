@@ -35,10 +35,9 @@ export default function LocationScreen() {
       return;
     }
 
-    // Location is already saved to store via useEffect
-    // Continue onboarding — home is only available after approval
+    // Continue onboarding — method-selection is skipped; Aadhaar applies policy (auto/hybrid/manual).
     if (session) {
-      router.replace("/(onboarding)/method-selection");
+      router.replace("/(onboarding)/aadhaar");
     } else {
       // If no session, go to welcome screen to start onboarding
       router.replace("/(onboarding)/welcome");

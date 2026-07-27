@@ -1,13 +1,6 @@
 import { useEffect, useState } from "react";
-import {
-  Modal,
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-  ScrollView,
-  Platform,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Modal, View, Pressable, StyleSheet, ScrollView, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";

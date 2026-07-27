@@ -44,6 +44,17 @@ export async function createServerSupabaseClient() {
       },
       setAll(cookiesToSet) {
         try {
+          // Parallel getUser()/refresh races can ask us to blank sb-* cookies.
+          // Applying that wipes a session another request just rotated → auto-logout.
+          // Explicit logout still clears cookies in /api/auth/logout.
+          const authCookies = cookiesToSet.filter((c) => c.name.startsWith("sb-"));
+          if (
+            authCookies.length > 0 &&
+            authCookies.every((c) => !c.value || c.value.length === 0)
+          ) {
+            return;
+          }
+
           cookiesToSet.forEach(({ name, value, options }) =>
             cookieStore.set(name, value, options)
           );

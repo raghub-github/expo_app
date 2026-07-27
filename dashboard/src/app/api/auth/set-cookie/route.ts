@@ -7,7 +7,12 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { validateUserForLogin } from "@/lib/auth/user-validation";
-import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
+import {
+  isInvalidRefreshToken,
+  isNetworkOrTransientError,
+  isTimeoutOrAbortError,
+  signOutIfSessionDead,
+} from "@/lib/auth/session-errors";
 import { isTransientAuthError } from "@/lib/auth/api-session";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getSystemUserById } from "@/lib/db/operations/users";
@@ -94,6 +99,10 @@ export async function POST(request: NextRequest) {
         },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) => {
+            // Never blank auth cookies from a failed setSession race — logout route clears explicitly.
+            if (name.startsWith("sb-") && (!value || value.length === 0)) {
+              return;
+            }
             const normalized = normalizeSupabaseCookieOptions(options);
             cookieStore.set(name, value, normalized);
             response.cookies.set(name, value, normalized);
@@ -138,11 +147,20 @@ export async function POST(request: NextRequest) {
 
     if (sessionError || !data?.session) {
       if (sessionError && isInvalidRefreshToken(sessionError)) {
+        // Stale client tokens during sync must not wipe a still-valid cookie session
+        // (that race was causing repeated auto-logouts on the dashboard).
         try {
-          await supabase.auth.signOut();
+          const existing = await supabase.auth.getUser();
+          if (existing.data?.user && !existing.error) {
+            console.warn(
+              "[set-cookie] Ignoring stale refresh token; existing cookie session is still valid"
+            );
+            return NextResponse.json({ success: true, reusedExistingSession: true });
+          }
         } catch {
-          // ignore
+          // fall through
         }
+        await signOutIfSessionDead(supabase, sessionError);
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }

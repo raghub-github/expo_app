@@ -100,6 +100,13 @@ export async function POST(
     `;
     const nextOrder = Number((orderRow as any)?.next_order ?? 0);
 
+    /**
+     * Control dashboard is staff-only (Admin / SuperAdmin / Agent with MERCHANT access).
+     * Staff uploads must apply live — never create a photo/item review queue entry.
+     * Merchant self-serve uploads (partnersite / merchant app) still go PENDING.
+     */
+    const moderatedBy = user.email ?? user.id;
+
     await sql`
       UPDATE merchant_menu_item_images
       SET is_primary = false, updated_at = NOW()
@@ -112,7 +119,7 @@ export async function POST(
       )
       VALUES (
         ${menuItemId}, ${imageUrl}, ${r2Key}, true, ${ext}, ${nextOrder},
-        'PENDING', NULL, NULL, NULL
+        'APPROVED', NULL, NOW(), ${moderatedBy}
       )
       RETURNING id
     `;
@@ -125,13 +132,14 @@ export async function POST(
         WHERE id = ${menuItemId} AND store_id = ${storeId}
       `;
     } else {
+      // Staff upload also auto-approves the item so partner/merchant apps do not show "under review".
       await sql`
         UPDATE merchant_menu_items
         SET item_image_url = ${imageUrl},
-            approval_status = 'PENDING'::merchant_menu_item_approval_status,
+            approval_status = 'APPROVED'::merchant_menu_item_approval_status,
             rejection_reason = NULL,
-            approved_at = NULL,
-            approved_by = NULL,
+            approved_at = NOW(),
+            approved_by = ${moderatedBy},
             updated_at = NOW()
         WHERE id = ${menuItemId} AND store_id = ${storeId}
       `;

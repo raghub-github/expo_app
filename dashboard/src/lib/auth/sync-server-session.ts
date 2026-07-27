@@ -1,7 +1,7 @@
 "use client";
 
 import { supabase } from "@/lib/supabase/client";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, shouldClearAuthSession } from "@/lib/auth/session-errors";
 import { safeParseJson } from "@/lib/utils";
 
 export type SetCookieResult = { ok: true } | { ok: false; error: string };
@@ -83,19 +83,45 @@ export async function syncServerSessionCookies(): Promise<boolean> {
 
   inFlightSync = (async () => {
     try {
+      // Prefer keeping an already-working cookie session over replaying stale
+      // localStorage refresh tokens (which previously signed the user out).
+      try {
+        const probe = await fetch("/api/auth/session-status", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (probe.ok) {
+          const body = (await probe.json().catch(() => null)) as {
+            success?: boolean;
+            authenticated?: boolean;
+          } | null;
+          if (body?.success && body.authenticated) {
+            markServerCookieSynced();
+            return true;
+          }
+        }
+      } catch {
+        // continue to token post path
+      }
+
       let session: { access_token: string; refresh_token: string } | null = null;
       try {
         const result = await supabase.auth.getSession();
         session = result.data?.session ?? null;
         if (result.error) {
-          if (isInvalidRefreshToken(result.error)) {
+          if (shouldClearAuthSession(result.error)) {
             await supabase.auth.signOut();
             return false;
+          }
+          if (isInvalidRefreshToken(result.error)) {
+            // already_used race — cookies may still be fine
+            markServerCookieSynced();
+            return true;
           }
           return false;
         }
       } catch (err) {
-        if (isInvalidRefreshToken(err)) {
+        if (shouldClearAuthSession(err)) {
           await supabase.auth.signOut();
         }
         return false;
@@ -111,7 +137,7 @@ export async function syncServerSessionCookies(): Promise<boolean> {
       // Supabase refresh tokens are single-use and can rotate across tabs/processes.
       // If another request already consumed this token, treat sync as completed
       // to avoid noisy retry loops and repeated "Already Used" errors.
-      if (/invalid refresh token/i.test(r.error)) {
+      if (/invalid refresh token|already used|not found/i.test(r.error)) {
         markServerCookieSynced();
         return true;
       }

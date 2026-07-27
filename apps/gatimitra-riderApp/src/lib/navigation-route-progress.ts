@@ -239,50 +239,20 @@ export type RiderRouteDeviation = {
   /** Rider heading differs from route direction (moving wrong way on road). */
   wrongWay: boolean;
   headingDeltaDeg: number;
+  visiblyOffRoute?: boolean;
+  shouldReroute?: boolean;
 };
 
-const WRONG_WAY_MIN_HEADING_DELTA = 95;
 /** Min gap (m) before drawing dashed rider → route join connector. */
 export const RIDER_ROUTE_CONNECTOR_MIN_M = 0.5;
-export const OFF_ROUTE_REROUTE_M = 32;
 
-function headingDeltaDeg(a: number, b: number): number {
-  return Math.abs(((a - b + 540) % 360) - 180);
-}
-
-/** Snap rider to route + detect wrong-way / off-route (for map + reroute). */
-export function analyzeRiderOnRoute(
-  route: LatLng[],
-  rider: RiderOnRoute
-): RiderRouteDeviation | null {
-  if (route.length < 2) return null;
-
-  const { point: snap, segmentIndex, distanceM } = closestPointOnRoute(route, rider);
-  const segEnd = route[Math.min(segmentIndex + 1, route.length - 1)]!;
-  const segStart = route[segmentIndex]!;
-  const routeBearing = bearingDegrees(segStart, segEnd);
-
-  let wrongWay = false;
-  let delta = 0;
-
-  if (rider.headingDeg != null && Number.isFinite(rider.headingDeg)) {
-    delta = headingDeltaDeg(rider.headingDeg, routeBearing);
-    wrongWay = delta >= WRONG_WAY_MIN_HEADING_DELTA && distanceM >= 5;
-  } else if (distanceM >= 12) {
-    const towardSnap = bearingDegrees(rider, snap);
-    delta = headingDeltaDeg(towardSnap, routeBearing);
-    wrongWay = delta >= 75 && delta <= 105;
-  }
-
-  return {
-    offRouteM: distanceM,
-    snapPoint: snap,
-    segmentIndex,
-    routeBearingDeg: routeBearing,
-    wrongWay,
-    headingDeltaDeg: delta,
-  };
-}
+export {
+  OFF_ROUTE_REROUTE_M,
+  OFF_ROUTE_SOFT_M,
+  analyzeRiderOnRoute,
+  rerouteDebounceMs,
+  resolveDisplayRiderPosition,
+} from "@gatimitra/map-tracking-engine";
 
 export type RouteConnectorFeature = {
   type: "Feature";

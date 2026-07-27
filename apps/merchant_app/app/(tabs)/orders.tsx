@@ -7,7 +7,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   View,
-  Text,
   StyleSheet,
   TextInput,
   Pressable,
@@ -21,6 +20,7 @@ import {
   PanResponder,
   Alert,
 } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import {
@@ -264,7 +264,7 @@ function StatusTabs({
   );
 }
 
-function resolveInitialFilterKey(tabParam: string, orders: OrderRecord[]): LiveFilterKey {
+function resolveInitialFilterKey(tabParam: string, _orders: OrderRecord[]): LiveFilterKey {
   if (tabParam === "active" || tabParam === "new" || tabParam === "created" || tabParam === "all") {
     return DEFAULT_LIVE_TAB;
   }
@@ -272,19 +272,7 @@ function resolveInitialFilterKey(tabParam: string, orders: OrderRecord[]): LiveF
   if (SWIPE_TAB_ORDER.includes(tabParam as LiveFilterKey)) {
     return tabParam as LiveFilterKey;
   }
-  for (const key of SWIPE_TAB_ORDER) {
-    if (key === "scheduled") {
-      if (orders.some((o) => isOpenScheduledOrder(o))) return key;
-      continue;
-    }
-    if (key === "completed") {
-      if (orders.some((o) => isTerminalCompletedStatus(o.status) && !isOpenScheduledOrder(o))) {
-        return key;
-      }
-      continue;
-    }
-    if (orders.some((o) => o.status === key && !isOpenScheduledOrder(o))) return key;
-  }
+  // Always open on Preparing unless a route `tab` param says otherwise.
   return DEFAULT_LIVE_TAB;
 }
 

@@ -1,6 +1,7 @@
 /**
  * Hydrate in-memory active-order state from /v1/orders so the floating
- * tracking pill survives navigation and app reloads.
+ * tracking pill + live progress shade survive navigation and app reloads.
+ * Includes food, person-ride, and parcel.
  */
 
 import { useEffect } from "react";
@@ -8,19 +9,33 @@ import { useQuery } from "@tanstack/react-query";
 import { orderService } from "@/services/order.service";
 import type { OrderSummary } from "@/services/order.service";
 import { useAuthStore } from "@/store/authStore";
-import { useOrderStore, type ActiveOrder, type OrderStatus } from "@/store/orderStore";
+import {
+  useOrderStore,
+  type ActiveOrder,
+  type ActiveOrderService,
+  type OrderStatus,
+} from "@/store/orderStore";
 import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
-import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
+import { isActivePersonRideOrder, isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import {
   getMyOrdersCachedAt,
   readSyncMyOrders,
   writeCachedMyOrders,
 } from "@/lib/myOrdersCache";
 
-function toActiveOrder(
-  order: import("@/services/order.service").OrderSummary,
-  existing?: ActiveOrder
-): ActiveOrder {
+export function resolveActiveOrderService(order: OrderSummary): ActiveOrderService {
+  const t = (order.orderType ?? "").trim().toLowerCase();
+  if (t === "person_ride" || t === "ride") return "ride";
+  if (t === "parcel") return "parcel";
+  if (t === "food") return "food";
+  if (isPersonRideOrderSummary(order)) return "ride";
+  const ref = (order.formattedOrderId ?? order.orderId ?? "").trim().toUpperCase();
+  if (/^GMP\d*/.test(ref)) return "ride";
+  if (/^GMX\d*/.test(ref) || /^GMPARCEL/i.test(ref)) return "parcel";
+  return "food";
+}
+
+function toActiveOrder(order: OrderSummary, existing?: ActiveOrder): ActiveOrder {
   const preservedEta =
     existing?.etaMinutes != null && existing.etaMinutes > 0 ? existing.etaMinutes : 0;
   return {
@@ -31,7 +46,13 @@ function toActiveOrder(
     storeId: order.merchantPublicStoreId ?? null,
     storeName: order.merchantPublicName ?? order.merchantName ?? null,
     placedAt: new Date(order.createdAt).getTime(),
+    serviceType: resolveActiveOrderService(order),
   };
+}
+
+function isTrackableActiveOrder(order: OrderSummary): boolean {
+  if (isPersonRideOrderSummary(order)) return isActivePersonRideOrder(order);
+  return isActiveOrderStatus(order.status);
 }
 
 export function useActiveOrdersHydration() {
@@ -59,21 +80,18 @@ export function useActiveOrdersHydration() {
   useEffect(() => {
     if (!orders) return;
 
-    const activeFood = orders.filter(
-      (o) => !isPersonRideOrderSummary(o) && isActiveOrderStatus(o.status)
-    );
+    const active = orders.filter(isTrackableActiveOrder);
     const orderById = new Map(orders.map((o) => [o.orderId, o]));
 
     const stored = useOrderStore.getState().activeOrders;
     for (const storedOrder of stored) {
       const fromApi = orderById.get(storedOrder.orderId);
-      // Keep freshly placed orders until the orders list includes them.
-      if (fromApi && !isActiveOrderStatus(fromApi.status)) {
+      if (fromApi && !isTrackableActiveOrder(fromApi)) {
         removeActiveOrder(storedOrder.orderId);
       }
     }
 
-    for (const order of activeFood) {
+    for (const order of active) {
       const existing = stored.find((o) => o.orderId === order.orderId);
       addActiveOrder(toActiveOrder(order, existing));
     }

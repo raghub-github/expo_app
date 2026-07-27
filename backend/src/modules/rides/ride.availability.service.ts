@@ -44,6 +44,8 @@ export type RideAvailabilityResult = {
   radiusKm: number;
   nearbyRiderCount: number;
   onDutyRiderCount: number;
+  /** Active catalog codes (for fare batch) — independent of nearby supply. */
+  catalogCodes: string[];
   options: RideAvailabilityOption[];
   riders: Array<{
     riderId: number;
@@ -304,10 +306,15 @@ export async function getNearbyRideSupply(input: {
     );
   }
 
+  const catalogCodes = catalogRows
+    .map((row) => row.code)
+    .filter((code) => code && code !== "travel");
+
   return {
     radiusKm,
     nearbyRiderCount: uniqueRiderIds.size,
     onDutyRiderCount: uniqueRiderIds.size,
+    catalogCodes,
     options,
     riders: mapRiders.map((r) => ({
       riderId: r.riderId,

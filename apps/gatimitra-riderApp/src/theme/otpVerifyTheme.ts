@@ -1,5 +1,5 @@
 import { colors } from "@/src/theme";
-import { LORA_BOLD } from "@/src/theme/headerFonts";
+import { LORA_BOLD, POPPINS_BOLD } from "@/src/theme/headerFonts";
 
 export const riderOtpVerifyTheme = {
   primary: colors.primary[600],
@@ -10,5 +10,5 @@ export const riderOtpVerifyTheme = {
   error: colors.error[600],
   titleFontFamily: LORA_BOLD,
   bodyFontFamily: LORA_BOLD,
-  digitFontFamily: LORA_BOLD,
+  digitFontFamily: POPPINS_BOLD,
 };

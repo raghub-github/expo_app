@@ -67,12 +67,6 @@ import {
   getMenuItemIdByAddonId,
   getMenuItemIdByImageId,
   getItemApprovalStatus,
-  createChangeRequest,
-  listChangeRequestsForItem,
-  listChangeRequests,
-  getChangeRequestById,
-  approveChangeRequest,
-  rejectChangeRequest,
   listModifierGroups,
   createModifierGroup,
   updateModifierGroup,
@@ -86,6 +80,18 @@ import {
   unlinkModifierGroupFromItem,
   getModifierGroupUsageCount,
 } from "./merchant-menu.service.js";
+import {
+  submitAddReviewRequest,
+  submitEditReviewRequest,
+  submitDeleteReviewRequest,
+  listReviewRequests,
+  listReviewRequestsForItem,
+  getReviewRequestById,
+  approveReviewRequest,
+  rejectReviewRequest,
+  mapLegacyRequestType,
+  type ReviewRequestStatus,
+} from "./merchant-menu-review.service.js";
 
 import {
   getAttributeDefinitionsByStoreType,
@@ -728,6 +734,42 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const access = await getStore(req, reply, req.params.storeId);
           if (!access) return;
           const role = req.auth?.role ?? "merchant";
+
+          // Merchants submit ADD review (no live row until approved). Agents/admins create live APPROVED items.
+          if (role === "merchant") {
+            try {
+              const created = await submitAddReviewRequest(access.storeIdNum, req.body as Record<string, unknown>, {
+                submitted_by: req.auth?.sub ?? "unknown",
+                submitted_by_role: "merchant",
+                source: "MERCHANT_APP",
+                client_ip: req.ip ?? null,
+              });
+              try {
+                await logStoreActivity({
+                  storeId: access.storeIdNum,
+                  section: "menu_item",
+                  action: "create",
+                  entityId: null,
+                  entityName: req.body.item_name,
+                  summary: `Merchant submitted ADD review for '${req.body.item_name}'`,
+                  actorType: "merchant",
+                  source: "merchant_app",
+                });
+              } catch {}
+              return reply.code(201).send({
+                pending_review: true,
+                review_request_id: created.review_request_id,
+                id: null,
+                item_id: null,
+              });
+            } catch (e: any) {
+              return reply.code(400).send({
+                error: e?.message ?? "add_review_failed",
+                message: e?.message ?? "Failed to submit add review",
+              });
+            }
+          }
+
           let created: { id: number; item_id: string };
           try {
             created = await createItem(access.storeIdNum, req.body, {
@@ -747,7 +789,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               action: "create",
               entityId: created?.id ?? null,
               entityName: req.body.item_name,
-              summary: `Merchant created item '${req.body.item_name}'`,
+              summary: `Agent created item '${req.body.item_name}'`,
               diff: {
                 attributes: req.body.attributes ?? null,
                 legacy: {
@@ -756,7 +798,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
                   cuisine_type: req.body.cuisine_type ?? null,
                 },
               },
-              actorType: "merchant",
+              actorType: "agent",
               source: "merchant_app",
             });
           } catch {}
@@ -1039,15 +1081,23 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               message: "Update requests are only for approved items. Edit the item directly.",
             });
           }
-          const created = await createChangeRequest(
+          const result = await submitEditReviewRequest(
             access.storeIdNum,
             id,
-            "UPDATE",
-            req.body.requested_payload ?? {},
-            { created_by: req.auth?.sub ?? "unknown", created_by_role: req.auth?.role ?? "merchant", reason: req.body.reason ?? null }
+            (req.body.requested_payload ?? {}) as Record<string, unknown>,
+            {
+              submitted_by: req.auth?.sub ?? "unknown",
+              submitted_by_role: req.auth?.role ?? "merchant",
+              source: "MERCHANT_APP",
+              client_ip: req.ip ?? null,
+              reason: req.body.reason ?? null,
+            }
           );
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "create", entityId: id, summary: `Merchant submitted update request for item #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
-          return reply.code(201).send(created);
+          if ("error" in result) {
+            return reply.code(400).send({ error: result.error });
+          }
+          try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "create", entityId: id, summary: `Merchant submitted EDIT review for item #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          return reply.code(201).send({ id: result.review_request_id, review_request_id: result.review_request_id });
         }
       );
 
@@ -1072,15 +1122,18 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               message: "Delete requests are only for approved items. Delete the item directly.",
             });
           }
-          const created = await createChangeRequest(
-            access.storeIdNum,
-            id,
-            "DELETE",
-            {},
-            { created_by: req.auth?.sub ?? "unknown", created_by_role: req.auth?.role ?? "merchant", reason: req.body.reason ?? null }
-          );
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "create", entityId: id, summary: `Merchant submitted delete request for item #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
-          return reply.code(201).send(created);
+          const result = await submitDeleteReviewRequest(access.storeIdNum, id, {
+            submitted_by: req.auth?.sub ?? "unknown",
+            submitted_by_role: req.auth?.role ?? "merchant",
+            source: "MERCHANT_APP",
+            client_ip: req.ip ?? null,
+            reason: req.body.reason ?? null,
+          });
+          if ("error" in result) {
+            return reply.code(400).send({ error: result.error });
+          }
+          try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "create", entityId: id, summary: `Merchant submitted DELETE review for item #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          return reply.code(201).send({ id: result.review_request_id, review_request_id: result.review_request_id });
         }
       );
 
@@ -1093,21 +1146,19 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!access) return;
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
-          const list = await listChangeRequestsForItem(id, access.storeIdNum);
-          return reply.send({ change_requests: list });
+          const list = await listReviewRequestsForItem(id, access.storeIdNum);
+          return reply.send({ change_requests: list, review_requests: list });
         }
       );
 
-      // Agent/Admin: list and manage change requests
+      // Agent/Admin: list and manage review requests (URL kept as /change-requests)
+      // Merchants may list their own store's pending reviews (for catalog badges / pending ADDs).
       protectedApp.get<{
         Querystring: { storeId?: string; status?: string; request_type?: string; limit?: string; offset?: string };
       }>(
         "/change-requests",
         async (req, reply) => {
           const role = req.auth?.role;
-          if (role !== "agent" && role !== "admin") {
-            return reply.code(403).send({ error: "agent_or_admin_required" });
-          }
           const storeId = (req.query as any).storeId;
           const status = (req.query as any).status as string | undefined;
           const request_type = (req.query as any).request_type as string | undefined;
@@ -1115,19 +1166,45 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const offset = Math.max(0, parseInt((req.query as any).offset ?? "0", 10) || 0);
           let storeIdNum: number | null = null;
           if (storeId) {
-            const { getSql } = await import("../../db/client.js");
-            const sql = getSql();
-            const rows = await sql`SELECT id FROM merchant_stores WHERE store_id = ${storeId} LIMIT 1`;
-            if (rows[0]) storeIdNum = Number((rows[0] as any).id);
+            if (role === "merchant") {
+              const access = await getStore(req, reply, storeId);
+              if (!access) return;
+              storeIdNum = access.storeIdNum;
+            } else if (role === "agent" || role === "admin") {
+              const { getSql } = await import("../../db/client.js");
+              const sql = getSql();
+              const rows = await sql`SELECT id FROM merchant_stores WHERE store_id = ${storeId} LIMIT 1`;
+              if (rows[0]) storeIdNum = Number((rows[0] as any).id);
+            } else {
+              return reply.code(403).send({ error: "forbidden" });
+            }
+          } else if (role !== "agent" && role !== "admin") {
+            return reply.code(400).send({ error: "storeId query required" });
           }
-          const { requests, total } = await listChangeRequests({
+          const mappedType = mapLegacyRequestType(request_type);
+          const mappedStatus: ReviewRequestStatus | undefined =
+            status === "PENDING" || status === "APPROVED" || status === "REJECTED" ? status : undefined;
+          const { requests, total } = await listReviewRequests({
             storeIdNum: storeIdNum ?? undefined,
-            status: status === "PENDING" || status === "APPROVED" || status === "REJECTED" || status === "CANCELLED" ? status : undefined,
-            request_type: request_type === "CREATE" || request_type === "UPDATE" || request_type === "DELETE" ? request_type : undefined,
+            status: mappedStatus,
+            request_type: mappedType ?? undefined,
             limit,
             offset,
           });
-          return reply.send({ change_requests: requests, total });
+          const change_requests = requests.map((r: any) => ({
+            ...r,
+            request_type:
+              r.request_type === "ADD" ? "CREATE" : r.request_type === "EDIT" ? "UPDATE" : r.request_type,
+            created_by: r.submitted_by,
+            created_by_role: r.submitted_by_role,
+            created_at: r.submitted_at ?? r.created_at,
+            reviewed_reason: r.rejection_reason,
+            requested_payload: r.add_payload ?? {},
+            current_snapshot: null,
+            changes: r.changes ?? [],
+            item_name: r.item_name ?? r.add_payload?.item_name ?? null,
+          }));
+          return reply.send({ change_requests, review_requests: requests, total });
         }
       );
 
@@ -1137,12 +1214,26 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const role = req.auth?.role;
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_id" });
-          const request = await getChangeRequestById(id, null);
+          const request = await getReviewRequestById(id, null);
           if (!request) return reply.code(404).send({ error: "request_not_found" });
           if (role !== "agent" && role !== "admin") {
             return reply.code(403).send({ error: "agent_or_admin_required" });
           }
-          return reply.send(request);
+          return reply.send({
+            ...request,
+            request_type:
+              request.request_type === "ADD"
+                ? "CREATE"
+                : request.request_type === "EDIT"
+                  ? "UPDATE"
+                  : request.request_type,
+            created_by: request.submitted_by,
+            created_by_role: request.submitted_by_role,
+            created_at: request.submitted_at ?? request.created_at,
+            reviewed_reason: request.rejection_reason,
+            requested_payload: request.add_payload ?? {},
+            current_snapshot: null,
+          });
         }
       );
 
@@ -1155,27 +1246,27 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           }
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_id" });
-          const result = await approveChangeRequest(id, {
+          const result = await approveReviewRequest(id, {
             reviewed_by: req.auth?.sub ?? "unknown",
             reviewed_by_role: role,
+            client_ip: req.ip ?? null,
           });
           if (!result.ok) {
             const code = result.error === "request_not_found" ? 404 : 400;
             return reply.code(code).send({ error: result.error ?? "approve_failed" });
           }
           try {
-            const storeIdForLog = (result as any).storeId ?? 0;
             await logStoreActivity({
-              storeId: storeIdForLog,
+              storeId: result.storeId ?? 0,
               section: "menu_item",
               action: "update",
-              entityId: id,
-              summary: `Agent approved change request #${id}`,
-              actorType: "merchant",
+              entityId: result.menu_item_id ?? id,
+              summary: `Agent approved menu review #${id}`,
+              actorType: "agent",
               source: "merchant_app",
             });
           } catch {}
-          return reply.send({ ok: true });
+          return reply.send({ ok: true, menu_item_id: result.menu_item_id ?? null });
         }
       );
 
@@ -1193,16 +1284,96 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           }
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_id" });
-          const ok = await rejectChangeRequest(id, {
+          const result = await rejectReviewRequest(id, {
             reviewed_by: req.auth?.sub ?? "unknown",
             reviewed_by_role: role,
-            reviewed_reason: req.body?.reviewed_reason ?? null,
+            rejection_reason: req.body?.reviewed_reason ?? null,
+            client_ip: req.ip ?? null,
           });
-          if (!ok) return reply.code(404).send({ error: "request_not_found_or_not_pending" });
-          try { await logStoreActivity({ storeId: 0, section: "menu_item", action: "update", entityId: id, summary: `Agent rejected change request #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          if (!result.ok) {
+            const code = result.error === "request_not_found" ? 404 : 400;
+            return reply.code(code).send({ error: result.error ?? "reject_failed" });
+          }
+          try {
+            await logStoreActivity({
+              storeId: 0,
+              section: "menu_item",
+              action: "update",
+              entityId: id,
+              summary: `Agent rejected menu review #${id}`,
+              actorType: "agent",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.send({ ok: true });
         }
       );
+
+      /** Attach image to a pending ADD review (does not touch live menu_item_images). */
+      protectedApp.post<{
+        Params: { id: string };
+        Querystring: { storeId: string };
+      }>("/change-requests/:id/images", async (req, reply) => {
+        const storeId = (req.query as any).storeId;
+        if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+        const access = await getStore(req, reply, storeId);
+        if (!access) return;
+        const reviewId = parseInt(req.params.id, 10);
+        if (Number.isNaN(reviewId)) return reply.code(400).send({ error: "invalid_id" });
+
+        const { getSql } = await import("../../db/client.js");
+        const sql = getSql();
+        const [row] = await sql`
+          SELECT id, add_payload, request_type::text, status::text
+          FROM merchant_menu_item_review_requests
+          WHERE id = ${reviewId} AND store_id = ${access.storeIdNum}
+        `;
+        if (!row) return reply.code(404).send({ error: "request_not_found" });
+        const r = row as any;
+        if (r.request_type !== "ADD" || r.status !== "PENDING") {
+          return reply.code(400).send({ error: "image_attach_only_for_pending_add" });
+        }
+
+        let uploadedKey: string | null = null;
+        try {
+          const data = await req.file();
+          if (!data) return reply.code(400).send({ error: "No file provided" });
+          const buffer = await data.toBuffer();
+          const dim = validateMenuItemSquareImage(buffer);
+          if (!dim.ok) {
+            return reply.code(400).send({ error: "invalid_image", message: dim.error });
+          }
+          const ext = (data.filename && /\.(webp|jpe?g|png|gif)$/i.exec(data.filename)?.[1]) || "jpg";
+          const fileId = randomUUID();
+          const draftItemId = `review_${reviewId}`;
+          const key = buildMenuItemImageKey(access.storeIdStr, draftItemId, fileId, ext);
+          const uploadResult = await uploadToR2(buffer, key, data.mimetype || "image/jpeg");
+          uploadedKey = uploadResult.key;
+          const imageUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`;
+
+          const payload = (r.add_payload ?? {}) as Record<string, unknown>;
+          const images = Array.isArray(payload.images) ? [...(payload.images as unknown[])] : [];
+          images.push({ image_url: imageUrl, r2_key: uploadedKey, is_primary: images.length === 0 });
+          const nextPayload = {
+            ...payload,
+            item_image_url: imageUrl,
+            images,
+          };
+          await sql`
+            UPDATE merchant_menu_item_review_requests
+            SET add_payload = ${JSON.stringify(nextPayload)}::jsonb, updated_at = NOW()
+            WHERE id = ${reviewId}
+          `;
+          return reply.code(201).send({ image_url: imageUrl, r2_key: uploadedKey, review_request_id: reviewId });
+        } catch (e: any) {
+          if (uploadedKey) {
+            try {
+              await deleteFromR2(uploadedKey);
+            } catch {}
+          }
+          return reply.code(500).send({ error: e?.message ?? "upload_failed" });
+        }
+      });
 
       const approvalPatchSchema = z.object({
         approval_status: z.enum(["APPROVED", "REJECTED"]),
@@ -1526,11 +1697,27 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               r2_key: uploadedKey,
               is_primary: true,
               format: ext,
+              // Merchant uploads stay PENDING + re-review; admin/agent apply live.
+              autoApprove: req.auth?.role !== "merchant",
+              moderated_by: req.auth?.role !== "merchant" ? (req.auth?.sub ?? null) : null,
             });
             if (req.auth?.role === "merchant" && req.auth?.sub) {
               await setItemPendingForReReview(itemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
             }
-            try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "create", entityId: itemId, summary: `Merchant uploaded image for item #${itemId}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "menu_item",
+                action: "create",
+                entityId: itemId,
+                summary:
+                  req.auth?.role !== "merchant"
+                    ? `Staff uploaded image for item #${itemId} (auto-approved)`
+                    : `Merchant uploaded image for item #${itemId}`,
+                actorType: req.auth?.role !== "merchant" ? "agent" : "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
             return reply.code(201).send({
               id: created.id,
               image_url: imageUrl,

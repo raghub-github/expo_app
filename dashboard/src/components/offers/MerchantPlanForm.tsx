@@ -13,7 +13,14 @@ interface MerchantPlanFormProps {
   planType: "MERCHANT" | "RIDER" | "CUSTOMER";
 }
 
-const BILLING_CYCLES = ["MONTHLY", "QUARTERLY", "YEARLY"] as const;
+const BILLING_CYCLES = [
+  { value: "MONTHLY", label: "Monthly" },
+  { value: "QUARTERLY", label: "Quarterly (3 months)" },
+  { value: "SEMI_YEARLY", label: "Semi-Yearly (6 months)" },
+  { value: "YEARLY", label: "Yearly" },
+] as const;
+
+type BillingCycleValue = (typeof BILLING_CYCLES)[number]["value"];
 
 export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planType }: MerchantPlanFormProps) {
   const createMutation = useCreateMerchantPlan();
@@ -25,7 +32,7 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
   const [gstPercent, setGstPercent] = useState("");
-  const [billingCycle, setBillingCycle] = useState<"MONTHLY" | "QUARTERLY" | "YEARLY">("MONTHLY");
+  const [billingCycle, setBillingCycle] = useState<BillingCycleValue>("MONTHLY");
   const [maxMenuItems, setMaxMenuItems] = useState("");
   const [maxCuisines, setMaxCuisines] = useState("");
   const [maxMenuCategories, setMaxMenuCategories] = useState("");
@@ -58,7 +65,11 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
       setDescription(editPlan.description ?? "");
       setPrice(String(editPlan.price));
       setGstPercent(editPlan.gstPercent != null ? String(editPlan.gstPercent) : "0");
-      setBillingCycle((editPlan.billingCycle as "MONTHLY" | "QUARTERLY" | "YEARLY") || "MONTHLY");
+      setBillingCycle(
+        (BILLING_CYCLES.some((c) => c.value === editPlan.billingCycle)
+          ? editPlan.billingCycle
+          : "MONTHLY") as BillingCycleValue
+      );
       setMaxMenuItems(editPlan.maxMenuItems != null ? String(editPlan.maxMenuItems) : "");
       setMaxCuisines(editPlan.maxCuisines != null ? String(editPlan.maxCuisines) : "");
       setMaxMenuCategories(editPlan.maxMenuCategories != null ? String(editPlan.maxMenuCategories) : "");
@@ -255,9 +266,15 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
                 </div>
                 <div>
                   <label className={labelCls}>Billing Cycle</label>
-                  <select value={billingCycle} onChange={(e) => setBillingCycle(e.target.value as "MONTHLY" | "QUARTERLY" | "YEARLY")} className={inputCls}>
+                  <select
+                    value={billingCycle}
+                    onChange={(e) => setBillingCycle(e.target.value as BillingCycleValue)}
+                    className={inputCls}
+                  >
                     {BILLING_CYCLES.map((c) => (
-                      <option key={c} value={c}>{c}</option>
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
                     ))}
                   </select>
                 </div>

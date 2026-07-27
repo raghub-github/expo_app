@@ -150,6 +150,10 @@ app.get("/", async () => ({
 await app.register(healthRoutes, { prefix: "/v1" });
 await app.register(attachmentsRoutes, { prefix: "/v1" });
 
+// Public DigiLocker return lives on onboarding routes:
+//   GET /v1/onboarding/digilocker-return  (config.skipAuth)
+// Do not re-register it here — duplicates break Fastify boot.
+
 // Public Razorpay checkout page (no auth) – used by customer app WebView.
 // Load checkout.js first, then open payment so the Razorpay modal (UPI/cards/wallets) actually appears.
 // Helmet global CSP blocks external scripts by default — override it here to allow Razorpay's CDN.
