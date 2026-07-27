@@ -810,6 +810,47 @@ export async function getStoreByIdForOrder(
  * Customer-facing surface status: operational gate + within operating hours.
  * Runs schedule tick so menu/detail match merchant app and partner portal.
  */
+export type StoreActiveRush = {
+  isActive: true;
+  endsAt: string;
+  remainingMinutes: number;
+  durationMinutes: number;
+};
+
+export async function getActiveRushForStoreInternalId(
+  storeInternalId: number
+): Promise<StoreActiveRush | null> {
+  if (!Number.isFinite(storeInternalId) || storeInternalId < 1) return null;
+  try {
+    const pg = getSql();
+    const rushRows = await pg`
+      SELECT duration_minutes, ends_at
+      FROM merchant_store_rush_windows
+      WHERE store_id = ${storeInternalId}
+        AND is_active = TRUE
+        AND ends_at > NOW()
+      ORDER BY started_at DESC
+      LIMIT 1
+    `;
+    const rw = rushRows[0] as
+      | { duration_minutes: number; ends_at: Date | string }
+      | undefined;
+    if (!rw) return null;
+    const endsAtMs = new Date(String(rw.ends_at)).getTime();
+    if (!Number.isFinite(endsAtMs)) return null;
+    const remainingMinutes = Math.max(0, Math.floor((endsAtMs - Date.now()) / 60000));
+    if (remainingMinutes <= 0) return null;
+    return {
+      isActive: true,
+      endsAt: new Date(endsAtMs).toISOString(),
+      remainingMinutes,
+      durationMinutes: Number(rw.duration_minutes) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function getStoreSurfaceLiveStatus(
   storeId: string,
   log?: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
@@ -818,6 +859,7 @@ export async function getStoreSurfaceLiveStatus(
   withinOperatingHours: boolean;
   nextOpenAt: string | null;
   nextCloseAt: string | null;
+  activeRush: StoreActiveRush | null;
 } | null> {
   const store = await getStoreByStoreId(storeId);
   if (!store) return null;
@@ -825,15 +867,19 @@ export async function getStoreSurfaceLiveStatus(
   if (!Number.isFinite(internalId) || internalId < 1) return null;
 
   const noopLog = log ?? { info: () => {}, error: () => {} };
-  const snapshot = await buildPartnerStoreStatusSnapshot(internalId, noopLog);
+  const [snapshot, sched, activeRush] = await Promise.all([
+    buildPartnerStoreStatusSnapshot(internalId, noopLog),
+    getScheduleTimesForStores([internalId]).then((m) => m.get(internalId)),
+    getActiveRushForStoreInternalId(internalId),
+  ]);
   if (!snapshot) return null;
 
-  const sched = (await getScheduleTimesForStores([internalId])).get(internalId);
   return {
     liveStatus: snapshot.surface_online ? "OPEN" : "CLOSED",
     withinOperatingHours: snapshot.within_operating_hours,
     nextOpenAt: sched?.nextOpenAt ?? null,
     nextCloseAt: sched?.nextCloseAt ?? null,
+    activeRush,
   };
 }
 

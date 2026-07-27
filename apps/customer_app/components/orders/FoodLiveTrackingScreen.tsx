@@ -13,6 +13,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useQueryClient } from "@tanstack/react-query";
+import { LiveTrackingStatusChip } from "@/components/orders/LiveTrackingStatusChip";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -335,9 +336,6 @@ export function FoodLiveTrackingScreen({
     dropLng: deliveryLng,
   });
 
-  const prevMapPhaseRef = useRef(mapPhase);
-  const prevHighlightDropRef = useRef(highlightDropZone);
-
   const pickupPoint = useMemo(
     () => ({ latitude: pickupLat, longitude: pickupLng }),
     [pickupLat, pickupLng]
@@ -354,6 +352,7 @@ export function FoodLiveTrackingScreen({
     connectorRoute,
     routeJoinPoint,
     hideRouteLine,
+    displayRider,
   } = useFoodDeliveryRouteProgress({
     phase: mapPhase,
     rider: riderPos,
@@ -364,6 +363,13 @@ export function FoodLiveTrackingScreen({
     riderHeading,
     hasRider,
   });
+
+  const mapRiderLat = displayRider?.latitude ?? riderLat;
+  const mapRiderLng = displayRider?.longitude ?? riderLng;
+
+  const prevMapPhaseRef = useRef(mapPhase);
+  const prevHighlightDropRef = useRef(highlightDropZone);
+  const prevHighlightPickupRef = useRef(highlightPickupZone);
 
   useEffect(() => {
     if (prevMapPhaseRef.current !== mapPhase) {
@@ -380,6 +386,13 @@ export function FoodLiveTrackingScreen({
   }, [highlightDropZone]);
 
   useEffect(() => {
+    if (highlightPickupZone && !prevHighlightPickupRef.current) {
+      setMapRefitNonce((n) => n + 1);
+    }
+    prevHighlightPickupRef.current = highlightPickupZone;
+  }, [highlightPickupZone]);
+
+  useEffect(() => {
     const t = setTimeout(() => setMapReady(true), 120);
     return () => clearTimeout(t);
   }, [order.orderId]);
@@ -390,8 +403,8 @@ export function FoodLiveTrackingScreen({
       pickupLng,
       dropLat: deliveryLat,
       dropLng: deliveryLng,
-      riderLat,
-      riderLng,
+      riderLat: mapRiderLat,
+      riderLng: mapRiderLng,
       riderHeading,
       fullRoute,
       remainingRoute,
@@ -406,15 +419,15 @@ export function FoodLiveTrackingScreen({
       geofenceProximityM: FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
       riderArrived,
       mapPhase,
-      mapPadding: { top: 52, bottom: 48, left: 32, right: 32 },
+      mapPadding: { top: 64, bottom: 64, left: 40, right: 40 },
     }),
     [
       pickupLat,
       pickupLng,
       deliveryLat,
       deliveryLng,
-      riderLat,
-      riderLng,
+      mapRiderLat,
+      mapRiderLng,
       riderHeading,
       fullRoute,
       remainingRoute,
@@ -681,6 +694,10 @@ export function FoodLiveTrackingScreen({
               </View>
             )}
           </View>
+          <LiveTrackingStatusChip
+            hasRiderFix={riderLat != null && riderLng != null}
+            style={styles.liveStatusChip}
+          />
           <TouchableOpacity
             style={[styles.mapControlBtn, styles.mapExpandBtn]}
             activeOpacity={0.85}
@@ -960,6 +977,13 @@ const styles = StyleSheet.create({
   },
   mapWrap: {
     position: "relative",
+  },
+  liveStatusChip: {
+    position: "absolute",
+    left: 12,
+    right: 56,
+    bottom: 16,
+    zIndex: 4,
   },
   mapSection: {
     height: MAP_HEIGHT,

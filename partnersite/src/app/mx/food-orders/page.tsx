@@ -53,6 +53,11 @@ import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
+import {
+  PARTNER_MANAGED_STORES_CHANGED,
+  readPartnerManagedStoreIds,
+} from '@/lib/partner-selected-store';
+import { fetchStoreById } from '@/lib/database';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
 import { merchantKeys } from '@/lib/query-keys';
 import { createClient } from '@/lib/supabase/client';
@@ -241,6 +246,8 @@ function OrdersPageContent() {
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [storeInternalId, setStoreInternalId] = useState<number | null>(null);
+  const [managedStoreIds, setManagedStoreIds] = useState<string[]>([]);
+  const [managedInternalIds, setManagedInternalIds] = useState<number[]>([]);
   // SSR-safe defaults only — reading sessionStorage/React Query in useState causes hydration mismatches.
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats>(DEFAULT_FOOD_ORDER_STATS);
@@ -464,6 +471,38 @@ function OrdersPageContent() {
   }, [searchParams]);
 
   useEffect(() => {
+    if (!storeId) {
+      setManagedStoreIds([]);
+      setManagedInternalIds([]);
+      return;
+    }
+    let cancelled = false;
+    const syncManaged = async () => {
+      const ids = readPartnerManagedStoreIds(storeId);
+      const unique = ids.length > 0 ? ids : [storeId];
+      if (cancelled) return;
+      setManagedStoreIds(unique);
+      const internals: number[] = [];
+      for (const sid of unique) {
+        try {
+          const s = await fetchStoreById(sid);
+          if (s?.id != null && Number.isFinite(Number(s.id))) internals.push(Number(s.id));
+        } catch {
+          /* skip */
+        }
+      }
+      if (!cancelled) setManagedInternalIds([...new Set(internals)]);
+    };
+    void syncManaged();
+    const onManaged = () => void syncManaged();
+    window.addEventListener(PARTNER_MANAGED_STORES_CHANGED, onManaged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PARTNER_MANAGED_STORES_CHANGED, onManaged);
+    };
+  }, [storeId]);
+
+  useEffect(() => {
     if (!storeId) return;
     setNotifyEnabled(readPartnerDeviceOrderAlerts(storeId).soundAlertsEnabled);
   }, [storeId]);
@@ -596,54 +635,63 @@ function OrdersPageContent() {
   }, [storeInternalId, storeId, fetchStoreStatus]);
 
   const fetchOrders = useCallback(async () => {
-    if (!storeId) return;
-    const cached = queryClient.getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(storeId));
+    const ids = managedStoreIds.length > 0 ? managedStoreIds : storeId ? [storeId] : [];
+    if (ids.length === 0) return;
+    const cacheKey = ids.join(',');
+    const cached = queryClient.getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(cacheKey));
     if (cached?.length) {
       setOrders(cached);
       setLoading(false);
     }
-    const url = `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200`;
-    const loadOnce = async () => {
+    const loadOnce = async (sid: string) => {
+      const url = `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=200`;
       const res = await fetch(url, { cache: 'no-store' });
       const data = await res.json();
-      return { res, data };
+      return { res, data, sid };
     };
     try {
-      let result: Awaited<ReturnType<typeof loadOnce>> | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          result = await loadOnce();
-          break;
-        } catch (err) {
-          const isLast = attempt >= 2;
-          if (isLast) throw err;
-          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      const batches = await Promise.all(
+        ids.map(async (sid) => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              return await loadOnce(sid);
+            } catch (err) {
+              if (attempt >= 2) throw err;
+              await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+            }
+          }
+          return null;
+        })
+      );
+      const merged: OrdersFoodRow[] = [];
+      const seen = new Set<number>();
+      for (const result of batches) {
+        if (!result) continue;
+        const { res, data } = result;
+        if (!res.ok) {
+          console.error('[FoodOrders] API error:', data.error);
+          continue;
+        }
+        if (!Array.isArray(data.orders)) continue;
+        for (const row of data.orders as OrdersFoodRow[]) {
+          const key = Number(row.order_id ?? row.id);
+          if (!Number.isFinite(key) || seen.has(key)) continue;
+          seen.add(key);
+          merged.push(row);
         }
       }
-      if (!result) return;
-      const { res, data } = result;
-      if (res.ok) {
-        if (Array.isArray(data.orders)) {
-          setOrders(data.orders);
-          queryClient.setQueryData(merchantKeys.foodOrders(storeId), data.orders);
-        } else {
-          console.warn('[FoodOrders] Invalid response format:', data);
-          setOrders([]);
-          queryClient.setQueryData(merchantKeys.foodOrders(storeId), []);
-        }
-      } else {
-        console.error('[FoodOrders] API error:', data.error);
-        toast.error(data.error || 'Failed to load orders');
-        setOrders([]);
-      }
+      merged.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      setOrders(merged);
+      queryClient.setQueryData(merchantKeys.foodOrders(cacheKey), merged);
     } catch (err) {
-      console.error('[FoodOrders] Fetch error:', err);
+      console.error('[FoodOrders] fetch failed:', err);
       toast.error('Failed to load orders');
-      setOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [storeId, queryClient]);
+  }, [managedStoreIds, storeId, queryClient]);
 
   const fetchStats = useCallback(async () => {
     if (!storeId) return;
@@ -676,7 +724,7 @@ function OrdersPageContent() {
     ).catch(() => {});
     void fetchOrders();
     void fetchStats();
-  }, [fetchOrders, fetchStats, storeId]);
+  }, [fetchOrders, fetchStats, storeId, managedStoreIds.join(',')]);
 
   useEffect(() => {
     const onRefresh = () => {
@@ -684,7 +732,11 @@ function OrdersPageContent() {
       void fetchStats();
     };
     window.addEventListener('partner-food-orders-refresh', onRefresh);
-    return () => window.removeEventListener('partner-food-orders-refresh', onRefresh);
+    window.addEventListener(PARTNER_MANAGED_STORES_CHANGED, onRefresh);
+    return () => {
+      window.removeEventListener('partner-food-orders-refresh', onRefresh);
+      window.removeEventListener(PARTNER_MANAGED_STORES_CHANGED, onRefresh);
+    };
   }, [fetchOrders, fetchStats]);
 
   useEffect(() => {
@@ -792,22 +844,31 @@ function OrdersPageContent() {
 
   /** Source of truth is orders_core; refetch when core or kitchen row changes. */
   useEffect(() => {
-    if (!storeInternalId || !storeId) return;
+    const ids = managedInternalIds.length > 0
+      ? managedInternalIds
+      : storeInternalId
+        ? [storeInternalId]
+        : [];
+    if (ids.length === 0 || !storeId) return;
     const supabase = createClient();
     const reload = () => {
       void fetchOrders();
       void fetchStats();
       dispatchPartnerNotificationsChanged();
     };
+    const filter =
+      ids.length === 1
+        ? `merchant_store_id=eq.${ids[0]}`
+        : `merchant_store_id=in.(${ids.join(',')})`;
     const ch = supabase
-      .channel(`partner_store_orders:${storeInternalId}`)
+      .channel(`partner_store_orders:${ids.join('_')}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'orders_core',
-          filter: `merchant_store_id=eq.${storeInternalId}`,
+          filter,
         },
         reload
       )
@@ -817,7 +878,7 @@ function OrdersPageContent() {
           event: '*',
           schema: 'public',
           table: 'orders_food',
-          filter: `merchant_store_id=eq.${storeInternalId}`,
+          filter,
         },
         reload
       )
@@ -825,7 +886,7 @@ function OrdersPageContent() {
     return () => {
       ch.unsubscribe();
     };
-  }, [storeInternalId, storeId, fetchOrders, fetchStats]);
+  }, [managedInternalIds.join(','), storeInternalId, storeId, fetchOrders, fetchStats]);
 
   const fetchOtp = useCallback(
     async (orderId: number) => {

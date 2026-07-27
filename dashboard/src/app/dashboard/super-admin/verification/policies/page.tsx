@@ -258,7 +258,13 @@ export default function VerificationPolicyCenterPage() {
                           <button
                             key={m}
                             disabled={busy !== null || m === p.mode}
-                            onClick={() => patch({ kind: "single", policyId: p.id, mode: m })}
+                            onClick={() =>
+                              patch({
+                                kind: "single",
+                                policyId: Number(p.id),
+                                mode: m,
+                              })
+                            }
                             className={
                               "px-2 py-1 text-xs " +
                               (m === p.mode
@@ -317,7 +323,13 @@ export default function VerificationPolicyCenterPage() {
                         <button
                           key={st}
                           disabled={busy !== null || st === s.state}
-                          onClick={() => patch({ kind: "switch", switchId: s.id, state: st })}
+                          onClick={() =>
+                            patch({
+                              kind: "switch",
+                              switchId: Number(s.id),
+                              state: st,
+                            })
+                          }
                           className={
                             "px-2 py-1 text-xs " +
                             (st === s.state

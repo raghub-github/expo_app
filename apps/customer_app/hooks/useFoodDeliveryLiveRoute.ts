@@ -11,9 +11,12 @@ import {
   type MapLatLng,
 } from "@/lib/map-route-utils";
 import type { FoodDeliveryMapPhase } from "@/lib/food-delivery-map-phase";
+import {
+  analyzeRiderOnRoute,
+  rerouteDebounceMs,
+  trackDebug,
+} from "@gatimitra/map-tracking-engine";
 
-const ROUTE_REFETCH_METERS = 40;
-const ROUTE_MAX_AGE_MS = 12_000;
 /** Bike profile for food delivery partner routes (not order id). */
 const FOOD_DELIVERY_ROUTE_VEHICLE = "bike";
 
@@ -64,25 +67,26 @@ export function useFoodDeliveryLiveRoute(args: {
   orderId: string;
   /** Skip routing API until a delivery partner is assigned. */
   enabled?: boolean;
+  riderHeading?: number | null;
 }): LiveRouteState {
-  const { phase, rider, pickup, drop, enabled = true } = args;
+  const { phase, rider, pickup, drop, orderId, enabled = true, riderHeading } = args;
   const [route, setRoute] = useState<CalculatedRoute | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const lastOriginRef = useRef<MapLatLng | null>(null);
-  const lastFetchAtRef = useRef(0);
   const hasRouteRef = useRef(false);
   const requestIdRef = useRef(0);
+  const rerouteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastDestKeyRef = useRef<string>("");
 
-  const fromLat =
-    phase === "rider_to_drop"
-      ? (rider?.latitude ?? pickup.latitude)
-      : (rider?.latitude ?? pickup.latitude);
-  const fromLng =
-    phase === "rider_to_drop"
-      ? (rider?.longitude ?? pickup.longitude)
-      : (rider?.longitude ?? pickup.longitude);
+  useEffect(() => {
+    hasRouteRef.current = false;
+    lastDestKeyRef.current = "";
+    setRoute(null);
+  }, [orderId]);
+
   const toLat = phase === "rider_to_drop" ? drop.latitude : pickup.latitude;
   const toLng = phase === "rider_to_drop" ? drop.longitude : pickup.longitude;
+
+  const destKey = `${phase}|${toLat.toFixed(5)},${toLng.toFixed(5)}`;
 
   useEffect(() => {
     if (!enabled) {
@@ -92,17 +96,17 @@ export function useFoodDeliveryLiveRoute(args: {
       return;
     }
 
-    const from: MapLatLng = { latitude: fromLat, longitude: fromLng };
+    // Wait for a real rider fix — never build pickup→pickup placeholder routes.
+    if (!rider) return;
+
+    const destChanged = lastDestKeyRef.current !== destKey;
+    lastDestKeyRef.current = destKey;
+
+    // Initial route or destination / phase change — not every GPS tick.
+    if (hasRouteRef.current && !destChanged) return;
+
+    const from: MapLatLng = { latitude: rider.latitude, longitude: rider.longitude };
     const to: MapLatLng = { latitude: toLat, longitude: toLng };
-
-    const now = Date.now();
-    const movedEnough =
-      lastOriginRef.current == null ||
-      haversineMeters(from.latitude, from.longitude, lastOriginRef.current.latitude, lastOriginRef.current.longitude) >=
-        ROUTE_REFETCH_METERS;
-    const stale = now - lastFetchAtRef.current >= ROUTE_MAX_AGE_MS;
-
-    if (!movedEnough && !stale && hasRouteRef.current) return;
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -111,19 +115,83 @@ export function useFoodDeliveryLiveRoute(args: {
     void (async () => {
       let next =
         (await getCalculatedRouteCoordinates([from, to], FOOD_DELIVERY_ROUTE_VEHICLE, {
-          skipCache: stale,
-        })) ?? (await fetchBackendRouteFallback(from, to, stale));
+          skipCache: destChanged,
+        })) ?? (await fetchBackendRouteFallback(from, to, destChanged));
 
       if (requestIdRef.current !== requestId) return;
       if (next) {
         setRoute(next);
         hasRouteRef.current = true;
-        lastOriginRef.current = from;
-        lastFetchAtRef.current = Date.now();
+        trackDebug("route_generated", {
+          orderId,
+          phase,
+          points: next.coordinates.length,
+          distanceKm: next.distanceKm,
+        });
       }
       setIsRefreshing(false);
     })();
-  }, [fromLat, fromLng, toLat, toLng, phase, enabled]);
+  }, [rider?.latitude, rider?.longitude, toLat, toLng, phase, enabled, destKey, orderId]);
+
+  // Off-route → debounced reroute only (no per-tick route API).
+  useEffect(() => {
+    if (!enabled || !rider || !route?.coordinates?.length) return;
+
+    const deviation = analyzeRiderOnRoute(route.coordinates, {
+      latitude: rider.latitude,
+      longitude: rider.longitude,
+      headingDeg: riderHeading ?? null,
+    });
+    if (!deviation?.shouldReroute) return;
+
+    trackDebug("off_route_detected", {
+      orderId,
+      offRouteM: Math.round(deviation.offRouteM),
+      wrongWay: deviation.wrongWay,
+    });
+
+    if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
+    const debounceMs = rerouteDebounceMs(deviation);
+    trackDebug("rerouting_started", { orderId, debounceMs });
+
+    rerouteTimerRef.current = setTimeout(() => {
+      const from: MapLatLng = { latitude: rider.latitude, longitude: rider.longitude };
+      const to: MapLatLng = { latitude: toLat, longitude: toLng };
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      setIsRefreshing(true);
+      void (async () => {
+        const next =
+          (await getCalculatedRouteCoordinates([from, to], FOOD_DELIVERY_ROUTE_VEHICLE, {
+            skipCache: true,
+          })) ?? (await fetchBackendRouteFallback(from, to, true));
+        if (requestIdRef.current !== requestId) return;
+        if (next) {
+          setRoute(next);
+          hasRouteRef.current = true;
+          trackDebug("rerouting_completed", {
+            orderId,
+            points: next.coordinates.length,
+            distanceKm: next.distanceKm,
+          });
+        }
+        setIsRefreshing(false);
+      })();
+    }, debounceMs);
+
+    return () => {
+      if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
+    };
+  }, [
+    enabled,
+    rider?.latitude,
+    rider?.longitude,
+    riderHeading,
+    route?.coordinates,
+    toLat,
+    toLng,
+    orderId,
+  ]);
 
   const coordinates = route?.coordinates ?? [];
   const remainingCoordinates = useMemo(
@@ -131,16 +199,31 @@ export function useFoodDeliveryLiveRoute(args: {
     [coordinates, rider]
   );
 
-  const distanceM =
-    route?.distanceKm != null && Number.isFinite(route.distanceKm)
-      ? Math.round(route.distanceKm * 1000)
-      : null;
+  // Prefer live remaining distance along geometry (no new route call).
+  const liveRemainingM = useMemo(() => {
+    if (remainingCoordinates.length >= 2) {
+      let sum = 0;
+      for (let i = 1; i < remainingCoordinates.length; i++) {
+        const a = remainingCoordinates[i - 1]!;
+        const b = remainingCoordinates[i]!;
+        sum += haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude);
+      }
+      return Math.round(sum);
+    }
+    if (route?.distanceKm != null && Number.isFinite(route.distanceKm)) {
+      return Math.round(route.distanceKm * 1000);
+    }
+    return null;
+  }, [remainingCoordinates, route?.distanceKm]);
 
   return {
     coordinates,
     remainingCoordinates,
-    distanceM,
-    etaMinutes: route?.etaMinutes ?? null,
+    distanceM: liveRemainingM,
+    etaMinutes:
+      liveRemainingM != null
+        ? Math.max(1, Math.round(liveRemainingM / 6.1 / 60))
+        : (route?.etaMinutes ?? null),
     isRefreshing,
   };
 }

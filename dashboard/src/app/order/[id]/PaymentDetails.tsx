@@ -40,6 +40,9 @@ interface OrderRefundForDisplay {
   /** Executor state — decides whether money actually moved. */
   executionStatus?: string | null;
   failureReason?: string | null;
+  /** Razorpay refund id (rfnd_…) — preferred over ordinal labels. */
+  razorpayRefundId?: string | null;
+  pgRefundId?: string | null;
   initiatedByEmail: string | null;
   createdAt: string;
 }
@@ -52,6 +55,8 @@ interface OrderRecoveryRecordForDisplay {
   reason: string | null;
   amount: number;
   impact: 'debit' | 'credit' | 'info';
+  /** Whether the debit was partial or full. */
+  debitScope?: 'partial' | 'full' | null;
   status: string | null;
   createdAt: string | null;
 }
@@ -139,6 +144,24 @@ function impactBadge(impact: 'debit' | 'credit' | 'info'): {
   return { label: 'No credit', className: 'bg-slate-100 text-slate-600' };
 }
 
+function refundGatewayId(r: OrderRefundForDisplay): string | null {
+  const id = (r.razorpayRefundId ?? r.pgRefundId ?? '').trim();
+  return id || null;
+}
+
+function debitScopeBadge(scope: 'partial' | 'full' | null | undefined): {
+  label: string;
+  className: string;
+} | null {
+  if (scope === 'partial') {
+    return { label: 'Partial', className: 'bg-amber-100 text-amber-800' };
+  }
+  if (scope === 'full') {
+    return { label: 'Full', className: 'bg-indigo-100 text-indigo-800' };
+  }
+  return null;
+}
+
 function PaymentDetailsModal({
   isOpen,
   onClose,
@@ -164,13 +187,20 @@ function PaymentDetailsModal({
 
   if (!isOpen) return null;
 
+  const settledRefunds = orderRefunds.filter(isRefundSettled);
   const totalAmount = summary.totalAmount ?? records.reduce((sum, r) => sum + (r.amount ?? 0), 0);
   const totalDeliveryFee =
     summary.deliveryFee ?? records.reduce((sum, r) => sum + (r.deliveryFee ?? 0), 0);
   const totalGatiCash =
     summary.gatiCashUsed ??
     records.reduce((sum, r) => sum + (r.gatiCashUsed ?? 0), 0);
-  const totalRefundAmount = orderRefunds.reduce((sum, r) => sum + Number(r.refundAmount) || 0, 0);
+  const totalRefundAmount = settledRefunds.reduce(
+    (sum, r) => sum + (Number(r.refundAmount) || 0),
+    0
+  );
+  const receivedCount = records.length;
+  const refundTxnCount = settledRefunds.length;
+  const totalTransactions = receivedCount + refundTxnCount;
   const refundedCount = records.filter((r) => r.refunded || r.partialRefunded).length;
   const showGatiCash = totalGatiCash > 0;
   const totalRiderPenalty = recoveryRecords
@@ -254,6 +284,11 @@ function PaymentDetailsModal({
                     : ctc != null && Number.isFinite(ctc)
                       ? Math.round((Number(ctc) - (gati ?? 0)) * 100) / 100
                       : null;
+                const refundedLabel = record.partialRefunded
+                  ? 'Partial'
+                  : record.refunded
+                    ? 'Yes'
+                    : '—';
                 return (
                 <tr
                   key={`${record.paymentId}-${index}`}
@@ -267,7 +302,9 @@ function PaymentDetailsModal({
                   <td className={TD}>
                     <span
                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                        record.paymentStatus.toLowerCase().includes('refund')
+                        record.paymentStatus.toLowerCase().includes('refund') ||
+                        record.refunded ||
+                        record.partialRefunded
                           ? 'bg-red-100 text-red-800'
                           : 'bg-emerald-100 text-emerald-800'
                       }`}
@@ -290,8 +327,26 @@ function PaymentDetailsModal({
                   <td className={`${TD} font-mono`}>
                     {formatPlain(record.pgTransactionId ?? record.transactionId)}
                   </td>
-                  <td className={TD}>{record.refunded ? 'Yes' : '—'}</td>
-                  <td className={`${TD} tabular-nums`}>{formatNum(record.partiallyRefundedAmount)}</td>
+                  <td className={TD}>
+                    {refundedLabel === '—' ? (
+                      '—'
+                    ) : (
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                          record.partialRefunded
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-red-100 text-red-800'
+                        }`}
+                      >
+                        {refundedLabel}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`${TD} tabular-nums font-medium ${record.partialRefunded ? 'text-red-700' : ''}`}>
+                    {record.partialRefunded
+                      ? formatNum(record.partiallyRefundedAmount)
+                      : '—'}
+                  </td>
                 </tr>
                 );
               })}
@@ -317,7 +372,11 @@ function PaymentDetailsModal({
           >
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <p className="text-[11px] font-medium text-gray-600">Total Transactions</p>
-              <p className="text-lg font-bold text-gray-900 mt-1">{records.length}</p>
+              <p className="text-lg font-bold text-gray-900 mt-1">{totalTransactions}</p>
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                Received {receivedCount}
+                {refundTxnCount > 0 ? ` · Refund ${refundTxnCount}` : ''}
+              </p>
             </div>
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <p className="text-[11px] font-medium text-gray-600">Total amount (CTC)</p>
@@ -338,8 +397,19 @@ function PaymentDetailsModal({
               </div>
             ) : null}
             <div className="bg-red-50 p-3 rounded-md border border-red-200">
-              <p className="text-[11px] font-medium text-red-600">Refunded Items</p>
-              <p className="text-lg font-bold text-red-900 mt-1">{refundedCount}</p>
+              <p className="text-[11px] font-medium text-red-600">
+                {refundTxnCount > 0 ? 'Refunded amount' : 'Refunded Items'}
+              </p>
+              <p className="text-lg font-bold text-red-900 mt-1">
+                {refundTxnCount > 0
+                  ? formatCurrency(totalRefundAmount)
+                  : refundedCount}
+              </p>
+              {refundTxnCount > 0 ? (
+                <p className="mt-0.5 text-[10px] text-red-600/80">
+                  {refundTxnCount} refund{refundTxnCount === 1 ? '' : 's'}
+                </p>
+              ) : null}
             </div>
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <p className="text-[11px] font-medium text-gray-600">Delivery charges</p>
@@ -357,10 +427,10 @@ function PaymentDetailsModal({
               <>
                 <h3 className="text-sm font-semibold text-slate-800 mb-2">Refund records</h3>
                 <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
-                  <table className="w-full min-w-[720px] border-collapse">
+                  <table className="w-full min-w-[820px] border-collapse">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className={TH}>#</th>
+                        <th className={TH}>Refund ID</th>
                         <th className={TH}>Reason</th>
                         <th className={TH}>Amount</th>
                         <th className={TH}>Status</th>
@@ -371,10 +441,11 @@ function PaymentDetailsModal({
                     <tbody className="bg-white divide-y divide-gray-200">
                       {orderRefunds.map((r, index) => {
                         const amt = Number(r.refundAmount);
+                        const gatewayId = refundGatewayId(r);
                         return (
                           <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                            <td className={`${TD} font-semibold text-red-700`}>
-                              Refund #{index + 1}
+                            <td className={`${TD} font-mono font-semibold text-red-700`}>
+                              {gatewayId ?? `Refund #${index + 1}`}
                             </td>
                             <td className={TD}>{formatPlain(r.refundReason)}</td>
                             <td className={`${TD} tabular-nums font-semibold text-red-700`}>
@@ -418,13 +489,14 @@ function PaymentDetailsModal({
                   Penalty &amp; recovery records
                 </h3>
                 <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
-                  <table className="w-full min-w-[880px] border-collapse">
+                  <table className="w-full min-w-[960px] border-collapse">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className={TH}>Charged To</th>
                         <th className={TH}>Type</th>
                         <th className={TH}>Reason</th>
                         <th className={TH}>Amount</th>
+                        <th className={TH}>Debit Scope</th>
                         <th className={TH}>Wallet Impact</th>
                         <th className={TH}>Status</th>
                         <th className={TH}>Date</th>
@@ -439,6 +511,7 @@ function PaymentDetailsModal({
                             : rec.impact === 'debit'
                               ? 'text-red-700'
                               : 'text-slate-600';
+                        const scope = debitScopeBadge(rec.debitScope);
                         return (
                           <tr key={rec.id} className="hover:bg-gray-50 transition-colors">
                             <td className={`${TD} font-medium`}>
@@ -456,6 +529,17 @@ function PaymentDetailsModal({
                             <td className={TD}>{formatPlain(rec.reason)}</td>
                             <td className={`${TD} tabular-nums font-semibold ${amountClass}`}>
                               {formatSignedCurrency(rec.amount, rec.impact)}
+                            </td>
+                            <td className={TD}>
+                              {scope ? (
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${scope.className}`}
+                                >
+                                  {scope.label}
+                                </span>
+                              ) : (
+                                '—'
+                              )}
                             </td>
                             <td className={TD}>
                               <span
@@ -617,10 +701,32 @@ export default function PaymentDetails({
         formatPaymentInstrumentSource(order.paymentMethod) ??
         (paymentMode === 'Cash' ? 'Cash' : null);
 
-      const rowDeliveryFee = delivery.waived ? 0 : delivery.amount;
+      const rowDeliveryFee = delivery.waived
+        ? 0
+        : delivery.amount != null
+          ? delivery.amount
+          : null;
       const gatiForRows = paymentDetail.gatiCashUsed ?? null;
 
-      // Keep table CTM / delivery fee / cashin in sync with summary cards.
+      const refundAmtResolved =
+        paymentDetail.refundAmount != null && paymentDetail.refundAmount > 0
+          ? paymentDetail.refundAmount
+          : hasRefundRecords
+            ? totalRefundFromRefunds
+            : null;
+      const isPartialResolved =
+        Boolean(paymentDetail.partialRefunded) ||
+        (refundAmtResolved != null &&
+          totalCtc != null &&
+          refundAmtResolved > 0 &&
+          refundAmtResolved < totalCtc - 0.01);
+      const isFullRefundResolved =
+        (Boolean(isRefunded) || (refundAmtResolved != null && refundAmtResolved > 0)) &&
+        !isPartialResolved &&
+        refundAmtResolved != null &&
+        refundAmtResolved > 0;
+
+      // Keep table CTM / delivery fee / cashin / refund flags in sync with summary cards.
       const records = paymentDetail.records.map((r) => {
         const ctc = r.ctc ?? r.amount ?? totalCtc;
         const gati = r.gatiCashUsed ?? gatiForRows;
@@ -630,6 +736,10 @@ export default function PaymentDetails({
             : ctc != null && Number.isFinite(ctc)
               ? Math.round((Number(ctc) - (gati != null && gati > 0 ? gati : 0)) * 100) / 100
               : null;
+        const rowRefundAmt =
+          refundAmtResolved != null && refundAmtResolved > 0
+            ? refundAmtResolved
+            : r.partiallyRefundedAmount;
         return {
           ...r,
           ctm: totalCtm,
@@ -640,6 +750,9 @@ export default function PaymentDetails({
           cashin,
           ctc,
           pgTransactionId: r.pgTransactionId ?? r.transactionId,
+          refunded: isFullRefundResolved || (r.refunded && !isPartialResolved),
+          partialRefunded: isPartialResolved || Boolean(r.partialRefunded),
+          partiallyRefundedAmount: isPartialResolved ? rowRefundAmt : null,
         };
       });
 
@@ -655,11 +768,9 @@ export default function PaymentDetails({
         deliveryFeeWaived: delivery.waived,
         source,
         paymentMode,
-        partialRefunded: paymentDetail.partialRefunded,
-        refundAmount:
-          paymentDetail.refundAmount ??
-          (hasRefundRecords ? totalRefundFromRefunds : null),
-        isRefunded,
+        partialRefunded: isPartialResolved,
+        refundAmount: refundAmtResolved,
+        isRefunded: Boolean(isRefunded) || isFullRefundResolved || isPartialResolved,
         records,
       };
     }

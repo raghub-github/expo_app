@@ -22,23 +22,34 @@ import {
   adaptBankAccount,
   adaptCin,
   adaptDigilockerCreate,
+  adaptAadhaarMasking,
   adaptDrivingLicence,
   adaptGstin,
   adaptIfsc,
   adaptPan,
   adaptPassport,
   adaptReversePennyDropCreate,
+  adaptUpiPennyDrop,
   adaptVehicleRc,
 } from "./cashfree/adapters.js";
 import { CashfreeError, isRetryableCategory } from "./cashfree/errors.js";
-import { createRequest, newVerificationId, persistOutcome, appendEvent } from "./history.js";
+import {
+  createRequest,
+  newVerificationId,
+  persistOutcome,
+  appendEvent,
+  applyAsyncTerminalOutcome,
+} from "./history.js";
 import { resolveEffectivePolicy } from "./policy/engine.js";
 import type {
   NormalizedVerification,
   VerificationDocumentKind,
   VerificationSubjectKind,
   EffectivePolicy,
+  VerificationStatus,
 } from "./types.js";
+import { getSql } from "../../db/client.js";
+import { RIDER_DIGILOCKER_HTTPS_RETURN } from "../../lib/rider-digilocker-return-html.js";
 
 export type SubmitCommonArgs = {
   subjectType: VerificationSubjectKind;
@@ -47,6 +58,11 @@ export type SubmitCommonArgs = {
   merchantDocumentId?: number | null;
   createdBy?: number | null;
   subjectFacts?: Record<string, unknown>;
+  /**
+   * Agent dashboard electronic verify: persist provider audit trail but do NOT
+   * flip rider/merchant document rows to verified until an agent explicitly approves.
+   */
+  deferProjection?: boolean;
 };
 
 export type SubmitOutcome =
@@ -107,30 +123,49 @@ async function runProviderCall(
   // 4. Call provider, adapt, persist.
   try {
     const normalized = await provider(verificationId);
-    await persistOutcome(requestId, normalized);
+
+    // Cashfree may already have debited — never turn a post-provider DB glitch
+    // into a 500 that blocks the merchant UI.
+    try {
+      await persistOutcome(requestId, normalized, {
+        deferProjection: !!args.deferProjection,
+      });
+    } catch (persistErr) {
+      console.error(
+        "[verification] persistOutcome failed after provider success:",
+        persistErr instanceof Error ? persistErr.message : persistErr,
+        persistErr instanceof Error ? persistErr.stack : "",
+      );
+    }
 
     // 5. Auto-approve gating.
-    if (
-      normalized.status === "verified" &&
-      policy.confidenceThreshold != null &&
-      normalized.confidence != null &&
-      normalized.confidence < policy.confidenceThreshold
-    ) {
-      // Confidence below threshold — flip to manual review.
-      await appendEvent({
-        requestId, eventKind: "manual_review_queued",
-        fromStatus: "verified", toStatus: "manual_review", actorType: "system",
-        details: { reason: "confidence_below_threshold", threshold: policy.confidenceThreshold, actual: normalized.confidence },
-      });
-      normalized.status = "manual_review";
-    }
-    if (normalized.status === "verified" && !policy.autoApprove) {
-      await appendEvent({
-        requestId, eventKind: "manual_review_queued",
-        fromStatus: "verified", toStatus: "manual_review", actorType: "system",
-        details: { reason: "policy_requires_review" },
-      });
-      normalized.status = "manual_review";
+    try {
+      if (
+        normalized.status === "verified" &&
+        policy.confidenceThreshold != null &&
+        normalized.confidence != null &&
+        normalized.confidence < policy.confidenceThreshold
+      ) {
+        await appendEvent({
+          requestId, eventKind: "manual_review_queued",
+          fromStatus: "verified", toStatus: "manual_review", actorType: "system",
+          details: { reason: "confidence_below_threshold", threshold: policy.confidenceThreshold, actual: normalized.confidence },
+        });
+        normalized.status = "manual_review";
+      }
+      if (normalized.status === "verified" && !policy.autoApprove) {
+        await appendEvent({
+          requestId, eventKind: "manual_review_queued",
+          fromStatus: "verified", toStatus: "manual_review", actorType: "system",
+          details: { reason: "policy_requires_review" },
+        });
+        normalized.status = "manual_review";
+      }
+    } catch (gateErr) {
+      console.error(
+        "[verification] auto-approve gating failed:",
+        gateErr instanceof Error ? gateErr.message : gateErr,
+      );
     }
 
     return { kind: "auto", result: normalized, requestId, policy };
@@ -142,22 +177,29 @@ async function runProviderCall(
         e.category === "duplicate" ? "duplicate" :
         e.category === "upstream_failed" ? "rejected" :
         "failed";
-      await appendEvent({
-        requestId,
-        eventKind: "provider_response",
-        fromStatus: "initiated",
-        toStatus: status,
-        actorType: "provider",
-        details: { category: e.category, code: e.cfCode, message: e.message },
-      });
-      await persistOutcome(requestId, {
-        verificationId, attemptNumber: 1, provider: "cashfree",
-        providerReference: null, subjectType: args.subjectType, subjectId: args.subjectId,
-        documentKind: docKind, status,
-        statusReason: `${e.category}: ${e.message}`, confidence: null, businessIdentifier: null,
-        verifiedData: {}, rawRequest: {}, rawResponse: e.body ?? { error: e.message },
-        responseHeaders: {}, httpStatus: e.status ?? null, durationMs: null, providerArtifacts: [],
-      });
+      try {
+        await appendEvent({
+          requestId,
+          eventKind: "provider_response",
+          fromStatus: "initiated",
+          toStatus: status,
+          actorType: "provider",
+          details: { category: e.category, code: e.cfCode, message: e.message },
+        });
+        await persistOutcome(requestId, {
+          verificationId, attemptNumber: 1, provider: "cashfree",
+          providerReference: null, subjectType: args.subjectType, subjectId: args.subjectId,
+          documentKind: docKind, status,
+          statusReason: `${e.category}: ${e.message}`, confidence: null, businessIdentifier: null,
+          verifiedData: {}, rawRequest: {}, rawResponse: e.body ?? { error: e.message },
+          responseHeaders: {}, httpStatus: e.status ?? null, durationMs: null, providerArtifacts: [],
+        }, { deferProjection: !!args.deferProjection });
+      } catch (persistErr) {
+        console.error(
+          "[verification] failed to archive CashfreeError outcome:",
+          persistErr instanceof Error ? persistErr.message : persistErr,
+        );
+      }
 
       // Fallback-to-manual: caller keeps the projection untouched and lets the
       // agent finish the doc through the existing manual workflow.
@@ -166,15 +208,25 @@ async function runProviderCall(
       }
       return { kind: "manual", reason: `provider_error_${e.category}`, policy, detail: e.message };
     }
+    console.error(
+      "[verification] unexpected submit error:",
+      e instanceof Error ? e.message : e,
+      e instanceof Error ? e.stack : "",
+    );
     throw e;
   }
 }
 
 // ── Per-document submit methods ────────────────────────────────────────────
 
-export async function submitPan(args: SubmitCommonArgs & { pan: string; name: string }): Promise<SubmitOutcome> {
+export async function submitPan(args: SubmitCommonArgs & { pan: string; name?: string }): Promise<SubmitOutcome> {
   return runProviderCall("pan", args, async (vid) => {
-    const call = await cashfree.verifyPan({ verification_id: vid, pan: args.pan, name: args.name });
+    const name = typeof args.name === "string" ? args.name.trim() : "";
+    const call = await cashfree.verifyPan({
+      verification_id: vid,
+      pan: args.pan,
+      ...(name ? { name } : {}),
+    });
     return adaptPan(call as never, common("pan", vid, args));
   });
 }
@@ -228,9 +280,24 @@ export async function submitBankAccount(args: SubmitCommonArgs & { bankAccount: 
   });
 }
 
+export async function submitUpiPennyDrop(args: SubmitCommonArgs & { vpa: string; name?: string }): Promise<SubmitOutcome> {
+  return runProviderCall("upi_penny_drop", args, async (vid) => {
+    const call = await cashfree.verifyUpiPennyDrop({
+      verification_id: vid,
+      vpa: args.vpa.trim().toLowerCase(),
+      name: args.name,
+    });
+    return adaptUpiPennyDrop(call as never, common("upi_penny_drop", vid, args));
+  });
+}
+
 export async function submitReversePennyDrop(args: SubmitCommonArgs & { redirectUrl?: string; name?: string }): Promise<SubmitOutcome> {
   return runProviderCall("reverse_penny_drop", args, async (vid) => {
-    const call = await cashfree.createReversePennyDrop({ verification_id: vid, name: args.name, redirect_url: args.redirectUrl });
+    const call = await cashfree.createReversePennyDrop({
+      verification_id: vid,
+      name: args.name,
+      redirect_url: ensureCashfreeHttpsRedirectUrl(args.redirectUrl),
+    });
     return adaptReversePennyDropCreate(call as never, common("reverse_penny_drop", vid, args));
   });
 }
@@ -241,14 +308,355 @@ export async function submitDigilocker(args: SubmitCommonArgs & {
   userFlow?: "signin" | "signup";
 }): Promise<SubmitOutcome> {
   return runProviderCall("aadhaar_digilocker", args, async (vid) => {
+    // Riders must never inherit merchant CASHFREE_DIGILOCKER_REDIRECT_URL (partner portal 404).
+    const redirect_url =
+      args.subjectType === "rider"
+        ? resolveRiderDigilockerRedirectUrl(args.redirectUrl)
+        : ensureCashfreeHttpsRedirectUrl(args.redirectUrl);
     const call = await cashfree.createDigilocker({
       verification_id: vid,
       document_requested: args.documents,
-      redirect_url: args.redirectUrl,
+      redirect_url,
       user_flow: args.userFlow ?? "signin",
     });
     return adaptDigilockerCreate(call as never, common("aadhaar_digilocker", vid, args));
   });
+}
+
+/**
+ * Rider Aadhaar same-page verify via Cashfree Aadhaar Masking (no DigiLocker browser).
+ * Uses the existing `aadhaar_digilocker` policy row so ops mode (auto/hybrid) still applies.
+ */
+export async function submitAadhaarMasking(args: SubmitCommonArgs & {
+  imageKey: string;
+  aadhaarNumber?: string;
+  name?: string;
+  dob?: string;
+}): Promise<SubmitOutcome> {
+  return runProviderCall("aadhaar_digilocker", args, async (vid) => {
+    const { getObjectByKey } = await import("../../services/r2/r2Service.js");
+    const obj = await getObjectByKey(args.imageKey);
+    if (!obj?.buffer?.length) {
+      throw new CashfreeError("invalid_input", "aadhaar_image_not_found");
+    }
+    const call = await cashfree.maskAadhaar({
+      verification_id: vid,
+      image: obj.buffer,
+      contentType: obj.contentType || "image/jpeg",
+      filename: "aadhaar.jpg",
+    });
+    return adaptAadhaarMasking(call as never, common("aadhaar_digilocker", vid, args), {
+      aadhaarNumber: args.aadhaarNumber,
+      name: args.name,
+      dob: args.dob,
+    });
+  });
+}
+
+/** Cashfree DigiLocker / RPD require redirect_url to start with https://. */
+function ensureCashfreeHttpsRedirectUrl(url?: string | null): string {
+  const envFallback = String(
+    process.env.CASHFREE_DIGILOCKER_REDIRECT_URL ||
+      process.env.VERIFICATION_PUBLIC_REDIRECT_URL ||
+      process.env.PUBLIC_APP_HTTPS_URL ||
+      "",
+  ).trim();
+  const candidates = [String(url || "").trim(), envFallback].filter(Boolean);
+  for (const raw of candidates) {
+    try {
+      const u = new URL(raw);
+      if (u.protocol === "http:") u.protocol = "https:";
+      if (u.protocol === "https:") return u.toString();
+    } catch {
+      /* next */
+    }
+  }
+  // Merchant/partner default — never send riders here (rider onboarding passes its own URL).
+  return "https://partner.gatimitra.com/auth/digilocker-return";
+}
+
+/** HTTPS return URL for Rider app DigiLocker (Custom Tab dismisses on this URL). */
+export function resolveRiderDigilockerRedirectUrl(requested?: string | null): string {
+  for (const raw of [
+    String(requested || "").trim(),
+    String(process.env.CASHFREE_RIDER_DIGILOCKER_REDIRECT_URL || "").trim(),
+  ]) {
+    if (!raw) continue;
+    try {
+      const u = new URL(raw);
+      if (u.protocol === "http:") u.protocol = "https:";
+      // Never payment checkout, never partner portal.
+      if (u.protocol !== "https:") continue;
+      if (/partner\.gatimitra\.com/i.test(u.hostname)) continue;
+      if (/\/v1\/razorpay-checkout/i.test(u.pathname)) continue;
+      return u.toString();
+    } catch {
+      /* next */
+    }
+  }
+
+  const apiBase = String(process.env.API_BASE_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (apiBase.startsWith("https://")) {
+    return `${apiBase}/v1/onboarding/digilocker-return`;
+  }
+
+  return RIDER_DIGILOCKER_HTTPS_RETURN;
+}
+
+/** Soft lookup for DigiLocker HTTPS return page (never throws to the browser). */
+export async function lookupDigilockerReturnByVerificationId(
+  verificationId: string,
+): Promise<{ known: boolean; status?: string; subjectType?: string; documentKind?: string }> {
+  const id = String(verificationId || "").trim();
+  if (!id) return { known: false };
+  try {
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT status::text AS status, subject_type, document_kind
+        FROM public.verification_requests
+       WHERE verification_id = ${id}
+       LIMIT 1
+    `) as unknown as Array<{
+      status: string;
+      subject_type: string;
+      document_kind: string;
+    }>;
+    if (!rows[0]) return { known: false };
+    return {
+      known: true,
+      status: String(rows[0].status || "").toLowerCase(),
+      subjectType: String(rows[0].subject_type || ""),
+      documentKind: String(rows[0].document_kind || ""),
+    };
+  } catch {
+    return { known: false };
+  }
+}
+
+export type DigilockerPollResult = {
+  status: string;
+  verified: boolean;
+  verifiedData?: Record<string, unknown>;
+  statusReason?: string | null;
+  verificationId?: string | null;
+};
+
+/**
+ * Active DigiLocker completion for onboarding UIs.
+ * Cashfree stays PENDING until the user finishes consent; once AUTHENTICATED we
+ * fetch the Aadhaar document and mark the request verified. This does not rely
+ * on webhooks (critical for local/dev where Cashfree cannot reach localhost).
+ */
+export async function pollDigilockerForSubject(args: {
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+}): Promise<DigilockerPollResult> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT id, verification_id, provider_reference, status::text AS status
+      FROM public.verification_requests
+     WHERE subject_type = ${args.subjectType}
+       AND subject_id = ${args.subjectId}
+       AND document_kind = 'aadhaar_digilocker'
+     ORDER BY created_at DESC
+     LIMIT 1
+  `) as unknown as Array<{
+    id: number;
+    verification_id: string;
+    provider_reference: string | null;
+    status: string;
+  }>;
+
+  if (!rows[0]) {
+    return { status: "none", verified: false };
+  }
+
+  const row = rows[0];
+  const current = String(row.status || "").toLowerCase();
+
+  if (current === "verified") {
+    const ev = (await sql`
+      SELECT details FROM public.verification_events
+       WHERE request_id = ${row.id}
+       ORDER BY created_at DESC
+       LIMIT 8
+    `) as unknown as Array<{ details: unknown }>;
+    let verifiedData: Record<string, unknown> | undefined;
+    for (const e of ev) {
+      const d = (e.details as { verifiedData?: Record<string, unknown> } | null)?.verifiedData;
+      if (d && typeof d === "object") {
+        verifiedData = d;
+        break;
+      }
+    }
+    return {
+      status: "verified",
+      verified: true,
+      verifiedData,
+      verificationId: row.verification_id,
+    };
+  }
+
+  if (
+    current === "failed" ||
+    current === "rejected" ||
+    current === "expired" ||
+    current === "consent_denied"
+  ) {
+    return {
+      status: current,
+      verified: false,
+      verificationId: row.verification_id,
+    };
+  }
+
+  let statusBody: {
+    status?: string;
+    user_details?: Record<string, unknown>;
+    reference_id?: number | string;
+    document_consent?: string[];
+  };
+  try {
+    const call = await cashfree.getDigilockerStatus(row.verification_id);
+    statusBody = (call.responseBody || {}) as typeof statusBody;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "status_poll_failed";
+    return {
+      status: "provider_processing",
+      verified: false,
+      statusReason: msg,
+      verificationId: row.verification_id,
+    };
+  }
+
+  const cfStatus = String(statusBody.status || "").toUpperCase();
+  const providerRef =
+    statusBody.reference_id != null
+      ? String(statusBody.reference_id)
+      : row.provider_reference;
+
+  if (cfStatus === "PENDING" || !cfStatus) {
+    return {
+      status: "provider_processing",
+      verified: false,
+      statusReason: "pending_consent",
+      verificationId: row.verification_id,
+    };
+  }
+
+  if (cfStatus === "EXPIRED" || cfStatus === "CONSENT_DENIED") {
+    const terminalStatus: VerificationStatus =
+      cfStatus === "EXPIRED" ? "expired" : "consent_denied";
+    const outcome: NormalizedVerification = {
+      verificationId: row.verification_id,
+      attemptNumber: 1,
+      subjectType: args.subjectType,
+      subjectId: args.subjectId,
+      documentKind: "aadhaar_digilocker",
+      provider: "cashfree",
+      providerReference: providerRef,
+      status: terminalStatus,
+      statusReason: `cashfree:${cfStatus.toLowerCase()}`,
+      confidence: null,
+      businessIdentifier: null,
+      verifiedData: {},
+      rawRequest: null,
+      rawResponse: statusBody,
+      responseHeaders: {},
+      httpStatus: 200,
+      durationMs: null,
+      providerArtifacts: [],
+    };
+    await applyAsyncTerminalOutcome(row.id, current as VerificationStatus, outcome);
+    return {
+      status: terminalStatus,
+      verified: false,
+      statusReason: outcome.statusReason,
+      verificationId: row.verification_id,
+    };
+  }
+
+  if (cfStatus !== "AUTHENTICATED") {
+    return {
+      status: "provider_processing",
+      verified: false,
+      statusReason: `cashfree:${cfStatus.toLowerCase()}`,
+      verificationId: row.verification_id,
+    };
+  }
+
+  let documentBody: Record<string, unknown> = {};
+  try {
+    const docCall = await cashfree.getDigilockerDocument("AADHAAR", row.verification_id);
+    documentBody = (docCall.responseBody || {}) as Record<string, unknown>;
+  } catch {
+    // Status AUTHENTICATED already proves consent; fall back to user_details.
+  }
+
+  const userDetails =
+    statusBody.user_details && typeof statusBody.user_details === "object"
+      ? statusBody.user_details
+      : {};
+  const verifiedData: Record<string, unknown> = {
+    ...userDetails,
+    ...(documentBody && typeof documentBody === "object" ? documentBody : {}),
+    digilocker_status: cfStatus,
+    document_consent: statusBody.document_consent ?? null,
+  };
+
+  const { maskAadhaarNumber, normalizeAadhaarVerifiedDetails } = await import("../../lib/mask-aadhaar.js");
+  const normalized = normalizeAadhaarVerifiedDetails(verifiedData);
+  // Never persist full Aadhaar UID in verified payloads / business identifier.
+  if (normalized.maskedAadhaar) {
+    verifiedData.uid = normalized.maskedAadhaar;
+    verifiedData.aadhaar_number = normalized.maskedAadhaar;
+    verifiedData.masked_aadhaar = normalized.maskedAadhaar;
+  }
+  if (normalized.name && !verifiedData.name) {
+    verifiedData.name = normalized.name;
+  }
+
+  const aadhaarUid = normalized.maskedAadhaar || maskAadhaarNumber(
+    String(
+      verifiedData.uid ||
+        verifiedData.aadhaar_number ||
+        verifiedData.masked_aadhaar ||
+        "",
+    ).trim(),
+  );
+
+  const outcome: NormalizedVerification = {
+    verificationId: row.verification_id,
+    attemptNumber: 1,
+    subjectType: args.subjectType,
+    subjectId: args.subjectId,
+    documentKind: "aadhaar_digilocker",
+    provider: "cashfree",
+    providerReference: providerRef,
+    status: "verified",
+    statusReason: "digilocker_authenticated",
+    confidence: 0.99,
+    businessIdentifier: aadhaarUid || null,
+    verifiedData,
+    rawRequest: null,
+    rawResponse: { status: statusBody, document: documentBody },
+    responseHeaders: {},
+    httpStatus: 200,
+    durationMs: null,
+    providerArtifacts: [],
+  };
+
+  await applyAsyncTerminalOutcome(row.id, current as VerificationStatus, outcome);
+
+  return {
+    status: "verified",
+    verified: true,
+    verifiedData,
+    statusReason: outcome.statusReason,
+    verificationId: row.verification_id,
+  };
 }
 
 function common(kind: VerificationDocumentKind, vid: string, args: SubmitCommonArgs) {

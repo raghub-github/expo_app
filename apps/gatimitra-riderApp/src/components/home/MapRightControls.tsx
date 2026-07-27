@@ -2,8 +2,6 @@ import React from "react";
 import { View, StyleSheet } from "react-native";
 import { MapRecenterFab } from "@/src/components/home/HomeAlertBanners";
 import { ActiveOrderFloatingCardHost } from "@/src/components/orders/ActiveOrderFloatingCardHost";
-import { useActiveOrders } from "@/src/hooks/useOrders";
-import { isActiveRiderOrder } from "@/src/lib/active-order-display";
 import {
   MAP_FLOATING_EDGE,
   MAP_FLOATING_STACK_GAP,
@@ -13,26 +11,25 @@ import {
 type Props = {
   onRecenter: () => void;
   showOffDutyBanner?: boolean;
-  hasActiveRideDock?: boolean;
+  hasDemandZonesDock?: boolean;
+  /** State-driven: only while ON duty with an accepted active order. */
+  showActiveRideFab?: boolean;
 };
 
 /**
- * Right-side floating control stack — Active Order card above Locate Me.
- * Single anchor eliminates positioning conflicts between independent absolute elements.
+ * Right-side floating control stack — Active Order card (conditional) above Locate Me.
  */
 export function MapRightControls({
   onRecenter,
   showOffDutyBanner = false,
-  hasActiveRideDock = false,
+  hasDemandZonesDock = false,
+  showActiveRideFab = false,
 }: Props) {
-  const { data: active = [] } = useActiveOrders();
-  const hasActiveOrder = active.some(isActiveRiderOrder);
-
-  const bottom = mapRightControlsBottomInset({ showOffDutyBanner, hasActiveRideDock });
+  const bottom = mapRightControlsBottomInset({ showOffDutyBanner, hasDemandZonesDock });
 
   return (
     <View style={[styles.column, { bottom }]} pointerEvents="box-none">
-      {hasActiveOrder ? (
+      {showActiveRideFab ? (
         <>
           <ActiveOrderFloatingCardHost />
           <View style={styles.gap} pointerEvents="none" />

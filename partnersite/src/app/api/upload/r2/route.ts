@@ -57,12 +57,27 @@ export async function POST(request: NextRequest) {
     // -------- Convert File --------
     const buffer = Buffer.from(await file.arrayBuffer());
 
+    // Prefer browser MIME; fall back from filename extension so banner/gallery without type still serve as images.
+    const inferContentType = (): string => {
+      const t = (file.type || "").trim().toLowerCase();
+      if (t && t !== "application/octet-stream") return t;
+      const name = String(filename || file.name || "").toLowerCase();
+      if (name.endsWith(".png")) return "image/png";
+      if (name.endsWith(".webp")) return "image/webp";
+      if (name.endsWith(".gif")) return "image/gif";
+      if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+      if (name.endsWith(".pdf")) return "application/pdf";
+      if (name.endsWith(".csv")) return "text/csv";
+      return t || "application/octet-stream";
+    };
+    const contentType = inferContentType();
+
     // -------- Upload to R2 --------
     const uploadCommand = new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: fullPath,
       Body: buffer,
-      ContentType: file.type,
+      ContentType: contentType,
     });
 
     await s3Client.send(uploadCommand);

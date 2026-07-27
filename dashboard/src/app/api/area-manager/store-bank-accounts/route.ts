@@ -39,6 +39,11 @@ export async function GET(req: NextRequest) {
         is_primary,
         is_active,
         is_disabled,
+        is_verified,
+        upi_verified,
+        verified_at,
+        verification_method,
+        bank_metadata,
         verification_status,
         created_at,
         updated_at
@@ -81,6 +86,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const isVerifiedProvided = typeof body.is_verified === "boolean";
+    const isVerified = isVerifiedProvided ? Boolean(body.is_verified) : null;
+    const upiVerifiedProvided = typeof body.upi_verified === "boolean";
+    const upiVerified = upiVerifiedProvided
+      ? Boolean(body.upi_verified)
+      : payoutMethod === "upi" && isVerified
+        ? true
+        : payoutMethod === "upi"
+          ? null
+          : false;
+
     const rawHolder = String(body.account_holder_name ?? "").trim();
     const rawAccount = String(body.account_number ?? "").trim();
     // Normalize IFSC / bankName so that "not provided" is sent as NULL (not empty string)
@@ -94,19 +110,30 @@ export async function POST(req: NextRequest) {
         : null;
 
     if (payoutMethod === "bank") {
-      if (!rawHolder || !rawAccount) {
+      if (!rawAccount) {
         return NextResponse.json(
           {
             success: false,
-            error:
-              "account_holder_name and account_number are required for bank",
+            error: "account_number is required for bank",
           },
           { status: 400 }
         );
       }
-      if (!ifscCode || !bankName) {
+      if (!ifscCode) {
         return NextResponse.json(
-          { success: false, error: "ifsc_code and bank_name required for bank" },
+          { success: false, error: "ifsc_code required for bank" },
+          { status: 400 }
+        );
+      }
+      // Auto-verified rows may omit holder/bank name in the client payload;
+      // require them only for the manual path.
+      if (!isVerified && (!rawHolder || !bankName)) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "account_holder_name and bank_name are required for bank",
+          },
           { status: 400 }
         );
       }
@@ -125,13 +152,54 @@ export async function POST(req: NextRequest) {
 
     const accountHolderName =
       payoutMethod === "bank"
-        ? rawHolder || null
+        ? rawHolder || (isVerified ? "Verified Account" : null)
         : rawHolder || null; // optional for upi
 
     const accountNumber =
       payoutMethod === "bank"
         ? rawAccount || null
         : rawAccount || null; // do NOT copy upi_id into account_number
+
+    const resolvedBankName =
+      payoutMethod === "bank"
+        ? bankName || (isVerified ? "Bank" : null)
+        : null;
+
+    const verifiedAt =
+      typeof body.verified_at === "string" && body.verified_at.trim()
+        ? body.verified_at.trim()
+        : isVerified
+          ? new Date().toISOString()
+          : null;
+    const verificationMethod =
+      typeof body.verification_method === "string" && body.verification_method.trim()
+        ? body.verification_method.trim()
+        : isVerified
+          ? "CASHFREE_AUTO"
+          : null;
+    let bankMetadata: string | null = null;
+    if (body.bank_metadata != null) {
+      try {
+        bankMetadata =
+          typeof body.bank_metadata === "string"
+            ? body.bank_metadata
+            : JSON.stringify(body.bank_metadata);
+      } catch {
+        bankMetadata = null;
+      }
+    } else if (body.bank_verified_details != null) {
+      try {
+        bankMetadata = JSON.stringify({
+          auto_verification: {
+            verified_data: body.bank_verified_details,
+            verified_at: verifiedAt,
+            method: verificationMethod,
+          },
+        });
+      } catch {
+        bankMetadata = null;
+      }
+    }
 
     const sql = getSql() as {
       unsafe: (q: string, v?: unknown[]) => Promise<unknown[]>;
@@ -152,9 +220,9 @@ export async function POST(req: NextRequest) {
         UPDATE merchant_store_bank_accounts
         SET
           account_holder_name = COALESCE($2::text, account_holder_name),
-          account_number     = COALESCE($3::text, account_number),
-          ifsc_code          = COALESCE($4::text, ifsc_code),
-          bank_name          = COALESCE($5::text, bank_name),
+          account_number     = CASE WHEN $8::text = 'upi' THEN NULL ELSE COALESCE($3::text, account_number) END,
+          ifsc_code          = CASE WHEN $8::text = 'upi' THEN NULL ELSE COALESCE($4::text, ifsc_code) END,
+          bank_name          = CASE WHEN $8::text = 'upi' THEN NULL ELSE COALESCE($5::text, bank_name) END,
           branch_name        = COALESCE($6::text, branch_name),
           account_type       = COALESCE($7::text, account_type),
           payout_method      = $8::text,
@@ -162,6 +230,14 @@ export async function POST(req: NextRequest) {
           bank_proof_file_url   = COALESCE($10::text, bank_proof_file_url),
           upi_qr_screenshot_url = COALESCE($11::text, upi_qr_screenshot_url),
           upi_id = CASE WHEN $8::text = 'upi' THEN $12::text ELSE NULL END,
+          is_verified = COALESCE($13::boolean, is_verified),
+          upi_verified = COALESCE($17::boolean, upi_verified),
+          verified_at = COALESCE($14::timestamptz, verified_at),
+          verification_method = COALESCE($15::text, verification_method),
+          bank_metadata = CASE
+            WHEN $16::jsonb IS NULL THEN bank_metadata
+            ELSE COALESCE(bank_metadata, '{}'::jsonb) || $16::jsonb
+          END,
           updated_at = now()
         WHERE id = $1
       `,
@@ -170,7 +246,7 @@ export async function POST(req: NextRequest) {
           accountHolderName,
           accountNumber,
           ifscCode,
-          bankName,
+          resolvedBankName,
           typeof body.branch_name === "string"
             ? body.branch_name.trim() || null
             : null,
@@ -188,17 +264,23 @@ export async function POST(req: NextRequest) {
             ? body.upi_qr_screenshot_url.trim() || null
             : null,
           payoutMethod === "upi" ? upiId || null : null,
+          isVerified,
+          isVerifiedProvided ? verifiedAt : null,
+          isVerifiedProvided ? verificationMethod : null,
+          bankMetadata,
+          upiVerified,
         ]
       );
 
       const updated = (await sql.unsafe(
-        "SELECT id, account_holder_name, payout_method, is_primary, created_at FROM merchant_store_bank_accounts WHERE id = $1",
+        "SELECT id, account_holder_name, payout_method, is_primary, is_verified, created_at FROM merchant_store_bank_accounts WHERE id = $1",
         [existingId]
       )) as {
         id: number;
         account_holder_name: string | null;
         payout_method: string | null;
         is_primary: boolean | null;
+        is_verified: boolean | null;
         created_at: string | Date | null;
       }[];
 
@@ -222,17 +304,22 @@ export async function POST(req: NextRequest) {
          bank_proof_file_url,
          upi_qr_screenshot_url,
          upi_id,
-         is_primary)
+         is_primary,
+         is_verified,
+         upi_verified,
+         verified_at,
+         verification_method,
+         bank_metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true)
-      RETURNING id, account_holder_name, payout_method, is_primary, created_at
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,$13,$14,$15,$16,$17::jsonb)
+      RETURNING id, account_holder_name, payout_method, is_primary, is_verified, created_at
     `,
       [
         storeInternalId,
         accountHolderName,
         accountNumber,
         payoutMethod === "bank" ? ifscCode : null,
-        payoutMethod === "bank" ? bankName : null,
+        payoutMethod === "bank" ? resolvedBankName : null,
         typeof body.branch_name === "string"
           ? body.branch_name.trim() || null
           : null,
@@ -250,12 +337,18 @@ export async function POST(req: NextRequest) {
           ? body.upi_qr_screenshot_url.trim() || null
           : null,
         payoutMethod === "upi" ? upiId || null : null,
+        isVerified === true,
+        upiVerified === true,
+        isVerified === true ? verifiedAt : null,
+        isVerified === true ? verificationMethod : null,
+        bankMetadata,
       ]
     )) as {
       id: number;
       account_holder_name: string | null;
       payout_method: string | null;
       is_primary: boolean | null;
+      is_verified: boolean | null;
       created_at: string | Date | null;
     }[];
 
@@ -269,4 +362,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-

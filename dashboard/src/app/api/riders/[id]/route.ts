@@ -5,14 +5,18 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getRiderWithDocuments, getRiderById, syncRiderOnboardingState } from "@/lib/db/operations/riders";
+import { getRiderWithDocuments, getRiderById, syncRiderOnboardingState, checkOnboardingPaymentCompleted, isRiderEligibleForApprovalQueue } from "@/lib/db/operations/riders";
 import { expandRiderDocumentsForDashboard } from "@/lib/rider-document-display";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
 import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
+import {
+  decryptRiderAccountNumber,
+  maskRiderAccountNumber,
+} from "@/lib/rider-bank-account-crypto";
 
 export const runtime = 'nodejs';
 
@@ -34,7 +38,7 @@ export async function GET(
     if (userError || !user) {
       // Check if it's an invalid refresh token error
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }
@@ -116,6 +120,21 @@ export async function GET(
       documentsWithUrls,
       riderData.rider
     );
+
+    const { resolveRiderSelfieFromStored } = await import("@/lib/rider-selfie-url");
+    const selfieFromRider = resolveRiderSelfieFromStored(
+      (riderData.rider as { selfieUrl?: string | null })?.selfieUrl,
+    );
+    const selfieFromDoc = documentsWithUrls.find(
+      (d: { docType?: string }) => d.docType === "selfie" || d.docType === "profile_photo",
+    ) as { fileUrl?: string } | undefined;
+    const riderForUi = {
+      ...riderData.rider,
+      selfieUrl:
+        selfieFromRider ||
+        resolveRiderSelfieFromStored(selfieFromDoc?.fileUrl) ||
+        null,
+    };
 
     const db = getDb();
 
@@ -225,10 +244,17 @@ export async function GET(
       updatedAt: row.updatedAt,
     }));
 
+    const [paymentCompleted, approvalQueueEligible] = await Promise.all([
+      checkOnboardingPaymentCompleted(riderId),
+      isRiderEligibleForApprovalQueue(riderId),
+    ]);
+
     return NextResponse.json({
       success: true,
       data: {
-        rider: riderData.rider,
+        rider: riderForUi,
+        paymentCompleted,
+        approvalQueueEligible,
         documents: documentsForUi,
         addresses: riderData.addresses ?? [],
         vehicle: riderData.vehicle
@@ -255,20 +281,27 @@ export async function GET(
               isActive: riderData.vehicle.isActive ?? true,
             }
           : null,
-        paymentMethods: (riderData.paymentMethods || []).map((pm: any) => ({
-          id: pm.id,
-          methodType: pm.methodType,
-          accountHolderName: pm.accountHolderName,
-          bankName: pm.bankName ?? null,
-          ifsc: pm.ifsc ?? null,
-          branch: pm.branch ?? null,
-          accountNumberMasked: pm.accountNumberEncrypted ? "••••" : null,
-          upiId: pm.upiId ?? null,
-          verificationStatus: pm.verificationStatus,
-          verificationProofType: pm.verificationProofType ?? null,
-          verifiedAt: pm.verifiedAt ?? null,
-          createdAt: pm.createdAt,
-        })),
+        paymentMethods: (riderData.paymentMethods || []).map((pm: any) => {
+          const decrypted = pm.accountNumberEncrypted
+            ? decryptRiderAccountNumber(pm.accountNumberEncrypted)
+            : null;
+          return {
+            id: pm.id,
+            methodType: pm.methodType,
+            accountHolderName: pm.accountHolderName,
+            bankName: pm.bankName ?? null,
+            ifsc: pm.ifsc ?? null,
+            branch: pm.branch ?? null,
+            accountNumberMasked: decrypted
+              ? maskRiderAccountNumber(decrypted)
+              : null,
+            upiId: pm.upiId ?? null,
+            verificationStatus: pm.verificationStatus,
+            verificationProofType: pm.verificationProofType ?? null,
+            verifiedAt: pm.verifiedAt ?? null,
+            createdAt: pm.createdAt,
+          };
+        }),
         wallet,
         recentLedger,
         recentPenalties,

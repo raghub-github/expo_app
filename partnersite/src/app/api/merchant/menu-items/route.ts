@@ -261,12 +261,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 })
     }
 
-    // Check plan limits before inserting
+    // Check plan limits before submitting (live items + pending ADD reviews)
     const { count: currentItemCount } = await supabase
       .from('merchant_menu_items')
       .select('id', { count: 'exact', head: true })
       .eq('store_id', store.id)
       .eq('is_deleted', false)
+
+    const { count: pendingAddCount } = await supabase
+      .from('merchant_menu_item_review_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('store_id', store.id)
+      .eq('status', 'PENDING')
+      .eq('request_type', 'ADD')
+
+    const effectiveCount = (currentItemCount ?? 0) + (pendingAddCount ?? 0)
 
     const { data: activeSub } = await supabase
       .from('merchant_subscriptions')
@@ -291,7 +300,7 @@ export async function POST(req: NextRequest) {
       maxItems = freePlan?.max_menu_items ?? 15;
     }
 
-    const willExceedLimit = maxItems !== null && (currentItemCount ?? 0) >= maxItems
+    const willExceedLimit = maxItems !== null && effectiveCount >= maxItems
     if (willExceedLimit) {
       return NextResponse.json(
         {
@@ -329,8 +338,7 @@ export async function POST(req: NextRequest) {
       return Number.isFinite(n) && n >= 0 ? n : null
     }
 
-    const payload = {
-      store_id: store.id,
+    const addPayload: Record<string, unknown> = {
       category_id: categoryId,
       item_name: body.item_name,
       item_description: body.item_description ?? '',
@@ -371,94 +379,29 @@ export async function POST(req: NextRequest) {
       fat_unit: body.fat_unit ?? 'mg',
       fibre: parseOptNum(body.fibre),
       fibre_unit: body.fibre_unit ?? 'mg',
-      // Merchant / MX portal: pending agent verification (dashboard agents use APPROVED on create).
-      approval_status: 'PENDING' as const,
-      approved_at: null,
-      approved_by: null,
+      customizations: Array.isArray(body.customizations) ? body.customizations : [],
+      variants: Array.isArray(body.variants) ? body.variants : [],
+      images: body.item_image_url
+        ? [{ image_url: body.item_image_url, is_primary: true }]
+        : [],
     }
 
-    const { data, error } = await supabase
-      .from('merchant_menu_items')
-      .insert([payload])
-      .select()
-      .single()
-
-    if (error) {
-      console.error('[menu-items POST]', error.message, error.code)
+    const { submitPartnerAddReview } = await import('@/lib/merchant-menu-review')
+    let review_request_id: number
+    try {
+      const created = await submitPartnerAddReview(supabase, {
+        storeIdNum: store.id,
+        merchantId: store.parent_id,
+        submittedBy: user.id,
+        addPayload,
+      })
+      review_request_id = created.review_request_id
+    } catch (e: any) {
+      console.error('[menu-items POST] review', e)
       return NextResponse.json(
-        { error: error.message || 'Failed to create menu item', code: error.code },
+        { error: e?.message || 'Failed to submit add review' },
         { status: 500 }
       )
-    }
-
-    const menuItemId = data.id as number
-
-    // If an image key was provided, also insert into merchant_menu_item_images as primary image
-    if (payload.item_image_url) {
-      try {
-        await supabase
-          .from('merchant_menu_item_images')
-          .insert([{
-            menu_item_id: menuItemId,
-            image_url: payload.item_image_url,
-            is_primary: true,
-            display_order: 0,
-          }]);
-      } catch (imgErr) {
-        console.error('[menu-items POST] merchant_menu_item_images insert error', imgErr);
-      }
-    }
-    const customizations = Array.isArray(body.customizations) ? body.customizations : []
-
-    for (let i = 0; i < customizations.length; i++) {
-      const c = customizations[i]
-      const custPayload = {
-        menu_item_id: menuItemId,
-        customization_title: c.customization_title ?? '',
-        customization_type: c.customization_type ?? null,
-        is_required: c.is_required ?? false,
-        min_selection: c.min_selection ?? 0,
-        max_selection: c.max_selection ?? 1,
-        display_order: c.display_order ?? i,
-      }
-      const { data: newCust, error: custErr } = await supabase
-        .from('merchant_menu_item_customizations')
-        .insert([{
-          ...custPayload,
-          customization_id: `GMC-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`,
-        }])
-        .select()
-        .single()
-      if (custErr) {
-        console.error('[menu-items POST] customization', custErr.message)
-        continue
-      }
-      const addons = Array.isArray(c.addons) ? c.addons : []
-      for (let j = 0; j < addons.length; j++) {
-        const a = addons[j]
-        await supabase.from('merchant_menu_item_addons').insert([{
-          customization_id: newCust.id,
-          addon_id: `GMA-${Date.now()}-${j}-${Math.random().toString(36).slice(2, 9)}`,
-          addon_name: a.addon_name ?? '',
-          addon_price: a.addon_price ?? 0,
-          in_stock: a.in_stock ?? true,
-          display_order: a.display_order ?? j,
-        }])
-      }
-    }
-
-    const variants = Array.isArray(body.variants) ? body.variants : []
-    for (let i = 0; i < variants.length; i++) {
-      const v = variants[i]
-      const variantPrice = typeof v.variant_price === 'number' ? v.variant_price : Number(v.variant_price) || 0
-      await supabase.from('merchant_menu_item_variants').insert([{
-        menu_item_id: menuItemId,
-        variant_id: `GMV-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`,
-        variant_name: v.variant_name ?? '',
-        variant_type: v.variant_type ?? null,
-        variant_price: variantPrice,
-        display_order: i,
-      }])
     }
 
     try {
@@ -466,16 +409,19 @@ export async function POST(req: NextRequest) {
         storeId: store.id,
         section: 'menu_item',
         action: 'create',
-        entityId: menuItemId,
+        entityId: null,
         entityName: body.item_name,
-        summary: `Merchant created item "${body.item_name}"`,
+        summary: `Merchant submitted ADD review for "${body.item_name}"`,
         actorType: 'merchant',
       });
     } catch (_) {}
 
-    await enforcePlanLimitsForStoreNumericId(store.id);
-
-    return NextResponse.json(data)
+    return NextResponse.json({
+      pending_review: true,
+      review_request_id,
+      item_name: body.item_name,
+      message: 'Item submitted for review. It will appear on the menu after approval.',
+    }, { status: 201 })
   } catch (err: unknown) {
     console.error('[menu-items POST]', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -526,11 +472,198 @@ export async function PATCH(req: NextRequest) {
 
     const { data: existingItemRow } = await supabase
       .from('merchant_menu_items')
-      .select('id')
+      .select('id, approval_status, item_name, item_description, item_image_url, category_id, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, tax_percentage, preparation_time_minutes, packaging_charges, serves, is_active, allergens, available_for_delivery, weight_per_serving, weight_per_serving_unit, calories_kcal, protein, protein_unit, carbohydrates, carbohydrates_unit, fat, fat_unit, fibre, fibre_unit, item_tags')
       .eq('item_id', String(itemId))
       .eq('store_id', store.id)
       .maybeSingle()
     // Plan-locking was removed from schema; edits are always allowed.
+
+    const stockOnlyPatch =
+      body.in_stock !== undefined &&
+      body.item_name == null &&
+      body.base_price == null &&
+      body.selling_price == null &&
+      body.item_description === undefined &&
+      body.category_id === undefined &&
+      body.food_type === undefined &&
+      body.spice_level === undefined &&
+      body.cuisine_type === undefined &&
+      body.discount_percentage === undefined &&
+      body.tax_percentage === undefined &&
+      body.available_quantity === undefined &&
+      body.low_stock_threshold === undefined &&
+      body.has_customizations === undefined &&
+      body.has_addons === undefined &&
+      body.has_variants === undefined &&
+      body.is_popular === undefined &&
+      body.is_recommended === undefined &&
+      body.preparation_time_minutes === undefined &&
+      body.packaging_charges === undefined &&
+      body.serves === undefined &&
+      body.is_active === undefined &&
+      body.allergens === undefined &&
+      body.item_image_url === undefined &&
+      body.available_for_delivery === undefined &&
+      body.weight_per_serving === undefined &&
+      body.weight_per_serving_unit === undefined &&
+      body.calories_kcal === undefined &&
+      body.protein === undefined &&
+      body.protein_unit === undefined &&
+      body.carbohydrates === undefined &&
+      body.carbohydrates_unit === undefined &&
+      body.fat === undefined &&
+      body.fat_unit === undefined &&
+      body.fibre === undefined &&
+      body.fibre_unit === undefined &&
+      body.item_tags === undefined &&
+      body.customizations === undefined &&
+      body.variants === undefined
+
+    // APPROVED items: catalog edits go through EDIT review (stock toggles stay live).
+    if (
+      existingItemRow &&
+      String((existingItemRow as any).approval_status) === 'APPROVED' &&
+      !stockOnlyPatch
+    ) {
+      const proposed: Record<string, unknown> = {}
+      if (body.category_id !== undefined) proposed.category_id = body.category_id ?? null
+      if (body.item_name !== undefined) proposed.item_name = body.item_name
+      if (body.item_description !== undefined) proposed.item_description = body.item_description ?? null
+      if (body.item_image_url !== undefined) proposed.item_image_url = body.item_image_url ?? null
+      if (body.food_type !== undefined) proposed.food_type = body.food_type ?? null
+      if (body.spice_level !== undefined) proposed.spice_level = body.spice_level ?? null
+      if (body.cuisine_type !== undefined) proposed.cuisine_type = body.cuisine_type ?? null
+      if (body.base_price != null) proposed.base_price = Number(body.base_price)
+      if (body.selling_price != null) proposed.selling_price = Number(body.selling_price)
+      if (body.discount_percentage !== undefined) proposed.discount_percentage = body.discount_percentage ?? 0
+      if (body.tax_percentage !== undefined) proposed.tax_percentage = body.tax_percentage ?? 0
+      if (body.preparation_time_minutes !== undefined) proposed.preparation_time_minutes = body.preparation_time_minutes ?? 15
+      if (body.packaging_charges !== undefined) {
+        proposed.packaging_charges =
+          body.packaging_charges === null ? null : Number(body.packaging_charges)
+      }
+      if (body.serves !== undefined) proposed.serves = body.serves ?? 1
+      if (body.is_active !== undefined) proposed.is_active = body.is_active ?? true
+      if (body.allergens !== undefined) {
+        const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])
+        proposed.allergens = allergens.length ? allergens : null
+      }
+      if (body.item_tags !== undefined) {
+        const tags = Array.isArray(body.item_tags)
+          ? body.item_tags
+          : typeof body.item_tags === 'string'
+            ? body.item_tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+            : []
+        proposed.item_tags = tags.length ? tags : null
+      }
+      if (body.available_for_delivery !== undefined) proposed.available_for_delivery = Boolean(body.available_for_delivery)
+      if (body.weight_per_serving !== undefined) proposed.weight_per_serving = body.weight_per_serving
+      if (body.weight_per_serving_unit !== undefined) proposed.weight_per_serving_unit = body.weight_per_serving_unit
+      if (body.calories_kcal !== undefined) proposed.calories_kcal = body.calories_kcal
+      if (body.protein !== undefined) proposed.protein = body.protein
+      if (body.protein_unit !== undefined) proposed.protein_unit = body.protein_unit
+      if (body.carbohydrates !== undefined) proposed.carbohydrates = body.carbohydrates
+      if (body.carbohydrates_unit !== undefined) proposed.carbohydrates_unit = body.carbohydrates_unit
+      if (body.fat !== undefined) proposed.fat = body.fat
+      if (body.fat_unit !== undefined) proposed.fat_unit = body.fat_unit
+      if (body.fibre !== undefined) proposed.fibre = body.fibre
+      if (body.fibre_unit !== undefined) proposed.fibre_unit = body.fibre_unit
+      if (body.customizations !== undefined) proposed.customizations = body.customizations
+      if (body.variants !== undefined) proposed.variants = body.variants
+      if (body.has_customizations !== undefined) proposed.has_customizations = Boolean(body.has_customizations)
+      if (body.has_addons !== undefined) proposed.has_addons = Boolean(body.has_addons)
+      if (body.has_variants !== undefined) proposed.has_variants = Boolean(body.has_variants)
+
+      const { submitPartnerEditReview } = await import('@/lib/merchant-menu-review')
+      try {
+        const current: Record<string, unknown> = { ...(existingItemRow as Record<string, unknown>) }
+        const menuItemPk = Number((existingItemRow as any).id)
+
+        // Load live nested options so EDIT diffs compare against real catalog data.
+        if (proposed.customizations !== undefined || proposed.has_customizations !== undefined) {
+          const { data: groups } = await supabase
+            .from('merchant_menu_item_customizations')
+            .select('id, customization_title, customization_type, is_required, min_selection, max_selection, display_order')
+            .eq('menu_item_id', menuItemPk)
+            .order('display_order', { ascending: true })
+          const customizations: any[] = []
+          for (const g of groups ?? []) {
+            const { data: addons } = await supabase
+              .from('merchant_menu_item_addons')
+              .select('addon_name, addon_price, in_stock, display_order')
+              .eq('customization_id', g.id)
+              .order('display_order', { ascending: true })
+            customizations.push({ ...g, addons: addons ?? [] })
+          }
+          current.customizations = customizations
+          current.has_customizations = customizations.length > 0
+          current.has_addons = customizations.some((c) => Array.isArray(c.addons) && c.addons.length > 0)
+        }
+        if (proposed.variants !== undefined || proposed.has_variants !== undefined) {
+          const { data: variants } = await supabase
+            .from('merchant_menu_item_variants')
+            .select('variant_name, variant_type, variant_price, display_order')
+            .eq('menu_item_id', menuItemPk)
+            .order('display_order', { ascending: true })
+          current.variants = variants ?? []
+          current.has_variants = (variants ?? []).length > 0
+        }
+
+        const result = await submitPartnerEditReview(supabase, {
+          storeIdNum: store.id,
+          merchantId: store.parent_id,
+          menuItemId: menuItemPk,
+          submittedBy: user.id,
+          current,
+          proposed,
+        })
+        if ('error' in result) {
+          // Soft-fail no_changes so the options wizard can finish without a red error.
+          if (result.error === 'no_changes') {
+            return NextResponse.json({
+              ok: true,
+              no_changes: true,
+              pending_review: false,
+              message: 'No catalog changes to submit.',
+            })
+          }
+          return NextResponse.json({ error: result.error }, { status: 400 })
+        }
+        // Stock can still be toggled live alongside an edit review
+        if (body.in_stock !== undefined) {
+          await supabase
+            .from('merchant_menu_items')
+            .update(buildMenuItemStockTogglePatch(body.in_stock !== false))
+            .eq('id', Number((existingItemRow as any).id))
+            .eq('store_id', store.id)
+        }
+        try {
+          await logStoreActivity({
+            storeId: store.id,
+            section: 'menu_item',
+            action: 'update',
+            entityId: Number((existingItemRow as any).id),
+            entityName: String((existingItemRow as any).item_name ?? ''),
+            summary: result.unchanged
+              ? `Merchant re-confirmed pending EDIT review for item #${(existingItemRow as any).id}`
+              : `Merchant submitted EDIT review for item #${(existingItemRow as any).id}`,
+            actorType: 'merchant',
+          })
+        } catch (_) {}
+        return NextResponse.json({
+          pending_review: true,
+          review_request_id: result.review_request_id,
+          unchanged: Boolean(result.unchanged),
+          merged: Boolean(result.merged),
+          message: result.unchanged
+            ? 'Already under review. Live menu is unchanged until approved.'
+            : 'Changes submitted for review. Live menu is unchanged until approved.',
+        })
+      } catch (e: any) {
+        console.error('[menu-items PATCH] edit review', e)
+        return NextResponse.json({ error: e?.message || 'Failed to submit edit review' }, { status: 500 })
+      }
+    }
 
     const hasItemFields =
       body.item_name != null ||

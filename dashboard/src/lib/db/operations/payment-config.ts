@@ -323,8 +323,14 @@ export async function revertRiderWithdrawalWalletDebitFromDashboard(
       rider_id, entry_type, amount, balance, ref, ref_type, description, metadata, performed_by_type
     ) VALUES (
       ${riderId}, 'failed_withdrawal_revert', ${amount.toFixed(2)}, ${balanceAfter.toFixed(2)},
-      ${ref}, 'withdrawal', ${`Withdrawal failed #${withdrawalId} — amount reverted`},
-      ${JSON.stringify({ withdrawal_id: withdrawalId, reason })}::jsonb, 'system'
+      ${ref}, 'withdrawal',
+      ${`Withdrawal rejected — amount reverted. Reason: ${reason.trim().slice(0, 400)}`},
+      ${JSON.stringify({
+        withdrawal_id: withdrawalId,
+        reason: reason.trim(),
+        rejection_reason: reason.trim(),
+      })}::jsonb,
+      'system'
     )
   `;
   await sql`
@@ -351,7 +357,10 @@ export async function rejectRiderWithdrawal(
   }
   const riderId = Number(wr.rider_id);
   const amount = Math.round(Number(wr.amount) * 100) / 100;
-  const rejectionReason = reason.trim() || "Rejected by admin";
+  const rejectionReason = reason.trim();
+  if (rejectionReason.length < 3) {
+    throw new Error("Rejection reason is required (min 3 characters)");
+  }
 
   await sql`
     UPDATE withdrawal_requests

@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveRiderTabBarBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { colors } from "@/src/theme";
-import { LORA_BOLD, LORA_SEMIBOLD, TAB_LABEL_SIZE } from "@/src/theme/headerFonts";
+import { TAB_LABEL_SIZE } from "@/src/theme/headerFonts";
 
 const BRAND = colors.primary[500];
 
@@ -122,14 +122,15 @@ const styles = StyleSheet.create({
     marginBottom: 2,
     opacity: 0,
   },
+  // System face — avoid Lora blank on first paint before brand fonts finish.
   label: {
-    fontFamily: LORA_SEMIBOLD,
     fontSize: TAB_LABEL_SIZE,
+    fontWeight: "600",
     color: colors.gray[500],
     includeFontPadding: false,
   },
   labelActive: {
-    fontFamily: LORA_BOLD,
+    fontWeight: "700",
     color: BRAND,
   },
 });

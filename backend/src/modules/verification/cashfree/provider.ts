@@ -11,11 +11,12 @@
  *     ops changes take effect immediately.
  *   - Timeout enforced via AbortController.
  *   - Non-2xx responses throw a categorised `CashfreeError`.
- *   - `x-cf-signature` (public-key 2FA) intentionally NOT sent — merchants
- *     that opt in can add that later.
+ *   - When `CASHFREE_PUBLIC_AUTH_KEY` is set, each request includes
+ *     `x-cf-signature` (public-key 2FA) so calls work without IP whitelist.
  */
 import { CashfreeError } from "./errors.js";
 import { loadCashfreeConfig, type CashfreeCredentials } from "./config.js";
+import { buildCashfreeCfSignature } from "./signature.js";
 
 export type ProviderCall<Res> = {
   path: string;
@@ -47,6 +48,11 @@ async function doRequest<Res>(
   };
   if (method === "POST") headers["Content-Type"] = "application/json";
   if (cfg.apiVersion) headers["x-api-version"] = cfg.apiVersion;
+
+  const cfSignature = buildCashfreeCfSignature(cfg.clientId, cfg.publicAuthKey);
+  if (cfSignature) {
+    headers["x-cf-signature"] = cfSignature;
+  }
 
   let res: Response;
   try {
@@ -84,10 +90,29 @@ async function doRequest<Res>(
   let parsed: unknown = null;
   const text = await res.text();
   if (text) {
-    try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 500) }; }
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = { raw: text.slice(0, 500) };
+    }
   }
 
   if (!res.ok) throw CashfreeError.fromResponse(res.status, parsed);
+
+  const bodyStatus =
+    parsed && typeof parsed === "object" && "status" in (parsed as object)
+      ? String((parsed as { status?: unknown }).status ?? "")
+      : "";
+  const bodyRef =
+    parsed && typeof parsed === "object" && "reference_id" in (parsed as object)
+      ? String((parsed as { reference_id?: unknown }).reference_id ?? "")
+      : "";
+  console.info(
+    `[cashfree] ${method} ${path} → HTTP ${res.status}` +
+      (bodyStatus ? ` status=${bodyStatus}` : "") +
+      (bodyRef ? ` ref=${bodyRef}` : "") +
+      ` env=${cfg.env} (${Date.now() - started}ms)`,
+  );
 
   return {
     path,
@@ -100,6 +125,87 @@ async function doRequest<Res>(
     configUsed: { env: cfg.env, configId: cfg.configId },
   };
 }
+
+async function doMultipartRequest<Res>(
+  path: string,
+  form: FormData,
+  cfg: CashfreeCredentials,
+  signal?: AbortSignal,
+): Promise<ProviderCall<Res>> {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("cashfree_timeout")), cfg.timeoutMs);
+  const merged = signal ? mergeSignals(controller.signal, signal) : controller.signal;
+
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "x-client-id": cfg.clientId,
+    "x-client-secret": cfg.clientSecret,
+  };
+  // Do NOT set Content-Type — fetch adds multipart boundary.
+  if (cfg.apiVersion) headers["x-api-version"] = cfg.apiVersion;
+
+  const cfSignature = buildCashfreeCfSignature(cfg.clientId, cfg.publicAuthKey);
+  if (cfSignature) {
+    headers["x-cf-signature"] = cfSignature;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(cfg.baseUrl + path, {
+      method: "POST",
+      headers,
+      body: form,
+      signal: merged,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    const isAbort =
+      (e as { name?: string })?.name === "AbortError" ||
+      (e as Error)?.message?.includes("cashfree_timeout");
+    if (isAbort) throw new CashfreeError("timeout", `Cashfree ${path} timed out after ${cfg.timeoutMs}ms`);
+    throw new CashfreeError("network", (e as Error).message ?? "network_error");
+  }
+  clearTimeout(timer);
+
+  const responseHeaders: Record<string, string> = {};
+  res.headers.forEach((v, k) => {
+    const key = k.toLowerCase();
+    if (
+      key === "x-ratelimit-remaining" ||
+      key === "x-ratelimit-reset" ||
+      key === "x-cf-request-id" ||
+      key === "content-type" ||
+      key === "date"
+    ) {
+      responseHeaders[key] = v;
+    }
+  });
+
+  let parsed: unknown = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = { raw: text.slice(0, 500) };
+    }
+  }
+
+  if (!res.ok) throw CashfreeError.fromResponse(res.status, parsed);
+
+  return {
+    path,
+    method: "POST",
+    requestBody: { multipart: true, path },
+    status: res.status,
+    responseBody: parsed as Res,
+    responseHeaders,
+    durationMs: Date.now() - started,
+    configUsed: { env: cfg.env, configId: cfg.configId },
+  };
+}
+
 
 function mergeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   const anySignal = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
@@ -196,6 +302,51 @@ export const cashfree = {
     return doRequest("/reverse-penny-drop", "POST", body, cfg, opts.signal);
   },
 
+  /**
+   * Cashfree Secure ID — UPI VPA verify.
+   *
+   * Primary: POST /upi/penny-drop (documented Secure ID product; returns
+   * name_at_bank + account status). Fallback: lightweight POST /upi when
+   * penny-drop is not enabled on the Cashfree account.
+   */
+  async verifyUpiPennyDrop(
+    body: { verification_id: string; vpa: string; name?: string },
+    opts: { signal?: AbortSignal } = {},
+  ) {
+    const cfg = await loadCashfreeConfig();
+    const vpaBody = {
+      verification_id: body.verification_id,
+      vpa: body.vpa.trim().toLowerCase(),
+      ...(body.name ? { name: body.name } : {}),
+    };
+
+    // Penny-drop docs require x-api-version; older DB rows may omit it.
+    const pennyCfg =
+      cfg.apiVersion && cfg.apiVersion.trim()
+        ? cfg
+        : { ...cfg, apiVersion: "2024-12-01" };
+    const pennyBody = {
+      ...vpaBody,
+      user_consent: {
+        obtained: true,
+        type: "EXPLICIT",
+        timestamp: new Date().toISOString(),
+        purpose: "Merchant store payout UPI ID verification",
+      },
+    };
+
+    try {
+      return await doRequest("/upi/penny-drop", "POST", pennyBody, pennyCfg, opts.signal);
+    } catch (e) {
+      if (!(e instanceof CashfreeError) || e.category !== "not_enabled") throw e;
+      console.warn(
+        "[cashfree] POST /upi/penny-drop not enabled — falling back to /upi",
+      );
+    }
+
+    return doRequest("/upi", "POST", vpaBody, cfg, opts.signal);
+  },
+
   async getReversePennyDropStatus(
     params: { ref_id?: number; verification_id?: string },
     opts: { signal?: AbortSignal } = {},
@@ -227,6 +378,50 @@ export const cashfree = {
     const cfg = await loadCashfreeConfig();
     const qs = new URLSearchParams({ verification_id: verificationId });
     return doRequest(`/digilocker?${qs.toString()}`, "GET", null, cfg, opts.signal);
+  },
+
+  async getDigilockerDocument(
+    documentType: "AADHAAR" | "PAN" | "DRIVING_LICENSE",
+    verificationId: string,
+    opts: { signal?: AbortSignal } = {},
+  ) {
+    const cfg = await loadCashfreeConfig();
+    const qs = new URLSearchParams({ verification_id: verificationId });
+    return doRequest(
+      `/digilocker/document/${encodeURIComponent(documentType)}?${qs.toString()}`,
+      "GET",
+      null,
+      cfg,
+      opts.signal,
+    );
+  },
+
+  /**
+   * Cashfree Aadhaar Masking — same-page, no DigiLocker redirect.
+   * Multipart: image + verification_id → masked image_link when status=VALID.
+   */
+  async maskAadhaar(
+    body: {
+      verification_id: string;
+      image: Buffer;
+      contentType?: string;
+      filename?: string;
+    },
+    opts: { signal?: AbortSignal } = {},
+  ) {
+    const cfg = await loadCashfreeConfig();
+    const form = new FormData();
+    form.append("verification_id", body.verification_id);
+    const bytes = new Uint8Array(body.image);
+    const blob = new Blob([bytes], { type: body.contentType || "image/jpeg" });
+    form.append("image", blob, body.filename || "aadhaar.jpg");
+    return doMultipartRequest<{
+      status?: string;
+      reference_id?: number | string;
+      verification_id?: string;
+      image_link?: string;
+      message?: string;
+    }>("/aadhaar-masking", form, cfg, opts.signal);
   },
 };
 

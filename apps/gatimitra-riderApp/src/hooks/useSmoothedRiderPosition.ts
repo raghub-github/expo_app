@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { bearingDegrees, lerpAngle, lerpLatLng } from "@/src/lib/navigation-route-progress";
-import type { LatLng } from "@/src/services/maps/directions.service";
+import {
+  bearingDegrees,
+  easeOutCubic,
+  lerpAngle,
+  lerpLatLng,
+  resolveMarkerAnimTiming,
+  trackDebug,
+} from "@gatimitra/map-tracking-engine";
 
 export type RiderGpsFix = {
   lat: number;
@@ -36,6 +42,7 @@ export function useSmoothedRiderPosition(
   );
   const toRef = useRef<SmoothedRider | null>(fromRef.current);
   const startMsRef = useRef(0);
+  const durationRef = useRef(durationMs);
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -60,9 +67,31 @@ export function useSmoothedRiderPosition(
       );
     }
 
+    const timing = resolveMarkerAnimTiming(current.lat, current.lng, fix.lat, fix.lng, {
+      minMs: Math.min(durationMs, 350),
+      maxMs: Math.max(durationMs, 350),
+      metersPerMs: 18,
+      snapIfJumpM: 180,
+    });
+
+    if (timing.durationMs === 0) {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      const snapped = { lat: fix.lat, lng: fix.lng, headingDeg: heading };
+      fromRef.current = snapped;
+      toRef.current = snapped;
+      setSmoothed(snapped);
+      trackDebug("marker_animation_completed", { reason: "snap_teleport" });
+      return;
+    }
+
     fromRef.current = current;
     toRef.current = { lat: fix.lat, lng: fix.lng, headingDeg: heading };
     startMsRef.current = Date.now();
+    durationRef.current = Math.min(timing.durationMs, durationMs);
+    trackDebug("marker_animation_started", {
+      durationMs: durationRef.current,
+    });
 
     const tick = () => {
       const to = toRef.current;
@@ -70,8 +99,8 @@ export function useSmoothedRiderPosition(
       if (!to || !from) return;
 
       const elapsed = Date.now() - startMsRef.current;
-      const t = Math.min(1, elapsed / durationMs);
-      const ease = 1 - (1 - t) ** 3;
+      const t = Math.min(1, elapsed / durationRef.current);
+      const ease = easeOutCubic(t);
 
       const pos = lerpLatLng(
         { latitude: from.lat, longitude: from.lng },
@@ -90,6 +119,9 @@ export function useSmoothedRiderPosition(
 
       if (t < 1) {
         rafRef.current = requestAnimationFrame(tick);
+      } else {
+        rafRef.current = null;
+        trackDebug("marker_animation_completed", {});
       }
     };
 

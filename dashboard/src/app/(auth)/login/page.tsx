@@ -33,13 +33,11 @@ export default function LoginPage() {
 
     if (reason === "session_invalid" || reason === "session_required") {
       void (async () => {
+        // Local-only clear — do NOT POST /api/auth/logout here.
+        // That wiped httpOnly cookies after refresh races and forced real logouts
+        // (especially when opening Payments as super-admin).
         try {
-          await supabase.auth.signOut();
-        } catch {
-          // ignore
-        }
-        try {
-          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+          await supabase.auth.signOut({ scope: "local" });
         } catch {
           // ignore
         }

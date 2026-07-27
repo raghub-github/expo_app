@@ -7,9 +7,30 @@ import {
   mapSettlementApiResponse,
   mapSettlementToClient,
   type MerchantPayoutSettlementClient,
+  isInternalHoldLedgerMovement,
+  isMerchantFacingWithdrawalRequest,
+  isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
+  resolveWithdrawalReversalDisplayDescription,
+  resolveLedgerCategoryLabel,
+  LEDGER_CATEGORY_LABELS,
+  type MerchantLedgerVisibilityEntry,
 } from "@gatimitra/merchant-payout";
 
-export type PayoutStatus = "PAID" | "PROCESSING" | "FAILED" | "ACCRUING";
+export {
+  isInternalHoldLedgerMovement,
+  isMerchantFacingWithdrawalRequest,
+  isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
+  resolveWithdrawalReversalDisplayDescription,
+  resolveLedgerCategoryLabel,
+  type MerchantLedgerVisibilityEntry,
+};
+
+/** @deprecated Prefer LEDGER_CATEGORY_LABELS from @gatimitra/merchant-payout */
+export const CAT_LABELS = LEDGER_CATEGORY_LABELS;
+
+export type PayoutStatus = "PAID" | "PENDING" | "PROCESSING" | "FAILED" | "ACCRUING";
 
 export type PayoutCard = {
   id: string;
@@ -22,6 +43,10 @@ export type PayoutCard = {
   sourceEntry?: LedgerEntry;
   /** Live accruing cycle — extends daily until merchant withdraws. */
   isCurrentCycle?: boolean;
+  cycleId?: number | null;
+  closeReason?: string | null;
+  /** Active merchant_payout_requests.id when this card is a live withdrawal. */
+  payoutRequestId?: number | null;
 };
 
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -117,33 +142,6 @@ export const TX_CATEGORIES = [
 export type TxCategory = (typeof TX_CATEGORIES)[number];
 
 export type TxFilter = "all" | "CREDIT" | "DEBIT" | TxCategory;
-
-export const CAT_LABELS: Record<string, string> = {
-  ORDER_EARNING: "Order Earning",
-  ORDER_ADJUSTMENT: "Adjustment",
-  WITHDRAWAL: "Withdrawal",
-  PENALTY: "Penalty",
-  SUBSCRIPTION_FEE: "Subscription",
-  COMMISSION_DEDUCTION: "Commission",
-  BONUS: "Bonus",
-  CASHBACK: "Cashback",
-  REFUND_REVERSAL: "Refund Reversal",
-  MANUAL_CREDIT: "Manual Credit",
-  MANUAL_DEBIT: "Manual Debit",
-  ADJUSTMENT: "Adjustment",
-  COMPENSATION_CREDIT: "Compensation Credit",
-  COMPENSATION_RECOVERY: "Compensation Recovery",
-};
-
-export function resolveLedgerCategoryLabel(entry: {
-  category: string;
-  metadata?: Record<string, unknown> | null;
-}): string {
-  const meta = entry.metadata ?? null;
-  const txType = String(meta?.transaction_type ?? "").trim().toUpperCase();
-  if (txType && CAT_LABELS[txType]) return CAT_LABELS[txType];
-  return CAT_LABELS[entry.category] ?? entry.category.replace(/_/g, " ");
-}
 
 export const TX_FILTER_CHIPS: { key: TxFilter; label: string }[] = [
   { key: "all", label: "All" },
@@ -333,33 +331,67 @@ export type SettlementBreakdownLine = {
 export function buildSettlementDetailSections(settlement: SettlementSummary): {
   deductionItems: SettlementBreakdownLine[];
   creditItems: SettlementBreakdownLine[];
+  otherCreditItems: SettlementBreakdownLine[];
+  cancellationCreditItems: SettlementBreakdownLine[];
   estPayoutLabel: string;
 } {
+  // Always show C breakdown rows on expand (same pattern as store-offer lines under B).
   const deductionItems: SettlementBreakdownLine[] = [
-    { label: "Payment mechanism fee", amount: settlement.mechanismFee, negative: true },
+    { label: 'Penalties', amount: settlement.penalties ?? 0, negative: true },
+    {
+      label: 'Refund adjustments',
+      amount: settlement.refundAdjustments ?? settlement.customerCompensation ?? 0,
+      negative: true,
+    },
+    {
+      label: 'Manual debit adjustments',
+      amount: settlement.manualDebitAdjustments ?? 0,
+      negative: true,
+    },
+    { label: 'Chargebacks', amount: settlement.chargebacks ?? 0, negative: true },
   ];
-  if (settlement.customerCompensation > 0) {
+  if ((settlement.mechanismFee ?? 0) > 0) {
     deductionItems.push({
-      label: PAYOUT_CUSTOMER_COMPENSATION_LABEL,
-      amount: settlement.customerCompensation,
+      label: 'Payment mechanism fee',
+      amount: settlement.mechanismFee,
       negative: true,
     });
   }
-  const creditItems: SettlementBreakdownLine[] =
-    settlement.cancellationCompensation > 0
-      ? [
-          {
-            label: PAYOUT_CANCELLATION_COMPENSATION_LABEL,
-            amount: settlement.cancellationCompensation,
-            green: true,
-          },
-        ]
-      : [];
-  const estPayoutLabel =
-    settlement.cancellationCompensation > 0
-      ? "Est. payout (net earnings − compensation + credits)"
-      : "Est. payout (net earnings − compensation)";
-  return { deductionItems, creditItems, estPayoutLabel };
+
+  const otherCreditItems: SettlementBreakdownLine[] = [
+    {
+      label: 'Withdrawal returned (rejected / failed)',
+      amount: settlement.withdrawalReversalCredits ?? 0,
+      green: true,
+    },
+    { label: 'Manual credit', amount: settlement.manualCredits ?? 0, green: true },
+    { label: 'Adjustment credit', amount: settlement.adjustmentCredits ?? 0, green: true },
+    { label: 'GST credit', amount: settlement.gstCredits ?? 0, green: true },
+    {
+      label: 'Penalty reversal',
+      amount: settlement.penaltyReversalCredits ?? 0,
+      green: true,
+    },
+  ];
+
+  const cancellationCreditItems: SettlementBreakdownLine[] = [
+    {
+      label: 'Platform cancellation compensation',
+      amount: settlement.cancellationCompensation ?? 0,
+      green: true,
+    },
+  ];
+
+  const creditItems: SettlementBreakdownLine[] = [];
+
+  const estPayoutLabel = 'Est. payout (A + compensation + credits − deductions)';
+  return {
+    deductionItems,
+    creditItems,
+    otherCreditItems,
+    cancellationCreditItems,
+    estPayoutLabel,
+  };
 }
 
 export function computeSettlement(entries: LedgerEntry[]): SettlementSummary {
@@ -370,6 +402,8 @@ export function statusBadgeStyle(status: PayoutStatus) {
   switch (status) {
     case "PAID":
       return { bg: "#E8F5E9", text: "#2E7D32" };
+    case "PENDING":
+      return { bg: "#FFF8E1", text: "#F57F17" };
     case "PROCESSING":
       return { bg: "#FFF3E0", text: "#E65100" };
     case "FAILED":
@@ -383,8 +417,10 @@ export function statusLabel(status: PayoutStatus): string {
   switch (status) {
     case "PAID":
       return "SETTLED";
+    case "PENDING":
+      return "PENDING";
     case "PROCESSING":
-      return "PROCESSING";
+      return "IN PROCESS";
     case "FAILED":
       return "FAILED";
     default:
@@ -400,8 +436,10 @@ export function orderSettlementBadge(
   switch (payoutStatus) {
     case "PAID":
       return { label: "SETTLED", variant: "settled" };
+    case "PENDING":
+      return { label: "PENDING", variant: "processing" };
     case "PROCESSING":
-      return { label: "PROCESSING", variant: "processing" };
+      return { label: "IN PROCESS", variant: "processing" };
     case "FAILED":
       return { label: "FAILED", variant: "failed" };
     default:
@@ -421,7 +459,98 @@ export function payoutCardToParams(card: PayoutCard): Record<string, string> {
     isCurrentCycle: card.isCurrentCycle ? "1" : "",
     ledgerEntryId: card.sourceEntry?.id != null ? String(card.sourceEntry.id) : "",
     pgTransactionId: card.sourceEntry?.pg_transaction_id ?? "",
+    cycleId: card.cycleId != null ? String(card.cycleId) : "",
   };
+}
+
+export function buildPayoutCardsFromCycles(
+  cycles: Array<{
+    id: number;
+    status: "OPEN" | "CLOSED";
+    close_reason: string | null;
+    period_start: string;
+    period_end: string | null;
+    net_payout: number;
+    estimated_payout: number;
+    order_count: number;
+  }>,
+): PayoutCard[] {
+  return cycles.map((c) => {
+    const isOpen = c.status === "OPEN";
+    let status: PayoutStatus = "ACCRUING";
+    if (!isOpen) {
+      if (c.close_reason === "WITHDRAWAL_COMPLETED") status = "PAID";
+      else if (c.close_reason === "WITHDRAWAL_FAILED") status = "FAILED";
+      else status = "FAILED";
+    }
+    const periodStart = parsePgTimestamp(c.period_start);
+    const periodEnd = c.period_end ? parsePgTimestamp(c.period_end) : endOfIstDay(new Date());
+    return {
+      id: isOpen ? "current-cycle" : `cycle-${c.id}`,
+      netPayout: isOpen ? Math.max(0, c.estimated_payout) : Math.max(0, c.net_payout),
+      orderCount: c.order_count,
+      periodStart,
+      periodEnd,
+      payoutDate: periodEnd,
+      status,
+      isCurrentCycle: isOpen,
+      cycleId: c.id,
+      closeReason: c.close_reason,
+    };
+  });
+}
+
+export type ActivePayoutRequestSource = {
+  id: number;
+  amount: number;
+  net_payout_amount: number;
+  status: string;
+  requested_at: string;
+  completed_at?: string | null;
+};
+
+/** Live withdrawal requests that are not yet terminal — shown as PENDING / IN PROCESS cards. */
+export function buildActivePayoutRequestCards(
+  requests: ActivePayoutRequestSource[],
+): PayoutCard[] {
+  return requests
+    .filter((r) => {
+      const s = String(r.status ?? "").toUpperCase();
+      return s === "PENDING" || s === "APPROVED" || s === "PROCESSING";
+    })
+    .map((r) => {
+      const s = String(r.status ?? "").toUpperCase();
+      const requestedAt = parsePgTimestamp(r.requested_at);
+      return {
+        id: `pr-${r.id}`,
+        netPayout: Math.max(0, Number(r.net_payout_amount ?? r.amount ?? 0)),
+        orderCount: 0,
+        periodStart: requestedAt,
+        periodEnd: requestedAt,
+        payoutDate: requestedAt,
+        status: (s === "PENDING" ? "PENDING" : "PROCESSING") as PayoutStatus,
+        payoutRequestId: r.id,
+      };
+    })
+    .sort((a, b) => (b.payoutDate?.getTime() ?? 0) - (a.payoutDate?.getTime() ?? 0));
+}
+
+/**
+ * Keep current-cycle card, then insert active withdrawal request cards, then closed cycles.
+ */
+export function mergePayoutCardsWithActiveRequests(
+  cycleOrLedgerCards: PayoutCard[],
+  requests: ActivePayoutRequestSource[],
+): PayoutCard[] {
+  const current = cycleOrLedgerCards.find((c) => c.isCurrentCycle) ?? null;
+  const past = cycleOrLedgerCards.filter((c) => !c.isCurrentCycle);
+  const active = buildActivePayoutRequestCards(requests).map((card) => ({
+    ...card,
+    periodStart: current?.periodStart ?? card.periodStart,
+    periodEnd: current?.periodEnd ?? card.periodEnd,
+    cycleId: current?.cycleId ?? null,
+  }));
+  return [...(current ? [current] : []), ...active, ...past];
 }
 
 export type OrderPayoutBreakdown = {
@@ -572,8 +701,36 @@ export function resolveLedgerDisplayDescription(entry: LedgerEntry): string {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
   const desc = entry.description?.trim() ?? "";
 
+  if (entry.category === "FAILED_WITHDRAWAL_REVERSAL") {
+    return resolveWithdrawalReversalDisplayDescription(desc, meta);
+  }
+
+  if (isMerchantFacingWithdrawalRequest(entry)) {
+    return "Withdrawal requested — funds held from your wallet.";
+  }
+
+  if (
+    entry.category === "HOLD_LOCK" ||
+    entry.category === "HOLD_RELEASE" ||
+    /withdrawal hold|release hold|hold released/i.test(desc)
+  ) {
+    // Should be filtered from merchant UI; keep a safe fallback if anything leaks.
+    return desc
+      .replace(/\s*#\d+\b/g, "")
+      .replace(/\(hold bucket\)/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim() || "Withdrawal update";
+  }
+
   if (/^Withdrawal completed #\d+$/i.test(desc)) {
     return WITHDRAWAL_COMPLETED_DESCRIPTION;
+  }
+
+  if (/withdrawal|funds returned|release hold|hold released|payout/i.test(desc)) {
+    return desc
+      .replace(/\s*#\d+\b/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
   }
 
   if (meta?.entry_type === "order_cancellation") {

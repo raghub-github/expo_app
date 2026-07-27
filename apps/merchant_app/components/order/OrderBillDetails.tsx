@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable } from "react-native";
 import type { ApiFoodOrder } from "@/services/ordersApi";
 import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { formatMerchantRs } from "@/lib/merchant-line-total";

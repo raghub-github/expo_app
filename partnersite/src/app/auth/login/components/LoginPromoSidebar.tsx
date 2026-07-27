@@ -171,7 +171,7 @@ export function LoginPromoSidebar({ variant = 'login' }: LoginPromoSidebarProps)
 
   return (
     <aside
-      className="relative hidden lg:flex lg:w-80 xl:w-[340px] shrink-0 flex-col justify-between overflow-hidden bg-gradient-to-br from-orange-600 via-orange-700 to-orange-800 text-white"
+      className="relative hidden h-dvh lg:flex lg:w-80 xl:w-[340px] shrink-0 flex-col justify-between overflow-hidden bg-gradient-to-br from-orange-600 via-orange-700 to-orange-800 text-white"
       aria-label={isSignup ? 'Why choose GatiMitra' : 'Partner login benefits'}
     >
       <SidebarWave />

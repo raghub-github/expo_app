@@ -1,11 +1,20 @@
 /**
  * Grid-first layout hero — admin media background + store offer CTA overlay.
+ * Hero height auto-fits the active slide's image/video aspect ratio.
  */
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
-import { View, ScrollView, TouchableOpacity, StyleSheet, NativeSyntheticEvent, NativeScrollEvent, useWindowDimensions } from "react-native";
+import {
+  View,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
+  useWindowDimensions,
+} from "react-native";
 import { Video, ResizeMode } from "expo-av";
-import { Image } from "expo-image";
+import { Image, type ImageLoadEventData } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -33,11 +42,49 @@ export const GRID_FIRST_HERO_PLACEHOLDER = GRID_FIRST_DEFAULT_HERO_BASE;
 const FOOD_PROMO_ASSET_KEYS = [CX.home.promoOffer, CX.home.promoOffer2] as const;
 /** Header row + search — overlay height on hero (excl. status bar). */
 export const GRID_FIRST_HEADER_OVERLAY_H = 122;
+/** Default media band when aspect ratio is unknown (legacy look). */
 const HERO_VISIBLE_H = 210;
 export const GRID_FIRST_HERO_VISIBLE_H = HERO_VISIBLE_H;
 
-export function gridFirstSkySectionHeight(topInset: number): number {
-  return topInset + GRID_FIRST_HEADER_OVERLAY_H + HERO_VISIBLE_H;
+const HERO_MEDIA_MIN_H = 130;
+
+/** Clamp media band height from width ÷ (width/height aspect). */
+export function gridFirstHeroMediaVisibleHeight(
+  screenWidth: number,
+  aspectRatio: number | null | undefined,
+  maxMediaH = 380
+): number {
+  const w = Math.max(1, screenWidth);
+  const ar =
+    aspectRatio != null && Number.isFinite(aspectRatio) && aspectRatio > 0.15 && aspectRatio <= 8
+      ? aspectRatio
+      : w / HERO_VISIBLE_H;
+  const raw = w / ar;
+  const maxH = Math.min(maxMediaH, Math.round(w * 1.2));
+  return Math.round(Math.min(maxH, Math.max(HERO_MEDIA_MIN_H, raw)));
+}
+
+export function gridFirstSkySectionHeight(
+  topInset: number,
+  mediaVisibleH: number = HERO_VISIBLE_H
+): number {
+  return topInset + GRID_FIRST_HEADER_OVERLAY_H + mediaVisibleH;
+}
+
+/** Full immersive sky height from media aspect (header overlays the media). */
+export function gridFirstSkyHeightForAspect(
+  topInset: number,
+  screenWidth: number,
+  screenHeight: number,
+  aspectRatio: number | null | undefined
+): number {
+  const minH = topInset + GRID_FIRST_HEADER_OVERLAY_H + HERO_MEDIA_MIN_H;
+  const maxH = Math.min(Math.round(screenHeight * 0.55), Math.round(screenWidth * 1.15));
+  if (aspectRatio == null || !Number.isFinite(aspectRatio) || aspectRatio <= 0.15) {
+    return Math.max(minH, gridFirstSkySectionHeight(topInset));
+  }
+  const natural = screenWidth / aspectRatio;
+  return Math.round(Math.min(maxH, Math.max(minH, natural)));
 }
 
 type Slide = {
@@ -46,6 +93,7 @@ type Slide = {
   mediaUrl: string | null;
   cta: string | null;
   storeId: string;
+  aspectRatio: number | null;
 };
 
 /** CTA from active store offer only — no generic fallback text. */
@@ -96,6 +144,12 @@ function merchantOfferHeroUrl(offer: HomeBannerOffer): string | null {
   return toAbsoluteImageUrl(raw) ?? raw;
 }
 
+function normalizeAspect(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0.15 || n > 8) return null;
+  return Number(n.toFixed(4));
+}
+
 function buildSlides(
   heroMedia: GridFirstHeroMediaItem[],
   offers: HomeBannerOffer[],
@@ -104,7 +158,12 @@ function buildSlides(
   const merchantOffers = offers.filter((o) => o.kind === "merchant" && o.store_id?.trim());
 
   const mapWithOffers = (
-    mediaSlides: Array<{ id: string; kind: "image" | "video"; mediaUrl: string | null }>
+    mediaSlides: Array<{
+      id: string;
+      kind: "image" | "video";
+      mediaUrl: string | null;
+      aspectRatio: number | null;
+    }>
   ): Slide[] =>
     mediaSlides.map((media, index) => {
       const offer =
@@ -135,6 +194,7 @@ function buildSlides(
         id: item.id,
         kind: item.kind,
         mediaUrl: raw ? toAbsoluteImageUrl(raw) ?? raw : null,
+        aspectRatio: normalizeAspect(item.aspectRatio),
       };
     });
     return mapWithOffers(mediaSlides);
@@ -152,11 +212,11 @@ function buildSlides(
           defaultPromoHeroUrl(index),
         cta,
         storeId: cta && offer.store_id?.trim() ? offer.store_id.trim() : "",
+        aspectRatio: null,
       };
     });
   }
 
-  // No admin hero media — use nearby restaurant food photos (Swiggy-style), then promo assets.
   if (merchantFallbackUris.length > 0) {
     return merchantFallbackUris.slice(0, 6).map((uri, index) => ({
       id: `merchant-hero-${index}`,
@@ -164,16 +224,27 @@ function buildSlides(
       mediaUrl: uri,
       cta: null,
       storeId: "",
+      aspectRatio: null,
     }));
   }
 
   const promo = defaultPromoHeroUrl(0);
   if (promo) {
-    return mapWithOffers([{ id: "hero-promo", kind: "image" as const, mediaUrl: promo }]);
+    return mapWithOffers([
+      { id: "hero-promo", kind: "image" as const, mediaUrl: promo, aspectRatio: null },
+    ]);
   }
 
-  // Patterned cream slide — no remote image required.
-  return [{ id: "hero-default-pattern", kind: "image", mediaUrl: null, cta: null, storeId: "" }];
+  return [
+    {
+      id: "hero-default-pattern",
+      kind: "image",
+      mediaUrl: null,
+      cta: null,
+      storeId: "",
+      aspectRatio: null,
+    },
+  ];
 }
 
 type Props = {
@@ -184,6 +255,8 @@ type Props = {
   embeddedInSky?: boolean;
   immersive?: boolean;
   topInset?: number;
+  /** Fires when total sky/hero height changes (immersive parent should resize). */
+  onHeroHeightChange?: (totalHeight: number) => void;
 };
 
 function HeroMediaSlide({
@@ -194,7 +267,7 @@ function HeroMediaSlide({
   onImageError,
   isActive,
   onPress,
-  immersive = false,
+  onAspectRatio,
 }: {
   slide: Slide;
   slideWidth: number;
@@ -203,21 +276,41 @@ function HeroMediaSlide({
   onImageError: () => void;
   isActive: boolean;
   onPress: () => void;
-  immersive?: boolean;
+  onAspectRatio?: (ratio: number) => void;
 }) {
   const hasMedia = !!slide.mediaUrl && !imageFailed;
   const hasCta = !!slide.cta?.trim();
   const [imageReady, setImageReady] = useState(false);
+  const reportedRef = useRef<string | null>(null);
 
   useEffect(() => {
     setImageReady(false);
+    reportedRef.current = null;
   }, [slide.mediaUrl, slide.id]);
+
+  const reportAspect = useCallback(
+    (width: number, height: number) => {
+      if (!onAspectRatio || !(width > 0) || !(height > 0)) return;
+      const key = `${slide.id}:${Math.round(width)}x${Math.round(height)}`;
+      if (reportedRef.current === key) return;
+      reportedRef.current = key;
+      const ratio = normalizeAspect(width / height);
+      if (ratio) onAspectRatio(ratio);
+    },
+    [onAspectRatio, slide.id]
+  );
+
+  const onImageLoad = useCallback(
+    (e: ImageLoadEventData) => {
+      setImageReady(true);
+      const src = e.source;
+      if (src?.width && src?.height) reportAspect(src.width, src.height);
+    },
+    [reportAspect]
+  );
 
   const content = (
     <>
-      {/* Branded warm backdrop is the ONLY placeholder — never an animated shimmer skeleton
-          (spec: the hero must never show a loading skeleton). It paints instantly and the
-          real image fades in over it when decoded, so there is no white/grey/shimmer flash. */}
       <GridFirstDefaultHeroBg />
 
       {slide.kind === "video" && hasMedia ? (
@@ -229,6 +322,12 @@ function HeroMediaSlide({
           isLooping
           isMuted
           useNativeControls={false}
+          onReadyForDisplay={(ev) => {
+            const nat = ev.naturalSize;
+            if (nat?.width && nat?.height) {
+              reportAspect(nat.width, nat.height);
+            }
+          }}
         />
       ) : hasMedia ? (
         <Image
@@ -239,7 +338,7 @@ function HeroMediaSlide({
           priority="high"
           transition={0}
           recyclingKey={slide.mediaUrl!}
-          onLoad={() => setImageReady(true)}
+          onLoad={onImageLoad}
           onError={onImageError}
         />
       ) : null}
@@ -274,18 +373,18 @@ export function FoodHomeHeroCarousel({
   embeddedInSky = false,
   immersive = false,
   topInset = 0,
+  onHeroHeightChange,
 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
   useAppAssetsStore((s) => s.assets);
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set());
-
-  const slideHeight = immersive
-    ? gridFirstSkySectionHeight(topInset)
-    : 232;
+  const [measuredAspectById, setMeasuredAspectById] = useState<Record<string, number>>({});
+  const [backdropReady, setBackdropReady] = useState(false);
+  const lastReportedHeightRef = useRef<number | null>(null);
 
   const merchantFallbackUris = useMemo(() => {
     const uris: string[] = [];
@@ -305,6 +404,28 @@ export function FoodHomeHeroCarousel({
     [heroMedia, offers, merchantFallbackUris]
   );
 
+  const activeSlide = slides[Math.min(activeIndex, Math.max(0, slides.length - 1))];
+  const activeAspect =
+    (activeSlide ? measuredAspectById[activeSlide.id] : null) ??
+    activeSlide?.aspectRatio ??
+    null;
+
+  const mediaVisibleH = useMemo(() => {
+    const cappedMax = Math.min(380, Math.round(windowHeight * 0.42));
+    return gridFirstHeroMediaVisibleHeight(windowWidth, activeAspect, cappedMax);
+  }, [windowWidth, windowHeight, activeAspect]);
+
+  const slideHeight = immersive
+    ? gridFirstSkyHeightForAspect(topInset, windowWidth, windowHeight, activeAspect)
+    : Math.max(200, mediaVisibleH + 22);
+
+  useEffect(() => {
+    if (!onHeroHeightChange) return;
+    if (lastReportedHeightRef.current === slideHeight) return;
+    lastReportedHeightRef.current = slideHeight;
+    onHeroHeightChange(slideHeight);
+  }, [slideHeight, onHeroHeightChange]);
+
   useLayoutEffect(() => {
     for (const slide of slides) {
       if (slide.kind === "image" && slide.mediaUrl) {
@@ -320,7 +441,9 @@ export function FoodHomeHeroCarousel({
   useEffect(() => {
     setActiveIndex(0);
     scrollRef.current?.scrollTo({ x: 0, animated: false });
-  }, [slides.length]);
+    setMeasuredAspectById({});
+    lastReportedHeightRef.current = null;
+  }, [slides.map((s) => s.id).join("|")]);
 
   useEffect(() => {
     if (slides.length < 2) return;
@@ -334,17 +457,33 @@ export function FoodHomeHeroCarousel({
     return () => clearInterval(timer);
   }, [slides.length, windowWidth]);
 
-  const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const x = e.nativeEvent.contentOffset.x;
-    const idx = Math.round(x / windowWidth);
-    setActiveIndex(idx);
-  }, [windowWidth]);
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const x = e.nativeEvent.contentOffset.x;
+      const idx = Math.round(x / windowWidth);
+      setActiveIndex(idx);
+    },
+    [windowWidth]
+  );
 
   const onPress = (slide: Slide) => {
     if (slide.storeId) {
       navigateToMerchant(router, queryClient, slide.storeId);
     }
   };
+
+  const onSlideAspect = useCallback((slideId: string, ratio: number) => {
+    setMeasuredAspectById((prev) => {
+      if (prev[slideId] === ratio) return prev;
+      return { ...prev, [slideId]: ratio };
+    });
+  }, []);
+
+  const backdropUri = slides[0]?.kind === "image" ? slides[0].mediaUrl : null;
+
+  useEffect(() => {
+    setBackdropReady(false);
+  }, [backdropUri]);
 
   if (slides.length === 0) {
     if (!immersive) return null;
@@ -355,25 +494,17 @@ export function FoodHomeHeroCarousel({
     );
   }
 
-  const backdropUri = slides[0]?.kind === "image" ? slides[0].mediaUrl : null;
-  const [backdropReady, setBackdropReady] = useState(false);
-
-  useEffect(() => {
-    setBackdropReady(false);
-  }, [backdropUri]);
-
   return (
     <View
       style={[
         styles.wrap,
         embeddedInSky && styles.wrapEmbedded,
         immersive && embeddedInSky && styles.wrapImmersiveAbsolute,
-        immersive && !embeddedInSky && { height: slideHeight },
+        (!immersive || !embeddedInSky) && { height: slideHeight },
       ]}
     >
       {immersive ? (
         <>
-          {/* Instant branded backdrop — no shimmer. Backdrop image fades in over it. */}
           <GridFirstDefaultHeroBg />
           {backdropUri ? (
             <Image
@@ -413,7 +544,11 @@ export function FoodHomeHeroCarousel({
             imageFailed={failedIds.has(slide.id)}
             onImageError={() => setFailedIds((s) => new Set(s).add(slide.id))}
             isActive={index === activeIndex}
-            immersive={immersive}
+            onAspectRatio={
+              slide.aspectRatio
+                ? undefined
+                : (ratio) => onSlideAspect(slide.id, ratio)
+            }
           />
         ))}
       </ScrollView>
@@ -431,6 +566,7 @@ export function FoodHomeHeroCarousel({
 const styles = StyleSheet.create({
   wrap: {
     paddingTop: 0,
+    backgroundColor: GRID_FIRST_HERO_PLACEHOLDER,
   },
   wrapEmbedded: {
     marginTop: 0,

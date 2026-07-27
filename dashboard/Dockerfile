@@ -61,6 +61,8 @@ COPY packages/shared-config ./packages/shared-config
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+# TypeScript check on ~1.5k dashboard files OOMs at the default ~2GB heap.
+ENV NODE_OPTIONS=--max-old-space-size=8192
 
 # Next bakes `NEXT_PUBLIC_*` env into the JS bundle at build time, so pass
 # them via build args (set in the workflow / docker-compose). Anything that

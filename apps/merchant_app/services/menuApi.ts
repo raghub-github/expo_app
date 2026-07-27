@@ -849,7 +849,12 @@ export async function createMenuItem(
   storeId: string,
   token: string,
   body: MenuItemPayload
-): Promise<{ id: number; item_id: string }> {
+): Promise<{
+  id: number | null;
+  item_id: string | null;
+  pending_review?: boolean;
+  review_request_id?: number;
+}> {
   const base = getApiBaseUrl();
   const res = await authFetch(
     `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/items`,
@@ -860,7 +865,61 @@ export async function createMenuItem(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { message?: string }).message || `Create item failed: ${res.status}`);
   }
-  return res.json() as Promise<{ id: number; item_id: string }>;
+  return res.json() as Promise<{
+    id: number | null;
+    item_id: string | null;
+    pending_review?: boolean;
+    review_request_id?: number;
+  }>;
+}
+
+/** Attach image to a pending ADD review request (R2 upload; no live menu row). */
+export async function uploadReviewRequestImage(
+  storeId: string,
+  reviewRequestId: number,
+  token: string,
+  file: { uri: string; type?: string; name?: string }
+): Promise<{ image_url: string; r2_key: string; review_request_id: number }> {
+  const base = getApiBaseUrl();
+  const formData = new FormData();
+  formData.append("file", {
+    uri: file.uri,
+    type: file.type ?? "image/jpeg",
+    name: file.name ?? "image.jpg",
+  } as any);
+  const res = await fetch(
+    `${base}/v1/merchant-menu/change-requests/${reviewRequestId}/images?storeId=${encodeURIComponent(storeId)}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Upload failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ image_url: string; r2_key: string; review_request_id: number }>;
+}
+
+/** List menu review / change requests for a store (merchant or agent). */
+export async function fetchChangeRequests(
+  storeId: string,
+  token: string,
+  opts?: { status?: string; request_type?: string; limit?: number }
+): Promise<{ change_requests: Array<Record<string, unknown>>; total: number }> {
+  const base = getApiBaseUrl();
+  const params = new URLSearchParams();
+  params.set("storeId", storeId);
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.request_type) params.set("request_type", opts.request_type);
+  params.set("limit", String(opts?.limit ?? 50));
+  const res = await authFetch(`${base}/v1/merchant-menu/change-requests?${params.toString()}`, token);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Fetch change requests failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ change_requests: Array<Record<string, unknown>>; total: number }>;
 }
 
 /** Upload item image (multipart). Returns { id, image_url, r2_key }. */

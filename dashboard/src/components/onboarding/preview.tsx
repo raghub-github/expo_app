@@ -14,11 +14,27 @@ function normalizeAttachmentHref(url: string | null | undefined): string | null 
   if (url == null || typeof url !== "string") return null;
   const u = url.trim();
   if (!u) return null;
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("data:")) return u;
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+  if (u.includes("/api/attachments/proxy") || u.includes("/v1/attachments/proxy")) {
+    try {
+      const parsed = new URL(u.startsWith("http") ? u : `http://local.invalid${u.startsWith("/") ? "" : "/"}${u}`);
+      const key = parsed.searchParams.get("key");
+      if (key?.trim()) {
+        const path = `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+        return origin ? `${origin}${path}` : path;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("/")) return origin ? `${origin}${u}` : u;
-  return origin ? `${origin}/api/attachments/proxy?key=${encodeURIComponent(u)}` : `/api/attachments/proxy?key=${encodeURIComponent(u)}`;
+  return origin
+    ? `${origin}/api/attachments/proxy?key=${encodeURIComponent(u)}`
+    : `/api/attachments/proxy?key=${encodeURIComponent(u)}`;
 }
 
 /** Same as normalizeAttachmentHref; use for img src so logo/banner/gallery load when stored as R2 key or relative path. */
@@ -77,22 +93,38 @@ const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo
     return count;
   }, [documents]);
 
-  // Format store hours dynamically
+  // Format store hours dynamically (always Mon–Sun; fill missing days like partnersite)
   const formattedStoreHours = useMemo(() => {
-    if (!storeSetup?.store_hours) return [];
-    return Object.entries(storeSetup.store_hours).map(([day, hours]: any) => {
+    const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+    const defaults: Record<string, { closed: boolean; slot1_open: string; slot1_close: string; slot2_open: string; slot2_close: string }> = {
+      monday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+      tuesday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+      wednesday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+      thursday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+      friday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+      saturday: { closed: false, slot1_open: "10:00", slot1_close: "23:00", slot2_open: "", slot2_close: "" },
+      sunday: { closed: false, slot1_open: "10:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+    };
+    const src =
+      storeSetup?.store_hours && typeof storeSetup.store_hours === "object"
+        ? (storeSetup.store_hours as Record<string, any>)
+        : {};
+    return days.map((day) => {
       const dayName = day.charAt(0).toUpperCase() + day.slice(1);
-      if (hours.closed) {
-        return { day: dayName, status: 'closed' };
+      const fb = defaults[day];
+      const hours = src[day] && typeof src[day] === "object" ? src[day] : fb;
+      const closed = typeof hours.closed === "boolean" ? hours.closed : fb.closed;
+      if (closed) {
+        return { day: dayName, status: "closed" as const };
       }
-      const slots = [];
-      if (hours.slot1_open && hours.slot1_close) {
-        slots.push(`${hours.slot1_open} - ${hours.slot1_close}`);
-      }
+      const slots: string[] = [];
+      const s1o = hours.slot1_open || fb.slot1_open;
+      const s1c = hours.slot1_close || fb.slot1_close;
+      if (s1o && s1c) slots.push(`${s1o} - ${s1c}`);
       if (hours.slot2_open && hours.slot2_close) {
         slots.push(`${hours.slot2_open} - ${hours.slot2_close}`);
       }
-      return { day: dayName, slots, status: 'open' };
+      return { day: dayName, slots, status: "open" as const };
     });
   }, [storeSetup?.store_hours]);
 

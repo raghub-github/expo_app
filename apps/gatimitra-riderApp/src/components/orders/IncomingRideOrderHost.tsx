@@ -343,6 +343,7 @@ export function IncomingRideOrderHost() {
     [activeOrderId, closeModal, rejectOrder, bumpPool, t]
   );
 
+  /** Incoming accept → open live nav. Cold start / app reopen does NOT auto-enter (see ActiveOrderResumeBootstrap). */
   const navigateAfterAccept = useCallback(
     (order: IncomingDispatchOrder) => {
       const active =
@@ -390,8 +391,20 @@ export function IncomingRideOrderHost() {
       },
       onError: async (err) => {
         acceptingRef.current = false;
+        const apiMessage = extractRiderAcceptErrorMessage(err);
 
         if (err instanceof ApiError && err.status === 409) {
+          if (isOrderTakenByAnotherRiderError(err)) {
+            showAcceptedByAnotherRiderToast(id);
+            expiredRef.current.add(id);
+            offerShownAtRef.current.delete(id);
+            bumpPool();
+            closeModal();
+            setActiveOrderId(null);
+            return;
+          }
+
+          // Fast path: if we already own it (retry after timeout), resume nav without extra RTT only when probe finds us.
           try {
             const active = await riderApi.getActiveOrders();
             const hit = active.find(
@@ -406,20 +419,6 @@ export function IncomingRideOrderHost() {
             }
           } catch {
             /* ignore recovery probe */
-          }
-        }
-
-        const apiMessage = extractRiderAcceptErrorMessage(err);
-
-        if (err instanceof ApiError && err.status === 409) {
-          if (isOrderTakenByAnotherRiderError(err)) {
-            showAcceptedByAnotherRiderToast(id);
-            expiredRef.current.add(id);
-            offerShownAtRef.current.delete(id);
-            bumpPool();
-            closeModal();
-            setActiveOrderId(null);
-            return;
           }
 
           Alert.alert(

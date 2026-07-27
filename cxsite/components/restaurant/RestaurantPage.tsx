@@ -280,7 +280,11 @@ function RestaurantPage({
       menuAc.abort();
     }, MENU_FETCH_TIMEOUT_MS);
 
-    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, { signal: restaurantAc.signal })
+    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
+      signal: restaurantAc.signal,
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    })
       .then((res) => {
         if (!res.ok) throw new Error(res.status === 404 ? 'Not found' : 'Failed to fetch');
         return res.json();
@@ -355,6 +359,54 @@ function RestaurantPage({
       restaurantAc.abort();
       menuAc.abort();
       window.clearTimeout(menuTimeoutId);
+    };
+  }, [restaurantId]);
+
+  /**
+   * Keep store hours / open status fresh while the page stays open.
+   * Merchant schedule edits write operating_hours instantly — re-fetch on tab
+   * focus and on a short interval so the hero never stays on a stale snapshot.
+   */
+  useEffect(() => {
+    if (!restaurantId) return;
+
+    const refreshStoreMeta = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data || typeof data !== 'object') return;
+          setRestaurant((prev) => {
+            if (!prev) return data;
+            return {
+              ...prev,
+              ...data,
+              // Preserve already-loaded menu-adjacent fields if API omits them
+              operating_hours: data.operating_hours ?? prev.operating_hours,
+              opening_time: data.opening_time ?? prev.opening_time,
+              closing_time: data.closing_time ?? prev.closing_time,
+              operational_status: data.operational_status ?? prev.operational_status,
+            };
+          });
+        })
+        .catch(() => {
+          /* non-fatal background refresh */
+        });
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshStoreMeta();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', refreshStoreMeta);
+    const intervalId = window.setInterval(refreshStoreMeta, 45_000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', refreshStoreMeta);
+      window.clearInterval(intervalId);
     };
   }, [restaurantId]);
 
@@ -806,11 +858,25 @@ function RestaurantPage({
     const os = restaurant.operational_status
     const osu = os != null ? String(os).toUpperCase() : ''
     const openLabel = osu === 'OPEN' ? 'Open now' : os != null && String(os).trim() !== '' ? String(os) : 'Hours'
+
+    // Prefer live merchant_store_operating_hours (today in IST). Legacy
+    // merchant_stores.opening_time/closing_time are registration-era and never
+    // updated when the store changes schedule — using them first caused stale times.
+    const todayLabel = new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      timeZone: 'Asia/Kolkata',
+    }).format(new Date())
+    const todayOh = restaurant.operating_hours?.find((d) => d.day === todayLabel)
+    if (todayOh) {
+      if (!todayOh.open) return `${openLabel} · Closed today`
+      if (todayOh.slots.length > 0) return `${openLabel} · ${todayOh.slots.join(', ')}`
+    }
+    const anyOpenDay = restaurant.operating_hours?.find((d) => d.open && d.slots.length > 0)
+    if (anyOpenDay) return `${openLabel} · ${anyOpenDay.slots.join(', ')}`
+
     if (restaurant.opening_time && restaurant.closing_time) {
       return `${openLabel} · ${restaurant.opening_time} – ${restaurant.closing_time}`
     }
-    const oh = restaurant.operating_hours?.find((d) => d.open && d.slots.length > 0)
-    if (oh) return `${openLabel} · ${oh.slots.join(', ')}`
     if (osu === 'OPEN') return 'Open now'
     if (os != null && String(os).trim() !== '') return String(os)
     return null

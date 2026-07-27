@@ -120,8 +120,9 @@ export function MapboxWebDeliveryMap({
       refitCamera: forceRefit || payload.refitCamera === true,
     };
     const json = JSON.stringify(mapPayload);
+    const recenterJs = forceRefit ? "if (window.recenterOnRider) { window.recenterOnRider(); }" : "";
     webRef.current?.injectJavaScript(
-      `(function(){ try { if (window.updateDeliveryMap) { window.updateDeliveryMap(${json}); } } catch(e) {} })(); true;`
+      `(function(){ try { ${recenterJs} if (window.updateDeliveryMap) { window.updateDeliveryMap(${json}); } } catch(e) {} })(); true;`
     );
   }, [payload, refitNonce]);
 

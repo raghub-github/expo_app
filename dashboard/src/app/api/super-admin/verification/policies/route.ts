@@ -19,7 +19,8 @@ const STATES = ["enabled", "disabled", "force_manual", "force_hybrid"] as const;
 
 const singlePolicySchema = z.object({
   kind: z.literal("single"),
-  policyId: z.number().int().positive(),
+  // Postgres/json may send id as string; coerce so Policy Center flips don't 400.
+  policyId: z.coerce.number().int().positive(),
   mode: z.enum(MODES),
   reason: z.string().max(500).optional().nullable(),
 });
@@ -32,7 +33,7 @@ const bulkPolicySchema = z.object({
 });
 const switchSchema = z.object({
   kind: z.literal("switch"),
-  switchId: z.number().int().positive(),
+  switchId: z.coerce.number().int().positive(),
   state: z.enum(STATES),
   reason: z.string().max(500).optional().nullable(),
 });

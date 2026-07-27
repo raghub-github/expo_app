@@ -66,11 +66,15 @@ export async function fetchPayoutSettlement(
   token: string,
   from: Date,
   to: Date,
+  opts?: { cycleId?: number | null },
 ): Promise<PayoutSettlementSummary> {
   const params = new URLSearchParams({
     from: from.toISOString(),
     to: to.toISOString(),
   });
+  if (opts?.cycleId != null && opts.cycleId > 0) {
+    params.set("cycleId", String(opts.cycleId));
+  }
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/payout-settlement?${params}`,
     token,
@@ -82,6 +86,36 @@ export async function fetchPayoutSettlement(
   const data = await res.json();
   const settlement = (data as { settlement?: Record<string, unknown> }).settlement ?? {};
   return mapSettlementApiResponse(settlement);
+}
+
+export type PayoutCycleCard = {
+  id: number;
+  status: "OPEN" | "CLOSED";
+  close_reason: string | null;
+  period_start: string;
+  period_end: string | null;
+  payout_request_id: number | null;
+  net_payout: number;
+  estimated_payout: number;
+  order_count: number;
+  settlement: Record<string, unknown> | null;
+};
+
+export async function fetchPayoutCycles(
+  storeId: number,
+  token: string,
+  limit = 50,
+): Promise<PayoutCycleCard[]> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/payout-cycles?limit=${limit}`,
+    token,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || "Failed to load payout cycles");
+  }
+  const data = await res.json();
+  return ((data as { cycles?: PayoutCycleCard[] }).cycles ?? []) as PayoutCycleCard[];
 }
 
 export async function fetchPayoutQuote(storeId: number, amount: number, token: string): Promise<PayoutQuote> {
@@ -107,4 +141,44 @@ export async function createPayoutRequest(
   }
   const data = await res.json();
   return data as PayoutResult;
+}
+
+export type PayoutRequestsSummary = {
+  paid: number;
+  in_process: number;
+  pending: number;
+  failed: number;
+  total: number;
+};
+
+export type PayoutRequestListItem = {
+  id: number;
+  amount: number;
+  net_payout_amount: number;
+  status: string;
+  requested_at: string;
+  completed_at: string | null;
+  utr_reference: string | null;
+  failure_reason: string | null;
+};
+
+/** Partner Site payout-requests list parity. */
+export async function fetchPayoutRequests(
+  storeId: number,
+  token: string,
+  limit = 5,
+): Promise<{ summary: PayoutRequestsSummary; recent: PayoutRequestListItem[] }> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/payout-requests?limit=${limit}`,
+    token,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || "Failed to load payouts");
+  }
+  const data = await res.json();
+  return {
+    summary: (data as { summary: PayoutRequestsSummary }).summary,
+    recent: (data as { recent: PayoutRequestListItem[] }).recent ?? [],
+  };
 }

@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, Pressable } from "react-native";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import type { LineItem } from "@/hooks/useOrders";

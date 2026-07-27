@@ -7,8 +7,33 @@ import {
   merchantCancellationHeadline,
   resolveMerchantCancellationActor,
 } from "@/lib/merchant-cancellation-ledger-brand";
+import {
+  isInternalHoldLedgerMovement,
+  isMerchantFacingWithdrawalRequest,
+  isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
+  resolveWithdrawalReversalDisplayDescription,
+  resolveLedgerCategoryLabel,
+  LEDGER_CATEGORY_LABELS,
+  computeSettlementFromLedgerEntries,
+  mapSettlementToClient,
+  type MerchantLedgerVisibilityEntry,
+} from "@gatimitra/merchant-payout";
 
-export type PayoutStatus = "PAID" | "PROCESSING" | "FAILED" | "ACCRUING";
+export {
+  isInternalHoldLedgerMovement,
+  isMerchantFacingWithdrawalRequest,
+  isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
+  resolveWithdrawalReversalDisplayDescription,
+  resolveLedgerCategoryLabel,
+  type MerchantLedgerVisibilityEntry,
+};
+
+/** @deprecated Prefer LEDGER_CATEGORY_LABELS from @gatimitra/merchant-payout */
+export const CAT_LABELS = LEDGER_CATEGORY_LABELS;
+
+export type PayoutStatus = "PAID" | "PENDING" | "PROCESSING" | "FAILED" | "ACCRUING";
 
 export type PayoutCard = {
   id: string;
@@ -21,6 +46,11 @@ export type PayoutCard = {
   sourceEntry?: LedgerEntry;
   /** Live accruing cycle — extends daily until merchant withdraws. */
   isCurrentCycle?: boolean;
+  /** Backend merchant_payout_cycles.id when available. */
+  cycleId?: number | null;
+  closeReason?: string | null;
+  /** Active merchant_payout_requests.id when this card is a live withdrawal. */
+  payoutRequestId?: number | null;
 };
 
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -118,30 +148,6 @@ export type TxCategory = (typeof TX_CATEGORIES)[number];
 
 export type TxFilter = "all" | "CREDIT" | "DEBIT" | TxCategory;
 
-export const CAT_LABELS: Record<string, string> = {
-  ORDER_EARNING: "Order Earning",
-  ORDER_ADJUSTMENT: "Adjustment",
-  WITHDRAWAL: "Withdrawal",
-  PENALTY: "Penalty",
-  SUBSCRIPTION_FEE: "Subscription",
-  COMMISSION_DEDUCTION: "Commission",
-  BONUS: "Bonus",
-  CASHBACK: "Cashback",
-  REFUND_REVERSAL: "Refund Reversal",
-  MANUAL_CREDIT: "Manual Credit",
-  MANUAL_DEBIT: "Manual Debit",
-  ADJUSTMENT: "Adjustment",
-  COMPENSATION_CREDIT: "Compensation Credit",
-  COMPENSATION_RECOVERY: "Compensation Recovery",
-};
-
-export function resolveLedgerCategoryLabel(entry: LedgerEntry): string {
-  const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-  const txType = String(meta?.transaction_type ?? "").trim().toUpperCase();
-  if (txType && CAT_LABELS[txType]) return CAT_LABELS[txType];
-  return CAT_LABELS[entry.category] ?? entry.category.replace(/_/g, " ");
-}
-
 export const TX_FILTER_CHIPS: { key: TxFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "CREDIT", label: "Credits" },
@@ -212,6 +218,14 @@ const WITHDRAWAL_COMPLETED_DESCRIPTION =
 function replaceOrderHashWithFormattedId(desc: string, formattedOrderId: string | null): string {
   if (!desc) return desc;
   const cleanedId = (formattedOrderId ?? "").trim().replace(/^#/, "");
+  // Never rewrite withdrawal / payout note hashes as "ID unavailable" — strip internal ids.
+  if (/withdrawal|funds returned|release hold|hold released|payout/i.test(desc)) {
+    return desc
+      .replace(/\s*#\d+\b/g, "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([.,;:!?)])/g, "$1")
+      .trim();
+  }
   if (!cleanedId) {
     return desc
       .replace(/\bOrder\s*#\d+\b/gi, "Order ID unavailable")
@@ -249,6 +263,14 @@ export function resolveLedgerDisplayDescription(entry: LedgerEntry): string {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
   const formattedOrderId = resolveLedgerFormattedOrderId(entry, meta);
   const desc = replaceOrderHashWithFormattedId(entry.description?.trim() ?? "", formattedOrderId);
+
+  if (entry.category === "FAILED_WITHDRAWAL_REVERSAL") {
+    return resolveWithdrawalReversalDisplayDescription(desc, meta);
+  }
+
+  if (isMerchantFacingWithdrawalRequest(entry)) {
+    return "Withdrawal requested — funds held from your wallet.";
+  }
 
   if (/^Withdrawal completed #\d+$/i.test(desc)) {
     return WITHDRAWAL_COMPLETED_DESCRIPTION;
@@ -471,6 +493,16 @@ export type SettlementSummary = {
   mechanismFee: number;
   customerCompensation: number;
   cancellationCompensation: number;
+  otherCredits: number;
+  withdrawalReversalCredits: number;
+  manualCredits: number;
+  adjustmentCredits: number;
+  gstCredits: number;
+  penaltyReversalCredits: number;
+  penalties: number;
+  refundAdjustments: number;
+  manualDebitAdjustments: number;
+  chargebacks: number;
   estimatedPayout: number;
   orderCount: number;
   deliveredOrderCount: number;
@@ -569,33 +601,68 @@ export type SettlementBreakdownLine = {
 export function buildSettlementDetailSections(settlement: SettlementSummary): {
   deductionItems: SettlementBreakdownLine[];
   creditItems: SettlementBreakdownLine[];
+  otherCreditItems: SettlementBreakdownLine[];
+  cancellationCreditItems: SettlementBreakdownLine[];
   estPayoutLabel: string;
 } {
+  // Always show C breakdown rows on expand (same pattern as store-offer lines under B).
   const deductionItems: SettlementBreakdownLine[] = [
-    { label: "Payment mechanism fee", amount: settlement.mechanismFee, negative: true },
+    { label: "Penalties", amount: settlement.penalties ?? 0, negative: true },
+    {
+      label: "Refund adjustments",
+      amount: settlement.refundAdjustments ?? settlement.customerCompensation ?? 0,
+      negative: true,
+    },
+    {
+      label: "Manual debit adjustments",
+      amount: settlement.manualDebitAdjustments ?? 0,
+      negative: true,
+    },
+    { label: "Chargebacks", amount: settlement.chargebacks ?? 0, negative: true },
   ];
-  if (settlement.customerCompensation > 0) {
+  if ((settlement.mechanismFee ?? 0) > 0) {
     deductionItems.push({
-      label: PAYOUT_CUSTOMER_COMPENSATION_LABEL,
-      amount: settlement.customerCompensation,
+      label: "Payment mechanism fee",
+      amount: settlement.mechanismFee,
       negative: true,
     });
   }
-  const creditItems: SettlementBreakdownLine[] =
-    settlement.cancellationCompensation > 0
-      ? [
-          {
-            label: PAYOUT_CANCELLATION_COMPENSATION_LABEL,
-            amount: settlement.cancellationCompensation,
-            green: true,
-          },
-        ]
-      : [];
-  const estPayoutLabel =
-    settlement.cancellationCompensation > 0
-      ? "Est. payout (net earnings − compensation + credits)"
-      : "Est. payout (net earnings − compensation)";
-  return { deductionItems, creditItems, estPayoutLabel };
+
+  const otherCreditItems: SettlementBreakdownLine[] = [
+    {
+      label: "Withdrawal returned (rejected / failed)",
+      amount: settlement.withdrawalReversalCredits ?? 0,
+      green: true,
+    },
+    { label: "Manual credit", amount: settlement.manualCredits ?? 0, green: true },
+    { label: "Adjustment credit", amount: settlement.adjustmentCredits ?? 0, green: true },
+    { label: "GST credit", amount: settlement.gstCredits ?? 0, green: true },
+    {
+      label: "Penalty reversal",
+      amount: settlement.penaltyReversalCredits ?? 0,
+      green: true,
+    },
+  ];
+
+  const cancellationCreditItems: SettlementBreakdownLine[] = [
+    {
+      label: "Platform cancellation compensation",
+      amount: settlement.cancellationCompensation ?? 0,
+      green: true,
+    },
+  ];
+
+  // Legacy flat credit rows (kept empty — UI uses expandable sections)
+  const creditItems: SettlementBreakdownLine[] = [];
+
+  const estPayoutLabel = "Est. payout (A + compensation + credits − deductions)";
+  return {
+    deductionItems,
+    creditItems,
+    otherCreditItems,
+    cancellationCreditItems,
+    estPayoutLabel,
+  };
 }
 
 function sumMerchantOfferDiscounts(orderCredits: LedgerEntry[]): {
@@ -739,119 +806,34 @@ function sumMechanismFee(entries: LedgerEntry[]): number {
 }
 
 export function computeSettlement(entries: LedgerEntry[]): SettlementSummary {
-  const orderCredits = entries.filter(
-    (e) => e.category === "ORDER_EARNING" && e.direction === "CREDIT"
-  );
-
-  let { itemSubtotal, packagingCharges } = sumNetOrderComponents(orderCredits);
-
-  const creditedOrderKeys = new Set(
-    orderCredits.map((e) => String(e.reference_id ?? e.order_id ?? e.id)),
-  );
-  for (const entry of entries) {
-    if (!isPayoutOrderLedgerEntry(entry)) continue;
-    if (resolveOrderFulfillmentStatus(entry) !== "rejected") continue;
-    const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
-    if (creditedOrderKeys.has(key)) continue;
-    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-    const gross = orderGrossFromEntry(entry);
-    const packaging = ledgerMetaNumber(meta, ["packaging_charge", "packaging_charges", "packaging"]);
-    const item = ledgerMetaNumber(meta, ["item_subtotal", "item_total", "items_total", "subtotal"]);
-    packagingCharges += packaging > 0 ? packaging : 0;
-    itemSubtotal += item > 0 ? item : Math.max(0, gross - packaging);
-  }
-
-  const {
-    couponOfferDiscount,
-    percentageFlatOfferDiscount,
-    comboOfferDiscount,
-    freeDeliveryOfferDiscount,
-  } = sumMerchantOfferDiscounts(orderCredits);
-  const restaurantDiscounts =
-    couponOfferDiscount +
-    percentageFlatOfferDiscount +
-    comboOfferDiscount +
-    freeDeliveryOfferDiscount;
-
-  const mechanismFee = sumMechanismFee(entries);
-  const customerCompensation = sumCustomerCompensation(entries);
-  const orderDeductions = mechanismFee + customerCompensation;
-
-  const { deliveredOrderCount, rejectedOrderCount } = countOrdersByStatus(entries);
-  const orderCount = deliveredOrderCount + rejectedOrderCount;
-
-  let rejectedItemSubtotal = 0;
-  let rejectedPackagingCharges = 0;
-  const rejectedKeys = new Set<string>();
-  for (const entry of entries) {
-    if (!isPayoutOrderLedgerEntry(entry)) continue;
-    if (resolveOrderFulfillmentStatus(entry) !== "rejected") continue;
-    const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
-    if (rejectedKeys.has(key)) continue;
-    rejectedKeys.add(key);
-    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-    const gross = orderGrossFromEntry(entry);
-    const packaging = ledgerMetaNumber(meta, ["packaging_charge", "packaging_charges", "packaging"]);
-    const item = ledgerMetaNumber(meta, ["item_subtotal", "item_total", "items_total", "subtotal"]);
-    rejectedPackagingCharges += packaging > 0 ? packaging : 0;
-    rejectedItemSubtotal += item > 0 ? item : Math.max(0, gross - packaging);
-  }
-
-  const deliveredItemSubtotal = Math.max(0, itemSubtotal - rejectedItemSubtotal);
-  const deliveredPackagingCharges = Math.max(0, packagingCharges - rejectedPackagingCharges);
-  const netOrderValue = deliveredItemSubtotal + deliveredPackagingCharges;
-
-  let cancellationCompensation = 0;
-  const compensationKeys = new Set<string>();
-  for (const entry of entries) {
-    if (!isPayoutOrderLedgerEntry(entry)) continue;
-    if (resolveOrderFulfillmentStatus(entry) !== "rejected") continue;
-    const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
-    if (compensationKeys.has(key)) continue;
-    compensationKeys.add(key);
-    const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-    const keeps = ledgerMetaNumber(meta, ["merchant_keeps_amount", "cancellation_compensation"]);
-    if (keeps > 0) {
-      cancellationCompensation += keeps;
-    } else if (
-      entry.category === "ORDER_ADJUSTMENT" &&
-      entry.direction === "CREDIT" &&
-      meta?.entry_type === "order_cancellation" &&
-      String(meta?.balance_impact ?? "").toLowerCase() === "credit"
-    ) {
-      cancellationCompensation += Number(entry.amount ?? 0);
-    }
-  }
-
-  const merchantNetTotal = orderCredits.reduce(
-    (sum, entry) => sum + Number(entry.amount ?? 0),
-    0,
-  );
-  const estimatedPayout = Math.max(
-    0,
-    merchantNetTotal -
-      restaurantDiscounts -
-      customerCompensation +
-      cancellationCompensation,
-  );
-
+  const client = mapSettlementToClient(computeSettlementFromLedgerEntries(entries));
   return {
-    netOrderValue,
-    itemSubtotal: deliveredItemSubtotal,
-    packagingCharges: deliveredPackagingCharges,
-    restaurantDiscounts,
-    couponOfferDiscount,
-    percentageFlatOfferDiscount,
-    comboOfferDiscount,
-    freeDeliveryOfferDiscount,
-    orderDeductions,
-    mechanismFee,
-    customerCompensation,
-    cancellationCompensation,
-    estimatedPayout,
-    orderCount,
-    deliveredOrderCount,
-    rejectedOrderCount,
+    netOrderValue: client.netOrderValue,
+    itemSubtotal: client.itemSubtotal,
+    packagingCharges: client.packagingCharges,
+    restaurantDiscounts: client.restaurantDiscounts,
+    couponOfferDiscount: client.couponOfferDiscount,
+    percentageFlatOfferDiscount: client.percentageFlatOfferDiscount,
+    comboOfferDiscount: client.comboOfferDiscount,
+    freeDeliveryOfferDiscount: client.freeDeliveryOfferDiscount,
+    orderDeductions: client.orderDeductions,
+    mechanismFee: client.mechanismFee,
+    customerCompensation: client.customerCompensation,
+    cancellationCompensation: client.cancellationCompensation,
+    otherCredits: client.otherCredits ?? 0,
+    withdrawalReversalCredits: client.withdrawalReversalCredits ?? 0,
+    manualCredits: client.manualCredits ?? 0,
+    adjustmentCredits: client.adjustmentCredits ?? 0,
+    gstCredits: client.gstCredits ?? 0,
+    penaltyReversalCredits: client.penaltyReversalCredits ?? 0,
+    penalties: client.penalties ?? 0,
+    refundAdjustments: client.refundAdjustments ?? 0,
+    manualDebitAdjustments: client.manualDebitAdjustments ?? 0,
+    chargebacks: client.chargebacks ?? 0,
+    estimatedPayout: client.estimatedPayout,
+    orderCount: client.orderCount,
+    deliveredOrderCount: client.deliveredOrderCount,
+    rejectedOrderCount: client.rejectedOrderCount,
   };
 }
 
@@ -859,6 +841,8 @@ export function statusBadgeStyle(status: PayoutStatus) {
   switch (status) {
     case "PAID":
       return { bg: "#E8F5E9", text: "#2E7D32" };
+    case "PENDING":
+      return { bg: "#FFF8E1", text: "#F57F17" };
     case "PROCESSING":
       return { bg: "#FFF3E0", text: "#E65100" };
     case "FAILED":
@@ -872,8 +856,10 @@ export function statusLabel(status: PayoutStatus): string {
   switch (status) {
     case "PAID":
       return "SETTLED";
+    case "PENDING":
+      return "PENDING";
     case "PROCESSING":
-      return "PROCESSING";
+      return "IN PROCESS";
     case "FAILED":
       return "FAILED";
     default:
@@ -889,8 +875,10 @@ export function orderSettlementBadge(
   switch (payoutStatus) {
     case "PAID":
       return { label: "SETTLED", variant: "settled" };
+    case "PENDING":
+      return { label: "PENDING", variant: "processing" };
     case "PROCESSING":
-      return { label: "PROCESSING", variant: "processing" };
+      return { label: "IN PROCESS", variant: "processing" };
     case "FAILED":
       return { label: "FAILED", variant: "failed" };
     default:
@@ -910,7 +898,100 @@ export function payoutCardToParams(card: PayoutCard): Record<string, string> {
     isCurrentCycle: card.isCurrentCycle ? "1" : "",
     ledgerEntryId: card.sourceEntry?.id != null ? String(card.sourceEntry.id) : "",
     pgTransactionId: card.sourceEntry?.pg_transaction_id ?? "",
+    cycleId: card.cycleId != null ? String(card.cycleId) : "",
   };
+}
+
+/** Map backend payout-cycles API rows into UI cards (SSOT when migration applied). */
+export function buildPayoutCardsFromCycles(
+  cycles: Array<{
+    id: number;
+    status: "OPEN" | "CLOSED";
+    close_reason: string | null;
+    period_start: string;
+    period_end: string | null;
+    net_payout: number;
+    estimated_payout: number;
+    order_count: number;
+  }>,
+): PayoutCard[] {
+  return cycles.map((c) => {
+    const isOpen = c.status === "OPEN";
+    let status: PayoutStatus = "ACCRUING";
+    if (!isOpen) {
+      if (c.close_reason === "WITHDRAWAL_COMPLETED") status = "PAID";
+      else if (c.close_reason === "WITHDRAWAL_FAILED") status = "FAILED";
+      else status = "FAILED"; // rejected / returned
+    }
+    const periodStart = parsePgTimestamp(c.period_start);
+    const periodEnd = c.period_end ? parsePgTimestamp(c.period_end) : endOfIstDay(new Date());
+    return {
+      id: isOpen ? "current-cycle" : `cycle-${c.id}`,
+      netPayout: isOpen ? Math.max(0, c.estimated_payout) : Math.max(0, c.net_payout),
+      orderCount: c.order_count,
+      periodStart,
+      periodEnd,
+      payoutDate: periodEnd,
+      status,
+      isCurrentCycle: isOpen,
+      cycleId: c.id,
+      closeReason: c.close_reason,
+    };
+  });
+}
+
+export type ActivePayoutRequestSource = {
+  id: number;
+  amount: number;
+  net_payout_amount: number;
+  status: string;
+  requested_at: string;
+  completed_at?: string | null;
+};
+
+/** Live withdrawal requests that are not yet terminal — shown as PENDING / IN PROCESS cards. */
+export function buildActivePayoutRequestCards(
+  requests: ActivePayoutRequestSource[],
+): PayoutCard[] {
+  return requests
+    .filter((r) => {
+      const s = String(r.status ?? "").toUpperCase();
+      return s === "PENDING" || s === "APPROVED" || s === "PROCESSING";
+    })
+    .map((r) => {
+      const s = String(r.status ?? "").toUpperCase();
+      const requestedAt = parsePgTimestamp(r.requested_at);
+      return {
+        id: `pr-${r.id}`,
+        netPayout: Math.max(0, Number(r.net_payout_amount ?? r.amount ?? 0)),
+        orderCount: 0,
+        periodStart: requestedAt,
+        periodEnd: requestedAt,
+        payoutDate: requestedAt,
+        status: (s === "PENDING" ? "PENDING" : "PROCESSING") as PayoutStatus,
+        payoutRequestId: r.id,
+      };
+    })
+    .sort((a, b) => (b.payoutDate?.getTime() ?? 0) - (a.payoutDate?.getTime() ?? 0));
+}
+
+/**
+ * Keep current-cycle card, then insert active withdrawal request cards, then closed cycles.
+ * Fixes missing PENDING card after merchant withdraws (cycle stays OPEN until settle/reject).
+ */
+export function mergePayoutCardsWithActiveRequests(
+  cycleOrLedgerCards: PayoutCard[],
+  requests: ActivePayoutRequestSource[],
+): PayoutCard[] {
+  const current = cycleOrLedgerCards.find((c) => c.isCurrentCycle) ?? null;
+  const past = cycleOrLedgerCards.filter((c) => !c.isCurrentCycle);
+  const active = buildActivePayoutRequestCards(requests).map((card) => ({
+    ...card,
+    periodStart: current?.periodStart ?? card.periodStart,
+    periodEnd: current?.periodEnd ?? card.periodEnd,
+    cycleId: current?.cycleId ?? null,
+  }));
+  return [...(current ? [current] : []), ...active, ...past];
 }
 
 export type OrderPayoutBreakdown = {

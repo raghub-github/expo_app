@@ -134,27 +134,34 @@ export default function PaymentScreen() {
     }
     const locallySubmitted =
       data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim();
-    if (locallySubmitted) return;
-    if (
-      !canAccessOnboardingPaymentScreen({
-        vehicleChoice: data.vehicleChoice,
-        vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
-        completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
-        vehicleOnboardingFlow: data.vehicleOnboardingFlow,
-      })
-    ) {
-      router.replace("/(onboarding)/dl-rc");
+    if (!locallySubmitted) {
+      if (
+        !canAccessOnboardingPaymentScreen({
+          vehicleChoice: data.vehicleChoice,
+          vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+          completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+          vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+          skipBankAccountCheck: true,
+        })
+      ) {
+        router.replace("/(onboarding)/dl-rc");
+        return;
+      }
+    }
+    if (!data.bankAccountOnboardingDone) {
+      router.replace("/(onboarding)/bank-account");
     }
   }, [
     data.vehicleChoice,
     data.vehicleOnboardingSubmittedFor,
     data.vehicleOnboardingFlow,
+    data.bankAccountOnboardingDone,
     riderStatus?.completedOnboardingSteps,
   ]);
 
   useEffect(() => {
     const next = riderStatus?.nextOnboardingStep;
-    if (!next || next === "payment") return;
+    if (!next || next === "payment" || next === "bank_account") return;
     if (
       next === "rental_ev" &&
       isVehicleOnboardingComplete(
@@ -172,27 +179,36 @@ export default function PaymentScreen() {
     data.vehicleOnboardingFlow,
   ]);
 
-  const macroStepIndex = useMemo(
-    () =>
-      resolveOnboardingMacroStepIndex(
-        riderStatus?.completedOnboardingSteps,
-        data.vehicleOnboardingFlow
-      ),
-    [riderStatus?.completedOnboardingSteps, data.vehicleOnboardingFlow]
-  );
+  const macroStepIndex = useMemo(() => {
+    if (typeof riderStatus?.macroStepIndex === "number") {
+      return Math.min(3, Math.max(0, riderStatus.macroStepIndex));
+    }
+    return resolveOnboardingMacroStepIndex(
+      riderStatus?.completedOnboardingSteps,
+      data.vehicleOnboardingFlow
+    );
+  }, [
+    riderStatus?.macroStepIndex,
+    riderStatus?.completedOnboardingSteps,
+    data.vehicleOnboardingFlow,
+  ]);
 
   const documentsReadyForPayment = useMemo(
     () =>
-      canAccessOnboardingPaymentScreen({
-        vehicleChoice: data.vehicleChoice,
-        vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
-        completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
-        vehicleOnboardingFlow: data.vehicleOnboardingFlow,
-      }),
+      Boolean(data.bankAccountOnboardingDone) &&
+      (data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice?.trim() ||
+        canAccessOnboardingPaymentScreen({
+          vehicleChoice: data.vehicleChoice,
+          vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+          completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+          vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+          bankAccountOnboardingDone: data.bankAccountOnboardingDone,
+        })),
     [
       data.vehicleChoice,
       data.vehicleOnboardingSubmittedFor,
       data.vehicleOnboardingFlow,
+      data.bankAccountOnboardingDone,
       riderStatus?.completedOnboardingSteps,
     ]
   );
@@ -330,7 +346,7 @@ export default function PaymentScreen() {
 
             <View style={[form.stepPill, styles.stepPillSpaced]}>
               <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
-              <Text style={form.stepPillText}>Step 3 · Payment</Text>
+              <Text style={form.stepPillText}>Step 5 · Payment</Text>
             </View>
 
             <Text style={form.title}>{feeConfig?.headline ?? "Onboarding Fee"}</Text>

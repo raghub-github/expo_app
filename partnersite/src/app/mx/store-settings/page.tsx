@@ -37,6 +37,7 @@ import {
   writeCachedStoreOperationsPanel,
 } from '@/lib/store-operations-panel-cache'
 import { settlementNoteVisibleUntil } from '@/lib/refund-settlement'
+import { billingCycleLabel, billingCycleSuffix } from '@/lib/billingCycleLabel'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
@@ -2155,7 +2156,7 @@ function StoreSettingsContent() {
         name: 'GatiMitra Growth Plans ⭐',
         description: isUpgrade
           ? `${selectedPlan.plan_name} – ₹${Number(orderData.amountToCharge || 0).toFixed(2)} (credit applied)`
-          : `${selectedPlan.plan_name} - ₹${selectedPlan.price}/${selectedPlan.billing_cycle?.toLowerCase() || 'month'}`,
+          : `${selectedPlan.plan_name} - ₹${selectedPlan.price}/${billingCycleSuffix(selectedPlan.billing_cycle)}`,
         theme: {
           color: '#f97316',
         },
@@ -3498,7 +3499,9 @@ function StoreSettingsContent() {
                                   <span className={`text-2xl sm:text-[28px] leading-tight font-extrabold tracking-tight whitespace-nowrap ${style.priceColor}`}>
                                     ₹{plan.price ?? 0}
                                   </span>
-                                  <span className="text-[11px] text-white/85 font-semibold leading-tight whitespace-nowrap">per month</span>
+                                  <span className="text-[11px] text-white/85 font-semibold leading-tight whitespace-nowrap">
+                                    /{billingCycleSuffix(plan.billing_cycle)} · {billingCycleLabel(plan.billing_cycle)}
+                                  </span>
                                 </div>
                               </div>
 

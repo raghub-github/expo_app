@@ -1,13 +1,6 @@
 import { useCallback } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  ActivityIndicator,
-  ScrollView,
-  Platform,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable, ActivityIndicator, ScrollView, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";

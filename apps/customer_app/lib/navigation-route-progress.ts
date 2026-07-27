@@ -13,7 +13,7 @@ export type RouteProgressSplit = {
 const EARTH_R = 6371000;
 const MIN_RIDER_ROUTE_POINT_M = 2;
 export const RIDER_FRONT_WHEEL_OFFSET_M = 2;
-export const OFF_ROUTE_REROUTE_M = 32;
+export { OFF_ROUTE_REROUTE_M, OFF_ROUTE_SOFT_M } from "@gatimitra/map-tracking-engine";
 
 function toRad(d: number) {
   return (d * Math.PI) / 180;

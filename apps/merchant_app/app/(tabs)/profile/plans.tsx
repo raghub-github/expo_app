@@ -6,7 +6,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
-  Text,
   StyleSheet,
   Pressable,
   Platform,
@@ -21,6 +20,7 @@ import {
   NativeScrollEvent,
   type ListRenderItemInfo,
 } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { API_BASE_URL } from "@/services/api";
@@ -38,10 +38,16 @@ import {
   updateSubscriptionAutoRenew,
 } from "@/services/subscriptionPaymentApi";
 import { SubscriptionCheckoutModal } from "@/components/subscription/SubscriptionCheckoutModal";
+import { SubscriptionSuccessSheet } from "@/components/subscription/SubscriptionSuccessSheet";
 import { SubscriptionHistoryList } from "@/components/subscription/SubscriptionHistoryList";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { Alert } from 'react-native';
+import { Alert } from "react-native";
 import { useAuth } from "@/context/AuthContext";
+import { billingCycleLabel, formatPlanPrice } from "@/lib/billingCycleLabel";
+
+const LORA = "Lora_400Regular";
+const LORA_BOLD = "Lora_700Bold";
+const POPPINS_BOLD = "Poppins_700Bold";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -70,15 +76,15 @@ export type MerchantPlan = {
   is_popular: boolean;
 };
 
-const CONTENT_TOP = 18;
-const CARD_STACK_TOP = 36;
-const PEEK = 40;
+const CONTENT_TOP = 14;
+const CARD_STACK_TOP = 20;
+const PEEK = 36;
 const CARD_WIDTH = SCREEN_WIDTH - PEEK * 2;
-const CARD_HEIGHT = 320;
-const CARD_RADIUS = 19;
-const CARD_PADDING = 16;
-const SIDE_SCALE = 0.93;
-const SIDE_OPACITY = 0.88;
+const CARD_HEIGHT = 360;
+const CARD_RADIUS = 22;
+const CARD_PADDING = 18;
+const SIDE_SCALE = 0.92;
+const SIDE_OPACITY = 0.9;
 
 const DEFAULT_PLANS: MerchantPlan[] = [
   {
@@ -149,12 +155,6 @@ const DEFAULT_PLANS: MerchantPlan[] = [
 function isPremiumPlan(plan: MerchantPlan): boolean {
   const code = (plan.plan_code || "").toUpperCase();
   return code === "PREMIUM" || (plan.is_popular && plan.price > 0 && plan.price < 300);
-}
-
-function formatPrice(price: number, billingCycle: string): string {
-  const cycle = (billingCycle || "MONTHLY").toLowerCase();
-  if (price === 0) return "Free";
-  return `₹${price}/${cycle === "monthly" ? "mo" : cycle === "yearly" ? "yr" : "qtr"}`;
 }
 
 function normalizeGstPercent(pct: unknown): number {
@@ -268,11 +268,16 @@ function StackCard({
             {plan.plan_name}
           </Text>
           <Text style={[styles.price, isPremium && styles.textWhite]} numberOfLines={1}>
-            {formatPrice(plan.price, plan.billing_cycle)}
+            {formatPlanPrice(plan.price, plan.billing_cycle)}
           </Text>
+          {plan.price > 0 ? (
+            <Text style={[styles.cycleChip, isPremium && styles.cycleChipPremium]} numberOfLines={1}>
+              {billingCycleLabel(plan.billing_cycle)}
+            </Text>
+          ) : null}
           {plan.price > 0 && (
-            <Text style={[styles.taxLine, isPremium && styles.textWhite]} numberOfLines={1}>
-              Tax: {gstPercent.toFixed(2)}% • Total ₹{totalWithTax.toFixed(2)}
+            <Text style={[styles.taxLine, isPremium && styles.textWhiteMuted]} numberOfLines={1}>
+              Tax: {gstPercent.toFixed(2)}% · Total ₹{totalWithTax.toFixed(2)}
             </Text>
           )}
         </View>
@@ -575,6 +580,12 @@ export default function PlansScreen() {
   );
 
   const [checkoutPlan, setCheckoutPlan] = useState<MerchantPlan | null>(null);
+  const [successSheet, setSuccessSheet] = useState<{
+    planName: string;
+    mode: "purchased" | "already";
+    via: "wallet" | "razorpay" | "skipped" | null;
+    billingCycle: string | null;
+  } | null>(null);
 
   /**
    * Subscription history sheet. Kept closed by default so the plan cards own the
@@ -652,9 +663,24 @@ export default function PlansScreen() {
       try {
         await activateFreeSubscription(selectedStore.id, token, plan.id);
         await refreshSubscriptionState();
-        Alert.alert("Activated", `${plan.plan_name} is now active.`);
+        setSuccessSheet({
+          planName: plan.plan_name,
+          mode: "purchased",
+          via: "skipped",
+          billingCycle: plan.billing_cycle,
+        });
       } catch (e) {
-        Alert.alert("Could not activate", e instanceof Error ? e.message : "Please try again.");
+        const msg = e instanceof Error ? e.message : "Please try again.";
+        if (/already on this plan/i.test(msg)) {
+          setSuccessSheet({
+            planName: plan.plan_name,
+            mode: "already",
+            via: null,
+            billingCycle: plan.billing_cycle,
+          });
+        } else {
+          Alert.alert("Could not activate", msg);
+        }
       }
       return;
     }
@@ -780,21 +806,35 @@ export default function PlansScreen() {
           planId={checkoutPlan.id}
           planName={checkoutPlan.plan_name}
           token={token}
-          onSuccess={async ({ via }) => {
+          onSuccess={async ({ via, alreadyOnPlan }) => {
+            const planSnapshot = checkoutPlan;
+            // Close checkout first so the success sheet isn't stacked under it.
             setCheckoutPlan(null);
             await refreshSubscriptionState();
-            Alert.alert(
-              "Subscription active",
-              via === "wallet"
-                ? "Paid from your wallet balance."
-                : via === "razorpay"
-                ? "Payment successful."
-                : "Plan activated."
-            );
+            // Next frame → success sheet opens cleanly after checkout Modal unmounts.
+            requestAnimationFrame(() => {
+              setSuccessSheet({
+                planName: planSnapshot.plan_name,
+                mode: alreadyOnPlan ? "already" : "purchased",
+                via: alreadyOnPlan ? null : via,
+                billingCycle: planSnapshot.billing_cycle,
+              });
+            });
           }}
           onClose={() => setCheckoutPlan(null)}
         />
       ) : null}
+
+      <SubscriptionSuccessSheet
+        visible={!!successSheet}
+        planName={successSheet?.planName ?? ""}
+        mode={successSheet?.mode ?? "purchased"}
+        via={successSheet?.via ?? null}
+        billingCycleLabel={
+          successSheet?.billingCycle ? billingCycleLabel(successSheet.billingCycle) : null
+        }
+        onClose={() => setSuccessSheet(null)}
+      />
     </View>
   );
 }
@@ -832,6 +872,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   sheetOverlay: { flex: 1, justifyContent: "flex-end" },
@@ -860,7 +901,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraMerchant.border,
   },
-  sheetTitle: { fontSize: 17, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  sheetTitle: { fontSize: 17, fontWeight: "800", fontFamily: LORA_BOLD, color: GatiMitraMerchant.textPrimary },
   sheetClose: {
     width: 32,
     height: 32,
@@ -872,21 +913,23 @@ const styles = StyleSheet.create({
   sheetBody: { flexGrow: 0 },
   sheetBodyContent: { paddingHorizontal: H_PADDING, paddingTop: 12, paddingBottom: 24 },
 
-  container: { flex: 1, backgroundColor: GatiMitraMerchant.background },
-  header: { paddingHorizontal: H_PADDING, marginBottom: 20 },
+  container: { flex: 1, backgroundColor: "#F8FAFC" },
+  header: { paddingHorizontal: H_PADDING, marginBottom: 12 },
   title: {
-    fontSize: 22,
-    fontWeight: "700",
+    fontSize: 24,
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   subtitle: {
     fontSize: 13,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textTertiary,
     marginTop: 4,
+    lineHeight: 18,
   },
   subheading: {
     fontSize: 12,
-    fontWeight: "600",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textSecondary,
     marginBottom: 12,
   },
@@ -896,36 +939,35 @@ const styles = StyleSheet.create({
   },
   cell: {
     width: CARD_WIDTH,
-    height: CARD_HEIGHT + 20,
+    height: CARD_HEIGHT + 24,
     justifyContent: "center",
     alignItems: "center",
   },
   listWrap: { flex: 1, justifyContent: "center" },
   cardBase: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderWidth: 1.5,
-    borderColor: GatiMitraMerchant.border,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowRadius: 18,
+    elevation: 6,
   },
   cardActiveOuterWrap: {
-    borderWidth: 3,
+    borderWidth: 2.5,
     borderColor: GatiMitraMerchant.primary,
-    borderRadius: CARD_RADIUS + 3,
+    borderRadius: CARD_RADIUS + 4,
     padding: 3,
     shadowColor: GatiMitraMerchant.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    elevation: 10,
   },
   cardActiveDoubleBorder: {
-    borderWidth: 2,
-    borderColor: GatiMitraMerchant.navy,
+    borderWidth: 0,
   },
   cardActiveInnerBorderLight: {
     borderWidth: 1,
@@ -943,46 +985,73 @@ const styles = StyleSheet.create({
   },
   planName: {
     fontSize: 18,
-    fontWeight: "800",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
     marginBottom: 2,
   },
   textWhite: { color: "#fff" },
+  textWhiteMuted: { color: "rgba(255,255,255,0.82)" },
   price: {
-    fontSize: 24,
-    fontWeight: "900",
+    fontSize: 28,
+    fontFamily: POPPINS_BOLD,
     color: GatiMitraMerchant.primary,
-    marginTop: 4,
+    marginTop: 6,
     marginBottom: 2,
+  },
+  cycleChip: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(62, 180, 137, 0.12)",
+    color: GatiMitraMerchant.primaryDark,
+    fontSize: 11,
+    fontFamily: LORA_BOLD,
+  },
+  cycleChipPremium: {
+    backgroundColor: "rgba(255,255,255,0.22)",
+    color: "#FFFFFF",
   },
   taxLine: {
     fontSize: 11,
-    fontWeight: "600",
+    fontFamily: LORA,
     color: GatiMitraMerchant.textSecondary,
-    marginTop: 2,
+    marginTop: 4,
   },
   badge: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: BUTTON_RADIUS,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 999,
     backgroundColor: GatiMitraMerchant.primary,
   },
   badgePremium: { backgroundColor: "rgba(255,255,255,0.28)" },
-  badgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
+  badgeText: { fontSize: 10, fontFamily: LORA_BOLD, color: "#fff" },
   currentBadge: {
-    paddingVertical: 3,
-    paddingHorizontal: 6,
-    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 999,
     backgroundColor: GatiMitraMerchant.statusCompletedBg,
   },
   currentBadgePremium: { backgroundColor: "rgba(255,255,255,0.2)" },
-  currentBadgeText: { fontSize: 10, fontWeight: "600", color: GatiMitraMerchant.statusCompleted },
-  description: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginBottom: 10, lineHeight: 16, fontWeight: "500" },
+  currentBadgeText: {
+    fontSize: 10,
+    fontFamily: LORA_BOLD,
+    color: GatiMitraMerchant.statusCompleted,
+  },
+  description: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 10,
+    lineHeight: 17,
+    fontFamily: LORA,
+  },
   featuresWrap: { flex: 1, minHeight: 0, marginTop: 4 },
   featuresScroll: { flex: 1, minHeight: 0 },
   featuresTitle: {
     fontSize: 10,
-    fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textTertiary,
     marginBottom: 6,
     textTransform: "uppercase",
@@ -992,27 +1061,38 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    marginBottom: 3,
+    marginBottom: 4,
   },
-  benefitLabel: { fontSize: 11, color: GatiMitraMerchant.textSecondary, flex: 1 },
-  benefitValue: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textPrimary, minWidth: 44, textAlign: "right" },
+  benefitLabel: {
+    fontSize: 11,
+    fontFamily: LORA,
+    color: GatiMitraMerchant.textSecondary,
+    flex: 1,
+  },
+  benefitValue: {
+    fontSize: 11,
+    fontFamily: LORA_BOLD,
+    color: GatiMitraMerchant.textPrimary,
+    minWidth: 44,
+    textAlign: "right",
+  },
   cta: {
-    paddingVertical: 12,
+    paddingVertical: 13,
     paddingHorizontal: 16,
-    borderRadius: BUTTON_RADIUS,
+    borderRadius: 14,
     backgroundColor: GatiMitraMerchant.primary,
     alignItems: "center",
     marginTop: 12,
     shadowColor: GatiMitraMerchant.primary,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.22,
     shadowRadius: 8,
     elevation: 4,
   },
   ctaPremium: { backgroundColor: "rgba(255,255,255,0.28)" },
-  ctaActive: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
+  ctaActive: { backgroundColor: GatiMitraMerchant.surfaceSubtle, shadowOpacity: 0 },
   ctaPressed: { opacity: 0.9 },
-  ctaText: { fontSize: 14, fontWeight: "800", color: "#fff", letterSpacing: 0.3 },
+  ctaText: { fontSize: 14, fontFamily: LORA_BOLD, color: "#fff", letterSpacing: 0.3 },
   ctaTextPremium: { color: "#fff" },
   ctaTextActive: { color: GatiMitraMerchant.textSecondary },
   dots: {

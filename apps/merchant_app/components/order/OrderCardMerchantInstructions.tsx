@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { resolveMerchantInstructionsForDisplay } from "@/lib/merchant-order-instructions";
 

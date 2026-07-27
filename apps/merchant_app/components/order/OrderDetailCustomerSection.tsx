@@ -2,7 +2,8 @@
  * Order details — Customer details section (light mode, reference layout).
  */
 
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ApiFoodOrder } from "@/services/ordersApi";
 import { callCustomer } from "@/lib/orderCardActions";

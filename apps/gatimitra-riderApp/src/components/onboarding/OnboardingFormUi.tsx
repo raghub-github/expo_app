@@ -283,7 +283,8 @@ export const onboardingFormStyles = StyleSheet.create({
   textInput: {
     flex: 1,
     fontSize: 16,
-    fontWeight: "500",
+    fontFamily: "Lora_700Bold",
+    fontWeight: "700",
     color: colors.gray[900],
     paddingVertical: Platform.OS === "ios" ? 14 : 10,
     letterSpacing: 0.5,

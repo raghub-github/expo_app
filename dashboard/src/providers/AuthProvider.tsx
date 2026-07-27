@@ -1,7 +1,8 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 interface SessionUser {
   id: string;
   email: string;
@@ -40,6 +41,13 @@ export interface SystemUserSummary {
   fullName: string;
   email: string;
 }
+
+type AuthSessionCache = {
+  session?: { user?: SessionUser };
+  permissions?: PermissionsData;
+  systemUser?: SystemUserSummary | null;
+};
+
 interface AuthContextValue {
   /** True once bootstrap/auth state has been resolved and queries may run */
   authReady: boolean;
@@ -66,6 +74,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const AUTH_SESSION_KEY = ["auth", "session"] as const;
+
 export function AuthProvider({
   children,
   authReady,
@@ -75,11 +85,19 @@ export function AuthProvider({
 }) {
   const queryClient = useQueryClient();
 
-  const bootstrapSession = queryClient.getQueryData<{
-    session?: { user?: SessionUser };
-    permissions?: PermissionsData;
-    systemUser?: SystemUserSummary | null;
-  }>(["auth", "session"]);
+  // Subscribe to cache updates — getQueryData alone does not re-render when
+  // bootstrap seeds session/systemUser after first paint.
+  const { data: bootstrapSession } = useQuery<AuthSessionCache | null>({
+    queryKey: AUTH_SESSION_KEY,
+    queryFn: async () =>
+      (queryClient.getQueryData<AuthSessionCache>(AUTH_SESSION_KEY) as AuthSessionCache | undefined) ??
+      null,
+    enabled: false,
+    initialData: () =>
+      (queryClient.getQueryData<AuthSessionCache>(AUTH_SESSION_KEY) as AuthSessionCache | undefined) ??
+      null,
+    staleTime: Infinity,
+  });
 
   const user = bootstrapSession?.session?.user ?? null;
   const permissions = (bootstrapSession?.permissions as PermissionsData | undefined) ?? null;
@@ -111,13 +129,12 @@ export function AuthProvider({
   }, []);
 
   const refetch = useCallback(() => {
-    // Re-run bootstrap to refresh auth state
     queryClient.invalidateQueries({ queryKey: ["auth", "bootstrap"] });
   }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      authReady: Boolean(authReady || user),
+      authReady: Boolean(authReady || user || systemUser),
       user,
       sessionStatus,
       permissions,

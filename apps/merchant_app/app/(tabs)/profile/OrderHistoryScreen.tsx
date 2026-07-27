@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";

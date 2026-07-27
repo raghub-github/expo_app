@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { usePathname, useRouter } from 'next/navigation';
 import { Lora, Poppins } from 'next/font/google';
-import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { fetchStoreById } from '@/lib/database';
@@ -240,7 +240,13 @@ function MiniOrderId({
 export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: string }) {
   const router = useRouter();
   const pathname = usePathname() || '';
-  const { storeId, storeInternalId, ready: storeReady } = usePartnerSelectedStore(restaurantId);
+  const {
+    storeId,
+    ready: storeReady,
+    managedStoreIds,
+    managedInternalIds,
+    metaByInternalId,
+  } = usePartnerSelectedStore(restaurantId);
   const [muted, setMuted] = useState(false);
   /** FIFO queue: oldest pending order is index 0. The merchant can page through with the pager. */
   const [queue, setQueue] = useState<OrdersFoodRow[]>([]);
@@ -446,30 +452,67 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   }, [modalOrder?.order_id]);
 
   const fetchByFoodRow = useCallback(
-    async (foodRowId: number) => {
-      if (!storeId) return null;
-      const res = await fetch(
-        `/api/food-orders?store_id=${encodeURIComponent(storeId)}&orders_food_id=${foodRowId}`
-      );
-      const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
-      if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
-      return data.orders[0] ?? null;
+    async (foodRowId: number, preferredStoreId?: string | null) => {
+      const tryIds = [
+        ...(preferredStoreId ? [preferredStoreId] : []),
+        ...managedStoreIds,
+        ...(storeId ? [storeId] : []),
+      ].filter((id, i, arr) => id && arr.indexOf(id) === i);
+      for (const sid of tryIds) {
+        const res = await fetch(
+          `/api/food-orders?store_id=${encodeURIComponent(sid)}&orders_food_id=${foodRowId}`
+        );
+        const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
+        if (res.ok && Array.isArray(data.orders) && data.orders.length > 0) {
+          return data.orders[0] ?? null;
+        }
+      }
+      return null;
     },
-    [storeId]
+    [managedStoreIds, storeId]
   );
 
   const fetchByCoreId = useCallback(
-    async (coreId: number) => {
-      if (!storeId) return null;
-      const res = await fetch(
-        `/api/food-orders?store_id=${encodeURIComponent(storeId)}&orders_core_id=${coreId}`
-      );
-      const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
-      if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
-      return data.orders[0] ?? null;
+    async (coreId: number, preferredStoreId?: string | null) => {
+      const tryIds = [
+        ...(preferredStoreId ? [preferredStoreId] : []),
+        ...managedStoreIds,
+        ...(storeId ? [storeId] : []),
+      ].filter((id, i, arr) => id && arr.indexOf(id) === i);
+      for (const sid of tryIds) {
+        const res = await fetch(
+          `/api/food-orders?store_id=${encodeURIComponent(sid)}&orders_core_id=${coreId}`
+        );
+        const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
+        if (res.ok && Array.isArray(data.orders) && data.orders.length > 0) {
+          return data.orders[0] ?? null;
+        }
+      }
+      return null;
     },
-    [storeId]
+    [managedStoreIds, storeId]
   );
+
+  const resolvePublicStoreIdForOrder = useCallback(
+    (order: OrdersFoodRow | null | undefined): string | null => {
+      if (!order) return storeId;
+      const internal = Number(order.merchant_store_id);
+      if (Number.isFinite(internal) && metaByInternalId.has(internal)) {
+        return metaByInternalId.get(internal)!.storeId;
+      }
+      return storeId;
+    },
+    [metaByInternalId, storeId]
+  );
+
+  const orderLocality = useMemo(() => {
+    if (!modalOrder) return '';
+    const internal = Number(modalOrder.merchant_store_id);
+    if (Number.isFinite(internal) && metaByInternalId.has(internal)) {
+      return metaByInternalId.get(internal)!.locality;
+    }
+    return '';
+  }, [modalOrder, metaByInternalId]);
 
   useEffect(() => {
     // Ensure modal has customer name + items + bulk flag by re-fetching full order (DB-backed)
@@ -615,65 +658,70 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   );
 
   const scanForNewOrders = useCallback(async () => {
-    if (!storeId || !storeReady) return;
-  // Don't bail on suppress here — openIfNew / suppress-clear handles reopen.
-  // (Previously early-return blocked rescans after floating-bar clear races.)
-  try {
-      const pending = await fetchPartnerPendingNewOrdersCount(storeId);
-      if (pending == null || pending <= 0) return;
+    const scanIds = managedStoreIds.length > 0 ? managedStoreIds : storeId ? [storeId] : [];
+    if (scanIds.length === 0 || !storeReady) return;
+    try {
+      for (const sid of scanIds) {
+        const pending = await fetchPartnerPendingNewOrdersCount(sid);
+        if (pending == null || pending <= 0) continue;
 
-      const res = await fetch(
-        `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=${FALLBACK_SCAN_LIMIT}&skip_compensation=1`
-      );
-      const text = await res.text();
-      let data: { orders?: OrdersFoodRow[] } = {};
-      if (text.trim()) {
-        try {
-          data = JSON.parse(text) as { orders?: OrdersFoodRow[] };
-        } catch {
-          return;
+        const res = await fetch(
+          `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=${FALLBACK_SCAN_LIMIT}&skip_compensation=1`
+        );
+        const text = await res.text();
+        let data: { orders?: OrdersFoodRow[] } = {};
+        if (text.trim()) {
+          try {
+            data = JSON.parse(text) as { orders?: OrdersFoodRow[] };
+          } catch {
+            continue;
+          }
         }
-      }
-      if (!res.ok || !Array.isArray(data.orders)) return;
-      const created = sortOrdersFifo(
-        data.orders.filter((o) => {
-          const coreOrderId = Number(o.order_id);
-          if (!Number.isFinite(coreOrderId) || isOrderDismissed(coreOrderId)) return false;
-          const ext = o as OrdersFoodRow & { core_status?: string; current_status?: string | null };
-          const st = resolvePartnerPipeline(
-            o.order_status,
-            ext.core_status ?? 'assigned',
-            ext.current_status ?? null
-          );
-          return st === 'CREATED';
-        })
-      );
-      for (const row of created) {
-        await openIfNew(row);
+        if (!res.ok || !Array.isArray(data.orders)) continue;
+        const created = sortOrdersFifo(
+          data.orders.filter((o) => {
+            const coreOrderId = Number(o.order_id);
+            if (!Number.isFinite(coreOrderId) || isOrderDismissed(coreOrderId)) return false;
+            const ext = o as OrdersFoodRow & { core_status?: string; current_status?: string | null };
+            const st = resolvePartnerPipeline(
+              o.order_status,
+              ext.core_status ?? 'assigned',
+              ext.current_status ?? null
+            );
+            return st === 'CREATED';
+          })
+        );
+        for (const row of created) {
+          await openIfNew(row);
+        }
       }
     } catch {
       /* ignore */
     }
-  }, [storeId, storeReady, openIfNew, isOrderDismissed]);
+  }, [managedStoreIds, storeId, storeReady, openIfNew, isOrderDismissed]);
 
   const scanForNewOrdersRef = useRef(scanForNewOrders);
   scanForNewOrdersRef.current = scanForNewOrders;
   const openIfNewRef = useRef(openIfNew);
   openIfNewRef.current = openIfNew;
 
+  const managedStoreIdsKey = managedStoreIds.join(',');
+  const managedInternalIdsKey = managedInternalIds.join(',');
+
   useEffect(() => {
-    if (!storeId || !storeReady) return;
+    if (!storeReady || managedStoreIds.length === 0) return;
+    const allowed = new Set(managedStoreIds);
     return subscribeIncomingOrderAlert((payload) => {
-      if (payload.storeId !== storeId) return;
+      if (!allowed.has(payload.storeId)) return;
       void (async () => {
-        const full = await fetchByCoreId(payload.orderId);
+        const full = await fetchByCoreId(payload.orderId, payload.storeId);
         await openIfNewRef.current(full, { skipBroadcast: true });
       })();
     });
-  }, [storeId, storeReady, fetchByCoreId]);
+  }, [storeReady, managedStoreIdsKey, fetchByCoreId]);
 
   useEffect(() => {
-    if (!storeReady || !storeId) return;
+    if (!storeReady || managedStoreIds.length === 0) return;
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         void scanForNewOrdersRef.current();
@@ -681,20 +729,24 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [storeReady, storeId]);
+  }, [storeReady, managedStoreIdsKey]);
 
   useEffect(() => {
-    if (!storeInternalId || !storeId || !storeReady) return () => {};
+    if (!storeReady || managedInternalIds.length === 0) return () => {};
     const supabase = createClient();
+    const filter =
+      managedInternalIds.length === 1
+        ? `merchant_store_id=eq.${managedInternalIds[0]}`
+        : `merchant_store_id=in.(${managedInternalIds.join(',')})`;
     const ch = supabase
-      .channel(`partner_incoming:${storeInternalId}`)
+      .channel(`partner_incoming:${managedInternalIds.join('_')}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'orders_core',
-          filter: `merchant_store_id=eq.${storeInternalId}`,
+          filter,
         },
         (payload) => {
           const row = payload.new as { id?: number; status?: string; merchant_store_id?: number };
@@ -702,8 +754,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           const nextStatus = String(row.status || '').toLowerCase();
           const prevStatus = String(prev?.status || '').toLowerCase();
           const coreId = Number(row.id);
-          // Any queued order that leaves 'assigned' (accepted/cancelled here or elsewhere)
-          // is dropped from the pager — not just the one being viewed.
           if (
             Number.isFinite(coreId) &&
             nextStatus !== 'assigned' &&
@@ -712,12 +762,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
             removeOrderFromQueueById(coreId);
             return;
           }
-          // Some flows create the row first, then UPDATE to assigned — handle both.
           if (nextStatus !== 'assigned') return;
           if (prevStatus === 'assigned') return;
           if (!Number.isFinite(coreId)) return;
+          const preferred =
+            row.merchant_store_id != null
+              ? metaByInternalId.get(Number(row.merchant_store_id))?.storeId
+              : null;
           void (async () => {
-            const full = await fetchByCoreId(coreId);
+            const full = await fetchByCoreId(coreId, preferred);
             await openIfNew(full);
           })();
         }
@@ -728,10 +781,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           event: '*',
           schema: 'public',
           table: 'orders_food',
-          filter: `merchant_store_id=eq.${storeInternalId}`,
+          filter,
         },
         (payload) => {
-          const row = payload.new as { id?: number; order_id?: number; order_status?: string };
+          const row = payload.new as {
+            id?: number;
+            order_id?: number;
+            order_status?: string;
+            merchant_store_id?: number;
+          };
           const prev = payload.old as { order_status?: string } | null;
           const prevSt = resolvePartnerPipeline(prev?.order_status ?? null, 'assigned', null);
           const st = resolvePartnerPipeline(row.order_status, 'assigned', null);
@@ -749,8 +807,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           if (prevSt === 'CREATED') return;
           const fid = Number(row.id);
           if (!Number.isFinite(fid)) return;
+          const preferred =
+            row.merchant_store_id != null
+              ? metaByInternalId.get(Number(row.merchant_store_id))?.storeId
+              : null;
           void (async () => {
-            const full = await fetchByFoodRow(fid);
+            const full = await fetchByFoodRow(fid, preferred);
             await openIfNew(full);
           })();
         }
@@ -759,7 +821,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     return () => {
       ch.unsubscribe();
     };
-  }, [storeId, storeInternalId, storeReady, fetchByCoreId, fetchByFoodRow, openIfNew, removeOrderFromQueueById]);
+  }, [
+    storeReady,
+    managedInternalIdsKey,
+    fetchByCoreId,
+    fetchByFoodRow,
+    openIfNew,
+    removeOrderFromQueueById,
+    metaByInternalId,
+  ]);
 
   useEffect(() => {
     if (!storeReady || !storeId) return;
@@ -1076,13 +1146,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     if (!storeId || !modalOrder) return;
     const orderIdForToast = modalOrder.order_id;
     const closeAfter = opts?.closeAfter !== false;
+    const patchStoreId = resolvePublicStoreIdForOrder(modalOrder) || storeId;
     setActionLoading(true);
     try {
       const url = modalOrder.core_only
         ? `/api/merchant/orders-core/${modalOrder.order_id}`
         : `/api/food-orders/${modalOrder.id}`;
       const payload = {
-        store_id: storeId,
+        store_id: patchStoreId,
         status,
         action_source: status === 'CANCELLED' && mode === 'auto' ? ('system' as const) : ('website' as const),
         ...(status === 'ACCEPTED' ? { accept_mode: mode } : {}),
@@ -1123,7 +1194,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         const moreWaiting = queueRef.current.length > 1;
         close();
         if (status === 'ACCEPTED' && !moreWaiting) {
-          router.push(partnerPreparingOrdersHref(pathname, storeId));
+          router.push(partnerPreparingOrdersHref(pathname, patchStoreId));
         }
       }
     } catch (e) {
@@ -1189,6 +1260,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                           ? ` · ${String(modalOrder.order_type).replace(/_/g, ' ')}`
                           : ''}
                       </p>
+                      {orderLocality ? (
+                        <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-sky-800">
+                          <MapPin size={12} className="shrink-0" aria-hidden />
+                          <span className="truncate">{orderLocality}</span>
+                        </p>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-0.5">
                       <button

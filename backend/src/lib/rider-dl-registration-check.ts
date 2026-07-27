@@ -1,6 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
-import { getDb } from "../db/client.js";
-import { riderDocuments } from "../db/schema.js";
+import { getSql } from "../db/client.js";
 
 export function normalizeDlNumber(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -16,27 +14,22 @@ export async function isDlAlreadyRegistered(
   const dl = normalizeDlNumber(dlValue);
   if (!dl) return false;
 
-  const db = getDb();
-  const docWhere = and(
-    eq(riderDocuments.docType, "dl"),
-    excludeRiderId != null ? ne(riderDocuments.riderId, excludeRiderId) : undefined
-  );
-  const dlDocs = await db
-    .select({
-      id: riderDocuments.id,
-      docNumber: riderDocuments.docNumber,
-      metadata: riderDocuments.metadata,
-    })
-    .from(riderDocuments)
-    .where(docWhere);
+  const sql = getSql();
+  const exclude = excludeRiderId ?? null;
 
-  for (const doc of dlDocs) {
-    if (doc.docNumber?.toUpperCase() === dl) return true;
-    const meta = doc.metadata as { dlNumber?: string } | null;
-    if (typeof meta?.dlNumber === "string" && normalizeDlNumber(meta.dlNumber) === dl) {
-      return true;
-    }
-  }
+  const docRows = await sql`
+    SELECT rd.id
+    FROM rider_documents rd
+    INNER JOIN riders r ON r.id = rd.rider_id
+    WHERE r.deleted_at IS NULL
+      AND rd.doc_type = 'dl'
+      AND (
+        upper(regexp_replace(coalesce(rd.doc_number, ''), '[^A-Za-z0-9]', '', 'g')) = ${dl}
+        OR upper(regexp_replace(coalesce(rd.metadata->>'dlNumber', ''), '[^A-Za-z0-9]', '', 'g')) = ${dl}
+      )
+      AND (${exclude}::int IS NULL OR rd.rider_id <> ${exclude})
+    LIMIT 1
+  `;
 
-  return false;
+  return docRows.length > 0;
 }

@@ -1,6 +1,6 @@
 /**
  * Active order state – after place order, cart transforms into "Track Live" until delivered.
- * Supports multiple active orders (horizontal dock). Status flow: ORDER_PLACED → PREPARING → PICKED_UP → OUT_FOR_DELIVERY → DELIVERED.
+ * Supports multiple active orders (horizontal dock) across food / ride / parcel.
  */
 
 import { create } from "zustand";
@@ -14,6 +14,8 @@ export type OrderStatus =
   | "DELIVERED"
   | "CANCELLED";
 
+export type ActiveOrderService = "food" | "ride" | "parcel";
+
 export type ActiveOrder = {
   orderId: string;
   formattedOrderId?: string | null;
@@ -22,6 +24,8 @@ export type ActiveOrder = {
   storeId: string | null;
   storeName: string | null;
   placedAt: number;
+  /** Drives live progress shade copy (food / ride / parcel). */
+  serviceType?: ActiveOrderService;
 };
 
 export type PrepDelayBanner = {
@@ -46,12 +50,29 @@ type OrderState = {
     status: OrderStatus,
     etaMinutes?: number,
     /** Live data can upgrade the optimistic order: GM… → GMF… id, resolved store name. */
-    patch?: { formattedOrderId?: string | null; storeName?: string | null }
+    patch?: {
+      formattedOrderId?: string | null;
+      storeName?: string | null;
+      serviceType?: ActiveOrderService;
+    }
   ) => void;
   showPrepDelayBanner: (orderId: string, message: string, durationMs?: number) => void;
   clearPrepDelayBanner: () => void;
   clearActiveOrder: () => void;
 };
+
+function mergeActiveOrder(existing: ActiveOrder | undefined, incoming: ActiveOrder): ActiveOrder {
+  const eta =
+    incoming.etaMinutes <= 0 && existing && existing.etaMinutes > 0
+      ? existing.etaMinutes
+      : incoming.etaMinutes;
+  return {
+    ...existing,
+    ...incoming,
+    etaMinutes: eta,
+    serviceType: incoming.serviceType ?? existing?.serviceType ?? "food",
+  };
+}
 
 export const useOrderStore = create<OrderState>((set) => ({
   activeOrder: null,
@@ -62,10 +83,7 @@ export const useOrderStore = create<OrderState>((set) => ({
     set((s) => {
       if (!order) return { activeOrder: null };
       const exists = s.activeOrders.find((o) => o.orderId === order.orderId);
-      const merged =
-        exists && order.etaMinutes <= 0 && exists.etaMinutes > 0
-          ? { ...order, etaMinutes: exists.etaMinutes }
-          : order;
+      const merged = mergeActiveOrder(exists, order);
       const alreadyListed = s.activeOrders.some((o) => o.orderId === order.orderId);
       const activeOrders = alreadyListed
         ? s.activeOrders.map((o) => (o.orderId === order.orderId ? merged : o))
@@ -76,10 +94,7 @@ export const useOrderStore = create<OrderState>((set) => ({
   addActiveOrder: (order) =>
     set((s) => {
       const exists = s.activeOrders.find((o) => o.orderId === order.orderId);
-      const merged =
-        exists && order.etaMinutes <= 0 && exists.etaMinutes > 0
-          ? { ...order, etaMinutes: exists.etaMinutes }
-          : order;
+      const merged = mergeActiveOrder(exists, order);
       const next = exists
         ? s.activeOrders.map((o) => (o.orderId === order.orderId ? merged : o))
         : [...s.activeOrders, merged];
@@ -90,16 +105,25 @@ export const useOrderStore = create<OrderState>((set) => ({
     set((s) => {
       const next = s.activeOrders.filter((o) => o.orderId !== orderId);
       const still = next.length > 0 ? next[0]! : null;
-      return { activeOrder: s.activeOrder?.orderId === orderId ? still : s.activeOrder, activeOrders: next };
+      return {
+        activeOrder: s.activeOrder?.orderId === orderId ? still : s.activeOrder,
+        activeOrders: next,
+      };
     }),
 
   updateStatus: (status, etaMinutes) =>
     set((s) =>
       s.activeOrder
         ? {
-            activeOrder: { ...s.activeOrder, status, ...(etaMinutes != null && { etaMinutes }) },
+            activeOrder: {
+              ...s.activeOrder,
+              status,
+              ...(etaMinutes != null && { etaMinutes }),
+            },
             activeOrders: s.activeOrders.map((o) =>
-              o.orderId === s.activeOrder!.orderId ? { ...o, status, ...(etaMinutes != null && { etaMinutes }) } : o
+              o.orderId === s.activeOrder!.orderId
+                ? { ...o, status, ...(etaMinutes != null && { etaMinutes }) }
+                : o
             ),
           }
         : s
@@ -113,6 +137,7 @@ export const useOrderStore = create<OrderState>((set) => ({
         ...(etaMinutes != null && { etaMinutes }),
         ...(patch?.formattedOrderId ? { formattedOrderId: patch.formattedOrderId } : {}),
         ...(patch?.storeName ? { storeName: patch.storeName } : {}),
+        ...(patch?.serviceType ? { serviceType: patch.serviceType } : {}),
       });
       return {
         activeOrder: s.activeOrder?.orderId === orderId ? apply(s.activeOrder) : s.activeOrder,

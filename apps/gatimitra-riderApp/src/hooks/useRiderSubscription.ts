@@ -2,6 +2,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
 import { getJson, patchJson, postJson } from "@/src/services/http";
+import {
+  getCachedRiderSubscriptionStatus,
+  persistRiderSubscriptionStatus,
+} from "@/src/lib/rider-subscription-cache";
 
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
@@ -116,6 +120,7 @@ export function useRiderSubscriptionPlans() {
 
 export function useRiderSubscriptionStatus() {
   const session = useSessionStore((s) => s.session);
+  const cached = getCachedRiderSubscriptionStatus();
 
   return useQuery({
     queryKey: ["rider", "subscription", "status"],
@@ -128,7 +133,7 @@ export function useRiderSubscriptionStatus() {
       }>(`${API_BASE()}/v1/rider/subscription/status`, {
         headers: authHeaders(session!.accessToken),
       });
-      return {
+      const next = {
         active: json.active,
         plan: json.plan,
         dues: json.dues ?? {
@@ -138,8 +143,8 @@ export function useRiderSubscriptionStatus() {
           dispatchBlocked: false,
           alertBanner: {
             visible: false,
-            variant: "warning",
-            reasonCode: "none",
+            variant: "warning" as const,
+            reasonCode: "none" as const,
             title: "",
             subtitle: "",
             totalDue: 0,
@@ -154,12 +159,16 @@ export function useRiderSubscriptionStatus() {
           },
         },
       } satisfies RiderSubscriptionStatus;
+      void persistRiderSubscriptionStatus(next);
+      return next;
     },
     enabled: Boolean(session?.accessToken),
-    staleTime: 0,
-    refetchOnMount: "always",
+    // Instant MAX badge from disk/memory; refresh in background.
+    initialData: cached ?? undefined,
+    staleTime: 60_000,
+    refetchOnMount: true,
     gcTime: 10 * 60_000,
-    placeholderData: (previous) => previous,
+    placeholderData: (previous) => previous ?? cached ?? undefined,
     retry: 2,
   });
 }

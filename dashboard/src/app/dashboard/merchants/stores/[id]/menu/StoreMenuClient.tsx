@@ -3009,6 +3009,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 <MenuItemPhotoCustomerPreview
                   item={reviewItem}
                   categoryLabel={formatCategoryLabel(categories, reviewItem.category_id)}
+                  storeId={storeId}
                 />
                 {reviewItem.rejection_reason ? (
                   <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2">

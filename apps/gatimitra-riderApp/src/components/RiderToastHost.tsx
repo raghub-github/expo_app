@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRiderToastStore } from "@/src/stores/riderToastStore";
 import { colors } from "@/src/theme";
 
-const TOAST_MS = 2500;
+const TOAST_MS = 5000;
 
 export function RiderToastHost() {
   const insets = useSafeAreaInsets();

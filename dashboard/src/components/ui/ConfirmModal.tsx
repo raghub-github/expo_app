@@ -13,6 +13,8 @@ export type ConfirmModalProps = {
   variant?: "default" | "danger";
   /** Disables actions and backdrop dismiss while an async confirm runs. */
   confirmBusy?: boolean;
+  /** When false, backdrop / outside click does not close (X / Cancel still work). Default true. */
+  closeOnBackdrop?: boolean;
   onClose: () => void;
   onConfirm: () => void | Promise<void>;
   /** z-index above other overlays (help topic editor uses z-[100]). */
@@ -30,6 +32,7 @@ export function ConfirmModal({
   cancelLabel = "Cancel",
   variant = "default",
   confirmBusy = false,
+  closeOnBackdrop = true,
   onClose,
   onConfirm,
   zIndexClass = "z-[110]",
@@ -37,11 +40,11 @@ export function ConfirmModal({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !confirmBusy) onClose();
+      if (e.key === "Escape" && !confirmBusy && closeOnBackdrop) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, confirmBusy, onClose]);
+  }, [open, confirmBusy, onClose, closeOnBackdrop]);
 
   useEffect(() => {
     if (!open) return;
@@ -67,10 +70,11 @@ export function ConfirmModal({
       <button
         type="button"
         className="absolute inset-0 bg-black/45 backdrop-blur-[1px]"
-        aria-label="Close dialog"
-        disabled={confirmBusy}
+        aria-label={closeOnBackdrop ? "Close dialog" : undefined}
+        tabIndex={closeOnBackdrop ? 0 : -1}
+        disabled={confirmBusy || !closeOnBackdrop}
         onClick={() => {
-          if (!confirmBusy) onClose();
+          if (closeOnBackdrop && !confirmBusy) onClose();
         }}
       />
       <div

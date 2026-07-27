@@ -241,7 +241,12 @@ export class SmartPermissionHandler {
 
     let fixAcquired = !!useRiderLocationStore.getState().coords;
     if (acquireFix) {
-      const acquisition = await acquireAndCommitRiderLocation({ assumeReady: true });
+      // Always take a fresh device reading — never reuse a stale in-memory fix.
+      useRiderLocationStore.getState().clearFix();
+      const acquisition = await acquireAndCommitRiderLocation({
+        assumeReady: true,
+        requireFresh: true,
+      });
       fixAcquired = acquisition.ok || !!useRiderLocationStore.getState().coords;
     }
 

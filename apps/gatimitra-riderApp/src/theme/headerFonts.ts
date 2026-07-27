@@ -1,6 +1,9 @@
 /** Lora — tab / global header typography (load in app/_layout.tsx). */
 export const LORA_BOLD = "Lora_700Bold";
 export const LORA_SEMIBOLD = "Lora_600SemiBold";
+export const LORA_REGULAR = "Lora_400Regular";
+export const POPPINS_SEMIBOLD = "Poppins_600SemiBold";
+export const POPPINS_BOLD = "Poppins_700Bold";
 
 export const HEADER_TITLE_SIZE = 20;
 /** Icon size scaled to title (~90%). */

@@ -138,6 +138,8 @@ export const WalletSummarySchema = z.object({
   today_earning: z.number(),
   yesterday_earning: z.number(),
   pending_withdrawal_total: z.number(),
+  /** APPROVED + PROCESSING payouts (Partner Site parity). */
+  in_process_withdrawal_total: z.number().optional(),
   /** Sum in LOCKED lifecycle (refund window) — same across all merchant portals */
   locked_settlement_total: z.number().optional(),
   /** withdrawable = available_balance (after hold rules) */

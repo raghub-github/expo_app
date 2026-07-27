@@ -1,4 +1,5 @@
-import { View, Text, Image, StyleSheet } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Image, StyleSheet } from "react-native";
 import { GatiMitraMerchant } from "@/constants/theme";
 
 type Props = {

@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { View, Text, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import {

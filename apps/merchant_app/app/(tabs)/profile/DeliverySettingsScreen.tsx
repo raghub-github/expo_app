@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Switch, Modal, Pressable, TextInput, ScrollView, Alert, RefreshControl } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Switch, Modal, Pressable, TextInput, ScrollView, Alert, RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";

@@ -127,7 +127,7 @@ export const profileService = {
       } finally {
         profileUpdateInFlight = null;
         if (profileUpdatePending) {
-          void profileService.updateProfile({});
+          void profileService.updateProfile({}).catch(() => undefined);
         }
       }
     })();

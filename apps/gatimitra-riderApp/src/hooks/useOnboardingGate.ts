@@ -5,6 +5,7 @@ import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import {
   canAccessHome,
+  resolveEstablishedRiderHref,
   resolveOnboardingHref,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
@@ -22,6 +23,13 @@ export function useOnboardingGate() {
   const vehicleOnboardingSubmittedFor = useOnboardingStore(
     (s) => s.data.vehicleOnboardingSubmittedFor
   );
+  const bankAccountOnboardingDone = useOnboardingStore(
+    (s) => s.data.bankAccountOnboardingDone
+  );
+  const cachedOnboardingStatus = useOnboardingStore((s) => s.data.cachedOnboardingStatus);
+  const cachedAccountStatus = useOnboardingStore((s) => s.data.cachedAccountStatus);
+  const cachedApprovalStatus = useOnboardingStore((s) => s.data.cachedApprovalStatus);
+  const setData = useOnboardingStore((s) => s.setData);
   const setStep = useOnboardingStore((s) => s.setStep);
   const clearOnboarding = useOnboardingStore((s) => s.clear);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
@@ -33,7 +41,7 @@ export function useOnboardingGate() {
     void hydrateOnboarding();
   }, [hydrateSession, hydrateOnboarding]);
 
-  const { data: riderStatus, isLoading, isError, error } = useRiderStatus(riderId);
+  const { data: riderStatus, isError, error, isFetched } = useRiderStatus(riderId);
   const riderNotFound = isError && isRiderNotFoundError(error);
 
   const serverStep = (riderStatus?.nextOnboardingStep ?? null) as ServerOnboardingStep | null;
@@ -45,6 +53,37 @@ export function useOnboardingGate() {
     }
     return base;
   }, [riderStatus?.completedOnboardingSteps, riderStatus?.selfieUrl]);
+
+  const effectiveOnboardingStatus =
+    riderStatus?.onboardingStatus ?? cachedOnboardingStatus ?? null;
+  const effectiveAccountStatus = riderStatus?.accountStatus ?? cachedAccountStatus ?? null;
+  const effectiveApprovalStatus = riderStatus?.approvalStatus ?? cachedApprovalStatus ?? null;
+
+  // Persist access fields so cold start can skip Aadhaar for approved riders.
+  useEffect(() => {
+    if (!riderStatus?.onboardingStatus) return;
+    const next = {
+      cachedOnboardingStatus: riderStatus.onboardingStatus,
+      cachedAccountStatus: riderStatus.accountStatus ?? undefined,
+      cachedApprovalStatus: riderStatus.approvalStatus ?? undefined,
+    };
+    if (
+      next.cachedOnboardingStatus === cachedOnboardingStatus &&
+      next.cachedAccountStatus === cachedAccountStatus &&
+      next.cachedApprovalStatus === cachedApprovalStatus
+    ) {
+      return;
+    }
+    void setData(next);
+  }, [
+    riderStatus?.onboardingStatus,
+    riderStatus?.accountStatus,
+    riderStatus?.approvalStatus,
+    cachedOnboardingStatus,
+    cachedAccountStatus,
+    cachedApprovalStatus,
+    setData,
+  ]);
 
   // Stale local riderId (deleted from DB) — clear cached onboarding and sign out.
   useEffect(() => {
@@ -74,46 +113,76 @@ export function useOnboardingGate() {
     if (!session) return true;
     if (riderNotFound) return true;
     if (!riderId) return true;
-    // Only block on the first load — background refetches must not blank the home screen.
-    if (isLoading && !riderStatus) return false;
+    // Known established rider (live or cached) → route home without waiting.
+    if (
+      resolveEstablishedRiderHref(
+        effectiveOnboardingStatus,
+        effectiveAccountStatus,
+        effectiveApprovalStatus,
+        {
+          paymentCompleted: riderStatus?.paymentCompleted,
+          nextOnboardingStep: serverStep,
+        }
+      )
+    ) {
+      return true;
+    }
+    // Wait for first status fetch so we never flash Aadhaar for approved riders.
+    if (!isFetched) return false;
     return true;
-  }, [sessionHydrated, onboardingHydrated, session, riderId, riderNotFound, isLoading, riderStatus]);
+  }, [
+    sessionHydrated,
+    onboardingHydrated,
+    session,
+    riderId,
+    riderNotFound,
+    effectiveOnboardingStatus,
+    effectiveAccountStatus,
+    effectiveApprovalStatus,
+    isFetched,
+    riderStatus?.paymentCompleted,
+    serverStep,
+  ]);
 
   const href = useMemo(() => {
     if (!session) return null;
     if (riderNotFound) return "/(auth)/login" as const;
     if (!riderId) return "/(auth)/login" as const;
-    return resolveOnboardingHref(riderStatus?.onboardingStatus, currentStep, serverStep, {
+    return resolveOnboardingHref(effectiveOnboardingStatus, currentStep, serverStep, {
       vehicleChoice,
       vehicleOnboardingFlow,
       vehicleOnboardingSubmittedFor,
-      accountStatus: riderStatus?.accountStatus,
+      bankAccountOnboardingDone,
+      accountStatus: effectiveAccountStatus,
       completedOnboardingSteps,
-      approvalStatus: riderStatus?.approvalStatus,
+      approvalStatus: effectiveApprovalStatus,
+      paymentCompleted: riderStatus?.paymentCompleted,
     });
   }, [
     session,
     riderId,
-    riderStatus?.onboardingStatus,
+    effectiveOnboardingStatus,
     currentStep,
     serverStep,
     riderNotFound,
     vehicleChoice,
     vehicleOnboardingFlow,
     vehicleOnboardingSubmittedFor,
-    riderStatus?.accountStatus,
+    bankAccountOnboardingDone,
+    effectiveAccountStatus,
     completedOnboardingSteps,
-    riderStatus?.approvalStatus,
+    effectiveApprovalStatus,
+    riderStatus?.paymentCompleted,
   ]);
 
-  const canAccessTabs = canAccessHome(riderStatus?.onboardingStatus, riderStatus?.accountStatus);
+  const canAccessTabs = canAccessHome(effectiveOnboardingStatus, effectiveAccountStatus);
 
   return {
     ready,
     href,
     canAccessTabs,
     session,
-    onboardingStatus: riderStatus?.onboardingStatus,
+    onboardingStatus: effectiveOnboardingStatus,
     nextOnboardingStep: serverStep,
     riderNotFound,
   };

@@ -1,5 +1,6 @@
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { addressService } from "@/services/address.service";
+import { useAuthStore } from "@/store/authStore";
 
 export const ADDRESSES_QUERY_KEY = ["addresses"] as const;
 
@@ -16,15 +17,21 @@ export function addressesQueryOptions() {
   } as const;
 }
 
-export function useAddresses() {
+export function useAddresses(options?: { enabled?: boolean }) {
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const accessToken = useAuthStore((s) => s.session?.accessToken);
+  const authed = hydrated && !!accessToken;
   return useQuery({
     ...addressesQueryOptions(),
+    enabled: options?.enabled ?? authed,
     placeholderData: (prev) => prev,
   });
 }
 
 export function prefetchAddresses(queryClient: QueryClient) {
-  return queryClient.prefetchQuery(addressesQueryOptions());
+  const { hydrated, session } = useAuthStore.getState();
+  if (!hydrated || !session?.accessToken) return Promise.resolve();
+  return queryClient.prefetchQuery(addressesQueryOptions()).catch(() => undefined);
 }
 
 export const ACTIVE_LOCATION_QUERY_KEY = ["active-location"] as const;
@@ -39,13 +46,19 @@ export function activeLocationQueryOptions() {
   } as const;
 }
 
-export function useActiveLocation() {
+export function useActiveLocation(options?: { enabled?: boolean }) {
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const accessToken = useAuthStore((s) => s.session?.accessToken);
+  const authed = hydrated && !!accessToken;
   return useQuery({
     ...activeLocationQueryOptions(),
+    enabled: options?.enabled ?? authed,
     placeholderData: (prev) => prev,
   });
 }
 
 export function prefetchActiveLocation(queryClient: QueryClient) {
-  return queryClient.prefetchQuery(activeLocationQueryOptions());
+  const { hydrated, session } = useAuthStore.getState();
+  if (!hydrated || !session?.accessToken) return Promise.resolve();
+  return queryClient.prefetchQuery(activeLocationQueryOptions()).catch(() => undefined);
 }

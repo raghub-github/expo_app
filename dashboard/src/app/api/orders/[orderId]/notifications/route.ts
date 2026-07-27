@@ -6,6 +6,7 @@ import {
   createOrderCxNotification,
   listOrderCxNotifications,
 } from "@/lib/db/operations/order-cx-notifications";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 
 export const runtime = "nodejs";
 
@@ -135,6 +136,17 @@ export async function POST(
         channel: "dashboard_manual",
         ...(body.notificationMetadata ?? {}),
       },
+    });
+
+    await stampOrderRoutedTo({
+      orderId,
+      systemUserId: systemUser?.id ?? null,
+      actorEmail: user.email ?? null,
+      actorName: systemUser?.full_name ?? user.email ?? null,
+      actorRole: systemUser?.primary_role ?? "AGENT",
+      action: "cx_notification",
+      actionRefTable: "order_cx_agent_notifications",
+      actionRefId: created?.id ?? null,
     });
 
     return NextResponse.json({

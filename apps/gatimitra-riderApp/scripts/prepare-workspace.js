@@ -55,7 +55,7 @@ function packageIsReady(packageName) {
   return fs.existsSync(packageJsonPath) && fs.existsSync(entryPath);
 }
 
-const workspacePackages = ['contracts', 'sdk', 'expo-push-kit', 'expo-location-kit'];
+const workspacePackages = ['contracts', 'sdk', 'expo-push-kit', 'expo-location-kit', 'map-tracking-engine'];
 const packagesReady = Object.fromEntries(
   workspacePackages.map((pkg) => [pkg, packageIsReady(pkg)])
 );

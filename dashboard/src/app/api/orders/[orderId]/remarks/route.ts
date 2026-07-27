@@ -3,6 +3,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { createOrderRemark, listOrderRemarks } from "@/lib/db/operations/order-remarks";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 
 export const runtime = "nodejs";
 
@@ -138,6 +139,18 @@ export async function POST(
         ...(body.remarkMetadata ?? {}),
         actorEmail: user.email ?? null,
       },
+    });
+
+    await stampOrderRoutedTo({
+      orderId,
+      systemUserId: actorId,
+      actorEmail: user.email ?? null,
+      actorName,
+      actorRole: actorType,
+      action: "remark",
+      actionRefTable: "order_remarks",
+      actionRefId: created?.id ?? null,
+      metadata: { remarkCategory, remarkPriority },
     });
 
     return NextResponse.json({

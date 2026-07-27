@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Animated,
-  LayoutChangeEvent,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Animated, LayoutChangeEvent, Pressable, StyleSheet, View } from "react-native";
 import {
   prepReadyCountdownLabel,
   prepReadyTimeRemainingRatio,

@@ -73,8 +73,13 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
       const bootstrapAgeMs = stored ? Date.now() - stored.storedAt : Number.POSITIVE_INFINITY;
       const bootstrapFresh = !forceRefresh && bootstrapAgeMs < BOOTSTRAP_REVALIDATE_MIN_AGE_MS;
 
-      const cached = forceRefresh ? null : queryClient.getQueryData(["auth", "session"]);
-      if (cached != null) {
+      const cached = forceRefresh ? null : queryClient.getQueryData<{
+        session?: unknown;
+        permissions?: unknown;
+        systemUser?: { systemUserId?: string } | null;
+      }>(["auth", "session"]);
+      const cachedHasSystemUserId = Boolean(cached?.systemUser?.systemUserId?.trim());
+      if (cached != null && cachedHasSystemUserId) {
         if (!cancelled) {
           window.__gatiBootstrapDone = true;
           setAuthReady(true);
@@ -92,22 +97,32 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
         queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
         queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
 
-        if (bootstrapFresh || (isStandaloneOrderRoute && bootstrapAgeMs < BOOTSTRAP_MAX_AGE_MS)) {
+        const storedHasSystemUserId = Boolean(systemUser?.systemUserId?.trim());
+        if (
+          storedHasSystemUserId &&
+          (bootstrapFresh || (isStandaloneOrderRoute && bootstrapAgeMs < BOOTSTRAP_MAX_AGE_MS))
+        ) {
           if (!cancelled) {
             window.__gatiBootstrapDone = true;
             setAuthReady(true);
+          }
+          // Soft revalidate in background if cache is aging out of the fresh window.
+          if (!bootstrapFresh) {
+            scheduleBootstrapRevalidate(queryClient);
           }
           return;
         }
       }
 
-      // Order page: ensure httpOnly cookies exist before client API calls, without full bootstrap revalidation.
-      if (isStandaloneOrderRoute && stored?.data) {
+      // Order page: ensure httpOnly cookies exist before client API calls.
+      // If systemUserId is missing from cache, still fetch bootstrap so header stays correct.
+      if (isStandaloneOrderRoute && stored?.data?.systemUser?.systemUserId) {
         await syncServerSessionCookies();
         if (!cancelled) {
           window.__gatiBootstrapDone = true;
           setAuthReady(true);
         }
+        scheduleBootstrapRevalidate(queryClient);
         return;
       }
 
@@ -136,10 +151,13 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
           if (!bootstrapInFlight) {
             scheduleBootstrapRevalidate(queryClient);
           }
-          if (!cancelled) {
-            window.__gatiBootstrapDone = true;
-            setAuthReady(true);
-          }
+          // Wait for bootstrap so OrderHeader always gets systemUserId (not empty "U").
+          void (bootstrapInFlight ?? Promise.resolve()).finally(() => {
+            if (!cancelled) {
+              window.__gatiBootstrapDone = true;
+              setAuthReady(true);
+            }
+          });
           return;
         }
 

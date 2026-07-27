@@ -1,15 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  View,
-  PanResponder,
-  Pressable,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Switch, View, PanResponder, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";

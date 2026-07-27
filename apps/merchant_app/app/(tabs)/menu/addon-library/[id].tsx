@@ -3,17 +3,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  ActivityIndicator,
-  Alert,
-  Switch,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, ScrollView, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Alert, Switch } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";

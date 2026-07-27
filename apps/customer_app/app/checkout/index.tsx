@@ -3597,6 +3597,7 @@ export default function CheckoutScreen() {
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
         placedAt: Date.now(),
+        serviceType: "food",
       });
       // See comment in finalizeOrder.onSuccess — same React batching pitfall.
       router.replace({
@@ -3674,6 +3675,7 @@ export default function CheckoutScreen() {
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
         placedAt: Date.now(),
+        serviceType: "food",
       });
       if (isCheckoutSheet) {
         useCheckoutSheetStore.getState().hide();

@@ -5,7 +5,7 @@
  * Query: fromDate, toDate (YYYY-MM-DD) — when set, counts are filtered by created_at range.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
@@ -15,13 +15,13 @@ export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
+    }
+    const { user } = auth;
 
-    if (error || !user?.email) {
+    if (!user.email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
         { status: 401 }

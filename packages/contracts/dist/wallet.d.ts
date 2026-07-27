@@ -111,6 +111,7 @@ export declare const WalletSummarySchema: z.ZodObject<{
     today_earning: z.ZodNumber;
     yesterday_earning: z.ZodNumber;
     pending_withdrawal_total: z.ZodNumber;
+    in_process_withdrawal_total: z.ZodOptional<z.ZodNumber>;
     locked_settlement_total: z.ZodOptional<z.ZodNumber>;
     withdrawable_balance: z.ZodOptional<z.ZodNumber>;
     total_balance: z.ZodOptional<z.ZodNumber>;

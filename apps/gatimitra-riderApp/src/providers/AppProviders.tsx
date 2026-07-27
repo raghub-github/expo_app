@@ -15,6 +15,9 @@ import { colors } from "../theme";
 import { SessionRevokedGate } from "@/src/components/SessionRevokedGate";
 import { AppAssetsPrefetch } from "@/src/components/AppAssetsPrefetch";
 import { RiderLocationLifecycle } from "@/src/components/RiderLocationLifecycle";
+import { PlayInAppUpdateBootstrap } from "@/src/components/PlayInAppUpdateBootstrap";
+import { hydrateRiderSubscriptionCache } from "@/src/lib/rider-subscription-cache";
+import { prefetchRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const i18n = useMemo(() => initI18n(), []);
@@ -63,7 +66,12 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     if (!sessionHydrated || !session) return;
     void refreshSessionIfNeeded();
     void syncDutyFromServer();
-  }, [sessionHydrated, session, refreshSessionIfNeeded, syncDutyFromServer]);
+    void hydrateRiderSubscriptionCache().then((cached) => {
+      if (!cached) return;
+      queryClient.setQueryData(["rider", "subscription", "status"], cached);
+    });
+    void prefetchRiderSubscriptionStatus(queryClient, session.accessToken);
+  }, [sessionHydrated, session, refreshSessionIfNeeded, syncDutyFromServer, queryClient]);
 
   if (!i18n || !queryClient) {
     return (
@@ -81,6 +89,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           <AppAssetsPrefetch />
           <RiderLocationLifecycle />
           <SessionRevokedGate />
+          <PlayInAppUpdateBootstrap />
           {children}
         </QueryClientProvider>
       </I18nextProvider>

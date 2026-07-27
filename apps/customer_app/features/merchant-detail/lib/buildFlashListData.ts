@@ -21,6 +21,8 @@ export type BuildFlashListInput = {
    * 1s tick never invalidates this memoized list (and re-renders every row) every second.
    */
   showClosedBanner: boolean;
+  /** Kitchen rush — show delay notice (only when store is open). */
+  showRushBanner: boolean;
   menuPending: boolean;
   /** Row key / id of the last item added to cart — pairing strip renders below it only. */
   pairingAnchorKey: string | null;
@@ -68,6 +70,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     sectionStartingPrice,
     visibleOffersCount,
     showClosedBanner,
+    showRushBanner,
     menuPending,
     pairingAnchorKey,
     pairingCompanionItems,
@@ -89,6 +92,8 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
 
   if (showClosedBanner) {
     push({ type: "closed_banner", key: "closed_banner" });
+  } else if (showRushBanner) {
+    push({ type: "rush_banner", key: "rush_banner" });
   }
 
   push({ type: "filter_bar", key: "filter_bar" });

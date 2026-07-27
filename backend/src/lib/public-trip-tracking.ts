@@ -406,6 +406,7 @@ export async function loadPublicTripByToken(token: string): Promise<PublicTripTr
     foodOrderStatus: null,
     riderId: orderRow.riderId,
     riderReachedPickupAt: rideMeta?.riderReachedPickupAt,
+    orderType: orderRow.orderType,
   });
 
   if (isTerminalAppStatus(appStatus) && link.isActive) {
@@ -672,6 +673,7 @@ export async function assertCustomerCanShareOrder(args: {
     coreStatus: row.status,
     foodOrderStatus: null,
     riderId: row.riderId,
+    orderType: row.orderType,
   });
   if (isTerminalAppStatus(appStatus)) return null;
   return { orderIdText: row.orderId, appStatus };

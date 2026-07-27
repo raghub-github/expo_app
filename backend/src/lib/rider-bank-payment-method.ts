@@ -22,6 +22,9 @@ export type RiderBankPaymentMethodView = {
   accountNumberMasked: string;
   verificationStatus: "pending" | "verified" | "rejected";
   createdAt: string;
+  /** Present when holder name was checked against Aadhaar. */
+  crossCheckStatus?: "ok" | "mismatch";
+  crossCheckMessages?: string[];
 };
 
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/i;
@@ -83,7 +86,8 @@ export function validateRiderBankPaymentMethodInput(
   const accountNumber = input.accountNumber.replace(/\s/g, "");
 
   if (accountHolderName.length < 2) return "Account holder name is required";
-  if (bankName.length < 2) return "Bank name is required";
+  // Bank name can come from Cashfree IFSC details after electronic verify.
+  if (bankName.length < 1) return "Bank name is required";
   if (!IFSC_RE.test(ifsc)) return "Enter a valid IFSC code";
   if (!ACCOUNT_RE.test(accountNumber)) return "Enter a valid account number (9–18 digits)";
 
@@ -156,6 +160,30 @@ export async function createRiderBankPaymentMethod(
   const branch = input.branch?.trim() || null;
   const accountNumber = input.accountNumber.replace(/\s/g, "");
 
+  // Cross-check holder name against verified Aadhaar (primary identity).
+  // Match → mark verified; mismatch → keep pending for admin (do not reject / block save).
+  let verificationStatus: "pending" | "verified" = "pending";
+  let nameMismatchMessages: string[] | null = null;
+  try {
+    const { loadRiderAadhaarIdentity } = await import("./rider-aadhaar-cross-check.js");
+    const { crossCheckAgainstAadhaar } = await import("./rider-cross-document-match.js");
+    const aadhaar = await loadRiderAadhaarIdentity(riderId);
+    if (aadhaar.name.trim().length >= 2) {
+      const cross = crossCheckAgainstAadhaar({
+        docKind: "bank",
+        aadhaar,
+        extractedName: accountHolderName,
+      });
+      if (cross.ok) {
+        verificationStatus = "verified";
+      } else {
+        nameMismatchMessages = cross.messages;
+      }
+    }
+  } catch {
+    /* keep pending if identity lookup fails */
+  }
+
   const db = getDb();
   const [row] = await db
     .insert(riderPaymentMethods)
@@ -167,7 +195,8 @@ export async function createRiderBankPaymentMethod(
       ifsc,
       branch,
       accountNumberEncrypted: encryptRiderAccountNumber(accountNumber),
-      verificationStatus: "pending",
+      verificationStatus,
+      verifiedAt: verificationStatus === "verified" ? new Date() : null,
     })
     .returning();
 
@@ -175,7 +204,16 @@ export async function createRiderBankPaymentMethod(
     throw new Error("Could not save bank account");
   }
 
-  return toView(row);
+  const view = toView(row);
+  return {
+    ...view,
+    ...(nameMismatchMessages
+      ? {
+          crossCheckStatus: "mismatch" as const,
+          crossCheckMessages: nameMismatchMessages,
+        }
+      : { crossCheckStatus: "ok" as const }),
+  };
 }
 
 export async function riderHasBankPaymentMethod(riderId: number): Promise<boolean> {

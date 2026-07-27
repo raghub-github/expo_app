@@ -24,6 +24,8 @@ import { formatLedgerDescription } from '@/lib/wallet-types';
 import {
   resolveLedgerDisplayAmount,
   resolveLedgerDisplayDescription,
+  isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
 } from '@/lib/merchant-payout-utils';
 import type { LedgerEntry } from '@/lib/wallet-types';
 import { LedgerEntryAmount } from '@/components/payments/LedgerEntryAmount';
@@ -60,6 +62,7 @@ import {
 import { PaymentsOverviewCharts } from '@/components/payments/PaymentsOverviewCharts'
 import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
+import { useHydrated } from '@/hooks/useHydrated'
 
 export const dynamic = 'force-dynamic'
 
@@ -86,7 +89,7 @@ const MIN_WITHDRAWAL = 100
 const MAX_WITHDRAWAL_PER_REQUEST = 100_000
 
 function getWithdrawableBalance(wallet: WalletSummary | undefined | null): number {
-  return wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0
+  return resolveWalletDisplayBalance(wallet)
 }
 
 function getMaxWithdrawalLimit(withdrawable: number): number {
@@ -141,7 +144,13 @@ interface OrderDetailRider {
 }
 
 function formatCategory(cat: string): string {
-  return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+  const key = String(cat ?? "").trim().toUpperCase();
+  if (key === "FAILED_WITHDRAWAL_REVERSAL") return "Withdrawal returned";
+  if (key === "HOLD_LOCK") return "Withdrawal";
+  if (key === "HOLD_RELEASE") return "Withdrawal update";
+  if (key === "WITHDRAWAL") return "Withdrawal";
+  if (key === "ORDER_EARNING") return "Order earning";
+  return cat.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 async function copyTextToClipboard(text: string, successMessage = 'Copied to clipboard') {
@@ -197,18 +206,11 @@ function pctChangeLabel(current: number, prior: number): { text: string; positiv
 function PaymentsContent() {
   const searchParams = useSearchParams()
   const pathname = usePathname()
+  const hydrated = useHydrated()
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
-  const [storeId, setStoreId] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null
-    const params = new URLSearchParams(window.location.search)
-    return (
-      params.get('restaurantId') ??
-      params.get('storeId') ??
-      localStorage.getItem('selectedStoreId') ??
-      localStorage.getItem('selectedRestaurantId') ??
-      DEMO_RESTAURANT_ID
-    )
-  })
+  // Always start null on server + first client paint to avoid hydration mismatch
+  // (window/localStorage differs between SSR and CSR).
+  const [storeId, setStoreId] = useState<string | null>(null)
   const { data: storeRecord } = usePartnerStoreRecord(storeId)
   const [showWithdrawal, setShowWithdrawal] = useState(false)
   const [withdrawalAmount, setWithdrawalAmount] = useState('')
@@ -227,6 +229,8 @@ function PaymentsContent() {
   const ledgerSectionRef = React.useRef<HTMLDivElement>(null)
 
   const { data: wallet, isLoading: walletLoading } = useMerchantWallet(storeId, { lite: false })
+  // Gate loading UI until after hydration so SSR HTML matches the first client paint.
+  const showWalletSkeleton = !hydrated || !storeId || walletLoading
   const { data: walletAnalytics, isLoading: analyticsLoading } = useMerchantWalletAnalytics(
     storeId,
     analyticsPeriod
@@ -242,7 +246,7 @@ function PaymentsContent() {
     search: filterSearch || undefined,
   }), [ledgerLimit, ledgerOffset, filterFrom, filterTo, filterDirection, filterCategory, filterSearch])
   const { data: ledgerData, isLoading: ledgerLoading } = useMerchantLedger(storeId, ledgerParams)
-  const ledger = ledgerData?.entries ?? []
+  const ledger = (ledgerData?.entries ?? []).filter(isMerchantVisibleLedgerEntry)
   const displayLedger = useMemo(
     () => mergeCancellationLedgerEntries(ledger).entries,
     [ledger]
@@ -448,7 +452,7 @@ function PaymentsContent() {
     setExpandedLedgerId(entry.id)
     setExpandedRidersLedgerId(null)
     if (entry.order_id != null && !orderDetailsCache[entry.order_id]) fetchOrderDetails(entry.order_id)
-    if (entry.category === 'WITHDRAWAL' && entry.reference_id != null && !payoutDetailsCache[entry.reference_id]) fetchPayoutDetails(entry.reference_id)
+    if ((entry.category === 'WITHDRAWAL' || entry.category === 'HOLD_LOCK') && entry.reference_id != null && !payoutDetailsCache[entry.reference_id]) fetchPayoutDetails(entry.reference_id)
   }
 
   const toggleRidersExpand = (ledgerId: number) => {
@@ -659,7 +663,7 @@ function PaymentsContent() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
-                    {walletLoading ? (
+                    {showWalletSkeleton ? (
                       <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
@@ -678,7 +682,7 @@ function PaymentsContent() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Today&apos;s Earning</p>
-                    {walletLoading ? (
+                    {showWalletSkeleton ? (
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
@@ -705,7 +709,7 @@ function PaymentsContent() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Yesterday&apos;s Earning</p>
-                    {walletLoading ? (
+                    {showWalletSkeleton ? (
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
@@ -725,7 +729,7 @@ function PaymentsContent() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Pending</p>
-                    {walletLoading ? (
+                    {showWalletSkeleton ? (
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
@@ -745,7 +749,7 @@ function PaymentsContent() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Pending Withdrawal</p>
-                    {walletLoading ? (
+                    {showWalletSkeleton ? (
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
@@ -765,7 +769,7 @@ function PaymentsContent() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">In Process</p>
-                    {walletLoading ? (
+                    {showWalletSkeleton ? (
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
@@ -1048,7 +1052,7 @@ function PaymentsContent() {
                           <React.Fragment key={row.id}>
                             <tr className={`transition-colors ${expandedLedgerId === row.id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
                               <td className="py-3 px-4">
-                                {(row.reference_type === 'ORDER' && row.order_id != null) || (row.category === 'WITHDRAWAL' && row.reference_id != null) ? (
+                                {(row.reference_type === 'ORDER' && row.order_id != null) || ((row.category === 'WITHDRAWAL' || row.category === 'HOLD_LOCK') && row.reference_id != null) ? (
                                   <button
                                     type="button"
                                     onClick={() => toggleExpand(row)}
@@ -1117,7 +1121,7 @@ function PaymentsContent() {
                                 {formatInr(row.balance_after)}
                               </td>
                             </tr>
-                            {expandedLedgerId === row.id && row.category === 'WITHDRAWAL' && row.reference_id != null && (() => {
+                            {expandedLedgerId === row.id && (row.category === 'WITHDRAWAL' || row.category === 'HOLD_LOCK') && row.reference_id != null && (() => {
                               const payoutRefId = row.reference_id as number
                               const payoutDetail = payoutDetailsCache[payoutRefId]
                               return (

@@ -32,16 +32,17 @@ function isWaitingTitle(title: string): boolean {
   return title.trim() === WAITING_FOR_ORDER_TITLE;
 }
 
-async function maybePresentBackgroundNotice(): Promise<void> {
+async function maybePresentBackgroundNotice(storeName: string): Promise<void> {
   if (AppState.currentState === "active") return;
   if (isExpoGo()) return;
   try {
     const Notifications = await import("expo-notifications");
+    const name = storeName.trim() || "Your restaurant";
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: "🟢 Your restaurant is online",
+        title: `🟢 ${name}`,
         body: "Waiting for orders",
-        data: { type: "store_online", screen: "notifications" },
+        data: { type: "store_online", screen: "orders" },
       },
       trigger: null,
     });
@@ -57,6 +58,7 @@ export default function WaitingForOrderNotifier() {
   const { notifications, refresh } = useNotifications();
 
   const storeId = selectedStore?.id ?? null;
+  const storeName = selectedStore?.store_name?.trim() || "Your restaurant";
 
   const skipRetriggerRef = useRef(false);
   const prevHadWaitingRef = useRef(false);
@@ -64,12 +66,14 @@ export default function WaitingForOrderNotifier() {
   const inFlightRef = useRef(false);
   const tokenRef = useRef(token);
   const storeIdRef = useRef(storeId);
+  const storeNameRef = useRef(storeName);
   const isOnlineRef = useRef(isOnline);
   const refreshRef = useRef(refresh);
   const hasWaitingRef = useRef(false);
 
   tokenRef.current = token;
   storeIdRef.current = storeId;
+  storeNameRef.current = storeName;
   isOnlineRef.current = isOnline;
   refreshRef.current = refresh;
 
@@ -99,7 +103,7 @@ export default function WaitingForOrderNotifier() {
             if (active > 0 || !isOnlineRef.current) return;
             const { created } = await ensureWaitingForOrderNotification(sid, t);
             void refreshRef.current();
-            if (created) await maybePresentBackgroundNotice();
+            if (created) await maybePresentBackgroundNotice(storeNameRef.current);
           } catch {
             // ignore
           }
@@ -166,7 +170,7 @@ export default function WaitingForOrderNotifier() {
         if (cancelled) return;
         if (created) {
           void refreshRef.current();
-          await maybePresentBackgroundNotice();
+          await maybePresentBackgroundNotice(storeNameRef.current);
         }
       } catch {
         // network / auth — skip cycle
@@ -209,7 +213,7 @@ export default function WaitingForOrderNotifier() {
         const { created } = await ensureWaitingForOrderNotification(storeId, token);
         if (created) {
           void refreshRef.current();
-          await maybePresentBackgroundNotice();
+          await maybePresentBackgroundNotice(storeNameRef.current);
         }
       } catch {
         // ignore

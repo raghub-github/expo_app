@@ -12,21 +12,8 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  StyleSheet,
-  Pressable,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Keyboard,
-  Linking,
-  Platform,
-  ScrollView,
-  BackHandler,
-  type KeyboardEvent,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, TextInput, StyleSheet, Pressable, ActivityIndicator, KeyboardAvoidingView, Keyboard, Linking, Platform, ScrollView, BackHandler, type KeyboardEvent } from "react-native";
 import { useRouter, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";

@@ -26,12 +26,22 @@ export function useStoreDetailLiveStatus(storeId: string | null) {
 
   useEffect(() => {
     if (!storeId || !query.data) return;
-    const { liveStatus, nextOpenAt, nextCloseAt } = query.data;
+    const {
+      liveStatus,
+      nextOpenAt,
+      nextCloseAt,
+      rushActive,
+      rushEndsAt,
+      rushRemainingMinutes,
+    } = query.data;
     setStatusFromApi(storeId, liveStatus === "OPEN", liveStatus);
     patchMerchantDetailLiveStatus(queryClient, storeId, {
       liveStatus,
       nextOpenAt,
       nextCloseAt,
+      rushActive,
+      rushEndsAt,
+      rushRemainingMinutes,
     });
   }, [storeId, query.data, queryClient, setStatusFromApi]);
 

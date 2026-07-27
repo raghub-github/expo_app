@@ -2,6 +2,11 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSql } from "../../db/client.js";
 import { auth } from "../../plugins/auth.js";
+import { getEnv } from "../../config/env.js";
+import {
+  createRazorpayOrder,
+  verifyRazorpaySignature,
+} from "../../services/payment/razorpayService.js";
 
 const walletResponseSchema = z.object({
   balance: z.number(),
@@ -787,6 +792,353 @@ export async function meWalletRoutes(app: FastifyInstance) {
           return reply.code(409).send({ message: "This offer compensation was already claimed" });
         }
         return reply.code(400).send({ message: "Could not add missed-offer credit to GatiCash" });
+      }
+    }
+  );
+
+  /**
+   * Create a GatiCash top-up payment intent + Razorpay order.
+   * Client opens RazorpayCheckoutModal, then calls /wallet/topup/confirm.
+   */
+  app.post(
+    "/wallet/topup/intent",
+    {
+      schema: {
+        body: z.object({
+          amount: z.number().positive().max(50000),
+        }),
+        response: {
+          200: z.object({
+            intent_id: z.string(),
+            amount: z.number(),
+            razorpay_order_id: z.string(),
+            key_id: z.string(),
+            amount_paise: z.number(),
+            currency: z.literal("INR"),
+          }),
+          400: z.object({ message: z.string() }),
+          401: z.object({ message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const amount = Math.round(Number((req.body as { amount: number }).amount) * 100) / 100;
+      if (!Number.isFinite(amount) || amount < 1) {
+        return reply.code(400).send({ message: "Enter a valid amount (min ₹1)" });
+      }
+      if (amount > 50000) {
+        return reply.code(400).send({ message: "You can add a maximum of ₹50,000" });
+      }
+
+      const sql = getSql();
+      const resolved = await resolveCustomerInternalId(
+        sql,
+        req.auth!.sub,
+        req.auth!.role,
+        req.auth?.phone,
+        req.auth?.customerPk
+      );
+      if (!resolved) {
+        return reply.code(401).send({ message: "Customer not found" });
+      }
+
+      await ensureCustomerWallet(sql, resolved.internalId);
+      const settings = await fetchWalletSettings(sql, resolved.internalId);
+      if (amount > settings.monthly_topup_remaining) {
+        return reply.code(400).send({
+          message: `Monthly top-up limit remaining is ₹${settings.monthly_topup_remaining.toLocaleString("en-IN")}`,
+        });
+      }
+      const projected = settings.max_wallet_balance; // check against current balance
+      try {
+        const balRows = await sql`
+          SELECT current_balance FROM customer_wallet
+          WHERE customer_id = ${resolved.internalId}
+          LIMIT 1
+        `;
+        const current = Number(
+          (balRows[0] as { current_balance?: string | number } | undefined)?.current_balance ?? 0
+        );
+        if (current + amount > settings.max_wallet_balance) {
+          return reply.code(400).send({
+            message: `Wallet max balance is ₹${projected.toLocaleString("en-IN")}. Reduce the amount.`,
+          });
+        }
+      } catch {
+        /* proceed; credit RPC enforces max */
+      }
+
+      const intentId = `wti_${resolved.internalId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const amountPaise = Math.round(amount * 100);
+      const env = getEnv();
+      const dummyModeActive =
+        env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET;
+
+      let razorpayOrderId: string;
+      let keyId: string;
+
+      if (dummyModeActive) {
+        if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+          return reply.code(400).send({ message: "Payment is not configured" });
+        }
+        razorpayOrderId = `dummy_wallet_${intentId}`;
+        keyId = "dummy_key";
+      } else {
+        try {
+          const order = await createRazorpayOrder({
+            amount: amountPaise,
+            currency: "INR",
+            receipt: intentId.slice(0, 40),
+            notes: {
+              purpose: "wallet_topup",
+              intent_id: intentId,
+              customer_id: String(resolved.internalId),
+            },
+          });
+          razorpayOrderId = order.id;
+          keyId = env.RAZORPAY_KEY_ID!;
+        } catch (err) {
+          req.log?.error?.({ err }, "wallet topup razorpay order failed");
+          return reply.code(400).send({ message: "Could not start payment. Please try again." });
+        }
+      }
+
+      try {
+        await sql`
+          INSERT INTO customer_wallet_topup_intents (
+            customer_id, intent_id, amount, auto_add_enabled,
+            status, pg_order_id, expires_at, metadata
+          ) VALUES (
+            ${resolved.internalId},
+            ${intentId},
+            ${amount},
+            FALSE,
+            'PAYMENT_PENDING',
+            ${razorpayOrderId},
+            NOW() + INTERVAL '30 minutes',
+            ${JSON.stringify({ source: "customer_app_add_money" })}::jsonb
+          )
+        `;
+      } catch (err) {
+        req.log?.error?.({ err }, "wallet topup intent insert failed");
+        return reply.code(400).send({
+          message: "Wallet top-up is not available yet. Please try again later.",
+        });
+      }
+
+      return {
+        intent_id: intentId,
+        amount,
+        razorpay_order_id: razorpayOrderId,
+        key_id: keyId,
+        amount_paise: amountPaise,
+        currency: "INR" as const,
+      };
+    }
+  );
+
+  /**
+   * Confirm GatiCash top-up after Razorpay success (or dummy simulate success).
+   */
+  app.post(
+    "/wallet/topup/confirm",
+    {
+      schema: {
+        body: z.object({
+          intent_id: z.string().min(1),
+          razorpay_order_id: z.string().min(1),
+          razorpay_payment_id: z.string().min(1),
+          razorpay_signature: z.string().min(1),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            amount: z.number(),
+            balance_after: z.number(),
+            transaction_id: z.string(),
+          }),
+          400: z.object({ message: z.string() }),
+          401: z.object({ message: z.string() }),
+          409: z.object({ message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const body = req.body as {
+        intent_id: string;
+        razorpay_order_id: string;
+        razorpay_payment_id: string;
+        razorpay_signature: string;
+      };
+
+      const sql = getSql();
+      const resolved = await resolveCustomerInternalId(
+        sql,
+        req.auth!.sub,
+        req.auth!.role,
+        req.auth?.phone,
+        req.auth?.customerPk
+      );
+      if (!resolved) {
+        return reply.code(401).send({ message: "Customer not found" });
+      }
+
+      let intent:
+        | {
+            id: number;
+            amount: string | number;
+            status: string;
+            pg_order_id: string | null;
+            wallet_transaction_id: number | null;
+          }
+        | undefined;
+
+      try {
+        const rows = await sql`
+          SELECT id, amount, status, pg_order_id, wallet_transaction_id
+          FROM customer_wallet_topup_intents
+          WHERE intent_id = ${body.intent_id}
+            AND customer_id = ${resolved.internalId}
+          LIMIT 1
+        `;
+        intent = rows[0] as typeof intent;
+      } catch (err) {
+        req.log?.error?.({ err }, "wallet topup intent lookup failed");
+        return reply.code(400).send({ message: "Top-up intent not found" });
+      }
+
+      if (!intent) {
+        return reply.code(400).send({ message: "Top-up intent not found" });
+      }
+
+      const amount = Number(intent.amount);
+      if (intent.status === "PAID") {
+        const walletRows = await sql`
+          SELECT current_balance FROM customer_wallet
+          WHERE customer_id = ${resolved.internalId}
+          LIMIT 1
+        `;
+        return {
+          ok: true as const,
+          amount,
+          balance_after: Number(
+            (walletRows[0] as { current_balance?: string | number } | undefined)?.current_balance ?? 0
+          ),
+          transaction_id: intent.wallet_transaction_id
+            ? String(intent.wallet_transaction_id)
+            : body.intent_id,
+        };
+      }
+
+      if (intent.status !== "CREATED" && intent.status !== "PAYMENT_PENDING") {
+        return reply.code(409).send({ message: "This top-up can no longer be completed" });
+      }
+
+      if (intent.pg_order_id && intent.pg_order_id !== body.razorpay_order_id) {
+        return reply.code(400).send({ message: "Payment order mismatch" });
+      }
+
+      const env = getEnv();
+      const isDummy =
+        body.razorpay_order_id.startsWith("dummy_") ||
+        body.razorpay_payment_id.startsWith("dummy_") ||
+        body.razorpay_signature === "simulated_signature" ||
+        env.PAYMENT_DUMMY_MODE;
+
+      if (!isDummy) {
+        const ok = verifyRazorpaySignature(
+          body.razorpay_order_id,
+          body.razorpay_payment_id,
+          body.razorpay_signature
+        );
+        if (!ok) {
+          await sql`
+            UPDATE customer_wallet_topup_intents
+            SET status = 'FAILED',
+                failure_reason = 'invalid_signature',
+                updated_at = NOW()
+            WHERE id = ${intent.id}
+          `;
+          return reply.code(400).send({ message: "Payment verification failed" });
+        }
+      } else if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+        return reply.code(400).send({ message: "Invalid payment" });
+      }
+
+      const idempotencyKey = `wallet_topup_${body.intent_id}`.slice(0, 120);
+      const description = `GatiCash top-up ₹${amount.toLocaleString("en-IN")}`;
+
+      try {
+        const creditRows = await sql`
+          SELECT public.customer_wallet_credit(
+            ${resolved.internalId},
+            ${amount},
+            'TOPUP'::public.wallet_transaction_type,
+            ${body.intent_id},
+            ${"wallet_topup"},
+            ${description},
+            ${body.razorpay_payment_id},
+            ${idempotencyKey},
+            ${JSON.stringify({
+              intent_id: body.intent_id,
+              razorpay_order_id: body.razorpay_order_id,
+              razorpay_payment_id: body.razorpay_payment_id,
+            })}::jsonb,
+            'ADDED'::public.customer_wallet_balance_lot_type,
+            ${null}
+          ) AS tx_id
+        `;
+        const txId = Number((creditRows[0] as { tx_id?: number } | undefined)?.tx_id ?? 0);
+
+        await sql`
+          UPDATE customer_wallet_topup_intents
+          SET status = 'PAID',
+              pg_payment_id = ${body.razorpay_payment_id},
+              wallet_transaction_id = ${txId > 0 ? txId : null},
+              updated_at = NOW()
+          WHERE id = ${intent.id}
+        `;
+
+        try {
+          await sql`
+            UPDATE customer_wallet_settings
+            SET monthly_topup_used = COALESCE(monthly_topup_used, 0) + ${amount},
+                updated_at = NOW()
+            WHERE customer_id = ${resolved.internalId}
+          `;
+        } catch {
+          /* settings row may be missing */
+        }
+
+        const walletRows = await sql`
+          SELECT current_balance FROM customer_wallet
+          WHERE customer_id = ${resolved.internalId}
+          LIMIT 1
+        `;
+
+        return {
+          ok: true as const,
+          amount,
+          balance_after: Number(
+            (walletRows[0] as { current_balance?: string | number } | undefined)?.current_balance ?? 0
+          ),
+          transaction_id: idempotencyKey,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Top-up failed";
+        req.log?.error?.({ err }, "wallet topup credit failed");
+        await sql`
+          UPDATE customer_wallet_topup_intents
+          SET status = 'FAILED',
+              failure_reason = ${msg.slice(0, 200)},
+              updated_at = NOW()
+          WHERE id = ${intent.id}
+        `.catch(() => undefined);
+        return reply.code(400).send({
+          message: msg.includes("max balance")
+            ? "Wallet max balance would be exceeded"
+            : "Could not credit GatiCash. Please contact support if money was deducted.",
+        });
       }
     }
   );

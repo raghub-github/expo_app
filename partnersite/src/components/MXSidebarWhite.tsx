@@ -248,7 +248,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const goToAllStores = () => {
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
-    window.location.href = '/partners/all-stores';
+    window.location.href = '/partners/all-stores?picker=1';
   };
 
   const handleLogout = async () => {

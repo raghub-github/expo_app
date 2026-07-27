@@ -86,7 +86,7 @@ const styles = StyleSheet.create({
   label: {
     color: "#ffffff",
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "700",
     maxWidth: 108,
     includeFontPadding: false,
   },
@@ -107,7 +107,7 @@ const styles = StyleSheet.create({
   badgeText: {
     color: "#ffffff",
     fontSize: 10,
-    fontWeight: "800",
+    fontWeight: "700",
     includeFontPadding: false,
   },
 });

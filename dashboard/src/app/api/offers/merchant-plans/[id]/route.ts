@@ -96,7 +96,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
           return n;
         },
       },
-      { key: "billingCycle", db: "billing_cycle" },
+      { key: "billingCycle", db: "billing_cycle", fn: (v) => {
+        const allowed = ["MONTHLY", "QUARTERLY", "SEMI_YEARLY", "YEARLY"];
+        const raw = String(v ?? "MONTHLY").toUpperCase().replace(/-/g, "_");
+        if (!allowed.includes(raw)) throw new Error("billingCycle must be MONTHLY|QUARTERLY|SEMI_YEARLY|YEARLY");
+        return raw;
+      } },
       { key: "maxMenuItems", db: "max_menu_items", fn: (v) => v != null ? Number(v) : v },
       { key: "maxCuisines", db: "max_cuisines", fn: (v) => v != null ? Number(v) : v },
       { key: "maxMenuCategories", db: "max_menu_categories", fn: (v) => v != null ? Number(v) : v },

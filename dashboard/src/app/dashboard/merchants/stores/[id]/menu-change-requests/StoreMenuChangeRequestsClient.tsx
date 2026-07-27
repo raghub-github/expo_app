@@ -18,6 +18,7 @@ import {
   buildChangeRequestDiff,
   ChangeRequestFullPayloadPanels,
   ChangeRequestValueBox,
+  formatChangeRequestValue,
   menuItemChangeFieldLabel,
   parseChangeRequestJson,
   sortMenuItemChangeKeys,
@@ -85,7 +86,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     | undefined;
 
   const [crStatus, setCrStatus] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED">("PENDING");
-  const [crType, setCrType] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
+  const [crType, setCrType] = useState<"ALL" | "CREATE" | "UPDATE" | "DELETE">("ALL");
   const [crLoading, setCrLoading] = useState(false);
   const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
   const [changeRequests, setChangeRequests] = useState<Record<string, unknown>[]>([]);
@@ -278,6 +279,23 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
 
   const changeRequestDetailDiff = useMemo(() => {
     if (!crDetailModal) return null;
+    const changesRaw = crDetailModal.changes;
+    const changesList = Array.isArray(changesRaw) ? changesRaw : [];
+    if (changesList.length > 0 && String(crDetailModal.request_type) === "UPDATE") {
+      const rows = changesList.map((c: any) => ({
+        key: String(c.field_name),
+        before: formatChangeRequestValue(c.old_value),
+        after: formatChangeRequestValue(c.new_value),
+        beforeRaw: c.old_value,
+        afterRaw: c.new_value,
+      }));
+      return {
+        intro: "Only fields the merchant changed (field-level review).",
+        rows,
+        fallbackCurrent: null,
+        fallbackRequested: null,
+      };
+    }
     return buildChangeRequestDiff(
       String(crDetailModal.request_type ?? ""),
       crDetailModal.current_snapshot,
@@ -287,6 +305,15 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
 
   const crParsedCurrent = useMemo(() => {
     if (!crDetailModal) return null;
+    const changesRaw = crDetailModal.changes;
+    const changesList = Array.isArray(changesRaw) ? changesRaw : [];
+    if (changesList.length > 0 && String(crDetailModal.request_type) === "UPDATE") {
+      const obj: Record<string, unknown> = {};
+      for (const c of changesList as any[]) {
+        obj[String(c.field_name)] = c.old_value;
+      }
+      return obj;
+    }
     const v = parseChangeRequestJson(crDetailModal.current_snapshot);
     return v !== null && typeof v === "object" && !Array.isArray(v)
       ? (v as Record<string, unknown>)
@@ -295,7 +322,16 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
 
   const crParsedRequested = useMemo(() => {
     if (!crDetailModal) return null;
-    const v = parseChangeRequestJson(crDetailModal.requested_payload);
+    const changesRaw = crDetailModal.changes;
+    const changesList = Array.isArray(changesRaw) ? changesRaw : [];
+    if (changesList.length > 0 && String(crDetailModal.request_type) === "UPDATE") {
+      const obj: Record<string, unknown> = {};
+      for (const c of changesList as any[]) {
+        obj[String(c.field_name)] = c.new_value;
+      }
+      return obj;
+    }
+    const v = parseChangeRequestJson(crDetailModal.requested_payload ?? crDetailModal.add_payload);
     return v !== null && typeof v === "object" && !Array.isArray(v)
       ? (v as Record<string, unknown>)
       : null;
@@ -573,6 +609,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                 aria-label="Filter change requests by type"
               >
                 <option value="ALL">Type: All</option>
+                <option value="CREATE">Type: Add</option>
                 <option value="UPDATE">Type: Edit</option>
                 <option value="DELETE">Type: Delete</option>
               </select>
@@ -622,7 +659,12 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                           }}
                           className="cursor-pointer font-semibold text-left text-blue-700 hover:text-blue-900 hover:underline underline-offset-2"
                         >
-                          {String(r.item_name ?? "—")}
+                          {String(
+                            r.item_name ??
+                              (r.add_payload as { item_name?: string } | null)?.item_name ??
+                              (r.requested_payload as { item_name?: string } | null)?.item_name ??
+                              "New item"
+                          )}
                         </button>
                         <div className="text-xs text-gray-500">{String(r.menu_item_public_id ?? "")}</div>
                       </td>
@@ -922,6 +964,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                 <MenuItemPhotoCustomerPreview
                   item={photoReviewItem}
                   categoryLabel={getCategoryLabel(photoReviewItem.category_id)}
+                  storeId={storeId}
                 />
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">

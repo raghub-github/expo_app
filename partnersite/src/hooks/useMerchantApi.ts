@@ -233,16 +233,55 @@ export async function fetchPayoutSettlement(
   storeId: string,
   from: Date,
   to: Date,
+  opts?: { cycleId?: number | null },
 ): Promise<import('@/lib/merchant-payout-utils').PayoutSettlementSummary> {
   const params = new URLSearchParams({
     storeId,
     from: from.toISOString(),
     to: to.toISOString(),
   });
+  if (opts?.cycleId != null && opts.cycleId > 0) {
+    params.set('cycleId', String(opts.cycleId));
+  }
   const res = await fetch(`/api/merchant/wallet/payout-settlement?${params}`);
   const data = await res.json();
   if (data.error) throw new Error(data.error);
   return mapPayoutSettlementApiResponse((data.settlement ?? {}) as Record<string, unknown>);
+}
+
+export async function fetchPayoutCycles(
+  storeId: string,
+  limit = 50,
+): Promise<
+  Array<{
+    id: number;
+    status: 'OPEN' | 'CLOSED';
+    close_reason: string | null;
+    period_start: string;
+    period_end: string | null;
+    payout_request_id: number | null;
+    net_payout: number;
+    estimated_payout: number;
+    order_count: number;
+    settlement: Record<string, unknown> | null;
+  }>
+> {
+  const params = new URLSearchParams({ storeId, limit: String(limit) });
+  const res = await fetch(`/api/merchant/wallet/payout-cycles?${params}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return (data.cycles ?? []) as Array<{
+    id: number;
+    status: 'OPEN' | 'CLOSED';
+    close_reason: string | null;
+    period_start: string;
+    period_end: string | null;
+    payout_request_id: number | null;
+    net_payout: number;
+    estimated_payout: number;
+    order_count: number;
+    settlement: Record<string, unknown> | null;
+  }>;
 }
 
 async function fetchBankAccounts(storeId: string): Promise<BankAccount[]> {
@@ -368,28 +407,39 @@ export function useMerchantPayoutRequests(
   });
 }
 
-/** Payout cycle settlement summary (A − B − C); cached per store + period. */
+/** Payout cycle settlement summary (ledger SSOT); cached per store + period/cycle. */
 export function usePayoutSettlement(
   storeId: string | null,
   periodStart: Date | null,
   periodEnd: Date | null,
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; cycleId?: number | null },
 ) {
   const from = periodStart?.toISOString() ?? '';
   const to = periodEnd?.toISOString() ?? '';
+  const cycleId = options?.cycleId ?? null;
   const enabled =
     (options?.enabled ?? true) &&
     !!storeId &&
     isValidPartnerStoreId(storeId) &&
-    !!from &&
-    !!to &&
-    !!periodStart &&
-    !!periodEnd;
+    ((!!from && !!to && !!periodStart && !!periodEnd) || (cycleId != null && cycleId > 0));
   return useQuery({
-    queryKey: merchantKeys.payoutSettlement(storeId ?? '', from, to),
-    queryFn: () => fetchPayoutSettlement(storeId!, periodStart!, periodEnd!),
+    queryKey: merchantKeys.payoutSettlement(storeId ?? '', from, to, cycleId),
+    queryFn: () =>
+      fetchPayoutSettlement(storeId!, periodStart ?? new Date(0), periodEnd ?? new Date(), {
+        cycleId,
+      }),
     enabled,
     staleTime: 60 * 1000,
+  });
+}
+
+export function usePayoutCycles(storeId: string | null, options?: { enabled?: boolean; limit?: number }) {
+  const enabled = (options?.enabled ?? true) && !!storeId && isValidPartnerStoreId(storeId);
+  return useQuery({
+    queryKey: ['merchant', 'payout-cycles', storeId ?? '', options?.limit ?? 50],
+    queryFn: () => fetchPayoutCycles(storeId!, options?.limit ?? 50),
+    enabled,
+    staleTime: 45 * 1000,
   });
 }
 

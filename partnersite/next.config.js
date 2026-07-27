@@ -7,6 +7,8 @@ const nextConfig = {
   outputFileTracingRoot: path.join(__dirname, '..'),
   output: 'standalone',
   reactCompiler: true,
+  // Phone / LAN testing hits the machine IP, not localhost — allow Next dev assets.
+  allowedDevOrigins: ['10.205.72.181', '127.0.0.1', 'localhost'],
   transpilePackages: [
     '@gatimitra/kot-print',
     '@gatimitra/bill-print',

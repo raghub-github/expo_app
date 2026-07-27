@@ -241,7 +241,10 @@ export async function recordRiderAssignmentAccepted(
 ): Promise<number> {
   const now = input.occurredAt ?? new Date();
   const serviceType = input.serviceType ?? "food";
-  const distance = await enrichDistanceSnapshot(input.riderId, input.orderCorePk, input.distance);
+  // Do NOT await GPS/distance enrichment inside the accept claim transaction —
+  // it inflates lock time and causes rival accept timeouts / false "taken" races.
+  // Use caller-provided distances only; post-commit jobs can backfill.
+  const distance = hasDistanceValues(input.distance) ? input.distance : undefined;
 
   // Only one is_active row per order — clear all active assignments (any rider).
   await tx.execute(sql`

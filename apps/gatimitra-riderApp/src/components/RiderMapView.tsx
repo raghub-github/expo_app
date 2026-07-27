@@ -3,14 +3,23 @@ import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, us
 import { View, Text, StyleSheet, Platform } from "react-native";
 import { getMapboxModule, isMapboxAvailable } from "@/src/services/maps/mapbox";
 import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
+import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
+import Constants from "expo-constants";
 import { YouRiderMarker } from "@/src/components/home/YouRiderMarker";
 import { RiderRadarPulse } from "@/src/components/home/RiderRadarPulse";
 import { isOrderPinAwayFromRider } from "@/src/lib/geo-distance";
 import { colors } from "@/src/theme";
 import { MAPBOX_HOME_STYLE, HOME_MAP_ZOOM } from "@/src/lib/map-assets";
+import {
+  demandZonesToGeoJson,
+  type DemandZone,
+} from "@/src/lib/demand-zones";
 
 const BRAND = colors.primary[500];
-const DEFAULT = { lat: 24.796, lng: 85.0 };
+/** Last successful camera center — never jump to a hardcoded city while waiting for GPS. */
+let lastCameraCenter: { lat: number; lng: number } | null = null;
+const DEMAND_FILL = "rgba(239, 68, 68, 0.22)";
+const DEMAND_STROKE = "#DC2626";
 
 interface Location {
   lat: number;
@@ -37,6 +46,7 @@ interface RiderMapViewProps {
   onOrderPress?: (orderId: string) => void;
   style?: object;
   showRadar?: boolean;
+  demandZones?: DemandZone[];
 }
 
 export type RiderMapViewHandle = {
@@ -55,7 +65,7 @@ const OrderPin: React.FC<{ order: Order; onPress?: () => void }> = ({ order, onP
 );
 
 export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(function RiderMapView(
-  { riderLocation, orders, onOrderPress, style, showRadar = false },
+  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [] },
   ref
 ) {
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
@@ -70,9 +80,13 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     }
   }, []);
 
-  const currentLocation = riderLocation || DEFAULT;
-  const lat = formatCoordinate(currentLocation.lat);
-  const lng = formatCoordinate(currentLocation.lng);
+  const hasLiveFix = !!riderLocation;
+  if (riderLocation) {
+    lastCameraCenter = { lat: riderLocation.lat, lng: riderLocation.lng };
+  }
+  const cameraSeed = riderLocation ?? lastCameraCenter;
+  const lat = formatCoordinate(cameraSeed?.lat ?? 0);
+  const lng = formatCoordinate(cameraSeed?.lng ?? 0);
 
   const visibleOrders = useMemo(
     () =>
@@ -80,17 +94,22 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
         (order) =>
           order.pickupLat != null &&
           order.pickupLng != null &&
-          isOrderPinAwayFromRider(lat, lng, order.pickupLat, order.pickupLng)
+          (!hasLiveFix ||
+            isOrderPinAwayFromRider(lat, lng, order.pickupLat, order.pickupLng))
       ),
-    [orders, lat, lng]
+    [orders, lat, lng, hasLiveFix]
+  );
+
+  const demandGeoJson = useMemo(
+    () => (demandZones.length > 0 ? demandZonesToGeoJson(demandZones) : null),
+    [demandZones]
   );
 
   const recenter = useCallback(() => {
-    if (!cameraRef.current) return;
-    const target = riderLocation || DEFAULT;
+    if (!cameraRef.current || !riderLocation) return;
     try {
       cameraRef.current.setCamera({
-        centerCoordinate: [formatCoordinate(target.lng), formatCoordinate(target.lat)],
+        centerCoordinate: [formatCoordinate(riderLocation.lng), formatCoordinate(riderLocation.lat)],
         zoomLevel: HOME_MAP_ZOOM,
         animationMode: "flyTo",
         animationDuration: 700,
@@ -112,11 +131,22 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
   }
 
   if (!resolveMapboxPublicToken()) {
-    return <View style={[styles.container, styles.placeholder, style]} />;
+    return (
+      <View style={[styles.container, style]}>
+        <MapboxUnavailablePanel context="home" missingToken />
+      </View>
+    );
   }
 
   if (!Mapbox || !isMapboxAvailable()) {
-    return <View style={[styles.container, styles.placeholder, style]} />;
+    return (
+      <View style={[styles.container, style]}>
+        <MapboxUnavailablePanel
+          context="home"
+          needsDevBuild={Constants.appOwnership === "expo"}
+        />
+      </View>
+    );
   }
 
   const MarkerView = Mapbox.MarkerView ?? null;
@@ -159,10 +189,39 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
         <Mapbox.Camera
           ref={cameraRef}
           zoomLevel={HOME_MAP_ZOOM}
-          centerCoordinate={[lng, lat]}
+          // Prefer live fix, else last known camera — never a hardcoded city.
+          {...(cameraSeed
+            ? {
+                centerCoordinate: [
+                  formatCoordinate(cameraSeed.lng),
+                  formatCoordinate(cameraSeed.lat),
+                ] as [number, number],
+              }
+            : {})}
           animationMode="none"
           animationDuration={0}
         />
+
+        {demandGeoJson ? (
+          <Mapbox.ShapeSource id="demand-zones" shape={demandGeoJson}>
+            <Mapbox.FillLayer
+              id="demand-zones-fill"
+              style={{
+                fillColor: DEMAND_FILL,
+                fillOpacity: 1,
+              }}
+            />
+            <Mapbox.LineLayer
+              id="demand-zones-outline"
+              style={{
+                lineColor: DEMAND_STROKE,
+                lineWidth: 2,
+                lineDasharray: [2, 1.5],
+                lineOpacity: 0.95,
+              }}
+            />
+          </Mapbox.ShapeSource>
+        ) : null}
 
         {riderLocation && showRadar
           ? renderMarker("rider-radar", [lng, lat], { x: 0.5, y: 0.5 }, <RiderRadarPulse />)

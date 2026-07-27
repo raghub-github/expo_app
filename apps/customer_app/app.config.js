@@ -4,10 +4,12 @@
  */
 const appJson = require("./app.json");
 
-// Launcher icons: logo-only mark, 65% safe zone — see scripts/generate-app-icons.mjs
+// Launcher icons: logo-only mark on pure black, ~56% safe zone — see scripts/generate-app-icons.mjs
 const APP_ICON = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
-const APP_ICON_BG = "#14b8a6";
+const APP_ICON_BG = "#000000";
+/** Native splash + Android 12+ splash window — match JS bootstrap mint (GatiMitraBootstrapScreen). */
+const LAUNCHER_SPLASH_BG = "#5eead4";
 
 module.exports = {
   ...appJson,
@@ -20,7 +22,7 @@ module.exports = {
       ...appJson.expo.splash,
       image: "./assets/images/splash-logo.png",
       resizeMode: "contain",
-      backgroundColor: "#14b8a6",
+      backgroundColor: LAUNCHER_SPLASH_BG,
     },
     ios: {
       ...appJson.expo.ios,
@@ -77,7 +79,8 @@ module.exports = {
         {
           icon: "./assets/images/splash-logo.png",
           color: "#14b8a6",
-          defaultChannel: "default",
+          defaultChannel: "customer_default",
+          sounds: ["./assets/sounds/cx_notification.mp3"],
         },
       ],
       [

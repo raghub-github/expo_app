@@ -9,6 +9,7 @@ import {
   manualAssignRiderOnBackend,
 } from "@/lib/orders/rider-management-backend";
 import { applyRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 
 export const runtime = "nodejs";
 
@@ -179,6 +180,20 @@ export async function POST(
     if (!result.ok) {
       return NextResponse.json({ success: false, error: result.error }, { status: result.status });
     }
+
+    await stampOrderRoutedTo({
+      orderId: orderCoreId,
+      systemUserId: systemUser?.id ?? null,
+      actorEmail,
+      actorName: systemUser?.full_name ?? null,
+      actorRole: systemUser?.primary_role ?? null,
+      action: "rider_cancel",
+      actionLabel:
+        action === "cancel_reassign"
+          ? "Rider cancellation + reassign"
+          : "Rider cancellation",
+      metadata: { action, reasonCode, reasonText },
+    });
 
     return NextResponse.json({
       success: true,

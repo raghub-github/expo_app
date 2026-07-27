@@ -20,7 +20,7 @@ import { RIDER_CANCEL_REASON_FALLBACK } from "@/src/lib/rider-ride-cancel-reason
 type Props = {
   visible: boolean;
   loading?: boolean;
-  variant?: "ride" | "food";
+  variant?: "ride" | "food" | "parcel";
   onClose: () => void;
   onSelect: (reasonCode: string, label: string) => void;
 };
@@ -35,7 +35,7 @@ export function RiderRideCancelReasonSheet({
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
   const isFood = variant === "food";
-  const { data: reasons = RIDER_CANCEL_REASON_FALLBACK, isLoading: reasonsLoading } =
+  const { data: reasons = RIDER_CANCEL_REASON_FALLBACK, isLoading: reasonsLoading, isFetching } =
     useRiderCancellationReasons(variant, visible);
 
   const title = isFood
@@ -52,7 +52,7 @@ export function RiderRideCancelReasonSheet({
         "Please cancel only if necessary or in an emergency. Otherwise, penalties may apply to your account."
       );
 
-  const listLoading = visible && reasonsLoading && reasons.length === 0;
+  const listLoading = visible && (reasonsLoading || isFetching) && reasons === RIDER_CANCEL_REASON_FALLBACK;
   const disabled = loading || listLoading;
 
   const reasonRows = reasons.map((opt, index) => (

@@ -1,18 +1,30 @@
 /**
- * GatiCash — Add money (Zomato reference UI). Gift card row disabled.
+ * GatiCash — Add money. Real Razorpay top-up; auto-add UI disabled for now.
  */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, TextInput, Alert, Modal, Pressable, KeyboardAvoidingView, Platform, BackHandler, Keyboard, type KeyboardEvent, type ViewStyle } from "react-native";
+import {
+  View,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+  TextInput,
+  Alert,
+  ActivityIndicator,
+  Keyboard,
+  Platform,
+  type KeyboardEvent,
+  type ViewStyle,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
-import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { WalletSubpageHeader } from "@/components/wallet/WalletSubpageHeader";
+import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { walletService } from "@/services/wallet.service";
 
@@ -22,11 +34,8 @@ const MUTED = "#6B7280";
 const BORDER = "#E5E7EB";
 const ACCENT = GatiMitraColors.primaryMint;
 const ACCENT_SOFT = "#ECFDF5";
-const WARN_BG = "#FFF4ED";
-const WARN_TEXT = "#9A3412";
 
 const PRESETS = [2000, 5000, 10000] as const;
-const DEFAULT_THRESHOLD = 500;
 
 function formatAmount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -43,15 +52,21 @@ export default function WalletAddMoneyScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [amount, setAmount] = useState(2000);
-  const [autoAdd, setAutoAdd] = useState(false);
-  const [autoAddAmount, setAutoAddAmount] = useState(2000);
-  const [thresholdAmount, setThresholdAmount] = useState(DEFAULT_THRESHOLD);
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [draftAutoAdd, setDraftAutoAdd] = useState("");
-  const [draftThreshold, setDraftThreshold] = useState("");
   const [amountInputFocused, setAmountInputFocused] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [keyboardFooterHeight, setKeyboardFooterHeight] = useState(0);
+  const [paying, setPaying] = useState(false);
+  const [pendingIntentId, setPendingIntentId] = useState<string | null>(null);
+  const [razorpayVisible, setRazorpayVisible] = useState(false);
+  const [razorpayParams, setRazorpayParams] = useState<{
+    orderId: string;
+    keyId: string;
+    amount: number;
+  } | null>(null);
+  const [simulatedPayment, setSimulatedPayment] = useState<{
+    orderId: string;
+    amount: number;
+  } | null>(null);
 
   const effectiveKeyboardHeight =
     keyboardHeight || (amountInputFocused && Platform.OS === "android" ? 300 : 0);
@@ -79,124 +94,106 @@ export default function WalletAddMoneyScreen() {
     };
   }, [amountInputFocused]);
 
-  useEffect(() => {
-    setAutoAddAmount(amount);
-  }, [amount]);
+  const amountDisplay = useMemo(() => formatAmount(amount), [amount]);
+  const canProceed = amount > 0 && !paying;
 
-  useEffect(() => {
-    let cancelled = false;
-    void walletService
-      .getSettings()
-      .then((settings) => {
-        if (cancelled) return;
-        setAutoAdd(settings.auto_add_enabled);
-        if (settings.auto_add_amount > 0) {
-          setAutoAddAmount(settings.auto_add_amount);
-          setAmount(settings.auto_add_amount);
-        }
-        if (settings.auto_add_threshold > 0) {
-          setThresholdAmount(settings.auto_add_threshold);
-        }
-      })
-      .catch(() => {
-        /* settings API unavailable until migrations are applied */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const persistSettings = useCallback(
-    async (next: {
-      auto_add_enabled?: boolean;
-      auto_add_amount?: number;
-      auto_add_threshold?: number;
-    }) => {
+  const finalizeTopup = useCallback(
+    async (result: RazorpayPaymentResult) => {
+      if (!pendingIntentId) return;
+      setPaying(true);
       try {
-        await walletService.updateSettings(next);
-      } catch {
-        /* keep local UI state; backend may not be migrated yet */
+        const confirmed = await walletService.confirmTopup({
+          intentId: pendingIntentId,
+          razorpayOrderId: result.razorpayOrderId,
+          razorpayPaymentId: result.razorpayPaymentId,
+          razorpaySignature: result.razorpaySignature,
+        });
+        setRazorpayVisible(false);
+        setRazorpayParams(null);
+        setSimulatedPayment(null);
+        setPendingIntentId(null);
+        // Land on main wallet (behind the success sheet) and refresh ledger there.
+        router.replace({
+          pathname: "/wallet",
+          params: {
+            topupAmount: String(confirmed.amount),
+            balanceAfter: String(confirmed.balance_after),
+          },
+        });
+      } catch (e) {
+        const msg =
+          (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+          "Could not confirm top-up. If money was deducted, it will reflect shortly or contact support.";
+        Alert.alert("Top-up failed", msg);
+      } finally {
+        setPaying(false);
       }
     },
-    []
+    [pendingIntentId, router]
   );
 
-  const amountDisplay = useMemo(() => formatAmount(amount), [amount]);
-
-  const showThresholdWarning = autoAdd && thresholdAmount > amount;
-  const canProceed = amount > 0 && !showThresholdWarning;
-
-  const openEditModal = () => {
-    setDraftAutoAdd(String(autoAddAmount || ""));
-    setDraftThreshold(String(thresholdAmount || ""));
-    setEditModalVisible(true);
-  };
-
-  const closeEditModal = () => setEditModalVisible(false);
-
-  useEffect(() => {
-    if (!editModalVisible || Platform.OS !== "android") return;
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      closeEditModal();
-      return true;
-    });
-    return () => sub.remove();
-  }, [editModalVisible]);
-
-  const saveAutoAddSettings = () => {
-    const nextAuto = parseDigits(draftAutoAdd);
-    const nextThreshold = parseDigits(draftThreshold);
-    if (nextAuto <= 0 || nextThreshold <= 0) return;
-    setAutoAddAmount(nextAuto);
-    setThresholdAmount(nextThreshold);
-    setAmount(nextAuto);
-    closeEditModal();
-    void persistSettings({
-      auto_add_enabled: autoAdd,
-      auto_add_amount: nextAuto,
-      auto_add_threshold: nextThreshold,
-    });
-  };
-
-  const canSaveAutoAdd =
-    parseDigits(draftAutoAdd) > 0 && parseDigits(draftThreshold) > 0;
-
-  const onAddPaymentMethod = () => {
+  const onAddPaymentMethod = useCallback(async () => {
     if (!canProceed) return;
-    Alert.alert(
-      "Coming soon",
-      "Payment methods for GatiCash top-up will be available soon.",
-      [{ text: "OK" }]
-    );
-  };
+    Keyboard.dismiss();
+    setPaying(true);
+    try {
+      const intent = await walletService.createTopupIntent(amount);
+      setPendingIntentId(intent.intent_id);
+      const isDummy =
+        intent.key_id === "dummy_key" ||
+        intent.key_id === "dev_sim_key" ||
+        intent.razorpay_order_id.startsWith("dummy_");
+      if (isDummy) {
+        setSimulatedPayment({
+          orderId: intent.razorpay_order_id,
+          amount: intent.amount_paise,
+        });
+      } else {
+        setRazorpayParams({
+          orderId: intent.razorpay_order_id,
+          keyId: intent.key_id,
+          amount: intent.amount_paise,
+        });
+        setRazorpayVisible(true);
+      }
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+        "Could not start payment. Please try again.";
+      Alert.alert("Payment unavailable", msg);
+      setPendingIntentId(null);
+    } finally {
+      setPaying(false);
+    }
+  }, [amount, canProceed]);
 
   const renderPaymentCta = useCallback(
     (containerStyle?: ViewStyle) => (
       <View style={[styles.ctaStack, containerStyle]}>
-        {showThresholdWarning ? (
-          <View style={styles.warningBanner}>
-            <AppText style={styles.warningText}>
-              Threshold amount cannot be greater than add money amount
-            </AppText>
-          </View>
-        ) : null}
-
         <TouchableOpacity
           style={[styles.ctaBtn, !canProceed && styles.ctaBtnDisabled]}
           activeOpacity={0.88}
           disabled={!canProceed}
-          onPress={onAddPaymentMethod}
+          onPress={() => void onAddPaymentMethod()}
         >
-          <AppText style={styles.ctaText}>Add Payment Method</AppText>
-          <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+          {paying ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <>
+              <AppText style={styles.ctaText}>
+                Pay ₹{formatAmount(amount)}
+              </AppText>
+              <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+            </>
+          )}
         </TouchableOpacity>
       </View>
     ),
-    [canProceed, onAddPaymentMethod, showThresholdWarning]
+    [amount, canProceed, onAddPaymentMethod, paying]
   );
 
   const keyboardScrollPadding =
-    effectiveKeyboardHeight + keyboardFooterHeight + (showThresholdWarning ? 12 : 0) + 16;
+    effectiveKeyboardHeight + keyboardFooterHeight + 16;
 
   return (
     <>
@@ -228,6 +225,7 @@ export default function WalletAddMoneyScreen() {
                 onChangeText={(v) => setAmount(parseDigits(v))}
                 keyboardType="number-pad"
                 maxLength={8}
+                editable={!paying}
                 onFocus={() => setAmountInputFocused(true)}
                 onBlur={() => {
                   setAmountInputFocused(false);
@@ -244,6 +242,7 @@ export default function WalletAddMoneyScreen() {
                     key={preset}
                     style={[styles.presetChip, active && styles.presetChipActive]}
                     activeOpacity={0.85}
+                    disabled={paying}
                     onPress={() => setAmount(preset)}
                   >
                     <AppText style={[styles.presetText, active && styles.presetTextActive]}>
@@ -255,45 +254,7 @@ export default function WalletAddMoneyScreen() {
             </View>
           </View>
 
-          <View style={styles.autoAddCard}>
-            <TouchableOpacity
-              style={styles.checkboxHit}
-              activeOpacity={0.85}
-              onPress={() => {
-                setAutoAdd((v) => {
-                  const next = !v;
-                  void persistSettings({
-                    auto_add_enabled: next,
-                    auto_add_amount: autoAddAmount,
-                    auto_add_threshold: thresholdAmount,
-                  });
-                  return next;
-                });
-              }}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: autoAdd }}
-            >
-              <View style={[styles.checkbox, autoAdd && styles.checkboxChecked]}>
-                {autoAdd ? <Ionicons name="checkmark" size={14} color="#fff" /> : null}
-              </View>
-            </TouchableOpacity>
-
-            <View style={styles.autoAddTextWrap}>
-              <AppText style={styles.autoAddTitle}>Auto-add ₹{formatAmount(autoAddAmount)}</AppText>
-              <View style={styles.autoAddSubRow}>
-                <AppText style={styles.autoAddSub}>
-                  when balance goes below ₹{formatAmount(thresholdAmount)}
-                </AppText>
-                <TouchableOpacity
-                  onPress={openEditModal}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  accessibilityLabel="Edit auto-add settings"
-                >
-                  <BiPencilSquareIcon size={14} color={ACCENT} />
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
+          {/* Auto-add temporarily disabled — re-enable when auto top-up product is ready. */}
 
           {!amountInputFocused ? (
             <>
@@ -342,78 +303,59 @@ export default function WalletAddMoneyScreen() {
         )}
       </View>
 
-      <Modal visible={editModalVisible} transparent animationType="slide" onRequestClose={closeEditModal}>
-        <View style={styles.modalRoot}>
-          <Pressable style={styles.modalOverlay} onPress={closeEditModal} />
+      <RazorpayCheckoutModal
+        visible={razorpayVisible && razorpayParams != null}
+        orderParams={razorpayParams}
+        themeColor={ACCENT}
+        onSuccess={(result) => void finalizeTopup(result)}
+        onCancel={() => {
+          setRazorpayVisible(false);
+          setRazorpayParams(null);
+          setPendingIntentId(null);
+          // Match checkout: silent dismiss — user can tap Pay again.
+        }}
+      />
 
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={styles.modalBottom}
-          >
-            <View style={styles.floatingCloseWrap}>
-              <TouchableOpacity
-                style={styles.floatingCloseBtn}
-                activeOpacity={0.85}
-                onPress={closeEditModal}
-                accessibilityLabel="Close"
-              >
-                <Ionicons name="close" size={22} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
-
-            <Pressable
-              style={[styles.modalSheet, { paddingBottom: insets.bottom + 20 }]}
-              onPress={(e) => e.stopPropagation()}
+      {simulatedPayment != null ? (
+        <View style={styles.simOverlay}>
+          <View style={styles.simCard}>
+            <AppText style={styles.simTitle}>Test payment</AppText>
+            <AppText style={styles.simSub}>
+              Dummy mode — simulate a successful GatiCash top-up of ₹
+              {formatAmount(amount)}.
+            </AppText>
+            <TouchableOpacity
+              style={styles.simSuccessBtn}
+              activeOpacity={0.88}
+              disabled={paying}
+              onPress={() =>
+                void finalizeTopup({
+                  razorpayOrderId: simulatedPayment.orderId,
+                  razorpayPaymentId: `dummy_pay_${Date.now()}`,
+                  razorpaySignature: "simulated_signature",
+                })
+              }
             >
-              <AppText style={styles.sheetTitle}>Add money</AppText>
-              <AppText style={styles.sheetSubtitle}>You can add a maximum of ₹50,000 in this month</AppText>
-
-              <AppText style={styles.fieldGroupLabel}>Automatically add</AppText>
-              <View style={[styles.inputField, styles.inputFieldActive]}>
-                <View style={styles.inputLabelWrap}>
-                  <AppText style={styles.inputLabel}>Amount</AppText>
-                </View>
-                <View style={styles.inputRow}>
-                  <AppText style={styles.prefix}>₹</AppText>
-                  <TextInput
-                    style={styles.modalInput}
-                    value={draftAutoAdd}
-                    onChangeText={(v) => setDraftAutoAdd(v.replace(/\D/g, "").slice(0, 6))}
-                    keyboardType="number-pad"
-                  />
-                </View>
-              </View>
-
-              <AppText style={[styles.fieldGroupLabel, { marginTop: 16 }]}>when balance goes below</AppText>
-              <View style={styles.inputField}>
-                <View style={styles.inputLabelWrap}>
-                  <AppText style={styles.inputLabel}>Threshold Amount</AppText>
-                </View>
-                <View style={styles.inputRow}>
-                  <AppText style={styles.prefix}>₹</AppText>
-                  <TextInput
-                    style={styles.modalInput}
-                    value={draftThreshold}
-                    onChangeText={(v) => setDraftThreshold(v.replace(/\D/g, "").slice(0, 6))}
-                    keyboardType="number-pad"
-                  />
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.continueBtn, !canSaveAutoAdd && styles.continueBtnDisabled]}
-                activeOpacity={0.88}
-                disabled={!canSaveAutoAdd}
-                onPress={saveAutoAddSettings}
-              >
-                <AppText style={[styles.continueText, !canSaveAutoAdd && styles.continueTextDisabled]}>
-                  Continue
-                </AppText>
-              </TouchableOpacity>
-            </Pressable>
-          </KeyboardAvoidingView>
+              {paying ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <AppText style={styles.simSuccessText}>Simulate Success</AppText>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.simCancelBtn}
+              activeOpacity={0.85}
+              disabled={paying}
+              onPress={() => {
+                setSimulatedPayment(null);
+                setPendingIntentId(null);
+              }}
+            >
+              <AppText style={styles.simCancelText}>Cancel</AppText>
+            </TouchableOpacity>
+          </View>
         </View>
-      </Modal>
+      ) : null}
     </>
   );
 }
@@ -463,34 +405,6 @@ const styles = StyleSheet.create({
   },
   presetText: { fontSize: 14, fontWeight: "700", color: TEXT },
   presetTextActive: { color: "#15803D" },
-  autoAddCard: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 22,
-    ...CARD_SHADOW,
-  },
-  checkboxHit: { paddingTop: 2 },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: ACCENT,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  checkboxChecked: {
-    backgroundColor: ACCENT,
-    borderColor: ACCENT,
-  },
-  autoAddTextWrap: { flex: 1 },
-  autoAddTitle: { fontSize: 16, fontWeight: "800", color: TEXT },
-  autoAddSubRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
-  autoAddSub: { fontSize: 14, color: MUTED, fontWeight: "500" },
   sectionLabel: {
     fontSize: 11,
     fontWeight: "600",
@@ -545,19 +459,6 @@ const styles = StyleSheet.create({
     backgroundColor: PAGE_BG,
     gap: 10,
   },
-  warningBanner: {
-    backgroundColor: WARN_BG,
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-  },
-  warningText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: WARN_TEXT,
-    textAlign: "center",
-    lineHeight: 18,
-  },
   ctaBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -566,124 +467,40 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT,
     borderRadius: 12,
     paddingVertical: 16,
+    minHeight: 52,
   },
   ctaBtnDisabled: {
     opacity: 0.45,
   },
   ctaText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
-  modalRoot: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  modalOverlay: {
+  simOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.55)",
-  },
-  modalBottom: { width: "100%" },
-  floatingCloseWrap: {
-    alignItems: "center",
-    marginBottom: 14,
-    zIndex: 2,
-  },
-  floatingCloseBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#2D2D2D",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 6,
+    paddingHorizontal: 28,
+    zIndex: 50,
   },
-  modalSheet: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingTop: 22,
+  simCard: {
+    width: "100%",
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
+    gap: 12,
   },
-  sheetTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: TEXT,
-    textAlign: "center",
-  },
-  sheetSubtitle: {
-    fontSize: 13,
-    color: MUTED,
-    textAlign: "center",
-    marginTop: 6,
-    marginBottom: 22,
-    lineHeight: 18,
-  },
-  fieldGroupLabel: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: TEXT,
-    marginBottom: 10,
-  },
-  inputField: {
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    paddingTop: 10,
-    position: "relative",
-  },
-  inputFieldActive: {
-    borderColor: TEXT,
-  },
-  inputLabelWrap: {
-    position: "absolute",
-    top: -9,
-    left: 12,
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 4,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: MUTED,
-  },
-  inputRow: {
-    flexDirection: "row",
+  simTitle: { fontSize: 18, fontWeight: "800", color: TEXT, textAlign: "center" },
+  simSub: { fontSize: 14, color: MUTED, textAlign: "center", lineHeight: 20 },
+  simSuccessBtn: {
+    backgroundColor: ACCENT,
+    borderRadius: 12,
+    paddingVertical: 14,
     alignItems: "center",
-    gap: 4,
     marginTop: 4,
   },
-  prefix: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: TEXT,
-  },
-  modalInput: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: "700",
-    color: TEXT,
-    padding: 0,
-    minHeight: 24,
-  },
-  continueBtn: {
-    backgroundColor: ACCENT,
-    borderRadius: 10,
-    paddingVertical: 15,
+  simSuccessText: { fontSize: 15, fontWeight: "700", color: "#fff" },
+  simCancelBtn: {
+    paddingVertical: 10,
     alignItems: "center",
-    marginTop: 24,
   },
-  continueBtnDisabled: {
-    backgroundColor: "#E5E7EB",
-  },
-  continueText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  continueTextDisabled: {
-    color: "#9CA3AF",
-  },
+  simCancelText: { fontSize: 14, fontWeight: "600", color: MUTED },
 });

@@ -6,23 +6,8 @@
  */
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Pressable,
-  Image,
-  ActivityIndicator,
-  Linking,
-  Alert,
-  Modal,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-  Switch,
-  Dimensions,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, ScrollView, StyleSheet, Pressable, Image, ActivityIndicator, Linking, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, Switch, Dimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";

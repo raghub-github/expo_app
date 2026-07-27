@@ -125,78 +125,159 @@ export async function middleware(request: NextRequest) {
                           request.cookies.has("sb-refresh-token") ||
                           request.cookies.getAll().some(c => c.name.startsWith("sb-"));
 
-    // API routes: pass through immediately when auth cookies exist. Avoids calling getUser() in Edge
-    // (which can throw "fetch failed") and lets the API route authenticate in Node instead.
-    if (pathname.startsWith("/api/") && hasAuthCookie) {
+    // Prefer cookie-based pass-through: Edge Runtime often cannot reach Supabase
+    // (ConnectTimeout / fetch failed). API routes and Server Components authenticate in Node.
+    // Calling getUser() here also leaves a racing promise that rejects after ~10s and floods logs.
+    if (hasAuthCookie) {
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name) ?? undefined,
       };
       const metadata = getSessionMetadata(cookieWrapper);
       if (metadata) {
+        const validity = checkSessionValidity(metadata);
+        if (!validity.isValid) {
+          const cookieSetter = {
+            set: (
+              name: string,
+              value: string,
+              options: {
+                maxAge: number;
+                path: string;
+                httpOnly?: boolean;
+                sameSite?: string;
+                secure?: boolean;
+              }
+            ) => {
+              setSafeResponseCookie(response, name, value, options);
+            },
+          };
+          expireSession(cookieSetter);
+          if (pathname.startsWith("/api/")) {
+            return NextResponse.json(
+              { success: false, error: "Session expired", code: "SESSION_EXPIRED" },
+              { status: 401, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
+            const redirectUrl = request.nextUrl.clone();
+            redirectUrl.pathname = "/login";
+            redirectUrl.searchParams.set("expired", validity.reason || "unknown");
+            redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
+            return NextResponse.redirect(redirectUrl);
+          }
+          return response;
+        }
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
-          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            setSafeResponseCookie(response, name, value, options);          },
+          set: (
+            name: string,
+            value: string,
+            options: {
+              maxAge: number;
+              path: string;
+              httpOnly?: boolean;
+              sameSite?: string;
+              secure?: boolean;
+            }
+          ) => {
+            setSafeResponseCookie(response, name, value, options);
+          },
         };
         updateActivity(cookieManager);
       }
+      // Auth cookies present: never call Supabase from Edge middleware.
       return response;
     }
 
     let session: { user: { id: string; email?: string }; [key: string]: unknown } | null = null;
     let sessionError: { message?: string; code?: string } | null = null;
 
-    if (hasAuthCookie) {
-      try {
-        type AuthUserResult = {
-          data?: { user?: { id: string; email?: string } | null };
-          error?: { message?: string; code?: string };
-        };
-        const userResult = (await Promise.race([
-          supabase.auth.getUser(),
-          new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
-            setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
-          ),
-        ])) as unknown as AuthUserResult;
-        const user = userResult.data?.user ?? null;
-        sessionError = userResult.error ?? null;
+    // No auth cookies — optional lightweight check (still swallow network failures).
+    try {
+      type AuthUserResult = {
+        data?: { user?: { id: string; email?: string } | null };
+        error?: { message?: string; code?: string };
+      };
+      const getUserSafe = supabase.auth.getUser().then(
+        (r) => r as AuthUserResult,
+        (err: unknown) => {
+          const e = err as { message?: string; code?: string; name?: string };
+          return {
+            data: { user: null },
+            error: {
+              message: e?.message ?? "fetch failed",
+              code: e?.code ?? e?.name ?? "FETCH_FAILED",
+            },
+          } satisfies AuthUserResult;
+        }
+      );
+      const userResult = (await Promise.race([
+        getUserSafe,
+        new Promise<AuthUserResult>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                data: { user: null },
+                error: { message: "Session check timeout", code: "TIMEOUT" },
+              }),
+            2500
+          )
+        ),
+      ])) as AuthUserResult;
+      const user = userResult.data?.user ?? null;
+      sessionError = userResult.error ?? null;
 
-        if (user) {
-          session = {
-            user: { id: user.id, email: user.email },
-            ...user,
-          } as unknown as typeof session;
-        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
-          session = null;
-          sessionError = null;
-        }
-      } catch (err) {
-        const error = err as { message?: string; code?: string; name?: string };
-        const isFetchError =
-          error.name === "TypeError" ||
-          error.message?.includes("fetch failed") ||
-          error.message?.includes("network") ||
-          error.code === "ECONNREFUSED";
-        if (isFetchError) {
-          session = null;
-          sessionError = null;
-        } else {
-          sessionError = error;
-        }
+      if (user) {
+        session = {
+          user: { id: user.id, email: user.email },
+          ...user,
+        } as unknown as typeof session;
+        sessionError = null;
+      } else if (
+        sessionError &&
+        (sessionError.code === "TIMEOUT" ||
+          sessionError.code === "FETCH_FAILED" ||
+          sessionError.message?.includes("timeout") ||
+          sessionError.message?.includes("fetch failed") ||
+          sessionError.message?.toLowerCase().includes("connect timeout"))
+      ) {
+        session = null;
+        sessionError = null;
+      }
+    } catch (err) {
+      const error = err as { message?: string; code?: string; name?: string };
+      const isFetchError =
+        error.name === "TypeError" ||
+        error.message?.includes("fetch failed") ||
+        error.message?.includes("network") ||
+        error.message?.toLowerCase().includes("timeout") ||
+        error.code === "ECONNREFUSED" ||
+        error.code === "UND_ERR_CONNECT_TIMEOUT";
+      if (isFetchError) {
+        session = null;
+        sessionError = null;
+      } else {
+        sessionError = error;
       }
     }
 
-    // Invalid/used refresh token or not found: clear cookies and redirect to login
+    // Invalid refresh token: only clear cookies when the token is truly dead.
+    // refresh_token_already_used is a parallel-refresh race — signing out here
+    // wipes cookies another request just rotated (dashboard auto-logout).
     if (sessionError) {
       const isRefreshTokenNotFound =
         sessionError.code === "refresh_token_not_found" ||
         sessionError.message?.includes("refresh_token_not_found");
-      const isInvalidOrUsedRefreshToken =
+      const isAlreadyUsed =
         sessionError.code === "refresh_token_already_used" ||
-        sessionError.message?.includes("refresh_token_already_used") ||
+        sessionError.message?.includes("refresh_token_already_used");
+      const isInvalidRefresh =
         (sessionError.message ?? "").toLowerCase().includes("invalid refresh token");
 
-      if (isRefreshTokenNotFound || isInvalidOrUsedRefreshToken) {
+      if (isAlreadyUsed) {
+        // Pass through; browser may already have the rotated cookies from the winning request.
+        sessionError = null;
+      } else if (isRefreshTokenNotFound || isInvalidRefresh) {
         try {
           await supabase.auth.signOut();
         } catch {
@@ -226,26 +307,6 @@ export async function middleware(request: NextRequest) {
     // middleware was gating the healthcheck behind a Supabase session.
     const publicRoutes = ["/login", "/auth", "/api/auth", "/api/health"];
     const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route));
-
-    // If we have auth cookies but couldn't verify in Edge (timeout / "fetch failed"),
-    // pass through for both API and page routes. API routes and Server Components can
-    // authenticate in Node (cookies() + getSession()/getUser()). This prevents
-    // redirecting logged-in users to login when Edge auth is flaky.
-    if (hasAuthCookie && !session) {
-      const cookieWrapper = {
-        get: (name: string) => request.cookies.get(name) ?? undefined,
-      };
-      const metadata = getSessionMetadata(cookieWrapper);
-      if (metadata) {
-        const cookieManager = {
-          get: (name: string) => request.cookies.get(name) ?? undefined,
-          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            setSafeResponseCookie(response, name, value, options);          },
-        };
-        updateActivity(cookieManager);
-      }
-      return response;
-    }
 
     // If no Supabase session and trying to access protected route
     if (!session && !isPublicRoute) {

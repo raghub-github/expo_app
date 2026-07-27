@@ -64,52 +64,54 @@ export async function getOrCreateWallet(storeId: number): Promise<{ id: number }
   return { id: Number((row as any).id) };
 }
 
-// ─── Wallet summary (V2 — includes locked_balance, lifetime totals) ──────────
+// ─── Wallet summary (V2 — Partner Site parity) ───────────────────────────────
 
-export async function getWalletSummary(storeId: number): Promise<WalletSummary> {
+export type GetWalletSummaryOptions = {
+  /** When true, rebuild available from ledger and sync merchant_wallet (Partner ?reconcile=1). */
+  reconcile?: boolean;
+  /**
+   * When true (default), skip splitting payout pending vs in-process and skip
+   * recomputing total_earned from ledger — matches Partner Site lite=1 default.
+   */
+  lite?: boolean;
+};
+
+/**
+ * Wallet summary aligned with Partner Site GET /api/merchant/wallet:
+ * - Default: read table available_balance (no always-on ledger reconcile)
+ * - Today/yesterday ORDER_EARNING: UTC calendar day windows (same as Partner)
+ * - pending_withdrawal_total = PENDING only; in_process = APPROVED+PROCESSING
+ * - Backfill is best-effort and does not block the read path
+ */
+export async function getWalletSummary(
+  storeId: number,
+  opts: GetWalletSummaryOptions = {},
+): Promise<WalletSummary> {
   const sql = getSql();
+  const reconcile = opts.reconcile === true;
+  const lite = opts.lite !== false;
 
-  try {
-    const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } =
-      await import("./backfill-merchant-wallet-credits.js");
-    await backfillMissingDeliveredOrderCredits(sql, storeId);
-    await backfillMissingCancelledOrderLedger(sql, storeId);
-  } catch (e) {
-    console.warn("[getWalletSummary] backfill credits:", e);
-  }
+  // Partner Site: backfill runs in the background — never block the read path.
+  void (async () => {
+    try {
+      const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } =
+        await import("./backfill-merchant-wallet-credits.js");
+      await backfillMissingDeliveredOrderCredits(sql, storeId);
+      await backfillMissingCancelledOrderLedger(sql, storeId);
+    } catch (e) {
+      console.warn("[getWalletSummary] backfill credits:", e);
+    }
+  })();
 
   const wallet = await getOrCreateWallet(storeId);
   const walletId = wallet.id;
 
-  const balanceLedgerRows = await sql`
-    SELECT id, balance_type, balance_after, amount, direction, created_at, metadata
-    FROM merchant_wallet_ledger
-    WHERE wallet_id = ${walletId}
-    ORDER BY created_at ASC, id ASC
-    LIMIT 5000
-  `;
-
-  const { latestRunningBalanceFromLedgerRows } = await import("./merchant-wallet-ledger-display.js");
-  const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
-    (balanceLedgerRows as any[]).map((row) => ({
-      id: row.id,
-      balance_type: row.balance_type,
-      balance_after: row.balance_after != null ? Number(row.balance_after) : null,
-      amount: row.amount != null ? Number(row.amount) : null,
-      direction: row.direction,
-      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-      metadata: row.metadata,
-    }))
-  );
-
-  if ((balanceLedgerRows as unknown[]).length > 0) {
-    await sql`
-      UPDATE merchant_wallet
-      SET available_balance = ${ledgerRunningBalance},
-          updated_at = NOW()
-      WHERE id = ${walletId}
-        AND ABS(COALESCE(available_balance, 0) - ${ledgerRunningBalance}) >= 0.01
-    `;
+  // Best-effort: return rejected/failed withdrawal funds stuck in HOLD to AVAILABLE,
+  // then sync available_balance from AVAILABLE ledger when drifted.
+  try {
+    await repairOrphanedMerchantPayoutHolds(walletId);
+  } catch (e) {
+    console.warn("[getWalletSummary] repair orphaned payout holds:", e);
   }
 
   const [w] = await sql`
@@ -117,57 +119,98 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
            COALESCE(pending_settlement, 0) AS pending_settlement,
            COALESCE(lifetime_credit, 0) AS lifetime_credit,
            COALESCE(lifetime_debit, 0) AS lifetime_debit,
-           total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
+           total_earned, total_withdrawn, total_penalty, total_commission_deducted, status,
+           COALESCE(settlement_paused, false) AS settlement_paused
     FROM merchant_wallet WHERE id = ${walletId}
   `;
   const wr = w as any;
 
-  const earningRows = await sql`
-    SELECT
-      COALESCE(SUM(l.amount) FILTER (
-        WHERE (l.created_at AT TIME ZONE 'Asia/Kolkata')::date =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
-      ), 0)::numeric AS today_earning,
-      COALESCE(SUM(l.amount) FILTER (
-        WHERE (l.created_at AT TIME ZONE 'Asia/Kolkata')::date =
-              ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day')::date
-      ), 0)::numeric AS yesterday_earning
-    FROM merchant_wallet_ledger l
-    WHERE l.wallet_id = ${walletId}
-      AND l.direction = 'CREDIT'
-      AND l.category = 'ORDER_EARNING'
-      AND (l.created_at AT TIME ZONE 'Asia/Kolkata')::date >=
-          ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day')::date
-      AND (l.created_at AT TIME ZONE 'Asia/Kolkata')::date <=
-          (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
-  `;
-  const er = earningRows[0] as { today_earning?: unknown; yesterday_earning?: unknown } | undefined;
-  const todayEarning = Number(er?.today_earning ?? 0);
-  const yesterdayEarning = Number(er?.yesterday_earning ?? 0);
+  let available_balance = Number(wr.available_balance ?? 0);
+  let total_earned = Number(wr.total_earned ?? 0);
+  const settlementPaused = Boolean(wr.settlement_paused);
 
-  const payoutRows = await sql`
-    SELECT COALESCE(SUM(net_payout_amount), 0) AS total
-    FROM merchant_payout_requests
-    WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
-  `;
-  const pendingWithdrawal = Number((payoutRows[0] as any)?.total ?? 0);
+  const shouldSyncAvailable =
+    reconcile ||
+    available_balance < 0.01 ||
+    Number(wr.hold_balance ?? 0) > 0.01;
 
-  let settlementPaused = false;
-  try {
-    const [sp] = await sql`
-      SELECT COALESCE(settlement_paused, false) AS settlement_paused
-      FROM merchant_wallet WHERE id = ${walletId}
-    `;
-    settlementPaused = Boolean((sp as { settlement_paused?: boolean })?.settlement_paused);
-  } catch {
-    /* pre-0239 */
+  if (shouldSyncAvailable) {
+    try {
+      available_balance = await syncAvailableBalanceFromLedger(walletId, available_balance);
+      const [refreshed] = await sql`
+        SELECT available_balance, hold_balance FROM merchant_wallet WHERE id = ${walletId}
+      `;
+      available_balance = Number((refreshed as any)?.available_balance ?? available_balance);
+      wr.hold_balance = (refreshed as any)?.hold_balance ?? wr.hold_balance;
+    } catch (e) {
+      console.warn("[getWalletSummary] sync available from ledger:", e);
+    }
   }
 
-  const available = roundMoney(
-    (balanceLedgerRows as unknown[]).length > 0
-      ? ledgerRunningBalance
-      : Number(wr.available_balance ?? 0)
-  );
+  // Partner Site: UTC calendar-day windows for today / yesterday earnings.
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const todayEnd = new Date(todayStart);
+  todayEnd.setUTCDate(todayEnd.getUTCDate() + 1);
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setUTCDate(yesterdayStart.getUTCDate() - 1);
+
+  const earningRows = await sql`
+    SELECT amount, created_at
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+      AND direction = 'CREDIT'
+      AND category = 'ORDER_EARNING'
+      AND created_at >= ${yesterdayStart.toISOString()}::timestamptz
+      AND created_at < ${todayEnd.toISOString()}::timestamptz
+  `;
+
+  let todayEarning = 0;
+  let yesterdayEarning = 0;
+  for (const row of earningRows as any[]) {
+    const amt = Number(row.amount ?? 0);
+    const at = row.created_at ? new Date(row.created_at) : null;
+    if (!at || Number.isNaN(at.getTime())) continue;
+    if (at >= todayStart && at < todayEnd) todayEarning += amt;
+    else if (at >= yesterdayStart && at < todayStart) yesterdayEarning += amt;
+  }
+
+  let pendingWithdrawal = 0;
+  let inProcessWithdrawal = 0;
+  if (!lite) {
+    const payoutRows = await sql`
+      SELECT net_payout_amount, status
+      FROM merchant_payout_requests
+      WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
+    `;
+    for (const row of payoutRows as any[]) {
+      const amt = Number(row.net_payout_amount ?? 0);
+      const st = String(row.status ?? "").toUpperCase();
+      if (st === "PENDING") pendingWithdrawal += amt;
+      else if (st === "APPROVED" || st === "PROCESSING") inProcessWithdrawal += amt;
+    }
+
+    if (total_earned <= 0) {
+      const allEarnings = await sql`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM merchant_wallet_ledger
+        WHERE wallet_id = ${walletId}
+          AND direction = 'CREDIT'
+          AND category = 'ORDER_EARNING'
+      `;
+      total_earned = Number((allEarnings[0] as any)?.total ?? 0);
+    }
+  } else {
+    // Lite: still expose a combined pending figure for App withdraw UX (PENDING+APPROVED+PROCESSING).
+    const payoutRows = await sql`
+      SELECT COALESCE(SUM(net_payout_amount), 0) AS total
+      FROM merchant_payout_requests
+      WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
+    `;
+    pendingWithdrawal = Number((payoutRows[0] as any)?.total ?? 0);
+  }
+
+  const available = roundMoney(available_balance);
   const hold = roundMoney(Number(wr.hold_balance ?? 0));
   const pending = roundMoney(Number(wr.pending_balance ?? 0));
 
@@ -183,14 +226,14 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
   return {
     wallet_id: walletId,
     available_balance: available,
-    pending_balance: roundMoney(Number(wr.pending_balance ?? 0)),
-    hold_balance: roundMoney(Number(wr.hold_balance ?? 0)),
+    pending_balance: pending,
+    hold_balance: hold,
     reserve_balance: roundMoney(Number(wr.reserve_balance ?? 0)),
     locked_balance: 0,
     pending_settlement: roundMoney(Number(wr.pending_settlement ?? 0)),
     lifetime_credit: roundMoney(Number(wr.lifetime_credit ?? 0)),
     lifetime_debit: roundMoney(Number(wr.lifetime_debit ?? 0)),
-    total_earned: roundMoney(Number(wr.total_earned ?? 0)),
+    total_earned: roundMoney(total_earned),
     total_withdrawn: roundMoney(Number(wr.total_withdrawn ?? 0)),
     total_penalty: roundMoney(Number(wr.total_penalty ?? 0)),
     total_commission_deducted: roundMoney(Number(wr.total_commission_deducted ?? 0)),
@@ -198,6 +241,7 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     today_earning: roundMoney(todayEarning),
     yesterday_earning: roundMoney(yesterdayEarning),
     pending_withdrawal_total: roundMoney(pendingWithdrawal),
+    in_process_withdrawal_total: roundMoney(inProcessWithdrawal),
     locked_settlement_total: 0,
     withdrawable_balance: available,
     total_balance: roundMoney(available + hold + pending),
@@ -241,6 +285,9 @@ export async function queryLedger(
   const fromFilter = opts.from ? normalizeLedgerTimeBound(opts.from, false) : null;
   const toFilter = opts.to ? normalizeLedgerTimeBound(opts.to, true) : null;
 
+  const categoryFilter = opts.category?.trim() || null;
+  const withdrawalCategoryFilter = categoryFilter === "WITHDRAWAL";
+
   const rows = await sql`
     SELECT id, direction, category, balance_type, amount,
            COALESCE(balance_before, 0) AS balance_before,
@@ -257,7 +304,11 @@ export async function queryLedger(
       AND (${fromFilter}::timestamptz IS NULL OR created_at >= ${fromFilter}::timestamptz)
       AND (${toFilter}::timestamptz IS NULL OR created_at <= ${toFilter}::timestamptz)
       AND (${opts.direction ?? null}::text IS NULL OR direction = ${opts.direction ?? null})
-      AND (${opts.category ?? null}::text IS NULL OR category = ${opts.category ?? null})
+      AND (
+        ${categoryFilter}::text IS NULL
+        OR (${withdrawalCategoryFilter} AND category IN ('WITHDRAWAL', 'HOLD_LOCK'))
+        OR (NOT ${withdrawalCategoryFilter} AND category = ${categoryFilter})
+      )
     ORDER BY created_at DESC
     LIMIT ${limit} OFFSET ${offset}
   `;
@@ -268,7 +319,11 @@ export async function queryLedger(
       AND (${fromFilter}::timestamptz IS NULL OR created_at >= ${fromFilter}::timestamptz)
       AND (${toFilter}::timestamptz IS NULL OR created_at <= ${toFilter}::timestamptz)
       AND (${opts.direction ?? null}::text IS NULL OR direction = ${opts.direction ?? null})
-      AND (${opts.category ?? null}::text IS NULL OR category = ${opts.category ?? null})
+      AND (
+        ${categoryFilter}::text IS NULL
+        OR (${withdrawalCategoryFilter} AND category IN ('WITHDRAWAL', 'HOLD_LOCK'))
+        OR (NOT ${withdrawalCategoryFilter} AND category = ${categoryFilter})
+      )
   `;
 
   const entries: LedgerEntry[] = (rows as any[]).map((r) => ({
@@ -307,7 +362,7 @@ export async function queryLedger(
   } = await import("./merchant-wallet-ledger-display.js");
   const withdrawableById = buildWithdrawableBalanceByLedgerId(
     (bucketRows as any[]).map((row) => ({
-      id: row.id,
+      id: Number(row.id),
       balance_type: row.balance_type,
       balance_after: row.balance_after != null ? Number(row.balance_after) : null,
       amount: row.amount != null ? Number(row.amount) : null,
@@ -318,10 +373,11 @@ export async function queryLedger(
   );
   const enrichedEntries = applyWithdrawableBalanceToLedgerEntries(entries, withdrawableById);
   const withPgIds = await enrichLedgerWithPgTransactionIds(sql, enrichedEntries);
+  const withPayoutStatus = await enrichLedgerWithPayoutRequestStatus(sql, withPgIds);
   // Main enrichments: payout breakdown, order context, cancellation
   // compensation, cancellation descriptions — added in the compensation
   // series on main.
-  const withPayoutBreakdown = await enrichLedgerWithPayoutBreakdown(sql, withPgIds);
+  const withPayoutBreakdown = await enrichLedgerWithPayoutBreakdown(sql, withPayoutStatus);
   const withMerchantBill = await enrichLedgerWithOrderContext(sql, withPayoutBreakdown);
   const withCompensation = await enrichLedgerWithCancellationCompensation(sql, withMerchantBill);
   const withMainDescriptions = enrichLedgerWithCancellationDescriptions(withCompensation);
@@ -368,6 +424,53 @@ export async function getPayoutQuote(_storeId: number, amount: number): Promise<
     commission_amount: 0,
     net_payout_amount: net,
   };
+}
+
+async function enrichLedgerWithPayoutRequestStatus(
+  sql: ReturnType<typeof getSql>,
+  entries: LedgerEntry[]
+): Promise<LedgerEntry[]> {
+  const holdIds = [
+    ...new Set(
+      entries
+        .filter((e) => String(e.category ?? "").toUpperCase() === "HOLD_LOCK")
+        .map((e) => e.id)
+    ),
+  ];
+  if (holdIds.length === 0) return entries;
+
+  try {
+    const rows = await sql`
+      SELECT id, hold_ledger_id, status
+      FROM merchant_payout_requests
+      WHERE hold_ledger_id = ANY(${holdIds})
+    `;
+    const byHoldId = new Map<number, { id: number; status: string }>();
+    for (const row of rows as unknown as { id: number; hold_ledger_id: number; status: string }[]) {
+      byHoldId.set(Number(row.hold_ledger_id), {
+        id: Number(row.id),
+        status: String(row.status ?? ""),
+      });
+    }
+    return entries.map((entry) => {
+      const linked = byHoldId.get(entry.id);
+      if (!linked) return entry;
+      return {
+        ...entry,
+        reference_id:
+          entry.reference_id != null && Number(entry.reference_id) > 0
+            ? entry.reference_id
+            : linked.id,
+        metadata: {
+          ...(entry.metadata ?? {}),
+          payout_request_id: linked.id,
+          payout_status: linked.status,
+        },
+      };
+    });
+  } catch {
+    return entries;
+  }
 }
 
 async function enrichLedgerWithPgTransactionIds(
@@ -1026,42 +1129,82 @@ export async function createWithdrawalRequest(
 
   const quote = await getPayoutQuote(storeId, amount);
 
-  // Atomic: HOLD funds from AVAILABLE, insert payout request, link ledger entry.
-  // The RPC handles: lock wallet row, check balance, debit AVAILABLE, credit HOLD,
-  // insert ledger entries, insert payout request, return payout_request_id.
-  // If anything fails, the entire transaction rolls back.
+  // Partner Site parity: HOLD AVAILABLE → HOLD bucket, then insert payout request.
+  // On hold-credit or insert failure, release funds back to AVAILABLE.
   const holdKey = idempotencyKey("payout_hold", walletId, Date.now());
+  let holdLedgerId = 0;
 
-  const [holdResult] = await sql`
-    SELECT merchant_wallet_debit(
-      ${walletId}, ${amount}, 'HOLD_LOCK', 'AVAILABLE',
-      'WITHDRAWAL', ${0}, ${holdKey},
-      ${'Withdrawal hold: ₹' + amount.toFixed(2)},
-      ${JSON.stringify({ source, commission: quote.commission_amount, net: quote.net_payout_amount })}::jsonb
-    ) AS ledger_id
-  `;
-  const holdLedgerId = Number((holdResult as any).ledger_id);
+  try {
+    const [holdResult] = await sql`
+      SELECT merchant_wallet_debit(
+        ${walletId}, ${amount}, 'HOLD_LOCK', 'AVAILABLE',
+        'WITHDRAWAL', ${0}, ${holdKey},
+        ${'Withdrawal requested: ₹' + amount.toFixed(2)},
+        ${JSON.stringify({ source, commission: quote.commission_amount, net: quote.net_payout_amount })}::jsonb
+      ) AS ledger_id
+    `;
+    holdLedgerId = Number((holdResult as any).ledger_id);
 
-  const [creditHoldResult] = await sql`
-    SELECT merchant_wallet_credit(
-      ${walletId}, ${amount}, 'HOLD_LOCK', 'HOLD',
-      'WITHDRAWAL', ${0}, ${holdKey + '_credit_hold'},
-      ${'Withdrawal hold (hold bucket): ₹' + amount.toFixed(2)},
-      ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
-    ) AS ledger_id
-  `;
+    await sql`
+      SELECT merchant_wallet_credit(
+        ${walletId}, ${amount}, 'HOLD_LOCK', 'HOLD',
+        'WITHDRAWAL', ${0}, ${holdKey + '_credit_hold'},
+        ${'Withdrawal requested (processing): ₹' + amount.toFixed(2)},
+        ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
+      ) AS ledger_id
+    `;
+  } catch (holdErr) {
+    if (holdLedgerId > 0) {
+      try {
+        await sql`
+          SELECT merchant_wallet_credit(
+            ${walletId}, ${amount}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
+            'WITHDRAWAL', ${0}, ${holdKey + '_reversal'},
+            ${'Hold credit failed — reversal'},
+            ${JSON.stringify({ reason: 'hold_credit_failed' })}::jsonb
+          )
+        `;
+      } catch {
+        /* best-effort */
+      }
+    }
+    throw holdErr instanceof Error ? holdErr : new Error("Wallet hold failed. Please try again.");
+  }
 
-  const [payoutRow] = await sql`
-    INSERT INTO merchant_payout_requests (
-      wallet_id, amount, status,
-      commission_percentage, commission_amount, net_payout_amount,
-      bank_account_id, hold_ledger_id
-    ) VALUES (
-      ${walletId}, ${amount}, 'PENDING',
-      ${quote.commission_percentage}, ${quote.commission_amount}, ${quote.net_payout_amount},
-      ${bankAccountId}, ${holdLedgerId}
-    ) RETURNING id, amount, commission_percentage, commission_amount, net_payout_amount, status, requested_at
-  `;
+  let payoutRow: any;
+  try {
+    const [row] = await sql`
+      INSERT INTO merchant_payout_requests (
+        wallet_id, amount, status,
+        commission_percentage, commission_amount, net_payout_amount,
+        bank_account_id, hold_ledger_id
+      ) VALUES (
+        ${walletId}, ${amount}, 'PENDING',
+        ${quote.commission_percentage}, ${quote.commission_amount}, ${quote.net_payout_amount},
+        ${bankAccountId}, ${holdLedgerId}
+      ) RETURNING id, amount, commission_percentage, commission_amount, net_payout_amount, status, requested_at
+    `;
+    payoutRow = row;
+  } catch (insertErr) {
+    await sql`
+      SELECT merchant_wallet_debit(
+        ${walletId}, ${amount}, 'HOLD_RELEASE', 'HOLD',
+        'WITHDRAWAL', ${0}, ${holdKey + '_release_debit'},
+        ${'Payout insert failed — releasing hold'},
+        ${JSON.stringify({ reason: 'payout_insert_failed' })}::jsonb
+      )
+    `;
+    await sql`
+      SELECT merchant_wallet_credit(
+        ${walletId}, ${amount}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
+        'WITHDRAWAL', ${0}, ${holdKey + '_release_credit'},
+        ${'Payout insert failed — funds released'},
+        ${JSON.stringify({ reason: 'payout_insert_failed' })}::jsonb
+      )
+    `;
+    throw insertErr instanceof Error ? insertErr : new Error("Failed to create payout request");
+  }
+
   const pr = payoutRow as any;
   const payoutRequestId = Number(pr.id);
 
@@ -1083,6 +1226,94 @@ export async function createWithdrawalRequest(
     net_payout_amount: Number(pr.net_payout_amount),
     status: String(pr.status) as PayoutResult["status"],
     hold_ledger_id: holdLedgerId,
+  };
+}
+
+export type PayoutRequestsSummary = {
+  paid: number;
+  in_process: number;
+  pending: number;
+  failed: number;
+  total: number;
+};
+
+export type PayoutRequestListItem = {
+  id: number;
+  amount: number;
+  net_payout_amount: number;
+  status: string;
+  requested_at: string;
+  completed_at: string | null;
+  utr_reference: string | null;
+  failure_reason: string | null;
+};
+
+/** Partner Site GET /api/merchant/payout-requests parity. */
+export async function listPayoutRequests(
+  storeId: number,
+  limit = 5,
+): Promise<{ summary: PayoutRequestsSummary; recent: PayoutRequestListItem[] }> {
+  const sql = getSql();
+  const wallet = await getOrCreateWallet(storeId);
+  const walletId = wallet.id;
+  const lim = Math.min(20, Math.max(1, limit));
+
+  const rows = await sql`
+    SELECT id, amount, net_payout_amount, status, requested_at, completed_at,
+           utr_reference, failure_reason
+    FROM merchant_payout_requests
+    WHERE wallet_id = ${walletId}
+    ORDER BY requested_at DESC
+    LIMIT 500
+  `;
+
+  const list = rows as any[];
+  const sumNet = (subset: any[]) =>
+    roundMoney(subset.reduce((s, r) => s + Number(r.net_payout_amount ?? r.amount ?? 0), 0));
+
+  const paidRows = list.filter((r) => String(r.status) === "COMPLETED");
+  const inProcessRows = list.filter((r) => {
+    const st = String(r.status);
+    return st === "APPROVED" || st === "PROCESSING";
+  });
+  const pendingRows = list.filter((r) => String(r.status) === "PENDING");
+  const failedRows = list.filter((r) => {
+    const st = String(r.status);
+    return st === "FAILED" || st === "CANCELLED" || st === "REVERSED";
+  });
+
+  const paid = sumNet(paidRows);
+  const in_process = sumNet(inProcessRows);
+  const pending = sumNet(pendingRows);
+  const failed = sumNet(failedRows);
+
+  const recent: PayoutRequestListItem[] = list.slice(0, lim).map((r) => ({
+    id: Number(r.id),
+    amount: roundMoney(Number(r.amount ?? 0)),
+    net_payout_amount: roundMoney(Number(r.net_payout_amount ?? r.amount ?? 0)),
+    status: String(r.status ?? "PENDING"),
+    requested_at:
+      r.requested_at instanceof Date
+        ? r.requested_at.toISOString()
+        : String(r.requested_at ?? ""),
+    completed_at: r.completed_at
+      ? r.completed_at instanceof Date
+        ? r.completed_at.toISOString()
+        : String(r.completed_at)
+      : null,
+    utr_reference: r.utr_reference != null ? String(r.utr_reference) : null,
+    failure_reason: r.failure_reason != null ? String(r.failure_reason) : null,
+  }));
+
+  return {
+    summary: {
+      paid,
+      in_process,
+      pending,
+      failed,
+      total: roundMoney(paid + in_process + pending + failed),
+    },
+    recent,
   };
 }
 
@@ -1127,35 +1358,56 @@ export async function completeWithdrawal(payoutRequestId: number): Promise<void>
 export async function failWithdrawal(payoutRequestId: number, reason: string): Promise<void> {
   const sql = getSql();
   const [pr] = await sql`
-    SELECT id, wallet_id, amount, status
+    SELECT id, status
     FROM merchant_payout_requests WHERE id = ${payoutRequestId}
   `;
   if (!pr) throw new Error("Payout request not found");
   const p = pr as any;
-  if (!["PENDING", "APPROVED", "PROCESSING"].includes(p.status)) {
+  if (!["PENDING", "APPROVED", "PROCESSING"].includes(String(p.status))) {
     throw new Error(`Cannot fail payout in status: ${p.status}`);
   }
 
-  const walletId = Number(p.wallet_id);
-  const amount = Number(p.amount);
+  // Prefer DB RPC (cycle close + HOLD → AVAILABLE). Fallback for DBs without 0446.
+  try {
+    await sql`
+      SELECT public.merchant_wallet_fail_withdrawal(
+        ${payoutRequestId}::bigint,
+        ${reason || "Bank transfer failed"}::text
+      )
+    `;
+    return;
+  } catch (rpcErr) {
+    console.warn("[failWithdrawal] merchant_wallet_fail_withdrawal RPC failed, using inline release:", rpcErr);
+  }
+
+  const [pr2] = await sql`
+    SELECT id, wallet_id, amount, status
+    FROM merchant_payout_requests WHERE id = ${payoutRequestId}
+  `;
+  if (!pr2) throw new Error("Payout request not found");
+  const p2 = pr2 as any;
+  if (!["PENDING", "APPROVED", "PROCESSING"].includes(String(p2.status))) {
+    throw new Error(`Cannot fail payout in status: ${p2.status}`);
+  }
+
+  const walletId = Number(p2.wallet_id);
+  const amount = Number(p2.amount);
   const releaseKey = idempotencyKey("payout_release", payoutRequestId);
 
-  // Debit from HOLD
   await sql`
     SELECT merchant_wallet_debit(
       ${walletId}, ${amount}, 'HOLD_RELEASE', 'HOLD',
       'WITHDRAWAL', ${payoutRequestId}, ${releaseKey + '_debit_hold'},
-      ${'Failed withdrawal release #' + payoutRequestId},
-      ${JSON.stringify({ reason })}::jsonb
+      ${'Withdrawal failed — hold released'},
+      ${JSON.stringify({ reason, payout_request_id: payoutRequestId })}::jsonb
     )
   `;
 
-  // Credit back to AVAILABLE
   await sql`
     SELECT merchant_wallet_credit(
       ${walletId}, ${amount}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
       'WITHDRAWAL', ${payoutRequestId}, ${releaseKey},
-      ${'Withdrawal failed — funds released #' + payoutRequestId},
+      ${'Withdrawal failed — funds returned to your wallet'},
       ${JSON.stringify({ payout_request_id: payoutRequestId, reason })}::jsonb
     )
   `;
@@ -1165,6 +1417,157 @@ export async function failWithdrawal(payoutRequestId: number, reason: string): P
     SET status = 'FAILED', failure_reason = ${reason}, updated_at = NOW()
     WHERE id = ${payoutRequestId}
   `;
+}
+
+/**
+ * Release HOLD that no longer belongs to an active payout so merchants can re-withdraw
+ * after reject/fail. Also covers FAILED/CANCELLED rows that never got a reversal credit.
+ */
+export async function repairOrphanedMerchantPayoutHolds(walletId: number): Promise<number> {
+  const sql = getSql();
+  let released = 0;
+
+  const missingReversal = await sql`
+    SELECT pr.id, pr.amount
+    FROM merchant_payout_requests pr
+    WHERE pr.wallet_id = ${walletId}
+      AND pr.status IN ('FAILED', 'CANCELLED', 'REVERSED')
+      AND COALESCE(pr.amount, 0) > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM merchant_wallet_ledger l
+        WHERE l.wallet_id = pr.wallet_id
+          AND l.reference_id = pr.id
+          AND l.direction = 'CREDIT'
+          AND l.category::text IN ('FAILED_WITHDRAWAL_REVERSAL', 'WITHDRAWAL_REVERSAL')
+      )
+    ORDER BY pr.id ASC
+  `;
+
+  for (const row of missingReversal as { id: number; amount: string | number }[]) {
+    const payoutRequestId = Number(row.id);
+    const amount = roundMoney(Number(row.amount ?? 0));
+    if (!(amount > 0)) continue;
+
+    const [w] = await sql`
+      SELECT hold_balance FROM merchant_wallet WHERE id = ${walletId} FOR UPDATE
+    `;
+    const hold = roundMoney(Number((w as { hold_balance?: number })?.hold_balance ?? 0));
+    if (hold + 1e-9 < amount) continue;
+
+    const debitKey = `payout_repair_hold_debit_${payoutRequestId}`;
+    const creditKey = `payout_repair_release_${payoutRequestId}`;
+    try {
+      await sql`
+        SELECT merchant_wallet_debit(
+          ${walletId}, ${amount}, 'HOLD_RELEASE', 'HOLD',
+          'WITHDRAWAL', ${payoutRequestId}, ${debitKey},
+          ${'Repair: release hold for terminal payout'},
+          ${JSON.stringify({ payout_request_id: payoutRequestId, repair: true })}::jsonb
+        )
+      `;
+      await sql`
+        SELECT merchant_wallet_credit(
+          ${walletId}, ${amount}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
+          'WITHDRAWAL', ${payoutRequestId}, ${creditKey},
+          ${'Withdrawal returned — funds restored to your wallet'},
+          ${JSON.stringify({ payout_request_id: payoutRequestId, repair: true })}::jsonb
+        )
+      `;
+      released = roundMoney(released + amount);
+    } catch (e) {
+      console.warn(`[repairOrphanedMerchantPayoutHolds] payout ${payoutRequestId}:`, e);
+    }
+  }
+
+  const [bal] = await sql`
+    SELECT COALESCE(hold_balance, 0) AS hold_balance,
+           COALESCE(available_balance, 0) AS available_balance
+    FROM merchant_wallet WHERE id = ${walletId}
+  `;
+  const [active] = await sql`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM merchant_payout_requests
+    WHERE wallet_id = ${walletId}
+      AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
+  `;
+  const holdNow = roundMoney(Number((bal as { hold_balance?: number })?.hold_balance ?? 0));
+  const activeHold = roundMoney(Number((active as { total?: number })?.total ?? 0));
+  const excess = roundMoney(holdNow - activeHold);
+  if (excess >= 0.01) {
+    const ledgerAvailable = await syncAvailableBalanceFromLedger(
+      walletId,
+      roundMoney(Number((bal as { available_balance?: number })?.available_balance ?? 0)),
+    );
+    const debitKey = `payout_repair_excess_hold_debit_${walletId}_${Math.round(excess * 100)}`;
+    const creditKey = `payout_repair_excess_hold_credit_${walletId}_${Math.round(excess * 100)}`;
+    try {
+      await sql`
+        SELECT merchant_wallet_debit(
+          ${walletId}, ${excess}, 'HOLD_RELEASE', 'HOLD',
+          'WITHDRAWAL', ${0}, ${debitKey},
+          ${'Repair: release orphaned hold balance'},
+          ${JSON.stringify({ repair: true, excess: true })}::jsonb
+        )
+      `;
+      // Only credit AVAILABLE when ledger withdrawable is ~0 (funds never returned).
+      // If AVAILABLE ledger already has the money, clearing HOLD alone avoids double-credit.
+      if (ledgerAvailable < 0.01) {
+        await sql`
+          SELECT merchant_wallet_credit(
+            ${walletId}, ${excess}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
+            'WITHDRAWAL', ${0}, ${creditKey},
+            ${'Orphaned hold released — funds restored to your wallet'},
+            ${JSON.stringify({ repair: true, excess: true })}::jsonb
+          )
+        `;
+        released = roundMoney(released + excess);
+      }
+    } catch (e) {
+      console.warn(`[repairOrphanedMerchantPayoutHolds] excess hold wallet ${walletId}:`, e);
+    }
+  }
+
+  return released;
+}
+
+/** Sync merchant_wallet.available_balance from AVAILABLE ledger running balance when drifted. */
+async function syncAvailableBalanceFromLedger(
+  walletId: number,
+  currentAvailable: number,
+): Promise<number> {
+  const sql = getSql();
+  const balanceLedgerRows = await sql`
+    SELECT id, balance_type, balance_after, amount, direction, created_at, metadata
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+    ORDER BY created_at ASC, id ASC
+    LIMIT 5000
+  `;
+  if ((balanceLedgerRows as unknown[]).length === 0) return currentAvailable;
+
+  const { latestRunningBalanceFromLedgerRows } = await import("./merchant-wallet-ledger-display.js");
+  const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
+    (balanceLedgerRows as any[]).map((row) => ({
+      id: Number(row.id),
+      balance_type: row.balance_type,
+      balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+      amount: row.amount != null ? Number(row.amount) : null,
+      direction: row.direction,
+      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      metadata: row.metadata,
+    })),
+  );
+
+  if (Math.abs(currentAvailable - ledgerRunningBalance) >= 0.01) {
+    await sql`
+      UPDATE merchant_wallet
+      SET available_balance = ${ledgerRunningBalance},
+          updated_at = NOW()
+      WHERE id = ${walletId}
+    `;
+  }
+  return ledgerRunningBalance;
 }
 
 // ─── Reconciliation check ─────────────────────────────────────────────────────

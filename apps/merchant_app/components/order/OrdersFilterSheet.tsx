@@ -3,17 +3,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Modal,
-  Pressable,
-  ScrollView,
-  TextInput,
-  Platform,
-  useWindowDimensions,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Modal, Pressable, ScrollView, TextInput, Platform, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";

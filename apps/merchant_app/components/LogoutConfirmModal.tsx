@@ -5,7 +5,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Modal, View, Text, Pressable, StyleSheet, Platform, ScrollView, ActivityIndicator, Alert } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Modal, View, Pressable, StyleSheet, Platform, ScrollView, ActivityIndicator, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";

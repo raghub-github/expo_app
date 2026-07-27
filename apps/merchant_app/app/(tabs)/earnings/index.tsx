@@ -1,8 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
-import {
-  View, Text, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator,
-  Alert, TextInput, RefreshControl, Modal,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, Alert, TextInput, RefreshControl, Modal } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -13,13 +11,16 @@ import {
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import {
-  fetchWalletSummary, fetchLedger, createPayoutRequest, fetchPayoutSettlement,
-  type WalletSummary, type LedgerEntry,
+  fetchWalletSummary, fetchLedger, createPayoutRequest, fetchPayoutSettlement, fetchPayoutRequests,
+  fetchPayoutCycles,
+  type WalletSummary, type LedgerEntry, type PayoutRequestsSummary, type PayoutRequestListItem,
 } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
   buildPayoutCards,
+  buildPayoutCardsFromCycles,
+  mergePayoutCardsWithActiveRequests,
   formatCurrency,
   formatPeriodRange,
   formatShortDate,
@@ -27,19 +28,23 @@ import {
   resolveLedgerDisplayAmount,
   resolveLedgerDisplayDescription,
   resolveLedgerCategoryLabel,
+  isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
   statusBadgeStyle,
   statusLabel,
   TX_FILTER_CHIPS,
   txFilterToLedgerQuery,
   type TxFilter,
+  type PayoutCard,
 } from "@/lib/merchantPayoutUtils";
 import { LedgerEntryAmount } from "@/components/earnings/LedgerEntryAmount";
+import { WithdrawalSuccessSheet } from "@/components/earnings/WithdrawalSuccessSheet";
 
 const MIN_WITHDRAWAL = 100;
 const MAX_WITHDRAWAL_PER_REQUEST = 100_000;
 
 function getWithdrawableBalance(wallet: WalletSummary | null): number {
-  return wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0;
+  return resolveWalletDisplayBalance(wallet);
 }
 
 function getMaxWithdrawalLimit(withdrawable: number): number {
@@ -83,6 +88,7 @@ export default function EarningsScreen() {
 
   const [activeTab, setActiveTab] = useState<"payouts" | "transactions">("payouts");
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
+  const [payoutSummary, setPayoutSummary] = useState<PayoutRequestsSummary | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -97,6 +103,9 @@ export default function EarningsScreen() {
   const [bankPickerOpen, setBankPickerOpen] = useState(false);
   const [cycleExpanded, setCycleExpanded] = useState(true);
   const [currentCycleEstPayout, setCurrentCycleEstPayout] = useState<number | null>(null);
+  const [successSheet, setSuccessSheet] = useState<{ amountLabel: string } | null>(null);
+  const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(null);
+  const [recentPayoutRequests, setRecentPayoutRequests] = useState<PayoutRequestListItem[]>([]);
 
   const ledgerQuery = useMemo(
     () => (activeTab === "transactions" ? txFilterToLedgerQuery(txFilter) : {}),
@@ -107,19 +116,31 @@ export default function EarningsScreen() {
     if (!storeId || !token) return;
     if (isRefresh) setRefreshing(true); else setLoading(true);
     try {
-      const [w, l] = await Promise.all([
+      const [w, l, payouts, cycles] = await Promise.all([
         fetchWalletSummary(storeId, token),
         fetchLedger(storeId, token, { limit: 100, ...ledgerQuery }),
+        fetchPayoutRequests(storeId, token, 20).catch(() => null),
+        fetchPayoutCycles(storeId, token, 50).catch(() => []),
       ]);
       setWallet(w);
-      setLedger(l.entries);
+      setLedger(l.entries.filter(isMerchantVisibleLedgerEntry));
+      if (payouts) {
+        setPayoutSummary(payouts.summary);
+        setRecentPayoutRequests(payouts.recent ?? []);
+      } else {
+        setRecentPayoutRequests([]);
+      }
+      setCycleCards(cycles.length > 0 ? buildPayoutCardsFromCycles(cycles) : null);
     } catch { /* ignore */ }
     finally { setLoading(false); setRefreshing(false); }
   }, [storeId, token, ledgerQuery]);
 
   useEffect(() => { load(); }, [load]);
 
-  const payoutCards = useMemo(() => buildPayoutCards(ledger), [ledger]);
+  const payoutCards = useMemo(() => {
+    const base = cycleCards && cycleCards.length > 0 ? cycleCards : buildPayoutCards(ledger);
+    return mergePayoutCardsWithActiveRequests(base, recentPayoutRequests);
+  }, [cycleCards, ledger, recentPayoutRequests]);
   const currentCycleCard = useMemo(
     () => payoutCards.find((c) => c.isCurrentCycle),
     [payoutCards],
@@ -203,9 +224,10 @@ export default function EarningsScreen() {
     setWithdrawing(true);
     try {
       await createPayoutRequest(storeId, amt, withdrawBankId, token);
-      Alert.alert("Success", `Withdrawal of ${formatCurrency(amt)} submitted. Full amount within 24 to 48 hrs.`);
+      const amountLabel = formatCurrency(amt);
       setShowWithdraw(false);
       setWithdrawAmount("");
+      setSuccessSheet({ amountLabel });
       await load();
     } catch (e) {
       Alert.alert("Failed", e instanceof Error ? e.message : "Try again");
@@ -265,14 +287,14 @@ export default function EarningsScreen() {
             style={({ pressed }) => [s.cycleRowLeft, pressed && s.pressed]}
           >
             <Text style={s.payoutAmount}>
-              {formatCurrency(displayEstPayout)}
+              {formatCurrency(withdrawableBalance)}
             </Text>
-            <Text style={s.cycleMetricLabel}>Est. payout</Text>
+            <Text style={s.cycleMetricLabel}>Wallet balance</Text>
+            <Text style={s.payoutOrders}>
+              Est. cycle payout · {formatCurrency(displayEstPayout)}
+            </Text>
             {cycleExpanded ? (
               <>
-                <Text style={s.payoutOrders}>
-                  Available balance · {formatCurrency(withdrawableBalance)}
-                </Text>
                 <Text style={s.payoutOrders}>
                   Total orders · {currentCycleCard.orderCount}
                 </Text>
@@ -304,6 +326,15 @@ export default function EarningsScreen() {
             <Ionicons name="chevron-forward" size={16} color="#2563EB" />
           </Pressable>
         </View>
+
+        {payoutSummary ? (
+          <View style={s.payoutStatusStrip}>
+            <Text style={s.payoutStatusItem}>Paid {formatCurrency(payoutSummary.paid)}</Text>
+            <Text style={s.payoutStatusItem}>Pending {formatCurrency(payoutSummary.pending)}</Text>
+            <Text style={s.payoutStatusItem}>In process {formatCurrency(payoutSummary.in_process)}</Text>
+            <Text style={s.payoutStatusItem}>Returned {formatCurrency(payoutSummary.failed)}</Text>
+          </View>
+        ) : null}
       </View>
     );
   };
@@ -375,7 +406,7 @@ export default function EarningsScreen() {
             <View style={s.emptyCard}>
               <Ionicons name="receipt-outline" size={32} color={GatiMitraMerchant.textTertiary} />
               <Text style={s.emptyTitle}>No past payouts</Text>
-              <Text style={s.emptyText}>Completed withdrawals will appear here.</Text>
+              <Text style={s.emptyText}>Withdrawals and past cycles will appear here.</Text>
             </View>
           ) : (
             <View style={s.payoutList}>
@@ -414,10 +445,16 @@ export default function EarningsScreen() {
                       </View>
                     </View>
                     <Pressable
-                      onPress={() => router.push({
-                        pathname: "/(tabs)/earnings/payout/[id]",
-                        params: payoutCardToParams(card),
-                      })}
+                      onPress={() => {
+                        const detailCard =
+                          card.payoutRequestId != null && currentCycleCard
+                            ? { ...currentCycleCard, netPayout: card.netPayout, status: card.status }
+                            : card;
+                        router.push({
+                          pathname: "/(tabs)/earnings/payout/[id]",
+                          params: payoutCardToParams(detailCard),
+                        });
+                      }}
                       style={({ pressed }) => [s.viewDetailsBtn, pressed && s.pressed]}
                     >
                       <Text style={s.viewDetailsText}>View details</Text>
@@ -527,6 +564,12 @@ export default function EarningsScreen() {
           </View>
         </View>
       </Modal>
+
+      <WithdrawalSuccessSheet
+        visible={successSheet != null}
+        amountLabel={successSheet?.amountLabel ?? ""}
+        onClose={() => setSuccessSheet(null)}
+      />
     </View>
   );
 }
@@ -565,6 +608,20 @@ const s = StyleSheet.create({
   cycleRowLast: {
     marginBottom: 0,
     alignItems: "flex-end",
+  },
+  payoutStatusStrip: {
+    marginTop: 4,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraMerchant.border,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  payoutStatusItem: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+    marginRight: 8,
   },
   cycleRowLeft: {
     flex: 1,

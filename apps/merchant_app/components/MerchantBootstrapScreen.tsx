@@ -1,17 +1,11 @@
-import {
-  ActivityIndicator,
-  Image,
-  StyleSheet,
-  Text,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { ActivityIndicator, Image, StyleSheet, View, useWindowDimensions } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant } from "@/constants/theme";
 
-/** Partner splash mark — `mxappicon.png` (dark green GatiMitra wordmark). */
-const APP_ICON = require("../assets/mxappicon.png");
+/** Partner splash mark — GatiMitra / Partner Control. */
+const APP_ICON = require("../assets/images/splash-logo.png");
 
 const LORA_BOLD = "Lora_700Bold";
 const LORA_REGULAR = "Lora_400Regular";
@@ -46,7 +40,7 @@ export function MerchantBootstrapScreen({ statusMessage = null }: Props) {
               height: iconSize,
               borderRadius: Math.round(iconSize * 0.18),
             }}
-            resizeMode="cover"
+            resizeMode="contain"
             accessibilityLabel="GatiMitra Partner app icon"
           />
         </View>
@@ -81,7 +75,7 @@ const styles = StyleSheet.create({
   },
   iconShadow: {
     marginBottom: 20,
-    backgroundColor: "#002B22",
+    backgroundColor: "#000000",
     overflow: "hidden",
     shadowColor: "#0F172A",
     shadowOpacity: 0.2,

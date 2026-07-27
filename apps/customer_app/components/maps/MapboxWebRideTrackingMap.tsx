@@ -31,6 +31,7 @@ type Props = {
   geofenceRadiusM?: number;
   onMapReady?: () => void;
   onRegionChangeComplete?: () => void;
+  onUserPan?: () => void;
   style?: object;
 };
 
@@ -54,6 +55,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
       geofenceRadiusM = 200,
       onMapReady,
       onRegionChangeComplete,
+      onUserPan,
       style,
     },
     ref
@@ -190,6 +192,26 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           if (navigationMode) return;
           applyFit(coords, options);
         },
+        fitToGeofence: (center, radiusM, options) => {
+          if (!readyRef.current) return;
+          const pad = JSON.stringify(options.edgePadding);
+          const force = options.force === true ? "true" : "false";
+          const maxZoom = options.maxZoom ?? 16.4;
+          const duration = options.animated === false ? 0 : 750;
+          webRef.current?.injectJavaScript(
+            `window.fitToGeofence && window.fitToGeofence(${center.latitude}, ${center.longitude}, ${radiusM}, ${pad}, { force: ${force}, maxZoom: ${maxZoom}, duration: ${duration} }); true;`
+          );
+        },
+        clearGeofenceCamera: () => {
+          webRef.current?.injectJavaScript(
+            `window.clearGeofenceCamera && window.clearGeofenceCamera(); true;`
+          );
+        },
+        recenterOnRider: () => {
+          webRef.current?.injectJavaScript(
+            `window.recenterOnRider && window.recenterOnRider(); true;`
+          );
+        },
       }),
       [applyFit, navigationMode]
     );
@@ -223,12 +245,16 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
             onMapReady?.();
             return;
           }
+          if (msg.type === "user_pan") {
+            onUserPan?.();
+            return;
+          }
           if (msg.type === "moveend") onRegionChangeComplete?.();
         } catch {
           /* ignore */
         }
       },
-      [applyFit, syncLayers, navigationMode, onMapReady, onRegionChangeComplete]
+      [applyFit, syncLayers, navigationMode, onMapReady, onRegionChangeComplete, onUserPan]
     );
 
     useEffect(() => {

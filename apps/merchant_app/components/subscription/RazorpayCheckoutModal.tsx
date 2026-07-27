@@ -1,10 +1,14 @@
 /**
- * Razorpay checkout via hosted backend page (expo-web-browser) — same as customer app.
+ * Razorpay Checkout — native SDK only (react-native-razorpay).
+ *
+ * Opens the in-app Razorpay bottom sheet (UPI / cards / netbanking / wallets).
+ * No WebView, no hosted page, no expo-web-browser, no Linking.openURL.
+ *
+ * Failures surface via `onFailure` so the parent can show PaymentFailedSheet.
+ * User dismiss → `onCancel` only (no failed sheet).
  */
 
-import { useEffect, useRef, useState } from "react";
-import * as WebBrowser from "expo-web-browser";
-import { getConfig } from "@/config/env";
+import { useEffect, useRef } from "react";
 
 export type RazorpayPaymentResult = {
   razorpayPaymentId: string;
@@ -15,7 +19,7 @@ export type RazorpayPaymentResult = {
 export type RazorpayOrderParams = {
   orderId: string;
   keyId: string;
-  amount: number;
+  amount: number; // paise
 };
 
 export type RazorpayPrefill = {
@@ -31,11 +35,15 @@ type Props = {
   themeColor?: string;
   onSuccess: (result: RazorpayPaymentResult) => void;
   onCancel: () => void;
+  onFailure?: (info: { message: string; rawError?: unknown }) => void;
 };
 
-const SUCCESS_PREFIX = "gatimitra-merchant://pay-success";
-const CANCEL_PREFIX = "gatimitra-merchant://pay-cancel";
-const REDIRECT_INTERCEPT = "gatimitra-merchant://";
+const DEFAULT_THEME = "#16a34a";
+const COMPANY_NAME = "GatiMitra Partner";
+const COMPANY_DESCRIPTION = "Complete your subscription payment";
+
+const DEV_BUILD_HINT =
+  "Native Razorpay is not linked in this build. Close Expo Go and run a Development Build: cd apps/merchant_app && npx expo run:android";
 
 function normalizeContact(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -43,72 +51,110 @@ function normalizeContact(raw: string | null | undefined): string {
   return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
-function buildHostedCheckoutUrl(params: {
-  orderParams: RazorpayOrderParams;
-  prefill?: RazorpayPrefill;
-  themeColor?: string;
-}): string {
-  const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
-  const qs = new URLSearchParams({
-    order_id: params.orderParams.orderId,
-    key_id: params.orderParams.keyId,
-    amount: String(params.orderParams.amount),
-    success_url: SUCCESS_PREFIX,
-    cancel_url: CANCEL_PREFIX,
-    prefill_contact: normalizeContact(params.prefill?.contact),
-    prefill_email: params.prefill?.email ?? "",
-    prefill_name: params.prefill?.name ?? "",
-    theme_color: params.themeColor ?? "#16a34a",
-  });
-  return `${base}/v1/razorpay-checkout?${qs.toString()}`;
-}
-
-function parseRazorpayTokensFromUrl(url: string): RazorpayPaymentResult {
-  const idx = url.indexOf("?");
-  const qs = idx >= 0 ? url.slice(idx + 1) : "";
-  const params = new URLSearchParams(qs);
-  return {
-    razorpayPaymentId: params.get("razorpay_payment_id") ?? "",
-    razorpayOrderId: params.get("razorpay_order_id") ?? "",
-    razorpaySignature: params.get("razorpay_signature") ?? "",
+function isExplicitUserCancel(err: unknown): boolean {
+  const errAny = err as {
+    code?: number | string;
+    description?: string;
+    error?: { code?: number | string; description?: string };
+    message?: string;
   };
+  const codeRaw = errAny?.code ?? errAny?.error?.code;
+  const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
+  if (code === 0) return true;
+  const desc = String(
+    errAny?.description ?? errAny?.error?.description ?? errAny?.message ?? ""
+  ).toLowerCase();
+  return (
+    desc.includes("backpressed") ||
+    desc.includes("user closed") ||
+    desc.includes("user cancelled") ||
+    desc.includes("payment cancelled by user")
+  );
 }
 
-async function openBrowserCheckout(args: {
+function loadRazorpayCheckout(): {
+  open: (options: Record<string, unknown>) => Promise<{
+    razorpay_payment_id: string;
+    razorpay_order_id: string;
+    razorpay_signature: string;
+  }>;
+} {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require("react-native-razorpay");
+  const checkout = mod?.default ?? mod;
+  if (!checkout || typeof checkout.open !== "function") {
+    throw new Error(DEV_BUILD_HINT);
+  }
+  return checkout;
+}
+
+async function openNativeSdk(args: {
   orderParams: RazorpayOrderParams;
-  prefill?: RazorpayPrefill;
-  themeColor?: string;
-  onSuccess: (r: RazorpayPaymentResult) => void;
-  onCancel: () => void;
-}): Promise<void> {
-  const url = buildHostedCheckoutUrl(args);
+  prefill: RazorpayPrefill | undefined;
+  themeColor: string;
+}): Promise<RazorpayPaymentResult> {
+  let RazorpayCheckout: ReturnType<typeof loadRazorpayCheckout>;
   try {
-    await WebBrowser.warmUpAsync();
-  } catch {
-    /* noop */
+    RazorpayCheckout = loadRazorpayCheckout();
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(DEV_BUILD_HINT);
+    (err as Error & { code?: string }).code = "SDK_MISSING";
+    throw err;
   }
+
+  const options: Record<string, unknown> = {
+    key: args.orderParams.keyId,
+    order_id: args.orderParams.orderId,
+    amount: args.orderParams.amount,
+    currency: "INR",
+    name: COMPANY_NAME,
+    description: COMPANY_DESCRIPTION,
+    theme: { color: args.themeColor },
+    prefill: {
+      contact: normalizeContact(args.prefill?.contact),
+      email: args.prefill?.email ?? "",
+      name: args.prefill?.name ?? "",
+    },
+    notes: { source: "gatimitra_merchant_native" },
+    retry: { enabled: true, max_count: 2 },
+  };
+
+  let data: {
+    razorpay_payment_id: string;
+    razorpay_order_id: string;
+    razorpay_signature: string;
+  };
   try {
-    const result = await WebBrowser.openAuthSessionAsync(url, REDIRECT_INTERCEPT, {
-      showInRecents: false,
-      toolbarColor: args.themeColor ?? "#16a34a",
-    });
-    WebBrowser.coolDownAsync().catch(() => undefined);
-    if (result.type !== "success" || !("url" in result) || !result.url) {
-      args.onCancel();
-      return;
+    data = await RazorpayCheckout.open(options);
+  } catch (rzpErr) {
+    if (isExplicitUserCancel(rzpErr)) throw rzpErr;
+    const msg = String(
+      (rzpErr as Error)?.message ??
+        (rzpErr as { description?: string })?.description ??
+        rzpErr ??
+        ""
+    ).toLowerCase();
+    if (
+      msg.includes("null") ||
+      msg.includes("undefined") ||
+      msg.includes("not linked") ||
+      msg.includes("unregistered") ||
+      msg.includes("native module") ||
+      msg.includes("cannot read")
+    ) {
+      const err = new Error(DEV_BUILD_HINT);
+      (err as Error & { code?: string; cause?: unknown }).code = "SDK_UNLINKED";
+      (err as Error & { cause?: unknown }).cause = rzpErr;
+      throw err;
     }
-    const returnedUrl = String(result.url);
-    if (returnedUrl.startsWith(SUCCESS_PREFIX)) {
-      const tokens = parseRazorpayTokensFromUrl(returnedUrl);
-      if (tokens.razorpayPaymentId && tokens.razorpayOrderId && tokens.razorpaySignature) {
-        args.onSuccess(tokens);
-        return;
-      }
-    }
-    args.onCancel();
-  } catch {
-    args.onCancel();
+    throw rzpErr;
   }
+
+  return {
+    razorpayPaymentId: String(data.razorpay_payment_id ?? ""),
+    razorpayOrderId: String(data.razorpay_order_id ?? ""),
+    razorpaySignature: String(data.razorpay_signature ?? ""),
+  };
 }
 
 export function RazorpayCheckoutModal({
@@ -118,45 +164,72 @@ export function RazorpayCheckoutModal({
   themeColor,
   onSuccess,
   onCancel,
-}: Props) {
+  onFailure,
+}: Props): null {
+  const theme = themeColor ?? DEFAULT_THEME;
   const inFlightRef = useRef(false);
-  const [, setMounted] = useState(false);
+  const completedRef = useRef(false);
+  const orderKey = orderParams?.orderId ?? null;
+  const launchGenRef = useRef(0);
 
   useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!visible || !orderParams) {
+    if (!visible) {
       inFlightRef.current = false;
+      completedRef.current = false;
       return;
     }
+    if (!orderParams) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
 
+    const launchGen = ++launchGenRef.current;
     let cancelled = false;
-    void openBrowserCheckout({
-      orderParams,
-      prefill,
-      themeColor,
-      onSuccess: (r) => {
-        if (!cancelled) {
+
+    (async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      if (cancelled || launchGen !== launchGenRef.current) return;
+
+      try {
+        const result = await openNativeSdk({
+          orderParams,
+          prefill,
+          themeColor: theme,
+        });
+        if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
+        if (!result.razorpayPaymentId || !result.razorpayOrderId || !result.razorpaySignature) {
           inFlightRef.current = false;
-          onSuccess(r);
+          onFailure?.({
+            message: "Payment completed without valid tokens. Please try again.",
+          });
+          return;
         }
-      },
-      onCancel: () => {
-        if (!cancelled) {
-          inFlightRef.current = false;
+        completedRef.current = true;
+        onSuccess(result);
+      } catch (e) {
+        if (cancelled || launchGen !== launchGenRef.current) return;
+        if (isExplicitUserCancel(e)) {
+          completedRef.current = true;
+          onCancel();
+          return;
+        }
+        const msg =
+          e instanceof Error
+            ? e.message
+            : String((e as { description?: string })?.description ?? e ?? "Payment failed");
+        inFlightRef.current = false;
+        if (onFailure) {
+          onFailure({ message: msg, rawError: e });
+        } else {
           onCancel();
         }
-      },
-    });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [visible, orderParams?.orderId, orderParams?.keyId, orderParams?.amount, prefill, themeColor, onSuccess, onCancel]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, orderKey]);
 
   return null;
 }

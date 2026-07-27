@@ -770,7 +770,7 @@ export async function listItems(
     offset?: number;
     approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
     inStock?: boolean | null;
-    changeRequestType?: "DELETE" | "UPDATE" | null;
+    changeRequestType?: "DELETE" | "UPDATE" | "CREATE" | "ADD" | "EDIT" | null;
   }
 ): Promise<{
   items: Array<{
@@ -830,10 +830,23 @@ export async function listItems(
   // Partner Site parity: category OOS cascades via matching out_of_stock_updated_at; manual item OOS / CLEAR breaks the link.
   const effectiveStockExpr = getMenuItemEffectiveInStockExprFull(sql);
   const stockCondition = inStock == null ? sql`true` : sql`${effectiveStockExpr} = ${inStock}`;
+  const mappedReviewType =
+    changeRequestType === "UPDATE" || changeRequestType === "EDIT"
+      ? "EDIT"
+      : changeRequestType === "CREATE" || changeRequestType === "ADD"
+        ? "ADD"
+        : changeRequestType === "DELETE"
+          ? "DELETE"
+          : null;
   const changeRequestCondition =
-    changeRequestType == null
+    mappedReviewType == null
       ? sql`true`
-      : sql`EXISTS (SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' AND r.request_type = ${changeRequestType}::merchant_menu_item_change_request_type)`;
+      : sql`EXISTS (
+          SELECT 1 FROM merchant_menu_item_review_requests r
+          WHERE r.menu_item_id = merchant_menu_items.id
+            AND r.status = 'PENDING'::merchant_menu_item_review_request_status
+            AND r.request_type = ${mappedReviewType}::merchant_menu_item_review_request_type
+        )`;
 
   const baseWhere = sql`
     merchant_menu_items.store_id = ${storeIdNum} AND (merchant_menu_items.is_deleted IS NULL OR merchant_menu_items.is_deleted = false)
@@ -896,8 +909,27 @@ export async function listItems(
            merchant_menu_items.rejection_reason,
            COALESCE(merchant_menu_items.is_locked_by_plan, FALSE) AS is_locked_by_plan,
            merchant_menu_items.locked_reason,
-           (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
-           (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type,
+           (SELECT EXISTS(
+              SELECT 1 FROM merchant_menu_item_review_requests r
+              WHERE r.menu_item_id = merchant_menu_items.id
+                AND r.status = 'PENDING'::merchant_menu_item_review_request_status
+            ) OR EXISTS(
+              SELECT 1 FROM merchant_menu_item_change_requests r
+              WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING'
+            )) AS has_pending_change_request,
+           (SELECT COALESCE(
+              (SELECT CASE r.request_type::text
+                 WHEN 'EDIT' THEN 'UPDATE'
+                 WHEN 'ADD' THEN 'CREATE'
+                 ELSE r.request_type::text
+               END
+               FROM merchant_menu_item_review_requests r
+               WHERE r.menu_item_id = merchant_menu_items.id
+                 AND r.status = 'PENDING'::merchant_menu_item_review_request_status
+               LIMIT 1),
+              (SELECT request_type::text FROM merchant_menu_item_change_requests r
+               WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1)
+            )) AS pending_change_request_type,
            (SELECT COUNT(*)::int FROM merchant_menu_item_images img WHERE img.menu_item_id = merchant_menu_items.id) AS image_count,
            (
              SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
@@ -1888,11 +1920,23 @@ export async function deleteCustomizationOption(optionId: number, storeIdNum: nu
 export async function addItemImageRow(
   menuItemId: number,
   storeIdNum: number,
-  data: { image_url: string; r2_key?: string | null; is_primary?: boolean; format?: string | null; display_order?: number }
+  data: {
+    image_url: string;
+    r2_key?: string | null;
+    is_primary?: boolean;
+    format?: string | null;
+    display_order?: number;
+    /** Staff (admin/agent) uploads apply live without photo review. */
+    autoApprove?: boolean;
+    moderated_by?: string | null;
+  }
 ): Promise<{ id: number }> {
   await assertItemOwnership(menuItemId, storeIdNum);
   const sql = getSql();
   const makePrimary = data.is_primary !== false;
+  const autoApprove = data.autoApprove === true;
+  const moderationStatus = autoApprove ? "APPROVED" : "PENDING";
+  const moderatedBy = autoApprove ? (data.moderated_by ?? null) : null;
   const [orderRow] = await sql`
     SELECT COALESCE(MAX(display_order), -1) + 1 AS next_order
     FROM merchant_menu_item_images
@@ -1906,17 +1950,29 @@ export async function addItemImageRow(
       WHERE menu_item_id = ${menuItemId} AND is_primary = true
     `;
   }
-  const [row] = await sql`
-    INSERT INTO merchant_menu_item_images (
-      menu_item_id, image_url, r2_key, is_primary, format, display_order,
-      moderation_status, rejection_reason, moderated_at, moderated_by
-    )
-    VALUES (
-      ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary}, ${data.format ?? null}, ${nextOrder},
-      ${makePrimary ? "PENDING" : "PENDING"}, NULL, NULL, NULL
-    )
-    RETURNING id
-  `;
+  const [row] = autoApprove
+    ? await sql`
+        INSERT INTO merchant_menu_item_images (
+          menu_item_id, image_url, r2_key, is_primary, format, display_order,
+          moderation_status, rejection_reason, moderated_at, moderated_by
+        )
+        VALUES (
+          ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary}, ${data.format ?? null}, ${nextOrder},
+          ${moderationStatus}, NULL, NOW(), ${moderatedBy}
+        )
+        RETURNING id
+      `
+    : await sql`
+        INSERT INTO merchant_menu_item_images (
+          menu_item_id, image_url, r2_key, is_primary, format, display_order,
+          moderation_status, rejection_reason, moderated_at, moderated_by
+        )
+        VALUES (
+          ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary}, ${data.format ?? null}, ${nextOrder},
+          'PENDING', NULL, NULL, NULL
+        )
+        RETURNING id
+      `;
   const imageId = Number((row as any).id);
   if (makePrimary) {
     const [itemRow] = await sql`
@@ -1928,7 +1984,18 @@ export async function addItemImageRow(
     const prevStatus = String((itemRow as { approval_status?: string })?.approval_status ?? "").toUpperCase();
     const wasApproved = prevStatus === "APPROVED";
 
-    if (wasApproved) {
+    if (autoApprove) {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${data.image_url},
+            approval_status = 'APPROVED'::merchant_menu_item_approval_status,
+            rejection_reason = NULL,
+            approved_at = COALESCE(approved_at, NOW()),
+            approved_by = COALESCE(approved_by, ${moderatedBy}),
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
+    } else if (wasApproved) {
       await sql`
         UPDATE merchant_menu_items
         SET item_image_url = ${data.image_url},
@@ -2676,12 +2743,20 @@ export async function rejectChangeRequest(
   return (result.count ?? 0) > 0;
 }
 
-/** Returns true if item has at least one PENDING change request. */
+/** Returns true if item has at least one PENDING review or legacy change request. */
 export async function hasPendingChangeRequest(menuItemId: number, storeIdNum: number): Promise<boolean> {
   const sql = getSql();
   const [r] = await sql`
-    SELECT 1 FROM merchant_menu_item_change_requests
-    WHERE menu_item_id = ${menuItemId} AND store_id = ${storeIdNum} AND status = 'PENDING'
+    SELECT 1 WHERE
+      EXISTS (
+        SELECT 1 FROM merchant_menu_item_review_requests
+        WHERE menu_item_id = ${menuItemId} AND store_id = ${storeIdNum}
+          AND status = 'PENDING'::merchant_menu_item_review_request_status
+      )
+      OR EXISTS (
+        SELECT 1 FROM merchant_menu_item_change_requests
+        WHERE menu_item_id = ${menuItemId} AND store_id = ${storeIdNum} AND status = 'PENDING'
+      )
     LIMIT 1
   `;
   return !!r;

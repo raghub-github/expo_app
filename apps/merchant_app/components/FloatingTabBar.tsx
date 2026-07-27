@@ -7,7 +7,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
-  Text,
   Pressable,
   StyleSheet,
   Platform,
@@ -15,6 +14,7 @@ import {
   Modal,
   ScrollView,
 } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -23,6 +23,7 @@ import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { CommonActions } from "@react-navigation/native";
 import {
   GatiMitraMerchant,
+  FONT_LORA,
   TAB_BAR_HEIGHT,
   TAB_BAR_FLOATING_GAP,
 } from "@/constants/theme";

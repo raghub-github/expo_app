@@ -64,6 +64,8 @@ export async function resolveEffectivePolicy(input: PolicyDecisionInput): Promis
     }
   }
 
+  const forceHybrid = activeSwitches.some((sw) => sw.state === "force_hybrid");
+
   // 2. Active policy for this (subject, doc_kind).
   const rows = await db
     .select()
@@ -78,7 +80,13 @@ export async function resolveEffectivePolicy(input: PolicyDecisionInput): Promis
     .limit(1);
 
   if (rows.length === 0) {
-    return manualDefault({ reason: "no_policy_row" });
+    return forceHybrid
+      ? {
+          ...manualDefault({ reason: "no_policy_row_force_hybrid" }),
+          mode: "hybrid" as const,
+          fallbackToManual: true,
+        }
+      : manualDefault({ reason: "no_policy_row" });
   }
   const p = rows[0]!;
 
@@ -100,10 +108,11 @@ export async function resolveEffectivePolicy(input: PolicyDecisionInput): Promis
     .orderBy(verificationPolicyVersions.versionNumber);
   const policySnapshotId = versions[versions.length - 1]?.id ?? p.id;
 
+  const baseMode = p.mode as EffectivePolicy["mode"];
   return {
     policyId: p.id,
     policySnapshotId,
-    mode: p.mode as EffectivePolicy["mode"],
+    mode: forceHybrid && (baseMode === "auto" || baseMode === "manual") ? "hybrid" : baseMode,
     provider: (p.provider as VerificationProvider | null) ?? null,
     autoApprove: p.autoApprove,
     confidenceThreshold: p.confidenceThreshold != null ? Number(p.confidenceThreshold) : null,

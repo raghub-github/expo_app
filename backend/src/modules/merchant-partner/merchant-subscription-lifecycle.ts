@@ -324,8 +324,9 @@ function gstBreakdown(amount: number, gstPercent: number) {
 
 function computeNextEnd(from: Date, cycle: string): Date {
   const end = new Date(from);
-  const c = (cycle || "MONTHLY").toUpperCase();
+  const c = (cycle || "MONTHLY").toUpperCase().replace(/-/g, "_");
   if (c === "YEARLY") end.setFullYear(end.getFullYear() + 1);
+  else if (c === "SEMI_YEARLY" || c === "SEMIYEARLY") end.setMonth(end.getMonth() + 6);
   else if (c === "QUARTERLY") end.setMonth(end.getMonth() + 3);
   else end.setMonth(end.getMonth() + 1);
   return end;

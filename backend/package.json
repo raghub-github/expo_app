@@ -32,6 +32,7 @@
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/swagger": "^9.5.1",
     "@fastify/swagger-ui": "^5.2.3",
+    "@gatimitra/bill-print": "*",
     "@gatimitra/contracts": "0.0.1",
     "@gatimitra/event-contracts": "*",
     "@gatimitra/financial-rules": "*",

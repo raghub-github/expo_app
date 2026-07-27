@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, Platform } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Platform } from "react-native";
 import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
 
 type Props = {

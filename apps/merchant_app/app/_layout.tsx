@@ -4,7 +4,7 @@ import { LogBox } from "react-native";
 import { Stack } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
-import { Poppins_700Bold } from "@expo-google-fonts/poppins";
+import { Poppins_600SemiBold, Poppins_700Bold } from "@expo-google-fonts/poppins";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -18,6 +18,7 @@ import { StoreSettingsProvider } from "@/context/StoreSettingsContext";
 import { OrdersProvider } from "@/context/OrdersContext";
 import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
+import { NotificationPermissionGateProvider } from "@/context/NotificationPermissionGateContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import { LiveSupportTicketProvider } from "@/context/LiveSupportTicketContext";
 import { FloatingLiveSupportTicket } from "@/components/FloatingLiveSupportTicket";
@@ -28,11 +29,16 @@ import AcceptanceTimeoutSync from "../components/AcceptanceTimeoutSync";
 import { IncomingOrderSheetProvider } from "@/context/IncomingOrderSheetContext";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
+import BackgroundOrderPermissionsGate from "../components/BackgroundOrderPermissionsGate";
+import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
 import { fetchMerchantAppAssets } from "@/services/appAssets.service";
 import { isAppAssetsLoaded, setAppAssets } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
+import { NetworkStatusProvider } from "@/context/NetworkStatusContext";
+import { OfflineNetworkChrome } from "@/components/OfflineNetworkChrome";
+import { PlayInAppUpdateBootstrap } from "@/components/PlayInAppUpdateBootstrap";
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -55,12 +61,13 @@ const queryClient = new QueryClient({
 
 const ASSETS_FETCH_TIMEOUT_MS = 2500;
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
-const FONTS_READY_FALLBACK_MS = 1500;
+const FONTS_READY_FALLBACK_MS = 8000;
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontsError] = useFonts({
     Lora_400Regular,
     Lora_700Bold,
+    Poppins_600SemiBold,
     Poppins_700Bold,
   });
   const [fontsTimedOut, setFontsTimedOut] = useState(false);
@@ -69,6 +76,20 @@ export default function RootLayout() {
     const t = setTimeout(() => setFontsTimedOut(true), FONTS_READY_FALLBACK_MS);
     return () => clearTimeout(t);
   }, []);
+
+  useEffect(() => {
+    if (fontsError && __DEV__) {
+      console.warn("[typography] useFonts error:", fontsError);
+    }
+  }, [fontsError]);
+
+  useEffect(() => {
+    if (fontsTimedOut && !fontsLoaded && __DEV__) {
+      console.warn(
+        "[typography] Fonts not ready after timeout — Lora/Poppins may look like system font"
+      );
+    }
+  }, [fontsTimedOut, fontsLoaded]);
 
   useEffect(() => {
     // CMS assets must never block first paint / auth redirect. Soft-fail fast.
@@ -86,7 +107,7 @@ export default function RootLayout() {
     };
   }, []);
 
-  // Proceed as soon as fonts load — or after a short fallback so login isn't blocked.
+  // Prefer real font registration; only soft-timeout so login is never blocked forever.
   const ready = fontsLoaded || fontsTimedOut;
 
   useEffect(() => {
@@ -94,7 +115,7 @@ export default function RootLayout() {
     void SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
-  // Keep native Expo splash (mxappicon) until fonts are ready so the React
+  // Keep native Expo splash (splash-logo.png) until fonts are ready so the React
   // bootstrap can render title/subtitle in Lora immediately after.
   if (!ready) {
     return null;
@@ -104,6 +125,7 @@ export default function RootLayout() {
     <QueryClientProvider client={queryClient}>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
+          <NetworkStatusProvider>
           <AuthProvider>
             <SelectedStoreProvider>
               <LiveSupportTicketProvider>
@@ -112,6 +134,7 @@ export default function RootLayout() {
                     <OrdersProvider>
                       <ProfileNavProvider>
                         <NotificationProvider>
+                          <NotificationPermissionGateProvider>
                           <SubscriptionProvider>
                             <StatusBar
                               style="dark"
@@ -121,6 +144,8 @@ export default function RootLayout() {
                             />
                             <IncomingOrderSheetProvider>
                               <NotificationSetup />
+                              <BackgroundOrderPermissionsGate />
+                              <NewOrderAutoOpenHandler />
                               <OrderAlertPushHandler />
                               <WaitingForOrderNotifier />
                               <StoreOnlineStatusNotifier />
@@ -143,9 +168,13 @@ export default function RootLayout() {
                                 <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="order-history" options={{ headerShown: false }} />
                                 <Stack.Screen name="notifications" options={{ headerShown: false }} />
+                                <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
                               </Stack>
+                              <OfflineNetworkChrome />
+                              <PlayInAppUpdateBootstrap />
                             </IncomingOrderSheetProvider>
                           </SubscriptionProvider>
+                          </NotificationPermissionGateProvider>
                         </NotificationProvider>
                       </ProfileNavProvider>
                     </OrdersProvider>
@@ -154,6 +183,7 @@ export default function RootLayout() {
               </LiveSupportTicketProvider>
             </SelectedStoreProvider>
           </AuthProvider>
+          </NetworkStatusProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     </QueryClientProvider>

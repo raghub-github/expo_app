@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-  ScrollView,
-  ActivityIndicator,
-  Modal,
-  Platform,
-  Animated as RNAnimated,
-  PanResponder,
-  Vibration,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Pressable, StyleSheet, ScrollView, ActivityIndicator, Modal, Platform, Animated as RNAnimated, PanResponder, Vibration } from "react-native";
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -46,7 +35,8 @@ import { AnimatedPlacedTime } from "@/components/order/AnimatedPlacedTime";
 import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { formatMerchantRs } from "@/lib/merchant-line-total";
-import { merchantBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
+import { merchantIncomingBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
+import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import {
@@ -382,7 +372,7 @@ function openCustomizationSheet(
 export default function IncomingOrderModal() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
-  const { selectedStore } = useSelectedStore();
+  const { selectedStore, managedStores } = useSelectedStore();
   const { registerOpenHandler } = useIncomingOrderSheet();
   const storeId = selectedStore?.id ?? null;
 
@@ -559,6 +549,31 @@ export default function IncomingOrderModal() {
     );
   }, [sheetOrder, orders]);
 
+  const actionStoreId = useMemo(() => {
+    const fromOrder = displayOrder?.merchantStoreId ?? sheetOrder?.merchantStoreId;
+    if (fromOrder != null && Number.isFinite(fromOrder) && fromOrder > 0) return fromOrder;
+    return storeId;
+  }, [displayOrder?.merchantStoreId, sheetOrder?.merchantStoreId, storeId]);
+
+  const orderLocality = useMemo(() => {
+    const direct = displayOrder?.merchantStoreLocality?.trim() || sheetOrder?.merchantStoreLocality?.trim();
+    if (direct) return direct;
+    const sid = displayOrder?.merchantStoreId ?? sheetOrder?.merchantStoreId ?? storeId;
+    const store =
+      managedStores.find((s) => s.id === sid) ??
+      (selectedStore?.id === sid ? selectedStore : null);
+    if (!store?.full_address) return "";
+    return shortLocalityFromAddress(store.full_address);
+  }, [
+    displayOrder?.merchantStoreLocality,
+    displayOrder?.merchantStoreId,
+    sheetOrder?.merchantStoreLocality,
+    sheetOrder?.merchantStoreId,
+    storeId,
+    managedStores,
+    selectedStore,
+  ]);
+
   /** All still-pending orders (FIFO) the merchant can page through while the sheet is open. */
   const pendingList = useMemo(
     () =>
@@ -634,12 +649,12 @@ export default function IncomingOrderModal() {
       extra?: { rejected_reason?: string; preparation_time_minutes?: number },
       mode: "auto" | "manual" = "manual"
     ) => {
-      if (!storeId || !token || !sheetOrder || sheetOrder.id.startsWith("core-")) return;
+      if (!actionStoreId || !token || !sheetOrder || sheetOrder.id.startsWith("core-")) return;
       const foodId = parseInt(sheetOrder.id, 10);
       if (!Number.isFinite(foodId)) return;
       setActionLoading(true);
       try {
-        await patchFoodOrderStatus(storeId, foodId, token, status, extra?.rejected_reason, {
+        await patchFoodOrderStatus(actionStoreId, foodId, token, status, extra?.rejected_reason, {
           action_source: "app",
           ...(status === "ACCEPTED"
             ? {
@@ -662,7 +677,7 @@ export default function IncomingOrderModal() {
         setActionLoading(false);
       }
     },
-    [storeId, token, sheetOrder, dismissSheet, showToast, prepMinutes]
+    [actionStoreId, token, sheetOrder, dismissSheet, showToast, prepMinutes]
   );
 
   const stepPrep = useCallback((delta: number) => {
@@ -694,7 +709,7 @@ export default function IncomingOrderModal() {
    * the sheet so it never stays open for an inactive order.
    */
   useEffect(() => {
-    if (!sheetOrder || !storeId || !token) return;
+    if (!sheetOrder || !actionStoreId || !token) return;
     if (sheetOrder.id.startsWith("core-")) return;
     const foodId = parseInt(sheetOrder.id, 10);
     if (!Number.isFinite(foodId)) return;
@@ -714,7 +729,7 @@ export default function IncomingOrderModal() {
         if (pastDeadline && !syncKickInFlight.current) {
           syncKickInFlight.current = true;
           try {
-            await syncAcceptanceTimeout(storeId, token);
+            await syncAcceptanceTimeout(actionStoreId, token);
           } catch {
             /* cron owns cancel; sync is a nudge */
           } finally {
@@ -722,7 +737,7 @@ export default function IncomingOrderModal() {
           }
         }
 
-        const updated = await fetchFoodOrder(storeId, foodId, token);
+        const updated = await fetchFoodOrder(actionStoreId, foodId, token);
         if (cancelled) return;
         const stage = String(updated.order_status || "").toUpperCase();
         if (stage && stage !== "CREATED" && stage !== "NEW" && stage !== "PLACED") {
@@ -753,18 +768,19 @@ export default function IncomingOrderModal() {
     sheetOrder?.id,
     sheetOrder?.createdAt,
     sheetOrder?.merchantResponseDeadlineAt,
-    storeId,
+    actionStoreId,
     token,
     acceptanceWindowMinutes,
     dismissSheet,
   ]);
 
-  if (!storeId) return null;
+  if (!storeId && !actionStoreId) return null;
 
   const order = displayOrder;
-  // Deterministic merchant bill: item subtotal (boost/BOGO-adjusted) + packaging
-  // − frozen orders_core.merchant_precision_discount (subtracted exactly once).
-  const incomingBill = order ? merchantBillPartsFromOrder(order) : null;
+  // Deterministic merchant bill: item subtotal (Boost/BOGO-adjusted nets) + packaging
+  // − frozen orders_core.merchant_precision_discount — recomputed from items (total: 0),
+  // matching PartnerIncomingOrderModal exactly.
+  const incomingBill = order ? merchantIncomingBillPartsFromOrder(order) : null;
   const precisionDiscount = incomingBill?.discount ?? 0;
   const orderValue = incomingBill?.total ?? order?.total ?? 0;
   const sheetVisible = !!order && !rejectOpen && !allItemsOpen && !customizationItem;
@@ -810,6 +826,14 @@ export default function IncomingOrderModal() {
             {order ? (
               <>
                 <View style={styles.sheetOverlapHeader} pointerEvents="box-none">
+                  {orderLocality ? (
+                    <View style={styles.localityPill} pointerEvents="none">
+                      <Ionicons name="location-outline" size={13} color={GatiMitraMerchant.primaryDark} />
+                      <Text style={styles.localityPillText} numberOfLines={1}>
+                        {orderLocality}
+                      </Text>
+                    </View>
+                  ) : null}
                   <NewOrderFusePill borderProgress={fuseProgress} urgent={fuseUrgent} />
                   <Pressable
                     onPress={() => setRejectOpen(true)}
@@ -1226,6 +1250,38 @@ const styles = StyleSheet.create({
       android: { elevation: 4 },
       default: {},
     }),
+  },
+  localityPill: {
+    position: "absolute",
+    top: -10,
+    left: H_PADDING,
+    maxWidth: "36%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    zIndex: 11,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 5,
+      },
+      android: { elevation: 3 },
+      default: {},
+    }),
+  },
+  localityPillText: {
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: "700",
+    color: GatiMitraMerchant.primaryDark,
   },
   rejectPillText: {
     fontSize: 13,

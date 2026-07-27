@@ -33,7 +33,7 @@ export function buildWithdrawableBalanceByLedgerId(
     const ta = new Date(a.created_at).getTime();
     const tb = new Date(b.created_at).getTime();
     if (ta !== tb) return ta - tb;
-    return a.id - b.id;
+    return Number(a.id) - Number(b.id);
   });
 
   let running = 0;
@@ -41,6 +41,7 @@ export function buildWithdrawableBalanceByLedgerId(
 
   for (const entry of sorted) {
     const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const entryId = Number(entry.id);
 
     if (affectsWithdrawableBalance(entry.balance_type) && !isNoBalanceImpactCancellation(meta)) {
       const amt = Number(entry.amount ?? 0);
@@ -52,7 +53,7 @@ export function buildWithdrawableBalanceByLedgerId(
       running = roundMoney(Math.max(0, running));
     }
 
-    result.set(entry.id, running);
+    result.set(entryId, running);
   }
 
   return result;
@@ -65,18 +66,20 @@ export function latestRunningBalanceFromLedgerRows(rows: LedgerBucketSnapshotRow
   for (const row of rows) {
     const ta = new Date(row.created_at).getTime();
     const tb = new Date(latest.created_at).getTime();
-    if (ta > tb || (ta === tb && row.id > latest.id)) {
+    const rowId = Number(row.id);
+    const latestId = Number(latest.id);
+    if (ta > tb || (ta === tb && rowId > latestId)) {
       latest = row;
     }
   }
-  return map.get(latest.id) ?? 0;
+  return map.get(Number(latest.id)) ?? 0;
 }
 
 export function applyWithdrawableBalanceToLedgerEntries<
   T extends { id: number; balance_after: number; metadata?: Record<string, unknown> | null }
 >(entries: T[], withdrawableById: Map<number, number>): T[] {
   return entries.map((entry) => {
-    const withdrawable = withdrawableById.get(entry.id);
+    const withdrawable = withdrawableById.get(Number(entry.id));
     if (withdrawable == null) return entry;
     return {
       ...entry,

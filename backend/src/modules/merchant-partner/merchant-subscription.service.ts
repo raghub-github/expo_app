@@ -1867,9 +1867,11 @@ async function insertSubscriptionPayment(
 
 function computeNextBillingEnd(from: Date, billingCycle: string): Date {
   const end = new Date(from);
-  const cycle = (billingCycle || "MONTHLY").toUpperCase();
+  const cycle = (billingCycle || "MONTHLY").toUpperCase().replace(/-/g, "_");
   if (cycle === "YEARLY") {
     end.setFullYear(end.getFullYear() + 1);
+  } else if (cycle === "SEMI_YEARLY" || cycle === "SEMIYEARLY") {
+    end.setMonth(end.getMonth() + 6);
   } else if (cycle === "QUARTERLY") {
     end.setMonth(end.getMonth() + 3);
   } else {

@@ -4,7 +4,9 @@ import { useActiveOrderPicker } from "@/src/hooks/useActiveOrderPicker";
 import { ActiveOrderPickerSheet } from "@/src/components/orders/ActiveOrderPickerSheet";
 import { getActiveOrderStatusCopy } from "@/src/lib/active-order-display";
 import { colors } from "@/src/theme";
-import { ACTIVE_RIDE_DOCK_BOTTOM_GAP } from "@/src/components/home/map-controls-layout";
+
+/** @deprecated Prefer floating Active Ride button — kept for reference. */
+const DOCK_BOTTOM_GAP = 0;
 
 /** Bottom dock — resume active ride when rider is on the home map. */
 export function ActiveRideResumePill() {
@@ -63,7 +65,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 16,
     right: 16,
-    bottom: ACTIVE_RIDE_DOCK_BOTTOM_GAP,
+    bottom: DOCK_BOTTOM_GAP,
     alignItems: "center",
     zIndex: 18,
   },

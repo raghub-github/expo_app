@@ -8,7 +8,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { getSignedUrlFromKey } from "@/lib/services/r2";
 
 export const runtime = "nodejs";
@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError) {
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
         return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
       }
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });

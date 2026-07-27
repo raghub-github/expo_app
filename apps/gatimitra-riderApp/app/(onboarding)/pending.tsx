@@ -22,7 +22,11 @@ import {
   StepProgress,
   onboardingFormStyles as form,
 } from "@/src/components/onboarding/OnboardingFormUi";
-import { canAccessHome } from "@/src/lib/onboarding-routes";
+import {
+  canAccessHome,
+  onboardingStepToRoute,
+  type ServerOnboardingStep,
+} from "@/src/lib/onboarding-routes";
 import { colors } from "@/src/theme";
 
 function isRiderApproved(status?: {
@@ -42,21 +46,55 @@ export default function PendingScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data, hydrate } = useOnboardingStore();
-  const { data: riderStatus, refetch, isFetching } = useRiderStatus(data.riderId);
+  const { data: riderStatus, refetch, isFetching, isFetched } = useRiderStatus(data.riderId);
   const approved = isRiderApproved(riderStatus);
+
+  const paymentCompleted = riderStatus?.paymentCompleted === true;
+  const isLegitPending =
+    paymentCompleted &&
+    (riderStatus?.onboardingStatus === "pending_approval" ||
+      riderStatus?.onboardingStatus === "rejected");
+
+  // Approval macro step only when truly pending after payment.
+  const macroStepIndex = isLegitPending
+    ? 3
+    : typeof riderStatus?.macroStepIndex === "number"
+      ? Math.min(3, Math.max(0, riderStatus.macroStepIndex))
+      : 2;
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
+  // Resume correct onboarding step — never stay here unpaid / mid-funnel.
+  const resumeRedirectRef = React.useRef(false);
+  useEffect(() => {
+    if (!riderStatus || !isFetched) return;
+    if (approved) return;
+    if (isLegitPending) return;
+    if (resumeRedirectRef.current) return;
+    resumeRedirectRef.current = true;
+    const next = (riderStatus.nextOnboardingStep || "aadhaar_name") as ServerOnboardingStep;
+    router.replace(onboardingStepToRoute(next));
+  }, [
+    riderStatus,
+    isFetched,
+    approved,
+    isLegitPending,
+    riderStatus?.nextOnboardingStep,
+    riderStatus?.paymentCompleted,
+    riderStatus?.onboardingStatus,
+  ]);
+
   const goToHome = useCallback(() => {
     router.replace("/(tabs)/orders");
   }, []);
 
+  const approvedRedirectRef = React.useRef(false);
   useEffect(() => {
-    if (approved) {
-      goToHome();
-    }
+    if (!approved || approvedRedirectRef.current) return;
+    approvedRedirectRef.current = true;
+    goToHome();
   }, [approved, goToHome]);
 
   const handleRefresh = useCallback(async () => {
@@ -69,6 +107,16 @@ export default function PendingScreen() {
 
   const tx = (key: string, fallback: string) =>
     t(`onboarding.pending.${key}`, { defaultValue: fallback });
+
+  // Avoid flashing Pending Approval copy while we decide the real next screen.
+  if (!data.riderId || !isFetched || (!approved && !isLegitPending)) {
+    return (
+      <View style={[form.root, styles.bootWrap]}>
+        <StatusBar style="dark" backgroundColor={BG} translucent={false} />
+        <ActivityIndicator size="large" color={ACCENT_DARK} />
+      </View>
+    );
+  }
 
   return (
     <View style={form.root}>
@@ -99,11 +147,11 @@ export default function PendingScreen() {
               </TouchableOpacity>
             </View>
 
-            <StepProgress steps={ONBOARDING_STEPS} currentIndex={3} />
+            <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
 
             <View style={[form.stepPill, styles.stepPillSpaced]}>
               <Ionicons name="hourglass-outline" size={14} color={ACCENT_DARK} />
-              <Text style={form.stepPillText}>{tx("stepLabel", "Step 4 · Pending approval")}</Text>
+              <Text style={form.stepPillText}>{tx("stepLabel", "Step 6 · Pending approval")}</Text>
             </View>
 
             <Text style={form.title}>{tx("title", "Pending Approval")}</Text>
@@ -190,6 +238,12 @@ export default function PendingScreen() {
 }
 
 const styles = StyleSheet.create({
+  bootWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: BG,
+  },
   scroll: {
     flex: 1,
   },

@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, Pressable } from "react-native";
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
 import type { LineItem } from "@/hooks/useOrders";
 import { ItemVegMark } from "@/components/order/ItemVegMark";

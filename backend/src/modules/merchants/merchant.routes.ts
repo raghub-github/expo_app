@@ -615,6 +615,9 @@ export async function merchantRoutes(app: FastifyInstance) {
             withinOperatingHours: z.boolean().optional(),
             nextOpenAt: z.string().nullable().optional(),
             nextCloseAt: z.string().nullable().optional(),
+            rushActive: z.boolean().optional(),
+            rushEndsAt: z.string().nullable().optional(),
+            rushRemainingMinutes: z.number().nullable().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -629,6 +632,9 @@ export async function merchantRoutes(app: FastifyInstance) {
         withinOperatingHours: surface.withinOperatingHours,
         nextOpenAt: surface.nextOpenAt,
         nextCloseAt: surface.nextCloseAt,
+        rushActive: surface.activeRush?.isActive === true,
+        rushEndsAt: surface.activeRush?.endsAt ?? null,
+        rushRemainingMinutes: surface.activeRush?.remainingMinutes ?? null,
       });
     }
   );
@@ -828,6 +834,9 @@ export async function merchantRoutes(app: FastifyInstance) {
             liveStatus: z.enum(["OPEN", "CLOSED"]).optional(),
             nextOpenAt: z.string().nullable().optional(),
             nextCloseAt: z.string().nullable().optional(),
+            rushActive: z.boolean().optional(),
+            rushEndsAt: z.string().nullable().optional(),
+            rushRemainingMinutes: z.number().nullable().optional(),
             menuVersion: z.number().optional(),
             etag: z.string().optional(),
           }),
@@ -923,6 +932,9 @@ export async function merchantRoutes(app: FastifyInstance) {
         userHasRatedStore,
         nextOpenAt: sched?.nextOpenAt ?? null,
         nextCloseAt: sched?.nextCloseAt ?? null,
+        rushActive: surface.activeRush?.isActive === true,
+        rushEndsAt: surface.activeRush?.endsAt ?? null,
+        rushRemainingMinutes: surface.activeRush?.remainingMinutes ?? null,
         menuVersion: versionInfo?.menuVersion,
         etag: versionInfo?.etag,
       });

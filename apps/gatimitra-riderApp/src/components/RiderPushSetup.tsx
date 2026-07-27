@@ -5,6 +5,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   navigateFromPushData,
   usePushPermissionController,
+  enqueueInAppBannerFromPush,
+  FloatingInAppBannerHost,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -50,6 +52,7 @@ export function RiderPushSetup() {
         (typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "") ||
         "";
       useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, payload.data));
+      enqueueInAppBannerFromPush(payload);
 
       const type = typeof payload.data.type === "string" ? payload.data.type : "";
       if (
@@ -120,5 +123,18 @@ export function RiderPushSetup() {
     }
   }, [snapshot.osStatus, setPermissionStepGranted]);
 
-  return null;
+  return (
+    <FloatingInAppBannerHost
+      onPressBanner={(item) => {
+        if (item.data) {
+          navigateFromPushData(router, {
+            ...item.data,
+            appRole: "rider",
+            orderPath:
+              item.data.orderId != null ? `/order/${String(item.data.orderId)}` : undefined,
+          });
+        }
+      }}
+    />
+  );
 }

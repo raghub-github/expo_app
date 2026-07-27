@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
-  Text,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
@@ -19,6 +18,7 @@ import {
   Alert,
   Pressable,
 } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -67,7 +67,7 @@ import { CatalogPhotoUploadingOverlay } from "@/components/menu/CatalogPhotoUplo
 import type { CatalogPhotoUploadCallbacks } from "@/lib/catalogPhotoUploadFlow";
 import { CatalogStockToggle } from "@/components/menu/CatalogStockToggle";
 import { CatalogCategoryMenuSheet } from "@/components/menu/CatalogCategoryMenuSheet";
-import { AuthProxyImage, prefetchAuthImage } from "@/components/AuthProxyImage";
+import { AuthProxyImage, prefetchAuthImage, prefetchAuthImages } from "@/components/AuthProxyImage";
 import { prefetchMenuItemDetail, invalidateMenuItemCache } from "@/lib/menuItemCache";
 
 type ApprovalFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
@@ -405,7 +405,7 @@ function MenuItemCard({
   const isRecommended = Boolean(item.is_recommended);
   const imageUri = item.item_image_url;
   const isUploading = Boolean(photoUpload);
-  const showImage = Boolean(imageUri) || isUploading;
+  const showImage = Boolean(imageUri) || isUploading || itemHasCatalogPhoto(item);
   const photoRejected = !isUploading && itemPhotoRejected(item);
   const photoReviewing = !isUploading && itemPhotoInReview(item);
   const imageCount = Math.max(0, item.image_count ?? (item.item_image_url ? 1 : 0));
@@ -926,6 +926,15 @@ export default function MenuScreen() {
   } = useMenuItems(storeId, token, MENU_CATALOG_LIST_FILTERS);
   const allItems = catalogData?.items ?? [];
   const catalogTotal = catalogData?.total ?? allItems.length;
+
+  // Warm disk/memory image cache as soon as catalog rows arrive (survives force-close).
+  useEffect(() => {
+    if (!token || allItems.length === 0) return;
+    prefetchAuthImages(
+      allItems.map((it) => it.item_image_url).filter(Boolean),
+      token,
+    );
+  }, [token, catalogData?.items]);
 
   useEffect(() => {
     if (!storeId) return;

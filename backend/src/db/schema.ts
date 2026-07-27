@@ -87,6 +87,10 @@ export const documentVerificationStatusEnum = pgEnum("document_verification_stat
   "pending",
   "approved",
   "rejected",
+  "auto_verified",
+  "expired",
+  "consent_denied",
+  "timeout",
 ]);
 
 export const documentFileSideEnum = pgEnum("document_file_side", [
@@ -154,6 +158,10 @@ export const onboardingRuleScopeEnum = pgEnum("onboarding_rule_scope", [
 export const verificationMethodEnum = pgEnum("verification_method", [
   "APP_VERIFIED",
   "MANUAL_UPLOAD",
+  "CASHFREE_AUTO",
+  "CASHFREE_ASSISTED",
+  "CASHFREE_MANUAL_FALLBACK",
+  "RAZORPAY_BANK",
 ]);
 
 export const fuelTypeEnum = pgEnum("fuel_type", [
@@ -560,6 +568,11 @@ const ridersTable = pgTable(
       .default("MOBILE_VERIFIED"),
     kycStatus: kycStatusEnum("kyc_status").notNull().default("PENDING"),
     status: riderStatusEnum("status").notNull().default("INACTIVE"),
+    /** Per-step onboarding progress map (aadhaar/face/pan/vehicle/payment/approval). */
+    onboardingProgress: jsonb("onboarding_progress").notNull().default({}),
+    lastCompletedStep: text("last_completed_step"),
+    nextRequiredStep: text("next_required_step"),
+    onboardingProgressPct: integer("onboarding_progress_pct").notNull().default(0),
     city: text("city"),
     state: text("state"),
     pincode: text("pincode"),
@@ -959,6 +972,9 @@ export const riderDocuments = pgTable(
     requiresManualReview: boolean("requires_manual_review").notNull().default(false),
     verificationMethod: verificationMethodEnum("verification_method").notNull().default("MANUAL_UPLOAD"),
     metadata: jsonb("metadata").default({}),
+    lastVerificationId: text("last_verification_id"),
+    lastProviderReference: text("last_provider_reference"),
+    extractedDataSummary: jsonb("extracted_data_summary").notNull().default({}),
     createdBy: integer("created_by"),
     updatedBy: integer("updated_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -1096,6 +1112,13 @@ export const riderVehicles = pgTable(
     color: text("color"),
     rcDocumentUrl: text("rc_document_url"),
     insuranceDocumentUrl: text("insurance_document_url"),
+    /** Cashfree RC chassis / engine / fitness / PUC + owner (vehicle ownership). */
+    chassisNumber: text("chassis_number"),
+    engineNumber: text("engine_number"),
+    fitnessExpiry: date("fitness_expiry"),
+    pucExpiry: date("puc_expiry"),
+    rcOwnerName: text("rc_owner_name"),
+    cashfreeRcPayload: jsonb("cashfree_rc_payload").notNull().default({}),
     verified: boolean("verified").default(false),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     verifiedBy: integer("verified_by"),

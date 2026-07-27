@@ -1,15 +1,13 @@
 /**
- * Pickup-token validation — the security core of the KOT / rider-scan handoff.
+ * Pickup-token validation — KOT / rider-scan handoff.
  *
- * The KOT prints a QR encoding a cryptographically-random pickup token (see
- * migration 0438, table order_pickup_tokens — one immutable, backend-generated
- * token per order). When a rider scans it, THIS service is the single place that
- * decides whether the pickup is allowed. NEVER trust client-side validation.
+ * The KOT prints a cryptographically-random pickup token (order_pickup_tokens.token).
+ * The token string is IMMUTABLE for the life of the order. Validation authorizes the
+ * *currently assigned* rider (orders_core.rider_id), not a one-time burn.
  *
- * Every attempt (success or rejection) is written to order_pickup_scan_audit.
- * The whole check + consume runs in ONE transaction with `FOR UPDATE` on the token
- * row, so concurrent scans of the same token cannot both succeed (one-time use,
- * race-condition free).
+ * After a successful pickup we record scan metadata but keep status ACTIVE so a
+ * reassigned rider can scan the same printed QR. Unassign clears pickup stamps and
+ * reactivates via gm_reactivate_order_pickup_token.
  */
 
 import { getSql } from "../../db/client.js";
@@ -35,6 +33,7 @@ export type PickupScanRejectReason =
   | "TOKEN_INVALIDATED"
   | "WRONG_RIDER"
   | "ORDER_STATE_NOT_PICKABLE"
+  | "ALREADY_PICKED_UP"
   | "OTP_INVALID"
   | "OTP_MISMATCH"
   | "OTP_UNAVAILABLE";
@@ -60,6 +59,7 @@ const REJECT_MESSAGE: Record<PickupScanRejectReason, string> = {
   TOKEN_INVALIDATED: "This pickup code is no longer valid.",
   WRONG_RIDER: "Invalid pickup. This order is assigned to another delivery partner.",
   ORDER_STATE_NOT_PICKABLE: "This order cannot be picked up in its current state.",
+  ALREADY_PICKED_UP: "You have already picked up this order.",
   OTP_INVALID: "Enter a valid pickup OTP.",
   OTP_MISMATCH: "Incorrect pickup OTP.",
   OTP_UNAVAILABLE: "No pickup OTP is set for this order.",
@@ -71,8 +71,6 @@ function looksLikeToken(token: unknown): token is string {
 }
 
 async function audit(
-  // Base Sql or a TransactionSql handle — postgres.js's generics don't unify, so
-  // this internal helper takes the tagged-template callable loosely.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sql: any,
   row: {
@@ -99,16 +97,61 @@ async function audit(
   }
 }
 
+type TokenRow = {
+  id: number;
+  order_id: number;
+  status: string;
+  assigned_rider_id: number | null;
+  expires_at: string | null;
+  public_order_id: string | null;
+  order_type: string | null;
+  current_rider_id: number | null;
+  core_status: string | null;
+  current_status: string | null;
+  active_assignment_picked_up_at: string | null;
+};
+
+async function rejectScan(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tx: any,
+  input: { token: string | null; riderId: number; device: string | null; latitude?: number | null; longitude?: number | null },
+  row: Partial<TokenRow> | null | undefined,
+  reason: PickupScanRejectReason,
+  status: number
+): Promise<PickupScanResult> {
+  await audit(tx, {
+    orderId: row?.order_id ?? null,
+    tokenId: row?.id ?? null,
+    token: input.token,
+    riderId: input.riderId,
+    outcome: "REJECTED",
+    reason,
+    device: input.device,
+    latitude: input.latitude,
+    longitude: input.longitude,
+  });
+  return { ok: false, status, reason, message: REJECT_MESSAGE[reason] };
+}
+
+function isTerminalOrderStatus(coreStatus: string | null, currentStatus: string | null): boolean {
+  const a = String(coreStatus ?? "").trim().toLowerCase();
+  const b = String(currentStatus ?? "").trim().toUpperCase();
+  return (
+    a === "delivered" ||
+    a === "cancelled" ||
+    b === "DELIVERED" ||
+    b === "CANCELLED"
+  );
+}
+
 /**
- * Validate a scanned pickup token and, only if EVERY check passes, atomically
- * consume it (status → USED) and stamp the pickup on the order. Returns a typed
- * result; the caller maps it to an HTTP response and fires realtime notifications.
+ * Validate a scanned pickup token and stamp pickup for the *current* assigned rider.
+ * Does NOT permanently burn the token — reassigned riders can reuse the same QR.
  */
 export async function validatePickupScan(input: PickupScanInput): Promise<PickupScanResult> {
   const sql = getSql();
   const device = input.device ?? null;
 
-  // Cheap tamper check before any DB work.
   if (!looksLikeToken(input.token)) {
     await audit(sql, {
       orderId: null, tokenId: null, token: String(input.token ?? "").slice(0, 64),
@@ -119,51 +162,77 @@ export async function validatePickupScan(input: PickupScanInput): Promise<Pickup
   }
 
   return sql.begin(async (tx) => {
-    // Lock the token row so two concurrent scans can't both consume it.
     const rows = await tx`
       SELECT t.id, t.order_id, t.status, t.assigned_rider_id, t.expires_at,
-             oc.order_id AS public_order_id, oc.order_type
+             oc.order_id AS public_order_id, oc.order_type,
+             oc.rider_id AS current_rider_id,
+             oc.status AS core_status,
+             oc.current_status AS current_status,
+             (
+               SELECT ora.picked_up_at
+               FROM order_rider_assignments ora
+               WHERE ora.order_core_id = t.order_id
+                 AND ora.rider_id = ${input.riderId}
+                 AND ora.is_active IS TRUE
+               ORDER BY ora.id DESC
+               LIMIT 1
+             ) AS active_assignment_picked_up_at
       FROM order_pickup_tokens t
       JOIN orders_core oc ON oc.id = t.order_id
       WHERE t.token = ${input.token}
       FOR UPDATE OF t
       LIMIT 1
     `;
-    const row = rows[0] as
-      | {
-          id: number; order_id: number; status: string;
-          assigned_rider_id: number | null; expires_at: string | null;
-          public_order_id: string | null; order_type: string | null;
-        }
-      | undefined;
+    const row = rows[0] as TokenRow | undefined;
 
-    const reject = async (
-      reason: PickupScanRejectReason,
-      status: number
-    ): Promise<PickupScanResult> => {
-      await audit(tx, {
-        orderId: row?.order_id ?? null, tokenId: row?.id ?? null, token: input.token,
-        riderId: input.riderId, outcome: "REJECTED", reason,
-        device, latitude: input.latitude, longitude: input.longitude,
-      });
-      return { ok: false, status, reason, message: REJECT_MESSAGE[reason] };
-    };
-
-    if (!row) return reject("TOKEN_NOT_FOUND", 404);
-    if (row.status === "USED") return reject("TOKEN_ALREADY_USED", 409);
-    if (row.status === "INVALIDATED") return reject("TOKEN_INVALIDATED", 409);
-    if (row.status === "EXPIRED") return reject("TOKEN_EXPIRED", 410);
-    if (row.status !== "ACTIVE") return reject("TOKEN_NOT_ACTIVE", 409);
-    if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
-      await tx`UPDATE order_pickup_tokens SET status='EXPIRED', updated_at=now() WHERE id=${row.id}`;
-      return reject("TOKEN_EXPIRED", 410);
+    if (!row) {
+      return rejectScan(tx, { token: input.token, riderId: input.riderId, device, ...input }, null, "TOKEN_NOT_FOUND", 404);
     }
-    // Only the CURRENTLY assigned rider may pick up.
-    if (row.assigned_rider_id == null || Number(row.assigned_rider_id) !== Number(input.riderId)) {
-      return reject("WRONG_RIDER", 403);
+    if (row.status === "INVALIDATED") {
+      return rejectScan(tx, { token: input.token, riderId: input.riderId, device, ...input }, row, "TOKEN_INVALIDATED", 409);
+    }
+    if (isTerminalOrderStatus(row.core_status, row.current_status)) {
+      // Delivered / Cancelled — QR must not be usable anymore.
+      if (row.status !== "EXPIRED" && row.status !== "INVALIDATED") {
+        await tx`
+          UPDATE order_pickup_tokens
+          SET status = 'EXPIRED', expires_at = COALESCE(expires_at, now()), updated_at = now()
+          WHERE id = ${row.id}
+        `;
+      }
+      return rejectScan(tx, { token: input.token, riderId: input.riderId, device, ...input }, row, "TOKEN_EXPIRED", 410);
+    }
+    // Soft-reactivate USED for open orders (reassignment after first scan).
+    // Do not revive INVALIDATED. EXPIRED on an open order (legacy 24h TTL) can reopen.
+    if (row.status === "USED" || row.status === "EXPIRED") {
+      await tx`
+        UPDATE order_pickup_tokens
+        SET status = 'ACTIVE',
+            used_at = NULL,
+            expires_at = NULL,
+            updated_at = now()
+        WHERE id = ${row.id}
+      `;
+      row.status = "ACTIVE";
+    }
+    if (row.status !== "ACTIVE") {
+      return rejectScan(tx, { token: input.token, riderId: input.riderId, device, ...input }, row, "TOKEN_NOT_ACTIVE", 409);
     }
 
-    return consumePickup(
+    const currentRider =
+      row.current_rider_id != null && Number.isFinite(Number(row.current_rider_id))
+        ? Number(row.current_rider_id)
+        : row.assigned_rider_id != null && Number.isFinite(Number(row.assigned_rider_id))
+          ? Number(row.assigned_rider_id)
+          : null;
+    if (currentRider == null || currentRider !== Number(input.riderId)) {
+      return rejectScan(tx, { token: input.token, riderId: input.riderId, device, ...input }, row, "WRONG_RIDER", 403);
+    }
+    if (row.active_assignment_picked_up_at) {
+      return rejectScan(tx, { token: input.token, riderId: input.riderId, device, ...input }, row, "ALREADY_PICKED_UP", 409);
+    }
+
+    return recordPickupScan(
       tx,
       { id: row.id, order_id: row.order_id, public_order_id: row.public_order_id, token: input.token },
       input.riderId,
@@ -175,12 +244,10 @@ export async function validatePickupScan(input: PickupScanInput): Promise<Pickup
 }
 
 /**
- * Shared success path for BOTH the QR-token and the OTP flow: consume the token
- * one-time (guarded on status so a racing tx can't double-pick), stamp the pickup
- * on the order, and audit SUCCESS. Consuming the token here also invalidates the
- * OTP — both are tied to the same order and neither works again after pickup.
+ * Record a successful pickup without burning the QR token.
+ * Token stays ACTIVE so a later reassigned rider can scan the same printed code.
  */
-async function consumePickup(
+async function recordPickupScan(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tx: any,
   row: { id: number; order_id: number; public_order_id: string | null; token: string },
@@ -190,20 +257,20 @@ async function consumePickup(
   longitude: number | null | undefined
 ): Promise<PickupScanResult> {
   const pickedUpAt = new Date().toISOString();
-  const consumed = await tx`
+
+  await tx`
     UPDATE order_pickup_tokens
-    SET status='USED', used_at=${pickedUpAt}, scanned_at=${pickedUpAt},
-        scanned_by_rider_id=${riderId}, scanned_device=${device}, updated_at=now()
-    WHERE id=${row.id} AND status='ACTIVE'
-    RETURNING id
+    SET status = 'ACTIVE',
+        scanned_at = ${pickedUpAt},
+        scanned_by_rider_id = ${riderId},
+        scanned_device = ${device},
+        assigned_rider_id = ${riderId},
+        used_at = NULL,
+        expires_at = NULL,
+        updated_at = now()
+    WHERE id = ${row.id}
   `;
-  if (consumed.length === 0) {
-    await audit(tx, {
-      orderId: row.order_id, tokenId: row.id, token: row.token, riderId,
-      outcome: "REJECTED", reason: "TOKEN_ALREADY_USED", device, latitude, longitude,
-    });
-    return { ok: false, status: 409, reason: "TOKEN_ALREADY_USED", message: REJECT_MESSAGE.TOKEN_ALREADY_USED };
-  }
+
   await tx`
     UPDATE orders_core
     SET status = 'picked_up',
@@ -216,10 +283,7 @@ async function consumePickup(
     UPDATE orders_food
     SET rider_picked_up_at = COALESCE(rider_picked_up_at, ${pickedUpAt}),
         handed_over_to_rider_at = COALESCE(handed_over_to_rider_at, ${pickedUpAt}),
-        order_status = CASE
-          WHEN order_status IS NULL OR order_status = '' THEN 'OUT_FOR_DELIVERY'
-          ELSE order_status
-        END,
+        order_status = 'OUT_FOR_DELIVERY',
         dispatched_at = COALESCE(dispatched_at, ${pickedUpAt}),
         updated_at = now()
     WHERE order_id = ${row.order_id}
@@ -243,9 +307,8 @@ export type PickupOtpInput = {
 };
 
 /**
- * Validate a pickup OTP entered by the rider. Same backend-only guarantees as the
- * QR flow (order/token/rider/state checks, race-free consume, audit). Either method
- * completing the pickup invalidates BOTH (shared token → USED).
+ * Validate a pickup OTP entered by the rider. Same authorization as QR:
+ * current assigned rider only; token is not permanently burned.
  */
 export async function validatePickupByOtp(input: PickupOtpInput): Promise<PickupScanResult> {
   const sql = getSql();
@@ -264,7 +327,20 @@ export async function validatePickupByOtp(input: PickupOtpInput): Promise<Pickup
     const rows = await tx`
       SELECT t.id, t.order_id, t.status, t.assigned_rider_id, t.expires_at, t.token,
              oc.order_id AS public_order_id,
-             COALESCE(NULLIF(TRIM(of.pickup_otp), ''), NULLIF(TRIM(oc.pickup_otp), '')) AS pickup_otp
+             oc.order_type,
+             oc.rider_id AS current_rider_id,
+             oc.status AS core_status,
+             oc.current_status AS current_status,
+             COALESCE(NULLIF(TRIM(of.pickup_otp), ''), NULLIF(TRIM(oc.pickup_otp), '')) AS pickup_otp,
+             (
+               SELECT ora.picked_up_at
+               FROM order_rider_assignments ora
+               WHERE ora.order_core_id = t.order_id
+                 AND ora.rider_id = ${input.riderId}
+                 AND ora.is_active IS TRUE
+               ORDER BY ora.id DESC
+               LIMIT 1
+             ) AS active_assignment_picked_up_at
       FROM order_pickup_tokens t
       JOIN orders_core oc ON oc.id = t.order_id
       LEFT JOIN orders_food of ON of.order_id = oc.id
@@ -273,41 +349,63 @@ export async function validatePickupByOtp(input: PickupOtpInput): Promise<Pickup
       LIMIT 1
     `;
     const row = rows[0] as
-      | {
-          id: number; order_id: number; status: string; assigned_rider_id: number | null;
-          expires_at: string | null; token: string; public_order_id: string | null;
-          pickup_otp: string | null;
-        }
+      | (TokenRow & { token: string; pickup_otp: string | null })
       | undefined;
 
-    const reject = async (
-      reason: PickupScanRejectReason,
-      status: number
-    ): Promise<PickupScanResult> => {
-      await audit(tx, {
-        orderId: row?.order_id ?? input.orderId, tokenId: row?.id ?? null,
-        token: row?.token ?? null, riderId: input.riderId, outcome: "REJECTED", reason,
-        device, latitude: input.latitude, longitude: input.longitude,
-      });
-      return { ok: false, status, reason, message: REJECT_MESSAGE[reason] };
-    };
-
-    if (!row) return reject("ORDER_NOT_FOUND", 404);
-    if (row.status === "USED") return reject("TOKEN_ALREADY_USED", 409);
-    if (row.status === "INVALIDATED") return reject("TOKEN_INVALIDATED", 409);
-    if (row.status === "EXPIRED") return reject("TOKEN_EXPIRED", 410);
-    if (row.status !== "ACTIVE") return reject("TOKEN_NOT_ACTIVE", 409);
-    if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
-      await tx`UPDATE order_pickup_tokens SET status='EXPIRED', updated_at=now() WHERE id=${row.id}`;
-      return reject("TOKEN_EXPIRED", 410);
+    if (!row) {
+      return rejectScan(
+        tx,
+        { token: null, riderId: input.riderId, device, ...input },
+        { order_id: input.orderId },
+        "ORDER_NOT_FOUND",
+        404
+      );
     }
-    if (row.assigned_rider_id == null || Number(row.assigned_rider_id) !== Number(input.riderId)) {
-      return reject("WRONG_RIDER", 403);
+    if (row.status === "INVALIDATED") {
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "TOKEN_INVALIDATED", 409);
     }
-    if (!row.pickup_otp || String(row.pickup_otp).trim() === "") return reject("OTP_UNAVAILABLE", 409);
-    if (String(row.pickup_otp).trim() !== otp) return reject("OTP_MISMATCH", 401);
+    if (isTerminalOrderStatus(row.core_status, row.current_status)) {
+      if (row.status !== "EXPIRED" && row.status !== "INVALIDATED") {
+        await tx`
+          UPDATE order_pickup_tokens
+          SET status = 'EXPIRED', expires_at = COALESCE(expires_at, now()), updated_at = now()
+          WHERE id = ${row.id}
+        `;
+      }
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "TOKEN_EXPIRED", 410);
+    }
+    if (row.status === "USED" || row.status === "EXPIRED") {
+      await tx`
+        UPDATE order_pickup_tokens
+        SET status = 'ACTIVE', used_at = NULL, expires_at = NULL, updated_at = now()
+        WHERE id = ${row.id}
+      `;
+      row.status = "ACTIVE";
+    }
+    if (row.status !== "ACTIVE") {
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "TOKEN_NOT_ACTIVE", 409);
+    }
 
-    return consumePickup(
+    const currentRider =
+      row.current_rider_id != null && Number.isFinite(Number(row.current_rider_id))
+        ? Number(row.current_rider_id)
+        : row.assigned_rider_id != null && Number.isFinite(Number(row.assigned_rider_id))
+          ? Number(row.assigned_rider_id)
+          : null;
+    if (currentRider == null || currentRider !== Number(input.riderId)) {
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "WRONG_RIDER", 403);
+    }
+    if (row.active_assignment_picked_up_at) {
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "ALREADY_PICKED_UP", 409);
+    }
+    if (!row.pickup_otp || String(row.pickup_otp).trim() === "") {
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "OTP_UNAVAILABLE", 409);
+    }
+    if (String(row.pickup_otp).trim() !== otp) {
+      return rejectScan(tx, { token: row.token, riderId: input.riderId, device, ...input }, row, "OTP_MISMATCH", 401);
+    }
+
+    return recordPickupScan(
       tx,
       { id: row.id, order_id: row.order_id, public_order_id: row.public_order_id, token: row.token },
       input.riderId,
@@ -316,4 +414,28 @@ export async function validatePickupByOtp(input: PickupOtpInput): Promise<Pickup
       input.longitude
     );
   });
+}
+
+/** Mark scan metadata after Path-B (rider app barcode/OTP) pickup — never burns the QR. */
+export async function markPickupTokenScanned(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sqlOrTx: any,
+  orderCoreId: number,
+  riderId: number
+): Promise<void> {
+  try {
+    await sqlOrTx`
+      UPDATE order_pickup_tokens
+      SET status = 'ACTIVE',
+          scanned_at = COALESCE(scanned_at, now()),
+          scanned_by_rider_id = COALESCE(scanned_by_rider_id, ${riderId}),
+          assigned_rider_id = ${riderId},
+          used_at = NULL,
+          expires_at = NULL,
+          updated_at = now()
+      WHERE order_id = ${orderCoreId}
+    `;
+  } catch (err) {
+    console.warn("[markPickupTokenScanned] failed:", err);
+  }
 }

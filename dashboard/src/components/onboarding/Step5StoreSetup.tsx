@@ -61,6 +61,47 @@ const defaultStoreSetup: StoreSetupData = {
   },
 };
 
+const STORE_HOURS_DAYS = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+] as const;
+
+/** Merge partial progress hours with full Mon–Sun defaults (partnersite parity). */
+export function normalizeStoreHours(
+  incoming: unknown,
+  fallback: StoreSetupData["store_hours"] = defaultStoreSetup.store_hours,
+): StoreSetupData["store_hours"] {
+  const srcObj =
+    incoming && typeof incoming === "object" ? (incoming as Record<string, any>) : {};
+  const normalized = { ...fallback };
+  for (const day of STORE_HOURS_DAYS) {
+    const src = srcObj[day] && typeof srcObj[day] === "object" ? srcObj[day] : {};
+    normalized[day] = {
+      closed: typeof src.closed === "boolean" ? src.closed : false,
+      slot1_open:
+        typeof src.slot1_open === "string" && src.slot1_open
+          ? src.slot1_open
+          : typeof src.open === "string" && src.open
+            ? src.open
+            : fallback[day].slot1_open,
+      slot1_close:
+        typeof src.slot1_close === "string" && src.slot1_close
+          ? src.slot1_close
+          : typeof src.close === "string" && src.close
+            ? src.close
+            : fallback[day].slot1_close,
+      slot2_open: typeof src.slot2_open === "string" ? src.slot2_open : "",
+      slot2_close: typeof src.slot2_close === "string" ? src.slot2_close : "",
+    };
+  }
+  return normalized;
+}
+
 export interface Step5StoreSetupProps {
   initialStoreSetup?: Partial<StoreSetupData> | null;
   onChange?: (value: StoreSetupData) => void;
@@ -228,10 +269,10 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
   const [storeSetup, setStoreSetup] = useState<StoreSetupData>(() => ({
     ...defaultStoreSetup,
     ...(initialStoreSetup || {}),
-    store_hours: {
-      ...defaultStoreSetup.store_hours,
-      ...(initialStoreSetup?.store_hours || {}),
-    },
+    store_hours: normalizeStoreHours(
+      initialStoreSetup?.store_hours,
+      defaultStoreSetup.store_hours,
+    ),
   }));
 
   const [mediaUploading, setMediaUploading] = useState(false);
@@ -340,13 +381,30 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
     if (!value) return undefined;
     const trimmed = value.trim();
     if (!trimmed) return undefined;
-    if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
     if (
-      trimmed.startsWith("http://") ||
-      trimmed.startsWith("https://") ||
       trimmed.startsWith("data:") ||
       trimmed.startsWith("blob:")
     ) {
+      return trimmed;
+    }
+    if (trimmed.includes("/api/attachments/proxy") || trimmed.includes("/v1/attachments/proxy")) {
+      try {
+        const u = new URL(
+          trimmed.startsWith("http") ? trimmed : `https://local.invalid${trimmed.startsWith("/") ? "" : "/"}${trimmed}`,
+        );
+        const key = u.searchParams.get("key");
+        if (key?.trim()) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+        }
+      } catch {
+        /* fall through */
+      }
+      if (trimmed.startsWith("/v1/attachments/proxy")) {
+        return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+      }
+      if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
+    }
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
       return trimmed;
     }
     // Treat as raw R2 key ("docs/merchants/...") and wrap in proxy URL
@@ -365,6 +423,8 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
     formData.append("type", type);
     formData.append("index", String(index));
     formData.append("apply_to_store", "true");
+    // Same R2 folder as partnersite register-store Step 5.
+    formData.append("onboarding", "1");
 
     const res = await fetch(`/api/merchant/stores/${storeInternalId}/profile-media`, {
       method: "POST",
@@ -376,9 +436,32 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
     if (!res.ok) {
       throw new Error(json?.error ?? "Failed to upload media");
     }
+    if (typeof json?.proxyUrl === "string" && json.proxyUrl.trim()) {
+      return normalizeMediaSrc(json.proxyUrl) ?? json.proxyUrl.trim();
+    }
     const key = json?.key;
     if (!key || typeof key !== "string") return null;
     return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
+  };
+
+  const removeProfileMedia = async (urlOrKey: string) => {
+    if (storeInternalId == null || !Number.isFinite(storeInternalId)) return;
+    const trimmed = String(urlOrKey || "").trim();
+    if (!trimmed || trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return;
+    try {
+      await fetch(`/api/merchant/stores/${storeInternalId}/profile-media/remove`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          trimmed.startsWith("/api/attachments/proxy") || trimmed.includes("://")
+            ? { url: trimmed }
+            : { key: trimmed },
+        ),
+      });
+    } catch {
+      /* best-effort */
+    }
   };
 
   useEffect(() => {
@@ -690,6 +773,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                           ...prev,
                           banner_preview: "",
                         }));
+                        void removeProfileMedia(current);
                         onDeleteBanner?.(current);
                       }}
                     >
@@ -711,16 +795,18 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                   className="w-full px-2 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm border border-slate-300 rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 bg-white file:mr-2 file:py-1 file:px-2 file:text-xs file:rounded file:border-0 file:bg-indigo-50 file:text-indigo-700"
                   onChange={(e) => {
                     const files = e.target.files ? Array.from(e.target.files) : [];
+                    e.target.value = "";
                     if (files.length === 0) return;
-                    const limited = files.slice(0, MAX_GALLERY_IMAGES);
+                    const prevGalleryPreviews = storeSetup.gallery_previews ?? [];
+                    const remaining = Math.max(0, MAX_GALLERY_IMAGES - prevGalleryPreviews.length);
+                    if (remaining <= 0) return;
+                    const limited = files.slice(0, remaining);
 
-                    const prevGalleryPreviews = storeSetup.gallery_previews;
                     void (async () => {
                       setMediaUploading(true);
                       try {
-                        // Optimistic preview while we upload in the background.
-                        // After upload completes, we replace with stable proxy URLs.
-                        const previews = await Promise.all(
+                        // Optimistic: keep existing + show new local previews
+                        const localPreviews = await Promise.all(
                           limited.map(
                             (file) =>
                               new Promise<string>((resolve, reject) => {
@@ -736,19 +822,39 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                           )
                         );
 
-                        setStoreSetup((prev) => ({ ...prev, gallery_previews: previews }));
+                        setStoreSetup((prev) => ({
+                          ...prev,
+                          gallery_previews: [...prev.gallery_previews, ...localPreviews].slice(
+                            0,
+                            MAX_GALLERY_IMAGES,
+                          ),
+                        }));
 
                         const proxyUrls: string[] = [];
                         for (let i = 0; i < limited.length; i++) {
                           const file = limited[i];
-                          const proxyUrl = await uploadProfileMedia(file, "gallery", i);
+                          const proxyUrl = await uploadProfileMedia(
+                            file,
+                            "gallery",
+                            prevGalleryPreviews.length + i,
+                          );
                           if (!proxyUrl) throw new Error("Failed to upload gallery image.");
                           proxyUrls.push(proxyUrl);
                         }
 
-                        setStoreSetup((prev) => ({ ...prev, gallery_previews: proxyUrls }));
+                        // Append uploaded URLs onto the pre-existing list (do not replace).
+                        setStoreSetup((prev) => ({
+                          ...prev,
+                          gallery_previews: [...prevGalleryPreviews, ...proxyUrls].slice(
+                            0,
+                            MAX_GALLERY_IMAGES,
+                          ),
+                        }));
                       } catch {
-                        setStoreSetup((prev) => ({ ...prev, gallery_previews: prevGalleryPreviews }));
+                        setStoreSetup((prev) => ({
+                          ...prev,
+                          gallery_previews: prevGalleryPreviews,
+                        }));
                       } finally {
                         setMediaUploading(false);
                       }
@@ -778,6 +884,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                                   (_, i) => i !== idx
                                 ),
                               }));
+                              void removeProfileMedia(url);
                               onDeleteGalleryImage?.(idx, url);
                             }}
                           >

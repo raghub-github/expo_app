@@ -207,7 +207,11 @@ export default function RentalEvScreen() {
           data.vehicleOnboardingFlow
         ))
     ) {
-      router.replace("/(onboarding)/payment");
+      router.replace(
+        data.bankAccountOnboardingDone
+          ? "/(onboarding)/payment"
+          : "/(onboarding)/bank-account",
+      );
       return;
     }
     if (next && next !== "rental_ev") {
@@ -228,6 +232,7 @@ export default function RentalEvScreen() {
     riderStatus?.nextOnboardingStep,
     riderStatus?.completedOnboardingSteps,
     data.vehicleOnboardingFlow,
+    data.bankAccountOnboardingDone,
     data,
     requiredDocs,
   ]);
@@ -389,13 +394,15 @@ export default function RentalEvScreen() {
         signedUrl: uploadResult.proxyUrl,
       });
 
+      const vehicleCode = data.vehicleChoice ?? "rental_ev";
       await setData({
         ...legacyPatch,
         maxSpeedDeclaration: requiresMaxSpeed ? Number(maxSpeedDeclaration) : undefined,
         currentStep: "rental_ev",
         hasOwnVehicle: false,
-        vehicleChoice: data.vehicleChoice ?? "rental_ev",
+        vehicleChoice: vehicleCode,
         vehicleOnboardingFlow: "rental_ev",
+        vehicleOnboardingSubmittedFor: vehicleCode,
       });
 
       await saveStep.mutateAsync({
@@ -424,7 +431,7 @@ export default function RentalEvScreen() {
         data: stepData,
       });
 
-      router.push("/(onboarding)/payment");
+      router.push("/(onboarding)/bank-account");
     } catch (e) {
       for (const key of uploadedKeys) {
         try {

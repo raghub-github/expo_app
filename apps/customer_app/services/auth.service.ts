@@ -202,8 +202,13 @@ export const authService = {
       throw new Error('OTP not requested yet. Tap "Send OTP" first and wait for the code.');
     }
 
+    // Same E.164 normalization as sendOtp — mismatched formats cause verify/exchange failures.
+    const normalizedPhone = payload.phoneE164.startsWith("+")
+      ? payload.phoneE164
+      : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
+
     const { data, error } = await supabase.auth.verifyOtp({
-      phone: payload.phoneE164,
+      phone: normalizedPhone,
       token: payload.otp,
       type: "sms",
     });
@@ -223,7 +228,7 @@ export const authService = {
 
     const { data: session } = await api.post<Session>(
       `${AUTH_PREFIX}/supabase/exchange-customer`,
-      { accessToken: sbToken, phoneE164: payload.phoneE164, deviceId: payload.deviceId },
+      { accessToken: sbToken, phoneE164: normalizedPhone, deviceId: payload.deviceId },
       { timeout: 15000 },
     );
 
@@ -247,11 +252,14 @@ export const authService = {
     if (error || !data?.session?.access_token) {
       throw new Error("OTP expired. Request a new OTP.");
     }
+    const normalizedPhone = payload.phoneE164.startsWith("+")
+      ? payload.phoneE164
+      : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
     const { data: session } = await api.post<Session>(
       `${AUTH_PREFIX}/supabase/exchange-customer`,
       {
         accessToken: data.session.access_token,
-        phoneE164: payload.phoneE164,
+        phoneE164: normalizedPhone,
         deviceId: payload.deviceId,
       },
       { timeout: 15000 },

@@ -4,12 +4,12 @@ import type { RiderLogoutSessionSnapshot } from "@/lib/rider-logout-types";
  * Shared types for Rider Dashboard (and reusable for Customer/Merchant dashboards later).
  */
 
-/** Flow: MOBILE_VERIFIED → KYC → APPROVAL (docs) → PAYMENT (fees) → ACTIVE */
+/** Flow: MOBILE_VERIFIED → KYC → PAYMENT (fees) → APPROVAL (paid, awaiting review) → ACTIVE */
 export const ONBOARDING_STAGE_LABELS: Record<string, string> = {
   MOBILE_VERIFIED: "Mobile verified",
-  KYC: "KYC",
-  APPROVAL: "Docs approval",
-  PAYMENT: "Payment (fees)",
+  KYC: "KYC / documents",
+  PAYMENT: "Payment pending",
+  APPROVAL: "Pending approval (paid)",
   ACTIVE: "Active",
 };
 
@@ -193,6 +193,10 @@ export interface RiderSummary {
       createdAt: string;
     }[];
   };
+  /** True when a completed onboarding payment exists. */
+  paymentCompleted?: boolean;
+  /** True when rider belongs in admin Pending Approval (paid + required docs + stage APPROVAL). */
+  approvalQueueEligible?: boolean;
 }
 
 /** Minimal rider info for sub-pages (penalties, orders, etc.) */

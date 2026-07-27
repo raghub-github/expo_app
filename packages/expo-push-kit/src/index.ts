@@ -64,3 +64,13 @@ export {
   type NotificationApiConfig,
 } from "./inbox";
 export { InboxScreen, type InboxScreenProps } from "./InboxScreen";
+
+export {
+  enqueueInAppBanner,
+  enqueueInAppBannerFromPush,
+  dismissCurrentInAppBanner,
+  getInAppBannerSnapshot,
+  subscribeInAppBanner,
+  FloatingInAppBannerHost,
+  type InAppBannerItem,
+} from "./floatingBanner";

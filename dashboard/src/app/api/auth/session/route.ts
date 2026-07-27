@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserPermissions } from "@/lib/permissions/engine";
 import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
-import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
+import {
+  isInvalidRefreshToken,
+  isNetworkOrTransientError,
+  isRefreshTokenAlreadyUsed,
+  isTimeoutOrAbortError,
+  signOutIfSessionDead,
+} from "@/lib/auth/session-errors";
 
 const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
@@ -20,6 +26,10 @@ export async function GET(request: NextRequest) {
       userError = result.error ?? null;
 
       if (!userError && user) break;
+      if (userError && isRefreshTokenAlreadyUsed(userError) && attempt < maxGetUserAttempts) {
+        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 400));
+        continue;
+      }
       if (userError && isInvalidRefreshToken(userError)) break;
       if (userError && isTimeoutOrAbortError(userError)) break;
       if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
@@ -32,7 +42,13 @@ export async function GET(request: NextRequest) {
 
     if (userError || !user) {
       if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
+        if (isRefreshTokenAlreadyUsed(userError)) {
+          return NextResponse.json(
+            { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+            { status: 503 }
+          );
+        }
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }
@@ -76,9 +92,15 @@ export async function GET(request: NextRequest) {
     if (isInvalidRefreshToken(error)) {
       try {
         const supabase = await createServerSupabaseClient();
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, error);
       } catch {
         // ignore
+      }
+      if (isRefreshTokenAlreadyUsed(error)) {
+        return NextResponse.json(
+          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503 }
+        );
       }
       return NextResponse.json(
         { success: false, error: "Session invalid", code: "SESSION_INVALID" },

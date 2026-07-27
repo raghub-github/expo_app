@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable } from "react-native";
 import { OFFERS_UI } from "./offers-theme";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 

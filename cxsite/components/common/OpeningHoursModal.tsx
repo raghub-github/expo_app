@@ -9,8 +9,10 @@ export type OperatingHoursDay = {
 }
 
 function getTodayWeekdayName(): string {
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-  return days[new Date().getDay()]
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    timeZone: 'Asia/Kolkata',
+  }).format(new Date())
 }
 
 export default function OpeningHoursModal({
@@ -39,7 +41,10 @@ export default function OpeningHoursModal({
     let cancelled = false
     setLoading(true)
     setFetchError(null)
-    fetch(`/api/restaurants/${encodeURIComponent(storeId)}`)
+    fetch(`/api/restaurants/${encodeURIComponent(storeId)}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    })
       .then(async (res) => {
         const data = (await res.json()) as Record<string, unknown>
         if (cancelled) return

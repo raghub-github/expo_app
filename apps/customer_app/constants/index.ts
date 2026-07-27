@@ -32,6 +32,8 @@ export const STORAGE_KEYS = {
   STORE_OFFERS_CACHE: "gm_customer_store_offers_cache_v1",
   /** Last my-orders payload for instant "Your Orders & Collections" */
   MY_ORDERS_CACHE: "gm_customer_my_orders_cache_v1",
+  /** Active person-ride order ids — survive force-close so Track pill can hydrate */
+  ACTIVE_PERSON_RIDE_IDS: "gm_customer_active_person_ride_ids_v1",
   /** FOOD browse categories for instant home/search/category paint */
   USER_APP_CATEGORIES_CACHE: "gm_customer_user_app_categories_cache_v1",
   /** CMS static image URL map for instant ride/home asset paint */

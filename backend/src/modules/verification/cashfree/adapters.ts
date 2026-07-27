@@ -29,6 +29,50 @@ type NormalizeCommonArgs = {
   documentKind: VerificationDocumentKind;
 };
 
+/** Human-readable Cashfree reject reason for DL/RC (and similar VALID/INVALID products). */
+export function cashfreeRejectReason(
+  body: Record<string, unknown> | null | undefined,
+  docLabel: string,
+): string {
+  const b = body && typeof body === "object" ? body : {};
+  const status = String(b.status ?? b.rc_status ?? "").trim().toUpperCase();
+  const message =
+    typeof b.message === "string"
+      ? b.message.trim()
+      : typeof b.error === "string"
+        ? b.error.trim()
+        : "";
+  const code =
+    typeof b.code === "string"
+      ? b.code.trim()
+      : typeof b.error_code === "string"
+        ? b.error_code.trim()
+        : "";
+  const parts: string[] = [];
+  if (message) parts.push(message);
+  if (status && status !== "VALID" && status !== "SUCCESS") {
+    // Cashfree Try RC modal: "Vehicle RC Not Found" when INVALID / missing.
+    if (
+      (status === "INVALID" || status === "NOT_FOUND") &&
+      /vehicle rc/i.test(docLabel) &&
+      !message
+    ) {
+      parts.push("Vehicle RC does not exist");
+    } else if (
+      (status === "INVALID" || status === "NOT_FOUND") &&
+      /driving/i.test(docLabel) &&
+      !message
+    ) {
+      parts.push("Driving licence was not found or is invalid");
+    } else {
+      parts.push(`Cashfree status: ${status}`);
+    }
+  }
+  if (code) parts.push(`Code: ${code}`);
+  if (parts.length) return parts.join(" · ");
+  return `${docLabel} was not verified by Cashfree (invalid number or not found).`;
+}
+
 /** Small helper — Cashfree pre-signed S3 URLs carry `X-Amz-Expires=86400`. */
 function parseS3Expiry(url: string | null | undefined): string | null {
   if (!url) return null;
@@ -55,30 +99,69 @@ export function adaptPan(call: ProviderCall<{
   reference_id?: number | string;
   name_provided?: string | null;
   registered_name?: string | null;
+  registered_nam?: string | null; // Cashfree typo in some docs/samples
   father_name?: string | null;
   valid?: boolean;
-  message?: string;
+  pan_status?: string | null;
+  status?: string | null;
+  message?: unknown;
+  name_match_score?: string | number | null;
+  name_match_result?: string | null;
 }>, args: NormalizeCommonArgs): NormalizedVerification {
-  const b = call.responseBody;
-  const status: VerificationStatus = b.valid === true ? "verified" : "rejected";
+  // Production sometimes returns an empty/non-object body on edge failures —
+  // never throw here (that becomes a 500 after Cashfree already debited).
+  const b = (call.responseBody && typeof call.responseBody === "object"
+    ? call.responseBody
+    : {}) as NonNullable<typeof call.responseBody>;
+
+  const panStatus = String(b.pan_status ?? b.status ?? "").toUpperCase();
+  const isValid =
+    b.valid === true ||
+    panStatus === "VALID" ||
+    panStatus === "E"; // PAN Lite "exists" status
+  const status: VerificationStatus = isValid ? "verified" : "rejected";
+
+  // numeric(4,3) column — keep confidence in 0..1, never raw 0..100.
+  let confidence: number | null = null;
+  if (b.name_match_score != null && b.name_match_score !== "") {
+    const raw = typeof b.name_match_score === "string"
+      ? Number(b.name_match_score)
+      : Number(b.name_match_score);
+    if (Number.isFinite(raw)) {
+      confidence = raw > 1 ? Math.min(1, raw / 100) : Math.max(0, Math.min(1, raw));
+    }
+  }
+
+  const registered =
+    (typeof b.registered_name === "string" && b.registered_name) ||
+    (typeof b.registered_nam === "string" && b.registered_nam) ||
+    null;
+  const statusReason =
+    typeof b.message === "string" ? b.message
+      : b.message == null ? null
+        : String(b.message);
+
   return {
     ...args,
     provider: "cashfree",
     providerReference: b.reference_id != null ? String(b.reference_id) : null,
     status,
-    statusReason: b.message ?? null,
-    confidence: null,
-    businessIdentifier: b.pan ?? null,
+    statusReason,
+    confidence,
+    businessIdentifier: typeof b.pan === "string" ? b.pan : null,
     verifiedData: {
-      pan: b.pan,
-      type: b.type,
-      name_provided: b.name_provided,
-      registered_name: b.registered_name,
-      father_name: b.father_name,
+      pan: b.pan ?? null,
+      type: b.type ?? null,
+      name_provided: b.name_provided ?? null,
+      registered_name: registered,
+      father_name: b.father_name ?? null,
+      name_match_score: b.name_match_score ?? null,
+      name_match_result: b.name_match_result ?? null,
+      pan_status: b.pan_status ?? b.status ?? null,
     },
     rawRequest: call.requestBody,
-    rawResponse: call.responseBody,
-    responseHeaders: call.responseHeaders,
+    rawResponse: call.responseBody ?? {},
+    responseHeaders: call.responseHeaders ?? {},
     httpStatus: call.status,
     durationMs: call.durationMs,
     providerArtifacts: [],
@@ -122,6 +205,88 @@ export function adaptIfsc(call: ProviderCall<{
 
 // ── DL ────────────────────────────────────────────────────────────────────
 
+/** Format Cashfree cov_details → "LMV, MCWG" like Secure ID Try modal. */
+function formatCovClasses(cov: unknown): string | null {
+  if (cov == null) return null;
+  if (typeof cov === "string") {
+    const s = cov.trim();
+    return s || null;
+  }
+  if (!Array.isArray(cov)) return null;
+  const parts = cov
+    .map((x) => {
+      if (x == null) return "";
+      if (typeof x === "string") return x.trim();
+      if (typeof x === "object") {
+        const r = x as Record<string, unknown>;
+        return String(r.cov ?? r.class_of_vehicle ?? r.cov_details ?? "").trim();
+      }
+      return String(x).trim();
+    })
+    .filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
+}
+
+function addressFromList(
+  list: unknown,
+  type: "permanent" | "temporary" | "present",
+): string | null {
+  if (!Array.isArray(list)) return null;
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    const t = String(r.type ?? r.address_type ?? "").toLowerCase();
+    if (!t.includes(type) && !(type === "temporary" && t.includes("present"))) continue;
+    const addr = String(r.complete_address ?? r.address ?? "").trim();
+    if (addr) return addr;
+  }
+  return null;
+}
+
+/**
+ * Cashfree dl_validity object → human lines, e.g.
+ * "Non-transport: 2023-06-23 → 2041-05-16"
+ */
+export function formatDlValidity(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t) return null;
+    if (t.startsWith("{")) {
+      try {
+        return formatDlValidity(JSON.parse(t));
+      } catch {
+        return t;
+      }
+    }
+    return t;
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  const v = raw as Record<string, unknown>;
+  const lines: string[] = [];
+
+  const rangeLabel = (label: string, block: unknown) => {
+    if (!block || typeof block !== "object" || Array.isArray(block)) return;
+    const b = block as Record<string, unknown>;
+    const from = b.from != null ? String(b.from).trim() : "";
+    const to = b.to != null ? String(b.to).trim() : "";
+    if (!from && !to) return;
+    if (from && to) lines.push(`${label}: ${from} → ${to}`);
+    else if (to) lines.push(`${label}: valid till ${to}`);
+    else lines.push(`${label}: from ${from}`);
+  };
+
+  rangeLabel("Non-transport", v.non_transport);
+  rangeLabel("Transport", v.transport);
+  if (v.hill_valid_till != null && String(v.hill_valid_till).trim()) {
+    lines.push(`Hill: valid till ${String(v.hill_valid_till).trim()}`);
+  }
+  if (v.hazardous_valid_till != null && String(v.hazardous_valid_till).trim()) {
+    lines.push(`Hazardous: valid till ${String(v.hazardous_valid_till).trim()}`);
+  }
+  return lines.length ? lines.join(" · ") : null;
+}
+
 export function adaptDrivingLicence(call: ProviderCall<{
   verification_id?: string; reference_id?: number | string; status?: string;
   dl_number?: string | null; dob?: string | null;
@@ -137,16 +302,35 @@ export function adaptDrivingLicence(call: ProviderCall<{
     cov_details?: unknown;
   };
 }>, args: NormalizeCommonArgs): NormalizedVerification {
-  const b = call.responseBody;
-  const status: VerificationStatus = b.status === "VALID" ? "verified" : "rejected";
+  const b = (call.responseBody && typeof call.responseBody === "object"
+    ? call.responseBody
+    : {}) as NonNullable<typeof call.responseBody>;
+  const statusRaw = String(b.status ?? "").toUpperCase();
+  const status: VerificationStatus = statusRaw === "VALID" ? "verified" : "rejected";
   const d = b.details_of_driving_licence ?? {};
   const photoUrl = d.photo ?? null;
+  const classOfVehicle = formatCovClasses(d.cov_details);
+  const permanentAddress =
+    addressFromList(d.address_list, "permanent") ||
+    (typeof d.address === "string" && d.address.trim() ? d.address.trim() : null);
+  const temporaryAddress =
+    addressFromList(d.address_list, "temporary") ||
+    addressFromList(d.address_list, "present");
+  const dlValiditySummary = formatDlValidity(b.dl_validity);
+  const nonTransport =
+    b.dl_validity && typeof b.dl_validity === "object" && !Array.isArray(b.dl_validity)
+      ? (b.dl_validity as { non_transport?: { from?: string | null; to?: string | null } })
+          .non_transport
+      : null;
   return {
     ...args,
     provider: "cashfree",
     providerReference: b.reference_id != null ? String(b.reference_id) : null,
     status,
-    statusReason: null,
+    statusReason:
+      status === "verified"
+        ? null
+        : cashfreeRejectReason(b as Record<string, unknown>, "Driving licence"),
     confidence: null,
     businessIdentifier: b.dl_number ?? null,
     verifiedData: {
@@ -159,8 +343,16 @@ export function adaptDrivingLicence(call: ProviderCall<{
       split_address: d.split_address,
       date_of_issue: d.date_of_issue,
       dl_validity: b.dl_validity,
+      // Human-readable for rider DB / dashboard cards (not raw JSON).
+      dl_validity_summary: dlValiditySummary,
+      non_transport_from: nonTransport?.from ?? null,
+      non_transport_to: nonTransport?.to ?? null,
       badge_details: b.badge_details,
       cov_details: d.cov_details,
+      class_of_vehicle: classOfVehicle,
+      permanent_address: permanentAddress,
+      temporary_address: temporaryAddress,
+      cashfree_status: b.status ?? null,
     },
     rawRequest: call.requestBody,
     rawResponse: call.responseBody,
@@ -176,14 +368,20 @@ export function adaptDrivingLicence(call: ProviderCall<{
 // ── Vehicle RC ────────────────────────────────────────────────────────────
 
 export function adaptVehicleRc(call: ProviderCall<Record<string, unknown>>, args: NormalizeCommonArgs): NormalizedVerification {
-  const b = call.responseBody as Record<string, unknown>;
-  const status: VerificationStatus = b.status === "VALID" ? "verified" : "rejected";
+  const b = (call.responseBody && typeof call.responseBody === "object"
+    ? call.responseBody
+    : {}) as Record<string, unknown>;
+  const statusRaw = String(b.status ?? "").toUpperCase();
+  const status: VerificationStatus = statusRaw === "VALID" ? "verified" : "rejected";
   return {
     ...args,
     provider: "cashfree",
     providerReference: b.reference_id != null ? String(b.reference_id) : null,
     status,
-    statusReason: null,
+    statusReason:
+      status === "verified"
+        ? null
+        : cashfreeRejectReason(b, "Vehicle RC"),
     confidence: null,
     businessIdentifier: (b.reg_no as string) ?? null,
     verifiedData: {
@@ -209,6 +407,12 @@ export function adaptVehicleRc(call: ProviderCall<Record<string, unknown>>, args
       split_present_address: b.split_present_address,
       is_commercial: b.is_commercial,
       vehicle_category: b.vehicle_category,
+      vehicle_chasi_number: b.vehicle_chasi_number,
+      vehicle_engine_number: b.vehicle_engine_number,
+      fitness_upto: b.fitness_upto,
+      puc_upto: b.puc_upto,
+      maker_model: b.maker_model,
+      cashfree_status: b.status ?? null,
     },
     rawRequest: call.requestBody,
     rawResponse: call.responseBody,
@@ -372,7 +576,16 @@ export function adaptBankAccount(call: ProviderCall<{
       account_status: b.account_status,
       account_status_code: b.account_status_code,
       name_at_bank: b.name_at_bank,
-      bank_name: b.bank_name,
+      bank_name: b.bank_name ?? (b.ifsc_details && typeof b.ifsc_details === "object" && !Array.isArray(b.ifsc_details)
+        ? String((b.ifsc_details as { bank?: string }).bank ?? "").trim() || null
+        : null),
+      branch_name: b.ifsc_details && typeof b.ifsc_details === "object" && !Array.isArray(b.ifsc_details)
+        ? String(
+            (b.ifsc_details as { branch?: string; branch_name?: string }).branch ??
+              (b.ifsc_details as { branch_name?: string }).branch_name ??
+              "",
+          ).trim() || null
+        : null,
       utr: b.utr,
       name_match_score: b.name_match_score,
       name_match_result: b.name_match_result,
@@ -423,6 +636,71 @@ export function adaptReversePennyDropCreate(call: ProviderCall<{
   };
 }
 
+// ── UPI Penny Drop (VPA verify) ───────────────────────────────────────────
+
+export function adaptUpiPennyDrop(call: ProviderCall<{
+  verification_id?: string;
+  reference_id?: number | string;
+  status?: string;
+  account_status?: string;
+  account_exists?: string;
+  vpa?: string;
+  name_at_bank?: string | null;
+  customer_name?: string | null;
+  ifsc?: string | null;
+  utr?: string | null;
+  bank_account?: string | null;
+  ifsc_details?: { bank?: string; branch?: string } | null;
+}>, args: NormalizeCommonArgs): NormalizedVerification {
+  const b = call.responseBody;
+  const statusUp = String(b.status ?? "").toUpperCase();
+  // /upi → account_exists YES/NO; /upi/penny-drop → status VALID/INVALID/SUCCESS
+  const existsYes =
+    String(b.account_exists ?? "").toUpperCase() === "YES" ||
+    statusUp === "VALID" ||
+    statusUp === "SUCCESS" ||
+    String(b.account_status ?? "").toUpperCase() === "VALID";
+  const existsNo =
+    String(b.account_exists ?? "").toUpperCase() === "NO" ||
+    statusUp === "INVALID" ||
+    statusUp === "FAILED" ||
+    statusUp === "EXPIRED";
+  const ok = existsYes && !existsNo;
+  const nameAtBank =
+    (typeof b.name_at_bank === "string" && b.name_at_bank.trim()) ||
+    (typeof b.customer_name === "string" && b.customer_name.trim()) ||
+    null;
+  const bankName =
+    (typeof b.ifsc_details?.bank === "string" && b.ifsc_details.bank.trim()) ||
+    null;
+  return {
+    ...args,
+    provider: "cashfree",
+    providerReference: b.reference_id != null ? String(b.reference_id) : null,
+    status: ok ? "verified" : "rejected",
+    statusReason: b.account_exists ?? b.status ?? b.account_status ?? null,
+    confidence: null,
+    businessIdentifier: b.vpa ?? null,
+    verifiedData: {
+      vpa: b.vpa,
+      name_at_bank: nameAtBank,
+      bank_name: bankName,
+      ifsc: b.ifsc,
+      bank_account: b.bank_account,
+      utr: b.utr,
+      account_status: b.account_exists ?? b.account_status ?? b.status,
+      account_exists: b.account_exists,
+      verification_path: call.path,
+    },
+    rawRequest: call.requestBody,
+    rawResponse: call.responseBody,
+    responseHeaders: call.responseHeaders,
+    httpStatus: call.status,
+    durationMs: call.durationMs,
+    providerArtifacts: [],
+  };
+}
+
 // ── DigiLocker — create URL step ─────────────────────────────────────────
 
 export function adaptDigilockerCreate(call: ProviderCall<{
@@ -454,3 +732,75 @@ export function adaptDigilockerCreate(call: ProviderCall<{
     providerArtifacts: [],
   };
 }
+
+// ── Aadhaar Masking (same-page; no DigiLocker redirect) ───────────────────
+
+export function adaptAadhaarMasking(
+  call: ProviderCall<{
+    status?: string;
+    reference_id?: number | string;
+    verification_id?: string;
+    image_link?: string;
+    message?: string;
+  }>,
+  args: NormalizeCommonArgs,
+  extras?: {
+    aadhaarNumber?: string;
+    name?: string;
+    dob?: string;
+  },
+): NormalizedVerification {
+  const b =
+    call.responseBody && typeof call.responseBody === "object"
+      ? call.responseBody
+      : ({} as NonNullable<typeof call.responseBody>);
+  const statusRaw = String(b.status ?? "").toUpperCase();
+  const isValid = statusRaw === "VALID" || statusRaw === "SUCCESS";
+  const status: VerificationStatus = isValid ? "verified" : "rejected";
+
+  // Inline mask to avoid circular imports at module top.
+  const digits = String(extras?.aadhaarNumber || "").replace(/\D/g, "");
+  const masked =
+    digits.length >= 4 ? `XXXX-XXXX-${digits.slice(-4)}` : String(extras?.aadhaarNumber || "").trim();
+  const name = String(extras?.name || "").trim();
+  const dob = String(extras?.dob || "").trim();
+  const imageLink = typeof b.image_link === "string" ? b.image_link : null;
+
+  return {
+    ...args,
+    provider: "cashfree",
+    providerReference: b.reference_id != null ? String(b.reference_id) : null,
+    status,
+    statusReason: isValid ? "aadhaar_masking_valid" : statusRaw || "aadhaar_masking_invalid",
+    confidence: isValid ? 1 : 0,
+    businessIdentifier: masked || null,
+    verifiedData: {
+      status: statusRaw || null,
+      masked_aadhaar: masked || null,
+      aadhaar_number: masked || null,
+      uid: masked || null,
+      name: name || null,
+      holder_name: name || null,
+      dob: dob || null,
+      date_of_birth: dob || null,
+      image_link: imageLink,
+      verification_method: "cashfree_aadhaar_masking",
+    },
+    rawRequest: call.requestBody,
+    rawResponse: call.responseBody,
+    responseHeaders: call.responseHeaders,
+    httpStatus: call.status,
+    durationMs: call.durationMs,
+    providerArtifacts: imageLink
+      ? [
+          {
+            kind: "photo",
+            url: imageLink,
+            expiresAt: parseS3Expiry(imageLink),
+            contentType: "image/jpeg",
+          },
+        ]
+      : [],
+  };
+}
+

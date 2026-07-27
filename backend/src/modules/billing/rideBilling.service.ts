@@ -7,7 +7,7 @@ import {
 } from "./ruleCache.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import { getRulesetVersion, loadBillingDatasetUncached } from "./billing.repository.js";
-import { resolveGeoLocation } from "./geoLocationResolver.js";
+import { resolveGeoLocation, type ResolveGeoLocationResult } from "./geoLocationResolver.js";
 import type { BillContext, BillingResult } from "./types.js";
 import type { ComputeBillResult } from "./billing.service.js";
 
@@ -49,6 +49,8 @@ export type ComputeBillForRideInput = {
   forceNoAutoOffer?: boolean;
   now?: Date;
   useCache?: boolean;
+  /** When provided (batch path), skip reverse-geocode / geo resolve. */
+  resolvedGeo?: ResolveGeoLocationResult | null;
 };
 
 export function enrichRideBillingSnapshot(
@@ -178,13 +180,15 @@ export async function computeBillForRide(
   const pickupStateName = sanitizePlaceholder(input.pickupState);
   const cityName = sanitizePlaceholder(input.cityName);
 
-  const calcGeo = await resolveGeoLocation({
-    savedPincode: pickupPostalCode,
-    savedState: pickupStateName,
-    savedCity: cityName,
-    latitude: input.pickupLat,
-    longitude: input.pickupLng,
-  });
+  const calcGeo =
+    input.resolvedGeo ??
+    (await resolveGeoLocation({
+      savedPincode: pickupPostalCode,
+      savedState: pickupStateName,
+      savedCity: cityName,
+      latitude: input.pickupLat,
+      longitude: input.pickupLng,
+    }));
   const dropGeoRefByLevel = calcGeo.refs;
   const platformOfferGeoBindingEffectiveIds = calcGeo.geoBoundOfferIds;
 
@@ -257,4 +261,21 @@ export async function computeBillForRide(
   );
 
   return { ok: true, billing, snapshot };
+}
+
+/** Resolve pickup geo once for a quote-batch billing pass. */
+export async function resolveRideBillingGeo(input: {
+  pickupLat: number;
+  pickupLng: number;
+  pickupPincode?: string | null;
+  pickupState?: string | null;
+  cityName?: string | null;
+}): Promise<ResolveGeoLocationResult> {
+  return resolveGeoLocation({
+    savedPincode: normalizePincode(input.pickupPincode),
+    savedState: sanitizePlaceholder(input.pickupState),
+    savedCity: sanitizePlaceholder(input.cityName),
+    latitude: input.pickupLat,
+    longitude: input.pickupLng,
+  });
 }

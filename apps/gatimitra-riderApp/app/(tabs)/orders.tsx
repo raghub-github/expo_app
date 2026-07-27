@@ -4,7 +4,6 @@ import {
   View,
   Text,
   StyleSheet,
-  ActivityIndicator,
   Linking,
   Platform,
   AppState,
@@ -16,13 +15,14 @@ import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
-import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
-import { useAvailableOrders, useActiveOrders, useRidePaymentHolds, RIDER_ACTIVE_ORDERS_QUERY_KEY, RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { createForegroundLocationTracker, getSharedLocationEngine, type LocationTrackerState } from "@/src/services/location/locationTracker";
+import { useAvailableOrders, useActiveOrders, useRidePaymentHolds, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { isActiveRiderOrder } from "@/src/lib/active-order-display";
-import { ActiveRideResumePill } from "@/src/components/orders/ActiveRideResumePill";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
+import { useDemandZones } from "@/src/hooks/useDemandZones";
+import { HighDemandZonesPanel } from "@/src/components/home/HighDemandZonesPanel";
+import { resolveRiderHomeChrome } from "@/src/lib/rider-home-chrome";
 import { useDutyStatus, RIDER_DUTY_STATUS_QUERY_KEY } from "@/src/hooks/useDutyStatus";
 import { mergeRiderBlockedServices, shouldShowAccountRestrictedBanner } from "@/src/lib/rider-blocked-services";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
@@ -47,15 +47,25 @@ import { useRiderPenaltyPayment } from "@/src/hooks/useRiderPenaltyPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import { extractApiErrorMessage } from "@/src/services/http";
 
+/** Demand heatmap may use a slightly stale fix; map pin stays on a stricter gate. */
+const DEMAND_FIX_MAX_AGE_MS = 5 * 60_000;
+
 export default function OrdersScreen() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const { setDuty, isPending: dutyPending, dutyGoOnBlocked } = useDutyToggle();
-  const tracker = useMemo(() => createForegroundLocationTracker(), []);
+  const tracker = useMemo(
+    () => createForegroundLocationTracker({ profileId: "orders-map" }),
+    []
+  );
   const [state, setState] = useState<LocationTrackerState>(tracker.getState());
   const [checkingLocation, setCheckingLocation] = useState(false);
   const mapRef = useRef<RiderMapViewHandle>(null);
+  /** Keep last known GPS so home never sits on a blank "Getting location…" state. */
+  const stickyFixRef = useRef<
+    NonNullable<Extract<LocationTrackerState, { status: "tracking" }>["lastFix"]> | undefined
+  >(undefined);
 
   const queryClient = useQueryClient();
   const { data: availableOrders = [] } = useAvailableOrders();
@@ -254,18 +264,69 @@ export default function OrdersScreen() {
     subscriptionBannerVisible,
   ]);
 
-  const hasActiveOrder = useMemo(
-    () => activeOrders.some(isActiveRiderOrder),
-    [activeOrders]
+  const homeChrome = useMemo(
+    () =>
+      resolveRiderHomeChrome({
+        isOnDuty,
+        activeOrders,
+        availableOrders,
+      }),
+    [isOnDuty, activeOrders, availableOrders]
   );
+
+  const demandExtraPoints = useMemo(
+    () =>
+      homeChrome.fetchDemandZones
+        ? availableOrders
+            .filter(
+              (o) =>
+                o.category === "food" &&
+                o.pickup?.lat != null &&
+                o.pickup?.lng != null &&
+                Number.isFinite(Number(o.pickup.lat)) &&
+                Number.isFinite(Number(o.pickup.lng))
+            )
+            .map((o) => ({
+              lat: Number(o.pickup.lat),
+              lng: Number(o.pickup.lng),
+            }))
+        : [],
+    [availableOrders, homeChrome.fetchDemandZones]
+  );
+
+  const rawFixPreview = state.status === "tracking" ? state.lastFix : undefined;
+  if (rawFixPreview) stickyFixRef.current = rawFixPreview;
+  /**
+   * Demand zones accept a slightly older sticky fix so the HDZ banner stays useful
+   * while GPS watch briefly stalls.
+   */
+  const demandFix =
+    stickyFixRef.current &&
+    Number.isFinite(stickyFixRef.current.tsMs) &&
+    Date.now() - stickyFixRef.current.tsMs <= DEMAND_FIX_MAX_AGE_MS
+      ? stickyFixRef.current
+      : undefined;
+
+  const { zones: demandZones, isLoading: demandZonesLoading } = useDemandZones({
+    riderLat: demandFix?.lat,
+    riderLng: demandFix?.lng,
+    extraPoints: demandExtraPoints,
+    enabled: homeChrome.fetchDemandZones,
+  });
 
   useFocusEffect(
     useCallback(() => {
-      void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
-      void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["rider", "subscription", "status"] });
+      // Light refresh only — avoid invalidating everything on every Orders focus (tab lag).
+      void queryClient.refetchQueries({
+        queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY,
+        type: "active",
+        stale: true,
+      });
+      void queryClient.refetchQueries({
+        queryKey: RIDER_DUTY_STATUS_QUERY_KEY,
+        type: "active",
+        stale: true,
+      });
     }, [queryClient])
   );
 
@@ -279,6 +340,39 @@ export default function OrdersScreen() {
   const locationCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => tracker.subscribe(setState), [tracker]);
+
+  // Paint last-known coords immediately so home never waits on cold GPS.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== "granted" || cancelled) return;
+        const lastKnown = await Location.getLastKnownPositionAsync({
+          maxAge: 5 * 60_000,
+          requiredAccuracy: 1000,
+        });
+        if (!lastKnown || cancelled) return;
+        const fix = {
+          tsMs: lastKnown.timestamp,
+          lat: lastKnown.coords.latitude,
+          lng: lastKnown.coords.longitude,
+          accuracyM: lastKnown.coords.accuracy ?? undefined,
+          altitudeM: lastKnown.coords.altitude ?? undefined,
+          speedMps: lastKnown.coords.speed ?? undefined,
+          headingDeg: lastKnown.coords.heading ?? undefined,
+        };
+        stickyFixRef.current = fix;
+        getSharedLocationEngine().ingestExternalFix(fix);
+        setState(getSharedLocationEngine().getState());
+      } catch {
+        /* tracker.start still runs */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isOnDuty) return;
@@ -331,6 +425,15 @@ export default function OrdersScreen() {
     };
   }, [tracker]);
 
+  // Foreground resume: refresh without tearing down the shared watch (keeps last fix).
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (nextAppState) => {
+      if (nextAppState !== "active") return;
+      void tracker.start();
+    });
+    return () => sub.remove();
+  }, [tracker]);
+
   const handleEnableLocation = useCallback(async () => {
     setCheckingLocation(true);
     try {
@@ -375,8 +478,14 @@ export default function OrdersScreen() {
     );
   }
 
-  const fix = state.status === "tracking" ? state.lastFix : undefined;
-  const isLocating = state.status === "tracking" && !fix;
+  const rawFix = state.status === "tracking" ? state.lastFix : undefined;
+  if (rawFix) stickyFixRef.current = rawFix;
+  /** Prefer fresh fix; fall back to sticky so map chrome never waits on a blank gate. */
+  const freshFix =
+    rawFix && Number.isFinite(rawFix.tsMs) && Date.now() - rawFix.tsMs <= 15_000
+      ? rawFix
+      : undefined;
+  const fix = freshFix ?? stickyFixRef.current;
 
   const mapOrders = availableOrders
     .filter((order) => order.pickup?.lat != null && order.pickup?.lng != null)
@@ -400,16 +509,19 @@ export default function OrdersScreen() {
       }
     : undefined;
 
-  const showOffDutyBanner = !isOnDuty;
-  /** Pulse radar whenever ON-DUTY (alert banners must not hide it). */
-  const showSearchingRadar = isOnDuty;
+  const showOffDutyBanner = homeChrome.showOffDutyBanner;
 
   return (
     <View style={styles.container}>
-      <StatusBar style="dark" backgroundColor={ORDERS_HEADER_BG} />
-      <SafeAreaView edges={["top"]} style={styles.chrome}>
+      <StatusBar
+        style="dark"
+        backgroundColor={ORDERS_HEADER_BG}
+        translucent={false}
+      />
+      {/* Header owns status-bar padding — avoids translucent leftover from splash. */}
+      <View style={styles.chrome}>
         <HomeMapHeader />
-      </SafeAreaView>
+      </View>
       <View style={styles.bannerHost}>
         <HomeAlertBannerCarousel slides={homeBannerSlides} />
       </View>
@@ -420,31 +532,38 @@ export default function OrdersScreen() {
           riderLocation={riderLocation}
           orders={mapOrders}
           style={styles.map}
-          showRadar={isOnDuty && !!riderLocation}
+          showRadar={homeChrome.showSearchingRadar && !!riderLocation}
+          demandZones={homeChrome.fetchDemandZones ? demandZones : []}
         />
 
-        {showSearchingRadar ? <SearchingOrdersPill /> : null}
-        {hasActiveOrder ? <ActiveRideResumePill /> : null}
-
-        {isLocating ? (
-          <View style={styles.locatingPill}>
-            <ActivityIndicator size="small" color={colors.primary[500]} />
-            <Text style={styles.locatingText}>{t("location.gettingLocation", "Getting your location…")}</Text>
-          </View>
-        ) : null}
+        {homeChrome.showSearchingPill ? <SearchingOrdersPill /> : null}
 
         <MapRightControls
           onRecenter={handleRecenter}
           showOffDutyBanner={showOffDutyBanner}
-          hasActiveRideDock={hasActiveOrder}
+          hasDemandZonesDock={homeChrome.showHighDemandSection}
+          showActiveRideFab={homeChrome.showActiveRideFab}
         />
 
+        {homeChrome.showHighDemandSection ? (
+          <View style={styles.demandHost} pointerEvents="box-none">
+            <HighDemandZonesPanel
+              visible
+              zones={demandZones}
+              isLoading={demandZonesLoading}
+              riderLat={demandFix?.lat}
+              riderLng={demandFix?.lng}
+            />
+          </View>
+        ) : null}
+
         {showOffDutyBanner ? (
-          <View style={styles.offDutyHost}>
+          <View style={styles.offDutyHost} pointerEvents="box-none">
             <OffDutyBanner
               visible
               dutyLocked={dutyGoOnBlocked || subscriptionDispatchBlocked}
               onTurnOn={() => {
+                if (dutyPending) return;
                 if (dutyGoOnBlocked || subscriptionDispatchBlocked) {
                   setDutyBlockedSheetVisible(true);
                   return;
@@ -495,30 +614,24 @@ const styles = StyleSheet.create({
   mapSection: {
     flex: 1,
     position: "relative",
-    overflow: "visible",
+    overflow: "hidden",
+    minHeight: 0,
   },
-  locatingPill: {
+  demandHost: {
     position: "absolute",
-    top: 12,
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 4,
-    zIndex: 8,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 40,
+    elevation: 24,
   },
-  locatingText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: colors.gray[700],
+  offDutyHost: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 40,
+    elevation: 24,
   },
   map: {
     flex: 1,
@@ -532,13 +645,6 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "stretch",
     zIndex: 10,
-  },
-  offDutyHost: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 12,
   },
   permissionScreen: {
     flex: 1,

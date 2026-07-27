@@ -10,13 +10,16 @@ import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { PageSkeletonGeneric } from '@/components/PageSkeleton';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
-import { useMerchantLedger, usePayoutSettlement } from '@/hooks/useMerchantApi';
+import { useMerchantLedger, useMerchantWallet, usePayoutSettlement, usePayoutCycles, useMerchantPayoutRequests } from '@/hooks/useMerchantApi';
 import {
   buildPayoutCards,
+  buildPayoutCardsFromCycles,
+  mergePayoutCardsWithActiveRequests,
   formatCurrency,
   formatPeriodRange,
   formatShortDate,
   payoutCardToParams,
+  resolveWalletDisplayBalance,
   statusBadgeStyle,
   statusLabel,
   type PayoutCard,
@@ -32,8 +35,9 @@ type StatusFilter = 'all' | PayoutStatus;
 const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'ACCRUING', label: 'To be paid' },
+  { key: 'PENDING', label: 'Pending' },
+  { key: 'PROCESSING', label: 'In process' },
   { key: 'PAID', label: 'Settled' },
-  { key: 'PROCESSING', label: 'Processing' },
   { key: 'FAILED', label: 'Failed' },
 ];
 
@@ -72,11 +76,18 @@ function PayoutHistoryContent() {
     { limit: 100, offset: 0 },
     { enabled: !!storeId },
   );
+  const { data: wallet } = useMerchantWallet(storeId, { enabled: !!storeId });
+  const { data: cycleRows } = usePayoutCycles(storeId, { enabled: !!storeId });
+  const { data: payoutRequestsData } = useMerchantPayoutRequests(storeId, 20, { enabled: !!storeId });
+  const walletBalance = resolveWalletDisplayBalance(wallet);
 
-  const payoutCards = useMemo(
-    () => buildPayoutCards(ledgerData?.entries ?? []),
-    [ledgerData?.entries],
-  );
+  const payoutCards = useMemo(() => {
+    const base =
+      cycleRows && cycleRows.length > 0
+        ? buildPayoutCardsFromCycles(cycleRows)
+        : buildPayoutCards(ledgerData?.entries ?? []);
+    return mergePayoutCardsWithActiveRequests(base, payoutRequestsData?.recent ?? []);
+  }, [cycleRows, ledgerData?.entries, payoutRequestsData?.recent]);
   const currentCycleCard = useMemo(
     () => payoutCards.find((c) => c.isCurrentCycle),
     [payoutCards],
@@ -86,7 +97,10 @@ function PayoutHistoryContent() {
     storeId,
     currentCycleCard?.periodStart ?? null,
     currentCycleCard?.periodEnd ?? null,
-    { enabled: !!currentCycleCard?.periodStart && !!currentCycleCard?.periodEnd },
+    {
+      enabled: !!currentCycleCard,
+      cycleId: currentCycleCard?.cycleId ?? null,
+    },
   );
   const currentCycleEstPayout = currentCycleSettlementRaw?.estimatedPayout ?? 0;
 
@@ -100,8 +114,12 @@ function PayoutHistoryContent() {
     currentCycleCard != null && (statusFilter === 'all' || statusFilter === 'ACCRUING');
 
   const detailHref = (cardId: string, card: PayoutCard) => {
-    const q = new URLSearchParams(payoutCardToParams(card));
-    return partnerPayoutHistoryDetailHref(pathname, cardId, q);
+    const detailCard =
+      card.payoutRequestId != null && currentCycleCard
+        ? { ...currentCycleCard, netPayout: card.netPayout, status: card.status }
+        : card;
+    const q = new URLSearchParams(payoutCardToParams(detailCard));
+    return partnerPayoutHistoryDetailHref(pathname, detailCard.id, q);
   };
 
   if (isLoading && !ledgerData) {
@@ -207,10 +225,13 @@ function PayoutHistoryContent() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
                       <div className="px-5 py-4">
                         <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">
-                          Est. payout
+                          Wallet balance
                         </p>
                         <p className="text-2xl font-bold text-gray-900 mt-1">
-                          {formatCurrency(currentCycleEstPayout)}
+                          {formatCurrency(walletBalance)}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Est. cycle payout · {formatCurrency(currentCycleEstPayout)}
                         </p>
                       </div>
                       <div className="px-5 py-4">
@@ -248,7 +269,7 @@ function PayoutHistoryContent() {
                 <section className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                   <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3">
                     <div>
-                      <h2 className="text-sm font-semibold text-gray-900">Past payouts</h2>
+                      <h2 className="text-sm font-semibold text-gray-900">Payouts</h2>
                       <p className="text-xs text-gray-500 mt-0.5">
                         {pastPayoutCards.length}{' '}
                         {pastPayoutCards.length === 1 ? 'record' : 'records'}

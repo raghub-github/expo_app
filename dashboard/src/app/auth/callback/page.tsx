@@ -5,7 +5,7 @@ import { Suspense, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
 import { markDashboardFreshLogin } from "@/lib/dashboard-auth-client-state";
 
@@ -123,7 +123,7 @@ function AuthCallbackContent() {
         sessionError = result.error ?? null;
       } catch (err) {
         if (isInvalidRefreshToken(err)) {
-          await supabase.auth.signOut();
+          await signOutIfSessionDead(supabase, err);
           router.push("/login?reason=session_invalid");
           return;
         }
@@ -131,7 +131,7 @@ function AuthCallbackContent() {
       }
       if (sessionError) {
         if (isInvalidRefreshToken(sessionError)) {
-          await supabase.auth.signOut();
+          await signOutIfSessionDead(supabase, sessionError);
           router.push("/login?reason=session_invalid");
           return;
         }

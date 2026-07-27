@@ -143,8 +143,17 @@ export default function PermissionRequestScreen() {
       }
 
       const existing = useRiderLocationStore.getState().coords;
-      if (!existing) {
-        const acquisition = await acquireAndCommitRiderLocation({ assumeReady: true });
+      const updatedAtMs = useRiderLocationStore.getState().updatedAtMs;
+      const fresh =
+        existing &&
+        updatedAtMs != null &&
+        Date.now() - updatedAtMs <= 8_000;
+      if (!fresh) {
+        useRiderLocationStore.getState().clearFix();
+        const acquisition = await acquireAndCommitRiderLocation({
+          assumeReady: true,
+          requireFresh: true,
+        });
         if (!acquisition.ok) {
           setLocationIssue("denied");
           return false;

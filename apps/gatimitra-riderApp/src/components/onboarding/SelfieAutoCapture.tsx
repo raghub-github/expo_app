@@ -132,6 +132,11 @@ export function SelfieAutoCapture({
       setDetectorUnavailable(true);
     }
 
+    setRejection(null);
+    setFacePresent(false);
+    facePresentRef.current = false;
+    blinkTrackerRef.current.reset();
+    setBlinkPhase("align");
     setStatus(cameraReady ? "searching" : "starting");
   }, [active, uri, disabled, permission, requestPermission, cameraReady]);
 
@@ -208,10 +213,10 @@ export function SelfieAutoCapture({
     facePresentRef.current = false;
     setDetectorUnavailable(false);
     setRejection(null);
-    if (!active) {
-      setCameraReady(false);
-      setStatus("starting");
-    }
+    // CameraView remounts after clear — wait for onCameraReady again.
+    setCameraReady(false);
+    setStatus(active ? "starting" : "starting");
+    capturingRef.current = false;
   }, [uri, active]);
 
   const statusLabel =
@@ -354,11 +359,42 @@ export function SelfieAutoCapture({
         ) : null}
 
         {uri ? (
-          <Pressable onPress={onRemove} style={styles.removeBtn} hitSlop={8}>
-            <Ionicons name="close-circle" size={24} color="#ffffff" />
+          <Pressable
+            onPress={() => {
+              if (disabled) return;
+              onRemove();
+            }}
+            disabled={disabled}
+            style={({ pressed }) => [
+              styles.removeBtn,
+              pressed && styles.removeBtnPressed,
+              disabled && styles.removeBtnDisabled,
+            ]}
+            hitSlop={16}
+            accessibilityRole="button"
+            accessibilityLabel="Remove selfie"
+          >
+            <Ionicons name="close" size={16} color="#374151" />
           </Pressable>
         ) : null}
       </View>
+
+      {uri ? (
+        <Pressable
+          onPress={onRemove}
+          disabled={disabled}
+          style={({ pressed }) => [
+            styles.recaptureBtn,
+            pressed && styles.recaptureBtnPressed,
+            disabled && styles.recaptureBtnDisabled,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Re-capture selfie"
+        >
+          <Ionicons name="camera-reverse-outline" size={18} color={ACCENT_DARK} />
+          <Text style={styles.recaptureBtnText}>Re-capture selfie</Text>
+        </Pressable>
+      ) : null}
 
       <View style={styles.tipsCard}>
         {tips.map((tip) => (
@@ -588,11 +624,58 @@ const styles = StyleSheet.create({
   },
   removeBtn: {
     position: "absolute",
-    top: 4,
-    right: 4,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    top: -2,
+    right: -2,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: colors.gray[200],
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 20,
+    elevation: 6,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.18,
+        shadowRadius: 2,
+      },
+      android: {},
+    }),
+  },
+  removeBtnPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.96 }],
+  },
+  removeBtnDisabled: {
+    opacity: 0.45,
+  },
+  recaptureBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
     borderRadius: 14,
-    zIndex: 3,
+    borderWidth: 1.5,
+    borderColor: ACCENT,
+    backgroundColor: "#f0fdf4",
+    minWidth: 200,
+  },
+  recaptureBtnPressed: {
+    opacity: 0.88,
+  },
+  recaptureBtnDisabled: {
+    opacity: 0.45,
+  },
+  recaptureBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: ACCENT_DARK,
   },
   tipsCard: {
     width: "100%",

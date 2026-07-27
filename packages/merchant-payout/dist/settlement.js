@@ -33,22 +33,133 @@ export function isCancellationStoreDebit(entry) {
     }
     return false;
 }
+/** @deprecated Use sumRefundAdjustmentsFromLedger — kept for callers. */
 export function sumCustomerCompensationFromLedger(entries) {
+    return sumRefundAdjustmentsFromLedger(entries);
+}
+export function sumRefundAdjustmentsFromLedger(entries) {
     let sum = 0;
     for (const entry of entries) {
         if (entry.direction !== "DEBIT")
             continue;
-        if (isCancellationStoreDebit(entry)) {
+        if (entry.category === "REFUND_DEBIT" || entry.category === "REFUND_TO_CUSTOMER") {
             sum += n(entry.amount);
             continue;
         }
+        if (isCancellationStoreDebit(entry)) {
+            sum += n(entry.amount);
+        }
+    }
+    return sum;
+}
+export function sumPenaltiesFromLedger(entries) {
+    let sum = 0;
+    for (const entry of entries) {
+        if (entry.direction !== "DEBIT")
+            continue;
+        if (entry.category !== "PENALTY")
+            continue;
+        const meta = (entry.metadata ?? null);
+        if (meta?.pending === true || meta?.pending === "true" || meta?.pending === 1)
+            continue;
+        const status = String(meta?.status ?? "").toLowerCase();
+        if (status.includes("pending") || status.includes("warning"))
+            continue;
+        if (meta?.finalized === false || meta?.finalized === "false" || meta?.finalized === 0)
+            continue;
+        sum += n(entry.amount);
+    }
+    return sum;
+}
+export function sumManualDebitsFromLedger(entries) {
+    let sum = 0;
+    for (const entry of entries) {
+        if (entry.direction !== "DEBIT")
+            continue;
+        if (entry.category === "MANUAL_DEBIT" || entry.category === "ADJUSTMENT_DEBIT") {
+            sum += n(entry.amount);
+        }
+    }
+    return sum;
+}
+export function sumChargebacksFromLedger(entries) {
+    let sum = 0;
+    for (const entry of entries) {
+        if (entry.direction !== "DEBIT")
+            continue;
+        const cat = String(entry.category ?? "").toUpperCase();
         const meta = (entry.metadata ?? null);
         const type = String(meta?.type ?? meta?.entry_type ?? "").toLowerCase();
         const desc = (entry.description ?? "").toLowerCase();
-        if (entry.category === "PENALTY" &&
-            (type.includes("compensation") || desc.includes("compensation"))) {
+        if (cat.includes("CHARGEBACK") || type.includes("chargeback") || desc.includes("chargeback")) {
             sum += n(entry.amount);
         }
+    }
+    return sum;
+}
+export function sumOtherMerchantCreditsFromLedger(entries) {
+    const parts = sumOtherMerchantCreditPartsFromLedger(entries);
+    return (parts.withdrawalReversalCredits +
+        parts.manualCredits +
+        parts.adjustmentCredits +
+        parts.gstCredits +
+        parts.penaltyReversalCredits);
+}
+export function sumOtherMerchantCreditPartsFromLedger(entries) {
+    let withdrawalReversalCredits = 0;
+    let manualCredits = 0;
+    let adjustmentCredits = 0;
+    let gstCredits = 0;
+    let penaltyReversalCredits = 0;
+    for (const entry of entries) {
+        if (entry.direction !== "CREDIT")
+            continue;
+        const cat = String(entry.category ?? "");
+        const amt = n(entry.amount);
+        if (cat === "FAILED_WITHDRAWAL_REVERSAL" || cat === "WITHDRAWAL_REVERSAL") {
+            withdrawalReversalCredits += amt;
+        }
+        else if (cat === "MANUAL_CREDIT") {
+            manualCredits += amt;
+        }
+        else if (cat === "ADJUSTMENT_CREDIT") {
+            adjustmentCredits += amt;
+        }
+        else if (cat === "GST_CREDIT") {
+            gstCredits += amt;
+        }
+        else if (cat === "PENALTY_REVERSAL") {
+            penaltyReversalCredits += amt;
+        }
+    }
+    return {
+        withdrawalReversalCredits,
+        manualCredits,
+        adjustmentCredits,
+        gstCredits,
+        penaltyReversalCredits,
+    };
+}
+export function sumCancellationCompensationFromLedger(entries) {
+    let sum = 0;
+    const seen = new Set();
+    for (const entry of entries) {
+        if (entry.direction !== "CREDIT")
+            continue;
+        const meta = (entry.metadata ?? null);
+        const entryType = String(meta?.entry_type ?? "").toLowerCase();
+        const balanceImpact = String(meta?.balance_impact ?? "").toLowerCase();
+        const isCompCredit = entry.category === "ORDER_ADJUSTMENT" &&
+            entryType === "order_cancellation" &&
+            balanceImpact === "credit";
+        if (!isCompCredit)
+            continue;
+        const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        const keeps = ledgerMetaNumber(meta, ["merchant_keeps_amount", "cancellation_compensation"]);
+        sum += keeps > 0 ? keeps : n(entry.amount);
     }
     return sum;
 }
@@ -87,18 +198,11 @@ function ledgerOrderGrossParts(meta, entryAmount) {
     }
     return { item, packaging };
 }
-function isRejectedCancellationEntry(entry) {
-    const meta = (entry.metadata ?? null);
-    const status = String(meta?.order_status ?? meta?.fulfillment_status ?? "").toUpperCase();
-    return (meta?.entry_type === "order_cancellation" ||
-        status === "REJECTED" ||
-        status === "CANCELLED" ||
-        status === "RTO");
-}
 /**
- * Core A − B − C payout formula.
- * payoutBase = merchantNetTotal (when credits exist) else delivered gross.
- * estimated_payout = max(0, payoutBase − restaurantDiscounts − customerCompensation + cancellationCompensation)
+ * Ledger SSOT formula:
+ * Est. payout = A (ORDER_EARNING credits) + cancellation compensation + other credits − C
+ * Store offer discounts (B) are informational only — never subtracted from Est. payout.
+ * Mechanism fee is informational when A is already post-fee net (default).
  */
 export function buildSummaryFromParts(parts) {
     const itemSubtotal = roundMoney(parts.itemSubtotal);
@@ -112,25 +216,36 @@ export function buildSummaryFromParts(parts) {
         comboOfferDiscount +
         freeDeliveryOfferDiscount);
     const mechanismFee = roundMoney(parts.mechanismFee);
-    const customerCompensation = roundMoney(parts.customerCompensation);
-    const orderDeductions = roundMoney(mechanismFee + customerCompensation);
-    const rejectedItemSubtotal = roundMoney(parts.rejectedItemSubtotal ?? 0);
-    const rejectedPackagingCharges = roundMoney(parts.rejectedPackagingCharges ?? 0);
-    const deliveredItemSubtotal = roundMoney(Math.max(0, itemSubtotal - rejectedItemSubtotal));
-    const deliveredPackagingCharges = roundMoney(Math.max(0, packagingCharges - rejectedPackagingCharges));
-    const deliveredGross = roundMoney(deliveredItemSubtotal + deliveredPackagingCharges);
-    const netOrderValue = deliveredGross;
-    const cancellationCompensation = roundMoney(parts.cancellationCompensation ?? 0);
+    const penalties = roundMoney(parts.penalties ?? 0);
+    const refundAdjustments = roundMoney(parts.refundAdjustments ?? parts.customerCompensation ?? 0);
+    const manualDebitAdjustments = roundMoney(parts.manualDebitAdjustments ?? 0);
+    const chargebacks = roundMoney(parts.chargebacks ?? 0);
+    const includeMechanism = parts.includeMechanismFeeInDeductions === true;
+    const orderDeductions = roundMoney(penalties +
+        refundAdjustments +
+        manualDebitAdjustments +
+        chargebacks +
+        (includeMechanism ? mechanismFee : 0));
     const merchantNetTotal = roundMoney(parts.merchantNetTotal ?? 0);
-    const payoutBase = merchantNetTotal > 0 ? merchantNetTotal : deliveredGross;
-    const estimatedPayout = roundMoney(Math.max(0, payoutBase - restaurantDiscounts - customerCompensation + cancellationCompensation));
+    // A = wallet-credited earnings only (never delivered gross)
+    const netOrderValue = merchantNetTotal;
+    const cancellationCompensation = roundMoney(parts.cancellationCompensation ?? 0);
+    const withdrawalReversalCredits = roundMoney(parts.withdrawalReversalCredits ?? 0);
+    const manualCredits = roundMoney(parts.manualCredits ?? 0);
+    const adjustmentCredits = roundMoney(parts.adjustmentCredits ?? 0);
+    const gstCredits = roundMoney(parts.gstCredits ?? 0);
+    const penaltyReversalCredits = roundMoney(parts.penaltyReversalCredits ?? 0);
+    const otherCreditsFromParts = roundMoney(parts.otherCredits ?? 0);
+    const otherCreditsBreakdown = withdrawalReversalCredits + manualCredits + adjustmentCredits + gstCredits + penaltyReversalCredits;
+    const otherCredits = roundMoney(otherCreditsFromParts > 0 ? otherCreditsFromParts : otherCreditsBreakdown);
+    const estimatedPayout = roundMoney(Math.max(0, netOrderValue + cancellationCompensation + otherCredits - orderDeductions));
     const deliveredOrderCount = parts.deliveredOrderCount;
     const rejectedOrderCount = parts.rejectedOrderCount;
     const orderCount = deliveredOrderCount + rejectedOrderCount;
     return {
         net_order_value: netOrderValue,
-        item_subtotal: deliveredItemSubtotal,
-        packaging_charges: deliveredPackagingCharges,
+        item_subtotal: itemSubtotal,
+        packaging_charges: packagingCharges,
         restaurant_discounts: restaurantDiscounts,
         coupon_offer_discount: couponOfferDiscount,
         percentage_flat_offer_discount: percentageFlatOfferDiscount,
@@ -138,15 +253,64 @@ export function buildSummaryFromParts(parts) {
         free_delivery_offer_discount: freeDeliveryOfferDiscount,
         order_deductions: orderDeductions,
         mechanism_fee: mechanismFee,
-        customer_compensation: customerCompensation,
+        customer_compensation: refundAdjustments,
         cancellation_compensation: cancellationCompensation,
+        other_credits: otherCredits,
+        withdrawal_reversal_credits: withdrawalReversalCredits,
+        manual_credits: manualCredits,
+        adjustment_credits: adjustmentCredits,
+        gst_credits: gstCredits,
+        penalty_reversal_credits: penaltyReversalCredits,
+        penalties,
+        refund_adjustments: refundAdjustments,
+        manual_debit_adjustments: manualDebitAdjustments,
+        chargebacks,
         estimated_payout: estimatedPayout,
         order_count: orderCount,
         delivered_order_count: deliveredOrderCount,
         rejected_order_count: rejectedOrderCount,
     };
 }
-/** Ledger-only fallback when order_settlement_breakdown rows are missing. */
+/** Non-zero deduction rows for Order level deductions (C). */
+export function buildOrderDeductionLines(summary) {
+    const lines = [];
+    if (summary.penalties > 0) {
+        lines.push({ key: "penalties", label: "Penalties", amount: summary.penalties });
+    }
+    if (summary.refund_adjustments > 0) {
+        lines.push({
+            key: "refund_adjustments",
+            label: "Refund adjustments",
+            amount: summary.refund_adjustments,
+        });
+    }
+    if (summary.manual_debit_adjustments > 0) {
+        lines.push({
+            key: "manual_debit_adjustments",
+            label: "Manual debit adjustments",
+            amount: summary.manual_debit_adjustments,
+        });
+    }
+    if (summary.chargebacks > 0) {
+        lines.push({ key: "chargebacks", label: "Chargebacks", amount: summary.chargebacks });
+    }
+    // Mechanism fee is informational (already in A when net); show only if counted in C
+    if (summary.mechanism_fee > 0 && summary.order_deductions >= summary.mechanism_fee) {
+        const withoutMech = summary.penalties +
+            summary.refund_adjustments +
+            summary.manual_debit_adjustments +
+            summary.chargebacks;
+        if (roundMoney(summary.order_deductions - withoutMech) > 0) {
+            lines.push({
+                key: "mechanism_fee",
+                label: "Payment mechanism fee",
+                amount: summary.mechanism_fee,
+            });
+        }
+    }
+    return lines;
+}
+/** Ledger-only settlement — ORDER_EARNING credits are the sole source for A. */
 export function computeSettlementFromLedgerEntries(entries) {
     const orderCredits = entries.filter((e) => e.category === "ORDER_EARNING" && e.direction === "CREDIT");
     let itemSubtotal = 0;
@@ -157,38 +321,16 @@ export function computeSettlementFromLedgerEntries(entries) {
     let freeDeliveryOfferDiscount = 0;
     for (const entry of orderCredits) {
         const meta = (entry.metadata ?? null);
+        const packaging = ledgerMetaNumber(meta, ["packaging_charge", "packaging_charges", "packaging"]);
+        const item = ledgerMetaNumber(meta, ["item_subtotal", "item_total", "items_total", "subtotal"]);
         const gross = ledgerMetaNumber(meta, ["merchant_gross", "order_gross", "gross_revenue"]);
         const net = n(entry.amount);
         const commission = n(entry.commission_amount);
         const gst = n(entry.gst_amount);
         const tds = n(entry.tds_amount);
         const orderGross = gross > 0 ? gross : net + commission + gst + tds;
-        const packaging = ledgerMetaNumber(meta, ["packaging_charge", "packaging_charges", "packaging"]);
-        const item = ledgerMetaNumber(meta, ["item_subtotal", "item_total", "items_total", "subtotal"]);
         packagingCharges += packaging > 0 ? packaging : 0;
         itemSubtotal += item > 0 ? item : Math.max(0, orderGross - packaging);
-    }
-    if (itemSubtotal <= 0 && packagingCharges <= 0 && orderCredits.length > 0) {
-        itemSubtotal = orderCredits.reduce((s, e) => s + n(e.amount), 0);
-    }
-    const creditedOrderKeys = new Set(orderCredits.map((e) => String(e.reference_id ?? e.order_id ?? e.id)));
-    const cancelDisplayKeys = new Set();
-    for (const entry of entries) {
-        if (!isRejectedCancellationEntry(entry))
-            continue;
-        const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
-        if (cancelDisplayKeys.has(key) || creditedOrderKeys.has(key))
-            continue;
-        cancelDisplayKeys.add(key);
-        const meta = (entry.metadata ?? null);
-        const { item, packaging } = ledgerOrderGrossParts(meta, n(entry.amount));
-        if (item > 0)
-            itemSubtotal += item;
-        if (packaging > 0)
-            packagingCharges += packaging;
-    }
-    for (const entry of orderCredits) {
-        const meta = (entry.metadata ?? null);
         couponOfferDiscount += ledgerMetaNumber(meta, [
             "coupon_offer_discount",
             "coupon_discount",
@@ -220,57 +362,24 @@ export function computeSettlementFromLedgerEntries(entries) {
             "merchant_delivery_discount",
         ]);
     }
-    let deliveredOrderCount = 0;
-    let rejectedOrderCount = 0;
-    const seenOrders = new Set();
-    for (const entry of entries) {
-        if (entry.category !== "ORDER_EARNING" && entry.category !== "ORDER_ADJUSTMENT")
-            continue;
-        const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
-        if (seenOrders.has(key))
-            continue;
-        seenOrders.add(key);
-        const meta = (entry.metadata ?? null);
-        const status = String(meta?.order_status ?? meta?.fulfillment_status ?? "").toUpperCase();
-        if (status === "REJECTED" ||
-            status === "CANCELLED" ||
-            status === "RTO" ||
-            meta?.entry_type === "order_cancellation") {
-            rejectedOrderCount += 1;
-        }
-        else {
-            deliveredOrderCount += 1;
-        }
+    if (itemSubtotal <= 0 && packagingCharges <= 0 && orderCredits.length > 0) {
+        itemSubtotal = orderCredits.reduce((s, e) => s + n(e.amount), 0);
     }
-    const mechanismFee = sumMechanismFeeFromLedger(entries);
-    const customerCompensation = sumCustomerCompensationFromLedger(entries);
     const merchantNetTotal = roundMoney(orderCredits.reduce((s, e) => s + n(e.amount), 0));
-    let rejectedItemSubtotal = 0;
-    let rejectedPackagingCharges = 0;
-    let cancellationCompensation = 0;
-    const rejectedKeys = new Set();
+    const deliveredOrderCount = orderCredits.length;
+    let rejectedOrderCount = 0;
+    const seenReject = new Set();
     for (const entry of entries) {
-        if (!isRejectedCancellationEntry(entry))
+        const meta = (entry.metadata ?? null);
+        if (meta?.entry_type !== "order_cancellation")
             continue;
         const key = String(entry.reference_id ?? entry.order_id ?? entry.id);
-        if (rejectedKeys.has(key))
+        if (seenReject.has(key))
             continue;
-        rejectedKeys.add(key);
-        const meta = (entry.metadata ?? null);
-        const { item, packaging } = ledgerOrderGrossParts(meta, n(entry.amount));
-        rejectedItemSubtotal += item;
-        rejectedPackagingCharges += packaging;
-        const keeps = ledgerMetaNumber(meta, ["merchant_keeps_amount", "cancellation_compensation"]);
-        if (keeps > 0) {
-            cancellationCompensation += keeps;
-        }
-        else if (entry.category === "ORDER_ADJUSTMENT" &&
-            entry.direction === "CREDIT" &&
-            meta?.entry_type === "order_cancellation" &&
-            String(meta?.balance_impact ?? "").toLowerCase() === "credit") {
-            cancellationCompensation += n(entry.amount);
-        }
+        seenReject.add(key);
+        rejectedOrderCount += 1;
     }
+    const creditParts = sumOtherMerchantCreditPartsFromLedger(entries);
     return buildSummaryFromParts({
         itemSubtotal,
         packagingCharges,
@@ -278,14 +387,22 @@ export function computeSettlementFromLedgerEntries(entries) {
         percentageFlatOfferDiscount,
         comboOfferDiscount,
         freeDeliveryOfferDiscount,
-        mechanismFee,
-        customerCompensation,
+        mechanismFee: sumMechanismFeeFromLedger(entries),
         deliveredOrderCount,
         rejectedOrderCount,
-        rejectedItemSubtotal,
-        rejectedPackagingCharges,
-        cancellationCompensation,
+        cancellationCompensation: sumCancellationCompensationFromLedger(entries),
         merchantNetTotal,
+        otherCredits: sumOtherMerchantCreditsFromLedger(entries),
+        withdrawalReversalCredits: creditParts.withdrawalReversalCredits,
+        manualCredits: creditParts.manualCredits,
+        adjustmentCredits: creditParts.adjustmentCredits,
+        gstCredits: creditParts.gstCredits,
+        penaltyReversalCredits: creditParts.penaltyReversalCredits,
+        penalties: sumPenaltiesFromLedger(entries),
+        refundAdjustments: sumRefundAdjustmentsFromLedger(entries),
+        manualDebitAdjustments: sumManualDebitsFromLedger(entries),
+        chargebacks: sumChargebacksFromLedger(entries),
+        includeMechanismFeeInDeductions: false,
     });
 }
 export function mapSettlementToClient(summary) {
@@ -302,6 +419,16 @@ export function mapSettlementToClient(summary) {
         mechanismFee: summary.mechanism_fee,
         customerCompensation: summary.customer_compensation,
         cancellationCompensation: summary.cancellation_compensation,
+        otherCredits: summary.other_credits ?? 0,
+        withdrawalReversalCredits: summary.withdrawal_reversal_credits ?? 0,
+        manualCredits: summary.manual_credits ?? 0,
+        adjustmentCredits: summary.adjustment_credits ?? 0,
+        gstCredits: summary.gst_credits ?? 0,
+        penaltyReversalCredits: summary.penalty_reversal_credits ?? 0,
+        penalties: summary.penalties ?? 0,
+        refundAdjustments: summary.refund_adjustments ?? 0,
+        manualDebitAdjustments: summary.manual_debit_adjustments ?? 0,
+        chargebacks: summary.chargebacks ?? 0,
         estimatedPayout: summary.estimated_payout,
         orderCount: summary.order_count,
         deliveredOrderCount: summary.delivered_order_count,
@@ -320,11 +447,51 @@ export function mapSettlementApiResponse(raw) {
         free_delivery_offer_discount: n(raw.free_delivery_offer_discount),
         order_deductions: n(raw.order_deductions),
         mechanism_fee: n(raw.mechanism_fee),
-        customer_compensation: n(raw.customer_compensation),
+        customer_compensation: n(raw.customer_compensation ?? raw.refund_adjustments),
         cancellation_compensation: n(raw.cancellation_compensation),
+        other_credits: n(raw.other_credits),
+        withdrawal_reversal_credits: n(raw.withdrawal_reversal_credits),
+        manual_credits: n(raw.manual_credits),
+        adjustment_credits: n(raw.adjustment_credits),
+        gst_credits: n(raw.gst_credits),
+        penalty_reversal_credits: n(raw.penalty_reversal_credits),
+        penalties: n(raw.penalties),
+        refund_adjustments: n(raw.refund_adjustments ?? raw.customer_compensation),
+        manual_debit_adjustments: n(raw.manual_debit_adjustments),
+        chargebacks: n(raw.chargebacks),
         estimated_payout: n(raw.estimated_payout),
         order_count: n(raw.order_count),
         delivered_order_count: n(raw.delivered_order_count),
         rejected_order_count: n(raw.rejected_order_count),
     });
+}
+export function summaryFromLockedSnapshot(row) {
+    return {
+        net_order_value: n(row.net_order_value),
+        item_subtotal: n(row.item_subtotal),
+        packaging_charges: n(row.packaging_charges),
+        restaurant_discounts: n(row.restaurant_discounts),
+        coupon_offer_discount: n(row.coupon_offer_discount ?? row.promo_discount),
+        percentage_flat_offer_discount: n(row.percentage_flat_offer_discount ?? row.other_restaurant_discount),
+        combo_offer_discount: n(row.combo_offer_discount),
+        free_delivery_offer_discount: n(row.free_delivery_offer_discount ?? row.delivery_charge_discount),
+        order_deductions: n(row.order_deductions),
+        mechanism_fee: n(row.mechanism_fee ?? row.payment_mechanism_fee),
+        customer_compensation: n(row.customer_compensation ?? row.refund_adjustments),
+        cancellation_compensation: n(row.cancellation_compensation),
+        other_credits: n(row.other_credits),
+        withdrawal_reversal_credits: n(row.withdrawal_reversal_credits),
+        manual_credits: n(row.manual_credits),
+        adjustment_credits: n(row.adjustment_credits),
+        gst_credits: n(row.gst_credits),
+        penalty_reversal_credits: n(row.penalty_reversal_credits),
+        penalties: n(row.penalties),
+        refund_adjustments: n(row.refund_adjustments ?? row.customer_compensation),
+        manual_debit_adjustments: n(row.manual_debit_adjustments),
+        chargebacks: n(row.chargebacks),
+        estimated_payout: n(row.estimated_payout ?? row.net_payout),
+        order_count: n(row.delivered_orders) + n(row.rejected_orders),
+        delivered_order_count: n(row.delivered_orders ?? row.delivered_order_count),
+        rejected_order_count: n(row.rejected_orders ?? row.rejected_order_count),
+    };
 }
