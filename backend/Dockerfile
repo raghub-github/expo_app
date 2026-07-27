@@ -111,11 +111,12 @@ RUN npm run build \
       --workspace=@gatimitra/financial-rules \
       --workspace=@gatimitra/slab-pricing \
       --workspace=@gatimitra/store-status \
+      --workspace=@gatimitra/bill-print \
       --workspace=@gatimitra/logger \
       --workspace=@gatimitra/queue \
       --workspace=@gatimitra/backend
 
-# @gatimitra/bill-print is source-only (consumed from src by Metro/Next). The
+# @gatimitra/bill-print's own build is a no-op echo (above, source-only). The
 # backend runs under `node dist/index.js`, so its `node` export condition points
 # at ./dist/index.js — bundle that self-contained ESM here (esbuild is available
 # via the backend's tsx devDependency). No source changes; other consumers keep
